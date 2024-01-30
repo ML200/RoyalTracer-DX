@@ -1,16 +1,14 @@
 # ninja log v5
 0	986	7283169662357230	CMakeFiles/Pathtracer.dir/main.cpp.obj	1adc3c08218c2a59
-511	619	7283180996777700	Pathtracer.exe	ff3db67260e43645
+197	299	7283187967066405	Pathtracer.exe	8cca9ff9560d6a1b
 17	334	7283180994050707	CMakeFiles/Pathtracer.dir/src/Math/Vector3.cpp.obj	26f5478d9284a21d
 8	337	7283180994070707	CMakeFiles/Pathtracer.dir/src/Scene/scene.cpp.obj	fcb0a6034e313b73
 5	336	7283180994090711	CMakeFiles/Pathtracer.dir/src/Components/Triangle.cpp.obj	1a68e94217ba50f4
-14	335	7283180994130715	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	c5530d5f9c0831cd
+4	37	7283187964666271	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	c5530d5f9c0831cd
 19	336	7283180994140708	CMakeFiles/Pathtracer.dir/src/Components/Material.cpp.obj	329f03c7e93e0ce0
 11	337	7283180994140708	CMakeFiles/Pathtracer.dir/src/Renderer/renderer.cpp.obj	7c8832b4c3b9e79
 24	342	7283180994220708	CMakeFiles/Pathtracer.dir/src/Math/Quaternion.cpp.obj	5d3b304a72d85af6
 1	510	7283180995897612	CMakeFiles/Pathtracer.dir/src/Objects/sceneObject.cpp.obj	8252df1871e39191
 7	41	7283183347423345	CMakeFiles/Pathtracer.dir/src/Scene/Scene.cpp.obj	ffc1134adf284870
 4	41	7283183347423345	CMakeFiles/Pathtracer.dir/src/Renderer/Renderer.cpp.obj	ac4e1482020d13cf
-9	43	7283183347443334	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	c5530d5f9c0831cd
-1	219	7283183349203332	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	455129a60982bd30
-220	306	7283183349903330	Pathtracer.exe	8d4d0f452227fb01
+1	197	7283187966256354	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	455129a60982bd30

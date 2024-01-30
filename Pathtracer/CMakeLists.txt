@@ -19,9 +19,7 @@ add_executable(Pathtracer main.cpp
         src/Components/Material.h
         src/Components/Transform.cpp
         src/Components/Transform.h
-        src/Math/Vector3.cpp
         src/Math/Vector3.h
-        src/Math/Quaternion.cpp
         src/Math/Quaternion.h)
 
 

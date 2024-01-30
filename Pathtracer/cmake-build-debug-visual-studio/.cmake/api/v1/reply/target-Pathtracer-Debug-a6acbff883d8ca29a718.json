@@ -36,19 +36,19 @@
 			{
 				"command" : 1,
 				"file" : 0,
-				"line" : 36,
+				"line" : 34,
 				"parent" : 0
 			},
 			{
 				"command" : 2,
 				"file" : 0,
-				"line" : 37,
+				"line" : 35,
 				"parent" : 0
 			},
 			{
 				"command" : 3,
 				"file" : 0,
-				"line" : 33,
+				"line" : 31,
 				"parent" : 0
 			}
 		]
@@ -86,9 +86,7 @@
 				5,
 				7,
 				9,
-				11,
-				13,
-				15
+				11
 			]
 		}
 	],
@@ -146,9 +144,7 @@
 				5,
 				7,
 				9,
-				11,
-				13,
-				15
+				11
 			]
 		},
 		{
@@ -161,8 +157,8 @@
 				8,
 				10,
 				12,
-				14,
-				16
+				13,
+				14
 			]
 		}
 	],
@@ -242,20 +238,8 @@
 		},
 		{
 			"backtrace" : 1,
-			"compileGroupIndex" : 0,
-			"path" : "src/Math/Vector3.cpp",
-			"sourceGroupIndex" : 0
-		},
-		{
-			"backtrace" : 1,
 			"path" : "src/Math/Vector3.h",
 			"sourceGroupIndex" : 1
-		},
-		{
-			"backtrace" : 1,
-			"compileGroupIndex" : 0,
-			"path" : "src/Math/Quaternion.cpp",
-			"sourceGroupIndex" : 0
 		},
 		{
 			"backtrace" : 1,
