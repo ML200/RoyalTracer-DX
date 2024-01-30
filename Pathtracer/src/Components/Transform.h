@@ -11,14 +11,14 @@
 
 class Transform {
 public:
-    Vector3 translation;
+    Vector3 position;
     Quaternion rotation;
     Vector3 scale;
 
     void Translate(Vector3 translation);
     void Rotate(Quaternion angle);
     void RotateEuler(Vector3 angle);
-    void Scale(Vector3 scale);
+    void Scale(Vector3 factor);
 };
 
 

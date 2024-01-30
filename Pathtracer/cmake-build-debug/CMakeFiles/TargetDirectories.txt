@@ -1,3 +1,0 @@
-C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug/CMakeFiles/Pathtracer.dir
-C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug/CMakeFiles/edit_cache.dir
-C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug/CMakeFiles/rebuild_cache.dir

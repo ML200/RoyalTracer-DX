@@ -39,7 +39,7 @@
 				{
 					"directoryIndex" : 0,
 					"id" : "Pathtracer::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-Pathtracer-Debug-a5e34465bbf7cf27c165.json",
+					"jsonFile" : "target-Pathtracer-Debug-38f8c833164a7826edcf.json",
 					"name" : "Pathtracer",
 					"projectIndex" : 0
 				}
@@ -49,7 +49,7 @@
 	"kind" : "codemodel",
 	"paths" : 
 	{
-		"build" : "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug",
+		"build" : "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio",
 		"source" : "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer"
 	},
 	"version" : 

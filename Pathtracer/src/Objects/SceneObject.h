@@ -9,12 +9,11 @@
 #include <vector>
 #include "../Components/Transform.h"
 #include "../Components/Material.h"
-#include "../Components/Triangle.h"
+#include "../Components/Mesh.h"
 
 class SceneObject {
 public:
-    std::vector<Triangle> tris;
-    Material mat;
+    Mesh mesh;
     Transform transform;
 };
 

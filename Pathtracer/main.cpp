@@ -2,6 +2,7 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <iostream>
+#include "src/Util/GLFDLoader.h"
 
 // Link necessary d3d12 libraries
 #pragma comment(lib, "d3d12.lib")
@@ -11,6 +12,10 @@
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 int main() {
+    GLDFLoader meshLoader;
+    meshLoader.LoadModel("/Models/example.glb");
+
+
     // Initialize the window class.
     WNDCLASSEX windowClass = {0};
     windowClass.cbSize = sizeof(WNDCLASSEX);
