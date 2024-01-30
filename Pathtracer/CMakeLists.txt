@@ -13,8 +13,16 @@ add_executable(Pathtracer main.cpp
         src/Renderer/renderer.h
         src/Scene/scene.cpp
         src/Scene/scene.h
-        src/Primitives/Triangle.cpp
-        src/Primitives/Triangle.h)
+        src/Components/Triangle.cpp
+        src/Components/Triangle.h
+        src/Components/Material.cpp
+        src/Components/Material.h
+        src/Components/Transform.cpp
+        src/Components/Transform.h
+        src/Math/Vector3.cpp
+        src/Math/Vector3.h
+        src/Math/Quaterion.cpp
+        src/Math/Quaterion.h)
 
 
 # Set the paths for DirectX headers and libraries

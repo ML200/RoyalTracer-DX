@@ -6,8 +6,17 @@
 #define PATHTRACER_SCENEOBJECT_H
 
 
-class sceneObject {
+#include <vector>
+#include "../Components/Transform.h"
+#include "../Components/Material.h"
+#include "../Components/Triangle.h"
 
+class sceneObject {
+public:
+    std::vector<Triangle> tris;
+    Material mat;
+    Transform transform;
+    void translate()
 };
 
 
