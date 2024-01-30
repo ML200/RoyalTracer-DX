@@ -7,12 +7,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 # Locate the Windows SDK for DirectX
 set(WINDOWS_SDK_VERSION "10.0") # Replace with your Windows SDK version if different
 add_executable(Pathtracer main.cpp
-        src/Objects/sceneObject.cpp
-        src/Objects/sceneObject.h
-        src/Renderer/renderer.cpp
-        src/Renderer/renderer.h
-        src/Scene/scene.cpp
-        src/Scene/scene.h
+        src/Objects/SceneObject.cpp
+        src/Objects/SceneObject.h
+        src/Renderer/Renderer.cpp
+        src/Renderer/Renderer.h
+        src/Scene/Scene.cpp
+        src/Scene/Scene.h
         src/Components/Triangle.cpp
         src/Components/Triangle.h
         src/Components/Material.cpp
@@ -21,8 +21,8 @@ add_executable(Pathtracer main.cpp
         src/Components/Transform.h
         src/Math/Vector3.cpp
         src/Math/Vector3.h
-        src/Math/Quaterion.cpp
-        src/Math/Quaterion.h)
+        src/Math/Quaternion.cpp
+        src/Math/Quaternion.h)
 
 
 # Set the paths for DirectX headers and libraries

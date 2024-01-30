@@ -57,7 +57,7 @@ build CMakeFiles\Pathtracer.dir\main.cpp.obj: CXX_COMPILER__Pathtracer_unscanned
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Objects\sceneObject.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Objects\sceneObject.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Objects\SceneObject.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
   INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
@@ -65,7 +65,7 @@ build CMakeFiles\Pathtracer.dir\src\Objects\sceneObject.cpp.obj: CXX_COMPILER__P
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\renderer.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\renderer.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\src\Renderer\Renderer.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\Renderer.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
   INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
@@ -73,7 +73,7 @@ build CMakeFiles\Pathtracer.dir\src\Renderer\renderer.cpp.obj: CXX_COMPILER__Pat
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Scene\scene.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Scene\scene.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Scene\Scene.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
   INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
@@ -113,7 +113,7 @@ build CMakeFiles\Pathtracer.dir\src\Math\Vector3.cpp.obj: CXX_COMPILER__Pathtrac
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Math\Quaterion.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Math\Quaterion.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\src\Math\Quaternion.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Math\Quaternion.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
   INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
@@ -129,7 +129,7 @@ build CMakeFiles\Pathtracer.dir\src\Math\Quaterion.cpp.obj: CXX_COMPILER__Pathtr
 #############################################
 # Link the executable Pathtracer.exe
 
-build Pathtracer.exe: CXX_EXECUTABLE_LINKER__Pathtracer_Debug CMakeFiles\Pathtracer.dir\main.cpp.obj CMakeFiles\Pathtracer.dir\src\Objects\sceneObject.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\renderer.cpp.obj CMakeFiles\Pathtracer.dir\src\Scene\scene.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Triangle.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Material.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.obj CMakeFiles\Pathtracer.dir\src\Math\Vector3.cpp.obj CMakeFiles\Pathtracer.dir\src\Math\Quaterion.cpp.obj
+build Pathtracer.exe: CXX_EXECUTABLE_LINKER__Pathtracer_Debug CMakeFiles\Pathtracer.dir\main.cpp.obj CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\Renderer.cpp.obj CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Triangle.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Material.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.obj CMakeFiles\Pathtracer.dir\src\Math\Vector3.cpp.obj CMakeFiles\Pathtracer.dir\src\Math\Quaternion.cpp.obj
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -MDd -Zi
   LINK_FLAGS = /machine:x64 /debug /INCREMENTAL /subsystem:console
   LINK_LIBRARIES = d3d12.lib  dxgi.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib

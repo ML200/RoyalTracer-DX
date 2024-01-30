@@ -6,8 +6,19 @@
 #define PATHTRACER_TRANSFORM_H
 
 
-class Transform {
+#include "../Math/Vector3.h"
+#include "../Math/Quaternion.h"
 
+class Transform {
+public:
+    Vector3 translation;
+    Quaternion rotation;
+    Vector3 scale;
+
+    void Translate(Vector3 translation);
+    void Rotate(Quaternion angle);
+    void RotateEuler(Vector3 angle);
+    void Scale(Vector3 scale);
 };
 
 

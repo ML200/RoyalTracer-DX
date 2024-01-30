@@ -6,7 +6,7 @@
 #define PATHTRACER_RENDERER_H
 
 
-class renderer {
+class Renderer {
 
 };
 

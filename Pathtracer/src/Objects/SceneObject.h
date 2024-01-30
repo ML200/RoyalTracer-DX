@@ -11,12 +11,11 @@
 #include "../Components/Material.h"
 #include "../Components/Triangle.h"
 
-class sceneObject {
+class SceneObject {
 public:
     std::vector<Triangle> tris;
     Material mat;
     Transform transform;
-    void translate()
 };
 
 

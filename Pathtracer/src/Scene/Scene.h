@@ -6,7 +6,7 @@
 #define PATHTRACER_SCENE_H
 
 
-class scene {
+class Scene {
 
 };
 
