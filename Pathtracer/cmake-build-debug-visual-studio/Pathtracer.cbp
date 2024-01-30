@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CodeBlocks_project_file>
+	<FileVersion major="1" minor="6"/>
+	<Project>
+		<Option title="Pathtracer"/>
+		<Option makefile_is_custom="1"/>
+		<Option compiler="msvc8"/>
+		<Option virtualFolders="CMake Files\;CMake Files\..\;CMake Files\..\..\;CMake Files\..\..\..\;CMake Files\..\..\..\..\;CMake Files\..\..\..\..\..\;CMake Files\..\..\..\..\..\.clion-vcpkg\;CMake Files\..\..\..\..\..\.clion-vcpkg\vcpkg\;CMake Files\..\..\..\..\..\.clion-vcpkg\vcpkg\scripts\;CMake Files\..\..\..\..\..\.clion-vcpkg\vcpkg\scripts\buildsystems\;"/>
+		<Build>
+			<Target title="all">
+				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 all"/>
+					<CompileFile command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+					<DistClean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="Pathtracer">
+				<Option output="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
+				<Option object_output="./"/>
+				<Option type="1"/>
+				<Option compiler="msvc8"/>
+				<Compiler>
+					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0/um"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\ATLMFC\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\um"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\shared"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\winrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\cppwinrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\include\um"/>
+				</Compiler>
+				<MakeCommands>
+					<Build command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 Pathtracer"/>
+					<CompileFile command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+					<DistClean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="Pathtracer/fast">
+				<Option output="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe" prefix_auto="0" extension_auto="0"/>
+				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
+				<Option object_output="./"/>
+				<Option type="1"/>
+				<Option compiler="msvc8"/>
+				<Compiler>
+					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0/um"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\ATLMFC\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\um"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\shared"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\winrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\cppwinrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\include\um"/>
+				</Compiler>
+				<MakeCommands>
+					<Build command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 Pathtracer/fast"/>
+					<CompileFile command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+					<DistClean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="edit_cache">
+				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 edit_cache"/>
+					<CompileFile command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+					<DistClean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+			<Target title="rebuild_cache">
+				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
+				<Option type="4"/>
+				<MakeCommands>
+					<Build command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 rebuild_cache"/>
+					<CompileFile command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 &quot;$file&quot;"/>
+					<Clean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+					<DistClean command="nmake /NOLOGO /f C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Makefile VERBOSE=1 clean"/>
+				</MakeCommands>
+			</Target>
+		</Build>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/main.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Material.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Mesh.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Mesh.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Transform.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Transform.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Vertex.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Vertex.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Helpers.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Quaternion.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector2.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector3.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector4.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Objects/SceneObject.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Objects/SceneObject.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Renderer/Renderer.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Renderer/Renderer.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Scene/Scene.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Scene/Scene.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Util/ObjLoader.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/CMakeLists.txt">
+			<Option virtualFolder="CMake Files\"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/../../../../../.clion-vcpkg/vcpkg/scripts/buildsystems/vcpkg.cmake">
+			<Option virtualFolder="CMake Files\..\..\..\..\..\.clion-vcpkg\vcpkg\scripts\buildsystems\"/>
+		</Unit>
+	</Project>
+</CodeBlocks_project_file>

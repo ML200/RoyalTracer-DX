@@ -1,4 +1,4 @@
-"C:\Program Files\JetBrains\CLion 2023.2.2\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug "-DCMAKE_MAKE_PROGRAM=C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe" -DCMAKE_TOOLCHAIN_FILE=C:\Users\m\.vcpkg-clion\vcpkg\scripts\buildsystems\vcpkg.cmake -G Ninja -S C:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer -B C:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio
--- Configuring done (0.0s)
--- Generating done (0.0s)
--- Build files have been written to: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio
+"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=C:\Users\m\.clion-vcpkg\vcpkg\scripts\buildsystems\vcpkg.cmake -G "CodeBlocks - NMake Makefiles" -S C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer -B C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio
+-- Configuring done
+-- Generating done
+-- Build files have been written to: C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio

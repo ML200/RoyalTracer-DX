@@ -5,6 +5,9 @@
 #ifndef PATHTRACER_VECTOR3_H
 #define PATHTRACER_VECTOR3_H
 
+#include <functional>
+#include <cmath>
+#include "Helpers.h"
 
 class Vector3 {
 public:
@@ -49,7 +52,26 @@ public:
                 a.x * b.y - a.y * b.x
         );
     }
+
+    // Equality comparison operator
+    bool operator==(const Vector3& other) const {
+        return isNearlyEqual(x, other.x) && isNearlyEqual(y, other.y) && isNearlyEqual(z, other.z);
+    }
+
 };
+
+// Specialize the std::hash template for the Vector3 class
+namespace std {
+    template <>
+    struct hash<Vector3> {
+        size_t operator()(const Vector3& v) const {
+            // Use a combination of the hash values of x, y, and z
+            return ((hash<float>()(v.x) ^
+                     (hash<float>()(v.y) << 1)) >> 1) ^
+                   (hash<float>()(v.z) << 1);
+        }
+    };
+}
 
 
 #endif //PATHTRACER_VECTOR3_H

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.26)
+cmake_minimum_required(VERSION 3.25.2)
 project(Pathtracer)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # Locate the Windows SDK for DirectX
 set(WINDOWS_SDK_VERSION "10.0")
+# Set the paths for DirectX headers and libraries
+set(DIRECTX_SDK_INCLUDE "C:/Program Files (x86)/Windows Kits/10/Include/${WINDOWS_SDK_VERSION}/um")
+set(DIRECTX_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/${WINDOWS_SDK_VERSION}/um/x64")
+
+
+
 add_executable(Pathtracer main.cpp
         src/Objects/SceneObject.cpp
         src/Objects/SceneObject.h
@@ -24,17 +30,16 @@ add_executable(Pathtracer main.cpp
         src/Components/Vertex.h
         src/Math/Vector2.h
         src/Math/Vector4.h
-        src/Util/GLFDLoader.h)
-
-
-# Set the paths for DirectX headers and libraries
-set(DIRECTX_SDK_INCLUDE "C:/Program Files (x86)/Windows Kits/10/Include/${WINDOWS_SDK_VERSION}/um")
-set(DIRECTX_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/${WINDOWS_SDK_VERSION}/um/x64")
+        src/Util/ObjLoader.h src/Math/Helpers.h)
 
 # Include directories
 include_directories(${DIRECTX_SDK_INCLUDE})
+target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_INCLUDE_DIR})
 
-# Link libraries
-target_link_directories(Pathtracer PRIVATE ${DIRECTX_SDK_LIB})
-target_link_libraries(Pathtracer d3d12.lib dxgi.lib)
+
+target_link_directories(Pathtracer PRIVATE ${DIRECTX_SDK_LIB} ${FASTGLTF_LIB_DIR})
+target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib)
+
+
+
 

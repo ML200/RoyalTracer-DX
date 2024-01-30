@@ -7,15 +7,35 @@
 
 
 #include "../Math/Vector3.h"
+#include "../Math/Vector2.h"
+#include <functional>
 
 class Vertex {
+public:
     Vector3 position;
     Vector3 normal;
-    Vector3 uv;
+    Vector2 uv; // UV should be a 2D vector
 
-    Vertex(const Vector3& pos, const Vector3& norm, const Vector3& uv)
+    Vertex(const Vector3& pos, const Vector3& norm, const Vector2& uv)
             : position(pos), normal(norm), uv(uv) {}
+
+    bool operator==(const Vertex& other) const {
+        return position == other.position && normal == other.normal && uv == other.uv;
+    }
 };
+
+namespace std {
+    template<>
+    struct hash<Vertex> {
+        size_t operator()(const Vertex& vertex) const {
+            // Implement your hashing logic here
+            // A simple example (you might need a better hash combination method):
+            return hash<Vector3>()(vertex.position) ^
+                   (hash<Vector3>()(vertex.normal) << 1) ^
+                   (hash<Vector2>()(vertex.uv) << 2);
+        }
+    };
+}
 
 
 #endif //PATHTRACER_VERTEX_H

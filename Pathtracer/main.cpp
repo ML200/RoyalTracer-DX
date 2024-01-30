@@ -2,7 +2,8 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <iostream>
-#include "src/Util/GLFDLoader.h"
+#include "src/Util/ObjLoader.h"
+
 
 // Link necessary d3d12 libraries
 #pragma comment(lib, "d3d12.lib")
@@ -12,8 +13,9 @@
 LRESULT CALLBACK WindowProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 int main() {
-    GLDFLoader meshLoader;
-    meshLoader.LoadModel("/Models/example.glb");
+
+    //Load in the example model:
+    Mesh modelMesh = ObjLoader::loadObjFile("Models/example.obj","./Models");
 
 
     // Initialize the window class.
