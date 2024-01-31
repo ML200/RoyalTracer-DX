@@ -1,18 +1,10 @@
 # ninja log v5
-4	1561	7283236755963807	CMakeFiles/Pathtracer.dir/main.cpp.obj	ad935a7eb64e3814
-21	342	7283236743788963	CMakeFiles/Pathtracer.dir/src/Components/Vertex.cpp.obj	acb81835eb669313
-1063	1427	7283210619536709	Pathtracer.exe	109ad851d00d007c
-1	535	7283236745728963	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	5cd7b3b7da2a36c6
-13	475	7283236745128957	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	2278b74e3441f019
-7	333	7283236743688960	CMakeFiles/Pathtracer.dir/src/Scene/Scene.cpp.obj	224da223fdefaa34
-10	330	7283236743668963	CMakeFiles/Pathtracer.dir/src/Renderer/Renderer.cpp.obj	e42c4d4782c71eb6
-0	60	7283238722633471	build.ninja	2e65970d8fcd294d
-17	525	7283236745629054	CMakeFiles/Pathtracer.dir/src/Components/Mesh.cpp.obj	11f13d7cb8113813
-12	58	7283238749418396	CMakeFiles/Pathtracer.dir/src/Scene/Scene.cpp.obj	ffc1134adf284870
-16	58	7283238749418396	CMakeFiles/Pathtracer.dir/src/Renderer/Renderer.cpp.obj	ac4e1482020d13cf
-20	62	7283238749468389	CMakeFiles/Pathtracer.dir/src/Components/Vertex.cpp.obj	6cf264b40918ba52
-5	196	7283238750808384	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	c5530d5f9c0831cd
-24	257	7283238751418442	CMakeFiles/Pathtracer.dir/src/Components/Mesh.cpp.obj	307cc7556d2ef07c
-8	258	7283238751418442	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	455129a60982bd30
-4	348	7283239106022374	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	455129a60982bd30
-0	1204	7283239114568798	CMakeFiles/Pathtracer.dir/main.cpp.obj	1adc3c08218c2a59
+1	1692	7284132903141818	CMakeFiles/Pathtracer.dir/main.cpp.obj	71eca4deaf4d7398
+21	421	7284132890447989	CMakeFiles/Pathtracer.dir/src/Components/Vertex.cpp.obj	a29de609ec4338f6
+0	560	7284135347282035	Pathtracer.exe	adb1f6ac71458177
+13	439	7284132890627996	CMakeFiles/Pathtracer.dir/src/Objects/SceneObject.cpp.obj	480163de7c3a5dd6
+7	416	7284132890387987	CMakeFiles/Pathtracer.dir/src/Components/Transform.cpp.obj	7ba31e4db9782fbd
+4	51	7284132886757996	CMakeFiles/Pathtracer.dir/src/Scene/Scene.cpp.obj	36ffd19c929f1840
+10	51	7284132886748001	CMakeFiles/Pathtracer.dir/src/Renderer/Renderer.cpp.obj	4eb8d6abdc706e29
+0	60	7284148871592475	build.ninja	2e65970d8fcd294d
+17	444	7284132890677988	CMakeFiles/Pathtracer.dir/src/Components/Mesh.cpp.obj	f0a8ee6d9e243aba

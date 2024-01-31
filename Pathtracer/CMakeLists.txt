@@ -12,7 +12,7 @@ set(DIRECTX_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/${WINDOWS_SDK_VE
 
 
 
-add_executable(Pathtracer main.cpp
+add_executable(Pathtracer WIN32 main.cpp
         src/Objects/SceneObject.cpp
         src/Objects/SceneObject.h
         src/Renderer/Renderer.cpp
@@ -30,7 +30,8 @@ add_executable(Pathtracer main.cpp
         src/Components/Vertex.h
         src/Math/Vector2.h
         src/Math/Vector4.h
-        src/Util/ObjLoader.h src/Math/Helpers.h)
+        src/Util/ObjLoader.h src/Math/Helpers.h
+        src/Util/D3DVertex.h)
 
 # Include directories
 include_directories(${DIRECTX_SDK_INCLUDE})
@@ -38,7 +39,7 @@ target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_
 
 
 target_link_directories(Pathtracer PRIVATE ${DIRECTX_SDK_LIB} ${FASTGLTF_LIB_DIR})
-target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib)
+target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib d3dcompiler.lib)
 
 
 
