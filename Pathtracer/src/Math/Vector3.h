@@ -7,7 +7,12 @@
 
 #include <functional>
 #include <cmath>
-#include "Helpers.h"
+
+
+static bool isNearlyEqual(float a, float b, float epsilon = 1e-6f) {
+    return std::fabs(a - b) < epsilon;
+}
+
 
 class Vector3 {
 public:

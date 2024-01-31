@@ -6,7 +6,8 @@
 #define PATHTRACER_VECTOR2_H
 
 #include <functional>
-#include "Helpers.h"
+
+
 
 class Vector2 {
 public:

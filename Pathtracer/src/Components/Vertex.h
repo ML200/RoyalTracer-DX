@@ -20,7 +20,7 @@ public:
             : position(pos), normal(norm), uv(uv) {}
 
     bool operator==(const Vertex& other) const {
-        return position == other.position && normal == other.normal && uv == other.uv;
+        return position == other.position;
     }
 };
 
@@ -30,9 +30,7 @@ namespace std {
         size_t operator()(const Vertex& vertex) const {
             // Implement your hashing logic here
             // A simple example (you might need a better hash combination method):
-            return hash<Vector3>()(vertex.position) ^
-                   (hash<Vector3>()(vertex.normal) << 1) ^
-                   (hash<Vector2>()(vertex.uv) << 2);
+            return hash<Vector3>()(vertex.position);
         }
     };
 }

@@ -20,9 +20,4 @@ inline void ThrowIfFailed(HRESULT hr)
         throw std::exception();
     }
 }
-
-static bool isNearlyEqual(float a, float b, float epsilon = 1e-6f) {
-    return std::fabs(a - b) < epsilon;
-}
-
 #endif //PATHTRACER_HELPERS_H

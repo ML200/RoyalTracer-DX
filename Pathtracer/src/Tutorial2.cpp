@@ -10,9 +10,13 @@ using namespace Microsoft::WRL;
 
 #include "../lib/DirectX/directx/d3d12.h"
 #include "../lib/DirectX/directx/d3dx12.h"
+#include "Components/Mesh.h"
 #include <d3dcompiler.h>
 
 #include <algorithm> // For std::min and std::max.
+#include <iostream>
+#include <cmath>
+
 #if defined(min)
 #undef min
 #endif
@@ -23,6 +27,7 @@ using namespace Microsoft::WRL;
 
 using namespace DirectX;
 
+#include "./Util/ObjLoader.h"
 
 // Clamp a value between a min and max range.
 template<typename T>
@@ -38,7 +43,7 @@ struct VertexPosColor
     XMFLOAT3 Color;
 };
 
-static VertexPosColor g_Vertices[8] = {
+/*static VertexPosColor g_Vertices[8] = {
     { XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT3(0.0f, 0.0f, 0.0f) }, // 0
     { XMFLOAT3(-1.0f,  1.0f, -1.0f), XMFLOAT3(0.0f, 1.0f, 0.0f) }, // 1
     { XMFLOAT3(1.0f,  1.0f, -1.0f), XMFLOAT3(1.0f, 1.0f, 0.0f) }, // 2
@@ -57,7 +62,11 @@ static WORD g_Indicies[36] =
     3, 2, 6, 3, 6, 7,
     1, 5, 6, 1, 6, 2,
     4, 0, 3, 4, 3, 7
-};
+};*/
+
+//Convert to vertex arrays
+static std::vector<VertexPosColor> g_Vertices;
+static std::vector<int> g_Indicies;
 
 
 Tutorial2::Tutorial2(const std::wstring& name, int width, int height, bool vSync)
@@ -129,30 +138,84 @@ void Tutorial2::UpdateBufferResource(
 bool Tutorial2::LoadContent()
 {
     auto device = Application::Get().GetDevice();
+
+
+
+    //Get device name
+    //_________________________________________________________________________
+
+    // First, get the IDXGIFactory4 that was used to create the device.
+    ComPtr<IDXGIFactory4> dxgiFactory;
+    UINT createFactoryFlags = 0;
+#if defined(_DEBUG)
+    // Enable the debug layer (requires the Graphics Tools "optional feature").
+    // NOTE: Enabling the debug layer after device creation will invalidate the active device.
+    createFactoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+#endif
+    ThrowIfFailed(CreateDXGIFactory2(createFactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
+
+// Use the factory to iterate through the adapters and find the one that matches your device.
+    ComPtr<IDXGIAdapter1> adapter;
+    for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != dxgiFactory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex)
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        adapter->GetDesc1(&desc);
+
+        // Check if the adapter LUID matches the LUID of the device.
+        LUID deviceLuid = device->GetAdapterLuid();
+        if (memcmp(&desc.AdapterLuid, &deviceLuid, sizeof(LUID)) == 0)
+        {
+            // This is the adapter for the current device.
+            std::wcout << L"Device Name: " << desc.Description << std::endl;
+            break;
+        }
+    }
+    //_________________________________________________________________________
+
+
     auto commandQueue = Application::Get().GetCommandQueue(D3D12_COMMAND_LIST_TYPE_COPY);
     auto commandList = commandQueue->GetCommandList();
+
+    Mesh mesh = ObjLoader::loadObjFile("example.obj");
+
+    for(Vertex v: mesh.vertices){
+        VertexPosColor vertex;
+        vertex.Color.x = abs(v.normal.x);
+        vertex.Color.y = abs(v.normal.y);
+        vertex.Color.z = abs(v.normal.z);
+
+        vertex.Position.x = v.position.x;
+        vertex.Position.y = v.position.y;
+        vertex.Position.z = v.position.z;
+
+        g_Vertices.push_back(vertex);
+    }
+
+    for(int i:mesh.indices){
+        g_Indicies.push_back(static_cast<int>(i));
+    }
 
     // Upload vertex buffer data.
     ComPtr<ID3D12Resource> intermediateVertexBuffer;
     UpdateBufferResource(commandList,
         &m_VertexBuffer, &intermediateVertexBuffer,
-        _countof(g_Vertices), sizeof(VertexPosColor), g_Vertices);
+        g_Vertices.size(), sizeof(VertexPosColor), g_Vertices.data());
 
     // Create the vertex buffer view.
     m_VertexBufferView.BufferLocation = m_VertexBuffer->GetGPUVirtualAddress();
-    m_VertexBufferView.SizeInBytes = sizeof(g_Vertices);
+    m_VertexBufferView.SizeInBytes = g_Vertices.size() * sizeof(VertexPosColor);
     m_VertexBufferView.StrideInBytes = sizeof(VertexPosColor);
 
     // Upload index buffer data.
     ComPtr<ID3D12Resource> intermediateIndexBuffer;
     UpdateBufferResource(commandList,
         &m_IndexBuffer, &intermediateIndexBuffer,
-        _countof(g_Indicies), sizeof(WORD), g_Indicies);
+        g_Indicies.size(), sizeof(int), g_Indicies.data());
 
     // Create index buffer view.
     m_IndexBufferView.BufferLocation = m_IndexBuffer->GetGPUVirtualAddress();
-    m_IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
-    m_IndexBufferView.SizeInBytes = sizeof(g_Indicies);
+    m_IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+    m_IndexBufferView.SizeInBytes = g_Indicies.size() * sizeof(int);
 
     // Create the descriptor heap for the depth-stencil view.
     D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
@@ -422,7 +485,7 @@ void Tutorial2::OnRender(RenderEventArgs& e)
     mvpMatrix = XMMatrixMultiply(mvpMatrix, m_ProjectionMatrix);
     commandList->SetGraphicsRoot32BitConstants(0, sizeof(XMMATRIX) / 4, &mvpMatrix, 0);
 
-    commandList->DrawIndexedInstanced(_countof(g_Indicies), 1, 0, 0, 0);
+    commandList->DrawIndexedInstanced(g_Indicies.size(), 1, 0, 0, 0);
 
     // Present
     {
