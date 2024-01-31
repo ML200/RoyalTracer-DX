@@ -1,7 +1,7 @@
 //
 // Created by m on 30.01.2024.
 //
-
+/*
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 #include <shellapi.h> // For CommandLineToArgvW
@@ -28,6 +28,7 @@ using namespace Microsoft::WRL;
 
 // DirectX 12 specific headers.
 #include "./lib/DirectX/directx/d3d12.h"
+//#include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
@@ -693,7 +694,7 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
     g_TearingSupported = CheckTearingSupport();
 
     RegisterWindowClass(hInstance, windowClassName);
-    g_hWnd = CreateWindow(windowClassName, hInstance, L"Learning DirectX 12",
+    g_hWnd = CreateWindow(windowClassName, hInstance, L"DX12 Pathtracer",
                           g_ClientWidth, g_ClientHeight);
 
     // Initialize the global window rect variable.
@@ -746,3 +747,6 @@ int CALLBACK wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdL
 
     return 0;
 }
+*/
+
+
