@@ -21,27 +21,45 @@ cbuffer Colors : register(b0) {
   float3 C;
 }
 
+struct InstanceProperties {
+  float4x4 objectToWorld;
+};
+
 StructuredBuffer<STriVertex> BTriVertex : register(t0);
 StructuredBuffer<int> indices : register(t1);
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
-  float3 barycentrics =
-      float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
-  uint vertId = 3 * PrimitiveIndex();
-  // #DXR Extra: Per-Instance Data
-  float3 hitColor = float3(0.6, 0.7, 0.6);
-  // Shade only the first 3 instances (triangles)
-  if (InstanceID() < 3) {
+   // Hardcoded point light position
+   float3 lightPosition = float3(0.0, 4.0, 0.0);
+   float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
-    // #DXR Extra: Per-Instance Data
-    hitColor = BTriVertex[indices[vertId + 0]].color * barycentrics.x +
-               BTriVertex[indices[vertId + 1]].color * barycentrics.y +
-               BTriVertex[indices[vertId + 2]].color * barycentrics.z;
-  }
+      uint vertId = 3 * PrimitiveIndex();
 
-  payload.colorAndDistance = float4(hitColor, RayTCurrent());
+      // Calculate the position of the intersection point
+      float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
+                           BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
+                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;
+
+      // Calculate the normal of the triangle
+      float3 edge1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
+      float3 edge2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
+      float3 normal = normalize(cross(edge1, edge2));
+
+      // Calculate the light direction
+      float3 lightDir = normalize(lightPosition - hitPosition);
+
+      // Diffuse reflection (Lambert's Cosine Law)
+      float diff = max(dot(normal, lightDir), 0.0);
+
+      // Simple diffuse color based on light incidence
+      float3 diffuseColor = diff * float3(1.0, 1.0, 1.0); // White light
+
+      // Modulate the color by the light's influence
+      float3 hitColor = diffuseColor * float3(0.6, 0.7, 0.6);
+
+      payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }
 
 // #DXR Extra - Another ray type

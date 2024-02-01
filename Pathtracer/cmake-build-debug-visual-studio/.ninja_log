@@ -26,3 +26,7 @@
 1	790	7285158577888115	CMakeFiles/Pathtracer.dir/rdn/Main.cpp.obj	176f39bd62c2fe90
 4	1559	7285158585559143	CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj	e50595568e91d578
 1559	1946	7285158586789227	Pathtracer.exe	a6495d1ce32b9617
+1	2290	7285177287691027	CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj	e50595568e91d578
+2291	2759	7285177289040847	Pathtracer.exe	a6495d1ce32b9617
+1	1907	7285177484884306	CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj	e50595568e91d578
+1907	2320	7285177486343879	Pathtracer.exe	a6495d1ce32b9617
