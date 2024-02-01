@@ -30,7 +30,7 @@ namespace std {
         size_t operator()(const Vertex& vertex) const {
             // Implement your hashing logic here
             // A simple example (you might need a better hash combination method):
-            return hash<Vector3>()(vertex.position);
+            return hash<Vector3>()(vertex.position+vertex.normal);
         }
     };
 }

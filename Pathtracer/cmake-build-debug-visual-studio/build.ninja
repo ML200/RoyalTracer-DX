@@ -49,107 +49,91 @@ cmake_ninja_workdir = C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtrac
 
 build cmake_object_order_depends_target_Pathtracer: phony || CMakeFiles\Pathtracer.dir
 
-build CMakeFiles\Pathtracer.dir\src\main.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\main.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Objects\SceneObject.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Objects
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Scene\Scene.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Scene
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Components\Transform.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Components
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Components\Mesh.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Components\Mesh.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Components
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Components\Vertex.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Components\Vertex.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Components
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\Application.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\Application.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\CommandQueue.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\CommandQueue.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\DX12LibPCH.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\DX12LibPCH.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\Game.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\Game.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\HighResolutionClock.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\HighResolutionClock.cpp || cmake_object_order_depends_target_Pathtracer
+build CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp || cmake_object_order_depends_target_Pathtracer
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
+  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0.18362.0\um"
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
-  TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
-  TARGET_PDB = Pathtracer.pdb
-
-build CMakeFiles\Pathtracer.dir\src\Renderer\src\Window.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Renderer\src\Window.cpp || cmake_object_order_depends_target_Pathtracer
-  FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
-  OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src\Renderer\src
-  TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
-  TARGET_PDB = Pathtracer.pdb
-
-build CMakeFiles\Pathtracer.dir\src\Tutorial2.cpp.obj: CXX_COMPILER__Pathtracer_unscanned_Debug C$:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Tutorial2.cpp || cmake_object_order_depends_target_Pathtracer
-  FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -std:c++latest -MDd -Zi
-  INCLUDES = -I"C:\Program Files (x86)\Windows Kits\10\Include\10.0\um"
-  OBJECT_DIR = CMakeFiles\Pathtracer.dir
-  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\src
+  OBJECT_FILE_DIR = CMakeFiles\Pathtracer.dir\rdn
   TARGET_COMPILE_PDB = CMakeFiles\Pathtracer.dir\
   TARGET_PDB = Pathtracer.pdb
 
@@ -161,11 +145,11 @@ build CMakeFiles\Pathtracer.dir\src\Tutorial2.cpp.obj: CXX_COMPILER__Pathtracer_
 #############################################
 # Link the executable Pathtracer.exe
 
-build Pathtracer.exe: CXX_EXECUTABLE_LINKER__Pathtracer_Debug CMakeFiles\Pathtracer.dir\src\main.cpp.obj CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.obj CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Mesh.cpp.obj CMakeFiles\Pathtracer.dir\src\Components\Vertex.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\Application.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\CommandQueue.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\DX12LibPCH.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\Game.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\HighResolutionClock.cpp.obj CMakeFiles\Pathtracer.dir\src\Renderer\src\Window.cpp.obj CMakeFiles\Pathtracer.dir\src\Tutorial2.cpp.obj
+build Pathtracer.exe: CXX_EXECUTABLE_LINKER__Pathtracer_Debug CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -MDd -Zi
   LINK_FLAGS = /machine:x64 /debug /INCREMENTAL /subsystem:windows
-  LINK_LIBRARIES = d3d12.lib  dxgi.lib  dxguid.lib  d3dcompiler.lib  shlwapi.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
-  LINK_PATH = -LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0\um\x64"
+  LINK_LIBRARIES = d3d12.lib  dxgi.lib  dxguid.lib  dxcompiler.lib  d3dcompiler.lib  shlwapi.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
+  LINK_PATH = -LIBPATH:C:\PROGRA~2\WI3CF2~1\10\Lib\100183~1.0\um\x64
   OBJECT_DIR = CMakeFiles\Pathtracer.dir
   POST_BUILD = cmd.exe /C "cd /D C:\Users\m\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio && C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.vcpkg-clion/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe -installedDir C:/Users/m/.vcpkg-clion/vcpkg/installed/x64-windows/debug/bin -OutVariable out"
   PRE_LINK = cd .
