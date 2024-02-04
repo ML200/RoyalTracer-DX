@@ -981,14 +981,14 @@ void Renderer::CreateRaytracingPipeline() {
   // our sample we just use the barycentric coordinates defined by the weights
   // u,v of the last two vertices of the triangle. The actual barycentrics can
   // be obtained using float3 barycentrics = float3(1.f-u-v, u, v);
-  pipeline.SetMaxAttributeSize(2 * sizeof(float)); // barycentric coordinates
+  pipeline.SetMaxAttributeSize(5 * sizeof(float)); // barycentric coordinates
 
   // The raytracing process can shoot rays from existing hit points, resulting
   // in nested TraceRay calls. Our sample code traces only primary rays, which
   // then requires a trace depth of 1. Note that this recursion depth should be
   // kept to a minimum for best performance. Path tracing algorithms can be
   // easily flattened into a simple loop in the ray generation.
-  pipeline.SetMaxRecursionDepth(2);
+  pipeline.SetMaxRecursionDepth(4);
 
   // Compile the pipeline for execution on the GPU
   m_rtStateObject = pipeline.Generate();

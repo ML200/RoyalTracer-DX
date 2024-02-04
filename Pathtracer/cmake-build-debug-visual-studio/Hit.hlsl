@@ -21,9 +21,6 @@ cbuffer Colors : register(b0) {
   float3 C;
 }
 
-struct InstanceProperties {
-  float4x4 objectToWorld;
-};
 
 StructuredBuffer<STriVertex> BTriVertex : register(t0);
 StructuredBuffer<int> indices : register(t1);
@@ -38,17 +35,21 @@ StructuredBuffer<int> indices : register(t1);
       uint vertId = 3 * PrimitiveIndex();
 
       // Calculate the position of the intersection point
-      float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
+      /*float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
                            BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
-                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;
+                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;*/
+
+      float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 
       // Calculate the normal of the triangle
       float3 edge1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
       float3 edge2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
       float3 normal = normalize(cross(edge1, edge2));
 
+      //float3 worldNormal = ;
+
       // Calculate the light direction
-      float3 lightDir = normalize(lightPosition - hitPosition);
+      float3 lightDir = normalize(lightPosition - worldOrigin);
 
       // Diffuse reflection (Lambert's Cosine Law)
       float diff = max(dot(normal, lightDir), 0.0);
