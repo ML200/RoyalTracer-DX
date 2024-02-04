@@ -39,34 +39,66 @@ std::wstring DXSample::GetAssetFullPath(LPCWSTR assetName)
 
 // Helper function for acquiring the first available hardware adapter that supports Direct3D 12.
 // If no such adapter can be found, *ppAdapter will be set to nullptr.
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl.h>
+#include <iostream>
+#include <string>
+
+using Microsoft::WRL::ComPtr;
+
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <wrl.h>
+#include <string>
+
+using Microsoft::WRL::ComPtr;
+
 _Use_decl_annotations_
 void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAdapter)
 {
-	ComPtr<IDXGIAdapter1> adapter;
-	*ppAdapter = nullptr;
+    ComPtr<IDXGIAdapter1> adapter;
+    *ppAdapter = nullptr;
+    std::wstring dxrGPU;
 
-	for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != pFactory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex)
-	{
-		DXGI_ADAPTER_DESC1 desc;
-		adapter->GetDesc1(&desc);
+    for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != pFactory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex)
+    {
+        DXGI_ADAPTER_DESC1 desc;
+        adapter->GetDesc1(&desc);
 
-		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-		{
-			// Don't select the Basic Render Driver adapter.
-			// If you want a software adapter, pass in "/warp" on the command line.
-			continue;
-		}
 
-		// Check to see if the adapter supports Direct3D 12, but don't create the
-		// actual device yet.
-		if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr)))
-		{
-			break;
-		}
-	}
+        // Convert the adapter name to a wide string and print it
+        std::wstring adapterName(desc.Description);
+        std::wstring message = L"Enumerating Adapter: " + adapterName + L"\n";
+        OutputDebugString(reinterpret_cast<LPCSTR>(message.c_str()));
 
-	*ppAdapter = adapter.Detach();
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+        {
+            // Don't select the Basic Render Driver adapter.
+            continue;
+        }
+
+        // Check to see if the adapter supports Direct3D 12.
+        ComPtr<ID3D12Device> testDevice;
+        if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), reinterpret_cast<void**>(testDevice.GetAddressOf()))))
+        {
+            // Now check for raytracing support.
+            D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+            if (SUCCEEDED(testDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))))
+            {
+                // This adapter supports DXR.
+                dxrGPU = L"Enumerating Adapter: " + adapterName + L"\n";
+                break;
+            }
+        }
+    }
+
+    if (adapter)
+    {
+        *ppAdapter = adapter.Detach();
+    }
 }
+
 
 // Helper function for setting the window's title text.
 void DXSample::SetCustomWindowText(LPCWSTR text)

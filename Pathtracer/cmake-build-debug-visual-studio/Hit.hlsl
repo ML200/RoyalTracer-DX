@@ -58,7 +58,7 @@ StructuredBuffer<int> indices : register(t1);
       float3 diffuseColor = diff * float3(1.0, 1.0, 1.0); // White light
 
       // Modulate the color by the light's influence
-      float3 hitColor = diffuseColor * float3(0.6, 0.7, 0.6);
+      float3 hitColor = diffuseColor ;//* float3(0.6, 0.7, 0.6);
 
       payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }
@@ -128,6 +128,6 @@ StructuredBuffer<int> indices : register(t1);
 
   float3 barycentrics =
       float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
-  float4 hitColor = float4(float3(0.7, 0.7, 0.3) * factor, RayTCurrent());
+  float4 hitColor = float4(float3(0.0, 0.0, 0.0) * factor, RayTCurrent());
   payload.colorAndDistance = float4(hitColor);
 }

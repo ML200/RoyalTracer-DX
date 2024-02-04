@@ -21,18 +21,18 @@
 				<Option output="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe" prefix_auto="0" extension_auto="0"/>
 				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
 				<Option object_output="./"/>
-				<Option type="1"/>
+				<Option type="0"/>
 				<Option compiler="msvc8"/>
 				<Compiler>
-					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0/um"/>
-					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\include"/>
-					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\ATLMFC\include"/>
+					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/um"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\ATLMFC\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\um"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\shared"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\winrt"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\cppwinrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\shared"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\winrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\cppwinrt"/>
 					<Add directory="C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\include\um"/>
 				</Compiler>
 				<MakeCommands>
@@ -46,18 +46,18 @@
 				<Option output="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe" prefix_auto="0" extension_auto="0"/>
 				<Option working_dir="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio"/>
 				<Option object_output="./"/>
-				<Option type="1"/>
+				<Option type="0"/>
 				<Option compiler="msvc8"/>
 				<Compiler>
-					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0/um"/>
-					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\include"/>
-					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.37.32822\ATLMFC\include"/>
+					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/um"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include"/>
+					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\ATLMFC\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22000.0\ucrt"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\um"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\shared"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\winrt"/>
-					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22000.0\\cppwinrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\um"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\shared"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\winrt"/>
+					<Add directory="C:\Program Files (x86)\Windows Kits\10\\include\10.0.22621.0\\cppwinrt"/>
 					<Add directory="C:\Program Files (x86)\Windows Kits\NETFXSDK\4.8\include\um"/>
 				</Compiler>
 				<MakeCommands>
@@ -88,64 +88,67 @@
 				</MakeCommands>
 			</Target>
 		</Build>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/main.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Material.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Mesh.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Main.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Mesh.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Renderer.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Transform.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Renderer.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Transform.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Vertex.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Vertex.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/manipulator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Helpers.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/manipulator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Quaternion.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/BottomLevelASGenerator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector2.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/BottomLevelASGenerator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector3.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/RaytracingPipelineGenerator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Math/Vector4.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/RaytracingPipelineGenerator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Objects/SceneObject.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/RootSignatureGenerator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Objects/SceneObject.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/RootSignatureGenerator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Renderer/Renderer.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/ShaderBindingTableGenerator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Renderer/Renderer.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/ShaderBindingTableGenerator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Scene/Scene.cpp">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/TopLevelASGenerator.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Scene/Scene.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/nv_helpers_dx12/TopLevelASGenerator.h">
 			<Option target="Pathtracer"/>
 		</Unit>
-		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Util/ObjLoader.h">
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/stdafx.cpp">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/stdafx.h">
 			<Option target="Pathtracer"/>
 		</Unit>
 		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/CMakeLists.txt">

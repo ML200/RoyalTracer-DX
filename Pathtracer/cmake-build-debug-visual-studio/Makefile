@@ -118,173 +118,269 @@ Pathtracer\fast:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\build
 .PHONY : Pathtracer\fast
 
-main.obj: main.cpp.obj
-.PHONY : main.obj
+rdn\DXSample.obj: rdn\DXSample.cpp.obj
+.PHONY : rdn\DXSample.obj
 
 # target to build an object file
-main.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\main.cpp.obj
-.PHONY : main.cpp.obj
+rdn\DXSample.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj
+.PHONY : rdn\DXSample.cpp.obj
 
-main.i: main.cpp.i
-.PHONY : main.i
+rdn\DXSample.i: rdn\DXSample.cpp.i
+.PHONY : rdn\DXSample.i
 
 # target to preprocess a source file
-main.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\main.cpp.i
-.PHONY : main.cpp.i
+rdn\DXSample.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.i
+.PHONY : rdn\DXSample.cpp.i
 
-main.s: main.cpp.s
-.PHONY : main.s
+rdn\DXSample.s: rdn\DXSample.cpp.s
+.PHONY : rdn\DXSample.s
 
 # target to generate assembly for a file
-main.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\main.cpp.s
-.PHONY : main.cpp.s
+rdn\DXSample.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.s
+.PHONY : rdn\DXSample.cpp.s
 
-src\Components\Mesh.obj: src\Components\Mesh.cpp.obj
-.PHONY : src\Components\Mesh.obj
+rdn\Main.obj: rdn\Main.cpp.obj
+.PHONY : rdn\Main.obj
 
 # target to build an object file
-src\Components\Mesh.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Mesh.cpp.obj
-.PHONY : src\Components\Mesh.cpp.obj
+rdn\Main.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj
+.PHONY : rdn\Main.cpp.obj
 
-src\Components\Mesh.i: src\Components\Mesh.cpp.i
-.PHONY : src\Components\Mesh.i
+rdn\Main.i: rdn\Main.cpp.i
+.PHONY : rdn\Main.i
 
 # target to preprocess a source file
-src\Components\Mesh.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Mesh.cpp.i
-.PHONY : src\Components\Mesh.cpp.i
+rdn\Main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Main.cpp.i
+.PHONY : rdn\Main.cpp.i
 
-src\Components\Mesh.s: src\Components\Mesh.cpp.s
-.PHONY : src\Components\Mesh.s
+rdn\Main.s: rdn\Main.cpp.s
+.PHONY : rdn\Main.s
 
 # target to generate assembly for a file
-src\Components\Mesh.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Mesh.cpp.s
-.PHONY : src\Components\Mesh.cpp.s
+rdn\Main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Main.cpp.s
+.PHONY : rdn\Main.cpp.s
 
-src\Components\Transform.obj: src\Components\Transform.cpp.obj
-.PHONY : src\Components\Transform.obj
+rdn\Renderer.obj: rdn\Renderer.cpp.obj
+.PHONY : rdn\Renderer.obj
 
 # target to build an object file
-src\Components\Transform.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.obj
-.PHONY : src\Components\Transform.cpp.obj
+rdn\Renderer.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj
+.PHONY : rdn\Renderer.cpp.obj
 
-src\Components\Transform.i: src\Components\Transform.cpp.i
-.PHONY : src\Components\Transform.i
+rdn\Renderer.i: rdn\Renderer.cpp.i
+.PHONY : rdn\Renderer.i
 
 # target to preprocess a source file
-src\Components\Transform.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.i
-.PHONY : src\Components\Transform.cpp.i
+rdn\Renderer.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.i
+.PHONY : rdn\Renderer.cpp.i
 
-src\Components\Transform.s: src\Components\Transform.cpp.s
-.PHONY : src\Components\Transform.s
+rdn\Renderer.s: rdn\Renderer.cpp.s
+.PHONY : rdn\Renderer.s
 
 # target to generate assembly for a file
-src\Components\Transform.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Transform.cpp.s
-.PHONY : src\Components\Transform.cpp.s
+rdn\Renderer.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.s
+.PHONY : rdn\Renderer.cpp.s
 
-src\Components\Vertex.obj: src\Components\Vertex.cpp.obj
-.PHONY : src\Components\Vertex.obj
+rdn\Win32Application.obj: rdn\Win32Application.cpp.obj
+.PHONY : rdn\Win32Application.obj
 
 # target to build an object file
-src\Components\Vertex.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Vertex.cpp.obj
-.PHONY : src\Components\Vertex.cpp.obj
+rdn\Win32Application.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj
+.PHONY : rdn\Win32Application.cpp.obj
 
-src\Components\Vertex.i: src\Components\Vertex.cpp.i
-.PHONY : src\Components\Vertex.i
+rdn\Win32Application.i: rdn\Win32Application.cpp.i
+.PHONY : rdn\Win32Application.i
 
 # target to preprocess a source file
-src\Components\Vertex.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Vertex.cpp.i
-.PHONY : src\Components\Vertex.cpp.i
+rdn\Win32Application.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.i
+.PHONY : rdn\Win32Application.cpp.i
 
-src\Components\Vertex.s: src\Components\Vertex.cpp.s
-.PHONY : src\Components\Vertex.s
+rdn\Win32Application.s: rdn\Win32Application.cpp.s
+.PHONY : rdn\Win32Application.s
 
 # target to generate assembly for a file
-src\Components\Vertex.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Components\Vertex.cpp.s
-.PHONY : src\Components\Vertex.cpp.s
+rdn\Win32Application.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.s
+.PHONY : rdn\Win32Application.cpp.s
 
-src\Objects\SceneObject.obj: src\Objects\SceneObject.cpp.obj
-.PHONY : src\Objects\SceneObject.obj
+rdn\manipulator.obj: rdn\manipulator.cpp.obj
+.PHONY : rdn\manipulator.obj
 
 # target to build an object file
-src\Objects\SceneObject.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.obj
-.PHONY : src\Objects\SceneObject.cpp.obj
+rdn\manipulator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj
+.PHONY : rdn\manipulator.cpp.obj
 
-src\Objects\SceneObject.i: src\Objects\SceneObject.cpp.i
-.PHONY : src\Objects\SceneObject.i
+rdn\manipulator.i: rdn\manipulator.cpp.i
+.PHONY : rdn\manipulator.i
 
 # target to preprocess a source file
-src\Objects\SceneObject.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.i
-.PHONY : src\Objects\SceneObject.cpp.i
+rdn\manipulator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.i
+.PHONY : rdn\manipulator.cpp.i
 
-src\Objects\SceneObject.s: src\Objects\SceneObject.cpp.s
-.PHONY : src\Objects\SceneObject.s
+rdn\manipulator.s: rdn\manipulator.cpp.s
+.PHONY : rdn\manipulator.s
 
 # target to generate assembly for a file
-src\Objects\SceneObject.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Objects\SceneObject.cpp.s
-.PHONY : src\Objects\SceneObject.cpp.s
+rdn\manipulator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.s
+.PHONY : rdn\manipulator.cpp.s
 
-src\Renderer\Renderer.obj: src\Renderer\Renderer.cpp.obj
-.PHONY : src\Renderer\Renderer.obj
+rdn\nv_helpers_dx12\BottomLevelASGenerator.obj: rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.obj
 
 # target to build an object file
-src\Renderer\Renderer.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Renderer\Renderer.cpp.obj
-.PHONY : src\Renderer\Renderer.cpp.obj
+rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj
 
-src\Renderer\Renderer.i: src\Renderer\Renderer.cpp.i
-.PHONY : src\Renderer\Renderer.i
+rdn\nv_helpers_dx12\BottomLevelASGenerator.i: rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.i
 
 # target to preprocess a source file
-src\Renderer\Renderer.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Renderer\Renderer.cpp.i
-.PHONY : src\Renderer\Renderer.cpp.i
+rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i
 
-src\Renderer\Renderer.s: src\Renderer\Renderer.cpp.s
-.PHONY : src\Renderer\Renderer.s
+rdn\nv_helpers_dx12\BottomLevelASGenerator.s: rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.s
 
 # target to generate assembly for a file
-src\Renderer\Renderer.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Renderer\Renderer.cpp.s
-.PHONY : src\Renderer\Renderer.cpp.s
+rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s
 
-src\Scene\Scene.obj: src\Scene\Scene.cpp.obj
-.PHONY : src\Scene\Scene.obj
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.obj: rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.obj
 
 # target to build an object file
-src\Scene\Scene.cpp.obj:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.obj
-.PHONY : src\Scene\Scene.cpp.obj
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj
 
-src\Scene\Scene.i: src\Scene\Scene.cpp.i
-.PHONY : src\Scene\Scene.i
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.i: rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.i
 
 # target to preprocess a source file
-src\Scene\Scene.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.i
-.PHONY : src\Scene\Scene.cpp.i
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i
 
-src\Scene\Scene.s: src\Scene\Scene.cpp.s
-.PHONY : src\Scene\Scene.s
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.s: rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.s
 
 # target to generate assembly for a file
-src\Scene\Scene.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\src\Scene\Scene.cpp.s
-.PHONY : src\Scene\Scene.cpp.s
+rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s
+
+rdn\nv_helpers_dx12\RootSignatureGenerator.obj: rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.obj
+
+# target to build an object file
+rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj
+
+rdn\nv_helpers_dx12\RootSignatureGenerator.i: rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.i
+
+# target to preprocess a source file
+rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i
+
+rdn\nv_helpers_dx12\RootSignatureGenerator.s: rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.s
+
+# target to generate assembly for a file
+rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s
+
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.obj: rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.obj
+
+# target to build an object file
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj
+
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.i: rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.i
+
+# target to preprocess a source file
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i
+
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.s: rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.s
+
+# target to generate assembly for a file
+rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s
+
+rdn\nv_helpers_dx12\TopLevelASGenerator.obj: rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.obj
+
+# target to build an object file
+rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj
+
+rdn\nv_helpers_dx12\TopLevelASGenerator.i: rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.i
+
+# target to preprocess a source file
+rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i
+
+rdn\nv_helpers_dx12\TopLevelASGenerator.s: rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.s
+
+# target to generate assembly for a file
+rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s
+.PHONY : rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s
+
+rdn\stdafx.obj: rdn\stdafx.cpp.obj
+.PHONY : rdn\stdafx.obj
+
+# target to build an object file
+rdn\stdafx.cpp.obj:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj
+.PHONY : rdn\stdafx.cpp.obj
+
+rdn\stdafx.i: rdn\stdafx.cpp.i
+.PHONY : rdn\stdafx.i
+
+# target to preprocess a source file
+rdn\stdafx.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.i
+.PHONY : rdn\stdafx.cpp.i
+
+rdn\stdafx.s: rdn\stdafx.cpp.s
+.PHONY : rdn\stdafx.s
+
+# target to generate assembly for a file
+rdn\stdafx.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Pathtracer.dir\build.make /nologo -$(MAKEFLAGS) CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.s
+.PHONY : rdn\stdafx.cpp.s
 
 # Help Target
 help:
@@ -295,27 +391,39 @@ help:
 	@echo ... edit_cache
 	@echo ... rebuild_cache
 	@echo ... Pathtracer
-	@echo ... main.obj
-	@echo ... main.i
-	@echo ... main.s
-	@echo ... src/Components/Mesh.obj
-	@echo ... src/Components/Mesh.i
-	@echo ... src/Components/Mesh.s
-	@echo ... src/Components/Transform.obj
-	@echo ... src/Components/Transform.i
-	@echo ... src/Components/Transform.s
-	@echo ... src/Components/Vertex.obj
-	@echo ... src/Components/Vertex.i
-	@echo ... src/Components/Vertex.s
-	@echo ... src/Objects/SceneObject.obj
-	@echo ... src/Objects/SceneObject.i
-	@echo ... src/Objects/SceneObject.s
-	@echo ... src/Renderer/Renderer.obj
-	@echo ... src/Renderer/Renderer.i
-	@echo ... src/Renderer/Renderer.s
-	@echo ... src/Scene/Scene.obj
-	@echo ... src/Scene/Scene.i
-	@echo ... src/Scene/Scene.s
+	@echo ... rdn/DXSample.obj
+	@echo ... rdn/DXSample.i
+	@echo ... rdn/DXSample.s
+	@echo ... rdn/Main.obj
+	@echo ... rdn/Main.i
+	@echo ... rdn/Main.s
+	@echo ... rdn/Renderer.obj
+	@echo ... rdn/Renderer.i
+	@echo ... rdn/Renderer.s
+	@echo ... rdn/Win32Application.obj
+	@echo ... rdn/Win32Application.i
+	@echo ... rdn/Win32Application.s
+	@echo ... rdn/manipulator.obj
+	@echo ... rdn/manipulator.i
+	@echo ... rdn/manipulator.s
+	@echo ... rdn/nv_helpers_dx12/BottomLevelASGenerator.obj
+	@echo ... rdn/nv_helpers_dx12/BottomLevelASGenerator.i
+	@echo ... rdn/nv_helpers_dx12/BottomLevelASGenerator.s
+	@echo ... rdn/nv_helpers_dx12/RaytracingPipelineGenerator.obj
+	@echo ... rdn/nv_helpers_dx12/RaytracingPipelineGenerator.i
+	@echo ... rdn/nv_helpers_dx12/RaytracingPipelineGenerator.s
+	@echo ... rdn/nv_helpers_dx12/RootSignatureGenerator.obj
+	@echo ... rdn/nv_helpers_dx12/RootSignatureGenerator.i
+	@echo ... rdn/nv_helpers_dx12/RootSignatureGenerator.s
+	@echo ... rdn/nv_helpers_dx12/ShaderBindingTableGenerator.obj
+	@echo ... rdn/nv_helpers_dx12/ShaderBindingTableGenerator.i
+	@echo ... rdn/nv_helpers_dx12/ShaderBindingTableGenerator.s
+	@echo ... rdn/nv_helpers_dx12/TopLevelASGenerator.obj
+	@echo ... rdn/nv_helpers_dx12/TopLevelASGenerator.i
+	@echo ... rdn/nv_helpers_dx12/TopLevelASGenerator.s
+	@echo ... rdn/stdafx.obj
+	@echo ... rdn/stdafx.i
+	@echo ... rdn/stdafx.s
 .PHONY : help
 
 
