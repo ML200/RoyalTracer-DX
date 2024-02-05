@@ -20,8 +20,11 @@ cbuffer CameraParams : register(b0) {
   float4x4 projection;
 }
 // #DXR Extra - Refitting
-struct InstanceProperties {
+struct InstanceProperties
+{
   float4x4 objectToWorld;
+  // # DXR Extra - Simple Lighting
+  float4x4 objectToWorldNormal;
 };
 
 StructuredBuffer<InstanceProperties> instanceProps : register(t0);
