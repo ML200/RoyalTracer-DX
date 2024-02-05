@@ -21,15 +21,6 @@ cbuffer Colors : register(b0) {
   float3 C;
 }
 
-// # DXR Extra - Simple Lighting
-struct InstanceProperties
-{
-  float4x4 objectToWorld;
-  float4x4 objectToWorldNormal;
-};
-
-StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-
 
 StructuredBuffer<STriVertex> BTriVertex : register(t0);
 StructuredBuffer<int> indices : register(t1);
@@ -44,18 +35,18 @@ StructuredBuffer<int> indices : register(t1);
       uint vertId = 3 * PrimitiveIndex();
 
       // Calculate the position of the intersection point
-      float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
+      /*float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
                            BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
-                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;
+                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;*/
 
       float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 
-      // # DXR Extra - Simple Lighting
-      float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId + 0]].vertex;
-      float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId + 0]].vertex;
-      float3 normal = normalize(cross(e2, e1));
-      normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
+      // Calculate the normal of the triangle
+      float3 edge1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
+      float3 edge2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
+      float3 normal = normalize(cross(edge1, edge2));
 
+      //float3 worldNormal = ;
 
       // Calculate the light direction
       float3 lightDir = normalize(lightPosition - worldOrigin);

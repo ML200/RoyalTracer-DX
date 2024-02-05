@@ -870,11 +870,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateHitSignature() {
   rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, 0);
   // #DXR Extra - Another ray type
   // Add a single range pointing to the TLAS in the heap
-    rsc.AddHeapRangesParameter(
-            {{2 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /*2nd slot of the heap*/},
-             {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Scene data*/, 2},
-                    // # DXR Extra - Simple Lighting
-             {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3}
+  rsc.AddHeapRangesParameter({
+      {2 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+       1 /*2nd slot of the heap*/},
   });
   return rsc.Generate(m_device.Get(), true);
 }
@@ -1034,11 +1032,10 @@ void Renderer::CreateRaytracingOutputBuffer() {
 //
 void Renderer::CreateShaderResourceHeap() {
   // #DXR Extra: Perspective Camera
-// Create a SRV/UAV/CBV descriptor heap. We need 4 entries - 1 SRV for the TLAS, 1 UAV for the
-// raytracing output, 1 CBV for the camera matrices, 1 SRV for the
-// per-instance data (# DXR Extra - Simple Lighting)
-    m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 4, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+  // Create a SRV/UAV/CBV descriptor heap. We need 3 entries - 1 SRV for the
+  // TLAS, 1 UAV for the raytracing output and 1 CBV for the camera matrices
+  m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
+      m_device.Get(), 3, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1076,22 +1073,6 @@ void Renderer::CreateShaderResourceHeap() {
   cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
   cbvDesc.SizeInBytes = m_cameraBufferSize;
   m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
-
-    //# DXR Extra - Simple Lighting
-    srvHandle.ptr +=
-            m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srvDesc.Buffer.FirstElement = 0;
-    srvDesc.Buffer.NumElements = static_cast<int>(m_instances.size());
-    srvDesc.Buffer.StructureByteStride = sizeof(InstanceProperties);
-    srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-// Write the per-instance properties buffer view in the heap
-    m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc, srvHandle);
-
-
 }
 
 //-----------------------------------------------------------------------------
@@ -1146,10 +1127,7 @@ void Renderer::CreateShaderBindingTable() {
   // The plane also uses a constant buffer for its vertex colors
   // #DXR Extra: Per-Instance Data
   // Adding the plane
-    m_sbtHelper.AddHitGroup(
-            L"PlaneHitGroup",
-            {(void *)m_planeBuffer->GetGPUVirtualAddress(), nullptr,
-             (void *)(m_globalConstantBuffer->GetGPUVirtualAddress()), heapPointer});
+  m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {heapPointer});
   // #DXR Extra - Another ray type
   m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
@@ -1540,23 +1518,9 @@ void Renderer::UpdateInstancePropertiesBuffer() {
       0, 0); // We do not intend to read from this resource on the CPU.
   ThrowIfFailed(m_instanceProperties->Map(0, &readRange,
                                           reinterpret_cast<void **>(&current)));
-    for (const auto &inst : m_instances)
-    {
-        current->objectToWorld = inst.second;
-
-        //# DXR Extra - Simple Lighting
-        XMMATRIX upper3x3 = inst.second;
-        // Remove the translation and lower vector of the matrix
-        upper3x3.r[0].m128_f32[3] = 0.f;
-        upper3x3.r[1].m128_f32[3] = 0.f;
-        upper3x3.r[2].m128_f32[3] = 0.f;
-        upper3x3.r[3].m128_f32[0] = 0.f;
-        upper3x3.r[3].m128_f32[1] = 0.f;
-        upper3x3.r[3].m128_f32[2] = 0.f;
-        upper3x3.r[3].m128_f32[3] = 1.f;
-        XMVECTOR det;
-        current->objectToWorldNormal = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
-        current++;
-    }
+  for (const auto &inst : m_instances) {
+    current->objectToWorld = inst.second;
+    current++;
+  }
   m_instanceProperties->Unmap(0, nullptr);
 }
