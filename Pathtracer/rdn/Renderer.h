@@ -201,8 +201,11 @@ private:
 
   // #DXR Extra - Refitting
   /// Per-instance properties
-  struct InstanceProperties {
-    XMMATRIX objectToWorld;
+  struct InstanceProperties
+  {
+      XMMATRIX objectToWorld;
+      //# DXR Extra - Simple Lighting
+      XMMATRIX objectToWorldNormal;
   };
 
   ComPtr<ID3D12Resource> m_instanceProperties;

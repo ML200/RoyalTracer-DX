@@ -21,6 +21,15 @@ cbuffer Colors : register(b0) {
   float3 C;
 }
 
+// # DXR Extra - Simple Lighting
+struct InstanceProperties
+{
+    float4x4 objectToWorld;
+    float4x4 objectToWorldNormal;
+};
+
+StructuredBuffer<InstanceProperties> instanceProps : register(t3);
+
 
 StructuredBuffer<STriVertex> BTriVertex : register(t0);
 StructuredBuffer<int> indices : register(t1);
@@ -28,45 +37,63 @@ StructuredBuffer<int> indices : register(t1);
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
 
-   // Hardcoded point light position
-   float3 lightPosition = float3(0.0, 4.0, 0.0);
    float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
       uint vertId = 3 * PrimitiveIndex();
 
       // Calculate the position of the intersection point
-      /*float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
+      float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
                            BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
-                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;*/
+                           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;
+    const float3 A = float3(1, 0, 0);
+    const float3 B = float3(0, 1, 0);
+    const float3 C = float3(0, 0, 1);
 
-      float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    float3 hitColor = A * barycentrics.x + B * barycentrics.y + C * barycentrics.z;
 
-      // Calculate the normal of the triangle
-      float3 edge1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
-      float3 edge2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
-      float3 normal = normalize(cross(edge1, edge2));
 
-      //float3 worldNormal = ;
+    // # DXR Extra - Simple Lighting
+    float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId + 0]].vertex;
+    float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId + 0]].vertex;
+    float3 normal = normalize(cross(e2, e1));
+    normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
 
-      // Calculate the light direction
-      float3 lightDir = normalize(lightPosition - worldOrigin);
 
-      // Diffuse reflection (Lambert's Cosine Law)
-      float diff = max(dot(normal, lightDir), 0.0);
+    // # DXR Extra - Simple Lighting
+    float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    float3 lightPos = float3(2, 2, -2);
+    float3 centerLightDir = normalize(lightPos - worldOrigin);
 
-      // Simple diffuse color based on light incidence
-      float3 diffuseColor = diff * float3(1.0, 1.0, 1.0); // White light
+    float nDotL = max(0.f, dot(normal, centerLightDir));
 
-      // Modulate the color by the light's influence
-      float3 hitColor = diffuseColor ;//* float3(0.6, 0.7, 0.6);
-
+    hitColor *= nDotL;
       payload.colorAndDistance = float4(hitColor, RayTCurrent());
 }
 
 // #DXR Extra - Another ray type
 [shader("closesthit")] void PlaneClosestHit(inout HitInfo payload,
                                                 Attributes attrib) {
-  float3 lightPos = float3(4, 4, -4);
+
+    // # DXR Extra - Simple Lighting
+    uint vertId = 3 * PrimitiveIndex();
+    float3 e1 = BTriVertex[vertId + 1].vertex - BTriVertex[vertId + 0].vertex;
+    float3 e2 = BTriVertex[vertId + 2].vertex - BTriVertex[vertId + 0].vertex;
+    float3 normal = normalize(cross(e2, e1));
+
+    normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
+    // # DXR Extra - Simple Lighting
+    bool isBackFacing = dot(normal, WorldRayDirection()) > 0.f;
+    if (isBackFacing)
+        normal = -normal;
+
+    // # DXR Extra - Simple Lighting
+    float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    float3 lightPos = float3(2, 2, -2);
+    float3 centerLightDir = normalize(lightPos - worldOrigin);
+    bool isShadowed = dot(normal, centerLightDir) < 0.f;
+
+    if (!isShadowed)
+    {
 
   // Find the world - space hit position
   float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
@@ -123,11 +150,13 @@ StructuredBuffer<int> indices : register(t1);
       // Payload associated to the ray, which will be used to communicate
       // between the hit/miss shaders and the raygen
       shadowPayload);
+        // # DXR Extra - Simple Lighting
+        isShadowed = shadowPayload.isHit;
+    }
 
-  float factor = shadowPayload.isHit ? 0.3 : 1.0;
-
-  float3 barycentrics =
-      float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
-  float4 hitColor = float4(float3(0.0, 0.0, 0.0) * factor, RayTCurrent());
-  payload.colorAndDistance = float4(hitColor);
+    // # DXR Extra - Simple Lighting
+    float factor = isShadowed ? 0.3 : 1.0;
+    float nDotL = max(0.f, dot(normal, centerLightDir));
+    float3 hitColor = float3(0.7, 0.7, 0.7)*nDotL*factor;
+    payload.colorAndDistance = float4(hitColor, 1);
 }
