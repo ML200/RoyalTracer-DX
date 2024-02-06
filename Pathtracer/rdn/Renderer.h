@@ -203,6 +203,7 @@ private:
   /// Per-instance properties
   struct InstanceProperties {
     XMMATRIX objectToWorld;
+    XMMATRIX objectToWorldNormal;
   };
 
   ComPtr<ID3D12Resource> m_instanceProperties;
