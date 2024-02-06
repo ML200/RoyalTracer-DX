@@ -29,7 +29,7 @@ cbuffer Colors : register(b0) {
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
 RaytracingAccelerationStructure SceneBVH : register(t0);
-//StructuredBuffer<InstanceProperties> instanceProps : register(t3);
+StructuredBuffer<InstanceProperties> instanceProps : register(t3);
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
@@ -49,12 +49,12 @@ RaytracingAccelerationStructure SceneBVH : register(t0);
     float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId + 0]].vertex;
     float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId + 0]].vertex;
     float3 normal = normalize(cross(e2, e1));
-    //normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
+    normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
 
 
     // # DXR Extra - Simple Lighting
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-    float3 lightPos = float3(2, 2, -2);
+    float3 lightPos = float3(5, 5, -5);
     float3 centerLightDir = normalize(lightPos - worldOrigin);
 
     float nDotL = max(0.f, dot(normal, centerLightDir));
@@ -63,8 +63,8 @@ RaytracingAccelerationStructure SceneBVH : register(t0);
       // from a constant-buffer
       RayDesc ray;
       ray.Origin = worldOrigin;
-      ray.Direction = -centerLightDir;
-      ray.TMin = 0.01;
+      ray.Direction = centerLightDir;
+      ray.TMin = 0.001;
       ray.TMax = 100000;
       bool hit = true;
 
@@ -110,7 +110,7 @@ RaytracingAccelerationStructure SceneBVH : register(t0);
           // between the hit/miss shaders and the raygen
           shadowPayload);
 
-      float factor = shadowPayload.isHit ? 0.3 : 1.0;
+      float factor = shadowPayload.isHit ? 0.0 : 1.0;
 
     hitColor *= nDotL * factor;
 

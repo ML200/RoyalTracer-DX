@@ -874,7 +874,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateHitSignature() {
             {{0 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /*2nd slot of the heap*/},
              //{0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Scene data*/, 2},
                     // # DXR Extra - Simple Lighting
-            // {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3}
+             {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3}
             });
   return rsc.Generate(m_device.Get(), true);
 }
@@ -990,7 +990,7 @@ void Renderer::CreateRaytracingPipeline() {
   // then requires a trace depth of 1. Note that this recursion depth should be
   // kept to a minimum for best performance. Path tracing algorithms can be
   // easily flattened into a simple loop in the ray generation.
-  pipeline.SetMaxRecursionDepth(4);
+  pipeline.SetMaxRecursionDepth(2);
 
   // Compile the pipeline for execution on the GPU
   m_rtStateObject = pipeline.Generate();
@@ -1040,7 +1040,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 3, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 4, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1080,7 +1080,7 @@ void Renderer::CreateShaderResourceHeap() {
   m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
 
     //# DXR Extra - Simple Lighting
-    /*srvHandle.ptr +=
+    srvHandle.ptr +=
             m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc1;
@@ -1092,7 +1092,7 @@ void Renderer::CreateShaderResourceHeap() {
     srvDesc1.Buffer.StructureByteStride = sizeof(InstanceProperties);
     srvDesc1.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 // Write the per-instance properties buffer view in the heap
-    m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc1, srvHandle);*/
+    m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc1, srvHandle);
 
 }
 
@@ -1140,7 +1140,7 @@ void Renderer::CreateShaderBindingTable() {
         L"HitGroup",
         {(void *)(m_mengerVB->GetGPUVirtualAddress()),
          (void *)(m_mengerIB->GetGPUVirtualAddress()),
-         (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress())});
+         (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});
     // #DXR Extra - Another ray type
     m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
   }
