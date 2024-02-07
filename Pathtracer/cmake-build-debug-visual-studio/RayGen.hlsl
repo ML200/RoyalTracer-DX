@@ -27,38 +27,30 @@ cbuffer CameraParams : register(b0)
   // #DXR Extra: Perspective Camera
   float aspectRatio = dims.x / dims.y;
 
-    float4 init_orig = mul(viewI, float4(0, 0, 0, 1));
+    float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-    float4 init_dir = mul(viewI, float4(target.xyz, 0));
+    float3 init_dir = mul(viewI, float4(target.xyz, 0));
 
     //We have to collect the intensity and color on the path:
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  for(int x = 0; x < 3; x++){
+  for(int x = 0; x < 1; x++){
       HitInfo payload;
       // Initialize the ray payload
       payload.colorAndDistance = float4(1, 1, 1, 0);
       payload.emission = float3(0, 0, 0);
-      payload.util = float4(0, 0, 0, 0);
-      payload.origin = init_orig.xyz;
-      payload.direction = init_dir.xyz;
+      payload.util = 0;
+      payload.origin = init_orig;
+      payload.seed = launchIndex.x*launchIndex.y+1003*x;
+      payload.direction = init_dir;
+      payload.pdf = 1.0f;
 
       for(int y = 0; y < 5; y++){
           RayDesc ray;
-            // Use a hybrid approach for generating random seeds
-          payload.util.x = HybridTaus(Hash(launchIndex.x * 1973 + launchIndex.y * 9277 + y * 26699 + x * 12289));
-          payload.util.y = HybridTaus(Hash(launchIndex.x * 2749 + launchIndex.y * 5923 + y * 23893 + x * 3229));
-
-          if(y == 0){
-              ray.Origin = init_orig;
-              ray.Direction = init_dir;
-          }
-          else{
-              ray.Origin = payload.origin;
-              ray.Direction = payload.direction;
-          }
-          ray.TMin = 0.00000001;
+          ray.Origin = payload.origin;
+          ray.Direction = payload.direction;
+          ray.TMin = 0.0001;
           ray.TMax = 100000;
           // Trace the ray
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
@@ -71,6 +63,6 @@ cbuffer CameraParams : register(b0)
       accumulation += payload.emission * payload.colorAndDistance.xyz;
 
   }
-  accumulation/=3.0f;
+  accumulation/=1.0f;
   gOutput[launchIndex] = float4(accumulation.xyz, 1.f);
 }

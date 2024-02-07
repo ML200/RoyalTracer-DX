@@ -8,7 +8,9 @@ struct HitInfo {
   float3 emission;
   float3 direction;
   float3 origin;
-  float4 util; //IMPORTANT: util info: miss flag, random1, random2, empty
+  float util; //IMPORTANT: util info: miss flag
+  uint seed;
+  float pdf;
 };
 
 // Attributes output by the raytracing when hitting a surface,
@@ -17,36 +19,31 @@ struct Attributes {
   float2 bary;
 };
 
-
-uint Hash(uint x) {
-    x += (x << 10);
-    x ^= (x >> 6);
-    x += (x << 3);
-    x ^= (x >> 11);
-    x += (x << 15);
+// Hash function to scramble the bits of an integer
+uint hash(uint x) {
+    x += (x << 10u);
+    x ^= (x >> 6u);
+    x += (x << 3u);
+    x ^= (x >> 11u);
+    x += (x << 15u);
     return x;
 }
 
-uint TausStep(uint z, int S1, int S2, int S3, uint M) {
-    uint b = (((z << S1) ^ z) >> S2);
-    return (((z & M) << S3) ^ b);
+// Returns a float in [0, 1)
+float RandomFloat(uint seed) {
+    const uint prime1 = 0x68bc21ebu; // Large prime number
+    const uint prime2 = 0x02e5be93u; // Another large prime number
+
+    uint scrambled = hash(seed * prime1 + prime2);
+    return float(scrambled) * (1.0 / 4294967296.0); // 2^-32
 }
 
-uint LCGStep(uint z, uint A, uint C) {
-    return (A * z + C);
-}
+// Main function to generate a random unit vector in the hemisphere
+float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed) {
+    // Generate two random numbers
+    float random1 = RandomFloat(seed);
+    float random2 = RandomFloat(seed);
 
-float HybridTaus(uint seed) {
-    // Combined Tausworthe generator
-    seed = TausStep(seed, 13, 19, 12, 4294967294UL) ^ TausStep(seed, 2, 25, 4, 4294967288UL) ^
-           TausStep(seed, 3, 11, 17, 4294967280UL) ^ LCGStep(seed, 1664525, 1013904223UL);
-
-    // Convert to float
-    return (seed & 0xFFFFFF) / 16777216.0f; // 2^24
-}
-
-// Generates a random unit vector in the hemisphere oriented around the given normal
-float3 RandomUnitVectorInHemisphere(float3 normal, float random1, float random2) {
     // Convert uniform random numbers into spherical coordinates
     float phi = 2.0f * 3.14159265358979323846f * random1;
     float theta = acos(1.0 - random2);
