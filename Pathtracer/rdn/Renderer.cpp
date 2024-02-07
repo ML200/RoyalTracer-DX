@@ -407,8 +407,8 @@ void Renderer::OnUpdate() {
   m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 500.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 200.f), 0.f);
+                           static_cast<float>(m_time) / 5000.0f) *
+      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -977,7 +977,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-  pipeline.SetMaxPayloadSize(4 * sizeof(float)); // RGB + distance
+  pipeline.SetMaxPayloadSize(17 * sizeof(float)); // RGB + distance
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1148,7 +1148,9 @@ void Renderer::CreateShaderBindingTable() {
   // The plane also uses a constant buffer for its vertex colors
   // #DXR Extra: Per-Instance Data
   // Adding the plane
-  m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {heapPointer});
+  m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {(void *)(m_mengerVB->GetGPUVirtualAddress()),
+                                             (void *)(m_mengerIB->GetGPUVirtualAddress()),
+                                             (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});
   // #DXR Extra - Another ray type
   m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
