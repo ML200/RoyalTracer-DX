@@ -46,7 +46,7 @@ cbuffer CameraParams : register(b0)
       payload.direction = init_dir;
       payload.pdf = 1.0f;
 
-      for(int y = 0; y < 5; y++){
+      for(int y = 0; y < 4; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -56,11 +56,11 @@ cbuffer CameraParams : register(b0)
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
 
           //If the last ray missed, terminate loop:
-          if(payload.util.x == 1.0f){
+          if(payload.util == 1.0f){
             break;
           }
       }
-      accumulation += payload.emission * payload.colorAndDistance.xyz;
+      accumulation += payload.emission;
 
   }
   accumulation/=1.0f;

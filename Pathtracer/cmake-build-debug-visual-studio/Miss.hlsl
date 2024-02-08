@@ -7,5 +7,5 @@
 
   float ramp = launchIndex.y / dims.y;
   //payload.colorAndDistance = float4(0.0f, 0.0f, 0.0f - 0.0f * ramp, -1.0f);
-  payload.util.x = 1.0f;
+  payload.util = 1.0f;
 }
