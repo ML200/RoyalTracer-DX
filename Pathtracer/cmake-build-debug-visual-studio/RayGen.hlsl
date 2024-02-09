@@ -35,7 +35,7 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  for(int x = 0; x < 1; x++){
+  for(int x = 0; x < 100; x++){
       HitInfo payload;
       // Initialize the ray payload
       payload.colorAndDistance = float4(1, 1, 1, 0);
@@ -46,7 +46,7 @@ cbuffer CameraParams : register(b0)
       payload.direction = init_dir;
       payload.pdf = 1.0f;
 
-      for(int y = 0; y < 4; y++){
+      for(int y = 0; y < 8; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -59,10 +59,22 @@ cbuffer CameraParams : register(b0)
           if(payload.util == 1.0f){
             break;
           }
+
+          // Apply Russian Roulette after a minimum number of bounces
+          if (y > 2) {
+              float continueProbability = 0.3f; // Common choice, tweak based on scene
+              float randomValue = RandomFloat(payload.seed);
+
+              // Terminate the path with a probability of (1 - continueProbability)
+              if (randomValue > continueProbability) {
+                  payload.emission *= continueProbability; // Adjust the PDF for terminated paths
+                  break;
+              }
+              payload.emission *= continueProbability; // Adjust the PDF if the path continues
+          }
       }
       accumulation += payload.emission;
-
   }
-  accumulation/=1.0f;
+  accumulation/=100.0f;
   gOutput[launchIndex] = float4(accumulation.xyz, 1.f);
 }
