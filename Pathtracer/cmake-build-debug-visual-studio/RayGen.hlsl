@@ -35,7 +35,8 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  for(int x = 0; x < 100; x++){
+  float samples = 1;
+  for(int x = 0; x < samples; x++){
       HitInfo payload;
       // Initialize the ray payload
       payload.colorAndDistance = float4(1, 1, 1, 0);
@@ -46,7 +47,7 @@ cbuffer CameraParams : register(b0)
       payload.direction = init_dir;
       payload.pdf = 1.0f;
 
-      for(int y = 0; y < 8; y++){
+      for(int y = 0; y < 4; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -75,6 +76,6 @@ cbuffer CameraParams : register(b0)
       }
       accumulation += payload.emission;
   }
-  accumulation/=100.0f;
+  accumulation/=samples;
   gOutput[launchIndex] = float4(accumulation.xyz, 1.f);
 }

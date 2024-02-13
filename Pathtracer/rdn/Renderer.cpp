@@ -21,6 +21,7 @@
 #include "Windowsx.h"
 #include "glm/gtc/type_ptr.hpp"
 #include "manipulator.h"
+#include "../src/Util/ObjLoader.h"
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -407,8 +408,8 @@ void Renderer::OnUpdate() {
   m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 5000.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000.f), 0.f);
+                           static_cast<float>(m_time) / 1000.0f) *
+      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -470,52 +471,6 @@ void Renderer::PopulateCommandList() {
 
   m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
-  // Record commands.
-  // #DXR
-  /*if (m_raster) {
-    // #DXR Extra: Depth Buffering
-    m_commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH,
-                                         1.0f, 0, 0, nullptr);
-    // #DXR Extra: Perspective Camera
-    std::vector<ID3D12DescriptorHeap *> heaps = {m_constHeap.Get()};
-    m_commandList->SetDescriptorHeaps(static_cast<UINT>(heaps.size()),
-                                      heaps.data());
-    // set the root descriptor table 0 to the constant buffer descriptor heap
-    m_commandList->SetGraphicsRootDescriptorTable(
-        0, m_constHeap->GetGPUDescriptorHandleForHeapStart());
-    const float clearColor[] = {0.0f, 0.2f, 0.4f, 1.0f};
-    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-
-    // #DXR Extra - Refitting
-    D3D12_GPU_DESCRIPTOR_HANDLE handle =
-        m_constHeap->GetGPUDescriptorHandleForHeapStart();
-    // Access to the camera buffer, 1st parameter of the root signature
-    m_commandList->SetGraphicsRootDescriptorTable(0, handle);
-    // Access to the per-instance properties buffer, 2nd parameter of the root
-    // signature
-    m_commandList->SetGraphicsRootDescriptorTable(1, handle);
-    // Instance index in the per-instance properties buffer, 3rd parameter of
-    // the root signature Here we set the value to 0, and since we have only 1
-    // constant, the offset is 0 as well
-    m_commandList->SetGraphicsRoot32BitConstant(2, 0, 0);
-
-    // #DXR Extra: Indexed Geometry
-    // In a way similar to triangle rendering, rasterize the Menger Sponge
-    m_commandList->IASetVertexBuffers(0, 1, &m_mengerVBView);
-    m_commandList->IASetIndexBuffer(&m_mengerIBView);
-    m_commandList->DrawIndexedInstanced(m_mengerIndexCount, 1, 0, 0, 0);
-
-    // Instance index in the per-instance properties buffer, 3rd parameter of
-    // the root signature Here we set the value to 0, and since we have only 1
-    // constant, the offset is 0 as well
-    m_commandList->SetGraphicsRoot32BitConstant(2, 1, 0);
-    // #DXR Extra: Per-Instance Data
-    // In a way similar to triangle rendering, rasterize the plane
-    m_commandList->IASetVertexBuffers(0, 1, &m_planeBufferView);
-    m_commandList->DrawInstanced(6, 1, 0, 0);
-
-  } else {*/
     // #DXR Extra - Refitting
     // Refit the top-level acceleration structure to account for the new
     // transform matrix of the triangle. Note that the build contains a barrier,
@@ -1199,29 +1154,6 @@ void Renderer::CreateCameraBuffer() {
   D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
   cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
   cbvDesc.SizeInBytes = m_cameraBufferSize;
-
-  // Get a handle to the heap memory on the CPU side, to be able to write the
-  // descriptors directly
-  /*D3D12_CPU_DESCRIPTOR_HANDLE srvHandle =
-      m_constHeap->GetCPUDescriptorHandleForHeapStart();
-  m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
-
-  // #DXR Extra - Refitting
-  // Add the per-instance buffer
-  srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
-  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-  srvDesc.Buffer.FirstElement = 0;
-  srvDesc.Buffer.NumElements = static_cast<UINT>(m_instances.size());
-  srvDesc.Buffer.StructureByteStride = sizeof(InstanceProperties);
-  srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-  // Write the per-instance buffer view in the heap
-  m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc,
-                                     srvHandle);*/
 }
 
 // #DXR Extra: Perspective Camera
@@ -1451,7 +1383,8 @@ void Renderer::CreateMengerSpongeVB() {
   std::vector<Vertex> vertices;
   std::vector<UINT> indices;
 
-  nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
+  //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
+  ObjLoader::loadObjFile("car_fixed.obj",&vertices, &indices);
   {
     const UINT mengerVBSize =
         static_cast<UINT>(vertices.size()) * sizeof(Vertex);

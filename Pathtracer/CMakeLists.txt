@@ -42,6 +42,8 @@ add_executable(Pathtracer WIN32
         rdn/manipulator.h
         rdn/stdafx.h
         rdn/Win32Application.h
+        src/Components/Vertex.h
+        src/Util/ObjLoader.h
 
 
 )

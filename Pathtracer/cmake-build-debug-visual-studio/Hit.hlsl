@@ -36,12 +36,12 @@ StructuredBuffer<InstanceProperties> instanceProps : register(t3);
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
+      uint vertId = 3 * PrimitiveIndex();
 
    // Modulate the color by the light's influence
-   float3 hitColor = float3(0.8,0.8,0.8);
+   float3 hitColor = BTriVertex[indices[vertId]].color.xyz;
    float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
-      uint vertId = 3 * PrimitiveIndex();
 
       // Calculate the position of the intersection point
       float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
