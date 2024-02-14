@@ -23,6 +23,7 @@
 #include "manipulator.h"
 #include "../src/Util/ObjLoader.h"
 
+
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
     : DXSample(width, height, name), m_frameIndex(0),
@@ -829,7 +830,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateHitSignature() {
             {{0 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /*2nd slot of the heap*/},
              //{0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Scene data*/, 2},
                     // # DXR Extra - Simple Lighting
-             {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3}
+             {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3},
+             {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
+             {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/}
             });
   return rsc.Generate(m_device.Get(), true);
 }
@@ -995,7 +998,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 4, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 6, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1049,6 +1052,33 @@ void Renderer::CreateShaderResourceHeap() {
 // Write the per-instance properties buffer view in the heap
     m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc1, srvHandle);
 
+    // Move to the next descriptor slot
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Create SRV for the Material IDs buffer
+    D3D12_SHADER_RESOURCE_VIEW_DESC materialIdSrvDesc = {};
+    materialIdSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    materialIdSrvDesc.Format = DXGI_FORMAT_R32_UINT; // Assuming material IDs are 32-bit unsigned integers
+    materialIdSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    materialIdSrvDesc.Buffer.FirstElement = 0;
+    materialIdSrvDesc.Buffer.NumElements = static_cast<UINT>(m_materialIDs.size()); // Assuming materialIDs is a std::vector<UINT>
+    materialIdSrvDesc.Buffer.StructureByteStride = 0; // Not a structured buffer
+    materialIdSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    m_device->CreateShaderResourceView(m_materialIndexBuffer.Get(), &materialIdSrvDesc, srvHandle);
+
+    // Move to the next descriptor slot
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Create SRV for the Materials buffer
+    D3D12_SHADER_RESOURCE_VIEW_DESC materialsSrvDesc = {};
+    materialsSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    materialsSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // Use DXGI_FORMAT_UNKNOWN for structured buffers
+    materialsSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    materialsSrvDesc.Buffer.FirstElement = 0;
+    materialsSrvDesc.Buffer.NumElements = static_cast<UINT>(m_materials.size()); // Assuming materials is a std::vector<Material>
+    materialsSrvDesc.Buffer.StructureByteStride = sizeof(Material); // Assuming Material is your material struct
+    materialsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    m_device->CreateShaderResourceView(m_materialBuffer.Get(), &materialsSrvDesc, srvHandle);
 }
 
 //-----------------------------------------------------------------------------
@@ -1382,9 +1412,13 @@ void Renderer::CreateDepthBuffer() {
 void Renderer::CreateMengerSpongeVB() {
   std::vector<Vertex> vertices;
   std::vector<UINT> indices;
+  std::vector<Material> materials;
+  std::vector<UINT> materialIDs;
 
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
-  ObjLoader::loadObjFile("car_fixed.obj",&vertices, &indices);
+  ObjLoader::loadObjFile("car_fixed.obj",&vertices, &indices, &materials, &materialIDs);
+  m_materials = materials;
+  m_materialIDs = materialIDs;
   {
     const UINT mengerVBSize =
         static_cast<UINT>(vertices.size()) * sizeof(Vertex);
@@ -1449,6 +1483,42 @@ void Renderer::CreateMengerSpongeVB() {
     m_mengerIndexCount = static_cast<UINT>(indices.size());
     m_mengerVertexCount = static_cast<UINT>(vertices.size());
   }
+
+  //Material:
+    {
+        const UINT materialBufferSize = static_cast<UINT>(materials.size()) * sizeof(Material);
+
+        CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+                &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
+
+        // Copy material data to the buffer.
+        UINT8* pMaterialDataBegin;
+        CD3DX12_RANGE readRange(0, 0);
+        ThrowIfFailed(m_materialBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialDataBegin)));
+        memcpy(pMaterialDataBegin, materials.data(), materialBufferSize);
+        m_materialBuffer->Unmap(0, nullptr);
+    }
+
+    //Material Indices
+    {
+        const UINT materialIndexBufferSize = static_cast<UINT>(materialIDs.size()) * sizeof(UINT);
+
+        CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+                &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
+
+        // Copy material index data to the buffer.
+        UINT8* pMaterialIndexDataBegin;
+        CD3DX12_RANGE readRange(0, 0);
+        ThrowIfFailed(m_materialIndexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialIndexDataBegin)));
+        memcpy(pMaterialIndexDataBegin, materialIDs.data(), materialIndexBufferSize);
+        m_materialIndexBuffer->Unmap(0, nullptr);
+    }
 }
 
 //--------------------------------------------------------------------------------------------------

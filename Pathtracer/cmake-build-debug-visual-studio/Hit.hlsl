@@ -12,6 +12,15 @@ struct InstanceProperties
   float4x4 objectToWorldNormal;
 };
 
+struct Material
+{
+     float4 Kd;
+     float3 Ks;
+     float3 Ke;
+     float4 Pr_Pm_Ps_Pc;
+     float2 aniso_anisor;
+};
+
 
 struct STriVertex {
   float3 vertex;

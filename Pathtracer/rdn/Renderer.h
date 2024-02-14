@@ -59,6 +59,7 @@ private:
   ComPtr<ID3D12Resource> m_vertexBuffer;
   D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
 
+
   // Synchronization objects.
   UINT m_frameIndex;
   HANDLE m_fenceEvent;
@@ -180,6 +181,10 @@ private:
   ComPtr<ID3D12Resource> m_mengerIB;
   D3D12_VERTEX_BUFFER_VIEW m_mengerVBView;
   D3D12_INDEX_BUFFER_VIEW m_mengerIBView;
+  ComPtr<ID3D12Resource> m_materialBuffer;
+  ComPtr<ID3D12Resource> m_materialIndexBuffer;
+  std::vector<UINT> m_materialIDs;
+  std::vector<Material> m_materials;
 
   UINT m_mengerIndexCount;
   UINT m_mengerVertexCount;

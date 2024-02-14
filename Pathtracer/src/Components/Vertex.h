@@ -11,6 +11,17 @@
 
 using namespace DirectX;
 
+struct Material{
+ XMFLOAT4 Kd = {1,1,1,1};
+ XMFLOAT3 Ks = {1,1,1};
+ XMFLOAT3 Ke = {0,0,0};
+ XMFLOAT4 Pr_Pm_Ps_Pc = {0,0,0,0};
+ XMFLOAT2 aniso_anisor = {0,0};
+
+ //ADD MAP IDs LATER
+ Material(XMFLOAT4 kd):Kd(kd){}
+};
+
 struct Vertex {
     XMFLOAT3 position;
     XMFLOAT4 color;
@@ -24,7 +35,6 @@ struct Vertex {
         return XMVector3Equal(XMLoadFloat3(&position), XMLoadFloat3(&other.position)) &&
                XMVector4Equal(XMLoadFloat4(&color), XMLoadFloat4(&other.color));
     }
-
 };
 
 namespace std {

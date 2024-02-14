@@ -8,14 +8,12 @@
 // Optional. define TINYOBJLOADER_USE_MAPBOX_EARCUT gives robust trinagulation. Requires C++11
 //#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
-#include "../Objects/SceneObject.h"
-#include "../Math/Vector2.h"
 #include <iostream>
 #include <unordered_map>
 
-class ObjLoader{
+class ObjLoader {
 public:
-    static void loadObjFile(const std::string& inputfile, std::vector<Vertex> *vertices , std::vector<UINT> *indices , const std::string& material_search_path = "./") {
+    static void loadObjFile(const std::string& inputfile, std::vector<Vertex> *vertices, std::vector<UINT> *indices, std::vector<Material> *mats, std::vector<UINT> *materialIDs, const std::string& material_search_path = "./") {
         tinyobj::ObjReaderConfig reader_config;
         reader_config.mtl_search_path = material_search_path; // Path to material files
 
@@ -32,50 +30,56 @@ public:
             std::cout << "TinyObjReader: " << reader.Warning();
         }
 
-        auto& attrib = reader.GetAttrib();
-        auto& shapes = reader.GetShapes();
-        auto& materials = reader.GetMaterials();
+        const auto& attrib = reader.GetAttrib();
+        const auto& shapes = reader.GetShapes();
+        const auto& materials = reader.GetMaterials();
+
+        // Process materials
+        for (const auto& mat : materials) {
+            XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f);
+            mats->push_back(Material(diffuse));
+        }
 
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
 
         for (const auto& shape : shapes) {
+            size_t index_offset = 0;
+            // For each face
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
+                int fv = shape.mesh.num_face_vertices[f];
 
-            //tinyobj::material_t& mat = materials[material_id];
+                // For each vertex in the face
+                for (size_t v = 0; v < fv; v++) {
+                    tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
+                    tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
+                    tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
+                    tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
+                    XMFLOAT3 pos(vx, vy, vz);
 
-            for (const auto& index : shape.mesh.indices) {
-                tinyobj::real_t vx = attrib.vertices[3 * index.vertex_index + 0];
-                tinyobj::real_t vy = attrib.vertices[3 * index.vertex_index + 1];
-                tinyobj::real_t vz = attrib.vertices[3 * index.vertex_index + 2];
-                XMFLOAT3 pos(vx, vy, vz);
+                    Vertex vertex(pos, XMFLOAT4 {1,0,1,1});
 
-                tinyobj::real_t nx = attrib.normals[3 * index.normal_index + 0];
-                tinyobj::real_t ny = attrib.normals[3 * index.normal_index + 1];
-                tinyobj::real_t nz = attrib.normals[3 * index.normal_index + 2];
-                XMFLOAT3 norm(nx, ny, nz);
+                    // Check if this vertex is unique
+                    if (uniqueVertices.count(vertex) == 0) {
+                        uniqueVertices[vertex] = static_cast<uint32_t>(vertices->size());
+                        vertices->push_back(vertex);
+                    }
 
-                tinyobj::real_t tx = attrib.texcoords[2 * index.texcoord_index + 0];
-                tinyobj::real_t ty = attrib.texcoords[2 * index.texcoord_index + 1];
-                XMFLOAT2 uv(tx, ty);
-
-                Vertex vertex(pos, XMFLOAT4 {1,0,1,1});
-
-                // Check if this vertex is unique
-                if (uniqueVertices.count(vertex) == 0) {
-                    // New unique vertex, add it to the vector
-                    uniqueVertices[vertex] = static_cast<uint32_t>(vertices->size());
-                    vertices->push_back(vertex);
+                    // Add index for this vertex
+                    indices->push_back(uniqueVertices[vertex]);
                 }
-
-                // Add index for this vertex
-                indices->push_back(uniqueVertices[vertex]);
+                // Assign material ID for this face
+                if (shape.mesh.material_ids[f] >= 0) {
+                    for (size_t v = 0; v < fv; v++) {
+                        materialIDs->push_back(shape.mesh.material_ids[f]);
+                    }
+                } else {
+                    // Optional: Handle faces without a material
+                }
+                index_offset += fv;
             }
         }
-
-        // Create a default material
-        //Material defaultMaterial(Vector4(1.0f, 1.0f, 1.0f, 1.0f), Vector4(1.0f, 1.0f, 1.0f, 1.0f), 32.0f);
-
-        //return Mesh(vertices, indices, defaultMaterial);
     }
 };
+
 
 #endif //PATHTRACER_OBJLOADER_H
