@@ -1416,7 +1416,7 @@ void Renderer::CreateMengerSpongeVB() {
   std::vector<UINT> materialIDs;
 
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
-  ObjLoader::loadObjFile("car_fixed.obj",&vertices, &indices, &materials, &materialIDs);
+  ObjLoader::loadObjFile("audi.obj",&vertices, &indices, &materials, &materialIDs);
   m_materials = materials;
   m_materialIDs = materialIDs;
   {

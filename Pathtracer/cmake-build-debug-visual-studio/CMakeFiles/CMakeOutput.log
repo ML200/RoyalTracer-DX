@@ -1,0 +1,75 @@
+The system is: Windows - 10.0.19045 - AMD64
+Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+Compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx86/x64/cl.exe 
+Build flags: 
+Id flags:  
+
+The output was:
+0
+Microsoft (R) C/C++-Optimierungscompiler Version 19.38.33135 für x64
+Copyright (C) Microsoft Corporation. Alle Rechte vorbehalten.
+
+CMakeCCompilerId.c
+Microsoft (R) Incremental Linker Version 14.38.33135.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:CMakeCCompilerId.exe 
+CMakeCCompilerId.obj 
+
+
+Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.exe"
+
+Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.obj"
+
+The C compiler identification is MSVC, found in "C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/3.25.2/CompilerIdC/CMakeCCompilerId.exe"
+
+Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+Compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx86/x64/cl.exe 
+Build flags: 
+Id flags:  
+
+The output was:
+0
+Microsoft (R) C/C++-Optimierungscompiler Version 19.38.33135 für x64
+Copyright (C) Microsoft Corporation. Alle Rechte vorbehalten.
+
+CMakeCXXCompilerId.cpp
+Microsoft (R) Incremental Linker Version 14.38.33135.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:CMakeCXXCompilerId.exe 
+CMakeCXXCompilerId.obj 
+
+
+Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.exe"
+
+Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.obj"
+
+The CXX compiler identification is MSVC, found in "C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/3.25.2/CompilerIdCXX/CMakeCXXCompilerId.exe"
+
+Detecting C compiler ABI info compiled with the following output:
+Change Dir: C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-vi8c4b
+
+Run Build Command(s):nmake -f Makefile /nologo cmTC_7ec51\fast && 	"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX86\x64\nmake.exe"  -f CMakeFiles\cmTC_7ec51.dir\build.make /nologo -L                  CMakeFiles\cmTC_7ec51.dir\build
+Building C object CMakeFiles/cmTC_7ec51.dir/CMakeCCompilerABI.c.obj
+	"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\cmTC_7ec51.dir\CMakeCCompilerABI.c.obj.d --working-dir=C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles\CMakeScratch\TryCompile-vi8c4b --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1438~1.331\bin\Hostx86\x64\cl.exe @C:\Users\m\AppData\Local\Temp\nmD7DD.tmp
+CMakeCCompilerABI.c
+Linking C executable cmTC_7ec51.exe
+	"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_7ec51.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\mt.exe --manifests -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1438~1.331\bin\Hostx86\x64\link.exe /nologo @CMakeFiles\cmTC_7ec51.dir\objects1 @C:\Users\m\AppData\Local\Temp\nmD917.tmp
+	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.clion-vcpkg/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-vi8c4b/cmTC_7ec51.exe -installedDir C:/Users/m/.clion-vcpkg/vcpkg/installed/x64-windows/debug/bin -OutVariable out
+
+
+
+Detecting CXX compiler ABI info compiled with the following output:
+Change Dir: C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-sxfsnk
+
+Run Build Command(s):nmake -f Makefile /nologo cmTC_1a8d2\fast && 	"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\bin\HostX86\x64\nmake.exe"  -f CMakeFiles\cmTC_1a8d2.dir\build.make /nologo -L                  CMakeFiles\cmTC_1a8d2.dir\build
+Building CXX object CMakeFiles/cmTC_1a8d2.dir/CMakeCXXCompilerABI.cpp.obj
+	"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\cmTC_1a8d2.dir\CMakeCXXCompilerABI.cpp.obj.d --working-dir=C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles\CMakeScratch\TryCompile-sxfsnk --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1438~1.331\bin\Hostx86\x64\cl.exe @C:\Users\m\AppData\Local\Temp\nmDEB3.tmp
+CMakeCXXCompilerABI.cpp
+Linking CXX executable cmTC_1a8d2.exe
+	"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\cmTC_1a8d2.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\mt.exe --manifests -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1438~1.331\bin\Hostx86\x64\link.exe /nologo @CMakeFiles\cmTC_1a8d2.dir\objects1 @C:\Users\m\AppData\Local\Temp\nmDEF3.tmp
+	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.clion-vcpkg/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-sxfsnk/cmTC_1a8d2.exe -installedDir C:/Users/m/.clion-vcpkg/vcpkg/installed/x64-windows/debug/bin -OutVariable out
+
+
+

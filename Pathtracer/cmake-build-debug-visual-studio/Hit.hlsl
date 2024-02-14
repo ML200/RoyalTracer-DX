@@ -24,7 +24,6 @@ struct Material
 
 struct STriVertex {
   float3 vertex;
-  float4 color;
 };
 
 // #DXR Extra: Per-Instance Data
@@ -39,16 +38,19 @@ StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
 RaytracingAccelerationStructure SceneBVH : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps : register(t3);
+StructuredBuffer<uint> materialIDs : register(t4);
+StructuredBuffer<Material> materials : register(t5);
 
 
 
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
-      uint vertId = 3 * PrimitiveIndex();
+    uint vertId = 3 * PrimitiveIndex();
+    uint materialID = materialIDs[vertId];
 
    // Modulate the color by the light's influence
-   float3 hitColor = BTriVertex[indices[vertId]].color.xyz;
+   float3 hitColor = materials[materialID].Kd.xyz;
    float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
 

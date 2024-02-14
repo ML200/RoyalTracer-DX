@@ -151,6 +151,12 @@
 		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/stdafx.h">
 			<Option target="Pathtracer"/>
 		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Components/Vertex.h">
+			<Option target="Pathtracer"/>
+		</Unit>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/src/Util/ObjLoader.h">
+			<Option target="Pathtracer"/>
+		</Unit>
 		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/CMakeLists.txt">
 			<Option virtualFolder="CMake Files\"/>
 		</Unit>
