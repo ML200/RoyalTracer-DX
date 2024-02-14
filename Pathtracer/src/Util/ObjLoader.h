@@ -56,7 +56,16 @@ public:
                     tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
                     XMFLOAT3 pos(vx, vy, vz);
 
-                    Vertex vertex(pos, XMFLOAT4 {1,0,1,1});
+                    // Extract normal, default to (0, 0, 0) if not present
+                    XMFLOAT3 normal(0.0f, 0.0f, 0.0f); // Default normal
+                    if (idx.normal_index >= 0) {
+                        tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
+                        tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
+                        tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
+                        normal = XMFLOAT3(nx, ny, nz);
+                    }
+
+                    Vertex vertex(pos, normal);
 
                     // Check if this vertex is unique
                     if (uniqueVertices.count(vertex) == 0) {

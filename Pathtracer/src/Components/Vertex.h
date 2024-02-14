@@ -24,10 +24,12 @@ struct Material{
 
 struct Vertex {
     XMFLOAT3 position;
+    XMFLOAT3 normal = {1,1,1};
     // #DXR Extra: Indexed Geometry
-    Vertex(XMFLOAT4 pos, XMFLOAT4 /*n*/, XMFLOAT4 col)
-            : position(pos.x, pos.y, pos.z) {}
-    Vertex(XMFLOAT3 pos, XMFLOAT4 col) : position(pos) {}
+    Vertex(XMFLOAT4 pos, XMFLOAT4 /*n*/, XMFLOAT3 norm)
+            : position(pos.x, pos.y, pos.z), normal(norm.x,norm.y,norm.z) {}
+    Vertex(XMFLOAT3 pos, XMFLOAT3 norm) : position(pos), normal(norm.x,norm.y,norm.z) {}
+    Vertex(XMFLOAT3 pos, XMFLOAT4 norm) : position(pos) {}
 
     // Equality operator
     bool operator==(const Vertex& other) const {
