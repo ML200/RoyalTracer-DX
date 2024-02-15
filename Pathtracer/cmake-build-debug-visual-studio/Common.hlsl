@@ -38,15 +38,18 @@ float RandomFloat(uint seed) {
     return float(scrambled) * (1.0 / 4294967296.0); // 2^-32
 }
 
-// Main function to generate a random unit vector in the hemisphere
-float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed) {
+float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed, float roughness) {
     // Generate two random numbers
     float random1 = RandomFloat(seed);
     float random2 = RandomFloat(seed);
 
-    // Convert uniform random numbers into spherical coordinates
+    float alpha = roughness*roughness;
+
+    // Adjust theta based on roughness
+    // Roughness = 0 (smooth surface) -> theta is small (tighter cone)
+    // Roughness = 1 (rough surface) -> theta is large (wider cone)
     float phi = 2.0f * 3.14159265358979323846f * random1;
-    float theta = acos(1.0 - random2);
+    float theta = acos(1.0 - random2 * alpha);
 
     // Convert spherical coordinates to Cartesian coordinates on a unit sphere
     float x = sin(theta) * cos(phi);

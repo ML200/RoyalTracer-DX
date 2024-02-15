@@ -64,37 +64,35 @@ StructuredBuffer<Material> materials : register(t5);
     //_____________________________________________________________________________________________________________________________________________
     //Determine the impact normal. Apply interpolation if necessary.
     // Determine if any vertex of the triangle requests flat shading
-    bool isFlatShading = all(BTriVertex[indices[vertId]].normal == float3(0, 0, 0)) ||
-                         all(BTriVertex[indices[vertId + 1]].normal == float3(0, 0, 0)) ||
-                         all(BTriVertex[indices[vertId + 2]].normal == float3(0, 0, 0));
-
-    // Initialize the normal to zero
     float3 normal = float3(0, 0, 0);
+    // Always calculate the flat shading normal
+    float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
+    float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
+    float3 flatNormal = normalize(cross(e1, e2));
 
-    // Accumulate the weighted normals for smooth shading
-    if (!isFlatShading) {
-        normal +=
-                (all(BTriVertex[indices[vertId]].normal != float3(0, 0, 0)) ? BTriVertex[indices[vertId]].normal * barycentrics.x : float3(0, 0, 0)) +
-                (all(BTriVertex[indices[vertId + 1]].normal != float3(0, 0, 0)) ? BTriVertex[indices[vertId + 1]].normal * barycentrics.y : float3(0, 0, 0)) +
-                (all(BTriVertex[indices[vertId + 2]].normal != float3(0, 0, 0)) ? BTriVertex[indices[vertId + 2]].normal * barycentrics.z : float3(0, 0, 0));
+    // Initialize the smooth shading normal to zero
+    float3 smoothNormal = float3(0, 0, 0);
 
-        // Normalize the normal if it's not near-zero
-        if (length(normal) > 0.0001) {
-            normal = normalize(normal);
+    // Check each vertex normal; accumulate if not zero, otherwise use flat normal
+    for (int i = 0; i < 3; i++) {
+        if (all(BTriVertex[indices[vertId + i]].normal != float3(0, 0, 0))) {
+            // Accumulate the weighted normals for smooth shading
+            smoothNormal += BTriVertex[indices[vertId + i]].normal * barycentrics[i];
         } else {
-            // Fallback to flat shading if the smooth normal is near-zero
-            float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
-            float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
-            normal = normalize(cross(e1, e2));
+            // One of the vertex normals is (0,0,0), use flat shading for this vertex
+            smoothNormal += flatNormal * barycentrics[i];
         }
-    } else {
-        // Flat shading
-        float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
-        float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
-        normal = normalize(cross(e1, e2));
     }
 
-// Transform normal to world space and adjust for ray direction
+    // Normalize the smooth normal if it's not near-zero
+    if (length(smoothNormal) > 0.0001) {
+        normal = normalize(smoothNormal);
+    } else {
+        // Fallback to flat shading if the smooth normal is near-zero
+        normal = flatNormal;
+    }
+
+    // Transform normal to world space and adjust for ray direction
     normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
     if (dot(payload.direction, normal) > 0.0f) {
         normal = -normal; // Flip the normal if hitting from behind
@@ -103,7 +101,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     // # DXR Extra - Simple Lighting
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-    float3 lightPos = float3(5, 5, -5);
+    float3 lightPos = float3(10, 10, -10);
     float3 toLight = lightPos - worldOrigin;
     float3 centerLightDir = normalize(toLight);
     float distanceToLight = length(toLight);
@@ -131,11 +129,11 @@ StructuredBuffer<Material> materials : register(t5);
 
 
     //Now, adjust the payload to the new origin and direction:
-    payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed);
+    payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed, 1.0f);
     payload.origin = worldOrigin;
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz *hitColor, RayTCurrent());
-    payload.emission += nDotL * factor *float3(120,120,120) * payload.colorAndDistance.xyz * payload.pdf; //Hardcoded intensity
+    payload.emission += nDotL * factor *float3(300,300,300) * payload.colorAndDistance.xyz /** payload.pdf*/; //Hardcoded intensity
     payload.pdf = max(dot(normal, payload.direction), 0.0);
 }
 

@@ -61,18 +61,25 @@ cbuffer CameraParams : register(b0)
             break;
           }
 
-          // Apply Russian Roulette after a minimum number of bounces
-          if (y > 2) {
-              float continueProbability = 0.3f; // Common choice, tweak based on scene
-              float randomValue = RandomFloat(payload.seed);
+        // Apply Russian Roulette after a minimum number of bounces
+        //______________________________________________________________________________________________________________
+        // Assuming 'throughput' is a float3 representing the accumulated light contribution (RGB)
+        if(y > 2){
+            float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
-              // Terminate the path with a probability of (1 - continueProbability)
-              if (randomValue > continueProbability) {
-                  payload.emission *= continueProbability; // Adjust the PDF for terminated paths
-                  break;
-              }
-              payload.emission *= continueProbability; // Adjust the PDF if the path continues
-          }
+            // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities
+            p = max(p, 0.05f); // Ensure there's at least a 5% chance to continue, adjust as needed
+
+            float randomValue = RandomFloat(payload.seed); // Generate a random value for Russian Roulette
+
+            // Randomly terminate the path with a probability inversely equal to 'p'
+            if (randomValue > p) {
+                break; // Terminate the path
+            }
+            // If the path continues, adjust the throughput to compensate for the paths terminated (removed for now)
+            //payload.emission /= p;
+        }
+        //______________________________________________________________________________________________________________
       }
       accumulation += payload.emission;
   }
