@@ -409,8 +409,8 @@ void Renderer::OnUpdate() {
   m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 1000.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
+                           static_cast<float>(m_time) / 100000000.0f) *
+      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }

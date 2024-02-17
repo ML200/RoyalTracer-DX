@@ -47,11 +47,9 @@ StructuredBuffer<Material> materials : register(t5);
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
                                        Attributes attrib) {
+    //Get information about the surface hit
     uint vertId = 3 * PrimitiveIndex();
     uint materialID = materialIDs[vertId];
-
-    // Modulate the color by the light's influence
-    float3 hitColor = materials[materialID].Kd.xyz;
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
 
@@ -93,9 +91,13 @@ StructuredBuffer<Material> materials : register(t5);
     }
 
     // Transform normal to world space and adjust for ray direction
-    normal = mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz;
+    normal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz);
+    flatNormal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(flatNormal, 0.f)).xyz);
     if (dot(payload.direction, normal) > 0.0f) {
         normal = -normal; // Flip the normal if hitting from behind
+    }
+    if (dot(payload.direction, flatNormal) > 0.0f) {
+        flatNormal = -flatNormal; // Flip the normal if hitting from behind
     }
     //_____________________________________________________________________________________________________________________________________________
 
@@ -115,10 +117,11 @@ StructuredBuffer<Material> materials : register(t5);
 
     //Shadow ray
     RayDesc ray;
-    ray.Origin = worldOrigin;
+    float bias = 0.000001f; // Shadow ray bias value
+    ray.Origin = worldOrigin + bias * flatNormal; // Offset origin along the normal
     ray.Direction = centerLightDir;
-    ray.TMin = 0.0001;
-    ray.TMax = length(toLight) - 0.001f;
+    ray.TMin = bias;
+    ray.TMax = length(toLight) - bias;
     bool hit = true;
     // Initialize the ray payload
     ShadowHitInfo shadowPayload;
@@ -129,12 +132,14 @@ StructuredBuffer<Material> materials : register(t5);
 
 
     //Now, adjust the payload to the new origin and direction:
-    payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed, 1.0f);
-    payload.origin = worldOrigin;
+    payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed);
+    payload.origin = worldOrigin+ bias * normal;
 
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz *hitColor, RayTCurrent());
-    payload.emission += nDotL * factor *float3(300,300,300) * payload.colorAndDistance.xyz /** payload.pdf*/; //Hardcoded intensity
-    payload.pdf = max(dot(normal, payload.direction), 0.0);
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
+    //Direct lighting: (Later, take a random sample from all available point lights
+    float3 direct = float3(200,200,200) * factor * nDotL * payload.colorAndDistance.xyz;
+    payload.emission += direct;
+    //payload.pdf = max(dot(normal, payload.direction), 0.0);
 }
 
 

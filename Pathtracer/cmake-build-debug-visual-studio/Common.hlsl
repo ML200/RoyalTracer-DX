@@ -19,56 +19,42 @@ struct Attributes {
   float2 bary;
 };
 
-// Hash function to scramble the bits of an integer
-uint hash(uint x) {
-    x += (x << 10u);
-    x ^= (x >> 6u);
-    x += (x << 3u);
-    x ^= (x >> 11u);
-    x += (x << 15u);
-    return x;
+uint lcg(inout uint seed) {
+    const uint LCG_A = 1664525u;
+    const uint LCG_C = 1013904223u;
+    seed = (LCG_A * seed + LCG_C);
+    return seed;
 }
 
-// Returns a float in [0, 1)
-float RandomFloat(uint seed) {
-    const uint prime1 = 0x68bc21ebu; // Large prime number
-    const uint prime2 = 0x02e5be93u; // Another large prime number
-
-    uint scrambled = hash(seed * prime1 + prime2);
-    return float(scrambled) * (1.0 / 4294967296.0); // 2^-32
+float RandomFloat(inout uint seed) {
+    return float(lcg(seed)) / float(0xFFFFFFFFu);
 }
 
-float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed, float roughness) {
+float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
+{
     // Generate two random numbers
-    float random1 = RandomFloat(seed);
-    float random2 = RandomFloat(seed);
+    float u1 = RandomFloat(seed);
+    float u2 = RandomFloat(seed);
 
-    float alpha = roughness*roughness;
+    // Convert uniform random numbers to cosine-weighted polar coordinates
+    float r = sqrt(u1);
+    float theta = 2.0 * 3.14159265358979323846 * u2;
 
-    // Adjust theta based on roughness
-    // Roughness = 0 (smooth surface) -> theta is small (tighter cone)
-    // Roughness = 1 (rough surface) -> theta is large (wider cone)
-    float phi = 2.0f * 3.14159265358979323846f * random1;
-    float theta = acos(1.0 - random2 * alpha);
+    // Project polar coordinates to sample on the unit disk
+    float x = r * cos(theta);
+    float y = r * sin(theta);
 
-    // Convert spherical coordinates to Cartesian coordinates on a unit sphere
-    float x = sin(theta) * cos(phi);
-    float y = sin(theta) * sin(phi);
-    float z = cos(theta); // This ensures it's in the upper hemisphere
+    // Project up to hemisphere
+    float z = sqrt(max(0.0f, 1.0f - x*x - y*y));
 
-    float3 sphereDir = float3(x, y, z);
+    // Create a local orthonormal basis centered around the normal
+    float3 h = normal;
+    float3 up = abs(normal.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 right = normalize(cross(up, h));
+    float3 forward = cross(h, right);
 
-    // Create a coordinate system (tangent, bitangent, normal)
-    float3 Nt, Nb;
-    if (abs(normal.x) > abs(normal.z)) {
-        Nt = float3(normal.y, -normal.x, 0.0);
-    } else {
-        Nt = float3(0.0, -normal.z, normal.y);
-    }
-    Nt = normalize(Nt);
-    Nb = cross(normal, Nt);
+    // Convert disk sample to hemisphere sample in the local basis
+    float3 hemisphereSample = x * right + y * forward + z * h;
 
-    // Transform the sphere direction to align with the original normal
-    float3 hemisphereDir = sphereDir.x * Nt + sphereDir.y * Nb + sphereDir.z * normal;
-    return normalize(hemisphereDir);
+    return normalize(hemisphereSample);
 }
