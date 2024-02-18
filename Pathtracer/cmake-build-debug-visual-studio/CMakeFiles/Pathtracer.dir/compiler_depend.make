@@ -675,16 +675,147 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual S
 
 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\chrono"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\yvals_core.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sal.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\concurrencysal.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vadefs.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xkeycheck.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_chrono.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\yvals.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\crtdbg.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_new_debug.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_new.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\crtdefs.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\use_ansi.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ctime"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\time.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wtime.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\limits"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cfloat"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\float.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\climits"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\limits.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cwchar"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdio"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stdio.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstdio.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_stdio_config.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\wchar.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_memcpy_s.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\errno.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_string.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wconio.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wctype.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wdirect.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wio.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_share.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wprocess.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstdlib.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstring.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\sys\stat.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\sys\types.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xtr1common"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin0.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin0.inl.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ratio"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdint"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\stdint.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\type_traits"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstddef"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stddef.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\utility"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\initializer_list"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\concepts"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\compare"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdlib"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\math.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_math.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stdlib.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_malloc.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_search.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xtimec.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\system_error"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_system_error_abi.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cerrno"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\stdexcept"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\exception"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\malloc.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_exception.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\eh.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_terminate.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xstring"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_sanitizer_annotate_container.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iosfwd"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstring"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\string.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_memory.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xmemory"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\new"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xatomic.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xutility"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_iter_core.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\tuple"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xpolymorphic_allocator.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcall_once.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xerrc.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\atomic"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xatomic_wait.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xthreads.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xfilesystem_abi.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_tzdb.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cmath"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\forward_list"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\istream"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ostream"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ios"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocnum"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iterator"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\streambuf"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xiosbase"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\share.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocale"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\memory"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\typeinfo"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_typeinfo.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xfacet"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocinfo"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_xlocinfo_types.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cctype"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\ctype.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\clocale"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\locale.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_filebuf.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_print.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\format"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_format_ucd_tables.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\bit"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_bit_utils.hpp"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\charconv"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xbit_ops.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_ryu.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_ryu_tables.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_tables.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\locale"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocbuf"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocmes"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocmon"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xloctime"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\optional"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xsmf_control.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sstream"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\string"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vector"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iomanip"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\windows.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\winapifamily.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\winpackagefamily.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\sdkddkver.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\excpt.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sal.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\concurrencysal.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vadefs.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\stdarg.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\windef.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\minwindef.h"
@@ -694,18 +825,9 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\driverspecs.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\sdv_driverspecs.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\winnt.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\ctype.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wctype.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\kernelspecs.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\basetsd.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\guiddef.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\string.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_memory.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_memcpy_s.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\errno.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_string.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstring.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\pshpack4.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\poppack.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\pshpack4.h"
@@ -819,12 +941,6 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\pshpack8.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\combaseapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\pshpack8.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stdlib.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_malloc.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_search.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stddef.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstdlib.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\limits.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\wtypesbase.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\guiddef.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\unknwnbase.h"
@@ -863,10 +979,7 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\d3d12shader.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMath.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\math.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_math.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\float.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin0.inl.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\setjmp.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\immintrin.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\wmmintrin.h"
@@ -877,69 +990,14 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visu
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\emmintrin.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xmmintrin.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\mmintrin.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\malloc.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\zmmintrin.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ammintrin.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\stdint.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMathConvert.inl"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMathVector.inl"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMathMatrix.inl"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMathMisc.inl"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\d3dx12.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\string"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\yvals_core.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xkeycheck.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xstring"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_sanitizer_annotate_container.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iosfwd"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\yvals.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\crtdbg.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_new_debug.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_new.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\crtdefs.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\use_ansi.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdio"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\stdio.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wstdio.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_stdio_config.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstring"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cwchar"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\wchar.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wconio.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wdirect.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wio.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_share.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wprocess.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wtime.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\sys\stat.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\sys\types.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xtr1common"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xmemory"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdint"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstdlib"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\math.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\limits"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cfloat"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\climits"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin0.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\new"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\exception"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\type_traits"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cstddef"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_exception.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\eh.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_terminate.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xatomic.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xutility"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_iter_core.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\utility"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\initializer_list"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\concepts"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\compare"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\tuple"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xpolymorphic_allocator.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cctype"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\winrt\wrl.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\winrt\wrl\client.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\winrt\weakreference.h"
@@ -977,66 +1035,16 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\Gi
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\dxcapi.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vector"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_bit_utils.hpp"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Components\Vertex.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\functional"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\typeinfo"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime_typeinfo.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\unordered_map"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xhash"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cmath"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\list"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xbit_ops.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xnode_handle.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXRHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\fstream"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_filebuf.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\streambuf"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xiosbase"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\share.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\system_error"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_system_error_abi.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cerrno"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\stdexcept"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcall_once.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xerrc.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\atomic"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xatomic_wait.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xthreads.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xtimec.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ctime"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\time.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocale"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\memory"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xfacet"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocinfo"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_xlocinfo_types.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\clocale"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\locale.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\istream"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ostream"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ios"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocnum"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iterator"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_print.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xfilesystem_abi.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\format"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_format_ucd_tables.hpp"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\bit"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\charconv"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_ryu.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_ryu_tables.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xcharconv_tables.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\locale"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocbuf"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocmes"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xlocmon"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xloctime"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sstream"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.h
@@ -3703,6 +3711,8 @@ CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj: "C:\Program Files (x86)\Windows Ki
 
 
 
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ratio":
+
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\basetsd.h":
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\debugapi.h":
@@ -4099,6 +4109,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\msxml.h":
 
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_tzdb.hpp":
+
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\propidl.h":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\matrix_transform.inl:
@@ -4144,6 +4156,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\um\DirectXMath.h":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_geometric.inl:
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\forward_list":
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\math.h":
 
@@ -4481,11 +4495,23 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\vec
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\list":
 
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\chrono":
+
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_vec1.hpp:
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_chrono.hpp":
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\optional":
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xsmf_control.h":
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sstream":
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iomanip":
+
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXRHelper.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\fstream":
-
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\sstream":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.h:
 
@@ -4570,8 +4596,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\..\geometric.hpp:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_geometric.hpp:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_vec1.hpp:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_vec1.inl:
 

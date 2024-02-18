@@ -19,7 +19,7 @@ struct Material{
  XMFLOAT2 aniso_anisor = {0,0};
 
  //ADD MAP IDs LATER
- Material(XMFLOAT4 kd):Kd(kd){}
+ Material(XMFLOAT4 kd, XMFLOAT4 pr_pm_ps_pc):Kd(kd), Pr_Pm_Ps_Pc(pr_pm_ps_pc){}
 };
 
 struct Vertex {

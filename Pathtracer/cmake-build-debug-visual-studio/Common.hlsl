@@ -1,3 +1,5 @@
+#define PI 3.1415f
+
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
 // Note that the payload should be kept as small as possible,
@@ -11,6 +13,15 @@ struct HitInfo {
   float util; //IMPORTANT: util info: miss flag
   uint seed;
   float pdf;
+};
+
+struct Material
+{
+     float4 Kd;
+     float3 Ks;
+     float3 Ke;
+     float4 Pr_Pm_Ps_Pc;
+     float2 aniso_anisor;
 };
 
 // Attributes output by the raytracing when hitting a surface,
@@ -57,4 +68,75 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
     float3 hemisphereSample = x * right + y * forward + z * h;
 
     return normalize(hemisphereSample);
+}
+
+float3 SampleCone(float3 normal, float3 target, float roughness, inout uint seed, out float pdf) {
+    // Convert roughness to a cosine of the maximum angle for the cone
+    float cosMaxAngle = sqrt(1.0 - roughness * roughness);
+
+    // Generate two random numbers for sampling
+    float u1 = RandomFloat(seed);
+    float u2 = RandomFloat(seed);
+
+    // Sample within the cone
+    float cosTheta = (1.0 - u1) + u1 * cosMaxAngle;
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float phi = 2.0 * PI * u2;
+
+    // Convert to Cartesian coordinates
+    float x = sinTheta * cos(phi);
+    float y = sinTheta * sin(phi);
+    float z = cosTheta;
+
+    // Create a local orthonormal basis around the target vector
+    float3 h = normalize(target);
+    float3 up = abs(h.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 right = normalize(cross(up, h));
+    float3 forward = cross(h, right);
+
+    // Convert the sampled direction from local basis to world space
+    float3 sampleVec = x * right + y * forward + z * h;
+
+    // If the vector is below the surface, mirror it
+    if (dot(sampleVec, normal) < 0.0) {
+        sampleVec = -sampleVec;
+    }
+
+    // PDF calculation for the sampled direction
+    if (roughness == 0.0) {
+        pdf = 1.0;
+    } else {
+        pdf = (cosTheta / PI) / (1.0 - cosMaxAngle);
+    }
+
+    return normalize(sampleVec);
+}
+
+float3 Reflect(float3 incident, float3 normal)
+{
+    // Ensure normal is normalized
+    normal = normalize(normal);
+
+    // Calculate the reflection vector
+    float3 reflected = incident - 2.0 * dot(incident, normal) * normal;
+
+    return reflected;
+}
+
+float3 getPerpendicularVector(float3 v)
+{
+    // Find the smallest component of the input vector
+    float minComponent = min(min(v.x, v.y), v.z);
+
+    // Construct a vector that is not parallel to the input vector
+    float3 nonParallelVec;
+    if (minComponent == v.x)
+        nonParallelVec = float3(1.0f, 0.0f, 0.0f);  // Input vector is mostly aligned with X-axis
+    else if (minComponent == v.y)
+        nonParallelVec = float3(0.0f, 1.0f, 0.0f);  // Input vector is mostly aligned with Y-axis
+    else
+        nonParallelVec = float3(0.0f, 0.0f, 1.0f);  // Input vector is mostly aligned with Z-axis
+
+    // Find a perpendicular vector using cross product
+    return cross(v, nonParallelVec);
 }

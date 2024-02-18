@@ -37,7 +37,8 @@ public:
         // Process materials
         for (const auto& mat : materials) {
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f);
-            mats->push_back(Material(diffuse));
+            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic,0,0);
+            mats->push_back(Material(diffuse, Pr_Pm_Ps_Pc));
         }
 
         std::unordered_map<Vertex, uint32_t> uniqueVertices;

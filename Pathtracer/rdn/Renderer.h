@@ -202,6 +202,11 @@ private:
     XMMATRIX objectToWorld;
     XMMATRIX objectToWorldNormal;
   };
+    //Frametime
+    struct FrameData
+    {
+        float Time;
+    };
 
   ComPtr<ID3D12Resource> m_instanceProperties;
   void CreateInstancePropertiesBuffer();

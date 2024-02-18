@@ -13,6 +13,7 @@ cbuffer CameraParams : register(b0)
   float4x4 projection;
   float4x4 viewI;
   float4x4 projectionI;
+  float time;
 }
 
 
@@ -43,15 +44,15 @@ cbuffer CameraParams : register(b0)
       payload.emission = float3(0, 0, 0);
       payload.util = 0;
       payload.origin = init_orig;
-      payload.seed = launchIndex.x * 73856093u ^ launchIndex.y * 19349663u ^ x * 83492791u;;
+      payload.seed = launchIndex.x * 73856093u ^ launchIndex.y * 19349663u ^ x * 83492791u ^ uint(time) * 1859303u;
       payload.direction = init_dir;
       payload.pdf = 1.0f;
 
-      for(int y = 0; y < 4; y++){
+      for(int y = 0; y < 6; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
-          ray.TMin = 0.00001;
+          ray.TMin = 0.0001;
           ray.TMax = 10000;
           // Trace the ray
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
@@ -68,7 +69,7 @@ cbuffer CameraParams : register(b0)
             float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
             // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities
-            p = max(p, 0.05f); // Ensure there's at least a 5% chance to continue, adjust as needed
+            p = max(p, 0.3f); // Ensure there's at least a 5% chance to continue, adjust as needed
 
             float randomValue = RandomFloat(payload.seed); // Generate a random value for Russian Roulette
 
@@ -77,7 +78,7 @@ cbuffer CameraParams : register(b0)
                 break; // Terminate the path
             }
             // If the path continues, adjust the throughput to compensate for the paths terminated (removed for now)
-            //payload.colorAndDistance.xyz /= p;
+            payload.colorAndDistance.xyz /= p;
         }
         //______________________________________________________________________________________________________________
       }

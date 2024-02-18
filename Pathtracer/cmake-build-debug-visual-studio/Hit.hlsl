@@ -1,4 +1,4 @@
-#include "Common.hlsl"
+#include "BRDF.hlsl"
 
 // #DXR Extra - Another ray type
 struct ShadowHitInfo {
@@ -10,15 +10,6 @@ struct InstanceProperties
   float4x4 objectToWorld;
   // # DXR Extra - Simple Lighting
   float4x4 objectToWorldNormal;
-};
-
-struct Material
-{
-     float4 Kd;
-     float3 Ks;
-     float3 Ke;
-     float4 Pr_Pm_Ps_Pc;
-     float2 aniso_anisor;
 };
 
 
@@ -117,7 +108,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     //Shadow ray
     RayDesc ray;
-    float bias = 0.000001f; // Shadow ray bias value
+    float bias = 0.00001f; // Shadow ray bias value
     ray.Origin = worldOrigin + bias * flatNormal; // Offset origin along the normal
     ray.Direction = centerLightDir;
     ray.TMin = bias;
@@ -130,16 +121,19 @@ StructuredBuffer<Material> materials : register(t5);
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
     float factor = shadowPayload.isHit ? 0.0 : 1.0;
 
+    float pdf;
+    float3 brdf = evaluateBRDF(materials[materialID], WorldRayDirection(), normal, centerLightDir, payload.direction, pdf, payload.seed);
+
 
     //Now, adjust the payload to the new origin and direction:
-    payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed);
+    //payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed);
     payload.origin = worldOrigin+ bias * normal;
 
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
     float3 direct = float3(200,200,200) * factor * nDotL * payload.colorAndDistance.xyz;
     payload.emission += direct;
-    //payload.pdf = max(dot(normal, payload.direction), 0.0);
+    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz * pdf, RayTCurrent());
 }
 
 

@@ -8,6 +8,7 @@
 // PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
 //
 //*********************************************************
+#include <chrono>
 #include "stdafx.h"
 
 #include "Renderer.h"
@@ -403,14 +404,15 @@ void Renderer::OnUpdate() {
   // #DXR Extra: Perspective Camera
   UpdateCameraBuffer();
 
+
   // #DXR Extra - Refitting
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 100000000.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000000.f), 0.f);
+                           static_cast<float>(m_time) / 1000.0f) *
+      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -1079,6 +1081,8 @@ void Renderer::CreateShaderResourceHeap() {
     materialsSrvDesc.Buffer.StructureByteStride = sizeof(Material); // Assuming Material is your material struct
     materialsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     m_device->CreateShaderResourceView(m_materialBuffer.Get(), &materialsSrvDesc, srvHandle);
+
+
 }
 
 //-----------------------------------------------------------------------------
@@ -1167,7 +1171,7 @@ void Renderer::CreateShaderBindingTable() {
 // #DXR Extra: Perspective Camera
 void Renderer::CreateCameraBuffer() {
   uint32_t nbMatrix = 4; // view, perspective, viewInv, perspectiveInv
-  m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX);
+  m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX) + sizeof(float)*64;
 
   // Create the constant buffer for all matrices
   m_cameraBuffer = nv_helpers_dx12::CreateBuffer(
@@ -1191,32 +1195,37 @@ void Renderer::CreateCameraBuffer() {
 // Create and copies the viewmodel and perspective matrices of the camera
 //
 void Renderer::UpdateCameraBuffer() {
-  std::vector<XMMATRIX> matrices(4);
+    std::vector<XMMATRIX> matrices(4);
 
-  // Initialize the view matrix, ideally this should be based on user
-  // interactions The lookat and perspective matrices used for rasterization are
-  // defined to transform world-space vertices into a [0,1]x[0,1]x[0,1] camera
-  // space
-  const glm::mat4 &mat = nv_helpers_dx12::CameraManip.getMatrix();
-  memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(mat), 16 * sizeof(float));
+    // Initialize the view matrix
+    const glm::mat4 &mat = nv_helpers_dx12::CameraManip.getMatrix();
+    memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(mat), 16 * sizeof(float));
 
-  float fovAngleY = 45.0f * XM_PI / 180.0f;
-  matrices[1] =
-      XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
+    float fovAngleY = 45.0f * XM_PI / 180.0f;
+    matrices[1] =
+            XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
 
-  // Raytracing has to do the contrary of rasterization: rays are defined in
-  // camera space, and are transformed into world space. To do this, we need to
-  // store the inverse matrices as well.
-  XMVECTOR det;
-  matrices[2] = XMMatrixInverse(&det, matrices[0]);
-  matrices[3] = XMMatrixInverse(&det, matrices[1]);
+    XMVECTOR det;
+    matrices[2] = XMMatrixInverse(&det, matrices[0]);
+    matrices[3] = XMMatrixInverse(&det, matrices[1]);
 
-  // Copy the matrix contents
-  uint8_t *pData;
-  ThrowIfFailed(m_cameraBuffer->Map(0, nullptr, (void **)&pData));
-  memcpy(pData, matrices.data(), m_cameraBufferSize);
-  m_cameraBuffer->Unmap(0, nullptr);
+    // Copy the matrix contents
+    uint8_t *pData;
+    ThrowIfFailed(m_cameraBuffer->Map(0, nullptr, (void **)&pData));
+    memcpy(pData, matrices.data(), m_cameraBufferSize - sizeof(float)); // Adjust for the size of the float
+
+    // Add the current system time as float
+    auto now = std::chrono::system_clock::now();
+    auto duration = now.time_since_epoch();
+    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+    float currentTime = static_cast<float>(millis % 10); // Convert milliseconds to seconds as float
+
+    // Copy the current time into the buffer, right after the matrices
+    memcpy(pData + m_cameraBufferSize - sizeof(float)*64, &currentTime, sizeof(float));
+
+    m_cameraBuffer->Unmap(0, nullptr);
 }
+
 
 //--------------------------------------------------------------------------------------------------
 //
