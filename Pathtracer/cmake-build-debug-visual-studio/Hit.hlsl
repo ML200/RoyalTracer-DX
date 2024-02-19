@@ -122,18 +122,17 @@ StructuredBuffer<Material> materials : register(t5);
     float factor = shadowPayload.isHit ? 0.0 : 1.0;
 
     float pdf;
-    float3 brdf = evaluateBRDF(materials[materialID], WorldRayDirection(), normal, centerLightDir, payload.direction, pdf, payload.seed);
+    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal, centerLightDir, payload.direction, pdf, payload.seed);
 
 
     //Now, adjust the payload to the new origin and direction:
-    //payload.direction = RandomUnitVectorInHemisphere(normal,payload.seed);
     payload.origin = worldOrigin+ bias * normal;
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
     float3 direct = float3(200,200,200) * factor * nDotL * payload.colorAndDistance.xyz;
     payload.emission += direct;
-    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz * pdf, RayTCurrent());
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * pdf, RayTCurrent());
 }
 
 

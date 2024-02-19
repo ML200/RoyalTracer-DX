@@ -1218,7 +1218,7 @@ void Renderer::UpdateCameraBuffer() {
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    float currentTime = static_cast<float>(millis % 10); // Convert milliseconds to seconds as float
+    float currentTime = static_cast<float>(millis % 100); // Convert milliseconds to seconds as float
 
     // Copy the current time into the buffer, right after the matrices
     memcpy(pData + m_cameraBufferSize - sizeof(float)*64, &currentTime, sizeof(float));

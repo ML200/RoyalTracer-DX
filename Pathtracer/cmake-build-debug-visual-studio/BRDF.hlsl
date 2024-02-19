@@ -29,14 +29,14 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 light,
     else{
         //Calculate the fresnel term based on mat.Ni, incidence and normal
         //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
-        float f = SchlickFresnel(1.45f, -incidence, normal);
+        float f = SchlickFresnel(1.0f, -incidence, normal) * (1-mat.Pr_Pm_Ps_Pc.x);
         //Get a random number
         float randomCheck = RandomFloat(seed);
         //Ckeck if the ray is diffuse reflected or through ggx:
         if(randomCheck < f){
             //Get the BRDF based on the materials properties
             sample =SampleCone(normal,Reflect(incidence,normal), mat.Pr_Pm_Ps_Pc.x,seed, pdf);
-            return 1.0f;
+            return mat.Kd;
         }
         else{
             //Diffuse reflection using lambertian
