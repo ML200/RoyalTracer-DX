@@ -41,6 +41,36 @@ float RandomFloat(inout uint seed) {
     return float(lcg(seed)) / float(0xFFFFFFFFu);
 }
 
+float GGXDistribution(float alpha, float NoH) {
+    float alphaSquared = alpha * alpha;
+    float denom = NoH * NoH * (alphaSquared - 1.0f) + 1.0f;
+    return alphaSquared / (PI * denom * denom);
+}
+float GeometrySchlickGGX(float NoV, float k) {
+    float denom = NoV * (1.0f - k) + k;
+    return NoV / denom;
+}
+
+float GeometrySmith(float NoV, float NoL, float alpha) {
+    float k = alpha * alpha / 2.0f;
+    float ggx1 = GeometrySchlickGGX(NoV, k);
+    float ggx2 = GeometrySchlickGGX(NoL, k);
+    return ggx1 * ggx2;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0) {
+    return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
+}
+
+float CalculateF0Scalar(float refractiveIndex) {
+    return pow((refractiveIndex - 1.0f) / (refractiveIndex + 1.0f), 2.0f);
+}
+
+float3 CalculateF0Vector(float refractiveIndex) {
+    float F0Scalar = CalculateF0Scalar(refractiveIndex);
+    return float3(F0Scalar, F0Scalar, F0Scalar); // Uniform reflectance across RGB
+}
+
 float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
 {
     // Generate two random numbers
@@ -70,47 +100,45 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
     return normalize(hemisphereSample);
 }
 
-float3 SampleCone(float3 normal, float3 target, float roughness, inout uint seed, out float pdf) {
-    // Convert roughness to a cosine of the maximum angle for the cone
-    float cosMaxAngle = sqrt(1.0 - roughness * roughness);
+float3 SampleGGXVNDF(float3 N, float3 V, float alpha, inout uint seed, out float pdf) {
+    float alphaSquared = alpha * alpha;
 
     // Generate two random numbers for sampling
     float u1 = RandomFloat(seed);
     float u2 = RandomFloat(seed);
 
-    // Sample within the cone
-    float cosTheta = (1.0 - u1) + u1 * cosMaxAngle;
-    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    // Sample theta and phi angles for H vector in spherical coordinates
+    float theta = atan(alphaSquared * sqrt(u1) / sqrt(1.0 - u1));
     float phi = 2.0 * PI * u2;
 
-    // Convert to Cartesian coordinates
-    float x = sinTheta * cos(phi);
-    float y = sinTheta * sin(phi);
-    float z = cosTheta;
+    // Convert spherical coordinates to Cartesian coordinates for H
+    float x = sin(theta) * cos(phi);
+    float y = sin(theta) * sin(phi);
+    float z = cos(theta);
 
-    // Create a local orthonormal basis around the target vector
-    float3 h = normalize(target);
-    float3 up = abs(h.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
-    float3 right = normalize(cross(up, h));
-    float3 forward = cross(h, right);
+    // Construct a local orthonormal basis (TBN matrix) around N
+    float3 up = abs(N.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 right = normalize(cross(up, N));
+    float3 forward = cross(N, right);
 
-    // Convert the sampled direction from local basis to world space
-    float3 sampleVec = x * right + y * forward + z * h;
+    // Transform H from local space to world space
+    float3 H = normalize(x * right + y * forward + z * N);
 
-    // If the vector is below the surface, mirror it
-    if (dot(sampleVec, normal) < 0.0) {
-        sampleVec = -sampleVec;
-    }
+    // Calculate the reflection direction L based on H and V
+    float3 L = 2.0f * dot(V, H) * H - V;
 
-    // PDF calculation for the sampled direction
-    if (roughness == 0.0) {
-        pdf = 1.0;
-    } else {
-        pdf = (cosTheta / PI) / (1.0 - cosMaxAngle);
-    }
+    // Calculate PDF for GGX distribution using H
+    float NoH = max(dot(N, H), 0.0f);
+    float NoV = max(dot(N, V), 0.0f);
+    float VoH = max(dot(V, H), 0.0f);
 
-    return normalize(sampleVec);
+    // PDF calculation adjusted for clarity and correctness
+    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH);
+
+    // Return the sampled vector L and the PDF by reference
+    return normalize(L);
 }
+
 
 float3 Reflect(float3 incident, float3 normal)
 {

@@ -7,6 +7,6 @@
 
   float ramp = launchIndex.y / dims.y;
   payload.colorAndDistance *= float4(1.0f, 1.0f, 1.0f /*- 0.1f * ramp*/, -1.0f); //background color
-  payload.emission += float3(0.3f,0.3f,0.3f) * payload.colorAndDistance.xyz;
+  payload.emission += float3(.3f,.3f,.3f) * payload.colorAndDistance.xyz;
   payload.util = 1.0f;
 }
