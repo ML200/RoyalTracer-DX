@@ -102,9 +102,6 @@ StructuredBuffer<Material> materials : register(t5);
     // Inverse Square Law for Attenuation
     float attenuation = 1.0 / (distanceToLight * distanceToLight);
 
-    float nDotL = max(0.f, dot(normal, centerLightDir));
-    nDotL *= attenuation;
-
 
     //Shadow ray
     RayDesc ray;
@@ -130,9 +127,8 @@ StructuredBuffer<Material> materials : register(t5);
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
-    float3 direct = float3(200,200,200) * payload.colorAndDistance.xyz * nDotL * brdf;//*factor;
+    float3 direct = float3(200,200,200) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) *factor * brdf;
     payload.emission += direct;
-    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
 }
 
 

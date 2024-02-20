@@ -15,23 +15,32 @@ float SchlickFresnel(float Ni, float3 incidence, float3 normal)
 }
 
 float3 BRDF_Specular_GGX(float3 N, float3 V, float3 L, float3 F0, float alpha) {
-    float3 H = normalize(V + L); // Halfway vector
-    float NoV = max(dot(N, V), 0.0f); // Normal and View vector dot product
-    float NoL = max(dot(N, L), 0.0f); // Normal and Light vector dot product
-    float NoH = max(dot(N, H), 0.0f); // Normal and Halfway vector dot product
-    float VoH = max(dot(V, H), 0.0f); // View and Halfway vector dot product
+    // Avoid zero-length vectors for V + L
+    float3 V_plus_L = V + L;
+    if (length(V_plus_L) < 1e-4f) {
+        return float3(0.0f, 0.0f, 0.0f); // Safety check for zero-length vectors
+    }
+    float3 H = normalize(V_plus_L);
 
-    // GGX Distribution
+    // Additional safety checks for grazing angles
+    float NoV = max(dot(N, V), 1e-4f);
+    float NoL = max(dot(N, L), 1e-4f);
+    float NoH = max(dot(N, H), 1e-4f);
+    float VoH = max(dot(V, H), 1e-4f);
+
+    // Use safe GGX Distribution, Geometry, and Fresnel functions
     float D = GGXDistribution(alpha, NoH);
-
-    // Geometry function
     float G = GeometrySmith(NoV, NoL, alpha);
-
-    // Fresnel function using Schlick's approximation
     float3 F = FresnelSchlick(VoH, F0);
 
-    // Specular BRDF
-    float3 specular = (D * G * F) / (4.0f * NoV * NoL);
+    // Ensure denominator is not zero
+    float denom = max(4.0f * NoV * NoL, 1e-4f);
+    float3 specular = (D * G * F) / denom;
+
+    // Check for NaNs again if necessary
+    if (any(isnan(specular))) {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
 
     return specular;
 }
@@ -45,12 +54,12 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 light,
     {
         //Get the BRDF based on the materials properties
         sample =SampleGGXVNDF(normal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
-        return BRDF_Specular_GGX(normal, -incidence, light, CalculateF0Vector(1.45f),mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
+        return BRDF_Specular_GGX(normal, -incidence, light, mat.Kd,mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
     }
     else{
         //Calculate the fresnel term based on mat.Ni, incidence and normal
         //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
-        float f = SchlickFresnel(1.0f, -incidence, normal);
+        float f = SchlickFresnel(1.45f, -incidence, normal);
         //Get a random number
         float randomCheck = RandomFloat(seed);
         //Ckeck if the ray is diffuse reflected or through ggx:
@@ -61,7 +70,7 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 light,
         }
         else{
             //Diffuse reflection using lambertian
-            sample = RandomUnitVectorInHemisphere(normal,seed); //already implemented
+            sample = RandomUnitVectorInHemisphere(normal,seed);
             pdf = 1.0f;
             return float3(1,1,1);
         }

@@ -109,8 +109,8 @@ events:
     checks:
       - "Detecting C compiler ABI info"
     directories:
-      source: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-nez5gt"
-      binary: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-nez5gt"
+      source: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-e7ytif"
+      binary: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-e7ytif"
     cmakeVariables:
       CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
       CMAKE_C_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
@@ -122,10 +122,10 @@ events:
       variable: "CMAKE_C_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-nez5gt
+        Change Dir: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-e7ytif
         
-        Run Build Command(s):C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe -v cmTC_ad789 && [1/2] C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\cl.exe  /nologo   /DWIN32 /D_WINDOWS  /Ob0 /Od /RTC1 -MDd -Zi /showIncludes /FoCMakeFiles\\cmTC_ad789.dir\\CMakeCCompilerABI.c.obj /FdCMakeFiles\\cmTC_ad789.dir\\ /FS -c "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\share\\cmake-3.26\\Modules\\CMakeCCompilerABI.c"
-        [2/2] cmd.exe /C "cd . && "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_ad789.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\mt.exe --manifests  -- C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\link.exe /nologo CMakeFiles\\cmTC_ad789.dir\\CMakeCCompilerABI.c.obj  /out:cmTC_ad789.exe /implib:cmTC_ad789.lib /pdb:cmTC_ad789.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cmd.exe /C "cd /D C:\\Users\\m\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-nez5gt && C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.vcpkg-clion/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-nez5gt/cmTC_ad789.exe -installedDir C:/Users/m/.vcpkg-clion/vcpkg/installed/x64-windows/debug/bin -OutVariable out""
+        Run Build Command(s):C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe -v cmTC_64c91 && [1/2] C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\cl.exe  /nologo   /DWIN32 /D_WINDOWS  /Ob0 /Od /RTC1 -MDd -Zi /showIncludes /FoCMakeFiles\\cmTC_64c91.dir\\CMakeCCompilerABI.c.obj /FdCMakeFiles\\cmTC_64c91.dir\\ /FS -c "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\share\\cmake-3.26\\Modules\\CMakeCCompilerABI.c"
+        [2/2] cmd.exe /C "cd . && "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_64c91.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\mt.exe --manifests  -- C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\link.exe /nologo CMakeFiles\\cmTC_64c91.dir\\CMakeCCompilerABI.c.obj  /out:cmTC_64c91.exe /implib:cmTC_64c91.lib /pdb:cmTC_64c91.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cmd.exe /C "cd /D C:\\Users\\m\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-e7ytif && C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.vcpkg-clion/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-e7ytif/cmTC_64c91.exe -installedDir C:/Users/m/.vcpkg-clion/vcpkg/installed/x64-windows/debug/bin -OutVariable out""
         
       exitCode: 0
   -
@@ -137,8 +137,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ysg4ts"
-      binary: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ysg4ts"
+      source: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ks0em8"
+      binary: "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ks0em8"
     cmakeVariables:
       CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /EHsc"
       CMAKE_CXX_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
@@ -150,10 +150,10 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ysg4ts
+        Change Dir: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ks0em8
         
-        Run Build Command(s):C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe -v cmTC_f989c && [1/2] C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP   /DWIN32 /D_WINDOWS /EHsc  /Ob0 /Od /RTC1 -MDd -Zi /showIncludes /FoCMakeFiles\\cmTC_f989c.dir\\CMakeCXXCompilerABI.cpp.obj /FdCMakeFiles\\cmTC_f989c.dir\\ /FS -c "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\share\\cmake-3.26\\Modules\\CMakeCXXCompilerABI.cpp"
-        [2/2] cmd.exe /C "cd . && "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_f989c.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\mt.exe --manifests  -- C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\link.exe /nologo CMakeFiles\\cmTC_f989c.dir\\CMakeCXXCompilerABI.cpp.obj  /out:cmTC_f989c.exe /implib:cmTC_f989c.lib /pdb:cmTC_f989c.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cmd.exe /C "cd /D C:\\Users\\m\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-ysg4ts && C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.vcpkg-clion/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ysg4ts/cmTC_f989c.exe -installedDir C:/Users/m/.vcpkg-clion/vcpkg/installed/x64-windows/debug/bin -OutVariable out""
+        Run Build Command(s):C:/Program Files/JetBrains/CLion 2023.2.2/bin/ninja/win/x64/ninja.exe -v cmTC_b98fa && [1/2] C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP   /DWIN32 /D_WINDOWS /EHsc  /Ob0 /Od /RTC1 -MDd -Zi /showIncludes /FoCMakeFiles\\cmTC_b98fa.dir\\CMakeCXXCompilerABI.cpp.obj /FdCMakeFiles\\cmTC_b98fa.dir\\ /FS -c "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\share\\cmake-3.26\\Modules\\CMakeCXXCompilerABI.cpp"
+        [2/2] cmd.exe /C "cd . && "C:\\Program Files\\JetBrains\\CLion 2023.2.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_b98fa.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100183~1.0\\x64\\mt.exe --manifests  -- C:\\PROGRA~1\\MIB055~1\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1438~1.331\\bin\\Hostx64\\x64\\link.exe /nologo CMakeFiles\\cmTC_b98fa.dir\\CMakeCXXCompilerABI.cpp.obj  /out:cmTC_b98fa.exe /implib:cmTC_b98fa.lib /pdb:cmTC_b98fa.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cmd.exe /C "cd /D C:\\Users\\m\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-ks0em8 && C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.vcpkg-clion/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-ks0em8/cmTC_b98fa.exe -installedDir C:/Users/m/.vcpkg-clion/vcpkg/installed/x64-windows/debug/bin -OutVariable out""
         
       exitCode: 0
 ...

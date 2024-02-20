@@ -43,7 +43,9 @@ float RandomFloat(inout uint seed) {
 
 float GGXDistribution(float alpha, float NoH) {
     float alphaSquared = alpha * alpha;
-    float denom = NoH * NoH * (alphaSquared - 1.0f) + 1.0f;
+    float NoHSquared = NoH * NoH;
+    float denom = NoHSquared * (alphaSquared - 1.0f) + 1.0f; // Can approach zero
+    denom = max(denom, 1e-4f); // Safety check against division by zero
     return alphaSquared / (PI * denom * denom);
 }
 float GeometrySchlickGGX(float NoV, float k) {
@@ -53,12 +55,16 @@ float GeometrySchlickGGX(float NoV, float k) {
 
 float GeometrySmith(float NoV, float NoL, float alpha) {
     float k = alpha * alpha / 2.0f;
+    // Ensure NoV and NoL are not zero to avoid division by zero in GeometrySchlickGGX
+    NoV = max(NoV, 1e-4f);
+    NoL = max(NoL, 1e-4f);
     float ggx1 = GeometrySchlickGGX(NoV, k);
     float ggx2 = GeometrySchlickGGX(NoL, k);
     return ggx1 * ggx2;
 }
 
 float3 FresnelSchlick(float cosTheta, float3 F0) {
+    cosTheta = clamp(cosTheta, 1e-4f, 1.0f); // Clamp to avoid pow with negative numbers
     return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
 }
 
@@ -127,13 +133,19 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, inout uint seed, out float
     // Calculate the reflection direction L based on H and V
     float3 L = 2.0f * dot(V, H) * H - V;
 
+    // Check if L is below the surface; if so, reflect it above the surface
+    if (dot(N, L) < 0.0) {
+        L = -L;
+    }
+
     // Calculate PDF for GGX distribution using H
-    float NoH = max(dot(N, H), 0.0f);
-    float NoV = max(dot(N, V), 0.0f);
-    float VoH = max(dot(V, H), 0.0f);
+    float NoH = normalize(max(dot(N, H), 0.0f));
+    float NoV = normalize(max(dot(N, V), 0.0f));
+    float VoH = normalize(max(dot(V, H), 0.0f));
+    float HoL = normalize(max(dot(H,L),0.0f));
 
     // PDF calculation adjusted for clarity and correctness
-    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH);
+    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH * HoL);
 
     // Return the sampled vector L and the PDF by reference
     return normalize(L);
