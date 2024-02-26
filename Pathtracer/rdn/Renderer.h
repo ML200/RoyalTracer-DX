@@ -189,6 +189,19 @@ private:
   UINT m_mengerIndexCount;
   UINT m_mengerVertexCount;
 
+  //Support for several objects (instanced optionally)
+  //____________________________________________________________________________________________________________________
+  std::vector<ComPtr<ID3D12Resource>> m_VB;
+  std::vector<ComPtr<ID3D12Resource>> m_IB;
+  std::vector<D3D12_VERTEX_BUFFER_VIEW> m_VBView;
+  std::vector<D3D12_INDEX_BUFFER_VIEW> m_IBView;
+  std::vector<ComPtr<ID3D12Resource>> m_material;
+  std::vector<ComPtr<ID3D12Resource>> m_materialID;
+  std::vector<UINT> m_IndexCount;
+  std::vector<UINT> m_VertexCount;
+  //____________________________________________________________________________________________________________________
+
+
   // #DXR Extra - Another ray type
   ComPtr<IDxcBlob> m_shadowLibrary;
   ComPtr<ID3D12RootSignature> m_shadowSignature;

@@ -53,7 +53,7 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNo
     if(mat.Pr_Pm_Ps_Pc.y > 0.5f) //Normally only 0 or 1
     {
         //Get the BRDF based on the materials properties
-        sample =SampleGGXVNDF(flatNormal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+        sample =SampleGGXVNDF(normal,flatNormal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
         return BRDF_Specular_GGX(normal, -incidence, light, mat.Kd,mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
     }
     else{
@@ -65,12 +65,12 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNo
         //Ckeck if the ray is diffuse reflected or through ggx:
         if(randomCheck < f){
             //Get the BRDF based on the materials properties
-            sample =SampleGGXVNDF(flatNormal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+            sample =SampleGGXVNDF(normal, flatNormal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
             return BRDF_Specular_GGX(normal, -incidence, light, CalculateF0Vector(1.0f),mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
         }
         else{
             //Diffuse reflection using lambertian
-            sample = RandomUnitVectorInHemisphere(flatNormal,seed);
+            sample = RandomUnitVectorInHemisphere(normal,seed);
             pdf = 1.0f;
             return float3(1,1,1);
         }

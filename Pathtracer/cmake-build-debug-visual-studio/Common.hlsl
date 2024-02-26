@@ -106,7 +106,7 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
     return normalize(hemisphereSample);
 }
 
-float3 SampleGGXVNDF(float3 N, float3 V, float alpha, inout uint seed, out float pdf) {
+float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout uint seed, out float pdf) {
     float alphaSquared = alpha * alpha;
 
     // Generate two random numbers for sampling
@@ -134,7 +134,7 @@ float3 SampleGGXVNDF(float3 N, float3 V, float alpha, inout uint seed, out float
     float3 L = 2.0f * dot(V, H) * H - V;
 
     // Check if L is below the surface; if so, reflect it above the surface
-    if (dot(N, L) < 0.0) {
+    if (dot(flatNormal, L) < 0.0) {
         L = -L;
     }
 

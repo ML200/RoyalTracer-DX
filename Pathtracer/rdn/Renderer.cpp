@@ -344,11 +344,11 @@ void Renderer::LoadAssets() {
     m_vertexBufferView.SizeInBytes = vertexBufferSize;
 
     // #DXR Extra: Indexed Geometry
-    //CreateMengerSpongeVB("A8.obj");
-    CreateMengerSpongeVB("monkey.obj");
+    CreateMengerSpongeVB("A8.obj");
+    //CreateMengerSpongeVB("monkey.obj");
     //----------------------------------------------------------------------------------------------
     // Indices
-    std::vector<UINT> indices = {0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2};
+    /*std::vector<UINT> indices = {0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2};
     const UINT indexBufferSize =
         static_cast<UINT>(indices.size()) * sizeof(UINT);
 
@@ -371,7 +371,7 @@ void Renderer::LoadAssets() {
     // Initialize the index buffer view.
     m_indexBufferView.BufferLocation = m_indexBuffer->GetGPUVirtualAddress();
     m_indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    m_indexBufferView.SizeInBytes = indexBufferSize;
+    m_indexBufferView.SizeInBytes = indexBufferSize;*/
 
     // #DXR - Per Instance
     // Create a vertex buffer for a ground plane, similarly to the triangle
@@ -408,12 +408,12 @@ void Renderer::OnUpdate() {
   // #DXR Extra - Refitting
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
-  m_time++;
+  /*m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 1000.0f) *
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
-  // #DXR Extra - Refitting
+  // #DXR Extra - Refitting*/
   UpdateInstancePropertiesBuffer();
 }
 
@@ -742,8 +742,8 @@ void Renderer::CreateTopLevelAS(
 //
 void Renderer::CreateAccelerationStructures() {
   // Build the bottom AS from the Triangle vertex buffer
-  AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS(
-      {{m_vertexBuffer.Get(), 4}}, {{m_indexBuffer.Get(), 12}});
+  /*AccelerationStructureBuffers bottomLevelBuffers = CreateBottomLevelAS(
+      {{m_vertexBuffer.Get(), 4}}, {{m_indexBuffer.Get(), 12}});*/
 
   // #DXR Extra: Indexed Geometry
   // Build the bottom AS from the Menger Sponge vertex buffer
@@ -754,19 +754,19 @@ void Renderer::CreateAccelerationStructures() {
                           {{m_mengerIB.Get(), m_mengerIndexCount}});
 
   // #DXR Extra: Per-Instance Data
-  AccelerationStructureBuffers planeBottomLevelBuffers =
-      CreateBottomLevelAS({{m_planeBuffer.Get(), 6}});
+  /*AccelerationStructureBuffers planeBottomLevelBuffers =
+      CreateBottomLevelAS({{m_planeBuffer.Get(), 6}});*/
 
   // Just one instance for now
   // #DXR Extra: Per-Instance Data
   // 3 instances of the triangle
   // 3 instances of the triangle + a plane
   m_instances = {
-      {mengerBottomLevelBuffers.pResult, XMMatrixIdentity()},
+      {mengerBottomLevelBuffers.pResult, XMMatrixIdentity()}};
       //{bottomLevelBuffers.pResult, XMMatrixTranslation(.6f, 0, 0)},
       //{bottomLevelBuffers.pResult, XMMatrixTranslation(-.6f, 0, 0)},
       // #DXR Extra: Per-Instance Data
-      {planeBottomLevelBuffers.pResult, XMMatrixTranslation(0, 0, 0)}};
+      //{planeBottomLevelBuffers.pResult, XMMatrixTranslation(0, 0, 0)}};
   CreateTopLevelAS(m_instances);
 
   // Flush the command list and wait for it to finish
@@ -786,7 +786,7 @@ void Renderer::CreateAccelerationStructures() {
 
   // Store the AS buffers. The rest of the buffers will be released once we exit
   // the function
-  m_bottomLevelAS = bottomLevelBuffers.pResult;
+    //m_bottomLevelAS = bottomLevelBuffers.pResult;
 }
 
 //-----------------------------------------------------------------------------
@@ -1137,9 +1137,9 @@ void Renderer::CreateShaderBindingTable() {
   // The plane also uses a constant buffer for its vertex colors
   // #DXR Extra: Per-Instance Data
   // Adding the plane
-  m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {(void *)(m_mengerVB->GetGPUVirtualAddress()),
+  /*m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {(void *)(m_mengerVB->GetGPUVirtualAddress()),
                                              (void *)(m_mengerIB->GetGPUVirtualAddress()),
-                                             (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});
+                                             (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});*/
   // #DXR Extra - Another ray type
   m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
