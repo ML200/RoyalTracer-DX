@@ -48,29 +48,29 @@ float3 BRDF_Specular_GGX(float3 N, float3 V, float3 L, float3 F0, float alpha) {
 
 //Decide how to evaluate the material: distinguish between metals and dielectricts for simplicity
 //This function returns the surface color evaluated
-float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 light, inout float3 sample, inout float pdf, inout uint seed){
+float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float pdf, inout uint seed){
     //Check for metallicness
     if(mat.Pr_Pm_Ps_Pc.y > 0.5f) //Normally only 0 or 1
     {
         //Get the BRDF based on the materials properties
-        sample =SampleGGXVNDF(normal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+        sample =SampleGGXVNDF(flatNormal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
         return BRDF_Specular_GGX(normal, -incidence, light, mat.Kd,mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
     }
     else{
         //Calculate the fresnel term based on mat.Ni, incidence and normal
         //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
-        float f = SchlickFresnel(1.45f, -incidence, normal);
+        float f = SchlickFresnel(1.45f, -incidence, flatNormal) * (1-mat.Pr_Pm_Ps_Pc.x);
         //Get a random number
         float randomCheck = RandomFloat(seed);
         //Ckeck if the ray is diffuse reflected or through ggx:
         if(randomCheck < f){
             //Get the BRDF based on the materials properties
-            sample =SampleGGXVNDF(normal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+            sample =SampleGGXVNDF(flatNormal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
             return BRDF_Specular_GGX(normal, -incidence, light, CalculateF0Vector(1.0f),mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
         }
         else{
             //Diffuse reflection using lambertian
-            sample = RandomUnitVectorInHemisphere(normal,seed);
+            sample = RandomUnitVectorInHemisphere(flatNormal,seed);
             pdf = 1.0f;
             return float3(1,1,1);
         }

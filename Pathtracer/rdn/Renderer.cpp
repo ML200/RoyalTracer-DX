@@ -344,8 +344,8 @@ void Renderer::LoadAssets() {
     m_vertexBufferView.SizeInBytes = vertexBufferSize;
 
     // #DXR Extra: Indexed Geometry
-    CreateMengerSpongeVB();
-
+    //CreateMengerSpongeVB("A8.obj");
+    CreateMengerSpongeVB("monkey.obj");
     //----------------------------------------------------------------------------------------------
     // Indices
     std::vector<UINT> indices = {0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2};
@@ -1418,14 +1418,14 @@ void Renderer::CreateDepthBuffer() {
 }
 
 // #DXR Extra: Indexed Geometry
-void Renderer::CreateMengerSpongeVB() {
+void Renderer::CreateMengerSpongeVB(std::string name) {
   std::vector<Vertex> vertices;
   std::vector<UINT> indices;
   std::vector<Material> materials;
   std::vector<UINT> materialIDs;
 
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
-  ObjLoader::loadObjFile("A8.obj",&vertices, &indices, &materials, &materialIDs);
+  ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs);
   m_materials = materials;
   m_materialIDs = materialIDs;
   {

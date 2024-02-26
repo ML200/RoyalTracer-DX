@@ -105,7 +105,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     //Shadow ray
     RayDesc ray;
-    float bias = 0.00001f; // Shadow ray bias value
+    float bias = 0.001f; // Shadow ray bias value
     ray.Origin = worldOrigin + bias * flatNormal; // Offset origin along the normal
     ray.Direction = centerLightDir;
     ray.TMin = bias;
@@ -119,11 +119,11 @@ StructuredBuffer<Material> materials : register(t5);
     float factor = shadowPayload.isHit ? 0.0 : 1.0;
 
     float pdf;
-    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal, normalize(centerLightDir), payload.direction, pdf, payload.seed);
+    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, normalize(centerLightDir), payload.direction, pdf, payload.seed);
 
 
     //Now, adjust the payload to the new origin and direction:
-    payload.origin = worldOrigin+ bias * normal;
+    payload.origin = worldOrigin+ bias * flatNormal;
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights

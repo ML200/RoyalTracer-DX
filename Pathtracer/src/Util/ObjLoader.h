@@ -32,12 +32,17 @@ public:
 
         const auto& attrib = reader.GetAttrib();
         const auto& shapes = reader.GetShapes();
-        const auto& materials = reader.GetMaterials();
+        auto& materials = reader.GetMaterials();
+
+        // Create a default material if a face has no material assigned
+        Material defaultMaterial(XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f)); // Example default material
+        mats->push_back(defaultMaterial);
+        UINT defaultMaterialIndex = mats->size() - 1; // Index of the default material
 
         // Process materials
         for (const auto& mat : materials) {
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f);
-            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic,0,0);
+            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, 0, 0);
             mats->push_back(Material(diffuse, Pr_Pm_Ps_Pc));
         }
 
@@ -48,6 +53,12 @@ public:
             // For each face
             for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
                 int fv = shape.mesh.num_face_vertices[f];
+
+                // Assign material ID for this face, use default if none assigned
+                UINT materialID = shape.mesh.material_ids[f] >= 0 ? shape.mesh.material_ids[f]+1 : defaultMaterialIndex;
+                for (size_t v = 0; v < fv; v++) {
+                    materialIDs->push_back(materialID);
+                }
 
                 // For each vertex in the face
                 for (size_t v = 0; v < fv; v++) {
@@ -76,14 +87,6 @@ public:
 
                     // Add index for this vertex
                     indices->push_back(uniqueVertices[vertex]);
-                }
-                // Assign material ID for this face
-                if (shape.mesh.material_ids[f] >= 0) {
-                    for (size_t v = 0; v < fv; v++) {
-                        materialIDs->push_back(shape.mesh.material_ids[f]);
-                    }
-                } else {
-                    // Optional: Handle faces without a material
                 }
                 index_offset += fv;
             }

@@ -78,7 +78,7 @@ cbuffer CameraParams : register(b0)
                 break; // Terminate the path
             }
             // If the path continues, adjust the throughput to compensate for the paths terminated (removed for now)
-            payload.colorAndDistance.xyz /= p;
+            //payload.colorAndDistance.xyz /= p;
         }
         //______________________________________________________________________________________________________________
       }
