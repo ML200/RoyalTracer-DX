@@ -304,7 +304,7 @@ void Renderer::LoadAssets() {
   // Create the vertex buffer.
   {
     // Define the geometry for a triangle.
-    Vertex triangleVertices[] = {
+    /*Vertex triangleVertices[] = {
         {{std::sqrtf(8.f / 9.f), 0.f, -1.f / 3.f}, {1.f, 0.f, 0.f, 1.f}},
         {{-std::sqrtf(2.f / 9.f), std::sqrtf(2.f / 3.f), -1.f / 3.f},
          {0.f, 1.f, 0.f, 1.f}},
@@ -341,10 +341,10 @@ void Renderer::LoadAssets() {
     // Initialize the vertex buffer view.
     m_vertexBufferView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
     m_vertexBufferView.StrideInBytes = sizeof(Vertex);
-    m_vertexBufferView.SizeInBytes = vertexBufferSize;
+    m_vertexBufferView.SizeInBytes = vertexBufferSize;*/
 
     // #DXR Extra: Indexed Geometry
-    CreateMengerSpongeVB("A8.obj");
+    CreateVB("A8.obj");
     //CreateMengerSpongeVB("monkey.obj");
     //----------------------------------------------------------------------------------------------
     // Indices
@@ -376,7 +376,7 @@ void Renderer::LoadAssets() {
     // #DXR - Per Instance
     // Create a vertex buffer for a ground plane, similarly to the triangle
     // definition above
-    CreatePlaneVB();
+    //CreatePlaneVB();
   }
 
   // Create synchronization objects and wait until assets have been uploaded to
@@ -1418,7 +1418,7 @@ void Renderer::CreateDepthBuffer() {
 }
 
 // #DXR Extra: Indexed Geometry
-void Renderer::CreateMengerSpongeVB(std::string name) {
+void Renderer::CreateVB(std::string name) {
   std::vector<Vertex> vertices;
   std::vector<UINT> indices;
   std::vector<Material> materials;

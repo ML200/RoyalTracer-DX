@@ -176,7 +176,7 @@ private:
   D3D12_INDEX_BUFFER_VIEW m_indexBufferView;
 
   // #DXR Extra: Indexed Geometry
-  void CreateMengerSpongeVB(std::string name);
+  void CreateVB(std::string name);
   ComPtr<ID3D12Resource> m_mengerVB;
   ComPtr<ID3D12Resource> m_mengerIB;
   D3D12_VERTEX_BUFFER_VIEW m_mengerVBView;
