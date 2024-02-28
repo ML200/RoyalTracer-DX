@@ -177,17 +177,10 @@ private:
 
   // #DXR Extra: Indexed Geometry
   void CreateVB(std::string name);
-  ComPtr<ID3D12Resource> m_mengerVB;
-  ComPtr<ID3D12Resource> m_mengerIB;
-  D3D12_VERTEX_BUFFER_VIEW m_mengerVBView;
-  D3D12_INDEX_BUFFER_VIEW m_mengerIBView;
   ComPtr<ID3D12Resource> m_materialBuffer;
   ComPtr<ID3D12Resource> m_materialIndexBuffer;
   std::vector<UINT> m_materialIDs;
   std::vector<Material> m_materials;
-
-  UINT m_mengerIndexCount;
-  UINT m_mengerVertexCount;
 
   //Support for several objects (instanced optionally)
   //____________________________________________________________________________________________________________________

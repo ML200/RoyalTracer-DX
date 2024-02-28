@@ -344,7 +344,13 @@ void Renderer::LoadAssets() {
     m_vertexBufferView.SizeInBytes = vertexBufferSize;*/
 
     // #DXR Extra: Indexed Geometry
-    CreateVB("A8.obj");
+    //Models
+    std::vector<std::string> models = {"A8.obj", "monkey.obj"};
+
+    //Iterate through the models in the scene (currently one hardcoded, later provided by list)
+    for(int i=0; i<models.size(); i++){
+        CreateVB(models[i]);
+    }
     //CreateMengerSpongeVB("monkey.obj");
     //----------------------------------------------------------------------------------------------
     // Indices
@@ -750,8 +756,8 @@ void Renderer::CreateAccelerationStructures() {
   // #DXR Extra: Indexed Geometry
   // Build the bottom AS from the Menger Sponge vertex buffer
   AccelerationStructureBuffers mengerBottomLevelBuffers =
-      CreateBottomLevelAS({{m_mengerVB.Get(), m_mengerVertexCount}},
-                          {{m_mengerIB.Get(), m_mengerIndexCount}});
+      CreateBottomLevelAS({{m_VB[0].Get(), m_VertexCount[0]}},
+                          {{m_IB[0].Get(), m_IndexCount[0]}});
 
   // #DXR Extra: Per-Instance Data
   /*AccelerationStructureBuffers planeBottomLevelBuffers =
@@ -763,10 +769,6 @@ void Renderer::CreateAccelerationStructures() {
   // 3 instances of the triangle + a plane
   m_instances = {
       {mengerBottomLevelBuffers.pResult, XMMatrixIdentity()}};
-      //{bottomLevelBuffers.pResult, XMMatrixTranslation(.6f, 0, 0)},
-      //{bottomLevelBuffers.pResult, XMMatrixTranslation(-.6f, 0, 0)},
-      // #DXR Extra: Per-Instance Data
-      //{planeBottomLevelBuffers.pResult, XMMatrixTranslation(0, 0, 0)}};
   CreateTopLevelAS(m_instances);
 
   // Flush the command list and wait for it to finish
@@ -1127,19 +1129,13 @@ void Renderer::CreateShaderBindingTable() {
   {
     m_sbtHelper.AddHitGroup(
         L"HitGroup",
-        {(void *)(m_mengerVB->GetGPUVirtualAddress()),
-         (void *)(m_mengerIB->GetGPUVirtualAddress()),
+        {(void *)(m_VB[0]->GetGPUVirtualAddress()),
+         (void *)(m_IB[0]->GetGPUVirtualAddress()),
          (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});
     // #DXR Extra - Another ray type
     m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
   }
 
-  // The plane also uses a constant buffer for its vertex colors
-  // #DXR Extra: Per-Instance Data
-  // Adding the plane
-  /*m_sbtHelper.AddHitGroup(L"PlaneHitGroup", {(void *)(m_mengerVB->GetGPUVirtualAddress()),
-                                             (void *)(m_mengerIB->GetGPUVirtualAddress()),
-                                             (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});*/
   // #DXR Extra - Another ray type
   m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
@@ -1424,6 +1420,15 @@ void Renderer::CreateVB(std::string name) {
   std::vector<Material> materials;
   std::vector<UINT> materialIDs;
 
+  ComPtr<ID3D12Resource> l_VB;
+  ComPtr<ID3D12Resource> l_IB;
+  D3D12_VERTEX_BUFFER_VIEW l_VBView;
+  D3D12_INDEX_BUFFER_VIEW l_IBView;
+  ComPtr<ID3D12Resource> l_material;
+  ComPtr<ID3D12Resource> l_materialID;
+  UINT l_IndexCount;
+  UINT l_VertexCount;
+
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
   ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs);
   m_materials = materials;
@@ -1443,24 +1448,24 @@ void Renderer::CreateVB(std::string name) {
         CD3DX12_RESOURCE_DESC::Buffer(mengerVBSize);
     ThrowIfFailed(m_device->CreateCommittedResource(
         &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_mengerVB)));
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&l_VB)));
 
     // Copy the triangle data to the vertex buffer.
     UINT8 *pVertexDataBegin;
     CD3DX12_RANGE readRange(
         0, 0); // We do not intend to read from this resource on the CPU.
-    ThrowIfFailed(m_mengerVB->Map(
+    ThrowIfFailed(l_VB->Map(
         0, &readRange, reinterpret_cast<void **>(&pVertexDataBegin)));
     memcpy(pVertexDataBegin, vertices.data(), mengerVBSize);
-    m_mengerVB->Unmap(0, nullptr);
+      l_VB->Unmap(0, nullptr);
 
     // Initialize the vertex buffer view.
-    m_mengerVBView.BufferLocation = m_mengerVB->GetGPUVirtualAddress();
-    m_mengerVBView.StrideInBytes = sizeof(Vertex);
-    m_mengerVBView.SizeInBytes = mengerVBSize;
+      l_VBView.BufferLocation = l_VB->GetGPUVirtualAddress();
+      l_VBView.StrideInBytes = sizeof(Vertex);
+      l_VBView.SizeInBytes = mengerVBSize;
   }
   {
-    const UINT mengerIBSize = static_cast<UINT>(indices.size()) * sizeof(UINT);
+    const UINT IBSize = static_cast<UINT>(indices.size()) * sizeof(UINT);
 
     // Note: using upload heaps to transfer static data like vert buffers is not
     // recommended. Every time the GPU needs it, the upload heap will be
@@ -1470,27 +1475,27 @@ void Renderer::CreateVB(std::string name) {
     CD3DX12_HEAP_PROPERTIES heapProperty =
         CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
     CD3DX12_RESOURCE_DESC bufferResource =
-        CD3DX12_RESOURCE_DESC::Buffer(mengerIBSize);
+        CD3DX12_RESOURCE_DESC::Buffer(IBSize);
     ThrowIfFailed(m_device->CreateCommittedResource(
         &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_mengerIB)));
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&l_IB)));
 
     // Copy the triangle data to the index buffer.
     UINT8 *pIndexDataBegin;
     CD3DX12_RANGE readRange(
         0, 0); // We do not intend to read from this resource on the CPU.
-    ThrowIfFailed(m_mengerIB->Map(0, &readRange,
+    ThrowIfFailed(l_IB->Map(0, &readRange,
                                   reinterpret_cast<void **>(&pIndexDataBegin)));
-    memcpy(pIndexDataBegin, indices.data(), mengerIBSize);
-    m_mengerIB->Unmap(0, nullptr);
+    memcpy(pIndexDataBegin, indices.data(), IBSize);
+      l_IB->Unmap(0, nullptr);
 
     // Initialize the index buffer view.
-    m_mengerIBView.BufferLocation = m_mengerIB->GetGPUVirtualAddress();
-    m_mengerIBView.Format = DXGI_FORMAT_R32_UINT;
-    m_mengerIBView.SizeInBytes = mengerIBSize;
+      l_IBView.BufferLocation = l_IB->GetGPUVirtualAddress();
+      l_IBView.Format = DXGI_FORMAT_R32_UINT;
+      l_IBView.SizeInBytes = IBSize;
 
-    m_mengerIndexCount = static_cast<UINT>(indices.size());
-    m_mengerVertexCount = static_cast<UINT>(vertices.size());
+      l_IndexCount = static_cast<UINT>(indices.size());
+      l_VertexCount = static_cast<UINT>(vertices.size());
   }
 
   //Material:
@@ -1528,6 +1533,16 @@ void Renderer::CreateVB(std::string name) {
         memcpy(pMaterialIndexDataBegin, materialIDs.data(), materialIndexBufferSize);
         m_materialIndexBuffer->Unmap(0, nullptr);
     }
+
+    //Fill the vectors with data
+    m_VB.push_back(l_VB);
+    m_VBView.push_back(l_VBView);
+    m_IB.push_back(l_IB);
+    m_IBView.push_back(l_IBView);
+    m_VertexCount.push_back(l_IndexCount);
+    m_IndexCount.push_back(l_VertexCount);
+    m_material.push_back(l_material);
+    m_materialID.push_back(l_materialID);
 }
 
 //--------------------------------------------------------------------------------------------------
