@@ -127,7 +127,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
-    float3 direct = float3(200,200,200) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) *factor * brdf;
+    float3 direct = float3(200,200,200) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
     payload.emission += direct;
 }
 
@@ -137,6 +137,6 @@ StructuredBuffer<Material> materials : register(t5);
 // #DXR Extra - Another ray type (unused for now)
 [shader("closesthit")] void PlaneClosestHit(inout HitInfo payload,
                                                 Attributes attrib) {
-    payload.util = 1;
+    payload.emission = float3(InstanceID(),1,1);
 
 }

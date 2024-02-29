@@ -345,7 +345,7 @@ void Renderer::LoadAssets() {
 
     // #DXR Extra: Indexed Geometry
     //Models
-    std::vector<std::string> models = {"A8.obj", "monkey.obj"};
+    std::vector<std::string> models = {"car_fixed.obj","A8.obj"};
 
     //Iterate through the models in the scene (currently one hardcoded, later provided by list)
     for(int i=0; i<models.size(); i++){
@@ -414,12 +414,16 @@ void Renderer::OnUpdate() {
   // #DXR Extra - Refitting
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
-  /*m_time++;
+  m_time++;
   m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 1000.0f) *
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
-  // #DXR Extra - Refitting*/
+    m_instances[1].second =
+            XMMatrixRotationAxis({0.f, 1.f, 0.f},
+                                 static_cast<float>(m_time) / 100.0f) *
+            XMMatrixTranslation(5.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
+  // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
 
@@ -755,20 +759,23 @@ void Renderer::CreateAccelerationStructures() {
   // Build the bottom AS from the Menger Sponge vertex buffer
   // #DXR Extra: Indexed Geometry
   // Build the bottom AS from the Menger Sponge vertex buffer
-  AccelerationStructureBuffers mengerBottomLevelBuffers =
-      CreateBottomLevelAS({{m_VB[0].Get(), m_VertexCount[0]}},
-                          {{m_IB[0].Get(), m_IndexCount[0]}});
 
-  // #DXR Extra: Per-Instance Data
-  /*AccelerationStructureBuffers planeBottomLevelBuffers =
-      CreateBottomLevelAS({{m_planeBuffer.Get(), 6}});*/
+    std::vector<AccelerationStructureBuffers> blasBuffers;
+    m_instances.clear();
 
-  // Just one instance for now
-  // #DXR Extra: Per-Instance Data
-  // 3 instances of the triangle
-  // 3 instances of the triangle + a plane
-  m_instances = {
-      {mengerBottomLevelBuffers.pResult, XMMatrixIdentity()}};
+    // Assume m_VB, m_IB, m_VertexCount, and m_IndexCount are all std::vector and have the same size.
+    for (size_t i = 0; i < m_VB.size(); ++i) {
+        AccelerationStructureBuffers buffers = CreateBottomLevelAS(
+                {{m_VB[i].Get(), m_VertexCount[i]}},
+                {{m_IB[i].Get(), m_IndexCount[i]}}
+        );
+
+        blasBuffers.push_back(buffers);
+
+        // Assuming each instance will use an identity matrix for simplicity,
+        // but you can replace XMMatrixIdentity() with any transformation matrix.
+        m_instances.push_back({buffers.pResult, XMMatrixIdentity()});
+    }
   CreateTopLevelAS(m_instances);
 
   // Flush the command list and wait for it to finish
@@ -788,7 +795,7 @@ void Renderer::CreateAccelerationStructures() {
 
   // Store the AS buffers. The rest of the buffers will be released once we exit
   // the function
-    //m_bottomLevelAS = bottomLevelBuffers.pResult;
+  //m_bottomLevelAS = bottomLevelBuffers.pResult;
 }
 
 //-----------------------------------------------------------------------------
@@ -909,6 +916,7 @@ void Renderer::CreateRaytracingPipeline() {
   // Hit group for the triangles, with a shader simply interpolating vertex
   // colors
   pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
+    pipeline.AddHitGroup(L"HitGroup1", L"PlaneClosestHit");
   // #DXR Extra: Per-Instance Data
   pipeline.AddHitGroup(L"PlaneHitGroup", L"PlaneClosestHit");
   // #DXR Extra - Another ray type
@@ -923,6 +931,7 @@ void Renderer::CreateRaytracingPipeline() {
   pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen"});
   pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup1"});
 
   // #DXR Extra - Another ray type
   pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),
@@ -933,7 +942,7 @@ void Renderer::CreateRaytracingPipeline() {
 
   // #DXR Extra: Per-Instance Data
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
-                                       {L"HitGroup", L"PlaneHitGroup"});
+                                       {L"HitGroup", L"PlaneHitGroup", L"HitGroup1"});
   // The payload size defines the maximum size of the data carried by the rays,
   // ie. the the data
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
@@ -1097,44 +1106,41 @@ void Renderer::CreateShaderResourceHeap() {
 // Using the helper class, those can be specified in arbitrary order.
 //
 void Renderer::CreateShaderBindingTable() {
-  // The SBT helper class collects calls to Add*Program.  If called several
-  // times, the helper must be emptied before re-adding shaders.
-  m_sbtHelper.Reset();
+    // The SBT helper class collects calls to Add*Program.  If called several
+    // times, the helper must be emptied before re-adding shaders.
+    m_sbtHelper.Reset();
 
-  // The pointer to the beginning of the heap is the only parameter required by
-  // shaders without root parameters
-  D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
-      m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    // The pointer to the beginning of the heap is the only parameter required by
+    // shaders without root parameters
+    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
+            m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
 
-  // The helper treats both root parameter pointers and heap pointers as void*,
-  // while DX12 uses the
-  // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
-  // struct is a UINT64, which then has to be reinterpreted as a pointer.
-  auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
+    // The helper treats both root parameter pointers and heap pointers as void*,
+    // while DX12 uses the
+    // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
+    // struct is a UINT64, which then has to be reinterpreted as a pointer.
+    auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
 
-  // The ray generation only uses heap data
-  m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
+    // The ray generation only uses heap data
+    m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
 
-  // The miss and hit shaders do not access any external resources: instead they
-  // communicate their results through the ray payload
-  m_sbtHelper.AddMissProgram(L"Miss", {});
-  // #DXR Extra - Another ray type
-  m_sbtHelper.AddMissProgram(L"ShadowMiss", {});
-
-  // #DXR Extra: Per-Instance Data
-  // We have 3 triangles, each of which needs to access its own constant buffer
-  // as a root parameter in its primary hit shader. The shadow hit only sets a
-  // boolean visibility in the payload, and does not require external data
-  // for (int i = 0; i < 3; ++i)
-  {
-    m_sbtHelper.AddHitGroup(
-        L"HitGroup",
-        {(void *)(m_VB[0]->GetGPUVirtualAddress()),
-         (void *)(m_IB[0]->GetGPUVirtualAddress()),
-         (void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()),heapPointer});
+    // The miss and hit shaders do not access any external resources: instead they
+    // communicate their results through the ray payload
+    m_sbtHelper.AddMissProgram(L"Miss", {});
     // #DXR Extra - Another ray type
-    m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
-  }
+    m_sbtHelper.AddMissProgram(L"ShadowMiss", {});
+
+    // #DXR Extra: Per-Instance Data
+    // We have 3 triangles, each of which needs to access its own constant buffer
+    // as a root parameter in its primary hit shader. The shadow hit only sets a
+    // boolean visibility in the payload, and does not require external data
+    for (int i = 0; i < m_instances.size(); ++i){
+        m_sbtHelper.AddHitGroup(
+                L"HitGroup",
+                {(void *) (m_VB[i]->GetGPUVirtualAddress()),
+                 (void *) (m_IB[i]->GetGPUVirtualAddress()),(void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()), heapPointer});
+        m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
+    }
 
   // #DXR Extra - Another ray type
   m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
@@ -1248,53 +1254,6 @@ void Renderer::OnMouseMove(UINT8 wParam, UINT32 lParam) {
   inputs.alt = GetAsyncKeyState(VK_MENU);
 
   CameraManip.mouseMove(-GET_X_LPARAM(lParam), -GET_Y_LPARAM(lParam), inputs);
-}
-
-//-----------------------------------------------------------------------------
-//
-// Create a vertex buffer for the plane
-//
-// #DXR Extra: Per-Instance Data
-void Renderer::CreatePlaneVB() {
-  // Define the geometry for a plane.
-  Vertex planeVertices[] = {
-      {{-1.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}/*, // 0
-      {{-1.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 1
-      {{01.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 2
-      {{01.5f, -.8f, 01.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 2
-      {{-1.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}, // 1
-      {{01.5f, -.8f, -1.5f}, {1.0f, 1.0f, 1.0f, 1.0f}}  // 4*/
-  };
-
-  const UINT planeBufferSize = sizeof(planeVertices);
-
-  // Note: using upload heaps to transfer static data like vert buffers is not
-  // recommended. Every time the GPU needs it, the upload heap will be
-  // marshalled over. Please read up on Default Heap usage. An upload heap is
-  // used here for code simplicity and because there are very few verts to
-  // actually transfer.
-  CD3DX12_HEAP_PROPERTIES heapProperty =
-      CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-  CD3DX12_RESOURCE_DESC bufferResource =
-      CD3DX12_RESOURCE_DESC::Buffer(planeBufferSize);
-  ThrowIfFailed(m_device->CreateCommittedResource(
-      &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-      D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-      IID_PPV_ARGS(&m_planeBuffer)));
-
-  // Copy the triangle data to the vertex buffer.
-  UINT8 *pVertexDataBegin;
-  CD3DX12_RANGE readRange(
-      0, 0); // We do not intend to read from this resource on the CPU.
-  ThrowIfFailed(m_planeBuffer->Map(
-      0, &readRange, reinterpret_cast<void **>(&pVertexDataBegin)));
-  memcpy(pVertexDataBegin, planeVertices, sizeof(planeVertices));
-  m_planeBuffer->Unmap(0, nullptr);
-
-  // Initialize the vertex buffer view.
-  m_planeBufferView.BufferLocation = m_planeBuffer->GetGPUVirtualAddress();
-  m_planeBufferView.StrideInBytes = sizeof(Vertex);
-  m_planeBufferView.SizeInBytes = planeBufferSize;
 }
 
 //-----------------------------------------------------------------------------
@@ -1539,8 +1498,8 @@ void Renderer::CreateVB(std::string name) {
     m_VBView.push_back(l_VBView);
     m_IB.push_back(l_IB);
     m_IBView.push_back(l_IBView);
-    m_VertexCount.push_back(l_IndexCount);
-    m_IndexCount.push_back(l_VertexCount);
+    m_VertexCount.push_back(l_VertexCount);
+    m_IndexCount.push_back(l_IndexCount);
     m_material.push_back(l_material);
     m_materialID.push_back(l_materialID);
 }
