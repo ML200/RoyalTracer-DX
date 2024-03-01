@@ -94,7 +94,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     // # DXR Extra - Simple Lighting
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-    float3 lightPos = float3(10, 10, -10);
+    float3 lightPos = float3(3, 2, -3);
     float3 toLight = lightPos - worldOrigin;
     float3 centerLightDir = normalize(toLight);
     float distanceToLight = length(toLight);
@@ -127,7 +127,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
-    float3 direct = float3(200,200,200) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
+    float3 direct = float3(20,20,20) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
     payload.emission += direct;
 }
 

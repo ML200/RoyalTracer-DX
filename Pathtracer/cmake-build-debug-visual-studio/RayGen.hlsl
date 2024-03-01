@@ -48,7 +48,7 @@ cbuffer CameraParams : register(b0)
       payload.direction = init_dir;
       payload.pdf = 1.0f;
 
-      for(int y = 0; y < 6; y++){
+      for(int y = 0; y < 5; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -65,11 +65,11 @@ cbuffer CameraParams : register(b0)
         // Apply Russian Roulette after a minimum number of bounces
         //______________________________________________________________________________________________________________
         // Assuming 'throughput' is a float3 representing the accumulated light contribution (RGB)
-        if(y > 3){
+        if(y > 2){
             float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
             // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities
-            p = max(p, 0.3f); // Ensure there's at least a 5% chance to continue, adjust as needed
+            p = max(p, 0.05f); // Ensure there's at least a 5% chance to continue, adjust as needed
 
             float randomValue = RandomFloat(payload.seed); // Generate a random value for Russian Roulette
 

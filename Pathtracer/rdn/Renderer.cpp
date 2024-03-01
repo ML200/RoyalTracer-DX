@@ -301,88 +301,13 @@ void Renderer::LoadAssets() {
       0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(),
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
-  // Create the vertex buffer.
   {
-    // Define the geometry for a triangle.
-    /*Vertex triangleVertices[] = {
-        {{std::sqrtf(8.f / 9.f), 0.f, -1.f / 3.f}, {1.f, 0.f, 0.f, 1.f}},
-        {{-std::sqrtf(2.f / 9.f), std::sqrtf(2.f / 3.f), -1.f / 3.f},
-         {0.f, 1.f, 0.f, 1.f}},
-        {{-std::sqrtf(2.f / 9.f), -std::sqrtf(2.f / 3.f), -1.f / 3.f},
-         {0.f, 0.f, 1.f, 1.f}},
-        {{0.f, 0.f, 1.f}, {1, 0, 1, 1}}};
-
-    const UINT vertexBufferSize = sizeof(triangleVertices);
-
-    // Note: using upload heaps to transfer static data like vert buffers is not
-    // recommended. Every time the GPU needs it, the upload heap will be
-    // marshalled over. Please read up on Default Heap usage. An upload heap is
-    // used here for code simplicity and because there are very few verts to
-    // actually transfer.
-      CD3DX12_HEAP_PROPERTIES heapProperties(D3D12_HEAP_TYPE_UPLOAD);
-      CD3DX12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize);
-
-      ThrowIfFailed(m_device->CreateCommittedResource(
-              &heapProperties,
-              D3D12_HEAP_FLAG_NONE,
-              &bufferDesc,
-              D3D12_RESOURCE_STATE_GENERIC_READ,
-              nullptr,
-              IID_PPV_ARGS(&m_vertexBuffer)));
-    // Copy the triangle data to the vertex buffer.
-    UINT8 *pVertexDataBegin;
-    CD3DX12_RANGE readRange(
-        0, 0); // We do not intend to read from this resource on the CPU.
-    ThrowIfFailed(m_vertexBuffer->Map(
-        0, &readRange, reinterpret_cast<void **>(&pVertexDataBegin)));
-    memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
-    m_vertexBuffer->Unmap(0, nullptr);
-
-    // Initialize the vertex buffer view.
-    m_vertexBufferView.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
-    m_vertexBufferView.StrideInBytes = sizeof(Vertex);
-    m_vertexBufferView.SizeInBytes = vertexBufferSize;*/
-
-    // #DXR Extra: Indexed Geometry
-    //Models
-    std::vector<std::string> models = {"car_fixed.obj","A8.obj"};
+    std::vector<std::string> models = {"garage.obj","A8.obj"};
 
     //Iterate through the models in the scene (currently one hardcoded, later provided by list)
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
     }
-    //CreateMengerSpongeVB("monkey.obj");
-    //----------------------------------------------------------------------------------------------
-    // Indices
-    /*std::vector<UINT> indices = {0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2};
-    const UINT indexBufferSize =
-        static_cast<UINT>(indices.size()) * sizeof(UINT);
-
-    CD3DX12_HEAP_PROPERTIES heapProperty =
-        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferResource =
-        CD3DX12_RESOURCE_DESC::Buffer(indexBufferSize);
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&m_indexBuffer)));
-
-    // Copy the triangle data to the index buffer.
-    UINT8 *pIndexDataBegin;
-    ThrowIfFailed(m_indexBuffer->Map(
-        0, &readRange, reinterpret_cast<void **>(&pIndexDataBegin)));
-    memcpy(pIndexDataBegin, indices.data(), indexBufferSize);
-    m_indexBuffer->Unmap(0, nullptr);
-
-    // Initialize the index buffer view.
-    m_indexBufferView.BufferLocation = m_indexBuffer->GetGPUVirtualAddress();
-    m_indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-    m_indexBufferView.SizeInBytes = indexBufferSize;*/
-
-    // #DXR - Per Instance
-    // Create a vertex buffer for a ground plane, similarly to the triangle
-    // definition above
-    //CreatePlaneVB();
   }
 
   // Create synchronization objects and wait until assets have been uploaded to
@@ -415,14 +340,14 @@ void Renderer::OnUpdate() {
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
-  m_instances[0].second =
+  /*m_instances[0].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 1000.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
+      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                                 static_cast<float>(m_time) / 100.0f) *
-            XMMatrixTranslation(5.f, 0.1f * cosf(m_time / 2000000.f), 0.f);
+                                 static_cast<float>(m_time) / 1000.0f) *
+            XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
