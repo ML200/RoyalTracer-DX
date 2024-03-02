@@ -15,7 +15,7 @@ struct InstanceProperties
 
 struct STriVertex {
   float3 vertex;
-  float3 normal;
+  float4 normal;
 };
 
 // #DXR Extra: Per-Instance Data
@@ -40,7 +40,7 @@ StructuredBuffer<Material> materials : register(t5);
                                        Attributes attrib) {
     //Get information about the surface hit
     uint vertId = 3 * PrimitiveIndex();
-    uint materialID = materialIDs[vertId];
+    uint materialID = materialIDs[vertId+BTriVertex[indices[vertId]].normal.w];
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
 
@@ -64,9 +64,9 @@ StructuredBuffer<Material> materials : register(t5);
 
     // Check each vertex normal; accumulate if not zero, otherwise use flat normal
     for (int i = 0; i < 3; i++) {
-        if (all(BTriVertex[indices[vertId + i]].normal != float3(0, 0, 0))) {
+        if (all(BTriVertex[indices[vertId + i]].normal.xyz != float3(0, 0, 0))) {
             // Accumulate the weighted normals for smooth shading
-            smoothNormal += BTriVertex[indices[vertId + i]].normal * barycentrics[i];
+            smoothNormal += BTriVertex[indices[vertId + i]].normal.xyz * barycentrics[i];
         } else {
             // One of the vertex normals is (0,0,0), use flat shading for this vertex
             smoothNormal += flatNormal * barycentrics[i];
@@ -105,7 +105,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     //Shadow ray
     RayDesc ray;
-    float bias = 0.001f; // Shadow ray bias value
+    float bias = 0.0001f; // Shadow ray bias value
     ray.Origin = worldOrigin + bias * flatNormal; // Offset origin along the normal
     ray.Direction = centerLightDir;
     ray.TMin = bias;
@@ -128,7 +128,9 @@ StructuredBuffer<Material> materials : register(t5);
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
     float3 direct = float3(20,20,20) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
-    payload.emission += direct;
+    float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
+    payload.emission += direct + emissive;
+    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
 }
 
 

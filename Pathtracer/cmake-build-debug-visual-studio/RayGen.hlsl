@@ -52,7 +52,7 @@ cbuffer CameraParams : register(b0)
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
-          ray.TMin = 0.0001;
+          ray.TMin = 0.00001;
           ray.TMax = 10000;
           // Trace the ray
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
@@ -65,7 +65,7 @@ cbuffer CameraParams : register(b0)
         // Apply Russian Roulette after a minimum number of bounces
         //______________________________________________________________________________________________________________
         // Assuming 'throughput' is a float3 representing the accumulated light contribution (RGB)
-        if(y > 2){
+        if(y > 3){
             float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
             // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities

@@ -181,6 +181,8 @@ private:
   ComPtr<ID3D12Resource> m_materialIndexBuffer;
   std::vector<UINT> m_materialIDs;
   std::vector<Material> m_materials;
+  UINT materialIDOffset = 0;
+  UINT materialVertexOffset = 0;
 
   //Support for several objects (instanced optionally)
   //____________________________________________________________________________________________________________________

@@ -308,6 +308,43 @@ void Renderer::LoadAssets() {
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
     }
+
+    //Upload the models
+      //Material:
+      {
+          const UINT materialBufferSize = static_cast<UINT>(m_materials.size()) * sizeof(Material);
+
+          CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+          CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
+          ThrowIfFailed(m_device->CreateCommittedResource(
+                  &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
+                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
+
+          // Copy material data to the buffer.
+          UINT8* pMaterialDataBegin;
+          CD3DX12_RANGE readRange(0, 0);
+          ThrowIfFailed(m_materialBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialDataBegin)));
+          memcpy(pMaterialDataBegin, m_materials.data(), materialBufferSize);
+          m_materialBuffer->Unmap(0, nullptr);
+      }
+
+      //Material Indices
+      {
+          const UINT materialIndexBufferSize = static_cast<UINT>(m_materialIDs.size()) * sizeof(UINT);
+
+          CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+          CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize);
+          ThrowIfFailed(m_device->CreateCommittedResource(
+                  &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
+                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
+
+          // Copy material index data to the buffer.
+          UINT8* pMaterialIndexDataBegin;
+          CD3DX12_RANGE readRange(0, 0);
+          ThrowIfFailed(m_materialIndexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialIndexDataBegin)));
+          memcpy(pMaterialIndexDataBegin, m_materialIDs.data(), materialIndexBufferSize);
+          m_materialIndexBuffer->Unmap(0, nullptr);
+      }
   }
 
   // Create synchronization objects and wait until assets have been uploaded to
@@ -1314,9 +1351,10 @@ void Renderer::CreateVB(std::string name) {
   UINT l_VertexCount;
 
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
-  ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs);
-  m_materials = materials;
-  m_materialIDs = materialIDs;
+  ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs, &materialIDOffset, &materialVertexOffset);
+  m_materials.insert(m_materials.end(), materials.begin(), materials.end());
+  m_materialIDs.insert(m_materialIDs.end(),materialIDs.begin(), materialIDs.end());
+  materialVertexOffset=materialIDs.size();
   {
     const UINT mengerVBSize =
         static_cast<UINT>(vertices.size()) * sizeof(Vertex);
@@ -1381,42 +1419,6 @@ void Renderer::CreateVB(std::string name) {
       l_IndexCount = static_cast<UINT>(indices.size());
       l_VertexCount = static_cast<UINT>(vertices.size());
   }
-
-  //Material:
-    {
-        const UINT materialBufferSize = static_cast<UINT>(materials.size()) * sizeof(Material);
-
-        CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
-        ThrowIfFailed(m_device->CreateCommittedResource(
-                &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
-
-        // Copy material data to the buffer.
-        UINT8* pMaterialDataBegin;
-        CD3DX12_RANGE readRange(0, 0);
-        ThrowIfFailed(m_materialBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialDataBegin)));
-        memcpy(pMaterialDataBegin, materials.data(), materialBufferSize);
-        m_materialBuffer->Unmap(0, nullptr);
-    }
-
-    //Material Indices
-    {
-        const UINT materialIndexBufferSize = static_cast<UINT>(materialIDs.size()) * sizeof(UINT);
-
-        CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize);
-        ThrowIfFailed(m_device->CreateCommittedResource(
-                &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
-
-        // Copy material index data to the buffer.
-        UINT8* pMaterialIndexDataBegin;
-        CD3DX12_RANGE readRange(0, 0);
-        ThrowIfFailed(m_materialIndexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialIndexDataBegin)));
-        memcpy(pMaterialIndexDataBegin, materialIDs.data(), materialIndexBufferSize);
-        m_materialIndexBuffer->Unmap(0, nullptr);
-    }
 
     //Fill the vectors with data
     m_VB.push_back(l_VB);

@@ -13,7 +13,7 @@
 
 class ObjLoader {
 public:
-    static void loadObjFile(const std::string& inputfile, std::vector<Vertex> *vertices, std::vector<UINT> *indices, std::vector<Material> *mats, std::vector<UINT> *materialIDs, const std::string& material_search_path = "./") {
+    static void loadObjFile(const std::string& inputfile, std::vector<Vertex> *vertices, std::vector<UINT> *indices, std::vector<Material> *mats, std::vector<UINT> *materialIDs, UINT *materialOffset, UINT *materialVertexOffset, const std::string& material_search_path = "./") {
         tinyobj::ObjReaderConfig reader_config;
         reader_config.mtl_search_path = material_search_path; // Path to material files
 
@@ -37,13 +37,17 @@ public:
         // Create a default material if a face has no material assigned
         Material defaultMaterial(XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f)); // Example default material
         mats->push_back(defaultMaterial);
-        UINT defaultMaterialIndex = mats->size() - 1; // Index of the default material
+        (*materialOffset)++;
 
         // Process materials
         for (const auto& mat : materials) {
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f);
             XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, 0, 0);
-            mats->push_back(Material(diffuse, Pr_Pm_Ps_Pc));
+            Material t_mat(diffuse, Pr_Pm_Ps_Pc);
+
+            t_mat.Ke = XMFLOAT3(mat.emission);
+
+            mats->push_back(t_mat);
         }
 
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
@@ -55,9 +59,10 @@ public:
                 int fv = shape.mesh.num_face_vertices[f];
 
                 // Assign material ID for this face, use default if none assigned
-                UINT materialID = shape.mesh.material_ids[f] >= 0 ? shape.mesh.material_ids[f]+1 : defaultMaterialIndex;
+                int materialID = shape.mesh.material_ids.size() >= 0 ? shape.mesh.material_ids[f] : -1;
                 for (size_t v = 0; v < fv; v++) {
-                    materialIDs->push_back(materialID);
+                    int id = materialID + *materialOffset;
+                    materialIDs->push_back(id);
                 }
 
                 // For each vertex in the face
@@ -69,12 +74,12 @@ public:
                     XMFLOAT3 pos(vx, vy, vz);
 
                     // Extract normal, default to (0, 0, 0) if not present
-                    XMFLOAT3 normal(0.0f, 0.0f, 0.0f); // Default normal
+                    XMFLOAT4 normal(0.0f, 0.0f, 0.0f, (float)*materialOffset); // Default normal
                     if (idx.normal_index >= 0) {
                         tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
                         tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
                         tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
-                        normal = XMFLOAT3(nx, ny, nz);
+                        normal = XMFLOAT4(nx, ny, nz, *materialVertexOffset);
                     }
 
                     Vertex vertex(pos, normal);
@@ -91,6 +96,8 @@ public:
                 index_offset += fv;
             }
         }
+
+        *materialOffset+=materials.size();
     }
 };
 
