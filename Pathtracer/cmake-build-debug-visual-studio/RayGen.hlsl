@@ -36,7 +36,7 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  float samples = 2;
+  float samples = 1;
   for(int x = 0; x < samples; x++){
       HitInfo payload;
       // Initialize the ray payload

@@ -18,6 +18,9 @@ set(CMAKE_SYSROOT "${WINDOWS_SDK_ROOT}/${WINDOWS_SDK_VERSION}")
 set(DIRECTX_SDK_INCLUDE "C:/Program Files (x86)/Windows Kits/10/Include/${WINDOWS_SDK_VERSION}/um")
 set(DIRECTX_SDK_LIB "C:/Program Files (x86)/Windows Kits/10/Lib/${WINDOWS_SDK_VERSION}/um/x64")
 
+set(SL_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/lib/nv_streamline/include")
+set(SL_LIBRARY_DIR "${CMAKE_SOURCE_DIR}/lib/nv_streamline/lib/x64")
+
 
 
 add_executable(Pathtracer WIN32
@@ -50,11 +53,10 @@ add_executable(Pathtracer WIN32
 
 # Include directories
 include_directories(${DIRECTX_SDK_INCLUDE})
-target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_INCLUDE_DIR})
-
+target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_INCLUDE_DIR} ${SL_INCLUDE_DIR})
 
 target_link_directories(Pathtracer PRIVATE ${DIRECTX_SDK_LIB} ${FASTGLTF_LIB_DIR})
-target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib shlwapi.lib)
+target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib shlwapi.lib ${SL_LIBRARY_DIR}/sl.interposer.lib)
 
 
 

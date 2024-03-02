@@ -25,6 +25,7 @@
 				<Option compiler="msvc8"/>
 				<Compiler>
 					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/um"/>
+					<Add directory="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\ATLMFC\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
@@ -50,6 +51,7 @@
 				<Option compiler="msvc8"/>
 				<Compiler>
 					<Add directory="C:/Program Files (x86)/Windows Kits/10/Include/10.0.18362.0/um"/>
+					<Add directory="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\ATLMFC\include"/>
 					<Add directory="C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\VS\include"/>
