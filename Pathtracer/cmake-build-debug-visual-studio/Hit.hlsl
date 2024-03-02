@@ -127,7 +127,7 @@ StructuredBuffer<Material> materials : register(t5);
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
-    float3 direct = float3(20,20,20) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
+    float3 direct = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
     float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
     payload.emission += direct + emissive;
     //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
