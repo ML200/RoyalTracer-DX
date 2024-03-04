@@ -61,7 +61,7 @@ float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNo
         //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
         float f = SchlickFresnel(1.45f, -incidence, flatNormal) * (1-mat.Pr_Pm_Ps_Pc.x);
         //Get a random number
-        float randomCheck = RandomFloat(seed);
+        float randomCheck = RandomFloatLCG(seed.x);
         //Ckeck if the ray is diffuse reflected or through ggx:
         if(randomCheck < f){
             //Get the BRDF based on the materials properties

@@ -67,11 +67,11 @@ cbuffer CameraParams : register(b0)
         payload.seed.y = (uint)(screenpos.x * prime1_y) ^ (uint)(screenpos.y * prime2_y) ^ x * prime3_y ^ uint(time) * prime_time_y;
 
 
-      for(int y = 0; y < 1; y++){
+      for(int y = 0; y < 6; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
-          ray.TMin = 0.00001;
+          ray.TMin = 0.0001;
           ray.TMax = 10000;
           // Trace the ray
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
