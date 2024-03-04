@@ -48,7 +48,7 @@ float3 BRDF_Specular_GGX(float3 N, float3 V, float3 L, float3 F0, float alpha) {
 
 //Decide how to evaluate the material: distinguish between metals and dielectricts for simplicity
 //This function returns the surface color evaluated
-float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float pdf, inout uint seed){
+float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float pdf, inout uint2 seed){
     //Check for metallicness
     if(mat.Pr_Pm_Ps_Pc.y > 0.5f) //Normally only 0 or 1
     {

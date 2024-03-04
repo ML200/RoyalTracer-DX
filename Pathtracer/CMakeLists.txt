@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 
 # Locate the Windows SDK for DirectX
 # Set the Windows SDK version
-set(WINDOWS_SDK_VERSION "10.0.18362.0")
+set(WINDOWS_SDK_VERSION "10.0.22621.0")
 
 # Set the path to the Windows SDK
 set(WINDOWS_SDK_ROOT "C:/Program Files (x86)/Windows Kits/10")

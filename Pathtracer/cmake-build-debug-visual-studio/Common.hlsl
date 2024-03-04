@@ -11,7 +11,7 @@ struct HitInfo {
   float3 direction;
   float3 origin;
   float util; //IMPORTANT: util info: miss flag
-  uint seed;
+  uint2 seed;
   float pdf;
 };
 
@@ -30,16 +30,18 @@ struct Attributes {
   float2 bary;
 };
 
-uint lcg(inout uint seed) {
-    const uint LCG_A = 1664525u;
-    const uint LCG_C = 1013904223u;
-    seed = (LCG_A * seed + LCG_C);
-    return seed;
+uint mwc(inout uint2 seed) {
+    const uint a = 4294957665u;
+    uint mwc = a * (seed.x & 0xFFFFFFFF) + (seed.y & 0xFFFFFFFF);
+    seed.y = (mwc >> 32);
+    seed.x = mwc;
+    return mwc;
 }
 
-float RandomFloat(inout uint seed) {
-    return float(lcg(seed)) / float(0xFFFFFFFFu);
+float RandomFloat(inout uint2 seed) {
+    return float(mwc(seed)) / float(0xFFFFFFFFu);
 }
+
 
 float GGXDistribution(float alpha, float NoH) {
     float alphaSquared = alpha * alpha;
@@ -77,7 +79,7 @@ float3 CalculateF0Vector(float refractiveIndex) {
     return float3(F0Scalar, F0Scalar, F0Scalar); // Uniform reflectance across RGB
 }
 
-float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
+float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
 {
     // Generate two random numbers
     float u1 = RandomFloat(seed);
@@ -106,7 +108,7 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint seed)
     return normalize(hemisphereSample);
 }
 
-float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout uint seed, out float pdf) {
+float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout uint2 seed, out float pdf) {
     float alphaSquared = alpha * alpha;
 
     // Generate two random numbers for sampling

@@ -44,11 +44,30 @@ cbuffer CameraParams : register(b0)
       payload.emission = float3(0, 0, 0);
       payload.util = 0;
       payload.origin = init_orig;
-      payload.seed = launchIndex.x * 73856093u ^ launchIndex.y * 19349663u ^ x * 83492791u ^ uint(time) * 1859303u;
-      payload.direction = init_dir;
-      payload.pdf = 1.0f;
+        payload.direction = init_dir;
+        payload.pdf = 1.0f;
 
-      for(int y = 0; y < 5; y++){
+      //SEEDING
+        // Use large prime numbers to scale coordinates and the sample index for each component
+        const uint prime1_x = 73856093u; // Prime for x coordinate (component 1)
+        const uint prime2_x = 19349663u; // Prime for y coordinate (component 1)
+        const uint prime3_x = 83492791u; // Prime for sample index (component 1)
+
+        const uint prime1_y = 37623481u; // Prime for x coordinate (component 2)
+        const uint prime2_y = 51964263u; // Prime for y coordinate (component 2)
+        const uint prime3_y = 68250729u; // Prime for sample index (component 2)
+
+        // Additional prime for time to ensure variability over time for both components
+        const uint prime_time_x = 293803u;
+        const uint prime_time_y = 423977u;
+
+        float3 screenpos = normalize(float3(launchIndex.x,launchIndex.y,0));
+
+        payload.seed.x = (uint)(screenpos.x * prime1_x) ^ (uint)(screenpos.y * prime2_x) ^ x * prime3_x ^ uint(time) * prime_time_x;
+        payload.seed.y = (uint)(screenpos.x * prime1_y) ^ (uint)(screenpos.y * prime2_y) ^ x * prime3_y ^ uint(time) * prime_time_y;
+
+
+      for(int y = 0; y < 1; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
