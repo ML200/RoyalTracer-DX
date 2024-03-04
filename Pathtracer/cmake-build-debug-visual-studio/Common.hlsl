@@ -42,6 +42,17 @@ float RandomFloat(inout uint2 seed) {
     return float(mwc(seed)) / float(0xFFFFFFFFu);
 }
 
+uint lcg(inout uint seed) {
+    const uint LCG_A = 1664525u;
+    const uint LCG_C = 1013904223u;
+    seed = (LCG_A * seed + LCG_C);
+    return seed;
+}
+
+float RandomFloatLCG(inout uint seed) {
+    return float(lcg(seed)) / float(0xFFFFFFFFu);
+}
+
 
 float GGXDistribution(float alpha, float NoH) {
     float alphaSquared = alpha * alpha;
@@ -112,8 +123,8 @@ float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout u
     float alphaSquared = alpha * alpha;
 
     // Generate two random numbers for sampling
-    float u1 = RandomFloat(seed);
-    float u2 = RandomFloat(seed);
+    float u1 = RandomFloatLCG(seed.x);
+    float u2 = RandomFloatLCG(seed.y);
 
     // Sample theta and phi angles for H vector in spherical coordinates
     float theta = atan(alphaSquared * sqrt(u1) / sqrt(1.0 - u1));
