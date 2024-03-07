@@ -30,16 +30,24 @@ struct Attributes {
   float2 bary;
 };
 
-uint mwc(inout uint2 seed) {
-    const uint a = 4294957665u;
-    uint mwc = a * (seed.x & 0xFFFFFFFF) + (seed.y & 0xFFFFFFFF);
-    seed.y = (mwc >> 32);
-    seed.x = mwc;
-    return mwc;
+// Hash function to mix the seeds
+uint hash(uint2 seed)
+{
+    uint h = seed.x + seed.y * 6364136223846793005u + 1442695040888963407u;
+    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9u;
+    h = (h ^ (h >> 27)) * 0x94d049bb133111ebu;
+    h = h ^ (h >> 31);
+    return h;
 }
 
-float RandomFloat(inout uint2 seed) {
-    return float(mwc(seed)) / float(0xFFFFFFFFu);
+// Improved Random Float Generator
+float RandomFloat(inout uint2 seed)
+{
+    uint h = hash(seed);
+    seed += uint2(1,1); // Simple way to update seed to ensure different values on subsequent calls
+    // Use the high-quality bits from the middle of the hashed value
+    uint randomValue = (h >> 9) | 0x3F800000u;
+    return asfloat(randomValue) - 1.0;
 }
 
 uint lcg(inout uint seed) {

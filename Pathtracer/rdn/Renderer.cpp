@@ -31,7 +31,9 @@ Renderer::Renderer(UINT width, UINT height,
       m_viewport(0.0f, 0.0f, static_cast<float>(width),
                  static_cast<float>(height)),
       m_scissorRect(0, 0, static_cast<LONG>(width), static_cast<LONG>(height)),
-      m_rtvDescriptorSize(0) {}
+      m_rtvDescriptorSize(0) {
+    m_mod = LoadLibrary("sl.interposer.dll");
+}
 
 void Renderer::OnInit() {
 
@@ -91,36 +93,49 @@ void Renderer::OnInit() {
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
   UINT dxgiFactoryFlags = 0;
+    // These are the exports from SL library
+    typedef HRESULT(WINAPI* PFunCreateDXGIFactory)(REFIID, void**);
+    typedef HRESULT(WINAPI* PFunCreateDXGIFactory1)(REFIID, void**);
+    typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
+    typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
+    typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
 
-#if defined(_DEBUG)
-  // Enable the debug layer (requires the Graphics Tools "optional feature").
-  // NOTE: Enabling the debug layer after device creation will invalidate the
-  // active device.
-  {
-    ComPtr<ID3D12Debug> debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-      debugController->EnableDebugLayer();
+    // Map functions from SL and use them instead of standard DXGI/D3D12 API
+    auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
+    auto slCreateDXGIFactory1 = reinterpret_cast<PFunCreateDXGIFactory1>(GetProcAddress(m_mod, "CreateDXGIFactory1"));
+    auto slCreateDXGIFactory2 = reinterpret_cast<PFunCreateDXGIFactory2>(GetProcAddress(m_mod, "CreateDXGIFactory2"));
+    auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
+    auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
 
-      // Enable additional debug layers.
-      dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-    }
-  }
-#endif
+    #if defined(_DEBUG)
+        // Enable the debug layer (requires the Graphics Tools "optional feature").
+        // NOTE: Enabling the debug layer after device creation will invalidate the
+        // active device.
+        {
+            ComPtr<ID3D12Debug> debugController;
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+                debugController->EnableDebugLayer();
+
+                // Enable additional debug layers.
+                dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+            }
+        }
+    #endif
 
   ComPtr<IDXGIFactory4> factory;
-  ThrowIfFailed(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
+  ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
 
   if (m_useWarpDevice) {
     ComPtr<IDXGIAdapter> warpAdapter;
     ThrowIfFailed(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)));
 
-    ThrowIfFailed(D3D12CreateDevice(warpAdapter.Get(), D3D_FEATURE_LEVEL_11_0,
+    ThrowIfFailed(slD3D12CreateDevice(warpAdapter.Get(), D3D_FEATURE_LEVEL_11_0,
                                     IID_PPV_ARGS(&m_device)));
   } else {
     ComPtr<IDXGIAdapter1> hardwareAdapter;
     GetHardwareAdapter(factory.Get(), &hardwareAdapter);
 
-    ThrowIfFailed(D3D12CreateDevice(hardwareAdapter.Get(),
+    ThrowIfFailed(slD3D12CreateDevice(hardwareAdapter.Get(),
                                     D3D_FEATURE_LEVEL_11_0,
                                     IID_PPV_ARGS(&m_device)));
   }

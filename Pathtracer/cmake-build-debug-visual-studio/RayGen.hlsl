@@ -36,7 +36,7 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  float samples = 1;
+  float samples = 2;
   for(int x = 0; x < samples; x++){
       HitInfo payload;
       // Initialize the ray payload
@@ -61,13 +61,11 @@ cbuffer CameraParams : register(b0)
         const uint prime_time_x = 293803u;
         const uint prime_time_y = 423977u;
 
-        float3 screenpos = normalize(float3(launchIndex.x,launchIndex.y,0));
-
-        payload.seed.x = (uint)(screenpos.x * prime1_x) ^ (uint)(screenpos.y * prime2_x) ^ x * prime3_x ^ uint(time) * prime_time_x;
-        payload.seed.y = (uint)(screenpos.x * prime1_y) ^ (uint)(screenpos.y * prime2_y) ^ x * prime3_y ^ uint(time) * prime_time_y;
+        payload.seed.x = (uint)(((uint)(launchIndex.y * prime1_x) ^ (uint)(launchIndex.x * prime2_x) ^ x * prime3_x ^ uint(time) * prime_time_x));
+        payload.seed.y = (uint)(((uint)(launchIndex.x * prime1_y) ^ (uint)(launchIndex.y * prime2_y) ^ x * prime3_y ^ uint(time) * prime_time_y));
 
 
-      for(int y = 0; y < 6; y++){
+      for(int y = 0; y < 5; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -84,7 +82,7 @@ cbuffer CameraParams : register(b0)
         // Apply Russian Roulette after a minimum number of bounces
         //______________________________________________________________________________________________________________
         // Assuming 'throughput' is a float3 representing the accumulated light contribution (RGB)
-        if(y > 3){
+        if(y > 2){
             float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
             // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities
