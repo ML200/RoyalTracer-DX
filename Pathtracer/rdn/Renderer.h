@@ -219,4 +219,7 @@ private:
   ComPtr<ID3D12Resource> m_instanceProperties;
   void CreateInstancePropertiesBuffer();
   void UpdateInstancePropertiesBuffer();
+
+  //SL specific
+  HINSTANCE__ *m_mod;
 };
