@@ -531,22 +531,30 @@ void Renderer::PopulateCommandList() {
     // UAV to a copy source, and the render target buffer to a copy destination.
     // We can then do the actual copy, before transitioning the render target
     // buffer into a render target, that will be then used to display the image
+    // Transition the raytracing output texture array from UAV to COPY_SOURCE
     transition = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_COPY_SOURCE);
-    m_commandList->ResourceBarrier(1, &transition);
-    transition = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_COPY_DEST);
+            m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
     m_commandList->ResourceBarrier(1, &transition);
 
-    m_commandList->CopyResource(m_renderTargets[m_frameIndex].Get(),
-                                m_outputResource.Get());
-
+    // Transition the current render target from RENDER_TARGET to COPY_DEST
     transition = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-        D3D12_RESOURCE_STATE_RENDER_TARGET);
+            m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
     m_commandList->ResourceBarrier(1, &transition);
+
+    // Calculate the subresource index for the specific layer of the texture array
+    UINT subresourceIndex = D3D12CalcSubresource(0, 0, 0, 1, 10);
+    CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), subresourceIndex);
+    CD3DX12_TEXTURE_COPY_LOCATION dest(m_renderTargets[m_frameIndex].Get(), 0);
+
+    // Define the region to copy - in this case, the whole layer
+    D3D12_BOX srcBox = {0, 0, 0, static_cast<UINT>(m_width), static_cast<UINT>(m_height), 1};
+    m_commandList->CopyTextureRegion(&dest, 0, 0, 0, &src, &srcBox);
+
+    // Transition the render target back to RENDER_TARGET to be used for presentation
+    transition = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    m_commandList->ResourceBarrier(1, &transition);
+
   //}
 
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -956,7 +964,7 @@ void Renderer::CreateRaytracingPipeline() {
 //
 void Renderer::CreateRaytracingOutputBuffer() {
   D3D12_RESOURCE_DESC resDesc = {};
-  resDesc.DepthOrArraySize = 1;
+  resDesc.DepthOrArraySize = 10;
   resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
   // The backbuffer is actually DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, but sRGB
   // formats cannot be used with UAVs. For accuracy we should convert to sRGB

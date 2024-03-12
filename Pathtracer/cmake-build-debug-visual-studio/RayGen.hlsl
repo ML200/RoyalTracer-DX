@@ -1,7 +1,7 @@
 #include "Common.hlsl"
 
 // Raytracing output texture, accessed as a UAV
-RWTexture2D<float4> gOutput : register(u0);
+RWTexture2DArray<float4> gOutput : register(u0);
 
 // Raytracing acceleration structure, accessed as a SRV
 RaytracingAccelerationStructure SceneBVH : register(t0);
@@ -102,5 +102,28 @@ cbuffer CameraParams : register(b0)
       accumulation += payload.emission;
   }
   accumulation/=samples;
-  gOutput[launchIndex] = float4(accumulation.xyz, 1.f);
+
+    // First, read the color from the previous frame [1] before it gets overwritten and start the accumulation
+    float3 temporalAccumulation = accumulation;
+
+    // Loop to shift entries one position ahead while accumulating the existing data
+    // Skipping the last slot as an example, assuming we only keep a history of 9 frames
+    [unroll]
+    for (int i = 1; i <= 9; i++) {
+        // Read color from the next slot
+        float4 prevColor = gOutput[uint3(launchIndex, i)];
+        // Accumulate colors
+        temporalAccumulation += prevColor.xyz;
+        // Shift color to the next slot
+        gOutput[uint3(launchIndex, i + 1)] = prevColor;
+    }
+
+    // Normalize the accumulated color by the number of accumulated frames
+    temporalAccumulation /= 9.0f;
+
+    // Write the accumulated color to the current frame's slot [1]
+    gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
+
+    // Write the normalized (averaged) accumulated color into the output frame buffer [0]
+    gOutput[uint3(launchIndex, 0)] = float4(temporalAccumulation, 1.0f);
 }
