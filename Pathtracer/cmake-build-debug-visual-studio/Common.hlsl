@@ -10,7 +10,7 @@ struct HitInfo {
   float3 emission;
   float3 direction;
   float3 origin;
-  float util; //IMPORTANT: util info: miss flag
+  float2 util; //IMPORTANT: util info: miss flag
   uint2 seed;
   float pdf;
 };
@@ -30,25 +30,26 @@ struct Attributes {
   float2 bary;
 };
 
-// Hash function to mix the seeds
-uint hash(uint2 seed)
-{
-    uint h = seed.x + seed.y * 6364136223846793005u + 1442695040888963407u;
-    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9u;
-    h = (h ^ (h >> 27)) * 0x94d049bb133111ebu;
-    h = h ^ (h >> 31);
-    return h;
-}
-
-// Improved Random Float Generator
+// Improved Random Float Generator using LCG
 float RandomFloat(inout uint2 seed)
 {
-    uint h = hash(seed);
-    seed += uint2(1,1); // Simple way to update seed to ensure different values on subsequent calls
-    // Use the high-quality bits from the middle of the hashed value
-    uint randomValue = (h >> 9) | 0x3F800000u;
-    return asfloat(randomValue) - 1.0;
+    // Constants for a 32-bit LCG (suggested by Numerical Recipes)
+    const uint a = 1664525u;
+    const uint c = 1013904223u;
+
+    // Update the seed with LCG formula
+    seed.x = (a * seed.x + c); // Simple LCG, applied to one component of the seed
+
+    // Optionally apply LCG to the other component for more variation, if needed
+    // seed.y = (a * seed.y + c);
+
+    // Normalize the result to [0, 1) range. Since we're using a 32-bit integer, divide by 2^32.
+    // Casting to float before division to avoid integer division.
+    float randomValue = float(seed.x) / 4294967296.0; // 2^32 = 4294967296
+
+    return randomValue;
 }
+
 
 uint lcg(inout uint seed) {
     const uint LCG_A = 1664525u;
@@ -124,12 +125,36 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
     // Convert disk sample to hemisphere sample in the local basis
     float3 hemisphereSample = x * right + y * forward + z * h;
 
-    return normalize(hemisphereSample);
+    // Normalize the sample vector
+    hemisphereSample = normalize(hemisphereSample);
+
+    // Mirror the vector if it's under the plane defined by the normal
+    if (dot(hemisphereSample, normal) < 0.0f) {
+        hemisphereSample = -hemisphereSample;
+    }
+
+    return hemisphereSample;
 }
 
+
 float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout uint2 seed, out float pdf) {
+    // Clamp alpha to a minimum value to avoid division by zero or other anomalies
+    alpha = max(alpha, 0.0001f);
     float alphaSquared = alpha * alpha;
 
+    // If alpha is very low, treat as perfect mirror
+    if (alpha <= 0.0001f) {
+        // Reflect V about N for perfect mirror reflection
+        float3 L = reflect(-V, N); // reflect expects V to point towards the surface
+
+        // Set PDF to 1 for deterministic reflection
+        pdf = 1.0f;
+
+        // Return the perfectly reflected direction
+        return L;
+    }
+
+    // Continue with GGX VNDF sampling for rough surfaces
     // Generate two random numbers for sampling
     float u1 = RandomFloatLCG(seed.x);
     float u2 = RandomFloatLCG(seed.y);
@@ -152,24 +177,21 @@ float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout u
     float3 H = normalize(x * right + y * forward + z * N);
 
     // Calculate the reflection direction L based on H and V
-    float3 L = 2.0f * dot(V, H) * H - V;
+    float3 L = normalize(2.0f * dot(V, H) * H - V);
 
     // Check if L is below the surface; if so, reflect it above the surface
     if (dot(flatNormal, L) < 0.0) {
         L = -L;
     }
 
-    // Calculate PDF for GGX distribution using H
-    float NoH = normalize(max(dot(N, H), 0.0f));
-    float NoV = normalize(max(dot(N, V), 0.0f));
-    float VoH = normalize(max(dot(V, H), 0.0f));
-    float HoL = normalize(max(dot(H,L),0.0f));
+    // Calculate PDF for GGX distribution using H for rough surfaces
+    float NoH = max(dot(N, H), 0.0f);
+    float VoH = max(dot(V, H), 0.0f);
 
-    // PDF calculation adjusted for clarity and correctness
-    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH * HoL);
+    // Adjusted PDF calculation for clarity and correctness
+    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH);
 
-    // Return the sampled vector L and the PDF by reference
-    return normalize(L);
+    return L;
 }
 
 
