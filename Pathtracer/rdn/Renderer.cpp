@@ -398,7 +398,7 @@ void Renderer::OnUpdate() {
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                                 static_cast<float>(m_time) / 1000.0f) *
+                                 static_cast<float>(m_time) / 10000000.0f) *
             XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
@@ -933,7 +933,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-  pipeline.SetMaxPayloadSize(15 * sizeof(float)+ 2*sizeof(UINT)); // RGB + distance
+  pipeline.SetMaxPayloadSize(16 * sizeof(float)+ 2*sizeof(UINT)); // RGB + distance
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1007,7 +1007,11 @@ void Renderer::CreateShaderResourceHeap() {
   // entry. The Create*View methods write the view information directly into
   // srvHandle
   D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-  uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // Ensure this matches your resource format
+    uavDesc.Texture2DArray.MipSlice = 0; // Assuming you're using the first MIP level
+    uavDesc.Texture2DArray.FirstArraySlice = 0; // Starting at the first layer of the array
+    uavDesc.Texture2DArray.ArraySize = 10; // The number of layers in the array
   m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc,
                                       srvHandle);
 
@@ -1205,7 +1209,7 @@ void Renderer::UpdateCameraBuffer() {
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    float currentTime = static_cast<float>(millis % 100); // Convert milliseconds to seconds as float
+    float currentTime = static_cast<float>(millis % 1000); // Convert milliseconds to seconds as float
 
     // Copy the current time into the buffer, right after the matrices
     memcpy(pData + m_cameraBufferSize - sizeof(float)*64, &currentTime, sizeof(float));

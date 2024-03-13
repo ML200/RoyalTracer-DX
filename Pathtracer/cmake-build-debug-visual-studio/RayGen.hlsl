@@ -36,13 +36,14 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  float samples = 2;
+  float samples = 1;
   for(int x = 0; x < samples; x++){
       HitInfo payload;
       // Initialize the ray payload
       payload.colorAndDistance = float4(1, 1, 1, 0);
       payload.emission = float3(0, 0, 0);
-      payload.util = 0;
+      payload.util.x = 0;
+      payload.util.y = x;
       payload.origin = init_orig;
         payload.direction = init_dir;
         payload.pdf = 1.0f;
@@ -61,11 +62,14 @@ cbuffer CameraParams : register(b0)
         const uint prime_time_x = 293803u;
         const uint prime_time_y = 423977u;
 
-        payload.seed.x = (uint)(((uint)(launchIndex.y * prime1_x) ^ (uint)(launchIndex.x * prime2_x) ^ x * prime3_x ^ uint(time) * prime_time_x));
-        payload.seed.y = (uint)(((uint)(launchIndex.x * prime1_y) ^ (uint)(launchIndex.y * prime2_y) ^ x * prime3_y ^ uint(time) * prime_time_y));
+        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ x * prime3_x ^ uint(time) * prime_time_x;
+        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ x * prime3_y ^ uint(time) * prime_time_y;
+
+      float jitterX = RandomFloatLCG(payload.seed.x) - 0.5f;
+      float jitterY = RandomFloatLCG(payload.seed.y) - 0.5f;
 
 
-      for(int y = 0; y < 5; y++){
+      for(int y = 0; y < 6; y++){
           RayDesc ray;
           ray.Origin = payload.origin;
           ray.Direction = payload.direction;
@@ -75,14 +79,14 @@ cbuffer CameraParams : register(b0)
           TraceRay(SceneBVH,RAY_FLAG_NONE,0xFF,0,0,0, ray, payload);
 
           //If the last ray missed, terminate loop:
-          if(payload.util == 1.0f){
+          if(payload.util.x == 1.0f){
             break;
           }
 
         // Apply Russian Roulette after a minimum number of bounces
         //______________________________________________________________________________________________________________
         // Assuming 'throughput' is a float3 representing the accumulated light contribution (RGB)
-        if(y > 2){
+        if(y > 3){
             float p = max(payload.emission.x, max(payload.emission.y, payload.emission.z)); // Max component of throughput
 
             // Ensure 'p' is within a sensible range to avoid division by zero or extremely low probabilities
@@ -108,8 +112,7 @@ cbuffer CameraParams : register(b0)
 
     // Loop to shift entries one position ahead while accumulating the existing data
     // Skipping the last slot as an example, assuming we only keep a history of 9 frames
-    [unroll]
-    for (int i = 1; i <= 9; i++) {
+    for (int i = 8; i >= 1; i--) {
         // Read color from the next slot
         float4 prevColor = gOutput[uint3(launchIndex, i)];
         // Accumulate colors
@@ -119,7 +122,7 @@ cbuffer CameraParams : register(b0)
     }
 
     // Normalize the accumulated color by the number of accumulated frames
-    temporalAccumulation /= 9.0f;
+    temporalAccumulation /= 10.0f;
 
     // Write the accumulated color to the current frame's slot [1]
     gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);

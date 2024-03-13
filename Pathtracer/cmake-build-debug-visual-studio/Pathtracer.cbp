@@ -90,6 +90,9 @@
 				</MakeCommands>
 			</Target>
 		</Build>
+		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nrd.h">
+			<Option target="Pathtracer"/>
+		</Unit>
 		<Unit filename="C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.cpp">
 			<Option target="Pathtracer"/>
 		</Unit>
