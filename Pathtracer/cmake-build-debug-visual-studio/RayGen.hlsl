@@ -22,16 +22,12 @@ cbuffer CameraParams : register(b0)
   // (often maps to pixels, so this could represent a pixel coordinate).
   uint2 launchIndex = DispatchRaysIndex().xy;
   float2 dims = float2(DispatchRaysDimensions().xy);
-  float2 d = (((launchIndex.xy + 0.5f) / dims.xy) * 2.f - 1.f);
   // Define a ray, consisting of origin, direction, and the min-max distance
   // values
   // #DXR Extra: Perspective Camera
   float aspectRatio = dims.x / dims.y;
 
     float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
-    float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-    float3 init_dir = mul(viewI, float4(target.xyz, 0));
-
     //We have to collect the intensity and color on the path:
     float3 accumulation = float3(0,0,0);
 
@@ -45,28 +41,33 @@ cbuffer CameraParams : register(b0)
       payload.util.x = 0;
       payload.util.y = x;
       payload.origin = init_orig;
-        payload.direction = init_dir;
-        payload.pdf = 1.0f;
 
       //SEEDING
-        // Use large prime numbers to scale coordinates and the sample index for each component
-        const uint prime1_x = 73856093u; // Prime for x coordinate (component 1)
-        const uint prime2_x = 19349663u; // Prime for y coordinate (component 1)
-        const uint prime3_x = 83492791u; // Prime for sample index (component 1)
+      // Use large prime numbers to scale coordinates and the sample index for each component
+      const uint prime1_x = 73856093u; // Prime for x coordinate (component 1)
+      const uint prime2_x = 19349663u; // Prime for y coordinate (component 1)
+      const uint prime3_x = 83492791u; // Prime for sample index (component 1)
 
-        const uint prime1_y = 37623481u; // Prime for x coordinate (component 2)
-        const uint prime2_y = 51964263u; // Prime for y coordinate (component 2)
-        const uint prime3_y = 68250729u; // Prime for sample index (component 2)
+      const uint prime1_y = 37623481u; // Prime for x coordinate (component 2)
+      const uint prime2_y = 51964263u; // Prime for y coordinate (component 2)
+      const uint prime3_y = 68250729u; // Prime for sample index (component 2)
 
-        // Additional prime for time to ensure variability over time for both components
-        const uint prime_time_x = 293803u;
-        const uint prime_time_y = 423977u;
+      // Additional prime for time to ensure variability over time for both components
+      const uint prime_time_x = 293803u;
+      const uint prime_time_y = 423977u;
 
-        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ x * prime3_x ^ uint(time) * prime_time_x;
-        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ x * prime3_y ^ uint(time) * prime_time_y;
+      payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ x * prime3_x ^ uint(time) * prime_time_x;
+      payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ x * prime3_y ^ uint(time) * prime_time_y;
 
-      float jitterX = RandomFloatLCG(payload.seed.x) - 0.5f;
-      float jitterY = RandomFloatLCG(payload.seed.y) - 0.5f;
+      float jitterX = RandomFloatLCG(payload.seed.x);
+      float jitterY = RandomFloatLCG(payload.seed.y);
+
+      float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
+      float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+      float3 init_dir = mul(viewI, float4(target.xyz, 0));
+
+      payload.direction = init_dir;
+      payload.pdf = 1.0f;
 
 
       for(int y = 0; y < 6; y++){
