@@ -90,6 +90,7 @@ void Renderer::OnInit() {
   CreateShaderBindingTable();
 }
 
+
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
   UINT dxgiFactoryFlags = 0;
@@ -964,7 +965,8 @@ void Renderer::CreateRaytracingPipeline() {
 //
 void Renderer::CreateRaytracingOutputBuffer() {
   D3D12_RESOURCE_DESC resDesc = {};
-  resDesc.DepthOrArraySize = 10;
+  //10 backtracking size, times the buffer number
+  resDesc.DepthOrArraySize = 10 * 2;
   resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
   // The backbuffer is actually DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, but sRGB
   // formats cannot be used with UAVs. For accuracy we should convert to sRGB
