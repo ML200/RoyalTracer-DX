@@ -17,6 +17,12 @@
 _Use_decl_annotations_
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
+    if (AllocConsole()) {
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        std::wcout << L"Console initialized" << std::endl;
+    }
+
     sl::Preferences pref;
     pref.showConsole = true;                        // for debugging, set to false in production
     pref.logLevel = sl::LogLevel();

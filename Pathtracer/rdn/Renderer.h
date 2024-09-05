@@ -223,4 +223,7 @@ private:
 
   //SL specific
   HINSTANCE__ *m_mod;
+
+  UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
+  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13}; // Levels to cycle through
 };

@@ -32,7 +32,7 @@ cbuffer CameraParams : register(b0)
     float3 accumulation = float3(0,0,0);
 
   //Pathtracing: x samples for y bounces
-  float samples = 10;
+  float samples = 3;
   for(int x = 0; x < samples; x++){
       HitInfo payload;
       // Initialize the ray payload
@@ -100,7 +100,21 @@ cbuffer CameraParams : register(b0)
                 break; // Terminate the path
             }
             // If the path continues, adjust the throughput to compensate for the paths terminated (removed for now)
-            //payload.colorAndDistance.xyz /= p;
+            payload.colorAndDistance.xyz /= p;
+        }
+        else{
+            if (y==0){
+                gOutput[uint3(launchIndex, 10)] = float4(payload.emission, 1.0f);
+            }
+            else if (y==1){
+                gOutput[uint3(launchIndex, 11)] = float4(payload.emission-gOutput[uint3(launchIndex, 10)], 1.0f);
+            }
+            else if (y==2){
+                gOutput[uint3(launchIndex, 12)] = float4(payload.emission-gOutput[uint3(launchIndex, 11)]-gOutput[uint3(launchIndex, 10)], 1.0f);
+            }
+            else if (y==3){
+                gOutput[uint3(launchIndex, 13)] = float4(payload.emission-gOutput[uint3(launchIndex, 12)]-gOutput[uint3(launchIndex, 11)]-gOutput[uint3(launchIndex, 10)], 1.0f);
+            }
         }
         //______________________________________________________________________________________________________________
       }
@@ -108,8 +122,9 @@ cbuffer CameraParams : register(b0)
   }
   accumulation/=samples;
 
+
     // First, read the color from the previous frame [1] before it gets overwritten and start the accumulation
-    float3 temporalAccumulation = accumulation;
+    float3 temporalAccumulation = float3(0.0f,0.0f,0.0f);//accumulation;
 
     // Loop to shift entries one position ahead while accumulating the existing data
     // Skipping the last slot as an example, assuming we only keep a history of 9 frames
@@ -123,7 +138,17 @@ cbuffer CameraParams : register(b0)
     }
 
     // Normalize the accumulated color by the number of accumulated frames
-    temporalAccumulation /= 10.0f;
+    //temporalAccumulation /= 10.0f;
+    temporalAccumulation /= 9.0f;
+
+
+    // Number of À-Trous wavelet iterations
+    int iterations = 3;
+    // Edge sensitivity (for edge-avoiding behavior)
+    float sigma_color = 0.1f;
+    // Perform Edge Avoiding À-Trous Wavelet Transform to denoise the image
+    float3 denoisedColor = A_TrousWaveletWithHistory(launchIndex, gOutput, dims, sigma_color, iterations);
+
 
     // Write the accumulated color to the current frame's slot [1]
     gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);

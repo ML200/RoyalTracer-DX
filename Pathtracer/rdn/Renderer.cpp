@@ -399,13 +399,12 @@ void Renderer::OnUpdate() {
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                                 static_cast<float>(m_time) / 10000000.0f) *
+                                 static_cast<float>(m_time) / 10000000000.0f) *
             XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
 
-// Render the scene.
 void Renderer::OnRender() {
     // Record all the commands we need to render the scene into the command list.
     PopulateCommandList();
@@ -414,11 +413,13 @@ void Renderer::OnRender() {
     ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
-    // Present the frame.
+    // Present the frame
     ThrowIfFailed(m_swapChain->Present(1, 0));
 
+    // Wait for the frame to finish
     WaitForPreviousFrame();
 }
+
 
 void Renderer::OnDestroy() {
   // Ensure that the GPU is no longer referencing resources that are about to be
@@ -542,8 +543,9 @@ void Renderer::PopulateCommandList() {
             m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
     m_commandList->ResourceBarrier(1, &transition);
 
+    UINT selectedLayer = m_displayLevels[m_currentDisplayLevel];
     // Calculate the subresource index for the specific layer of the texture array
-    UINT subresourceIndex = D3D12CalcSubresource(0, 0, 0, 1, 10);
+    UINT subresourceIndex = D3D12CalcSubresource(0, selectedLayer, 0, 1, 30);
     CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), subresourceIndex);
     CD3DX12_TEXTURE_COPY_LOCATION dest(m_renderTargets[m_frameIndex].Get(), 0);
 
@@ -600,11 +602,19 @@ void Renderer::CheckRaytracingSupport() {
 //
 //
 void Renderer::OnKeyUp(UINT8 key) {
-  // Alternate between rasterization and raytracing using the spacebar
-  if (key == VK_SPACE) {
-    m_raster = !m_raster;
-  }
+    // Check if a specific key (e.g., 'C' for cycle) is pressed
+    if (key == 'C') {
+        m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
+        std::wcout << L"C key pressed, switching to level: " << m_currentDisplayLevel << std::endl;
+    }
+
+    if (key == VK_SPACE) {
+        m_raster = !m_raster;
+        std::wcout << L"Space key pressed, toggling rasterization: " << m_raster << std::endl;
+    }
 }
+
+
 
 //-----------------------------------------------------------------------------
 //
@@ -966,7 +976,7 @@ void Renderer::CreateRaytracingPipeline() {
 void Renderer::CreateRaytracingOutputBuffer() {
   D3D12_RESOURCE_DESC resDesc = {};
   //10 backtracking size, times the buffer number
-  resDesc.DepthOrArraySize = 10 * 2;
+  resDesc.DepthOrArraySize = 30 * 2;
   resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
   // The backbuffer is actually DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, but sRGB
   // formats cannot be used with UAVs. For accuracy we should convert to sRGB
@@ -1013,7 +1023,7 @@ void Renderer::CreateShaderResourceHeap() {
     uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // Ensure this matches your resource format
     uavDesc.Texture2DArray.MipSlice = 0; // Assuming you're using the first MIP level
     uavDesc.Texture2DArray.FirstArraySlice = 0; // Starting at the first layer of the array
-    uavDesc.Texture2DArray.ArraySize = 10; // The number of layers in the array
+    uavDesc.Texture2DArray.ArraySize = 30; // The number of layers in the array
   m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc,
                                       srvHandle);
 
