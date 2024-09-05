@@ -1,4 +1,5 @@
 #define PI 3.1415f
+#define s_bias 0.00001f // Shadow ray bias value
 
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
@@ -222,4 +223,72 @@ float3 getPerpendicularVector(float3 v)
 
     // Find a perpendicular vector using cross product
     return cross(v, nonParallelVec);
+}
+
+// Gaussian function for edge weighting (for spatial and temporal filtering)
+float Gaussian(float dist2, float sigma) {
+    return exp(-dist2 / (2.0f * sigma * sigma));
+}
+
+// Edge-Avoiding À-Trous Wavelet Transform with Temporal Accumulation
+float3 A_TrousWaveletWithHistory(uint2 launchIndex, RWTexture2DArray<float4> gOutput, float2 dims, float sigma_color, int iterations) {
+    // Start with the current frame's pixel color as the baseline
+    float3 currentColor = gOutput[uint3(launchIndex, 1)].xyz;
+    float kernel[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
+
+    // Use the history of previous 9 frames to accumulate information
+    float3 accumulatedColor = float3(0, 0, 0);
+    float normalization = 0.0f;
+
+    // Step size for À-Trous (expanding kernel size at each iteration)
+    float stepSize = 1.0f;
+
+    // Loop through the À-Trous iterations
+    for (int iter = 0; iter < iterations; iter++) {
+        // Temporal accumulation over the last 9 frames (including the current one)
+        for (int frameIndex = 0; frameIndex < 9; frameIndex++) {
+            float3 filteredColor = float3(0, 0, 0);
+            float weightSum = 0.0f;
+
+            // Apply the À-Trous kernel spatially
+            for (int dx = -2; dx <= 2; dx++) {
+                for (int dy = -2; dy <= 2; dy++) {
+                    int2 neighborIdx = int2(launchIndex) + int2(dx * stepSize, dy * stepSize);
+
+                    // Ensure the neighbor is within bounds
+                    if (neighborIdx.x >= 0 && neighborIdx.y >= 0 && neighborIdx.x < dims.x && neighborIdx.y < dims.y) {
+                        float3 neighborColor = gOutput[uint3(neighborIdx, frameIndex)].xyz;
+
+                        // Spatial kernel weight
+                        float spatialWeight = kernel[dx + 2] * kernel[dy + 2];
+
+                        // Edge-aware weighting based on color difference
+                        float3 colorDiff = neighborColor - currentColor;
+                        float dist2 = dot(colorDiff, colorDiff); // Squared distance
+                        float edgeWeight = Gaussian(dist2, sigma_color);
+
+                        // Final weight is the product of spatial weight and edge-aware weight
+                        float weight = spatialWeight * edgeWeight;
+
+                        // Accumulate the weighted color
+                        filteredColor += neighborColor * weight;
+                        weightSum += weight;
+                    }
+                }
+            }
+
+            // Normalize the filtered color by the sum of the weights
+            filteredColor /= max(weightSum, 1e-5f); // Prevent division by zero
+            accumulatedColor += filteredColor;
+            normalization += 1.0f; // Each frame adds 1 contribution
+        }
+
+        // Increase step size for the next iteration
+        stepSize *= 2.0f;
+    }
+
+    // Normalize the accumulated color
+    accumulatedColor /= max(normalization, 1e-5f); // Ensure no division by zero
+
+    return accumulatedColor;
 }

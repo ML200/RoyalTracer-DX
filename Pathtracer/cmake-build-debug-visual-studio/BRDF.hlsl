@@ -48,30 +48,48 @@ float3 BRDF_Specular_GGX(float3 N, float3 V, float3 L, float3 F0, float alpha) {
 
 //Decide how to evaluate the material: distinguish between metals and dielectricts for simplicity
 //This function returns the surface color evaluated
-float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float pdf, inout uint2 seed){
+float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float3 origin, float3 worldOrigin, inout float pdf, inout uint2 seed, inout bool recieveDir){
     //Check for metallicness
     if(mat.Pr_Pm_Ps_Pc.y > 0.5f) //Normally only 0 or 1
     {
         //Get the BRDF based on the materials properties
         sample =SampleGGXVNDF(normal,flatNormal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+        origin = worldOrigin + s_bias * flatNormal;
+        recieveDir = true;
         return BRDF_Specular_GGX(normal, -incidence, light, mat.Kd,mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
     }
     else{
         //Calculate the fresnel term based on mat.Ni, incidence and normal
         //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
         float f = SchlickFresnel(1.45f, -incidence, flatNormal) * (1-mat.Pr_Pm_Ps_Pc.x);
+        float transparency = 1.0f - mat.Kd.w; // Kd.w holds alpha, 1.0 is fully opaque
+
+
         //Get a random number
         float randomCheck = RandomFloatLCG(seed.x);
+
+
         //Ckeck if the ray is diffuse reflected or through ggx:
         if(randomCheck < f){
             //Get the BRDF based on the materials properties
             sample =SampleGGXVNDF(normal, flatNormal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
+            origin = worldOrigin + s_bias * flatNormal;
+            recieveDir = true;
             return BRDF_Specular_GGX(normal, -incidence, light, CalculateF0Vector(1.0f),mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
         }
         else{
+            if(randomCheck < transparency){
+                sample = incidence;
+                origin = worldOrigin - s_bias * incidence;
+                pdf = 1.0f;
+                recieveDir = false;
+                return mat.Kd.xyz * transparency;
+            }
             //Diffuse reflection using lambertian
             sample = RandomUnitVectorInHemisphere(normal,seed);
+            origin = worldOrigin + s_bias * flatNormal;
             pdf = 1.0f;
+            recieveDir = true;
             return float3(1,1,1);
         }
     }

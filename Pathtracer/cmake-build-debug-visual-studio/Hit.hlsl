@@ -90,6 +90,8 @@ StructuredBuffer<Material> materials : register(t5);
     if (dot(payload.direction, flatNormal) > 0.0f) {
         flatNormal = -flatNormal; // Flip the normal if hitting from behind
     }
+
+
     //_____________________________________________________________________________________________________________________________________________
 
     // # DXR Extra - Simple Lighting
@@ -105,11 +107,10 @@ StructuredBuffer<Material> materials : register(t5);
 
     //Shadow ray
     RayDesc ray;
-    float bias = 0.0001f; // Shadow ray bias value
-    ray.Origin = worldOrigin + bias * flatNormal; // Offset origin along the normal
+    ray.Origin = worldOrigin + s_bias * flatNormal; // Offset origin along the normal
     ray.Direction = centerLightDir;
-    ray.TMin = bias;
-    ray.TMax = length(toLight) - bias;
+    ray.TMin = s_bias;
+    ray.TMax = length(toLight) - s_bias;
     bool hit = true;
     // Initialize the ray payload
     ShadowHitInfo shadowPayload;
@@ -119,11 +120,9 @@ StructuredBuffer<Material> materials : register(t5);
     float factor = shadowPayload.isHit ? 0.0 : 1.0;
 
     float pdf;
-    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, normalize(centerLightDir), payload.direction, pdf, payload.seed);
+    bool recieveDir;
+    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, normalize(centerLightDir), payload.direction, payload.origin, worldOrigin, pdf, payload.seed, recieveDir);
 
-
-    //Now, adjust the payload to the new origin and direction:
-    payload.origin = worldOrigin+ bias * flatNormal;
 
     payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
     //Direct lighting: (Later, take a random sample from all available point lights
@@ -131,10 +130,12 @@ StructuredBuffer<Material> materials : register(t5);
     //Reduce fireflies:
     float3 direct = float3(0,0,0);
 
-    if(payload.util.y != 0)
-        direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf * materials[materialID].Pr_Pm_Ps_Pc.x * materials[materialID].Pr_Pm_Ps_Pc.x;
-    else
-        direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
+    if(recieveDir){
+        if(payload.util.y != 0)
+            direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf * materials[materialID].Pr_Pm_Ps_Pc.x * materials[materialID].Pr_Pm_Ps_Pc.x;
+        else
+            direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
+    }
 
     float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
     payload.emission += direct + emissive;

@@ -730,6 +730,7 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vector"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Components\Vertex.h
@@ -1112,6 +1113,7 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\Gi
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Components\Vertex.h
@@ -4574,6 +4576,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cp
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vector":
+
+"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h:
 

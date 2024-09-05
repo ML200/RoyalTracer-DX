@@ -41,14 +41,24 @@ public:
 
         // Process materials
         for (const auto& mat : materials) {
-            XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], 1.0f);
+            // Convert the material name to a wide string (assuming mat.name is a std::string)
+            std::wstring wideName(mat.name.begin(), mat.name.end());
+
+            // Print the material name and dissolve value (alpha)
+            std::wcout << L"Loading Material: " << wideName << L", Dissolve: " << mat.dissolve << std::endl;
+
+            // Set up material properties
+            XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve);
             XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, 0, 0);
             Material t_mat(diffuse, Pr_Pm_Ps_Pc);
 
+            // Set emission
             t_mat.Ke = XMFLOAT3(mat.emission);
 
+            // Add the material to the list
             mats->push_back(t_mat);
         }
+
 
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
 
