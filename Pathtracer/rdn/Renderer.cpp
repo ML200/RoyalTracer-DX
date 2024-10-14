@@ -399,7 +399,7 @@ void Renderer::OnUpdate() {
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                                 static_cast<float>(m_time) / 10000000000.0f) *
+                                 static_cast<float>(m_time) / 100.0f) *
             XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
@@ -944,7 +944,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-  pipeline.SetMaxPayloadSize(16 * sizeof(float)+ 2*sizeof(UINT)); // RGB + distance
+    pipeline.SetMaxPayloadSize(23 * sizeof(float)+ 2*sizeof(UINT)+ 32 * sizeof(float));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1045,11 +1045,20 @@ void Renderer::CreateShaderResourceHeap() {
   srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
       D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  // Describe and create a constant buffer view for the camera
-  D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-  cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
-  cbvDesc.SizeInBytes = m_cameraBufferSize;
-  m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
+// Describe and create a constant buffer view for the camera
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+    cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+    cbvDesc.SizeInBytes = m_cameraBufferSize;
+
+// Debug output: Check the buffer location and size
+    std::wcout << L"Camera buffer GPU virtual address: " << cbvDesc.BufferLocation << std::endl;
+    std::wcout << L"Camera buffer size (in bytes): " << cbvDesc.SizeInBytes << std::endl;
+
+    m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
+
+// Debug output: Confirm that the CreateConstantBufferView call was made
+    std::wcout << L"Constant buffer view created for the camera." << std::endl;
+
 
     //# DXR Extra - Simple Lighting
     srvHandle.ptr +=
@@ -1094,6 +1103,8 @@ void Renderer::CreateShaderResourceHeap() {
     materialsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     m_device->CreateShaderResourceView(m_materialBuffer.Get(), &materialsSrvDesc, srvHandle);
 
+    std::wcout << L"SRVs created!" << std::endl;
+
 
 }
 
@@ -1107,61 +1118,70 @@ void Renderer::CreateShaderResourceHeap() {
 // Using the helper class, those can be specified in arbitrary order.
 //
 void Renderer::CreateShaderBindingTable() {
-    // The SBT helper class collects calls to Add*Program.  If called several
+    // The SBT helper class collects calls to Add*Program. If called several
     // times, the helper must be emptied before re-adding shaders.
+    std::wcout << L"Resetting SBT helper..." << std::endl;
     m_sbtHelper.Reset();
 
     // The pointer to the beginning of the heap is the only parameter required by
     // shaders without root parameters
-    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
-            m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    std::wcout << L"Got GPU descriptor handle for heap start." << std::endl;
 
-    // The helper treats both root parameter pointers and heap pointers as void*,
-    // while DX12 uses the
-    // D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
-    // struct is a UINT64, which then has to be reinterpreted as a pointer.
+    // The heap pointer is reinterpreted as a UINT64 pointer
     auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
+    std::wcout << L"Heap pointer address: " << srvUavHeapHandle.ptr << std::endl;
 
     // The ray generation only uses heap data
+    std::wcout << L"Adding ray generation program..." << std::endl;
     m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
 
-    // The miss and hit shaders do not access any external resources: instead they
-    // communicate their results through the ray payload
+    // The miss and hit shaders do not access any external resources
+    std::wcout << L"Adding miss programs..." << std::endl;
     m_sbtHelper.AddMissProgram(L"Miss", {});
-    // #DXR Extra - Another ray type
     m_sbtHelper.AddMissProgram(L"ShadowMiss", {});
 
-    // #DXR Extra: Per-Instance Data
-    // We have 3 triangles, each of which needs to access its own constant buffer
-    // as a root parameter in its primary hit shader. The shadow hit only sets a
-    // boolean visibility in the payload, and does not require external data
-    for (int i = 0; i < m_instances.size(); ++i){
+    // Adding hit groups for each instance
+    std::wcout << L"Adding hit groups for instances..." << std::endl;
+    for (int i = 0; i < m_instances.size(); ++i) {
+        std::wcout << L"Adding hit group for instance " << i << std::endl;
         m_sbtHelper.AddHitGroup(
                 L"HitGroup",
                 {(void *) (m_VB[i]->GetGPUVirtualAddress()),
-                 (void *) (m_IB[i]->GetGPUVirtualAddress()),(void *)(m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()), heapPointer});
+                 (void *) (m_IB[i]->GetGPUVirtualAddress()),
+                 (void *) (m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()), heapPointer});
         m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
     }
 
-  // #DXR Extra - Another ray type
-  m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
+    // Adding final ShadowHitGroup
+    std::wcout << L"Adding ShadowHitGroup..." << std::endl;
+    m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
-  // Compute the size of the SBT given the number of shaders and their
-  // parameters
-  uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
+    // Compute the size of the SBT
+    std::wcout << L"Computing SBT size..." << std::endl;
+    uint32_t sbtSize = m_sbtHelper.ComputeSBTSize();
+    std::wcout << L"SBT size: " << sbtSize << L" bytes." << std::endl;
 
-  // Create the SBT on the upload heap. This is required as the helper will use
-  // mapping to write the SBT contents. After the SBT compilation it could be
-  // copied to the default heap for performance.
-  m_sbtStorage = nv_helpers_dx12::CreateBuffer(
-      m_device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE,
-      D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-  if (!m_sbtStorage) {
-    throw std::logic_error("Could not allocate the shader binding table");
-  }
-  // Compile the SBT from the shader and parameters info
-  m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
+    // Create the SBT on the upload heap
+    std::wcout << L"Creating shader binding table buffer..." << std::endl;
+    m_sbtStorage = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    // Check if SBT buffer creation was successful
+    if (!m_sbtStorage) {
+        std::wcout << L"Could not allocate the shader binding table!" << std::endl;
+        throw std::logic_error("Could not allocate the shader binding table");
+    }
+
+    // Compile the SBT
+    std::wcout << L"Generating the Shader Binding Table..." << std::endl;
+    m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
+
+    // SBT creation completed
+    std::wcout << L"Shader Binding Table created successfully." << std::endl;
 }
+
 
 //----------------------------------------------------------------------------------
 //
@@ -1173,61 +1193,170 @@ void Renderer::CreateShaderBindingTable() {
 //
 // #DXR Extra: Perspective Camera
 void Renderer::CreateCameraBuffer() {
-  uint32_t nbMatrix = 4; // view, perspective, viewInv, perspectiveInv
-  m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX) + sizeof(float)*64;
+    // Calculate the buffer size
+    uint32_t nbMatrix = 6; // view, perspective, viewInv, perspectiveInv, prevView, prevProjection
+    uint32_t frustrums = 8; // frustumLeft, frustumRight, frustumTop, frustumBottom (current and previous)
+    m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX) + frustrums * sizeof(float) * 3 + sizeof(float);
+    m_cameraBufferSize = (m_cameraBufferSize + 255) & ~255;
 
-  // Create the constant buffer for all matrices
-  m_cameraBuffer = nv_helpers_dx12::CreateBuffer(
-      m_device.Get(), m_cameraBufferSize, D3D12_RESOURCE_FLAG_NONE,
-      D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 
-  // #DXR Extra - Refitting
-  // Create a descriptor heap that will be used by the rasterization shaders:
-  // Camera matrices and per-instance matrices
-  m_constHeap = nv_helpers_dx12::CreateDescriptorHeap(
-      m_device.Get(), 2, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+    // Debug output: Display the calculated buffer size
+    std::wcout << L"Camera buffer size (in bytes): " << m_cameraBufferSize << std::endl;
 
-  // Describe and create the constant buffer view.
-  D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-  cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
-  cbvDesc.SizeInBytes = m_cameraBufferSize;
+    // Create the constant buffer for all matrices and additional parameters
+    m_cameraBuffer = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), m_cameraBufferSize, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    // Debug output: Check if the buffer was created successfully
+    if (m_cameraBuffer)
+        std::wcout << L"Camera buffer created successfully." << std::endl;
+    else
+        std::wcout << L"Failed to create camera buffer!" << std::endl;
+
+    // Create the descriptor heap
+    m_constHeap = nv_helpers_dx12::CreateDescriptorHeap(
+            m_device.Get(), 2, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+
+    // Debug output: Check if the descriptor heap was created successfully
+    if (m_constHeap)
+        std::wcout << L"Descriptor heap created successfully." << std::endl;
+    else
+        std::wcout << L"Failed to create descriptor heap!" << std::endl;
+
+    // Describe and create the constant buffer view
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+    cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+    cbvDesc.SizeInBytes = m_cameraBufferSize;
+
+    // Debug output: Display buffer location and size
+    std::wcout << L"Buffer location (GPU virtual address): " << cbvDesc.BufferLocation << std::endl;
+    std::wcout << L"Constant buffer view size (in bytes): " << cbvDesc.SizeInBytes << std::endl;
+    std::wcout << L"________________________________________________" << std::endl;
+
+
 }
+
 
 // #DXR Extra: Perspective Camera
 //--------------------------------------------------------------------------------
 // Create and copies the viewmodel and perspective matrices of the camera
 //
 void Renderer::UpdateCameraBuffer() {
-    std::vector<XMMATRIX> matrices(4);
+    std::vector<XMMATRIX> matrices(6); // view, projection, viewInv, projectionInv, prevView, prevProjection
+    std::vector<XMFLOAT4> frustumPlanes(8); // 4 current and 4 previous frustum planes
 
-    // Initialize the view matrix
-    const glm::mat4 &mat = nv_helpers_dx12::CameraManip.getMatrix();
-    memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(mat), 16 * sizeof(float));
+    // Initialize the current view matrix
+    const glm::mat4 &viewMat = nv_helpers_dx12::CameraManip.getMatrix();
+    memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(viewMat), 16 * sizeof(float));
 
-    float fovAngleY = 45.0f * XM_PI / 180.0f;
-    matrices[1] =
-            XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
+    // Current projection matrix
+    float fovAngleY = 60.0f * XM_PI / 180.0f;
+    matrices[1] = XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
 
+    // Inverse matrices
     XMVECTOR det;
-    matrices[2] = XMMatrixInverse(&det, matrices[0]);
-    matrices[3] = XMMatrixInverse(&det, matrices[1]);
+    matrices[2] = XMMatrixInverse(&det, matrices[0]);  // viewInv
+    matrices[3] = XMMatrixInverse(&det, matrices[1]);  // projectionInv
 
-    // Copy the matrix contents
+    // Previous frame matrices
+    matrices[4] = m_prevViewMatrix;
+    matrices[5] = m_prevProjMatrix;
+
+    // Compute frustum planes for the current view-projection matrix
+    XMMATRIX viewProjMatrix = XMMatrixMultiply(matrices[0], matrices[1]);
+    ExtractFrustumPlanes(viewProjMatrix, frustumPlanes.data());
+
+    // Compute frustum planes for the previous view-projection matrix
+    XMMATRIX prevViewProjMatrix = XMMatrixMultiply(matrices[4], matrices[5]);
+    ExtractFrustumPlanes(prevViewProjMatrix, frustumPlanes.data() + 4); // Previous frustum planes
+
+    // Copy matrix contents to the buffer
     uint8_t *pData;
-    ThrowIfFailed(m_cameraBuffer->Map(0, nullptr, (void **)&pData));
-    memcpy(pData, matrices.data(), m_cameraBufferSize - sizeof(float)); // Adjust for the size of the float
+    HRESULT hr = m_cameraBuffer->Map(0, nullptr, (void **)&pData);
+    if (FAILED(hr)) {
+        std::wcerr << L"Failed to map camera buffer!" << std::endl;
+        return;
+    }
+
+    // Copy the 6 matrices
+    memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
 
     // Add the current system time as float
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    float currentTime = static_cast<float>(millis % 1000); // Convert milliseconds to seconds as float
+    float currentTime = static_cast<float>(millis % 1000);  // Convert milliseconds to seconds as float
 
-    // Copy the current time into the buffer, right after the matrices
-    memcpy(pData + m_cameraBufferSize - sizeof(float)*64, &currentTime, sizeof(float));
+    memcpy(pData + 6 * sizeof(XMMATRIX), &currentTime, sizeof(float));
+
+    // Copy the frustum planes right after the time, now using XMFLOAT4 (padded)
+    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(float), frustumPlanes.data(), 8 * sizeof(XMFLOAT4));
 
     m_cameraBuffer->Unmap(0, nullptr);
+
+    // Save the current matrices for use in the next frame
+    m_prevViewMatrix = matrices[0];
+    m_prevProjMatrix = matrices[1];
 }
+
+
+void Renderer::ExtractFrustumPlanes(const XMMATRIX& viewProjMatrix, XMFLOAT4* planes) {
+    // Extract the rows of the view-projection matrix
+    XMVECTOR row1 = viewProjMatrix.r[0]; // First row
+    XMVECTOR row2 = viewProjMatrix.r[1]; // Second row
+    XMVECTOR row3 = viewProjMatrix.r[2]; // Third row
+    XMVECTOR row4 = viewProjMatrix.r[3]; // Fourth row
+
+    // Left plane (row4 + row1)
+    planes[0] = XMFLOAT4(
+            XMVectorGetX(row4) + XMVectorGetX(row1),
+            XMVectorGetY(row4) + XMVectorGetY(row1),
+            XMVectorGetZ(row4) + XMVectorGetZ(row1),
+            XMVectorGetW(row4) + XMVectorGetW(row1) // Correct calculation of D
+    );
+
+    // Right plane (row4 - row1)
+    planes[1] = XMFLOAT4(
+            XMVectorGetX(row4) - XMVectorGetX(row1),
+            XMVectorGetY(row4) - XMVectorGetY(row1),
+            XMVectorGetZ(row4) - XMVectorGetZ(row1),
+            XMVectorGetW(row4) - XMVectorGetW(row1)
+    );
+
+    // Top plane (row4 + row2)
+    planes[2] = XMFLOAT4(
+            XMVectorGetX(row4) + XMVectorGetX(row2),
+            XMVectorGetY(row4) + XMVectorGetY(row2),
+            XMVectorGetZ(row4) + XMVectorGetZ(row2),
+            XMVectorGetW(row4) + XMVectorGetW(row2)
+    );
+
+    // Bottom plane (row4 - row2)
+    planes[3] = XMFLOAT4(
+            XMVectorGetX(row4) - XMVectorGetX(row2),
+            XMVectorGetY(row4) - XMVectorGetY(row2),
+            XMVectorGetZ(row4) - XMVectorGetZ(row2),
+            XMVectorGetW(row4) - XMVectorGetW(row2)
+    );
+
+    // Normalize the planes
+    for (int i = 0; i < 4; i++) {
+        XMVECTOR plane = XMLoadFloat4(&planes[i]);
+        XMVECTOR planeNormal = XMVectorSet(XMVectorGetX(plane), XMVectorGetY(plane), XMVectorGetZ(plane), 0.0f);
+        float length = XMVectorGetX(XMVector3Length(planeNormal));
+        if (length != 0.0f) {
+            planes[i].x /= length;
+            planes[i].y /= length;
+            planes[i].z /= length;
+            planes[i].w /= length;
+        }
+    }
+}
+
+
+
+
 
 
 //--------------------------------------------------------------------------------------------------
@@ -1393,7 +1522,8 @@ void Renderer::CreateVB(std::string name) {
   ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs, &materialIDOffset, &materialVertexOffset);
   m_materials.insert(m_materials.end(), materials.begin(), materials.end());
   m_materialIDs.insert(m_materialIDs.end(),materialIDs.begin(), materialIDs.end());
-  materialVertexOffset=materialIDs.size();
+  materialVertexOffset=m_materialIDs.size();
+  std::wcout << L"Triangle Offset: " << materialVertexOffset << std::endl;
   {
     const UINT mengerVBSize =
         static_cast<UINT>(vertices.size()) * sizeof(Vertex);
@@ -1495,6 +1625,7 @@ void Renderer::UpdateInstancePropertiesBuffer() {
                                           reinterpret_cast<void **>(&current)));
     for (const auto &inst : m_instances)
     {
+        current->prevObjectToWorld = current->objectToWorld;
         current->objectToWorld = inst.second;
 
         //# DXR Extra - Simple Lighting
@@ -1508,6 +1639,7 @@ void Renderer::UpdateInstancePropertiesBuffer() {
         upper3x3.r[3].m128_f32[2] = 0.f;
         upper3x3.r[3].m128_f32[3] = 1.f;
         XMVECTOR det;
+        current->prevObjectToWorldNormal = current->objectToWorldNormal;
         current->objectToWorldNormal = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
         current++;
     }
