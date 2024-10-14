@@ -300,17 +300,6 @@ CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: "C:\Program Files (x86)\Windows 
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\poppack.h"
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\shellapi.h"
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_struct.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_consts.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_version.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_result.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_helpers.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_reflex.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_dlss.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nis.h
-CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nrd.h
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\dxgi1_6.h"
@@ -715,17 +704,6 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\shellapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_struct.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_consts.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_version.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_result.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_helpers.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_reflex.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_dlss.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nis.h
-CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nrd.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
@@ -1099,17 +1077,6 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\shellapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_struct.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_consts.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_version.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_result.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_helpers.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_reflex.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_dlss.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nis.h
-CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nrd.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
@@ -1543,17 +1510,6 @@ CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: "C:\Program Files (x86)\
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\shellapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_struct.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_consts.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_version.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_result.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_helpers.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_reflex.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_dlss.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nis.h
-CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nrd.h
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h
 
 
@@ -3891,8 +3847,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\apiquery2.h":
 
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_helpers.h:
-
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_wtime.h":
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\specstrings_undef.h":
@@ -4251,8 +4205,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12sdklayers.h":
 
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_version.h:
-
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\dxgi1_3.h":
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\winrt\weakreference.h":
@@ -4399,13 +4351,9 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\limits":
 
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_result.h:
-
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\cfloat":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_trigonometric.hpp:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nis.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\intrin0.h":
 
@@ -4434,8 +4382,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\src\Util\..
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xutility":
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat4x3.inl:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_nrd.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\__msvc_iter_core.hpp":
 
@@ -4475,22 +4421,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h:
 
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl.h:
-
-"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\timeapi.h":
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_struct.h:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_consts.h:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\constants.inl:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_reflex.h:
-
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iostream":
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include\sl_dlss.h:
-
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h:
@@ -4500,6 +4430,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Ap
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat.hpp:
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\dxgi1_5.h":
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iostream":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\ostream":
 
@@ -4717,6 +4649,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\..\gtc\constants.hpp:
 
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\constants.inl:
+
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_trigonometric_simd.inl:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\..\exponential.hpp:
@@ -4760,6 +4694,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_help
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\mmiscapi.h":
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\mciapi.h":
+
+"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\timeapi.h":
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\joystickapi.h":
 

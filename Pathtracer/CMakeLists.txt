@@ -47,17 +47,16 @@ add_executable(Pathtracer WIN32
         rdn/Win32Application.h
         src/Components/Vertex.h
         src/Util/ObjLoader.h
-        lib/nv_streamline/include/sl_nrd.h
 
 
 )
 
 # Include directories
 include_directories(${DIRECTX_SDK_INCLUDE})
-target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_INCLUDE_DIR} ${SL_INCLUDE_DIR})
+target_include_directories(Pathtracer PRIVATE ${DIRECTX_SDK_INCLUDE} ${FASTGLTF_INCLUDE_DIR})
 
 target_link_directories(Pathtracer PRIVATE ${DIRECTX_SDK_LIB} ${FASTGLTF_LIB_DIR})
-target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib shlwapi.lib ${SL_LIBRARY_DIR}/sl.interposer.lib)
+target_link_libraries(Pathtracer PRIVATE d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib)
 
 
 

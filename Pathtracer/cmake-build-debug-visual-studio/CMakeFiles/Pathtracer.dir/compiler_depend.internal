@@ -301,17 +301,6 @@ CMakeFiles/Pathtracer.dir/rdn/DXSample.cpp.obj
  C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/shared/poppack.h
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/shellapi.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_struct.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_consts.h
- C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_version.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_result.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_helpers.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_reflex.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_dlss.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nis.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nrd.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSampleHelper.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.h
  C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/shared/dxgi1_6.h
@@ -716,17 +705,6 @@ CMakeFiles/Pathtracer.dir/rdn/Main.cpp.obj
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/shellapi.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Renderer.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_struct.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_consts.h
- C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_version.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_result.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_helpers.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_reflex.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_dlss.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nis.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nrd.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSampleHelper.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.h
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/dxcapi.h
@@ -1100,17 +1078,6 @@ CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/shellapi.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Renderer.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_struct.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_consts.h
- C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_version.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_result.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_helpers.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_reflex.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_dlss.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nis.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nrd.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSampleHelper.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.h
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/dxcapi.h
@@ -1544,17 +1511,6 @@ CMakeFiles/Pathtracer.dir/rdn/Win32Application.cpp.obj
  C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/shellapi.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Win32Application.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSample.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_struct.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_consts.h
- C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_version.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_result.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_helpers.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_reflex.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_dlss.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nis.h
- C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/nv_streamline/include/sl_nrd.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXSampleHelper.h
 
 CMakeFiles/Pathtracer.dir/rdn/manipulator.cpp.obj

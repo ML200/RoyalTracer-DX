@@ -4,7 +4,7 @@
 # compile CXX with C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/bin/Hostx86/x64/cl.exe
 CXX_DEFINES = 
 
-CXX_INCLUDES = -IC:\PROGRA~2\WI3CF2~1\10\Include\100226~1.0\um -IC:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\include
+CXX_INCLUDES = -IC:\PROGRA~2\WI3CF2~1\10\Include\100226~1.0\um
 
 CXX_FLAGS = /DWIN32 /D_WINDOWS /EHsc /Ob0 /Od /RTC1 -MDd -Zi -std:c++latest
 
