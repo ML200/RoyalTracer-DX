@@ -154,6 +154,8 @@ private:
   // #DXR Extra: Perspective Camera++
   void OnButtonDown(UINT32 lParam);
   void OnMouseMove(UINT8 wParam, UINT32 lParam);
+    XMMATRIX m_prevViewMatrix;
+    XMMATRIX m_prevProjMatrix;
 
   // #DXR Extra: Per-Instance Data
   ComPtr<ID3D12Resource> m_planeBuffer;
@@ -209,7 +211,9 @@ private:
   /// Per-instance properties
   struct InstanceProperties {
     XMMATRIX objectToWorld;
+    XMMATRIX prevObjectToWorld;
     XMMATRIX objectToWorldNormal;
+    XMMATRIX prevObjectToWorldNormal;
   };
     //Frametime
     struct FrameData
@@ -218,6 +222,7 @@ private:
     };
 
   ComPtr<ID3D12Resource> m_instanceProperties;
+  ComPtr<ID3D12Resource> m_instancePropertiesPrevious;
   void CreateInstancePropertiesBuffer();
   void UpdateInstancePropertiesBuffer();
 
@@ -225,5 +230,6 @@ private:
   HINSTANCE__ *m_mod;
 
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13}; // Levels to cycle through
+  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28}; // Levels to cycle through
+  void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
 };

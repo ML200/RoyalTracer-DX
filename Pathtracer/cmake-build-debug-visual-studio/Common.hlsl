@@ -14,6 +14,11 @@ struct HitInfo {
   float2 util; //IMPORTANT: util info: miss flag
   uint2 seed;
   float pdf;
+  float3 hitNormal;
+  float3 localHit;
+  float reflectiveness;
+  float4x4 currentOTW;
+  float4x4 prevOTW;
 };
 
 struct Material
@@ -230,65 +235,43 @@ float Gaussian(float dist2, float sigma) {
     return exp(-dist2 / (2.0f * sigma * sigma));
 }
 
-// Edge-Avoiding À-Trous Wavelet Transform with Temporal Accumulation
-float3 A_TrousWaveletWithHistory(uint2 launchIndex, RWTexture2DArray<float4> gOutput, float2 dims, float sigma_color, int iterations) {
-    // Start with the current frame's pixel color as the baseline
-    float3 currentColor = gOutput[uint3(launchIndex, 1)].xyz;
-    float kernel[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
+float2 ComputeMotionVector(float3 worldPos,
+                           row_major float4x4 view, row_major float4x4 projection,
+                           row_major float4x4 prevView, row_major float4x4 prevProjection,
+                           float screenWidth, float screenHeight)
+{
+    // Current frame transformations
+    float4 currentViewPos = mul(float4(worldPos, 1.0f), view);
+    float4 currentClipPos = mul(currentViewPos, projection);
 
-    // Use the history of previous 9 frames to accumulate information
-    float3 accumulatedColor = float3(0, 0, 0);
-    float normalization = 0.0f;
+    // Previous frame transformations
+    float4 prevViewPos = mul(float4(worldPos, 1.0f), prevView);
+    float4 prevClipPos = mul(prevViewPos, prevProjection);
 
-    // Step size for À-Trous (expanding kernel size at each iteration)
-    float stepSize = 1.0f;
+    // Perspective divide (from clip space to NDC)
+    float w_current = max(currentClipPos.w, 1e-5f);
+    float w_prev = max(prevClipPos.w, 1e-5f);
 
-    // Loop through the À-Trous iterations
-    for (int iter = 0; iter < iterations; iter++) {
-        // Temporal accumulation over the last 9 frames (including the current one)
-        for (int frameIndex = 0; frameIndex < 9; frameIndex++) {
-            float3 filteredColor = float3(0, 0, 0);
-            float weightSum = 0.0f;
+    float2 currentNDC = currentClipPos.xy / w_current;
+    float2 prevNDC = prevClipPos.xy / w_prev;
 
-            // Apply the À-Trous kernel spatially
-            for (int dx = -2; dx <= 2; dx++) {
-                for (int dy = -2; dy <= 2; dy++) {
-                    int2 neighborIdx = int2(launchIndex) + int2(dx * stepSize, dy * stepSize);
+    // Convert NDC to screen space coordinates
+    float2 currentScreenPos = (currentNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
+    float2 prevScreenPos = (prevNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
 
-                    // Ensure the neighbor is within bounds
-                    if (neighborIdx.x >= 0 && neighborIdx.y >= 0 && neighborIdx.x < dims.x && neighborIdx.y < dims.y) {
-                        float3 neighborColor = gOutput[uint3(neighborIdx, frameIndex)].xyz;
+    // Compute the motion vector (difference between current and previous screen space positions)
+    float2 motionVector = currentScreenPos - prevScreenPos;
 
-                        // Spatial kernel weight
-                        float spatialWeight = kernel[dx + 2] * kernel[dy + 2];
-
-                        // Edge-aware weighting based on color difference
-                        float3 colorDiff = neighborColor - currentColor;
-                        float dist2 = dot(colorDiff, colorDiff); // Squared distance
-                        float edgeWeight = Gaussian(dist2, sigma_color);
-
-                        // Final weight is the product of spatial weight and edge-aware weight
-                        float weight = spatialWeight * edgeWeight;
-
-                        // Accumulate the weighted color
-                        filteredColor += neighborColor * weight;
-                        weightSum += weight;
-                    }
-                }
-            }
-
-            // Normalize the filtered color by the sum of the weights
-            filteredColor /= max(weightSum, 1e-5f); // Prevent division by zero
-            accumulatedColor += filteredColor;
-            normalization += 1.0f; // Each frame adds 1 contribution
-        }
-
-        // Increase step size for the next iteration
-        stepSize *= 2.0f;
-    }
-
-    // Normalize the accumulated color
-    accumulatedColor /= max(normalization, 1e-5f); // Ensure no division by zero
-
-    return accumulatedColor;
+    return motionVector;
 }
+
+
+
+
+
+
+
+
+
+
+

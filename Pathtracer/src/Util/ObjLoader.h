@@ -71,7 +71,7 @@ public:
                 // Assign material ID for this face, use default if none assigned
                 int materialID = shape.mesh.material_ids.size() >= 0 ? shape.mesh.material_ids[f] : -1;
                 for (size_t v = 0; v < fv; v++) {
-                    int id = materialID + *materialOffset;
+                    uint32_t id = materialID + *materialOffset;
                     materialIDs->push_back(id);
                 }
 
@@ -84,7 +84,7 @@ public:
                     XMFLOAT3 pos(vx, vy, vz);
 
                     // Extract normal, default to (0, 0, 0) if not present
-                    XMFLOAT4 normal(0.0f, 0.0f, 0.0f, (float)*materialOffset); // Default normal
+                    XMFLOAT4 normal(0.0f, 0.0f, 0.0f, *materialVertexOffset); // Default normal
                     if (idx.normal_index >= 0) {
                         tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
                         tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];

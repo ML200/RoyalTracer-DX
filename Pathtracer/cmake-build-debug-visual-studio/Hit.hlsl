@@ -8,8 +8,9 @@ struct ShadowHitInfo {
 struct InstanceProperties
 {
   float4x4 objectToWorld;
-  // # DXR Extra - Simple Lighting
+  float4x4 prevObjectToWorld;
   float4x4 objectToWorldNormal;
+  float4x4 prevObjectToWorldNormal;
 };
 
 
@@ -139,6 +140,10 @@ StructuredBuffer<Material> materials : register(t5);
 
     float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
     payload.emission += direct + emissive;
+    payload.hitNormal = normal;
+    payload.reflectiveness = 1.0f-materials[materialID].Pr_Pm_Ps_Pc.x;
+    payload.currentOTW = instanceProps[InstanceID()].objectToWorld;
+    payload.prevOTW = instanceProps[InstanceID()].prevObjectToWorld;
     //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
 }
 
