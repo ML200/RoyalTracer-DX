@@ -307,11 +307,10 @@ Pathtracer.exe: CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\build.make
-Pathtracer.exe: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\lib\x64\sl.interposer.lib
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\objects1
 	@$(CMAKE_COMMAND) -E cmake_echo_color --switch=$(COLOR) --green --bold --progress-dir=C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Linking CXX executable Pathtracer.exe"
 	"C:\Program Files\JetBrains\CLion 2023.1.4\bin\cmake\win\x64\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\Pathtracer.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x86\mt.exe --manifests -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1438~1.331\bin\Hostx86\x64\link.exe /nologo @CMakeFiles\Pathtracer.dir\objects1 @<<
- /out:Pathtracer.exe /implib:Pathtracer.lib /pdb:C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Pathtracer.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:windows   -LIBPATH:C:\PROGRA~2\WI3CF2~1\10\Lib\100226~1.0\um\x64  d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib shlwapi.lib C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\nv_streamline\lib\x64\sl.interposer.lib kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib 
+ /out:Pathtracer.exe /implib:Pathtracer.lib /pdb:C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Pathtracer.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:windows   -LIBPATH:C:\PROGRA~2\WI3CF2~1\10\Lib\100226~1.0\um\x64  d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib 
 <<
 	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -noprofile -executionpolicy Bypass -file C:/Users/m/.clion-vcpkg/vcpkg/scripts/buildsystems/msbuild/applocal.ps1 -targetBinary C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/Pathtracer.exe -installedDir C:/Users/m/.clion-vcpkg/vcpkg/installed/x64-windows/debug/bin -OutVariable out
 
