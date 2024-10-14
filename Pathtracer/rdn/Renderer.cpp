@@ -399,7 +399,7 @@ void Renderer::OnUpdate() {
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                                 static_cast<float>(m_time) / 100.0f) *
+                                 static_cast<float>(m_time) / 10000000000.0f) *
             XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
