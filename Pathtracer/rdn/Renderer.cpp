@@ -137,7 +137,7 @@ void Renderer::LoadPipeline() {
     GetHardwareAdapter(factory.Get(), &hardwareAdapter);
 
     ThrowIfFailed(slD3D12CreateDevice(hardwareAdapter.Get(),
-                                    D3D_FEATURE_LEVEL_11_0,
+                                    D3D_FEATURE_LEVEL_12_2,
                                     IID_PPV_ARGS(&m_device)));
   }
 
