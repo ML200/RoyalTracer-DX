@@ -91,7 +91,7 @@ void RayGen() {
         payload.direction = init_dir;
         payload.pdf = 1.0f;
 
-        for (int y = 0; y < 6; y++) {
+        for (int y = 0; y < 8; y++) {
             RayDesc ray;
             ray.Origin = payload.origin;
             ray.Direction = payload.direction;
@@ -126,6 +126,21 @@ void RayGen() {
                 gOutput[uint3(launchIndex, 16)] = float4(payload.hitNormal, 1.0f);
                 gOutput[uint3(launchIndex, 17)] = float4(payload.reflectiveness, payload.reflectiveness, payload.reflectiveness, 1.0f);
             }
+
+            if(y > 3){
+
+                float throughput = length(payload.colorAndDistance.xyz)/3.0f;
+                float random = RandomFloatLCG(payload.seed.x);
+
+                if(throughput < random){
+                    break;
+                }
+
+                throughput *= 1.0f/random;
+
+            }
+
+
         }
 
         accumulation += payload.emission;
@@ -153,7 +168,8 @@ void RayGen() {
     gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
 
     // Calculate the average color over the accumulated frames
-    float3 averagedColor = (temporalAccumulation) / (usablePixels);
+    //float3 averagedColor = temporalAccumulation/usablePixels;
+    float3 averagedColor = accumulation;
 
     // Output the final color to layer 0
     gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);

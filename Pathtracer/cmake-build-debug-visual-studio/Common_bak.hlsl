@@ -1,0 +1,277 @@
+#define PI 3.1415f
+#define s_bias 0.00001f // Shadow ray bias value
+
+// Hit information, aka ray payload
+// This sample only carries a shading color and hit distance.
+// Note that the payload should be kept as small as possible,
+// and that its size must be declared in the corresponding
+// D3D12_RAYTRACING_SHADER_CONFIG pipeline subobject.
+struct HitInfo {
+  float4 colorAndDistance;
+  float3 emission;
+  float3 direction;
+  float3 origin;
+  float2 util; //IMPORTANT: util info: miss flag
+  uint2 seed;
+  float pdf;
+  float3 hitNormal;
+  float3 localHit;
+  float reflectiveness;
+  float4x4 currentOTW;
+  float4x4 prevOTW;
+};
+
+struct Material
+{
+     float4 Kd;
+     float3 Ks;
+     float3 Ke;
+     float4 Pr_Pm_Ps_Pc;
+     float2 aniso_anisor;
+};
+
+// Attributes output by the raytracing when hitting a surface,
+// here the barycentric coordinates
+struct Attributes {
+  float2 bary;
+};
+
+// Improved Random Float Generator using LCG
+float RandomFloat(inout uint2 seed)
+{
+    // Constants for a 32-bit LCG (suggested by Numerical Recipes)
+    const uint a = 1664525u;
+    const uint c = 1013904223u;
+
+    // Update the seed with LCG formula
+    seed.x = (a * seed.x + c); // Simple LCG, applied to one component of the seed
+
+    // Optionally apply LCG to the other component for more variation, if needed
+    // seed.y = (a * seed.y + c);
+
+    // Normalize the result to [0, 1) range. Since we're using a 32-bit integer, divide by 2^32.
+    // Casting to float before division to avoid integer division.
+    float randomValue = float(seed.x) / 4294967296.0; // 2^32 = 4294967296
+
+    return randomValue;
+}
+
+
+uint lcg(inout uint seed) {
+    const uint LCG_A = 1664525u;
+    const uint LCG_C = 1013904223u;
+    seed = (LCG_A * seed + LCG_C);
+    return seed;
+}
+
+float RandomFloatLCG(inout uint seed) {
+    return float(lcg(seed)) / float(0xFFFFFFFFu);
+}
+
+
+float GGXDistribution(float alpha, float NoH) {
+    float alphaSquared = alpha * alpha;
+    float NoHSquared = NoH * NoH;
+    float denom = NoHSquared * (alphaSquared - 1.0f) + 1.0f; // Can approach zero
+    denom = max(denom, 1e-4f); // Safety check against division by zero
+    return alphaSquared / (PI * denom * denom);
+}
+float GeometrySchlickGGX(float NoV, float k) {
+    float denom = NoV * (1.0f - k) + k;
+    return NoV / denom;
+}
+
+float GeometrySmith(float NoV, float NoL, float alpha) {
+    float k = alpha * alpha / 2.0f;
+    // Ensure NoV and NoL are not zero to avoid division by zero in GeometrySchlickGGX
+    NoV = max(NoV, 1e-4f);
+    NoL = max(NoL, 1e-4f);
+    float ggx1 = GeometrySchlickGGX(NoV, k);
+    float ggx2 = GeometrySchlickGGX(NoL, k);
+    return ggx1 * ggx2;
+}
+
+float3 FresnelSchlick(float cosTheta, float3 F0) {
+    cosTheta = clamp(cosTheta, 1e-4f, 1.0f); // Clamp to avoid pow with negative numbers
+    return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
+}
+
+float CalculateF0Scalar(float refractiveIndex) {
+    return pow((refractiveIndex - 1.0f) / (refractiveIndex + 1.0f), 2.0f);
+}
+
+float3 CalculateF0Vector(float refractiveIndex) {
+    float F0Scalar = CalculateF0Scalar(refractiveIndex);
+    return float3(F0Scalar, F0Scalar, F0Scalar); // Uniform reflectance across RGB
+}
+
+float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
+{
+    // Generate two random numbers
+    float u1 = RandomFloat(seed);
+    float u2 = RandomFloat(seed);
+
+    // Convert uniform random numbers to cosine-weighted polar coordinates
+    float r = sqrt(u1);
+    float theta = 2.0 * 3.14159265358979323846 * u2;
+
+    // Project polar coordinates to sample on the unit disk
+    float x = r * cos(theta);
+    float y = r * sin(theta);
+
+    // Project up to hemisphere
+    float z = sqrt(max(0.0f, 1.0f - x*x - y*y));
+
+    // Create a local orthonormal basis centered around the normal
+    float3 h = normal;
+    float3 up = abs(normal.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 right = normalize(cross(up, h));
+    float3 forward = cross(h, right);
+
+    // Convert disk sample to hemisphere sample in the local basis
+    float3 hemisphereSample = x * right + y * forward + z * h;
+
+    // Normalize the sample vector
+    hemisphereSample = normalize(hemisphereSample);
+
+    // Mirror the vector if it's under the plane defined by the normal
+    if (dot(hemisphereSample, normal) < 0.0f) {
+        hemisphereSample = -hemisphereSample;
+    }
+
+    return hemisphereSample;
+}
+
+
+float3 SampleGGXVNDF(float3 N, float3 flatNormal, float3 V, float alpha, inout uint2 seed, out float pdf) {
+    // Clamp alpha to a minimum value to avoid division by zero or other anomalies
+    alpha = max(alpha, 0.0001f);
+    float alphaSquared = alpha * alpha;
+
+    // If alpha is very low, treat as perfect mirror
+    if (alpha <= 0.0001f) {
+        // Reflect V about N for perfect mirror reflection
+        float3 L = reflect(-V, N); // reflect expects V to point towards the surface
+
+        // Set PDF to 1 for deterministic reflection
+        pdf = 1.0f;
+
+        // Return the perfectly reflected direction
+        return L;
+    }
+
+    // Continue with GGX VNDF sampling for rough surfaces
+    // Generate two random numbers for sampling
+    float u1 = RandomFloatLCG(seed.x);
+    float u2 = RandomFloatLCG(seed.y);
+
+    // Sample theta and phi angles for H vector in spherical coordinates
+    float theta = atan(alphaSquared * sqrt(u1) / sqrt(1.0 - u1));
+    float phi = 2.0 * PI * u2;
+
+    // Convert spherical coordinates to Cartesian coordinates for H
+    float x = sin(theta) * cos(phi);
+    float y = sin(theta) * sin(phi);
+    float z = cos(theta);
+
+    // Construct a local orthonormal basis (TBN matrix) around N
+    float3 up = abs(N.z) < 0.999 ? float3(0,0,1) : float3(1,0,0);
+    float3 right = normalize(cross(up, N));
+    float3 forward = cross(N, right);
+
+    // Transform H from local space to world space
+    float3 H = normalize(x * right + y * forward + z * N);
+
+    // Calculate the reflection direction L based on H and V
+    float3 L = normalize(2.0f * dot(V, H) * H - V);
+
+    // Check if L is below the surface; if so, reflect it above the surface
+    if (dot(flatNormal, L) < 0.0) {
+        L = -L;
+    }
+
+    // Calculate PDF for GGX distribution using H for rough surfaces
+    float NoH = max(dot(N, H), 0.0f);
+    float VoH = max(dot(V, H), 0.0f);
+
+    // Adjusted PDF calculation for clarity and correctness
+    pdf = GGXDistribution(alpha, NoH) * NoH / (4.0f * VoH);
+
+    return L;
+}
+
+
+float3 Reflect(float3 incident, float3 normal)
+{
+    // Ensure normal is normalized
+    normal = normalize(normal);
+
+    // Calculate the reflection vector
+    float3 reflected = incident - 2.0 * dot(incident, normal) * normal;
+
+    return reflected;
+}
+
+float3 getPerpendicularVector(float3 v)
+{
+    // Find the smallest component of the input vector
+    float minComponent = min(min(v.x, v.y), v.z);
+
+    // Construct a vector that is not parallel to the input vector
+    float3 nonParallelVec;
+    if (minComponent == v.x)
+        nonParallelVec = float3(1.0f, 0.0f, 0.0f);  // Input vector is mostly aligned with X-axis
+    else if (minComponent == v.y)
+        nonParallelVec = float3(0.0f, 1.0f, 0.0f);  // Input vector is mostly aligned with Y-axis
+    else
+        nonParallelVec = float3(0.0f, 0.0f, 1.0f);  // Input vector is mostly aligned with Z-axis
+
+    // Find a perpendicular vector using cross product
+    return cross(v, nonParallelVec);
+}
+
+// Gaussian function for edge weighting (for spatial and temporal filtering)
+float Gaussian(float dist2, float sigma) {
+    return exp(-dist2 / (2.0f * sigma * sigma));
+}
+
+float2 ComputeMotionVector(float3 worldPos,
+                           row_major float4x4 view, row_major float4x4 projection,
+                           row_major float4x4 prevView, row_major float4x4 prevProjection,
+                           float screenWidth, float screenHeight)
+{
+    // Current frame transformations
+    float4 currentViewPos = mul(float4(worldPos, 1.0f), view);
+    float4 currentClipPos = mul(currentViewPos, projection);
+
+    // Previous frame transformations
+    float4 prevViewPos = mul(float4(worldPos, 1.0f), prevView);
+    float4 prevClipPos = mul(prevViewPos, prevProjection);
+
+    // Perspective divide (from clip space to NDC)
+    float w_current = max(currentClipPos.w, 1e-5f);
+    float w_prev = max(prevClipPos.w, 1e-5f);
+
+    float2 currentNDC = currentClipPos.xy / w_current;
+    float2 prevNDC = prevClipPos.xy / w_prev;
+
+    // Convert NDC to screen space coordinates
+    float2 currentScreenPos = (currentNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
+    float2 prevScreenPos = (prevNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
+
+    // Compute the motion vector (difference between current and previous screen space positions)
+    float2 motionVector = currentScreenPos - prevScreenPos;
+
+    return motionVector;
+}
+
+
+
+
+
+
+
+
+
+
+

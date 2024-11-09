@@ -318,7 +318,9 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","A8.obj"};
+    std::vector<std::string> models = {"garage.obj","monkey.obj"};
+
+
 
     //Iterate through the models in the scene (currently one hardcoded, later provided by list)
     for(int i=0; i<models.size(); i++){
@@ -398,9 +400,9 @@ void Renderer::OnUpdate() {
                            static_cast<float>(m_time) / 1000.0f) *
       XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
     m_instances[1].second =
-            XMMatrixRotationAxis({0.f, 1.f, 0.f},
+            XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000000.0f) *
-            XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 2000000.f), 0.f);
+            XMMatrixTranslation(0.f, 2.0f * cosf(m_time / 2000000.f), 2.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -758,6 +760,7 @@ void Renderer::CreateAccelerationStructures() {
 
     std::vector<AccelerationStructureBuffers> blasBuffers;
     m_instances.clear();
+    m_instanceModelIndices.clear();
 
     // Assume m_VB, m_IB, m_VertexCount, and m_IndexCount are all std::vector and have the same size.
     for (size_t i = 0; i < m_VB.size(); ++i) {
@@ -770,9 +773,15 @@ void Renderer::CreateAccelerationStructures() {
 
         // Assuming each instance will use an identity matrix for simplicity,
         // but you can replace XMMatrixIdentity() with any transformation matrix.
-        m_instances.push_back({buffers.pResult, XMMatrixIdentity()});
+        m_instances.emplace_back(buffers.pResult, XMMatrixIdentity());
+        m_instanceModelIndices.push_back(static_cast<UINT>(i));
     }
   CreateTopLevelAS(m_instances);
+    // Collect emissive triangles
+    CollectEmissiveTriangles();
+
+    // Create buffer for emissive triangles
+    CreateEmissiveTrianglesBuffer();
 
   // Flush the command list and wait for it to finish
   m_commandList->Close();
@@ -803,13 +812,11 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
   nv_helpers_dx12::RootSignatureGenerator rsc;
   rsc.AddHeapRangesParameter(
       {{0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/,
-        D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,
-        0 /*heap slot where the UAV is defined*/},
-       {0 /*t0*/, 1, 0,
-        D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,
-        1},
-       {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,
-        2}});
+        D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
+       {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
+       {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
+       {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6}
+      });
 
   return rsc.Generate(m_device.Get(), true);
 }
@@ -839,7 +846,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateHitSignature() {
                     // # DXR Extra - Simple Lighting
              {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3},
              {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
-             {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/}
+             {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
+                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6 /*7th slot - Light triangles*/}
             });
   return rsc.Generate(m_device.Get(), true);
 }
@@ -1008,7 +1016,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 6, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 7, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1102,6 +1110,21 @@ void Renderer::CreateShaderResourceHeap() {
     materialsSrvDesc.Buffer.StructureByteStride = sizeof(Material); // Assuming Material is your material struct
     materialsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     m_device->CreateShaderResourceView(m_materialBuffer.Get(), &materialsSrvDesc, srvHandle);
+
+// After existing descriptors
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+// Create SRV for the Emissive Triangles buffer
+    D3D12_SHADER_RESOURCE_VIEW_DESC emissiveTrianglesSrvDesc = {};
+    emissiveTrianglesSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    emissiveTrianglesSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // Structured buffer
+    emissiveTrianglesSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    emissiveTrianglesSrvDesc.Buffer.FirstElement = 0;
+    emissiveTrianglesSrvDesc.Buffer.NumElements = static_cast<UINT>(m_emissiveTriangles.size());
+    emissiveTrianglesSrvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
+    emissiveTrianglesSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+    m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &emissiveTrianglesSrvDesc, srvHandle);
+
 
     std::wcout << L"SRVs created!" << std::endl;
 
@@ -1520,8 +1543,12 @@ void Renderer::CreateVB(std::string name) {
 
   //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
   ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs, &materialIDOffset, &materialVertexOffset);
-  m_materials.insert(m_materials.end(), materials.begin(), materials.end());
-  m_materialIDs.insert(m_materialIDs.end(),materialIDs.begin(), materialIDs.end());
+    // Before inserting new material IDs, store the current offset
+    m_materialIDOffsets.push_back(static_cast<UINT>(m_materialIDs.size()));
+
+    // Insert the material IDs and materials
+    m_materialIDs.insert(m_materialIDs.end(), materialIDs.begin(), materialIDs.end());
+    m_materials.insert(m_materials.end(), materials.begin(), materials.end());
   materialVertexOffset=m_materialIDs.size();
   std::wcout << L"Triangle Offset: " << materialVertexOffset << std::endl;
   {
@@ -1645,3 +1672,141 @@ void Renderer::UpdateInstancePropertiesBuffer() {
     }
   m_instanceProperties->Unmap(0, nullptr);
 }
+
+void Renderer::CollectEmissiveTriangles() {
+    m_emissiveTriangles.clear();
+
+    for (size_t instanceIndex = 0; instanceIndex < m_instances.size(); ++instanceIndex) {
+        UINT modelIndex = m_instanceModelIndices[instanceIndex];
+
+        UINT e_materialIDOffset = m_materialIDOffsets[modelIndex];
+        UINT triangleCount = m_IndexCount[modelIndex] / 3;
+
+        std::wcout << L"Triangle count: " << triangleCount << std::endl;
+        std::wcout << L"Material Offset: " << e_materialIDOffset << std::endl;
+
+        // Map the vertex and index buffers for the model
+        Vertex* vertices = nullptr;
+        UINT* indices = nullptr;
+        CD3DX12_RANGE readRange(0, 0);
+
+        // Map the vertex buffer
+        ThrowIfFailed(m_VB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&vertices)));
+
+        // Map the index buffer
+        ThrowIfFailed(m_IB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&indices)));
+
+        for (UINT t = 0; t < triangleCount; ++t) {
+            UINT idx0 = indices[t * 3 + 0];
+            UINT idx1 = indices[t * 3 + 1];
+            UINT idx2 = indices[t * 3 + 2];
+
+            // Get the material IDs for the triangle's vertices
+            UINT materialID0 = m_materialIDs[e_materialIDOffset + t * 3 + 0];
+            UINT materialID1 = m_materialIDs[e_materialIDOffset + t * 3 + 1];
+            UINT materialID2 = m_materialIDs[e_materialIDOffset + t * 3 + 2];
+
+            // Ensure all vertices of the triangle have the same material ID
+            if (materialID0 != materialID1 || materialID0 != materialID2) {
+                std::wcout << "Warning: Triangle vertices have different material IDs!" << std::endl;
+                continue; // Skip this triangle or handle as needed
+            }
+
+            UINT materialID = materialID0; // Use the consistent material ID
+            const Material& material = m_materials[materialID];
+
+            // Check if the material is emissive
+            if (material.Ke.x + material.Ke.y + material.Ke.z > 0.0f) {
+                // Get the positions of the vertices
+                const Vertex& v0 = vertices[idx0];
+                const Vertex& v1 = vertices[idx1];
+                const Vertex& v2 = vertices[idx2];
+
+                LightTriangle lt{};
+                lt.x = v0.position;
+                lt.y = v1.position;
+                lt.z = v2.position;
+                lt.instanceID = instanceIndex;
+                lt.weight = ComputeTriangleWeight(v0.position, v1.position, v2.position, material.Ke);
+                lt.emission = XMFLOAT3(material.Ke.x, material.Ke.y, material.Ke.z);
+
+                m_emissiveTriangles.push_back(lt);
+            }
+        }
+        std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
+
+        // Unmap the vertex and index buffers
+        m_VB[modelIndex]->Unmap(0, nullptr);
+        m_IB[modelIndex]->Unmap(0, nullptr);
+    }
+}
+
+
+float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
+    // Compute the area of the triangle
+    XMVECTOR p0 = XMLoadFloat3(&v0);
+    XMVECTOR p1 = XMLoadFloat3(&v1);
+    XMVECTOR p2 = XMLoadFloat3(&v2);
+
+    XMVECTOR edge1 = XMVectorSubtract(p1, p0);
+    XMVECTOR edge2 = XMVectorSubtract(p2, p0);
+    XMVECTOR crossProduct = XMVector3Cross(edge1, edge2);
+    float area = 0.5f * XMVectorGetX(XMVector3Length(crossProduct));
+
+    // Compute the average emissive intensity
+    float emissiveIntensity = (emissiveColor.x + emissiveColor.y + emissiveColor.z) / 3.0f;
+
+    // The weight is proportional to area and emissive intensity
+    return area * emissiveIntensity;
+}
+
+
+
+void Renderer::CreateEmissiveTrianglesBuffer() {
+    size_t bufferSize = m_emissiveTriangles.size() * sizeof(LightTriangle);
+
+    // Ensure triCount is set
+    for (auto &m_emissiveTriangle : m_emissiveTriangles) {
+        m_emissiveTriangle.triCount = static_cast<UINT>(m_emissiveTriangles.size());
+    }
+
+    // Create an upload buffer
+    ComPtr<ID3D12Resource> emissiveTrianglesUploadBuffer = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), static_cast<UINT>(bufferSize), D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    // Copy data to the upload buffer
+    {
+        LightTriangle *pData = nullptr;
+        CD3DX12_RANGE readRange(0, 0);
+        ThrowIfFailed(emissiveTrianglesUploadBuffer->Map(0, &readRange, reinterpret_cast<void **>(&pData)));
+        memcpy(pData, m_emissiveTriangles.data(), bufferSize);
+        emissiveTrianglesUploadBuffer->Unmap(0, nullptr);
+    }
+
+    // Create the default heap buffer
+    m_emissiveTrianglesBuffer = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), static_cast<UINT>(bufferSize), D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+
+    // Copy data from upload buffer to default heap buffer
+    m_commandList->CopyBufferRegion(m_emissiveTrianglesBuffer.Get(), 0, emissiveTrianglesUploadBuffer.Get(), 0, bufferSize);
+
+    // Transition the buffer to GENERIC_READ for shader access
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_emissiveTrianglesBuffer.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ);
+    m_commandList->ResourceBarrier(1, &barrier);
+
+    // Execute and flush the command list
+    ThrowIfFailed(m_commandList->Close());
+    ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
+    m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
+    WaitForPreviousFrame();
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
+}
+
+
+
+
