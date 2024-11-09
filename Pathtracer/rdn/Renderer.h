@@ -90,7 +90,36 @@ private:
   AccelerationStructureBuffers m_topLevelASBuffers;
   std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> m_instances;
 
-  /// Create the acceleration structure of an instance
+    // Map from instance index to model index
+    std::vector<UINT> m_instanceModelIndices;
+    std::vector<UINT> m_materialIDOffsets;
+
+// Structure to hold emissive triangle data
+    #pragma pack(push, 1)
+    struct alignas(16) LightTriangle {
+        XMFLOAT3 x;         // 12 bytes
+        float    pad0;      // 4 bytes
+        XMFLOAT3 y;         // 12 bytes
+        float    pad1;      // 4 bytes
+        XMFLOAT3 z;         // 12 bytes
+        float    pad2;      // 4 bytes
+        UINT     instanceID; // 4 bytes
+        float    weight;     // 4 bytes
+        UINT     triCount;   // 4 bytes
+        float    pad3;       // 4 bytes
+        XMFLOAT3 emission;   // 12 bytes
+        float    pad4;       // 4 bytes
+        // Total size: 64 bytes
+    };
+
+    #pragma pack(pop)
+
+// Buffer to store emissive triangles
+    std::vector<LightTriangle> m_emissiveTriangles;
+    ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
+
+
+    /// Create the acceleration structure of an instance
   ///
   /// \param     vVertexBuffers : pair of buffer and vertex count
   /// \return    AccelerationStructureBuffers for TLAS
@@ -215,6 +244,7 @@ private:
     XMMATRIX objectToWorldNormal;
     XMMATRIX prevObjectToWorldNormal;
   };
+
     //Frametime
     struct FrameData
     {
@@ -232,4 +262,12 @@ private:
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
   std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28}; // Levels to cycle through
   void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
+
+
+    void CollectEmissiveTriangles();
+
+    void CreateEmissiveTrianglesBuffer();
+
+    float
+    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor);
 };

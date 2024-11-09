@@ -92,7 +92,7 @@ anisor 0.000000
 map_Pr D:/VFX/Textures/Leather/2/TexturesCom_Fabric_Cashmere_1K_roughness.tif
 
 newmtl CarPaint
-Kd 1.0 1.0 1.0
+Kd 0.0 0.4 0.0
 Ks 0.100000 0.100000 0.100000
 Ke 0.000000 0.000000 0.000000
 Ni 1.450000

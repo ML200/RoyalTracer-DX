@@ -13,6 +13,21 @@ struct InstanceProperties
   float4x4 prevObjectToWorldNormal;
 };
 
+struct LightTriangle {
+    float3 x;
+    float  pad0;
+    float3 y;
+    float  pad1;
+    float3 z;
+    float  pad2;
+    uint   instanceID;
+    float  weight;
+    uint   triCount;
+    float  pad3;
+    float3 emission;
+    float  pad4;
+};
+
 
 struct STriVertex {
   float3 vertex;
@@ -33,8 +48,7 @@ RaytracingAccelerationStructure SceneBVH : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps : register(t3);
 StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
-
-
+StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload,
@@ -97,54 +111,99 @@ StructuredBuffer<Material> materials : register(t5);
 
     // # DXR Extra - Simple Lighting
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
-    float3 lightPos = float3(3, 2, -3);
-    float3 toLight = lightPos - worldOrigin;
-    float3 centerLightDir = normalize(toLight);
-    float distanceToLight = length(toLight);
 
-    // Inverse Square Law for Attenuation
-    float attenuation = 1.0 / (distanceToLight * distanceToLight);
+    // Get a random light source based on the weights
+    int random = int(RandomFloatLCG(payload.seed.x) * g_EmissiveTriangles[0].triCount);
+    LightTriangle sampleLight = g_EmissiveTriangles[random];
+
+    //Calculate the current world coordinates of the given triangle
+    //Get the conversion matrix:
+    float4x4 conversionMatrix = instanceProps[sampleLight.instanceID].objectToWorld;
+    float3 x_v = mul(conversionMatrix, float4(sampleLight.x, 1.f)).xyz;
+    float3 y_v = mul(conversionMatrix, float4(sampleLight.y, 1.f)).xyz;
+    float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
+
+    // Generate two random numbers in [0,1)
+    float xi1 = RandomFloatLCG(payload.seed.x);
+    float xi2 = RandomFloatLCG(payload.seed.x);
+
+    // Ensure the sample lies within the triangle
+    if (xi1 + xi2 > 1.0f) {
+        xi1 = 1.0f - xi1;
+        xi2 = 1.0f - xi2;
+    }
+
+    // Compute the barycentric coordinates
+    float u = 1.0f - xi1 - xi2;
+    float v = xi1;
+    float w = xi2;
+
+    // Calculate the sample point in world coordinates
+    float3 samplePoint = u * x_v + v * y_v + w * z_v;
+
+    // Get the sample direction
+    float3 L = samplePoint - (worldOrigin + s_bias * flatNormal);
+    float dist2 = dot(L, L);
+    float dist = sqrt(dist2);
+    float3 L_norm = L / dist; // Sampling direction
+
+    // Compute the normal vector using the cross product of the edge vectors
+    float3 edge1 = y_v - x_v;
+    float3 edge2 = z_v - x_v;
+    float3 cross_l = cross(edge1, edge2);
+    float3 normal_l = normalize(cross_l);
+    float area_l = abs(length(cross_l) * 0.5f);
+
+
+    // Compute the cosine of the angles at x and y
+    float cos_theta_x = max(0.0, dot(normal, L_norm));       // Cosine at shading point
+    float cos_theta_y = max(0.0, dot(normal_l, -L_norm));      // Cosine at light sample
+
+    // Compute the geometry term
+    float G = (cos_theta_x * cos_theta_y) / dist2;
+    float pdf_l = 1.0 / (area_l * g_EmissiveTriangles[0].triCount);
+    float3 emission_l =  sampleLight.emission;
 
 
     //Shadow ray
     RayDesc ray;
     ray.Origin = worldOrigin + s_bias * flatNormal; // Offset origin along the normal
-    ray.Direction = centerLightDir;
+    ray.Direction = L_norm;
     ray.TMin = s_bias;
-    ray.TMax = length(toLight) - s_bias;
+    ray.TMax = length(dist) - s_bias;
     bool hit = true;
     // Initialize the ray payload
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     // Trace the ray
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
-    float factor = shadowPayload.isHit ? 0.0 : 1.0;
+    float visible = shadowPayload.isHit ? 0.0 : 1.0;
 
     float pdf;
     bool recieveDir;
-    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, normalize(centerLightDir), payload.direction, payload.origin, worldOrigin, pdf, payload.seed, recieveDir);
+    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, L_norm, payload.direction, payload.origin, worldOrigin, pdf, payload.seed, recieveDir);
 
-
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
-    //Direct lighting: (Later, take a random sample from all available point lights
-
-    //Reduce fireflies:
+    //Direct lighting:
     float3 direct = float3(0,0,0);
 
     if(recieveDir){
         if(payload.util.y != 0)
-            direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf * materials[materialID].Pr_Pm_Ps_Pc.x * materials[materialID].Pr_Pm_Ps_Pc.x;
+            direct  = g_EmissiveTriangles[0].triCount* emission_l * payload.colorAndDistance.xyz * max(0.f, dot(normal, L_norm)) * visible * brdf * G  * materials[materialID].Kd / pdf;
         else
-            direct  = float3(10,10,10) * payload.colorAndDistance.xyz * attenuation * max(0.f, dot(normal, centerLightDir)) * factor * brdf;
+            direct  = g_EmissiveTriangles[0].triCount* emission_l * payload.colorAndDistance.xyz * max(0.f, dot(normal, L_norm)) * visible * brdf * G * materials[materialID].Kd / pdf;
     }
 
+    //_____________________________________________________________________________________________________________________________________________
+
     float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
-    payload.emission += direct + emissive;
+    payload.emission += (direct + emissive) / 2.0f;
+
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
+    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
     payload.hitNormal = normal;
     payload.reflectiveness = 1.0f-materials[materialID].Pr_Pm_Ps_Pc.x;
     payload.currentOTW = instanceProps[InstanceID()].objectToWorld;
     payload.prevOTW = instanceProps[InstanceID()].prevObjectToWorld;
-    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
 }
 
 
