@@ -59,13 +59,11 @@ void RayGen() {
     float3 initialHit = init_orig;
 
     // Path tracing: x samples for y bounces
-    float samples = 1;
+    float samples = 30;
     for (int x = 0; x < samples; x++) {
         HitInfo payload;
-        payload.colorAndDistance = float4(1, 1, 1, 0);
-        payload.emission = float3(0, 0, 0);
-        payload.util.x = 0;
-        payload.util.y = x;
+        payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        payload.emission = float3(0.0f, 0.0f, 0.0f);
         payload.origin = init_orig;
 
         // SEEDING
@@ -97,6 +95,9 @@ void RayGen() {
             ray.Direction = payload.direction;
             ray.TMin = 0.0001;
             ray.TMax = 10000;
+
+            payload.util.x = 0;
+            payload.util.y = float(y);
 
             // Trace the ray
             TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
@@ -168,8 +169,8 @@ void RayGen() {
     gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
 
     // Calculate the average color over the accumulated frames
-    //float3 averagedColor = temporalAccumulation/usablePixels;
-    float3 averagedColor = accumulation;
+    float3 averagedColor = temporalAccumulation/usablePixels;
+    //float3 averagedColor = accumulation;
 
     // Output the final color to layer 0
     gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);

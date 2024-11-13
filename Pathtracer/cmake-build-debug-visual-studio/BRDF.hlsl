@@ -1,96 +1,56 @@
-#include "Common.hlsl"
+#include "Lambertian.hlsl"
 
-float SchlickFresnel(float Ni, float3 incidence, float3 normal)
-{
-    // Calculate reflectance at normal incidence, F0, using the refractive index
-    float F0 = pow((Ni - 1) / (Ni + 1), 2);
 
-    // Calculate the cosine of the angle between the incidence direction and the normal
-    float cosTheta = dot(normalize(incidence), normalize(normal));
+// Select a sampling strategy for the given material:
+// 0 - Lambertian
+// 1 - Specular (GGX)
+// 2 - Perfect reflection
+// 3 - Refraction
+// Probability is the likelihood to select the given sampling strategy, used for weighting the contributions
+uint SelectSamplingStrategy(Material mat, float3 incoming, float3 normal, inout float probability, inout uint2 seed){
+    //Get random value
+    float r_1 = RandomFloat(seed);
 
-    // Apply Schlick's approximation
-    float F = F0 + (1 - F0) * pow(1 - cosTheta, 5);
+    // Evaluate the material properties
+    float roughness = mat.Pr_Pm_Ps_Pc.x;
+    float metallic = mat.Pr_Pm_Ps_Pc.y;
+    float sheen = mat.Pr_Pm_Ps_Pc.z;
+    float clearcoat = mat.Pr_Pm_Ps_Pc.w;
 
-    return F;
+    float alpha = mat.Kd.w;
+    float3 specular = mat.Ks;
+
+    // Check if the ray will enter the material
+    // First the Fresnel term has to be evaluated: Get the wavelength specific one and calculate the average
+    float3 fresnel_3 = SchlickFresnel(specular, dot(normal, -incident));
+    float fresnel = (fresnel_3.x + fresnel_3.y + fresnel_3.z) / 3.0;
+
+
+
+
 }
 
-float3 BRDF_Specular_GGX(float3 N, float3 V, float3 L, float3 F0, float alpha) {
-    // Avoid zero-length vectors for V + L
-    float3 V_plus_L = V + L;
-    if (length(V_plus_L) < 1e-4f) {
-        return float3(0.0f, 0.0f, 0.0f); // Safety check for zero-length vectors
-    }
-    float3 H = normalize(V_plus_L);
+// Sample the BRDF of the given material
+void SampleBRDF(uint strategy, Material mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
 
-    // Additional safety checks for grazing angles
-    float NoV = max(dot(N, V), 1e-4f);
-    float NoL = max(dot(N, L), 1e-4f);
-    float NoH = max(dot(N, H), 1e-4f);
-    float VoH = max(dot(V, H), 1e-4f);
-
-    // Use safe GGX Distribution, Geometry, and Fresnel functions
-    float D = GGXDistribution(alpha, NoH);
-    float G = GeometrySmith(NoV, NoL, alpha);
-    float3 F = FresnelSchlick(VoH, F0);
-
-    // Ensure denominator is not zero
-    float denom = max(4.0f * NoV * NoL, 1e-4f);
-    float3 specular = (D * G * F) / denom;
-
-    // Check for NaNs again if necessary
-    if (any(isnan(specular))) {
-        return float3(0.0f, 0.0f, 0.0f);
-    }
-
-    return specular;
 }
 
+// Evaluate the BRDF for the given material
+float3 EvaluateBRDF(uint strategy, Material mat, float3 normal, float3 incidence, float3 outgoing) {
 
-//Decide how to evaluate the material: distinguish between metals and dielectricts for simplicity
-//This function returns the surface color evaluated
-float3 evaluateBRDF(Material mat, float3 incidence, float3 normal, float3 flatNormal, float3 light, inout float3 sample, inout float3 origin, float3 worldOrigin, inout float pdf, inout uint2 seed, inout bool recieveDir){
-    //Check for metallicness
-    if(mat.Pr_Pm_Ps_Pc.y > 0.5f) //Normally only 0 or 1
-    {
-        //Get the BRDF based on the materials properties
-        sample =SampleGGXVNDF(normal,flatNormal,-incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
-        origin = worldOrigin + s_bias * flatNormal;
-        recieveDir = true;
-        return BRDF_Specular_GGX(normal, -incidence, light, mat.Kd,mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
-    }
-    else{
-        //Calculate the fresnel term based on mat.Ni, incidence and normal
-        //float f = SchlickFresnel(mat.Ni, incidence, normal); //For now hardcoded
-        float f = SchlickFresnel(1.45f, -incidence, flatNormal) * (1-mat.Pr_Pm_Ps_Pc.x);
-        float transparency = 1.0f - mat.Kd.w; // Kd.w holds alpha, 1.0 is fully opaque
+}
 
+// Calculate the PDF for a given sample direction
+float BRDF_PDF(uint strategy, Material mat, float3 normal, float3 incidence, float3 outgoing) {
 
-        //Get a random number
-        float randomCheck = RandomFloatLCG(seed.x);
+}
 
+// Combine the evaluation
+float3 EvaluateBRDF_Combined(Material mat, float3 normal, float3 incidence, float3 outgoing) {
 
-        //Ckeck if the ray is diffuse reflected or through ggx:
-        if(randomCheck < f){
-            //Get the BRDF based on the materials properties
-            sample =SampleGGXVNDF(normal, flatNormal, -incidence, mat.Pr_Pm_Ps_Pc.x,seed, pdf);
-            origin = worldOrigin + s_bias * flatNormal;
-            recieveDir = true;
-            return BRDF_Specular_GGX(normal, -incidence, light, CalculateF0Vector(1.0f),mat.Pr_Pm_Ps_Pc.x*mat.Pr_Pm_Ps_Pc.x);
-        }
-        else{
-            if(randomCheck < transparency){
-                sample = incidence;
-                origin = worldOrigin - s_bias * incidence;
-                pdf = 1.0f;
-                recieveDir = false;
-                return mat.Kd.xyz * transparency;
-            }
-            //Diffuse reflection using lambertian
-            sample = RandomUnitVectorInHemisphere(normal,seed);
-            origin = worldOrigin + s_bias * flatNormal;
-            pdf = 1.0f;
-            recieveDir = true;
-            return float3(1,1,1);
-        }
-    }
+}
+
+// Calculate the PDF for a given sample direction regarding the combination of pdfs
+float BRDF_PDF_Combined(Material mat, float3 normal, float3 incidence, float3 outgoing) {
+
 }

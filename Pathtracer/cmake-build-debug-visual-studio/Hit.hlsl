@@ -58,7 +58,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     uint materialID = materialIDs[vertId+BTriVertex[indices[vertId]].normal.w];
     float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
-
     // Calculate the position of the intersection point
     float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
            BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
@@ -75,6 +74,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     float3 flatNormal = normalize(cross(e1, e2));
 
     // Initialize the smooth shading normal to zero
+    //____________________________________________________________
     float3 smoothNormal = float3(0, 0, 0);
 
     // Check each vertex normal; accumulate if not zero, otherwise use flat normal
@@ -97,6 +97,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     }
 
     // Transform normal to world space and adjust for ray direction
+    //____________________________________________________________
     normal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz);
     flatNormal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(flatNormal, 0.f)).xyz);
     if (dot(payload.direction, normal) > 0.0f) {
@@ -105,16 +106,15 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     if (dot(payload.direction, flatNormal) > 0.0f) {
         flatNormal = -flatNormal; // Flip the normal if hitting from behind
     }
-
-
     //_____________________________________________________________________________________________________________________________________________
 
-    // # DXR Extra - Simple Lighting
+    // # MIS - Multiple Importance Sampling for lights
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 
-    // Get a random light source based on the weights
+    // Get a random light source based on the weights (Replace later with binary search)
     int random = int(RandomFloatLCG(payload.seed.x) * g_EmissiveTriangles[0].triCount);
     LightTriangle sampleLight = g_EmissiveTriangles[random];
+    //____________________________________________________________
 
     //Calculate the current world coordinates of the given triangle
     //Get the conversion matrix:
@@ -122,6 +122,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     float3 x_v = mul(conversionMatrix, float4(sampleLight.x, 1.f)).xyz;
     float3 y_v = mul(conversionMatrix, float4(sampleLight.y, 1.f)).xyz;
     float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
+    //____________________________________________________________
+
 
     // Generate two random numbers in [0,1)
     float xi1 = RandomFloatLCG(payload.seed.x);
@@ -140,6 +142,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
     // Calculate the sample point in world coordinates
     float3 samplePoint = u * x_v + v * y_v + w * z_v;
+    //____________________________________________________________
 
     // Get the sample direction
     float3 L = samplePoint - (worldOrigin + s_bias * flatNormal);
@@ -166,6 +169,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
     //Shadow ray
+    //____________________________________________________________
     RayDesc ray;
     ray.Origin = worldOrigin + s_bias * flatNormal; // Offset origin along the normal
     ray.Direction = L_norm;
@@ -178,28 +182,79 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     // Trace the ray
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
     float visible = shadowPayload.isHit ? 0.0 : 1.0;
+    //____________________________________________________________
 
-    float pdf;
-    bool recieveDir;
-    float3 brdf = evaluateBRDF(materials[materialID], normalize(WorldRayDirection()), normal,flatNormal, L_norm, payload.direction, payload.origin, worldOrigin, pdf, payload.seed, recieveDir);
+
+
+    // Get the light BRDF
+    //____________________________________________________________
+    //We sample the BSDF for the selected importance light.
+    float3 brdf_light = EvaluateBRDF(materials[materialID], normal, payload.direction, L_norm);
+    // We also need to get the pdf for that sample
+    float pdf_brdf_light = BRDF_PDF(materials[materialID], normal, payload.direction, L_norm);
 
     //Direct lighting:
-    float3 direct = float3(0,0,0);
+    float3 direct  = emission_l * visible * brdf_light * dot(normal, L_norm) * G / pdf_l;
+    // MIS Weight: Use G to convert from solid-angle space to solid angle space. Fuck me, took forever to find this.
+    float weight_light = pdf_l / (pdf_l + pdf_brdf_light * G);
+    // Also adjust for the throughput
+    direct  *= payload.colorAndDistance.xyz * weight_light;
+    //____________________________________________________________
 
-    if(recieveDir){
-        if(payload.util.y != 0)
-            direct  = g_EmissiveTriangles[0].triCount* emission_l * payload.colorAndDistance.xyz * max(0.f, dot(normal, L_norm)) * visible * brdf * G  * materials[materialID].Kd / pdf;
-        else
-            direct  = g_EmissiveTriangles[0].triCount* emission_l * payload.colorAndDistance.xyz * max(0.f, dot(normal, L_norm)) * visible * brdf * G * materials[materialID].Kd / pdf;
+
+    //Get the sample BRDF:
+    //____________________________________________________________
+    //First, we sample the BSDF of the given material - payload.direction and payload.origin will be altered. We need the incoming ray direction later, so we buffer it.
+    float3 incoming = payload.direction;
+    float3 origin = payload.origin;
+    SampleBRDF(materials[materialID], incoming, normal,flatNormal, payload.direction, payload.origin, worldOrigin, payload.seed);
+    float pdf_sample = BRDF_PDF(materials[materialID], normal, incoming, payload.direction);
+
+    //Now, we evaluate the BRDF for the new sample. Our incident vector is the former ray direction vector and our outgoing vector is the new ray direction.
+    float3 brdf_sample = EvaluateBRDF(materials[materialID], normal, incoming, payload.direction);
+    //____________________________________________________________
+
+
+    float3 emissive = float3(0.0f,0.0f,0.0f);
+    //If we hit a emissive surface, calculate MIS weights and end the path
+    if(length(materials[materialID].Ke) > 0.0f){
+        // If its the first bounce, we didnt sample the lightsource, so the weight is 1.0
+        if(payload.util.y == 0.0f){
+            emissive = materials[materialID].Ke;
+        }
+        else{
+            //Calculate the G term
+            float3 L_emissive = worldOrigin - origin;
+            float dist2_emissive = dot(L_emissive, L_emissive);
+            float dist_emissive = sqrt(dist2_emissive);
+            float3 L_emissive_norm = L_emissive / dist_emissive;
+
+            // Cosine terms for shading point and emissive surface
+            float cos_theta_shading = max(0.0f, dot(payload.hitNormal, L_emissive_norm)); // Cosine at shading point
+            float cos_theta_emissive = max(0.0f, dot(normal, -L_emissive_norm)); // Cosine at emissive surface
+
+            float G_emissive = (cos_theta_shading * cos_theta_emissive) / dist2_emissive;
+
+
+            //Calculate the MIS weight
+            float weight_light = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
+            // Calculate the MIS-weighted illumation
+            emissive = weight_light * materials[materialID].Ke * payload.colorAndDistance.xyz;
+        }
+
     }
 
-    //_____________________________________________________________________________________________________________________________________________
+    payload.emission += abs(direct) + abs(emissive);
+    //payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
+    //Adjust the throughput
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf_sample * dot(normal, payload.direction) / pdf_sample, RayTCurrent());
 
-    float3 emissive = materials[materialID].Ke * payload.colorAndDistance.xyz;
-    payload.emission += (direct + emissive) / 2.0f;
+    //Save the pdf_sample in case the next ray hits a light source
+    payload.pdf = pdf_sample;
 
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * materials[materialID].Kd, RayTCurrent());
-    //payload.colorAndDistance = float4(payload.colorAndDistance.xyz / pdf, RayTCurrent());
+
+    //Misc
+    //____________________________________________________________
     payload.hitNormal = normal;
     payload.reflectiveness = 1.0f-materials[materialID].Pr_Pm_Ps_Pc.x;
     payload.currentOTW = instanceProps[InstanceID()].objectToWorld;
