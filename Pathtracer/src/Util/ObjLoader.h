@@ -49,7 +49,7 @@ public:
 
             // Set up material properties
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve);
-            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, 0, 0);
+            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, mat.sheen, 0);
             Material t_mat(diffuse, Pr_Pm_Ps_Pc);
 
             // Set emission
