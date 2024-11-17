@@ -41,6 +41,11 @@ cbuffer Colors : register(b0) {
   float3 C;
 }
 
+float3 SchlickFresnel_DEBUG(float3 F0, float cosTheta)
+{
+    return  F0 + (1.0f - F0) * pow(abs(1.0f - cosTheta), 5.0f);
+}
+
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -189,13 +194,13 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     // Get the light BRDF
     //____________________________________________________________
     //We sample the BSDF for the selected importance light.
-    float3 brdf_light = EvaluateBRDF(materials[materialID], normal, payload.direction, L_norm);
+    float3 brdf_light = EvaluateBRDF_Combined(materials[materialID], normal, -L_norm, -payload.direction);
     // We also need to get the pdf for that sample
-    float pdf_brdf_light = BRDF_PDF(materials[materialID], normal, payload.direction, L_norm);
+    float pdf_brdf_light = BRDF_PDF_Combined(materials[materialID], normal, -L_norm, -payload.direction);
 
     //Direct lighting:
     float3 direct  = emission_l * visible * brdf_light * dot(normal, L_norm) * G / pdf_l;
-    // MIS Weight: Use G to convert from solid-angle space to solid angle space. Fuck me, took forever to find this.
+    // MIS Weight: Use G to convert from area space to solid-angle space. Fuck me, took forever to find this.
     float weight_light = pdf_l / (pdf_l + pdf_brdf_light * G);
     // Also adjust for the throughput
     direct  *= payload.colorAndDistance.xyz * weight_light;
@@ -205,13 +210,17 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //Get the sample BRDF:
     //____________________________________________________________
     //First, we sample the BSDF of the given material - payload.direction and payload.origin will be altered. We need the incoming ray direction later, so we buffer it.
-    float3 incoming = payload.direction;
+    float3 outgoing = -payload.direction; //Outgoing is the direction to the camera
     float3 origin = payload.origin;
-    SampleBRDF(materials[materialID], incoming, normal,flatNormal, payload.direction, payload.origin, worldOrigin, payload.seed);
-    float pdf_sample = BRDF_PDF(materials[materialID], normal, incoming, payload.direction);
+    //As materials might combine lobes, we have to select one:
+    uint strategy = SelectSamplingStrategy(materials[materialID], outgoing, normal, payload.seed);
+    SampleBRDF(strategy, materials[materialID], outgoing, normal,flatNormal, payload.direction, payload.origin, worldOrigin, payload.seed);
+    float3 incoming = -payload.direction;
 
+    //PDF
+    float pdf_sample = BRDF_PDF(strategy, materials[materialID], normal, incoming, outgoing);
     //Now, we evaluate the BRDF for the new sample. Our incident vector is the former ray direction vector and our outgoing vector is the new ray direction.
-    float3 brdf_sample = EvaluateBRDF(materials[materialID], normal, incoming, payload.direction);
+    float3 brdf_sample = EvaluateBRDF(strategy, materials[materialID], normal, incoming, outgoing);
     //____________________________________________________________
 
 
@@ -237,17 +246,26 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
             //Calculate the MIS weight
-            float weight_light = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
+            float weight_emissive = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
             // Calculate the MIS-weighted illumation
-            emissive = weight_light * materials[materialID].Ke * payload.colorAndDistance.xyz;
+            emissive = materials[materialID].Ke * payload.colorAndDistance.xyz * weight_emissive;
+            payload.util.x = 1.1f;
         }
 
     }
 
     payload.emission += abs(direct) + abs(emissive);
     //payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
+
+    //_________DEBUG___________
+    //float cosTheta = dot(normal, outgoing);
+    //float3 fresnel = SchlickFresnel_DEBUG(materials[materialID].Ks, cosTheta);
+    //payload.emission = 1.0f/pdf_sample;
+    //payload.emission = brdf_sample;
+    //_________DEBUG___________
+
     //Adjust the throughput
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf_sample * dot(normal, payload.direction) / pdf_sample, RayTCurrent());
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf_sample * dot(normal, -incoming) / pdf_sample, RayTCurrent());
 
     //Save the pdf_sample in case the next ray hits a light source
     payload.pdf = pdf_sample;

@@ -49,11 +49,9 @@ void SampleBRDF_Lambertian(Material mat, float3 incoming, float3 normal, float3 
 }
 
 // Evaluate the BRDF for the given material
-float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incidence, float3 outgoing) {
+float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incoming, float3 outgoing) {
     // Ensure the vectors are normalized
     float3 N = normalize(normal);
-    float3 L = normalize(incidence); // Incident light direction
-    float3 V = normalize(outgoing);  // Viewing direction or sample direction
 
     // For Lambertian reflection, the BRDF is constant
     // BRDF = Kd / PI
@@ -61,8 +59,8 @@ float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incidence, fl
 }
 
 // Calculate the PDF for a given sample direction
-float BRDF_PDF_Lambertian(Material mat, float3 normal, float3 incidence, float3 outgoing) {
+float BRDF_PDF_Lambertian(Material mat, float3 normal, float3 incoming, float3 outgoing) {
     // For cosine-weighted hemisphere sampling over a Lambertian surface
-    return max(dot(normal, outgoing), 0.0f) / PI;
+    return max(dot(normal, -incoming), 0.0f) / PI;
 }
 

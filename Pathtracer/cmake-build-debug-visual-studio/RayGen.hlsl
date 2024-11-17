@@ -59,7 +59,7 @@ void RayGen() {
     float3 initialHit = init_orig;
 
     // Path tracing: x samples for y bounces
-    float samples = 30;
+    float samples = 100;
     for (int x = 0; x < samples; x++) {
         HitInfo payload;
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -89,7 +89,7 @@ void RayGen() {
         payload.direction = init_dir;
         payload.pdf = 1.0f;
 
-        for (int y = 0; y < 8; y++) {
+        for (int y = 0; y < 10; y++) {
             RayDesc ray;
             ray.Origin = payload.origin;
             ray.Direction = payload.direction;
@@ -103,7 +103,7 @@ void RayGen() {
             TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
 
             // If the last ray missed, terminate loop
-            if (payload.util.x == 1.0f) {
+            if (payload.util.x >= 1.0f) {
                 break;
             }
 
