@@ -17,6 +17,7 @@ struct Material{
  XMFLOAT3 Ke = {0,0,0};
  XMFLOAT4 Pr_Pm_Ps_Pc = {0,0,0,0};
  XMFLOAT2 aniso_anisor = {0,0};
+ float Ni = 1;
 
  //ADD MAP IDs LATER
  Material(XMFLOAT4 kd, XMFLOAT4 pr_pm_ps_pc):Kd(kd), Pr_Pm_Ps_Pc(pr_pm_ps_pc){}

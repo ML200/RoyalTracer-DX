@@ -226,6 +226,7 @@ struct material_t {
   real_t anisotropy;           // aniso. [0, 1] default 0
   real_t anisotropy_rotation;  // anisor. [0, 1] default 0
   real_t pad0;
+  real_t Ni;
   std::string roughness_texname;  // map_Pr
   std::string metallic_texname;   // map_Pm
   std::string sheen_texname;      // map_Ps
@@ -2266,6 +2267,13 @@ void LoadMtl(std::map<std::string, int> *material_map,
       material.roughness = parseReal(&token);
       continue;
     }
+
+      // PBR: Ni
+      if (token[0] == 'N' && token[1] == 'i' && IS_SPACE(token[2])) {
+          token += 2;
+          material.Ni = parseReal(&token);
+          continue;
+      }
 
     // PBR: metallic
     if (token[0] == 'P' && token[1] == 'm' && IS_SPACE(token[2])) {

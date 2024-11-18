@@ -1,4 +1,4 @@
-#include "GGX.hlsl"
+#include "GGXT.hlsl"
 // Simple Cosine-Weighted hemisphere sampling
 float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
 {

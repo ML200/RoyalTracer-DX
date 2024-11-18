@@ -25,10 +25,9 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
     float3 fresnel = SchlickFresnel(mat.Ks, cosTheta);
 
     // Sampling probabilities
-    float p_s = min(1.0f, length(fresnel)/3.0f + clearcoat + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + clearcoat + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
     float p_d = (1.0f - p_s); // Sample the diffuse part of the lobe
     //Adjust for translucency
-    p_s *= alpha;
     p_d *= alpha;
 
     //Select the strategy based on the probabilities (CDF)
@@ -63,9 +62,8 @@ void SampleBRDF(uint strategy, Material mat, float3 incoming, float3 normal, flo
 
     }
     else{
-
+        //SampleBTDF_GGX(mat, incoming, normal, flatNormal, sample, origin, worldOrigin, seed);
     }
-    //SampleBRDF_Lambertian(mat, incoming, normal, flatNormal, sample, origin, worldOrigin, seed);
 }
 
 // Evaluate the BRDF for the given strategy
@@ -81,7 +79,7 @@ float3 EvaluateBRDF(uint strategy, Material mat, float3 normal, float3 incidence
 
     }
     else{
-
+        //return EvaluateBTDF_GGX(mat, normal, incidence, outgoing);
     }
     return (0,0,0);
 }
@@ -99,7 +97,7 @@ float BRDF_PDF(uint strategy, Material mat, float3 normal, float3 incidence, flo
 
     }
     else{
-
+        //return BTDF_PDF_GGX(mat, normal, incidence, outgoing);
     }
     return 0;
 }
@@ -157,7 +155,7 @@ float BRDF_PDF_Combined(Material mat, float3 normal, float3 incoming, float3 out
     float3 fresnel = SchlickFresnel(mat.Ks, abs(dot(normal, outgoing)));
 
     // Sampling probabilities
-    float p_s = min(1.0f, length(fresnel)/3.0f + clearcoat + metallic);
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + clearcoat + metallic);
     float p_d = 1.0f - p_s;
 
     // Adjust for translucency

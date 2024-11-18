@@ -718,6 +718,11 @@ CMakeFiles/Pathtracer.dir/rdn/Main.cpp.obj
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/xhash
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/list
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/xnode_handle.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/imgui/imconfig.h
+ C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui_impl_dx12.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui_impl_win32.h
 
 CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/Renderer.cpp
@@ -1090,6 +1095,11 @@ CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/xhash
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/list
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/xnode_handle.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/lib/imgui/imconfig.h
+ C:/Program Files (x86)/Windows Kits/10/include/10.0.22621.0/ucrt/assert.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui_impl_dx12.h
+ C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui_impl_win32.h
  C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/rdn/DXRHelper.h
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/fstream
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.38.33130/include/iostream

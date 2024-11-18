@@ -59,7 +59,7 @@ void RayGen() {
     float3 initialHit = init_orig;
 
     // Path tracing: x samples for y bounces
-    float samples = 100;
+    float samples = 10;
     for (int x = 0; x < samples; x++) {
         HitInfo payload;
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -89,7 +89,7 @@ void RayGen() {
         payload.direction = init_dir;
         payload.pdf = 1.0f;
 
-        for (int y = 0; y < 10; y++) {
+        for (int y = 0; y < 5; y++) {
             RayDesc ray;
             ray.Origin = payload.origin;
             ray.Direction = payload.direction;
@@ -130,7 +130,7 @@ void RayGen() {
 
             if(y > 3){
 
-                float throughput = length(payload.colorAndDistance.xyz)/3.0f;
+                float throughput = (payload.colorAndDistance.x + payload.colorAndDistance.y + payload.colorAndDistance.z)/3.0f;
                 float random = RandomFloatLCG(payload.seed.x);
 
                 if(throughput < random){
@@ -171,6 +171,7 @@ void RayGen() {
     // Calculate the average color over the accumulated frames
     float3 averagedColor = temporalAccumulation/usablePixels;
     //float3 averagedColor = accumulation;
+
 
     // Output the final color to layer 0
     gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);

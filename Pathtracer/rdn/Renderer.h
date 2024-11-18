@@ -21,6 +21,10 @@
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "../src/Components/Vertex.h"
 
+#include "../lib/imgui/imgui.h"
+#include "../lib/imgui/imgui_impl_dx12.h"
+#include "../lib/imgui/imgui_impl_win32.h"
+
 using namespace DirectX;
 
 // Note that while ComPtr is used to manage the lifetime of resources on the

@@ -105,12 +105,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //____________________________________________________________
     normal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz);
     flatNormal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(flatNormal, 0.f)).xyz);
-    if (dot(payload.direction, normal) > 0.0f) {
-        normal = -normal; // Flip the normal if hitting from behind
-    }
-    if (dot(payload.direction, flatNormal) > 0.0f) {
-        flatNormal = -flatNormal; // Flip the normal if hitting from behind
-    }
     //_____________________________________________________________________________________________________________________________________________
 
     // # MIS - Multiple Importance Sampling for lights
@@ -249,7 +243,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
             float weight_emissive = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
             // Calculate the MIS-weighted illumation
             emissive = materials[materialID].Ke * payload.colorAndDistance.xyz * weight_emissive;
-            payload.util.x = 1.1f;
         }
 
     }
@@ -261,7 +254,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //float cosTheta = dot(normal, outgoing);
     //float3 fresnel = SchlickFresnel_DEBUG(materials[materialID].Ks, cosTheta);
     //payload.emission = 1.0f/pdf_sample;
-    //payload.emission = brdf_sample;
     //_________DEBUG___________
 
     //Adjust the throughput
