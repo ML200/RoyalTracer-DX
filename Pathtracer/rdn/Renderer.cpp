@@ -88,8 +88,10 @@ void Renderer::OnInit() {
   // Create the shader binding table and indicating which shaders
   // are invoked for each instance in the  AS
   CreateShaderBindingTable();
-}
 
+
+
+}
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
@@ -318,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","monkey.obj"};
+    std::vector<std::string> models = {"garage.obj","untitled.obj"};
 
 
 
@@ -402,7 +404,7 @@ void Renderer::OnUpdate() {
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000000.0f) *
-            XMMatrixTranslation(0.f, 2.0f * cosf(m_time / 2000000.f), 0.f);
+            XMMatrixTranslation(0.f, 1.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }

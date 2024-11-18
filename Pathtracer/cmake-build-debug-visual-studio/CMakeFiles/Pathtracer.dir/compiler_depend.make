@@ -717,6 +717,11 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual S
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xhash"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\list"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xnode_handle.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\imgui\imconfig.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_dx12.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_win32.h
 
 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
@@ -1089,6 +1094,11 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visu
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xhash"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\list"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\xnode_handle.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\imgui\imconfig.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\assert.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_dx12.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_win32.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXRHelper.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\fstream"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\iostream"
@@ -3769,6 +3779,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\..\simd\geometric.h:
 
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui.h:
+
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\ucrt\corecrt_math.h":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\vcruntime.h":
@@ -4421,6 +4433,8 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h:
 
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\lib\imgui\imconfig.h:
+
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSampleHelper.h:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h:
@@ -4527,6 +4541,14 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\vec
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\list":
 
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat2x2.hpp:
+
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_dx12.h:
+
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\map":
+
+C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui_impl_win32.h:
+
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\chrono":
@@ -4590,8 +4612,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\det
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_vec4.inl:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\..\mat2x2.hpp:
-
-C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat2x2.hpp:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat2x2.inl:
 
@@ -4668,8 +4688,6 @@ C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\int
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_integer.hpp:
 
 C:\Users\m\OneDrive\Dokumente\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Util\ObjLoader.h:
-
-"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\map":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.38.33130\include\set":
 

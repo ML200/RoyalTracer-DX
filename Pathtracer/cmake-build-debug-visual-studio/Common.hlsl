@@ -28,6 +28,7 @@ struct Material
      float3 Ke;
      float4 Pr_Pm_Ps_Pc;
      float2 aniso_anisor;
+     float Ni;
 };
 
 // Attributes output by the raytracing when hitting a surface,
@@ -90,6 +91,21 @@ float3 getPerpendicularVector(float3 v)
 float Gaussian(float dist2, float sigma) {
     return exp(-dist2 / (2.0f * sigma * sigma));
 }
+
+// Tonemapping function (Reinhard operator)
+float3 ReinhardTonemap(float3 color)
+{
+    // Apply Reinhard tonemapping
+    return color / (color + 1.0f);
+}
+
+// Alternatively, for a slightly brighter image, you can use a scaling factor
+float3 ReinhardTonemapScaled(float3 color, float exposure)
+{
+    color *= exposure;
+    return color / (color + 1.0f);
+}
+
 
 float2 ComputeMotionVector(float3 worldPos,
                            row_major float4x4 view, row_major float4x4 projection,
