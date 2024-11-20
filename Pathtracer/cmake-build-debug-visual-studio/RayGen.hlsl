@@ -5,6 +5,7 @@
 
 // Raytracing output texture, accessed as a UAV
 RWTexture2DArray<float4> gOutput : register(u0);
+RWTexture2D<float4> gPermanentData : register(u1);
 
 // Raytracing acceleration structure, accessed as a SRV
 RaytracingAccelerationStructure SceneBVH : register(t0);
@@ -59,7 +60,7 @@ void RayGen() {
     float3 initialHit = init_orig;
 
     // Path tracing: x samples for y bounces
-    float samples = 10;
+    float samples = 20;
     for (int x = 0; x < samples; x++) {
         HitInfo payload;
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
@@ -149,13 +150,13 @@ void RayGen() {
 
     accumulation /= samples;
 
-    // DENOISE ______________________________________________________________________________________________________________________
+    // DENOISE (Works but not used rn) ______________________________________________________________________________________________
 
-    float3 temporalAccumulation = float3(0.0f, 0.0f, 0.0f);
-    int usablePixels = 0;
+    //float3 temporalAccumulation = float3(0.0f, 0.0f, 0.0f);
+    //int usablePixels = 0;
 
     // Loop to shift entries one position ahead while accumulating the existing data
-    for (int i = 8; i >= 1; i--) {
+    /*for (int i = 8; i >= 1; i--) {
         // Shift previous accumulations
         gOutput[uint3(launchIndex, i + 1)] = gOutput[uint3(launchIndex, i)];
 
@@ -163,14 +164,55 @@ void RayGen() {
         float4 prevColor = gOutput[uint3(launchIndex, i)];
         temporalAccumulation += prevColor.xyz;
         usablePixels++;
+    }*/
+    // Store the current frame's accumulation in layer 1
+    //gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
+    // Calculate the average color over the accumulated frames
+    //float3 averagedColor = temporalAccumulation/usablePixels;
+    // DENOISE ______________________________________________________________________________________________________________________
+
+
+
+    //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
+    int maxFrames = 100000;
+    float frameCount = gPermanentData[uint2(launchIndex)].w;
+
+    // Check if the frame count is zero or uninitialized
+    if (frameCount <= 0.0f && !IsNaN(accumulation.x) && !IsNaN(accumulation.y) && !IsNaN(accumulation.z))
+    {
+        // Initialize the accumulation buffer and frame count
+        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
+    }
+    else if (frameCount < maxFrames && !IsNaN(accumulation.x) && !IsNaN(accumulation.y) && !IsNaN(accumulation.z))
+    {
+        // Continue accumulating valid samples
+        gPermanentData[uint2(launchIndex)].xyz += accumulation;
+        gPermanentData[uint2(launchIndex)].w += 1.0f;
     }
 
-    // Store the current frame's accumulation in layer 1
-    gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
+    // Compare the view matrices and reset if different (your existing code)
+    bool different = false;
+    for (int row = 0; row < 4; row++)
+    {
+        float4 diff = abs(view[row] - prevView[row]);
+        if (any(diff > s_bias))
+        {
+            different = true;
+            break;
+        }
+    }
 
-    // Calculate the average color over the accumulated frames
-    float3 averagedColor = temporalAccumulation/usablePixels;
-    //float3 averagedColor = accumulation;
+    if (different)
+    {
+        // Reset buffers
+        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
+        frameCount = 1.0f; // Update frameCount to reflect the reset
+    }
+
+    // Safely calculate the averaged color
+    frameCount = max(frameCount, 1.0f); // Ensure frameCount is at least 1 to avoid division by zero
+    float3 averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
+    //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
 
 
     // Output the final color to layer 0
