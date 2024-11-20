@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","untitled.obj"};
+    std::vector<std::string> models = {"furnace.obj","untitled.obj"};
 
 
 
@@ -815,6 +815,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
   rsc.AddHeapRangesParameter(
       {{0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/,
         D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
+       {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
        {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
        {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
        {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6}
@@ -1003,6 +1004,29 @@ void Renderer::CreateRaytracingOutputBuffer() {
       &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
       D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr,
       IID_PPV_ARGS(&m_outputResource)));
+
+
+    // Create a texture description
+    D3D12_RESOURCE_DESC textureDesc = {};
+    textureDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    textureDesc.Width = GetWidth();
+    textureDesc.Height = GetHeight();
+    textureDesc.DepthOrArraySize = 1;
+    textureDesc.MipLevels = 1;
+    textureDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; // Choose an appropriate format
+    textureDesc.SampleDesc.Count = 1;
+    textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    // Create the texture resource
+    ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &textureDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(&m_permanentDataTexture)));
+
 }
 
 //-----------------------------------------------------------------------------
@@ -1018,7 +1042,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 7, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 8, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1126,6 +1150,20 @@ void Renderer::CreateShaderResourceHeap() {
     emissiveTrianglesSrvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
     emissiveTrianglesSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
     m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &emissiveTrianglesSrvDesc, srvHandle);
+
+    // Move to the next descriptor slot after the last SRV
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Create UAV for the permanent data texture
+    D3D12_UNORDERED_ACCESS_VIEW_DESC permanentDataUavDesc = {};
+    permanentDataUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    permanentDataUavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; // Ensure this matches your resource format
+    permanentDataUavDesc.Texture2D.MipSlice = 0;
+    permanentDataUavDesc.Texture2D.PlaneSlice = 0;
+
+    // Create the UAV in the heap at the current descriptor slot (heap slot 7)
+    m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &permanentDataUavDesc, srvHandle);
+
 
 
     std::wcout << L"SRVs created!" << std::endl;

@@ -61,6 +61,6 @@ float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incoming, flo
 // Calculate the PDF for a given sample direction
 float BRDF_PDF_Lambertian(Material mat, float3 normal, float3 incoming, float3 outgoing) {
     // For cosine-weighted hemisphere sampling over a Lambertian surface
-    return max(dot(normal, -incoming), 0.0f) / PI;
+    return max(dot(normal, -incoming), 0.0001f) / PI;
 }
 

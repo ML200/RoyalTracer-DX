@@ -105,6 +105,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //____________________________________________________________
     normal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz);
     flatNormal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(flatNormal, 0.f)).xyz);
+    if (dot(normal, -payload.direction) < 0.0f)
+        normal = -normal; // Flip the normal to match the ray direction
     //_____________________________________________________________________________________________________________________________________________
 
     // # MIS - Multiple Importance Sampling for lights
@@ -112,6 +114,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
     // Get a random light source based on the weights (Replace later with binary search)
     int random = int(RandomFloatLCG(payload.seed.x) * g_EmissiveTriangles[0].triCount);
+    random = max(0, random);
+    random = min(g_EmissiveTriangles[0].triCount-1, random);
     LightTriangle sampleLight = g_EmissiveTriangles[random];
     //____________________________________________________________
 
@@ -145,8 +149,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
     // Get the sample direction
     float3 L = samplePoint - (worldOrigin + s_bias * flatNormal);
-    float dist2 = dot(L, L);
-    float dist = sqrt(dist2);
+    float dist2 = max(dot(L, L), EPSILON);
+    float dist = max(sqrt(dist2), EPSILON);
     float3 L_norm = L / dist; // Sampling direction
 
     // Compute the normal vector using the cross product of the edge vectors
@@ -162,8 +166,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     float cos_theta_y = max(0.0, dot(normal_l, -L_norm));      // Cosine at light sample
 
     // Compute the geometry term
-    float G = (cos_theta_x * cos_theta_y) / dist2;
-    float pdf_l = 1.0 / (area_l * g_EmissiveTriangles[0].triCount);
+    float G = max((cos_theta_x * cos_theta_y) / dist2, EPSILON);
+    float pdf_l = max(1.0 / (area_l * g_EmissiveTriangles[0].triCount), EPSILON);
     float3 emission_l =  sampleLight.emission;
 
 
@@ -190,7 +194,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //We sample the BSDF for the selected importance light.
     float3 brdf_light = EvaluateBRDF_Combined(materials[materialID], normal, -L_norm, -payload.direction);
     // We also need to get the pdf for that sample
-    float pdf_brdf_light = BRDF_PDF_Combined(materials[materialID], normal, -L_norm, -payload.direction);
+    float pdf_brdf_light = max(BRDF_PDF_Combined(materials[materialID], normal, -L_norm, -payload.direction), EPSILON);
 
     //Direct lighting:
     float3 direct  = emission_l * visible * brdf_light * dot(normal, L_norm) * G / pdf_l;
@@ -206,30 +210,44 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //First, we sample the BSDF of the given material - payload.direction and payload.origin will be altered. We need the incoming ray direction later, so we buffer it.
     float3 outgoing = -payload.direction; //Outgoing is the direction to the camera
     float3 origin = payload.origin;
+    float p_strategy = 1.0f;
     //As materials might combine lobes, we have to select one:
-    uint strategy = SelectSamplingStrategy(materials[materialID], outgoing, normal, payload.seed);
+    uint strategy = SelectSamplingStrategy(materials[materialID], outgoing, normal, payload.seed, p_strategy);
     SampleBRDF(strategy, materials[materialID], outgoing, normal,flatNormal, payload.direction, payload.origin, worldOrigin, payload.seed);
     float3 incoming = -payload.direction;
 
-    //PDF
-    float pdf_sample = BRDF_PDF(strategy, materials[materialID], normal, incoming, outgoing);
-    //Now, we evaluate the BRDF for the new sample. Our incident vector is the former ray direction vector and our outgoing vector is the new ray direction.
-    float3 brdf_sample = EvaluateBRDF(strategy, materials[materialID], normal, incoming, outgoing);
+    //Check if we generated an invalid sample, if so set throughput to 0 and terminate ray here, effectively discarding the sample
+    float terminator = 1.0f;
+    float pdf_sample = 1.0f;
+    float3 brdf_sample = 0.0f;
+    if(length(payload.direction) < 0.01f){
+        terminator = 0.0f;
+        payload.util.x = 1.1f; //Terminate ray
+    }
+    else{
+        //PDF
+        pdf_sample = max(BRDF_PDF(strategy, materials[materialID], normal, incoming, outgoing),0.0001f);
+        //Now, we evaluate the BRDF for the new sample. Our incident vector is the former ray direction vector and our outgoing vector is the new ray direction.
+        brdf_sample = EvaluateBRDF(strategy, materials[materialID], normal, incoming, outgoing);
+    }
+
     //____________________________________________________________
 
 
     float3 emissive = float3(0.0f,0.0f,0.0f);
+    float weight_emissive = 1.0f;
     //If we hit a emissive surface, calculate MIS weights and end the path
     if(length(materials[materialID].Ke) > 0.0f){
         // If its the first bounce, we didnt sample the lightsource, so the weight is 1.0
         if(payload.util.y == 0.0f){
             emissive = materials[materialID].Ke;
+            payload.util.x = 1.1f;
         }
         else{
             //Calculate the G term
             float3 L_emissive = worldOrigin - origin;
-            float dist2_emissive = dot(L_emissive, L_emissive);
-            float dist_emissive = sqrt(dist2_emissive);
+            float dist2_emissive = max(dot(L_emissive, L_emissive), EPSILON);
+            float dist_emissive = max(sqrt(dist2_emissive), EPSILON);
             float3 L_emissive_norm = L_emissive / dist_emissive;
 
             // Cosine terms for shading point and emissive surface
@@ -240,15 +258,16 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
             //Calculate the MIS weight
-            float weight_emissive = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
+            weight_emissive = payload.pdf * G_emissive  / (payload.pdf * G_emissive  + pdf_l);
             // Calculate the MIS-weighted illumation
             emissive = materials[materialID].Ke * payload.colorAndDistance.xyz * weight_emissive;
+            payload.util.x = 1.1f;
         }
 
     }
 
-    payload.emission += abs(direct) + abs(emissive);
-    //payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
+    //payload.emission += abs(direct) + abs(emissive);
+    payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
 
     //_________DEBUG___________
     //float cosTheta = dot(normal, outgoing);
@@ -257,7 +276,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //_________DEBUG___________
 
     //Adjust the throughput
-    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf_sample * dot(normal, -incoming) / pdf_sample, RayTCurrent());
+    payload.colorAndDistance = float4(payload.colorAndDistance.xyz * brdf_sample * dot(normal, -incoming) * weight_emissive / pdf_sample, RayTCurrent());
 
     //Save the pdf_sample in case the next ray hits a light source
     payload.pdf = pdf_sample;

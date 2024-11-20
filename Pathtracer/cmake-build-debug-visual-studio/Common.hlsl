@@ -1,5 +1,6 @@
 #define PI 3.1415f
 #define s_bias 0.00001f // Shadow ray bias value
+#define EPSILON 0.0001f
 
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
@@ -30,6 +31,12 @@ struct Material
      float2 aniso_anisor;
      float Ni;
 };
+
+//Simple NaN check
+bool IsNaN(float x)
+{
+    return !(x < 0.f || x > 0.f || x == 0.f);
+}
 
 // Attributes output by the raytracing when hitting a surface,
 // here the barycentric coordinates

@@ -7,7 +7,7 @@
 // 2 - Perfect reflection
 // 3 - Refraction
 // Probability is the likelihood to select the given sampling strategy, used for weighting the contributions
-uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout uint2 seed){
+uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout uint2 seed, inout float probability){
     //Get random value
     float r = RandomFloat(seed);
 
@@ -36,14 +36,17 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
         if(roughness < 0.04f){ // adjust threshold (later 2)
             return 1;
         }
+        probability = p_s;
         return 1;
     }
     //Diffuse
     else if(r <= p_s + p_d){
+        probability = p_d;
         return 0;
     }
     else{
         // Refraction, currently replaced by diffuse (later 3)
+        probability = 1.0f - (p_d + p_s);
         return 0;
     }
 
@@ -159,7 +162,6 @@ float BRDF_PDF_Combined(Material mat, float3 normal, float3 incoming, float3 out
     float p_d = 1.0f - p_s;
 
     // Adjust for translucency
-    p_s *= alpha;
     p_d *= alpha;
 
     // Normalize probabilities
