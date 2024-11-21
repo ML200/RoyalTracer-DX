@@ -1,5 +1,41 @@
 #include "Common.hlsl"
 
+
+float ESS_LUT(Material mat, float NdotV, float roughness)
+{
+    // Normalize inputs to [0, 1]
+    roughness = saturate(roughness);
+    NdotV = saturate(NdotV);
+
+    // Compute fractional indices
+    float roughIdxF = roughness * (LUT_SIZE_ROUGHNESS - 1);
+    float thetaIdxF = NdotV * (LUT_SIZE_THETA - 1);
+
+    // Compute integer indices for the corners
+    int roughIdx0 = (int)floor(roughIdxF);
+    int roughIdx1 = min(roughIdx0 + 1, LUT_SIZE_ROUGHNESS - 1);
+
+    int thetaIdx0 = (int)floor(thetaIdxF);
+    int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE_THETA - 1);
+
+    // Compute interpolation weights
+    float wRough = roughIdxF - roughIdx0;
+    float wTheta = thetaIdxF - thetaIdx0;
+
+    // Fetch LUT values at the four corners
+    float v00 = mat.LUT[thetaIdx0][roughIdx0];
+    float v01 = mat.LUT[thetaIdx0][roughIdx1];
+    float v10 = mat.LUT[thetaIdx1][roughIdx0];
+    float v11 = mat.LUT[thetaIdx1][roughIdx1];
+
+    // Perform bilinear interpolation
+    float v0 = lerp(v00, v01, wRough);
+    float v1 = lerp(v10, v11, wRough);
+    return lerp(v0, v1, wTheta);
+}
+
+
+
 float3 SchlickFresnel(float3 F0, float cosTheta)
 {
     return saturate(F0 + (1.0f - F0) * pow(abs(1.0f - cosTheta), 5.0f));
@@ -128,9 +164,11 @@ float3 EvaluateBRDF_GGX(Material mat, float3 normal, float3 incoming, float3 out
 
     float3 specular = (F * D * G) / denominator;
 
-    //Diffuse BRDF later to account for double fresnel terms
+    //Multiscatter GGX
+    float Ess = ESS_LUT(mat, NdotV, mat.Pr_Pm_Ps_Pc.x);
+    float kms = (1.0f - Ess) / Ess;
 
-    return specular;
+    return specular * (1.0f + kms);
 }
 
 // Calculate the PDF for a given sample direction using GGX
