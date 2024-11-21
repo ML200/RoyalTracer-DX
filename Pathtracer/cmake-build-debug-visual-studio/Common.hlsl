@@ -2,6 +2,9 @@
 #define s_bias 0.00001f // Shadow ray bias value
 #define EPSILON 0.0001f
 
+#define LUT_SIZE_ROUGHNESS 16
+#define LUT_SIZE_THETA 16
+
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
 // Note that the payload should be kept as small as possible,
@@ -30,6 +33,7 @@ struct Material
      float4 Pr_Pm_Ps_Pc;
      float2 aniso_anisor;
      float Ni;
+     float LUT[16][16];
 };
 
 //Simple NaN check
