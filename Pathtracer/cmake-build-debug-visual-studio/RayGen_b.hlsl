@@ -58,8 +58,8 @@ void RayGen() {
     float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
     float3 accumulation = float3(0, 0, 0);
 
-    uint samples = 1;
-    uint bounces = 1;
+    uint samples = 20;
+    uint bounces = 5;
     uint rr_threshold = 3;
 
 
@@ -78,6 +78,8 @@ void RayGen() {
     payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
     payload.emission = float3(0.0f, 0.0f, 0.0f);
     payload.origin = init_orig;
+    payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
+    payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
 
     float2 d = ((launchIndex.xy / dims.xy) * 2.f - 1.f);
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
@@ -89,16 +91,17 @@ void RayGen() {
 
     // Path tracing: x samples for y bounces
     for (int x = 0; x < samples; x++) {
-        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
-        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
         // Initialize the new payload
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
         payload.emission = float3(0.0f, 0.0f, 0.0f);
         payload.origin = init_orig;
         payload.direction = init_dir;
         payload.pdf = 1.0f;
+        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ x * prime3_x ^ uint(time) * prime_time_x;
+        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ x * prime3_y ^ uint(time) * prime_time_y;
 
         for (int y = 0; y < bounces; y++) {
+
             RayDesc ray;
             ray.Origin = payload.origin;
             ray.Direction = payload.direction;
@@ -139,7 +142,7 @@ void RayGen() {
 
 
     //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
-    int maxFrames = 10000000;
+    int maxFrames = 1000000;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
 
     // Check if the frame count is zero or uninitialized

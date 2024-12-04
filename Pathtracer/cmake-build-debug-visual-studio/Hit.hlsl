@@ -25,7 +25,7 @@ struct LightTriangle {
     uint   triCount;
     float  pad3;
     float3 emission;
-    float  pad4;
+    float  cdf;
 };
 
 
@@ -112,11 +112,27 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     // # MIS - Multiple Importance Sampling for lights
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
 
-    // Get a random light source based on the weights (Replace later with binary search)
-    int random = int(RandomFloatLCG(payload.seed.x) * g_EmissiveTriangles[0].triCount);
-    random = max(0, random);
-    random = min(g_EmissiveTriangles[0].triCount-1, random);
-    LightTriangle sampleLight = g_EmissiveTriangles[random];
+    // Generate a random float in [0,1)
+    float randomValue = RandomFloat(payload.seed);
+
+
+    // Get a random light source based on the weights
+    int left = 0;
+    int right = g_EmissiveTriangles[0].triCount - 1;
+    int selectedIndex = 0;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        float midCdf = g_EmissiveTriangles[mid].cdf;
+
+        if (randomValue < midCdf) {
+            selectedIndex = mid;
+            right = mid - 1;
+        } else {
+            left = mid + 1;
+        }
+    }
+    LightTriangle sampleLight = g_EmissiveTriangles[selectedIndex];
     //____________________________________________________________
 
     //Calculate the current world coordinates of the given triangle
@@ -129,8 +145,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
     // Generate two random numbers in [0,1)
-    float xi1 = RandomFloatLCG(payload.seed.x);
-    float xi2 = RandomFloatLCG(payload.seed.x);
+    float xi1 = RandomFloat(payload.seed);
+    float xi2 = RandomFloat(payload.seed);
 
     // Ensure the sample lies within the triangle
     if (xi1 + xi2 > 1.0f) {
@@ -167,7 +183,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
     // Compute the geometry term
     float G = max((cos_theta_x * cos_theta_y) / dist2, EPSILON);
-    float pdf_l = max(1.0 / (area_l * g_EmissiveTriangles[0].triCount), EPSILON);
+    float pdf_l = max(sampleLight.weight / area_l, EPSILON);
     float3 emission_l =  sampleLight.emission;
 
 
@@ -188,31 +204,32 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //____________________________________________________________
 
 
+    //As materials might combine lobes, we have to select one:
+    float p_strategy = 1.0f;
+    float3 outgoing = -payload.direction; //Outgoing is the direction to the camera
+    uint strategy = SelectSamplingStrategy(materials[materialID], outgoing, normal, payload.seed, p_strategy);
+
 
     // Get the light BRDF
     //____________________________________________________________
     //We sample the BSDF for the selected importance light.
-    float3 brdf_light = EvaluateBRDF_Combined(materials[materialID], normal, -L_norm, -payload.direction);
+    float3 brdf_light = EvaluateBRDF(strategy, materials[materialID], normal, -L_norm, -payload.direction);
     // We also need to get the pdf for that sample
-    float pdf_brdf_light = max(BRDF_PDF_Combined(materials[materialID], normal, -L_norm, -payload.direction), EPSILON);
+    float pdf_brdf_light = max(BRDF_PDF(strategy, materials[materialID], normal, -L_norm, -payload.direction), EPSILON);
 
     //Direct lighting:
-    float3 direct  = emission_l * visible * brdf_light * dot(normal, L_norm) * G / pdf_l;
+    float3 direct  = emission_l * visible * brdf_light * G / pdf_l;
     // MIS Weight: Use G to convert from area space to solid-angle space. Fuck me, took forever to find this.
     float weight_light = pdf_l / (pdf_l + pdf_brdf_light * G);
     // Also adjust for the throughput
-    direct  *= payload.colorAndDistance.xyz * weight_light;
+    direct  *= payload.colorAndDistance.xyz;// * weight_light;
     //____________________________________________________________
 
 
     //Get the sample BRDF:
     //____________________________________________________________
     //First, we sample the BSDF of the given material - payload.direction and payload.origin will be altered. We need the incoming ray direction later, so we buffer it.
-    float3 outgoing = -payload.direction; //Outgoing is the direction to the camera
     float3 origin = payload.origin;
-    float p_strategy = 1.0f;
-    //As materials might combine lobes, we have to select one:
-    uint strategy = SelectSamplingStrategy(materials[materialID], outgoing, normal, payload.seed, p_strategy);
     SampleBRDF(strategy, materials[materialID], outgoing, normal,flatNormal, payload.direction, payload.origin, worldOrigin, payload.seed);
     float3 incoming = -payload.direction;
 
@@ -266,8 +283,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
     }
 
-    //payload.emission += abs(direct) + abs(emissive);
-    payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
+    payload.emission += abs(direct) + abs(emissive);
+    //payload.emission += materials[materialID].Ke * payload.colorAndDistance.xyz;
 
     //_________DEBUG___________
     //float cosTheta = dot(normal, outgoing);
@@ -286,8 +303,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     //____________________________________________________________
     payload.hitNormal = normal;
     payload.reflectiveness = 1.0f-materials[materialID].Pr_Pm_Ps_Pc.x;
-    payload.currentOTW = instanceProps[InstanceID()].objectToWorld;
-    payload.prevOTW = instanceProps[InstanceID()].prevObjectToWorld;
 }
 
 

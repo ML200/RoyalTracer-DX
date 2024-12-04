@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"furnace.obj","untitled.obj"};
+    std::vector<std::string> models = {"garage.obj","monkey.obj"};
 
 
 
@@ -955,7 +955,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(23 * sizeof(float)+ 2*sizeof(UINT)+ 32 * sizeof(float));
+    pipeline.SetMaxPayloadSize(30 * sizeof(float) + 2 * sizeof(UINT));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1348,8 +1348,9 @@ void Renderer::UpdateCameraBuffer() {
     // Add the current system time as float
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
-    auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-    float currentTime = static_cast<float>(millis % 1000);  // Convert milliseconds to seconds as float
+    auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+    //float currentTime = static_cast<float>(nanos % 1000);  // Convert milliseconds to seconds as float
+    float currentTime = static_cast<uint32_t>(nanos);
 
     memcpy(pData + 6 * sizeof(XMMATRIX), &currentTime, sizeof(float));
 
@@ -1722,9 +1723,6 @@ void Renderer::CollectEmissiveTriangles() {
         UINT e_materialIDOffset = m_materialIDOffsets[modelIndex];
         UINT triangleCount = m_IndexCount[modelIndex] / 3;
 
-        std::wcout << L"Triangle count: " << triangleCount << std::endl;
-        std::wcout << L"Material Offset: " << e_materialIDOffset << std::endl;
-
         // Map the vertex and index buffers for the model
         Vertex* vertices = nullptr;
         UINT* indices = nullptr;
@@ -1766,20 +1764,47 @@ void Renderer::CollectEmissiveTriangles() {
                 lt.x = v0.position;
                 lt.y = v1.position;
                 lt.z = v2.position;
-                lt.instanceID = instanceIndex;
+                lt.instanceID = static_cast<UINT>(instanceIndex);
                 lt.weight = ComputeTriangleWeight(v0.position, v1.position, v2.position, material.Ke);
-                lt.emission = XMFLOAT3(material.Ke.x, material.Ke.y, material.Ke.z);
+                lt.emission = material.Ke;
 
                 m_emissiveTriangles.push_back(lt);
             }
         }
-        std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
 
         // Unmap the vertex and index buffers
         m_VB[modelIndex]->Unmap(0, nullptr);
         m_IB[modelIndex]->Unmap(0, nullptr);
     }
+
+    // Sort the emissive triangles based on weight in descending order
+    std::sort(m_emissiveTriangles.begin(), m_emissiveTriangles.end(),
+              [](const LightTriangle& a, const LightTriangle& b) {
+                  return a.weight > b.weight;
+              });
+
+    // Calculate the total weight
+    float totalWeight = 0.0f;
+    for (const auto& triangle : m_emissiveTriangles) {
+        totalWeight += triangle.weight;
+    }
+
+    // Calculate relative weights and cumulative distribution function (CDF)
+    float cumulativeWeight = 0.0f;
+    for (auto& triangle : m_emissiveTriangles) {
+        triangle.weight /= totalWeight; // Normalize weight
+        cumulativeWeight += triangle.weight;
+        triangle.cdf = cumulativeWeight;
+    }
+
+    // Ensure the last CDF value is exactly 1.0f
+    if (!m_emissiveTriangles.empty()) {
+        m_emissiveTriangles.back().cdf = 1.0f;
+    }
+
+    std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
 }
+
 
 
 float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
@@ -1806,7 +1831,7 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
     size_t bufferSize = m_emissiveTriangles.size() * sizeof(LightTriangle);
 
     // Ensure triCount is set
-    for (auto &m_emissiveTriangle : m_emissiveTriangles) {
+    for (auto& m_emissiveTriangle : m_emissiveTriangles) {
         m_emissiveTriangle.triCount = static_cast<UINT>(m_emissiveTriangles.size());
     }
 
@@ -1817,9 +1842,9 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
 
     // Copy data to the upload buffer
     {
-        LightTriangle *pData = nullptr;
+        LightTriangle* pData = nullptr;
         CD3DX12_RANGE readRange(0, 0);
-        ThrowIfFailed(emissiveTrianglesUploadBuffer->Map(0, &readRange, reinterpret_cast<void **>(&pData)));
+        ThrowIfFailed(emissiveTrianglesUploadBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pData)));
         memcpy(pData, m_emissiveTriangles.data(), bufferSize);
         emissiveTrianglesUploadBuffer->Unmap(0, nullptr);
     }
@@ -1841,11 +1866,12 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
 
     // Execute and flush the command list
     ThrowIfFailed(m_commandList->Close());
-    ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
+    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
     WaitForPreviousFrame();
     ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
 }
+
 
 
 

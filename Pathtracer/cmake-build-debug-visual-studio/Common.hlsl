@@ -12,7 +12,9 @@
 // D3D12_RAYTRACING_SHADER_CONFIG pipeline subobject.
 struct HitInfo {
   float4 colorAndDistance;
+  float3 indirectThroughput; //Throughput after the first bounce
   float3 emission;
+  float3 indirectEmission;
   float3 direction;
   float3 origin;
   float2 util; //IMPORTANT: util info: miss flag
@@ -21,8 +23,6 @@ struct HitInfo {
   float3 hitNormal;
   float3 localHit;
   float reflectiveness;
-  float4x4 currentOTW;
-  float4x4 prevOTW;
 };
 
 struct Material
@@ -33,7 +33,7 @@ struct Material
      float4 Pr_Pm_Ps_Pc;
      float2 aniso_anisor;
      float Ni;
-     float LUT[16][16];
+     float LUT[32];
 };
 
 //Simple NaN check
@@ -48,37 +48,49 @@ struct Attributes {
   float2 bary;
 };
 
-// Improved Random Float Generator using LCG
+
+// Improved Random Float Generator using TEA
 float RandomFloat(inout uint2 seed)
 {
-    // Constants for a 32-bit LCG (suggested by Numerical Recipes)
-    const uint a = 1664525u;
-    const uint c = 1013904223u;
+    uint v0 = seed.x;
+    uint v1 = seed.y;
+    uint sum = 0u;
+    const uint delta = 0x9e3779b9u; // A key schedule constant
 
-    // Update the seed with LCG formula
-    seed.x = (a * seed.x + c); // Simple LCG, applied to one component of the seed
+    // TEA encryption rounds (reduced to 4 for performance)
+    for (uint i = 0u; i < 4u; i++)
+    {
+        sum += delta;
+        v0 += ((v1 << 4u) + 0xA341316Cu) ^ (v1 + sum) ^ ((v1 >> 5u) + 0xC8013EA4u);
+        v1 += ((v0 << 4u) + 0xAD90777Du) ^ (v0 + sum) ^ ((v0 >> 5u) + 0x7E95761Eu);
+    }
 
-    // Optionally apply LCG to the other component for more variation, if needed
-    // seed.y = (a * seed.y + c);
+    // Update the seed
+    seed.x = v0;
+    seed.y = v1;
 
-    // Normalize the result to [0, 1) range. Since we're using a 32-bit integer, divide by 2^32.
-    // Casting to float before division to avoid integer division.
-    float randomValue = float(seed.x) / 4294967296.0; // 2^32 = 4294967296
-
-    return randomValue;
+    // Normalize the result to [0, 1)
+    return float(v0) / 4294967296.0; // 2^32 = 4294967296
 }
 
 
-uint lcg(inout uint seed) {
-    const uint LCG_A = 1664525u;
-    const uint LCG_C = 1013904223u;
-    seed = (LCG_A * seed + LCG_C);
-    return seed;
+
+// PCG Random Number Generator
+uint PCG(inout uint state)
+{
+    uint oldState = state;
+    state = oldState * 747796405u + 2891336453u;
+    uint xorshifted = ((oldState >> ((oldState >> 28u) + 4u)) ^ oldState) * 277803737u;
+    return (xorshifted >> 22u) ^ xorshifted;
 }
 
-float RandomFloatLCG(inout uint seed) {
-    return float(lcg(seed)) / float(0xFFFFFFFFu);
+float RandomFloatLCG(inout uint state)
+{
+    uint rand = PCG(state);
+    // Normalize to [0, 1)
+    return float(rand) / 4294967296.0;
 }
+
 
 float3 getPerpendicularVector(float3 v)
 {
