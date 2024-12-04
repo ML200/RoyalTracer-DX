@@ -20,9 +20,8 @@
 #include <iomanip>
 
 constexpr float PI = 3.14159265359f;
-constexpr int LUT_SIZE_THETA = 16; // Number of samples for cos(theta)
-constexpr int LUT_SIZE_ROUGHNESS = 16; // Number of samples for roughness
-constexpr int NUM_SAMPLES_MC = 10000; // Monte Carlo samples per integral
+constexpr int LUT_SIZE_THETA = 32; // Number of samples for cos(theta)
+constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
 
 #include <DirectXMath.h>
 using namespace DirectX;
@@ -62,6 +61,16 @@ inline XMFLOAT3 operator-(const XMFLOAT3& a, const float& b) {
     XMVECTOR va = XMLoadFloat3(&a);
     XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
     XMVECTOR result = XMVectorSubtract(va, vb);
+    XMFLOAT3 diff;
+    XMStoreFloat3(&diff, result);
+    return diff;
+}
+
+// Subtract a scalar from an XMFLOAT3
+inline XMFLOAT3 operator-(const float& b, const XMFLOAT3& a) {
+    XMVECTOR va = XMLoadFloat3(&a);
+    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR result = XMVectorSubtract(vb, va);
     XMFLOAT3 diff;
     XMStoreFloat3(&diff, result);
     return diff;
@@ -126,14 +135,6 @@ inline XMFLOAT3 reflect(const XMFLOAT3& I, const XMFLOAT3& N) {
     return reflectedVec;
 }
 
-
-
-
-// Schlick Fresnel approximation
-inline XMFLOAT3 SchlickFresnel(const XMFLOAT3& F0, float cosTheta) {
-    return F0 + (F0 + (-1.0f)) * pow(std::abs(1.0f - cosTheta), 5.0f);
-}
-
 // GGX Distribution Function (D)
 inline float D_GGX(float NdotH, float roughness) {
     float alpha = roughness * roughness;
@@ -146,7 +147,7 @@ inline float D_GGX(float NdotH, float roughness) {
 
 // Smith's Geometry function 1 for GGX
 inline float G1_SmithGGX(float NdotV, float alpha) {
-    float alpha2 = alpha * alpha;
+    float alpha2 = alpha*alpha;
     float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
 
     return 2.0f * NdotV / std::max(denomC, 1e-7f); // Avoid division by zero
@@ -154,37 +155,156 @@ inline float G1_SmithGGX(float NdotV, float alpha) {
 
 // Smith Geometry Function G2
 inline float G2_SmithGGX(float NdotV, float NdotL, float alpha) {
-    float alpha2 = alpha * alpha;
+    float alpha2 = alpha*alpha;
     float denomA = NdotV * sqrt(alpha2 + (1.0f - alpha2) * NdotL * NdotL);
     float denomB = NdotL * sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV);
     return 2.0f * NdotL * NdotV / (denomA + denomB);
 }
 
-// GGX Importance Sampling
-void SampleGGX(const XMFLOAT3& V, const XMFLOAT3& N, float roughness, float u1, float u2, XMFLOAT3& H, XMFLOAT3& L) {
+// Constructs an orthonormal basis (T1, T2) given a normal vector N
+void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
+    if (fabs(N.z) < 0.999f) {
+        T1 = normalize(cross(XMFLOAT3(0.0f, 0.0f, 1.0f), N));
+    } else {
+        T1 = normalize(cross(XMFLOAT3(1.0f, 0.0f, 0.0f), N));
+    }
+    T2 = cross(N, T1);
+}
+
+// SampleGGX Function
+void SampleGGX(
+        const Material& mat,
+        const XMFLOAT3& outgoing,      // View direction (V)
+        const XMFLOAT3& normal,        // Surface normal (N)
+        XMFLOAT3& sample,
+        float e0,
+        float e1// Output sample direction (L)
+)
+{
+    // Extract and compute alpha (roughness squared)
+    float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
+
+    // Normalize input vectors
+    XMFLOAT3 N = normalize(normal);
+    XMFLOAT3 V = normalize(outgoing);
+
+
+    // Construct orthonormal basis (T1, T2, N)
+    XMFLOAT3 T1, T2;
+    CoordinateSystem(N, T1, T2);
+
+    // Transform view vector V into the tangent space
+    float VdotT1 = dot(T1, V);
+    float VdotT2 = dot(T2, V);
+    float VdotN = dot(N, V);
+    XMFLOAT3 Vh = normalize(XMFLOAT3(VdotT1, VdotT2, VdotN));
+
+    // Stretch the view vector by alpha
+    float alpha_x = alpha;
+    float alpha_y = alpha;
+    XMFLOAT3 Vh_stretched = normalize(XMFLOAT3(alpha_x * Vh.x, alpha_y * Vh.y, Vh.z));
+
+    // Build an orthonormal basis for the stretched space
+    float lensq = Vh_stretched.x * Vh_stretched.x + Vh_stretched.y * Vh_stretched.y;
+    XMFLOAT3 T1h, T2h;
+    if (lensq > 0.0f)
+    {
+        float invSqrtLensq = 1.0f / sqrtf(lensq);
+        T1h = normalize(XMFLOAT3(-Vh_stretched.y * invSqrtLensq, Vh_stretched.x * invSqrtLensq, 0.0f));
+        T2h = cross(Vh_stretched, T1h);
+    }
+    else
+    {
+        T1h = normalize(XMFLOAT3(1.0f, 0.0f, 0.0f));
+        T2h = normalize(XMFLOAT3(0.0f, 1.0f, 0.0f));
+    }
+
+    // Sample point on unit disk using polar coordinates
+    float r = sqrtf(e0);
+    float phi = 2.0f * static_cast<float>(XM_PI) * e1;
+    float x = r * cosf(phi);
+    float y = r * sinf(phi);
+
+    // Compute normal in stretched hemisphere
+    float z = sqrtf(std::max(0.0f, 1.0f - x * x - y * y));
+    XMFLOAT3 Nh_stretched = normalize(XMFLOAT3(
+            x * T1h.x + y * T2h.x + z * Vh_stretched.x,
+            x * T1h.y + y * T2h.y + z * Vh_stretched.y,
+            x * T1h.z + y * T2h.z + z * Vh_stretched.z
+    ));
+
+    // Unstretch the normal
+    XMFLOAT3 Nh = normalize(XMFLOAT3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, std::max(0.0f, Nh_stretched.z)));
+
+    // Transform back to world space
+    XMFLOAT3 H = normalize(XMFLOAT3(
+            Nh.x * T1.x + Nh.y * T2.x + Nh.z * N.x,
+            Nh.x * T1.y + Nh.y * T2.y + Nh.z * N.y,
+            Nh.x * T1.z + Nh.y * T2.z + Nh.z * N.z
+    ));
+
+    // Reflect view vector V about H to get sample direction L
+    XMFLOAT3 negV = V * (-1.0f);
+    XMFLOAT3 L = reflect(negV, H);
+    sample = normalize(L);
+
+}
+
+
+// Sample GGX VNDF for sampling H
+/*XMFLOAT3 SampleGGX_H(const XMFLOAT3& V, float roughness, float u1, float u2) {
     float alpha = roughness * roughness;
 
-    // Build coordinate system
-    XMFLOAT3 T, B;
-    if (std::abs(N.z) < 0.999f) {
-        T = normalize(cross({0.0f, 0.0f, 1.0f}, N));
-    } else {
-        T = normalize(cross({1.0f, 0.0f, 0.0f}, N));
-    }
-    B = cross(N, T);
-
-    // Sample GGX distribution
     float phi = 2.0f * PI * u1;
     float cosTheta = sqrt((1.0f - u2) / (1.0f + (alpha * alpha - 1.0f) * u2));
     float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
 
-    // Spherical to Cartesian
-    XMFLOAT3 H_local = {sinTheta * cos(phi), sinTheta * sin(phi), cosTheta};
-    H = normalize(T * H_local.x + B*H_local.y + N*H_local.z);
+    float x = sinTheta * cosf(phi);
+    float y = sinTheta * sinf(phi);
+    float z = cosTheta;
 
-    // Reflect the view vector
-    L = reflect(V * (-1.0f), H);
+    // Create orthonormal basis (T1, T2, N)
+    XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Assuming N is along the z-axis
+    XMFLOAT3 T1, T2;
+    CoordinateSystem(N, T1, T2);
+
+    // Transform H from tangent space to world space
+    XMFLOAT3 H_world = normalize(XMFLOAT3(
+            x * T1.x + y * T2.x + z * N.x,
+            x * T1.y + y * T2.y + z * N.y,
+            x * T1.z + y * T2.z + z * N.z
+    ));
+
+    return H_world;
 }
+
+// Updated SampleGGX Function using standard GGX VNDF sampling
+void SampleGGX(
+        const Material& mat,
+        const XMFLOAT3& outgoing,      // View direction (V)
+        const XMFLOAT3& normal,        // Surface normal (N)
+        XMFLOAT3& sample,              // Output L
+        float u1,
+        float u2
+) {
+    // Normalize vectors
+    XMFLOAT3 N = normalize(normal);
+    XMFLOAT3 V = normalize(outgoing);
+
+    // Sample H from GGX distribution
+    XMFLOAT3 H = SampleGGX_H(V, mat.Pr_Pm_Ps_Pc.x, u1, u2);
+
+    // Compute L as reflection of V about H
+    XMFLOAT3 negV = V * (-1.0f);
+    XMFLOAT3 L = reflect(negV, H);
+    sample = normalize(L);
+}*/
+
+
+
+
+
+
 
 // Evaluate GGX BRDF
 XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3& F0, float roughness) {
@@ -194,11 +314,11 @@ XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& 
     float NdotH = std::max(dot(N, H), 0.0f);
     float VdotH = std::max(dot(V, H), 0.0f);
 
-    XMFLOAT3 F = SchlickFresnel(F0, VdotH);
+    XMFLOAT3 F = XMFLOAT3(1.0f,1.0f,1.0f);
     float D = D_GGX(NdotH, roughness);
-    float G = G2_SmithGGX(NdotV, NdotL, roughness * roughness);
+    float G = G2_SmithGGX(NdotV, NdotL, roughness*roughness);
 
-    return F * D * G / std::max(4.0f * NdotV * NdotL, 1e-7f);
+    return F * G / std::max(4.0f * NdotV * NdotL, 1e-7f);
 }
 
 // Calculate the PDF for a given sample direction using GGX
@@ -214,14 +334,18 @@ inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const X
 
     float alpha = roughness * roughness; // Roughness squared
     float G1 = G1_SmithGGX(NdotV, alpha);
-    float D = D_GGX(NdotH, roughness);
 
     float denom = std::max(NdotV * 4.0f, 1e-7f); // Avoid division by zero
-    return G1 * D / denom;
+    return G1 / denom;
+
+    /*float denom = 4.0f * VdotH;
+    return NdotH  / denom;*/
 }
 
+
+
 // Compute E_ss with Monte Carlo Integration
-float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, int numSamples) {
+float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, XMFLOAT3 Ks, int numSamples, Material& mat) {
     float Ess = 0.0f;
 
     // Random number generator
@@ -235,14 +359,14 @@ float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, int numS
         float u2 = dist(gen);
 
         // Sample GGX
-        XMFLOAT3 H, L;
-        SampleGGX(V, N, roughness, u1, u2, H, L);
+        XMFLOAT3 L;
+        SampleGGX(mat,V,N,L,u1,u2);
 
         // Ensure L is valid
         if (dot(N, L) <= 0.0f) continue;
 
-        float NdotL = std::max(dot(N, L), 0.0f);
-        XMFLOAT3 brdf = EvaluateBRDF_GGX(V, L, N, {1.0f, 1.0f, 1.0f}, roughness);
+        float NdotL = std::abs(dot(normalize(N), normalize(L)));
+        XMFLOAT3 brdf = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), Ks, roughness);
 
         // Calculate the PDF
         float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
@@ -262,36 +386,26 @@ float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, int numS
 
 
 
-void PrintLUTAsMatrix16x16(const Material& mat) {
-    std::wcout << L"16x16 LUT (Rows: cosTheta, Columns: Roughness):\n\n";
+void PrintLUTAsVector(const Material& mat) {
+    std::wcout << L"1D LUT (Indexed by cosTheta):\n\n";
 
-    // Print column headers (Roughness values)
-    std::wcout << L"      "; // Padding for the row labels
-    for (int col = 0; col < 16; ++col) {
-        float roughness = static_cast<float>(col) / 15.0f; // Normalize column index to [0, 1]
-        std::wcout << std::fixed << std::setprecision(2) << roughness << L"  ";
-    }
-    std::wcout << L"\n";
+    // Print column headers for cosTheta values
+    for (int idx = 0; idx < LUT_SIZE_THETA; ++idx) {
+        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1); // Normalize index to [0, 1]
 
-    // Print rows with cosTheta values as labels
-    for (int row = 0; row < 16; ++row) {
-        float cosTheta = static_cast<float>(row) / 15.0f; // Normalize row index to [0, 1]
+        // Print cosTheta value as label
+        std::wcout << L"cosTheta = " << std::fixed << std::setprecision(2) << cosTheta << L": ";
 
-        // Print row label (cosTheta value)
-        std::wcout << std::fixed << std::setprecision(2) << cosTheta << L" | ";
-
-        // Print LUT values for this row
-        for (int col = 0; col < 16; ++col) {
-            std::wcout << std::fixed << std::setprecision(3) << mat.LUT[row][col] << L" ";
-        }
-        std::wcout << L"\n";
+        // Print LUT value at this index
+        std::wcout << std::fixed << std::setprecision(3) << 1.0f + (1.0f -mat.LUT[idx]) / mat.LUT[idx] << L"\n";
     }
 }
 
 
 
+
 void GenerateEssLUT(Material& mat) {
-    constexpr float EPSILON = 0.0001f; // Small value to replace 0
+    constexpr float EPSILON = 0.00001f; // Small value to replace 0
 
     // Start measuring time
     auto startTime = std::chrono::high_resolution_clock::now();
@@ -304,18 +418,12 @@ void GenerateEssLUT(Material& mat) {
         // Ensure sinTheta is calculated safely
         float sinTheta = sqrt(std::max(EPSILON, 1.0f - cosTheta * cosTheta));
 
-        // Loop over roughness values
-        for (int roughIdx = 0; roughIdx < LUT_SIZE_ROUGHNESS; ++roughIdx) {
-            // Replace 0 with EPSILON for roughness
-            float roughness = EPSILON + static_cast<float>(roughIdx) / (LUT_SIZE_ROUGHNESS - 1) * (1.0f - EPSILON);
+        // Compute normal and view direction
+        XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Fixed normal
+        XMFLOAT3 V = {sinTheta, 0.0f, cosTheta}; // View vector aligned with cosTheta
 
-            // Compute normal and view direction
-            XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Fixed normal
-            XMFLOAT3 V = {sinTheta, 0.0f, cosTheta}; // View vector aligned with cosTheta
-
-            // Compute E_ss using Monte Carlo integration
-            mat.LUT[thetaIdx][roughIdx] = ComputeEss(N, V, roughness, NUM_SAMPLES_MC);
-        }
+        // Compute E_ss using Monte Carlo integration
+        mat.LUT[thetaIdx] = ComputeEss(N, V, mat.Pr_Pm_Ps_Pc.x, XMFLOAT3(1.0f, 1.0f, 1.0f), NUM_SAMPLES_MC, mat);
 
         // Log progress to the console every 10% completed
         if (thetaIdx % (LUT_SIZE_THETA / 10) == 0) {
@@ -333,10 +441,6 @@ void GenerateEssLUT(Material& mat) {
                << std::fixed << std::setprecision(2)
                << duration.count() / 1000.0 << L" seconds)\n";
 }
-
-
-
-
 
 
 
@@ -390,7 +494,8 @@ public:
 
             //Calculate LUT
             GenerateEssLUT(t_mat);
-            PrintLUTAsMatrix16x16(t_mat);
+            PrintLUTAsVector(t_mat);
+            //TestKMOffsetGGX(200,t_mat);
 
             // Add the material to the list
             mats->push_back(t_mat);

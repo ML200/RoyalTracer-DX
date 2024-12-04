@@ -57,40 +57,48 @@ void RayGen() {
     // Initialize the ray origin and direction
     float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
     float3 accumulation = float3(0, 0, 0);
-    float3 initialHit = init_orig;
+
+    uint samples = 1;
+    uint bounces = 1;
+    uint rr_threshold = 3;
+
+
+    // SEEDING
+    const uint prime1_x = 73856093u;
+    const uint prime2_x = 19349663u;
+    const uint prime3_x = 83492791u;
+    const uint prime1_y = 37623481u;
+    const uint prime2_y = 51964263u;
+    const uint prime3_y = 68250729u;
+    const uint prime_time_x = 293803u;
+    const uint prime_time_y = 423977u;
+
+    HitInfo payload;
+
+    payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
+    payload.emission = float3(0.0f, 0.0f, 0.0f);
+    payload.origin = init_orig;
+
+    float2 d = ((launchIndex.xy / dims.xy) * 2.f - 1.f);
+    float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+    float3 init_dir = mul(viewI, float4(target.xyz, 0));
+
+    // Shoot the initial ray only once; significant performance increase, ca. 1/3
+    // TODO: perform single sample as long as no stochastic integration point is reached (e.g. perfect reflection/refraction)
+
 
     // Path tracing: x samples for y bounces
-    float samples = 20;
     for (int x = 0; x < samples; x++) {
-        HitInfo payload;
+        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
+        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
+        // Initialize the new payload
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
         payload.emission = float3(0.0f, 0.0f, 0.0f);
         payload.origin = init_orig;
-
-        // SEEDING
-        const uint prime1_x = 73856093u;
-        const uint prime2_x = 19349663u;
-        const uint prime3_x = 83492791u;
-        const uint prime1_y = 37623481u;
-        const uint prime2_y = 51964263u;
-        const uint prime3_y = 68250729u;
-        const uint prime_time_x = 293803u;
-        const uint prime_time_y = 423977u;
-
-        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ x * prime3_x ^ uint(time) * prime_time_x;
-        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ x * prime3_y ^ uint(time) * prime_time_y;
-
-        float jitterX = RandomFloatLCG(payload.seed.x);
-        float jitterY = RandomFloatLCG(payload.seed.y);
-
-        float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
-        float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-        float3 init_dir = mul(viewI, float4(target.xyz, 0));
-
         payload.direction = init_dir;
         payload.pdf = 1.0f;
 
-        for (int y = 0; y < 5; y++) {
+        for (int y = 0; y < bounces; y++) {
             RayDesc ray;
             ray.Origin = payload.origin;
             ray.Direction = payload.direction;
@@ -108,37 +116,16 @@ void RayGen() {
                 break;
             }
 
-            if (y == 0) {
-                // Store normal and reflectiveness as in the original code
-                gOutput[uint3(launchIndex, 10)] = float4(payload.hitNormal, 1.0f);
-                gOutput[uint3(launchIndex, 11)] = float4(payload.reflectiveness, payload.reflectiveness, payload.reflectiveness, 1.0f);
-                initialHit = payload.origin;
-            }
-
-            if (y == 1) {
-                gOutput[uint3(launchIndex, 12)] = float4(payload.hitNormal, 1.0f);
-                gOutput[uint3(launchIndex, 13)] = float4(payload.reflectiveness, payload.reflectiveness, payload.reflectiveness, 1.0f);
-            }
-
-            if (y == 2) {
-                gOutput[uint3(launchIndex, 14)] = float4(payload.hitNormal, 1.0f);
-                gOutput[uint3(launchIndex, 15)] = float4(payload.reflectiveness, payload.reflectiveness, payload.reflectiveness, 1.0f);
-            }
-            if (y == 3) {
-                gOutput[uint3(launchIndex, 16)] = float4(payload.hitNormal, 1.0f);
-                gOutput[uint3(launchIndex, 17)] = float4(payload.reflectiveness, payload.reflectiveness, payload.reflectiveness, 1.0f);
-            }
-
-            if(y > 3){
-
+            // Russian roulette: terminate the ray if the further accumulation of light would yield diminishing improvements due to a dark throughput
+            if(y > rr_threshold){
                 float throughput = (payload.colorAndDistance.x + payload.colorAndDistance.y + payload.colorAndDistance.z)/3.0f;
-                float random = RandomFloatLCG(payload.seed.x);
+                float random = RandomFloat(payload.seed);
 
                 if(throughput < random){
                     break;
                 }
 
-                throughput *= 1.0f/random;
+                payload.colorAndDistance.xyz *= 1.0f/random;
 
             }
 
@@ -150,31 +137,9 @@ void RayGen() {
 
     accumulation /= samples;
 
-    // DENOISE (Works but not used rn) ______________________________________________________________________________________________
-
-    //float3 temporalAccumulation = float3(0.0f, 0.0f, 0.0f);
-    //int usablePixels = 0;
-
-    // Loop to shift entries one position ahead while accumulating the existing data
-    /*for (int i = 8; i >= 1; i--) {
-        // Shift previous accumulations
-        gOutput[uint3(launchIndex, i + 1)] = gOutput[uint3(launchIndex, i)];
-
-        // Accumulate color from previous frames at the same pixel position
-        float4 prevColor = gOutput[uint3(launchIndex, i)];
-        temporalAccumulation += prevColor.xyz;
-        usablePixels++;
-    }*/
-    // Store the current frame's accumulation in layer 1
-    //gOutput[uint3(launchIndex, 1)] = float4(accumulation, 1.0f);
-    // Calculate the average color over the accumulated frames
-    //float3 averagedColor = temporalAccumulation/usablePixels;
-    // DENOISE ______________________________________________________________________________________________________________________
-
-
 
     //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
-    int maxFrames = 100000;
+    int maxFrames = 10000000;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
 
     // Check if the frame count is zero or uninitialized
@@ -216,5 +181,5 @@ void RayGen() {
 
 
     // Output the final color to layer 0
-    gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);
+    gOutput[uint3(launchIndex, 0)] = float4(abs(averagedColor), 1.0f);
 }

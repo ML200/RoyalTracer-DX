@@ -1,38 +1,30 @@
 #include "Common.hlsl"
 
 
-float ESS_LUT(Material mat, float NdotV, float roughness)
+float ESS_LUT(Material mat, float NdotV)
 {
     // Normalize inputs to [0, 1]
-    roughness = saturate(roughness);
     NdotV = saturate(NdotV);
 
-    // Compute fractional indices
-    float roughIdxF = roughness * (LUT_SIZE_ROUGHNESS - 1);
+    // Compute fractional index for the angle (NdotV)
     float thetaIdxF = NdotV * (LUT_SIZE_THETA - 1);
 
-    // Compute integer indices for the corners
-    int roughIdx0 = (int)floor(roughIdxF);
-    int roughIdx1 = min(roughIdx0 + 1, LUT_SIZE_ROUGHNESS - 1);
-
+    // Compute integer indices for interpolation
     int thetaIdx0 = (int)floor(thetaIdxF);
     int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE_THETA - 1);
 
-    // Compute interpolation weights
-    float wRough = roughIdxF - roughIdx0;
+    // Compute interpolation weight
     float wTheta = thetaIdxF - thetaIdx0;
 
-    // Fetch LUT values at the four corners
-    float v00 = mat.LUT[thetaIdx0][roughIdx0];
-    float v01 = mat.LUT[thetaIdx0][roughIdx1];
-    float v10 = mat.LUT[thetaIdx1][roughIdx0];
-    float v11 = mat.LUT[thetaIdx1][roughIdx1];
+    // Fetch LUT values at the two angle indices
+    float v0 = mat.LUT[thetaIdx0];
+    float v1 = mat.LUT[thetaIdx1];
 
-    // Perform bilinear interpolation
-    float v0 = lerp(v00, v01, wRough);
-    float v1 = lerp(v10, v11, wRough);
+    // Perform linear interpolation
     return lerp(v0, v1, wTheta);
+    //return v0;
 }
+
 
 
 
@@ -165,10 +157,11 @@ float3 EvaluateBRDF_GGX(Material mat, float3 normal, float3 incoming, float3 out
     float3 specular = (F * D * G) / denominator;
 
     //Multiscatter GGX
-    float Ess = ESS_LUT(mat, NdotV, mat.Pr_Pm_Ps_Pc.x);
+    float Ess = ESS_LUT(mat, NdotV);
     float kms = (1.0f - Ess) / Ess;
 
-    return specular * (1.0f + kms);
+    float3 specular_ess = specular * (1.0f + mat.Ks * kms);
+    return specular_ess;
 }
 
 // Calculate the PDF for a given sample direction using GGX
@@ -183,7 +176,6 @@ float BRDF_PDF_GGX(Material mat, float3 normal, float3 incoming, float3 outgoing
     float NdotV = saturate(dot(N,V));
 
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
-    float alpha2 = alpha * alpha;
 
     float G1 = G1_SmithGGX(NdotV, alpha);
     float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
