@@ -1,4 +1,4 @@
-# Install script for directory: C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer
+# Install script for directory: C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer
 
 # Set the install prefix
 if(NOT DEFINED CMAKE_INSTALL_PREFIX)
@@ -40,5 +40,5 @@ endif()
 
 string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
        "${CMAKE_INSTALL_MANIFEST_FILES}")
-file(WRITE "C:/Users/m/OneDrive/Dokumente/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/${CMAKE_INSTALL_MANIFEST}"
+file(WRITE "C:/Users/m/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/${CMAKE_INSTALL_MANIFEST}"
      "${CMAKE_INSTALL_MANIFEST_CONTENT}")

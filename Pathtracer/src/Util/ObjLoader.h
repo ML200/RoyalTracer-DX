@@ -303,9 +303,6 @@ void SampleGGX(
 
 
 
-
-
-
 // Evaluate GGX BRDF
 XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3& F0, float roughness) {
     XMFLOAT3 H = normalize(V + L);
@@ -402,10 +399,8 @@ void PrintLUTAsVector(const Material& mat) {
 }
 
 
-
-
 void GenerateEssLUT(Material& mat) {
-    constexpr float EPSILON = 0.00001f; // Small value to replace 0
+    constexpr float EPSILON = 0.04f; // Small value to replace 0
 
     // Start measuring time
     auto startTime = std::chrono::high_resolution_clock::now();

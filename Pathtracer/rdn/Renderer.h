@@ -110,7 +110,7 @@ private:
         UINT     instanceID; // 4 bytes
         float    weight;     // 4 bytes
         UINT     triCount;   // 4 bytes
-        float    pad3;       // 4 bytes
+        float    totalWeight;       // 4 bytes
         XMFLOAT3 emission;   // 12 bytes
         float    cdf;       // 4 bytes
         // Total size: 64 bytes

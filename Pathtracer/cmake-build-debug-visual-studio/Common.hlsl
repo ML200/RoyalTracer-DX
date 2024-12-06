@@ -14,6 +14,7 @@ struct HitInfo {
   float4 colorAndDistance;
   float3 indirectThroughput; //Throughput after the first bounce
   float3 emission;
+  float3 u_emission;
   float3 indirectEmission;
   float3 direction;
   float3 origin;

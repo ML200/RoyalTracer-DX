@@ -57,9 +57,10 @@ void RayGen() {
     // Initialize the ray origin and direction
     float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
     float3 accumulation = float3(0, 0, 0);
+    float3 u_accumulation = float3(0, 0, 0);
 
     uint samples = 1;
-    uint bounces = 1;
+    uint bounces = 10000000;
     uint rr_threshold = 3;
 
 
@@ -77,6 +78,7 @@ void RayGen() {
 
     payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
     payload.emission = float3(0.0f, 0.0f, 0.0f);
+    payload.u_emission = float3(0.0f, 0.0f, 0.0f);
     payload.origin = init_orig;
 
     float2 d = ((launchIndex.xy / dims.xy) * 2.f - 1.f);
@@ -94,6 +96,7 @@ void RayGen() {
         // Initialize the new payload
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
         payload.emission = float3(0.0f, 0.0f, 0.0f);
+        payload.u_emission = float3(0.0f, 0.0f, 0.0f);
         payload.origin = init_orig;
         payload.direction = init_dir;
         payload.pdf = 1.0f;
@@ -118,14 +121,16 @@ void RayGen() {
 
             // Russian roulette: terminate the ray if the further accumulation of light would yield diminishing improvements due to a dark throughput
             if(y > rr_threshold){
-                float throughput = (payload.colorAndDistance.x + payload.colorAndDistance.y + payload.colorAndDistance.z)/3.0f;
+                float3 throughput = payload.colorAndDistance.xyz;
+                float max_throughput = max(throughput.x, max(throughput.y, throughput.z));
+                float q = clamp(max_throughput, 0.05f, 1.0f); // Ensures q is at least 5%
                 float random = RandomFloat(payload.seed);
 
-                if(throughput < random){
+                if(random > q){
                     break;
                 }
 
-                payload.colorAndDistance.xyz *= 1.0f/random;
+                payload.colorAndDistance.xyz *= 1.0f/q;
 
             }
 
@@ -133,29 +138,31 @@ void RayGen() {
         }
 
         accumulation += payload.emission;
+        u_accumulation += payload.u_emission;
     }
 
     accumulation /= samples;
+    u_accumulation /= samples;
 
 
     //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
-    int maxFrames = 10000000;
+    int maxFrames = 1000000;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
 
     // Check if the frame count is zero or uninitialized
-    if (frameCount <= 0.0f && !IsNaN(accumulation.x) && !IsNaN(accumulation.y) && !IsNaN(accumulation.z))
+    if (frameCount <= 0.0f && !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) && isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
     {
         // Initialize the accumulation buffer and frame count
-        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
+        gPermanentData[uint2(launchIndex)] = float4(accumulation-u_accumulation, 1.0f);
     }
-    else if (frameCount < maxFrames && !IsNaN(accumulation.x) && !IsNaN(accumulation.y) && !IsNaN(accumulation.z))
+    else if (frameCount < maxFrames && !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) && isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
     {
         // Continue accumulating valid samples
-        gPermanentData[uint2(launchIndex)].xyz += accumulation;
+        gPermanentData[uint2(launchIndex)].xyz += accumulation-u_accumulation;
         gPermanentData[uint2(launchIndex)].w += 1.0f;
     }
 
-    // Compare the view matrices and reset if different (your existing code)
+    // Compare the view matrices and reset if different
     bool different = false;
     for (int row = 0; row < 4; row++)
     {
@@ -170,7 +177,7 @@ void RayGen() {
     if (different)
     {
         // Reset buffers
-        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
+        gPermanentData[uint2(launchIndex)] = float4(accumulation-u_accumulation, 1.0f);
         frameCount = 1.0f; // Update frameCount to reflect the reset
     }
 
@@ -181,5 +188,5 @@ void RayGen() {
 
 
     // Output the final color to layer 0
-    gOutput[uint3(launchIndex, 0)] = float4(abs(averagedColor), 1.0f);
+    gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);
 }
