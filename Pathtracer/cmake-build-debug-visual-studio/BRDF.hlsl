@@ -34,10 +34,10 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
     //Specular
     if(r <= p_s){
         if(roughness < 0.04f){ // adjust threshold (later 2)
-            return 0;
+            return 1;
         }
         probability = p_s;
-        return 0;
+        return 1;
     }
     //Diffuse
     else if(r <= p_s + p_d){

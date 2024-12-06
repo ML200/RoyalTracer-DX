@@ -80,7 +80,7 @@ void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAda
 
         // Check to see if the adapter supports Direct3D 12.
         ComPtr<ID3D12Device> testDevice;
-        if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_2, _uuidof(ID3D12Device), reinterpret_cast<void**>(testDevice.GetAddressOf()))))
+        if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, _uuidof(ID3D12Device), reinterpret_cast<void**>(testDevice.GetAddressOf()))))
         {
             // Now check for raytracing support.
             D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};

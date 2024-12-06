@@ -132,14 +132,14 @@ void Renderer::LoadPipeline() {
     ComPtr<IDXGIAdapter> warpAdapter;
     ThrowIfFailed(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)));
 
-    ThrowIfFailed(slD3D12CreateDevice(warpAdapter.Get(), D3D_FEATURE_LEVEL_11_0,
+    ThrowIfFailed(slD3D12CreateDevice(warpAdapter.Get(), D3D_FEATURE_LEVEL_12_1,
                                     IID_PPV_ARGS(&m_device)));
   } else {
     ComPtr<IDXGIAdapter1> hardwareAdapter;
     GetHardwareAdapter(factory.Get(), &hardwareAdapter);
 
     ThrowIfFailed(slD3D12CreateDevice(hardwareAdapter.Get(),
-                                    D3D_FEATURE_LEVEL_12_2,
+                                    D3D_FEATURE_LEVEL_12_1,
                                     IID_PPV_ARGS(&m_device)));
   }
 
@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","monkey.obj"};
+    std::vector<std::string> models = {"garage.obj","monke.obj", "A8.obj"};
 
 
 
@@ -397,14 +397,14 @@ void Renderer::OnUpdate() {
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
-  /*m_instances[0].second =
+  m_instances[2].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 1000.0f) *
-      XMMatrixTranslation(0.f, 0.1f * cosf(m_time / 2000000.f), 0.f);*/
+                           static_cast<float>(m_time) / 100000000.0f) *
+      XMMatrixTranslation(0.f, 0.5f * cosf(m_time / 20000000.f), 0.f);
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000000.0f) *
-            XMMatrixTranslation(0.f, 1.0f * cosf(m_time / 2000000.f), 0.f);
+            XMMatrixTranslation(4.f, 1.0f * cosf(m_time / 2000000.f), 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -955,7 +955,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(30 * sizeof(float) + 2 * sizeof(UINT));
+    pipeline.SetMaxPayloadSize(33 * sizeof(float) + 2 * sizeof(UINT));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1795,6 +1795,7 @@ void Renderer::CollectEmissiveTriangles() {
         triangle.weight /= totalWeight; // Normalize weight
         cumulativeWeight += triangle.weight;
         triangle.cdf = cumulativeWeight;
+        triangle.totalWeight = totalWeight;
     }
 
     // Ensure the last CDF value is exactly 1.0f
