@@ -76,23 +76,18 @@ void RayGen() {
 
     HitInfo payload;
 
-    payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
-    payload.emission = float3(0.0f, 0.0f, 0.0f);
-    payload.u_emission = float3(0.0f, 0.0f, 0.0f);
-    payload.origin = init_orig;
-
-    float2 d = ((launchIndex.xy / dims.xy) * 2.f - 1.f);
-    float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-    float3 init_dir = mul(viewI, float4(target.xyz, 0));
-
-    // Shoot the initial ray only once; significant performance increase, ca. 1/3
-    // TODO: perform single sample as long as no stochastic integration point is reached (e.g. perfect reflection/refraction)
-
-
     // Path tracing: x samples for y bounces
     for (int x = 0; x < samples; x++) {
         payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
         payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
+
+        float jitterX = RandomFloat(payload.seed);
+        float jitterY = RandomFloat(payload.seed);
+
+        float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
+        float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+        float3 init_dir = mul(viewI, float4(target.xyz, 0));
+
         // Initialize the new payload
         payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
         payload.emission = float3(0.0f, 0.0f, 0.0f);
@@ -146,7 +141,7 @@ void RayGen() {
 
 
     //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
-    int maxFrames = 1000000;
+    int maxFrames = 1;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
 
     // Check if the frame count is zero or uninitialized
