@@ -5,6 +5,8 @@
 #define LUT_SIZE_ROUGHNESS 16
 #define LUT_SIZE_THETA 16
 
+#define RIS_M 20
+
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
 // Note that the payload should be kept as small as possible,

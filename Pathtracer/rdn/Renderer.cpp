@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","monke.obj", "A8.obj"};
+    std::vector<std::string> models = {"garage.obj","monkey.obj", "A8.obj"};
 
 
 
@@ -397,10 +397,10 @@ void Renderer::OnUpdate() {
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
-  m_instances[2].second =
+  /*m_instances[2].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 100000000.0f) *
-      XMMatrixTranslation(0.f, 0.5f * cosf(m_time / 20000000.f), 0.f);
+      XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 20000000.f), 0.f);*/
     m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000000.0f) *
