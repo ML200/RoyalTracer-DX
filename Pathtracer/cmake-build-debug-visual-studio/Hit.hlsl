@@ -107,6 +107,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     flatNormal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(flatNormal, 0.f)).xyz);
     if (dot(normal, -payload.direction) < 0.0f)
         normal = -normal; // Flip the normal to match the ray direction
+    if (dot(flatNormal, -payload.direction) < 0.0f)
+        flatNormal = -flatNormal; // Flip the normal to match the ray direction
     //_____________________________________________________________________________________________________________________________________________
 
     // # MIS - Multiple Importance Sampling for lights
@@ -179,8 +181,8 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
         // Temporary buffers for RIS
         float ris_weights[RIS_M];
-        uint ris_indices[RIS_M];
         float3 ris_f[RIS_M];
+        float ris_luminance[RIS_M];
         float ris_dist[RIS_M];
         float ris_cos_theta[RIS_M];
         float ris_pdf_brdf_light[RIS_M];
@@ -275,8 +277,9 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
             // Save the important information in our resampling list
             // RIS weights: mi*p^/p
             ris_f[i] = emission_l * brdf_light * G;
+            ris_luminance[i] = (emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G;
+            //ris_weights[i] = (1.0f/RIS_M) * (((emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G) / pdf_l); // Use luminance to get a scalar value
             ris_weights[i] = (1.0f/RIS_M) * (((emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G) / pdf_l); // Use luminance to get a scalar value
-            ris_indices[i] = selectedIndex;
             ris_LDir[i] = L_norm;
             ris_dist[i] = dist;
             ris_cos_theta[i] = cos_theta_y;
@@ -307,7 +310,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
         }
 
         // Calculate the unbiased contribution weight WX = 1/p^ * ris_total_weight
-        float WX = 1.0f/ris_f[selectedCandidate] * ris_total_weight;
+        float WX = max(EPSILON,1.0f/max(EPSILON, ris_luminance[selectedCandidate]) * ris_total_weight);
 
         //Shadow ray
         //____________________________________________________________
@@ -328,7 +331,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
         //Direct lighting:
         direct  = ris_f[selectedCandidate] * visible * WX;
         // MIS Weight: Use G to convert from area space to solid-angle space. Fuck me, took forever to find this.
-        float pdf_l_sa = max(EPSILON, (1.0f/WX) * ris_dist[selectedCandidate] * ris_dist[selectedCandidate] / ris_cos_theta[selectedCandidate]);
+        float pdf_l_sa = max(EPSILON, ris_pdf_l[selectedCandidate] * ris_dist[selectedCandidate] * ris_dist[selectedCandidate] / ris_cos_theta[selectedCandidate]);
         float weight_light = pdf_l_sa / (pdf_l_sa + ris_pdf_brdf_light[selectedCandidate]);
         // Also adjust for the throughput
         direct  *= payload.colorAndDistance.xyz * weight_light;

@@ -5,7 +5,7 @@
 #define LUT_SIZE_ROUGHNESS 16
 #define LUT_SIZE_THETA 16
 
-#define RIS_M 20
+#define RIS_M 10
 
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
@@ -39,11 +39,14 @@ struct Material
      float LUT[32];
 };
 
-//Simple NaN check
-bool IsNaN(float x)
+// RIS reservoir for direct lighting
+struct Reservoir
 {
-    return !(x < 0.f || x > 0.f || x == 0.f);
-}
+    uint Y; // index of most important light
+    float W_y; // light weight
+    float W_sum; // sum of all weights for all lights processed
+    float M; // number of lights processed for this reservoir
+};
 
 // Attributes output by the raytracing when hitting a surface,
 // here the barycentric coordinates
@@ -77,21 +80,19 @@ float RandomFloat(inout uint2 seed)
 }
 
 
-
-// PCG Random Number Generator
-uint PCG(inout uint state)
+// Update the reservoir with the light
+bool UpdateReservoir(inout Reservoir reservoir, uint X, float w, float c, inout uint2 seed)
 {
-    uint oldState = state;
-    state = oldState * 747796405u + 2891336453u;
-    uint xorshifted = ((oldState >> ((oldState >> 28u) + 4u)) ^ oldState) * 277803737u;
-    return (xorshifted >> 22u) ^ xorshifted;
-}
+    reservoir.W_sum += w;
+    reservoir.M += c;
 
-float RandomFloatLCG(inout uint state)
-{
-    uint rand = PCG(state);
-    // Normalize to [0, 1)
-    return float(rand) / 4294967296.0;
+    if ( RandomFloat(seed) < w / reservoir.W_sum  )
+    {
+        reservoir.Y = X;
+        return true;
+    }
+
+    return false;
 }
 
 

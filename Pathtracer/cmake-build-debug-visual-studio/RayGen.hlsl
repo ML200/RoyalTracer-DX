@@ -141,7 +141,7 @@ void RayGen() {
 
 
     //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
-    int maxFrames = 1;
+    int maxFrames = 1000000000;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
 
     // Check if the frame count is zero or uninitialized
