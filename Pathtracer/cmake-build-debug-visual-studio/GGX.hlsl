@@ -93,6 +93,11 @@ void SampleBRDF_GGX(Material mat, float3 outgoing, float3 normal, float3 flatNor
     float3 T1, T2;
     CoordinateSystem(N, T1, T2);
     float3 Vh = normalize(float3(dot(T1, V), dot(T2, V), dot(N, V)));
+    if (Vh.z < 0.0f)
+    {
+        Vh = -Vh;
+    }
+
     float alpha_x = alpha;
     float alpha_y = alpha;
     float3 Vh_stretched = normalize(float3(alpha_x * Vh.x, alpha_y * Vh.y, Vh.z));
@@ -119,7 +124,7 @@ void SampleBRDF_GGX(Material mat, float3 outgoing, float3 normal, float3 flatNor
 
     // Compute normal in stretched hemisphere
     float3 Nh_stretched = x * T1h + y * T2h + sqrt(max(0.0f, 1.0f - x * x - y * y)) * Vh_stretched;
-    float3 Nh = normalize(float3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, max(0.0f, Nh_stretched.z)));
+    float3 Nh = normalize(float3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, Nh_stretched.z));
     float3 H = Nh.x * T1 + Nh.y * T2 + Nh.z * N;
     sample = reflect(-V, H);
 
