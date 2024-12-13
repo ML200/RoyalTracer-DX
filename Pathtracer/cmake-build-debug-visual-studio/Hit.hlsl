@@ -278,7 +278,6 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
             // RIS weights: mi*p^/p
             ris_f[i] = emission_l * brdf_light * G;
             ris_luminance[i] = (emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G;
-            //ris_weights[i] = (1.0f/RIS_M) * (((emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G) / pdf_l); // Use luminance to get a scalar value
             ris_weights[i] = (1.0f/RIS_M) * (((emission_l.x + emission_l.y + emission_l.z) / 3.0f * brdf_light * G) / pdf_l); // Use luminance to get a scalar value
             ris_LDir[i] = L_norm;
             ris_dist[i] = dist;
