@@ -811,18 +811,24 @@ void Renderer::CreateAccelerationStructures() {
 //
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-  nv_helpers_dx12::RootSignatureGenerator rsc;
-  rsc.AddHeapRangesParameter(
-      {{0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/,
-        D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
-       {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
-       {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
-       {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
-       {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6}
-      });
+    nv_helpers_dx12::RootSignatureGenerator rsc;
 
-  return rsc.Generate(m_device.Get(), true);
+    rsc.AddHeapRangesParameter(
+            {
+                    {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
+                    {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
+                    {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
+                    {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
+                    {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
+                    {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
+                    {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
+                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6}
+            }
+    );
+
+    return rsc.Generate(m_device.Get(), true);
 }
+
 
 //-----------------------------------------------------------------------------
 // The hit shader communicates only through the ray payload, and therefore does
@@ -879,9 +885,9 @@ void Renderer::CreateRaytracingPipeline() {
   // set of DXIL libraries. We chose to separate the code in several libraries
   // by semantic (ray generation, hit, miss) for clarity. Any code layout can be
   // used.
-  m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen.hlsl");
-  m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss.hlsl");
-  m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit.hlsl");
+  m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6.hlsl");
+  m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
+  m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
 
   // #DXR Extra - Another ray type
   m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
@@ -955,7 +961,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(33 * sizeof(float) + 2 * sizeof(UINT));
+    pipeline.SetMaxPayloadSize(7 * sizeof(float) + 1 * sizeof(UINT));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
