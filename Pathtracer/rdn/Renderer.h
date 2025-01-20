@@ -118,6 +118,22 @@ private:
 
     #pragma pack(pop)
 
+    struct Reservoir
+    {
+        // Current sample parameters
+        XMFLOAT3 f;
+        float p_hat;
+        XMFLOAT3 direction;
+        float dist;
+        XMFLOAT3 hitPos;
+        XMFLOAT3 hitNormal;
+        bool v_eval;
+        float v;
+        float w_sum;
+        float w_i;
+        float M;
+    };
+
 // Buffer to store emissive triangles
     std::vector<LightTriangle> m_emissiveTriangles;
     ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
@@ -182,6 +198,8 @@ private:
   void CreateCameraBuffer();
   void UpdateCameraBuffer();
   ComPtr<ID3D12Resource> m_cameraBuffer;
+  ComPtr<ID3D12Resource> m_reservoirBuffer;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_2;
   ComPtr<ID3D12DescriptorHeap> m_constHeap;
   uint32_t m_cameraBufferSize = 0;
 

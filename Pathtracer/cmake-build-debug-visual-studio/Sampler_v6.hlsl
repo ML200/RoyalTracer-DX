@@ -8,6 +8,8 @@ void SampleLightBSDF(
     inout float3 f,
     inout float3 incoming,
     inout float p_hat,
+    inout float3 dir_l,
+    inout float dist_l,
 
     inout uint2 seed, // Inputs
     float3 worldOrigin,
@@ -52,22 +54,25 @@ void SampleLightBSDF(
         float dist2 = dist * dist;
         float cos_theta = max(EPSILON, dot(samplePayload.hitNormal, -sample));
 
-        pdf_light = (((Ke / 3.0f) * area_l) / g_EmissiveTriangles[0].total_weight);
+        pdf_light = ((Ke / 3.0f) / g_EmissiveTriangles[0].total_weight);
         pdf_light_sa = max(EPSILON, pdf_light * dist2 / cos_theta);
         incoming = -sample;
 
         float3 brdf = EvaluateBRDF(strategy, material, normal, -sample, outgoing);
 
-        p_hat = (brdf.x * material_ke.Ke.x + brdf.y * material_ke.Ke.y + brdf.z * material_ke.Ke.z) / 3.0f;
-        f = brdf * material_ke.Ke;
+        p_hat = (brdf.x * material_ke.Ke.x + brdf.y * material_ke.Ke.y + brdf.z * material_ke.Ke.z) / 3.0f * dot(normal, -incoming);
+        f = brdf * material_ke.Ke * dot(normal, -incoming);
+        dist_l = dist;
+        dir_l = normalize(L);
     }
     else{
         pdf_light = 0.0f;
         pdf_light_sa = 0.0f;
+        dist_l = 0.0f;
+        dir_l = float3(0,0,0);
         p_hat = 0.0f;
         f = float3(0,0,0);
     }
-
 }
 
 
@@ -79,6 +84,8 @@ void SampleLightNEE(
     inout float3 f,
     inout float3 incoming,
     inout float p_hat,
+    inout float3 dir_l,
+    inout float dist_l,
 
     inout uint2 seed, // Inputs
     float3 worldOrigin,
@@ -141,15 +148,20 @@ void SampleLightNEE(
 
     // Get the sample direction
     float3 L = samplePoint - worldOrigin;
-    float dist2 = max(dot(L, L), EPSILON);
+    float dist2 = max(abs(dot(L, L)), EPSILON);
     float dist = max(sqrt(dist2), EPSILON);
-    float3 L_norm = L / dist; // Sampling direction
+    float3 L_norm = normalize(L); // Sampling direction
 
     // Compute the normal vector using the cross product of the edge vectors
     float3 edge1 = y_v - x_v;
     float3 edge2 = z_v - x_v;
     float3 cross_l = cross(edge1, edge2);
     float3 normal_l = normalize(cross_l);
+
+    if(dot(normal_l, -L_norm) < 0.0f){
+        normal_l = -normal_l;
+    }
+
     float area_l = abs(length(cross_l) * 0.5f);
 
 
@@ -158,16 +170,16 @@ void SampleLightNEE(
     float cos_theta_y = max(EPSILON, dot(normal_l, -L_norm));      // Cosine at light sample
 
     // Compute the geometry term
-    float G = max((cos_theta_x * cos_theta_y) / dist2, EPSILON);
+    float G = max(cos_theta_y * cos_theta_x / dist2, EPSILON);
     float pdf_l = sampleLight.weight / max(area_l, EPSILON);
     float3 emission_l =  sampleLight.emission;
 
     // Get the light BRDF
     //____________________________________________________________
     //We sample the BSDF for the selected importance light.
-    float3 brdf_light = EvaluateBRDF(strategy, material, normal, -L_norm, outgoing);
+    float3 brdf_light = EvaluateBRDF(strategy, material, normal, -L_norm, normalize(outgoing));
     // We also need to get the pdf for that sample
-    float pdf_brdf_light = max(BRDF_PDF(strategy, material, normal, -L_norm, outgoing), EPSILON);
+    float pdf_brdf_light = max(BRDF_PDF(strategy, material, normal, -L_norm, normalize(outgoing)), EPSILON);
 
 
     // Trace the ray if using visibility term, otherwise V = 1
@@ -178,8 +190,8 @@ void SampleLightNEE(
         RayDesc ray;
         ray.Origin = worldOrigin + s_bias * normal; // Offset origin along the normal
         ray.Direction = L_norm;
-        ray.TMin = s_bias;
-        ray.TMax = dist - s_bias;
+        ray.TMin = 0.0f;
+        ray.TMax = dist - s_bias * 2.0f;
         bool hit = true;
         // Initialize the ray payload
         ShadowHitInfo shadowPayload;
@@ -195,16 +207,18 @@ void SampleLightNEE(
     p_hat = (emission_l.x * brdf_light.x + emission_l.y * brdf_light.y + emission_l.z * brdf_light.z) / 3.0f * G * V;
     f = emission_l * brdf_light * G * V;
     pdf_light = max(EPSILON,pdf_l);
-    pdf_light_sa = pdf_l * dist2 / cos_theta_y;
+    pdf_light_sa = pdf_light * dist2/cos_theta_y;
     pdf_bsdf = pdf_brdf_light;
     incoming = -L_norm;
+    dist_l = dist;
+    dir_l = L_norm;
 }
 
 
 // Sample RIS for direct Lights (for now) on a given point
 //M1: Number NEE samples
 //M2: Number BSDF samples
-float3 SampleRIS(
+void SampleRIS(
     uint M1,
     uint M2,
     float3 outgoing,
@@ -225,6 +239,8 @@ float3 SampleRIS(
         float3 f;
         float3 incoming;
         float p_hat;
+        float dist;
+        float3 dir;
 
         SampleLightNEE(
             pdf_light,
@@ -233,6 +249,8 @@ float3 SampleRIS(
             f,
             incoming,
             p_hat,
+            dir,
+            dist,
             seed,
             payload.hitPosition,
             payload.hitNormal,
@@ -248,7 +266,7 @@ float3 SampleRIS(
         float wi = mi * p_hat / pdf_light;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, seed, f, p_hat, true);
+        UpdateReservoir(reservoir, wi, 1.0f, seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
     }
 
     // Iterate through M2 BSDF samples and fill them in the reservoir
@@ -259,6 +277,8 @@ float3 SampleRIS(
         float3 f;
         float3 incoming;
         float p_hat;
+        float dist;
+        float3 dir;
 
         SampleLightBSDF(
             pdf_light,
@@ -267,6 +287,8 @@ float3 SampleRIS(
             f,
             incoming,
             p_hat,
+            dir,
+            dist,
             seed,
             payload.hitPosition,
             payload.hitNormal,
@@ -280,70 +302,6 @@ float3 SampleRIS(
         float wi = mi * p_hat / pdf_bsdf;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, seed, f, p_hat, true);
+        UpdateReservoir(reservoir, wi, 1.0f, seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
     }
-
-    // We got a wonderful high-quality sample now. Time to use it!
-    if(reservoir.p_hat > 0.0f){
-        float Wx = 1.0f / reservoir.p_hat * reservoir.w_sum;
-        return reservoir.f * Wx;
-    }
-    return float3(0,0,0);
-}
-
-
-// Sample RIS only using NEE (reference)
-//M1: Number NEE samples
-float3 SampleRISNEE(
-    uint M1,
-    float3 outgoing,
-    inout Reservoir reservoir,
-    HitInfo payload,
-    inout uint2 seed
-    ){
-
-    Material material = materials[payload.materialID];
-    float p_strategy = 1.0f;
-    uint strategy = SelectSamplingStrategy(material, outgoing, payload.hitNormal, seed, p_strategy);
-
-    // Iterate through M1 NEE samples and fill up the reservoir
-    for(int i=0; i<M1; i++){
-        float pdf_light = 1.0f;
-        float pdf_light_sa = 1.0f;
-        float pdf_bsdf = 1.0f;
-        float3 f;
-        float3 incoming;
-        float p_hat;
-
-        SampleLightNEE(
-            pdf_light,
-            pdf_light_sa,
-            pdf_bsdf,
-            f,
-            incoming,
-            p_hat,
-            seed,
-            payload.hitPosition,
-            payload.hitNormal,
-            outgoing,
-            material,
-            strategy,
-            true // Test with visibility for now
-            );
-
-        // Calculate Resampling weight
-        // MIS weight
-        float mi = 1 / M1;
-        float wi = mi * p_hat / pdf_light;
-
-        // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, seed, f, p_hat, true);
-    }
-
-    // We got a wonderful high-quality sample now. Time to use it!
-    if(reservoir.p_hat > 0.0f){
-        float Wx = 1.0f / reservoir.p_hat * reservoir.w_sum;
-        return reservoir.f * Wx;
-    }
-    return float3(0,0,0);
 }
