@@ -1,10 +1,9 @@
 #define PI 3.1415f
 #define s_bias 0.00001f // Shadow ray bias value
-#define EPSILON 0.0001f // Floating point precision correction
+#define EPSILON 0.00001f // Floating point precision correction
 
 #define LUT_SIZE_THETA 16
 
-#define RIS_M 10
 #define samples 1
 #define bounces 1
 #define rr_threshold 3
@@ -142,37 +141,22 @@ float3 ReinhardTonemapScaled(float3 color, float exposure)
 }
 
 
-float2 ComputeMotionVector(float3 worldPos,
-                           row_major float4x4 view, row_major float4x4 projection,
-                           row_major float4x4 prevView, row_major float4x4 prevProjection,
-                           float screenWidth, float screenHeight)
-{
-    // Current frame transformations
-    float4 currentViewPos = mul(float4(worldPos, 1.0f), view);
-    float4 currentClipPos = mul(currentViewPos, projection);
 
-    // Previous frame transformations
-    float4 prevViewPos = mul(float4(worldPos, 1.0f), prevView);
-    float4 prevClipPos = mul(prevViewPos, prevProjection);
-
-    // Perspective divide (from clip space to NDC)
-    float w_current = max(currentClipPos.w, 1e-5f);
-    float w_prev = max(prevClipPos.w, 1e-5f);
-
-    float2 currentNDC = currentClipPos.xy / w_current;
-    float2 prevNDC = prevClipPos.xy / w_prev;
-
-    // Convert NDC to screen space coordinates
-    float2 currentScreenPos = (currentNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
-    float2 prevScreenPos = (prevNDC * 0.5f + 0.5f) * float2(screenWidth, screenHeight);
-
-    // Compute the motion vector (difference between current and previous screen space positions)
-    float2 motionVector = currentScreenPos - prevScreenPos;
-
-    return motionVector;
+// Get a random pixel in the vecinity
+uint GetRandomPixelArea(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed){
+        int offsetX = (int)((RandomFloat(seed) * 2.0f - 1.0f) * radius);
+        int offsetY = (int)((RandomFloat(seed) * 2.0f - 1.0f) * radius);
+        int newX = (int)x + offsetX;
+        int newY = (int)y + offsetY;
+        newX = clamp(newX, 0, (int)w - 1);
+        newY = clamp(newY, 0, (int)h - 1);
+        return newY * w + newX;
 }
 
-
+bool RejectNormal(float3 n1, float3 n2){
+    float similarity = dot(n1, n2);
+    return (similarity < 0.9f);
+}
 
 
 

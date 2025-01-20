@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj","monkey.obj"};
+    std::vector<std::string> models = {"garage.obj", "monkey.obj"};
 
 
 
@@ -822,7 +822,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
                     {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
                     {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
-                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6}
+                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6},
+                    {2 /*u2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,8},
+                    {3 /*u3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,9}
             }
     );
 
@@ -1048,7 +1050,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 8, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 10, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1172,9 +1174,97 @@ void Renderer::CreateShaderResourceHeap() {
 
 
 
+    //_________________________________
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    // Assuming you know the number of elements and structure size
+    UINT width = GetWidth();
+    UINT height = GetHeight();
+    UINT reservoirCount = width * height;
+    UINT reservoirElementSize = sizeof(Reservoir);
+    UINT reservoirBufferSize = reservoirCount * reservoirElementSize;
+
+// Create default-heap buffer with UAV for random read/write
+    D3D12_RESOURCE_DESC reservoirDesc = {};
+    reservoirDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    reservoirDesc.Alignment = 0;
+    reservoirDesc.Width = reservoirBufferSize;
+    reservoirDesc.Height = 1;
+    reservoirDesc.DepthOrArraySize = 1;
+    reservoirDesc.MipLevels = 1;
+    reservoirDesc.Format = DXGI_FORMAT_UNKNOWN;
+    reservoirDesc.SampleDesc.Count = 1;
+    reservoirDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    reservoirDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &reservoirDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(&m_reservoirBuffer)
+    ));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc = {};
+    reservoirUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
+    reservoirUavDesc.Buffer.FirstElement = 0;
+    reservoirUavDesc.Buffer.NumElements = reservoirCount;
+    reservoirUavDesc.Buffer.StructureByteStride = reservoirElementSize;
+    reservoirUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+
+    m_device->CreateUnorderedAccessView(
+            m_reservoirBuffer.Get(),
+            nullptr,
+            &reservoirUavDesc,
+            srvHandle
+    );
+    //_________________________________
+
+    //_________________________________
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+// Create default-heap buffer with UAV for random read/write
+    D3D12_RESOURCE_DESC reservoirDesc_2 = {};
+    reservoirDesc_2.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    reservoirDesc_2.Alignment = 0;
+    reservoirDesc_2.Width = reservoirBufferSize;
+    reservoirDesc_2.Height = 1;
+    reservoirDesc_2.DepthOrArraySize = 1;
+    reservoirDesc_2.MipLevels = 1;
+    reservoirDesc_2.Format = DXGI_FORMAT_UNKNOWN;
+    reservoirDesc_2.SampleDesc.Count = 1;
+    reservoirDesc_2.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    reservoirDesc_2.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &reservoirDesc_2,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(&m_reservoirBuffer_2)
+    ));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_2 = {};
+    reservoirUavDesc_2.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_2.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
+    reservoirUavDesc_2.Buffer.FirstElement = 0;
+    reservoirUavDesc_2.Buffer.NumElements = reservoirCount;
+    reservoirUavDesc_2.Buffer.StructureByteStride = reservoirElementSize;
+    reservoirUavDesc_2.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
+
+    m_device->CreateUnorderedAccessView(
+            m_reservoirBuffer_2.Get(),
+            nullptr,
+            &reservoirUavDesc_2,
+            srvHandle
+    );
+    //_________________________________
+
+
     std::wcout << L"SRVs created!" << std::endl;
-
-
 }
 
 //-----------------------------------------------------------------------------
