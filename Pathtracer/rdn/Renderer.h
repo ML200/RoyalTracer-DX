@@ -132,6 +132,7 @@ private:
         float w_sum;
         float w_i;
         float M;
+        XMFLOAT3 finalColor; // in case we hit a light, this is non 0
     };
 
 // Buffer to store emissive triangles
@@ -169,6 +170,7 @@ private:
   void CreateRaytracingPipeline();
 
   ComPtr<IDxcBlob> m_rayGenLibrary;
+  ComPtr<IDxcBlob> m_rayGenLibrary2;
   ComPtr<IDxcBlob> m_hitLibrary;
   ComPtr<IDxcBlob> m_missLibrary;
 
@@ -263,7 +265,9 @@ private:
   /// Per-instance properties
   struct InstanceProperties {
     XMMATRIX objectToWorld;
+    XMMATRIX objectToWorldInverse;
     XMMATRIX prevObjectToWorld;
+    XMMATRIX prevObjectToWorldInverse;
     XMMATRIX objectToWorldNormal;
     XMMATRIX prevObjectToWorldNormal;
   };
