@@ -495,12 +495,13 @@ void Renderer::PopulateCommandList() {
     // stride.
 
     // The ray generation shaders are always at the beginning of the SBT.
+    uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
+    uint32_t rgSize    = m_sbtHelper.GetRayGenEntrySize();
     uint32_t rayGenerationSectionSizeInBytes =
         m_sbtHelper.GetRayGenSectionSize();
-    desc.RayGenerationShaderRecord.StartAddress =
-        m_sbtStorage->GetGPUVirtualAddress();
-    desc.RayGenerationShaderRecord.SizeInBytes =
-        rayGenerationSectionSizeInBytes;
+
+    desc.RayGenerationShaderRecord.StartAddress = sbtStart;
+    desc.RayGenerationShaderRecord.SizeInBytes = rgSize;
 
     // The miss shaders are in the second SBT section, right after the ray
     // generation shader. We have one miss shader for the camera rays and one
@@ -530,6 +531,16 @@ void Renderer::PopulateCommandList() {
     // Bind the raytracing pipeline
     m_commandList->SetPipelineState1(m_rtStateObject.Get());
     // Dispatch the rays and write to the raytracing output
+    m_commandList->DispatchRays(&desc);
+
+    // Create the barrier object
+    CD3DX12_RESOURCE_BARRIER globalUAVBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+    m_commandList->ResourceBarrier(1, &globalUAVBarrier);
+
+
+    // Second ray gen pass
+    desc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSize; // the second RayGen
+    desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
     m_commandList->DispatchRays(&desc);
 
     // The raytracing output needs to be copied to the actual render target used
@@ -887,7 +898,8 @@ void Renderer::CreateRaytracingPipeline() {
   // set of DXIL libraries. We chose to separate the code in several libraries
   // by semantic (ray generation, hit, miss) for clarity. Any code layout can be
   // used.
-  m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6.hlsl");
+  m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass1.hlsl");
+  m_rayGenLibrary2 = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass2.hlsl");
   m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
   m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
 
@@ -903,6 +915,7 @@ void Renderer::CreateRaytracingPipeline() {
   // can contain an arbitrary number of symbols, whose semantic is given in HLSL
   // using the [shader("xxx")] syntax
   pipeline.AddLibrary(m_rayGenLibrary.Get(), {L"RayGen"});
+    pipeline.AddLibrary(m_rayGenLibrary2.Get(), {L"RayGen2"});
   pipeline.AddLibrary(m_missLibrary.Get(), {L"Miss"});
   // #DXR Extra: Per-Instance Data
   pipeline.AddLibrary(m_hitLibrary.Get(), {L"ClosestHit", L"PlaneClosestHit"});
@@ -944,7 +957,8 @@ void Renderer::CreateRaytracingPipeline() {
   // to as hit groups, meaning that the underlying intersection, any-hit and
   // closest-hit shaders share the same root signature.
   pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen"});
-  pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
+    pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen2"});
+    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup1"});
 
@@ -1294,6 +1308,8 @@ void Renderer::CreateShaderBindingTable() {
     // The ray generation only uses heap data
     std::wcout << L"Adding ray generation program..." << std::endl;
     m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
+    m_sbtHelper.AddRayGenerationProgram(L"RayGen2", {heapPointer});
+
 
     // The miss and hit shaders do not access any external resources
     std::wcout << L"Adding miss programs..." << std::endl;
@@ -1789,8 +1805,11 @@ void Renderer::UpdateInstancePropertiesBuffer() {
                                           reinterpret_cast<void **>(&current)));
     for (const auto &inst : m_instances)
     {
+        XMVECTOR det_filler;
         current->prevObjectToWorld = current->objectToWorld;
+        current->prevObjectToWorldInverse = XMMatrixInverse(&det_filler,current->objectToWorld);
         current->objectToWorld = inst.second;
+        current->objectToWorldInverse = XMMatrixInverse(&det_filler,inst.second);
 
         //# DXR Extra - Simple Lighting
         XMMATRIX upper3x3 = inst.second;

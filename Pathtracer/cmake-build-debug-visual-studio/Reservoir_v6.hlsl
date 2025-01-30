@@ -14,6 +14,8 @@ struct Reservoir
     float w_sum; // sum of weights
     float w_i;
     float M; // Number of candidates
+
+    float3 finalColor;
 };
 
 

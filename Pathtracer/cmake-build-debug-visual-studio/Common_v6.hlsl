@@ -1,6 +1,6 @@
 #define PI 3.1415f
-#define s_bias 0.00001f // Shadow ray bias value
-#define EPSILON 0.00001f // Floating point precision correction
+#define s_bias 0.000007f // Shadow ray bias value
+#define EPSILON 0.000007f // Floating point precision correction
 
 #define LUT_SIZE_THETA 16
 
@@ -38,7 +38,9 @@ struct ShadowHitInfo {
 struct InstanceProperties
 {
   float4x4 objectToWorld;
+  float4x4 objectToWorldInverse;
   float4x4 prevObjectToWorld;
+  float4x4 prevObjectToWorldInverse;
   float4x4 objectToWorldNormal;
   float4x4 prevObjectToWorldNormal;
 };

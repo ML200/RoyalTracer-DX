@@ -257,7 +257,7 @@ void SampleRIS(
             outgoing,
             material,
             strategy,
-            true // Test with visibility for now
+            false // Test with visibility for now
             );
 
         // Calculate Resampling weight
@@ -266,7 +266,7 @@ void SampleRIS(
         float wi = mi * p_hat / pdf_light;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, 1.0f, seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
+        UpdateReservoir(reservoir, wi, 1.0f/(M1 + M2), seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
     }
 
     // Iterate through M2 BSDF samples and fill them in the reservoir
@@ -302,6 +302,6 @@ void SampleRIS(
         float wi = mi * p_hat / pdf_bsdf;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, 1.0f, seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
+        UpdateReservoir(reservoir, wi, 1.0f/(M1 + M2), seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
     }
 }
