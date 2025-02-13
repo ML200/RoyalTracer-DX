@@ -1,0 +1,10 @@
+^C:\USERS\MALTE\DOCUMENTS\GITHUB\DIRECTX12_PATHTRACER\PATHTRACER\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\JetBrains\CLion 2024.3.2\bin\cmake\win\x64\bin\cmake.exe" -SC:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer -BC:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio --check-stamp-file C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

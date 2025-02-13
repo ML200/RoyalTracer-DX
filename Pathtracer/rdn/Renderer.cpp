@@ -110,7 +110,7 @@ void Renderer::LoadPipeline() {
     auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
 
-    #if defined(_DEBUG)
+    /*#if defined(_DEBUG)
         // Enable the debug layer (requires the Graphics Tools "optional feature").
         // NOTE: Enabling the debug layer after device creation will invalidate the
         // active device.
@@ -123,7 +123,7 @@ void Renderer::LoadPipeline() {
                 dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
             }
         }
-    #endif
+    #endif*/
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monkey.obj"};
+    std::vector<std::string> models = {"garage.obj"};//, "monke.obj"};
 
 
 
@@ -401,10 +401,10 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 100000000.0f) *
       XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 20000000.f), 0.f);*/
-    m_instances[1].second =
+    /*m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000000.0f) *
-            XMMatrixTranslation(4.f, 1.0f * cosf(m_time / 2000000.f), 0.f);
+            XMMatrixTranslation(4.f, 1.0f * cosf(m_time / 2000000.f), 0.f);*/
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -416,7 +416,6 @@ void Renderer::OnRender() {
     // Execute the command list.
     ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
     m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
     // Present the frame
     ThrowIfFailed(m_swapChain->Present(1, 0));
 
@@ -543,6 +542,15 @@ void Renderer::PopulateCommandList() {
     desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
     m_commandList->DispatchRays(&desc);
 
+    // Insert a UAV barrier between RayGen2 and RayGen3
+    CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+    m_commandList->ResourceBarrier(1, &uavBarrier);
+
+    // Dispatch third raygen shader (RayGen3)
+    desc.RayGenerationShaderRecord.StartAddress = sbtStart + 2 * rgSize;
+    desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
+    m_commandList->DispatchRays(&desc);
+
     // The raytracing output needs to be copied to the actual render target used
     // for display. For this, we need to transition the raytracing output from a
     // UAV to a copy source, and the render target buffer to a copy destination.
@@ -576,10 +584,10 @@ void Renderer::PopulateCommandList() {
   //}
 
     barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_renderTargets[m_frameIndex].Get(),
-            D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-
+        m_renderTargets[m_frameIndex].Get(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_PRESENT
+    );
     m_commandList->ResourceBarrier(1, &barrier);
 
   ThrowIfFailed(m_commandList->Close());
@@ -900,6 +908,7 @@ void Renderer::CreateRaytracingPipeline() {
   // used.
   m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass1.hlsl");
   m_rayGenLibrary2 = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass2.hlsl");
+  m_rayGenLibrary3 = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass3.hlsl");
   m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
   m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
 
@@ -916,6 +925,7 @@ void Renderer::CreateRaytracingPipeline() {
   // using the [shader("xxx")] syntax
   pipeline.AddLibrary(m_rayGenLibrary.Get(), {L"RayGen"});
     pipeline.AddLibrary(m_rayGenLibrary2.Get(), {L"RayGen2"});
+    pipeline.AddLibrary(m_rayGenLibrary3.Get(), {L"RayGen3"});
   pipeline.AddLibrary(m_missLibrary.Get(), {L"Miss"});
   // #DXR Extra: Per-Instance Data
   pipeline.AddLibrary(m_hitLibrary.Get(), {L"ClosestHit", L"PlaneClosestHit"});
@@ -958,6 +968,7 @@ void Renderer::CreateRaytracingPipeline() {
   // closest-hit shaders share the same root signature.
   pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen"});
     pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen2"});
+    pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen3"});
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup1"});
@@ -977,7 +988,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(7 * sizeof(float) + 1 * sizeof(UINT));
+    pipeline.SetMaxPayloadSize(7 * sizeof(float) + sizeof(UINT) + sizeof(BOOL));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1309,6 +1320,7 @@ void Renderer::CreateShaderBindingTable() {
     std::wcout << L"Adding ray generation program..." << std::endl;
     m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
     m_sbtHelper.AddRayGenerationProgram(L"RayGen2", {heapPointer});
+    m_sbtHelper.AddRayGenerationProgram(L"RayGen3", {heapPointer});
 
 
     // The miss and hit shaders do not access any external resources

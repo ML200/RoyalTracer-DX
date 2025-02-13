@@ -71,39 +71,21 @@ void RayGen() {
     uint2 seed;
 
 
-    //_______________________________RESERVOIRS__________________________________
-    Reservoir reservoir = {
-      (float3)0.0f,  // f
-      0.0f,          // p_hat
-      (float3)0.0f,  // direction
-      0.0f,          // distance
-      (float3)0.0f,   // hitPos
-      (float3)0.0f,   // hitNormal
-      false,         // v_eval
-      1.0f,          // v
-      0.0f,          // w_sum
-      0.0f,          // w_i
-      0.0f,           // M
-      (float3)0.0f   // Final color
-    };
-
-
     //_______________________________SETUP__________________________________
     // Every sample recieves a new seed
     seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
     seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
 
     // Calculate the initial ray direction. Jitter is used to randomize the rays intersection point on subpixel level
-    float jitterX = RandomFloat(seed);
-    float jitterY = RandomFloat(seed);
+    float jitterX = 0.0f;//RandomFloat(seed);
+    float jitterY = 0.0f;//RandomFloat(seed);
     float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
     float3 init_dir = mul(viewI, float4(target.xyz, 0));
 
 
     //_________________________PATH_VARIABLES______________________________
-    float3 throughput = float3(1,1,1);
-    float3 direction = init_dir;
+    float3 direction = normalize(init_dir);
     float3 origin = init_orig;
 
 
@@ -115,14 +97,44 @@ void RayGen() {
     ray.TMax = 10000;
 
     // Trace the camera ray
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
-    Material hitMaterial = materials[payload.materialID];
-
     bool performSampling = true;
-    // Check if we hit a light source
-    if((hitMaterial.Ke.x + hitMaterial.Ke.y + hitMaterial.Ke.z) > 0.0f){
+
+    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
+
+    Material hitMaterial;
+    if(payload.materialID != 4294967294){
+        hitMaterial = materials[payload.materialID];
+        if(length(materials[payload.materialID].Ke) > 0.0f){
+            performSampling = false;
+        }
+    }
+    else{
+        hitMaterial = g_DefaultMissMaterial;
         performSampling = false;
     }
+
+	//_______________________________RESERVOIRS__________________________________
+    Reservoir reservoir = {
+        (float3)0.0f,  // x1
+        (float3)0.0f,  // n1
+        (float3)0.0f,  // x2
+        (float3)0.0f,  // n2
+        (float)0.0f,  // w_sum
+        (float)0.0f,  // p_hat of the stored sample
+        (float)0.0f,  // W
+        (float)0.0f,  // M
+        (float)0.0f,    // V
+        (float3)0.0f,  // final color (L1), mostly 0
+        (float3)0.0f,  // reconnection color (L2)
+        (uint)0,  // s
+        (float3)0.0f,  //o
+        (uint)0  // mID
+    };
+	reservoir.x1 = payload.hitPosition;
+	reservoir.n1 = payload.hitNormal;
+	reservoir.L1 = (float3)hitMaterial.Ke;
+	reservoir.o = -direction;
+	reservoir.mID = payload.materialID;
 
     //_______________________________PATH_SAMPLING__________________________________
     // Perform y bounces
@@ -133,11 +145,10 @@ void RayGen() {
         done in the raygeneration shader. Sampling works always the same:
         - Evaluate direct NEE: Perform light sampling using NEE. This can be done with or without visibility check which will significantly speed up RIS
         - Evaluate direct BSDF: Sample the BSDF to evaluate direct light contribution
-        - Evaluate indirect BSDF: Sample the BSDF to trace a ray with several bounces accumulating the pdf (ReSTIR GI/PT)
+        - Evaluate indirect BSDF: Sample the BSDF to trace a ray with several bounces accumulating the pdf (ReSTIR GI/PT, later)
         */
 
         //_______________________________RIS_DIRECT_ILLUMINATION__________________________________
-
         SampleRIS(
             10,
             1,
@@ -146,59 +157,8 @@ void RayGen() {
             payload,
             seed
             );
-
         //_______________________________VISIBILITY_PASS__________________________________
-        reservoir.v = 1.0f;
-        // Check visibility here. This ensures a sample with actual contribution is used
-        if(reservoir.p_hat > 0.0f){
-            // If we didnt do a visibility test, do it now:
-            //Shadow ray
-            //____________________________________________________________
-            RayDesc ray;
-            ray.Origin = reservoir.hitPos; // Offset origin along the normal
-            ray.Direction = reservoir.direction;
-            ray.TMin = s_bias;
-            ray.TMax = max(reservoir.dist - s_bias, 2.0f * s_bias);
-            // Initialize the ray payload
-            ShadowHitInfo shadowPayload;
-            shadowPayload.isHit = false;
-            // Trace the ray
-            TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
-            float V = shadowPayload.isHit ? 0.0 : 1.0;
-            reservoir.v = V;
-            //____________________________________________________________
-        }
-
-        //_______________________________RUSSIAN_ROULETTE__________________________________
-
-        // Russian roulette: terminate the ray if the further accumulation of light would yield diminishing improvements due to a dark throughput
-        /*if(y > rr_threshold){
-            float max_throughput = max(throughput.x, max(throughput.y, throughput.z));
-            float q = clamp(max_throughput, 0.05f, 1.0f); // Ensures q is at least 5%
-            float random = RandomFloat(seed);
-
-            if(random > q){
-                break;
-            }
-
-            payload.colorAndDistance.xyz *= 1.0f/q;
-
-        }*/
-        g_Reservoirs_current[pixelIdx] = reservoir;
+        reservoir.V = VisibilityCheck(reservoir.x1, normalize(reservoir.x2-reservoir.x1), length(reservoir.x2-reservoir.x1));
     }
-    else{
-        reservoir.f = float3(0.0f, 0.0f, 0.0f);
-        reservoir.p_hat = 0.0f;
-        reservoir.direction = float3(0.0f, 0.0f, 0.0f);
-        reservoir.dist = 0.0f;
-        reservoir.hitPos = float3(0.0f, 0.0f, 0.0f);
-        reservoir.hitNormal = float3(0.0f, 0.0f, 0.0f);
-        reservoir.v_eval = false;
-        reservoir.v = 1.0f;
-        reservoir.w_sum = 0.0f;
-        reservoir.w_i = 0.0f;
-        reservoir.M = 0.0f;
-        reservoir.finalColor = hitMaterial.Ke;
-        g_Reservoirs_current[pixelIdx] = reservoir;
-    }
+	g_Reservoirs_current[pixelIdx] = reservoir;
 }

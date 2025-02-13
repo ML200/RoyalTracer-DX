@@ -120,19 +120,22 @@ private:
 
     struct Reservoir
     {
+        // Hit information after camera ray (stays constant)
+        XMFLOAT3 x1;
+        XMFLOAT3 n1;
         // Current sample parameters
-        XMFLOAT3 f;
-        float p_hat;
-        XMFLOAT3 direction;
-        float dist;
-        XMFLOAT3 hitPos;
-        XMFLOAT3 hitNormal;
-        bool v_eval;
-        float v;
+        XMFLOAT3 x2;
+        XMFLOAT3 n2;
         float w_sum;
-        float w_i;
+        float p_hat;
+        float W;
         float M;
-        XMFLOAT3 finalColor; // in case we hit a light, this is non 0
+        float V;
+        XMFLOAT3 L1; // in case we hit a light, this is non 0
+        XMFLOAT3 L2;
+        UINT s;
+        XMFLOAT3 o;
+        UINT mID;
     };
 
 // Buffer to store emissive triangles
@@ -171,6 +174,7 @@ private:
 
   ComPtr<IDxcBlob> m_rayGenLibrary;
   ComPtr<IDxcBlob> m_rayGenLibrary2;
+  ComPtr<IDxcBlob> m_rayGenLibrary3;
   ComPtr<IDxcBlob> m_hitLibrary;
   ComPtr<IDxcBlob> m_missLibrary;
 

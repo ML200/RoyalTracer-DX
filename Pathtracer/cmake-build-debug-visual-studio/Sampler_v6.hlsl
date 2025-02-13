@@ -1,22 +1,23 @@
 // This provides relevant wrapper functions for tracing a ray.
 
+
 // Use visibility is mandatory
 void SampleLightBSDF(
     inout float pdf_light, // Outputs
-    inout float pdf_light_sa,
     inout float pdf_bsdf,
-    inout float3 f,
     inout float3 incoming,
     inout float p_hat,
-    inout float3 dir_l,
-    inout float dist_l,
 
     inout uint2 seed, // Inputs
     float3 worldOrigin,
     float3 normal,
     float3 outgoing,
     Material material,
-    uint strategy
+	float fresnel,
+    uint strategy,
+    inout float3 emission,
+    inout float3 x2,
+    inout float3 n2
     ){
 
     // Sample a BSDF direction
@@ -27,7 +28,7 @@ void SampleLightBSDF(
     // Trace the ray
     //____________________________________________________________
     RayDesc ray;
-    ray.Origin = worldOrigin + s_bias * normal; // Offset origin along the normal
+    ray.Origin = worldOrigin; // Offset origin along the normal
     ray.Direction = sample;
     ray.TMin = s_bias;
     ray.TMax = 10000;
@@ -42,9 +43,9 @@ void SampleLightBSDF(
     // Did we hit an emissive surface?
     Material material_ke = materials[samplePayload.materialID];
     float Ke = material_ke.Ke.x + material_ke.Ke.y + material_ke.Ke.z;
-
-
-    pdf_bsdf = max(EPSILON,BRDF_PDF(strategy, material, normal, -sample, outgoing));
+	emission = material_ke.Ke;
+	x2 = samplePayload.hitPosition;
+	n2 = samplePayload.hitNormal;
 
     // If yes, get the samples triangle information
     if(Ke > EPSILON){
@@ -55,23 +56,15 @@ void SampleLightBSDF(
         float cos_theta = max(EPSILON, dot(samplePayload.hitNormal, -sample));
 
         pdf_light = ((Ke / 3.0f) / g_EmissiveTriangles[0].total_weight);
-        pdf_light_sa = max(EPSILON, pdf_light * dist2 / cos_theta);
+		pdf_bsdf = max(EPSILON,BRDF_PDF(strategy, material, normal, -sample, outgoing) * cos_theta / dist2);
         incoming = -sample;
 
-        float3 brdf = EvaluateBRDF(strategy, material, normal, -sample, outgoing);
+		float3 brdf = EvaluateBRDF(strategy, material, normal, -sample, outgoing);
 
-        p_hat = (brdf.x * material_ke.Ke.x + brdf.y * material_ke.Ke.y + brdf.z * material_ke.Ke.z) / 3.0f * dot(normal, -incoming);
-        f = brdf * material_ke.Ke * dot(normal, -incoming);
-        dist_l = dist;
-        dir_l = normalize(L);
+        p_hat = (brdf.x * material_ke.Ke.x + brdf.y * material_ke.Ke.y + brdf.z * material_ke.Ke.z) / 3.0f * dot(normal, -incoming) * cos_theta / dist2;
     }
     else{
-        pdf_light = 0.0f;
-        pdf_light_sa = 0.0f;
-        dist_l = 0.0f;
-        dir_l = float3(0,0,0);
         p_hat = 0.0f;
-        f = float3(0,0,0);
     }
 }
 
@@ -79,13 +72,9 @@ void SampleLightBSDF(
 
 void SampleLightNEE(
     inout float pdf_light, // Outputs
-    inout float pdf_light_sa,
     inout float pdf_bsdf,
-    inout float3 f,
     inout float3 incoming,
     inout float p_hat,
-    inout float3 dir_l,
-    inout float dist_l,
 
     inout uint2 seed, // Inputs
     float3 worldOrigin,
@@ -93,6 +82,10 @@ void SampleLightNEE(
     float3 outgoing,
     Material material,
     uint strategy,
+	float fresnel,
+    inout float3 emission,
+    inout float3 x2,
+    inout float3 n2,
     bool useVisibility
     ){
 
@@ -144,6 +137,7 @@ void SampleLightNEE(
 
     // Calculate the sample point in world coordinates
     float3 samplePoint = u * x_v + v * y_v + w * z_v;
+	x2 = samplePoint;
     //____________________________________________________________
 
     // Get the sample direction
@@ -161,6 +155,7 @@ void SampleLightNEE(
     if(dot(normal_l, -L_norm) < 0.0f){
         normal_l = -normal_l;
     }
+	n2 = normal_l;
 
     float area_l = abs(length(cross_l) * 0.5f);
 
@@ -173,6 +168,7 @@ void SampleLightNEE(
     float G = max(cos_theta_y * cos_theta_x / dist2, EPSILON);
     float pdf_l = sampleLight.weight / max(area_l, EPSILON);
     float3 emission_l =  sampleLight.emission;
+	emission = emission_l;
 
     // Get the light BRDF
     //____________________________________________________________
@@ -205,13 +201,9 @@ void SampleLightNEE(
 
     // Evaluate the contribution
     p_hat = (emission_l.x * brdf_light.x + emission_l.y * brdf_light.y + emission_l.z * brdf_light.z) / 3.0f * G * V;
-    f = emission_l * brdf_light * G * V;
     pdf_light = max(EPSILON,pdf_l);
-    pdf_light_sa = pdf_light * dist2/cos_theta_y;
-    pdf_bsdf = pdf_brdf_light;
+    pdf_bsdf = pdf_brdf_light * cos_theta_y/dist2;
     incoming = -L_norm;
-    dist_l = dist;
-    dir_l = L_norm;
 }
 
 
@@ -234,74 +226,181 @@ void SampleRIS(
     // Iterate through M1 NEE samples and fill up the reservoir
     for(int i=0; i<M1; i++){
         float pdf_light = 1.0f;
-        float pdf_light_sa = 1.0f;
         float pdf_bsdf = 1.0f;
-        float3 f;
         float3 incoming;
         float p_hat;
-        float dist;
-        float3 dir;
+        float3 emission;
+        float3 x2;
+        float3 n2;
 
         SampleLightNEE(
             pdf_light,
-            pdf_light_sa,
             pdf_bsdf,
-            f,
             incoming,
             p_hat,
-            dir,
-            dist,
             seed,
             payload.hitPosition,
             payload.hitNormal,
             outgoing,
             material,
             strategy,
+			p_strategy,
+            emission,
+			x2,
+			n2,
             false // Test with visibility for now
             );
 
         // Calculate Resampling weight
         // MIS weight
-        float mi = pdf_light_sa / (M1 * pdf_light_sa + M2 * pdf_bsdf);
+        float mi =  pdf_light / (M1 * pdf_light + M2 * pdf_bsdf);
         float wi = mi * p_hat / pdf_light;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, 1.0f/(M1 + M2), seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
+		if(p_hat > 0.0f)
+			UpdateReservoir(reservoir, wi, 0.0f, p_hat, x2, n2, emission, strategy, seed);
     }
 
     // Iterate through M2 BSDF samples and fill them in the reservoir
-    for(int i=0; i<M2; i++){
+    for(int j=0; j<M2; j++){
         float pdf_light = 1.0f;
-        float pdf_light_sa = 1.0f;
         float pdf_bsdf = 1.0f;
-        float3 f;
         float3 incoming;
         float p_hat;
-        float dist;
-        float3 dir;
+        float3 emission;
+        float3 x2;
+        float3 n2;
 
         SampleLightBSDF(
             pdf_light,
-            pdf_light_sa,
             pdf_bsdf,
-            f,
             incoming,
             p_hat,
-            dir,
-            dist,
             seed,
             payload.hitPosition,
             payload.hitNormal,
             outgoing,
             material,
-            strategy
+			p_strategy,
+            strategy,
+            emission,
+			x2,
+			n2
             );
         // Calculate Resampling weight
         // MIS weight
-        float mi = pdf_bsdf / (M1 * pdf_light_sa + M2 * pdf_bsdf);
+        float mi = pdf_bsdf / (M1 * pdf_light + M2 * pdf_bsdf);
         float wi = mi * p_hat / pdf_bsdf;
 
         // Update the reservoir with this entry
-        UpdateReservoir(reservoir, wi, 1.0f/(M1 + M2), seed, f, p_hat, true, 0.0f, dir, dist, payload.hitPosition, payload.hitNormal);
+		if(p_hat > 0.0f)
+        	UpdateReservoir(reservoir, wi, 0.0f, p_hat, x2, n2, emission, strategy, seed);
     }
+
+    // First selected sample is canonical
+    reservoir.M = 1.0f;
+}
+
+// Shoot a shadow ray to check for occlusion
+float VisibilityCheck(
+    float3 x1,
+    float3 dir,
+    float dist
+)
+{
+    float V = 0.0f;
+    //Shadow ray
+    //____________________________________________________________
+    RayDesc ray;
+    ray.Origin = x1; // Offset origin along the normal
+    ray.Direction = dir;
+    ray.TMin = s_bias;
+    ray.TMax = max(dist - s_bias, 2.0f * s_bias);
+    bool hit = true;
+    // Initialize the ray payload
+    ShadowHitInfo shadowPayload;
+    shadowPayload.isHit = false;
+    // Trace the ray
+    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+    V = shadowPayload.isHit ? 0.0 : 1.0;
+    //____________________________________________________________
+    return V;
+}
+
+// Return light contribution without W: F * V * L * cosx * cosy / dist^2
+float3 ReconnectDI(
+    float3 x1,
+    float3 n1,
+    float3 x2,
+    float3 n2,
+    float3 L,
+    float3 outgoing,
+    uint strategy,
+    Material material
+)
+
+{
+    // Calculate light vector
+    float3 dir = x2 - x1;
+    // Calculate distance to reconnection point
+    float dist = length(dir);
+	if (dist < 2.0f * s_bias) {
+    	return float3(0, 0, 0); // or some other fallback value
+	}
+
+    // Calculate the angles (n1 o dir, n2 o -dir)
+    float cosThetaX1 = max(0, dot(n1, normalize(dir)));
+    float cosThetaX2 = max(0, dot(n2, normalize(-dir)));
+
+    // Calculate F
+    float3 F = EvaluateBRDF(strategy, material, n1, normalize(-dir), normalize(outgoing));
+
+    // Calculate V
+    float V = VisibilityCheck(x1, normalize(dir), dist);
+
+    return F * L * V * cosThetaX1 * cosThetaX2 / (dist * dist);
+}
+
+// This function selects among the 4 candidates the pixel with the smallest world space error.
+int2 GetBestReprojectedPixel(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution)
+{
+    // Compute the sub-pixel coordinate.
+    float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution);
+
+    // Get the base (floor) coordinate.
+    int2 basePixel = int2(floor(subPixelCoord));
+
+    // Define the 4 candidate pixels.
+    int2 candidates[4];
+    candidates[0] = basePixel;
+    candidates[1] = basePixel + int2(1, 0);
+    candidates[2] = basePixel + int2(0, 1);
+    candidates[3] = basePixel + int2(1, 1);
+
+    float minDistance = 10000000.0f;
+    int2 bestPixel = int2(-1, -1);
+
+    // For each candidate, we need to fetch its stored world-space position.
+    for (int i = 0; i < 4; i++)
+    {
+        int2 candidate = candidates[i];
+        // Convert candidate to a 1D index if your reservoir is in a buffer:
+        uint index = candidate.y * uint(resolution.x) + candidate.x;
+        // Retrieve the candidate world position. (This is pseudo-code.)
+        float3 candidateWorldPos = g_Reservoirs_last[index].x1;
+
+        // Compute the world space error.
+        float dist = length(candidateWorldPos - worldPos);
+        if (dist < minDistance)
+        {
+            minDistance = dist;
+            bestPixel = candidate;
+        }
+    }
+
+    return bestPixel;
 }
