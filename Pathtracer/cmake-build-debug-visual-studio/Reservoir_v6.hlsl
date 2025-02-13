@@ -1,21 +1,20 @@
 // RIS reservoir for direct lighting
 struct Reservoir
 {
-    // Current sample parameters
-    float3 f;
-    float p_hat;
-    float3 direction;
-    float dist;
-    float3 hitPos;
-    float3 hitNormal;
-    bool v_eval; // visibility for this sample already evaluated?
-    float v;
-
+    float3 x1;    // hit vertex
+    float3 n1;    // hit normal
+    float3 x2;    // Reconnection vertex position (object space)
+    float3 n2;    // Reconnection normal (object space)
     float w_sum; // sum of weights
-    float w_i;
-    float M; // Number of candidates
-
-    float3 finalColor;
+    float p_hat;    // target function (using in weight calulation etc)
+    float W;     // Unbiased contribution weight
+    float M;     // Number of candidates (c value)
+    float V;     //visibility from postponed check
+    float3 L1;    // If not 0, we hit a light and use this as pixel shading (outsource later)
+    float3 L2;    // The selected lights emission
+    uint s;     // Strategy for lobe sampling
+    float3 o;     // Outgoing ray (outsource later)
+    uint mID;    // Material ID (outsource later)
 };
 
 
@@ -24,16 +23,14 @@ bool UpdateReservoir(
     inout Reservoir reservoir,
     float wi,
     float M,
-    inout uint2 seed,
-
-    float3 f,
     float p_hat,
-    bool v_eval,
-    float v,
-    float3 direction,
-    float dist,
-    float3 hitPos,
-    float3 hitNormal
+
+    float3 x2,
+    float3 n2,
+    float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Alwo,we dont want to reuse sample on a lights surface
+    uint s,
+
+    inout uint2 seed
     )
 {
 
@@ -42,22 +39,20 @@ bool UpdateReservoir(
 
     if (RandomFloat(seed) < wi / max(EPSILON, reservoir.w_sum))
     {
-        reservoir.f = f;
+        reservoir.x2 = x2;
+        reservoir.n2 = n2;
         reservoir.p_hat = p_hat;
-        reservoir.v_eval = v_eval;
-        reservoir.direction =direction;
-        reservoir.dist = dist;
-        reservoir.hitPos = hitPos;
-        reservoir.hitNormal = hitNormal;
-        reservoir.v = v;
-        if(reservoir.p_hat > 0.0f)
-            reservoir.w_i = reservoir.w_sum / p_hat;
-        return true;
+        reservoir.L2 = L2;
+        reservoir.s = s;
     }
-    if(reservoir.p_hat > 0.0f)
-        reservoir.w_i = reservoir.w_sum / reservoir.p_hat;
-    else
-        reservoir.w_i = 0.0f;
+
+    if(p_hat > EPSILON)
+        reservoir.W = reservoir.w_sum / reservoir.p_hat;
+	else
+		reservoir.W = 0.0f;
+	if(isnan(reservoir.W))
+		reservoir.W = 0.0f;
+
     return false;
 }
 

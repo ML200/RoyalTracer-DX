@@ -1,4 +1,5 @@
 ToolSet: 17.0 (local)@C:\Program Files\Microsoft Visual Studio\2022\Community
-Options: msvc.arch=x86_amd64
+Ninja: 1.12.1@C:\Program Files\JetBrains\CLion 2024.3.2\bin\ninja\win\x64\ninja.exe
+Options: 
 
-Options:-DCMAKE_TOOLCHAIN_FILE=C:\Users\m\.clion-vcpkg\vcpkg\scripts\buildsystems\vcpkg.cmake
+Options:

@@ -22,10 +22,12 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
     float3 fresnel = SchlickFresnel(mat.Ks, cosTheta);
 
     // Sampling probabilities
-    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + clearcoat + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
     float p_d = (1.0f - p_s); // Sample the diffuse part of the lobe
+
     //Adjust for translucency
-    p_d *= alpha;
+    //p_d *= alpha;
+    probability = p_s;
 
     //Select the strategy based on the probabilities (CDF)
     //Specular
@@ -33,20 +35,16 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
         if(roughness < 0.04f){ // adjust threshold (later 2)
             return 0;
         }
-        probability = p_s;
-        return 1;
+        return 0;
     }
     //Diffuse
     else if(r <= p_s + p_d){
-        probability = p_d;
         return 0;
     }
     else{
         // Refraction, currently replaced by diffuse (later 3)
-        probability = 1.0f - (p_d + p_s);
         return 0;
     }
-
 }
 
 // Sample the BRDF of the given strategy
@@ -81,7 +79,7 @@ float3 EvaluateBRDF(uint strategy, Material mat, float3 normal, float3 incidence
     else{
         //return EvaluateBTDF_GGX(mat, normal, incidence, outgoing);
     }
-    return (0,0,0);
+    return float3(0,0,0);
 }
 
 // Calculate the PDF for a given sample direction and strategy
