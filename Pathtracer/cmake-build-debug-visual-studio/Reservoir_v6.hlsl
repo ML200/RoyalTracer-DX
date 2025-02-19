@@ -19,7 +19,7 @@ struct Reservoir
 
 
 // Update the reservoir with the light
-bool UpdateReservoir(
+void UpdateReservoir(
     inout Reservoir reservoir,
     float wi,
     float M,
@@ -37,7 +37,7 @@ bool UpdateReservoir(
     reservoir.w_sum += wi;
     reservoir.M += M;
 
-    if (RandomFloat(seed) < wi / max(EPSILON, reservoir.w_sum))
+    if (RandomFloat(seed) < wi / reservoir.w_sum)
     {
         reservoir.x2 = x2;
         reservoir.n2 = n2;
@@ -45,18 +45,7 @@ bool UpdateReservoir(
         reservoir.L2 = L2;
         reservoir.s = s;
     }
-
-    if(p_hat > EPSILON)
-        reservoir.W = reservoir.w_sum / reservoir.p_hat;
-	else
-		reservoir.W = 0.0f;
-	if(isnan(reservoir.W))
-		reservoir.W = 0.0f;
-
-    return false;
 }
-
-
 
 // Weight the reservoir.
 void WeightReservoir(
@@ -64,5 +53,15 @@ void WeightReservoir(
     float w
     )
 {
-    reservoir.w_sum *= w;
+    reservoir.w_sum = w;
+}
+
+
+float GetW(
+    Reservoir reservoir
+){
+    if(reservoir.p_hat < EPSILON)
+        return 0.0f;
+    else
+        return reservoir.w_sum / reservoir.p_hat;
 }

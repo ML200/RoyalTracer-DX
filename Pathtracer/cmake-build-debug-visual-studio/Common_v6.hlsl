@@ -1,5 +1,5 @@
 #define PI 3.1415f
-#define s_bias 0.000015f // Shadow ray bias value
+#define s_bias 0.00002f // Shadow ray bias value
 #define EPSILON 0.0001f // Floating point precision correction
 
 #define LUT_SIZE_THETA 16
@@ -7,6 +7,10 @@
 #define samples 1
 #define bounces 1
 #define rr_threshold 3
+
+#define spatial_candidate_count 10
+#define spatial_M_cap 20
+#define temporal_M_cap 20
 
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
@@ -34,9 +38,9 @@ struct Material
 // Default background material (Ray miss)
 static const Material g_DefaultMissMaterial =
 {
-    float4(0.2,0.2,0.2,0.0f),
+    float4(0.0,0.0,0.0,0.0f),
     float3(0,0,0),
-    float3(0.2,0.2,0.2),
+    float3(0.0,0.0,0.0),
     float4(0,0,0,0),
     float2(0,0),
     1.0f,
@@ -95,15 +99,14 @@ struct Attributes {
 };
 
 
-// Improved Random Float Generator using TEA
+// Random Float Generator
 float RandomFloat(inout uint2 seed)
 {
     uint v0 = seed.x;
     uint v1 = seed.y;
     uint sum = 0u;
-    const uint delta = 0x9e3779b9u; // A key schedule constant
+    const uint delta = 0x9e3779b9u;
 
-    // TEA encryption rounds (reduced to 4 for performance)
     for (uint i = 0u; i < 4u; i++)
     {
         sum += delta;
@@ -111,12 +114,10 @@ float RandomFloat(inout uint2 seed)
         v1 += ((v0 << 4u) + 0xAD90777Du) ^ (v0 + sum) ^ ((v0 >> 5u) + 0x7E95761Eu);
     }
 
-    // Update the seed
     seed.x = v0;
     seed.y = v1;
 
-    // Normalize the result to [0, 1)
-    return float(v0) / 4294967296.0; // 2^32 = 4294967296
+    return float(v0) / 4294967296.0;
 }
 
 
@@ -138,32 +139,36 @@ float3 getPerpendicularVector(float3 v)
     return cross(v, nonParallelVec);
 }
 
-// Sample from a weighted circle disk around a given pixel
+// Sample from a weighted circle disk around a given pixel, never returning (x,y)
 uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed) {
-    // Get a uniform random value
-    float u = RandomFloat(seed);
+    int newX, newY;
+    do {
+        // Get a uniform random value
+        float u = RandomFloat(seed);
 
-    // Inverse CDF for F(z) = 3z^2 - 2z^3, with z = r/float(radius)
-    float z = 0.5 + cos((1.0/3.0)*acos(1.0 - 2.0*u) - 2.0943951); // 2π/3 ≈ 2.0943951
+        // Inverse CDF for F(z) = 3z^2 - 2z^3, with z = r/float(radius)
+        float z = 0.5 + cos((1.0/3.0)*acos(1.0 - 2.0*u) - 2.0943951); // 2π/3 ≈ 2.0943951
 
-    // Compute r with bias toward 0
-    float r = float(radius) * z;
+        // Compute r with bias toward 0
+        float r = float(radius) * z;
 
-    // Choose an angle uniformly from [0, 2π)
-    float angle = RandomFloat(seed) * 6.2831853; // 2π
+        // Choose an angle uniformly from [0, 2π)
+        float angle = RandomFloat(seed) * 6.2831853; // 2π
 
-    // Compute offsets
-    int offsetX = int(cos(angle) * r);
-    int offsetY = int(sin(angle) * r);
+        // Compute offsets
+        int offsetX = int(cos(angle) * r);
+        int offsetY = int(sin(angle) * r);
 
-    // Compute new coordinates clamped to the image bounds
-    int newX = int(x) + offsetX;
-    int newY = int(y) + offsetY;
-    newX = clamp(newX, 0, int(w)-1);
-    newY = clamp(newY, 0, int(h)-1);
+        // Compute new coordinates clamped to the image bounds
+        newX = int(x) + offsetX;
+        newY = int(y) + offsetY;
+        newX = clamp(newX, 0, int(w) - 1);
+        newY = clamp(newY, 0, int(h) - 1);
+    } while(newX == int(x) && newY == int(y));  // Reject the center pixel
 
     return newY * w + newX;
 }
+
 
 
 bool RejectNormal(float3 n1, float3 n2){
@@ -171,7 +176,19 @@ bool RejectNormal(float3 n1, float3 n2){
     return (similarity < 0.9f);
 }
 
+bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
+{
+    // Calculate distances from the camera to each point.
+    float d1 = length(x1 - camPos);
+    float d2 = length(x2 - camPos);
 
+    // Compute the relative difference.
+    // We divide by the maximum distance to normalize the difference.
+    float relativeDifference = abs(d1 - d2) / max(d1, d2);
+
+    // Return true if the relative difference exceeds the threshold.
+    return relativeDifference > threshold;
+}
 
 
 // Assume that GetLastFramePixelCoordinates_Float() returns the sub-pixel coordinate in reservoir space.
@@ -193,9 +210,6 @@ float2 GetLastFramePixelCoordinates_Float(
     // Get the full sub-pixel coordinate in pixel space:
     return screenUV * resolution;
 }
-
-
-
 
 
 

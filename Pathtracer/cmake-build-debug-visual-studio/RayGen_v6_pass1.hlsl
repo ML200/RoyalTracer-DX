@@ -20,6 +20,7 @@ StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 #include "Sampler_v6.hlsl"
+#include "MIS_v6.hlsl"
 
 // #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
@@ -147,7 +148,6 @@ void RayGen() {
         - Evaluate direct BSDF: Sample the BSDF to evaluate direct light contribution
         - Evaluate indirect BSDF: Sample the BSDF to trace a ray with several bounces accumulating the pdf (ReSTIR GI/PT, later)
         */
-
         //_______________________________RIS_DIRECT_ILLUMINATION__________________________________
         SampleRIS(
             10,
@@ -158,7 +158,10 @@ void RayGen() {
             seed
             );
         //_______________________________VISIBILITY_PASS__________________________________
-        reservoir.V = VisibilityCheck(reservoir.x1, normalize(reservoir.x2-reservoir.x1), length(reservoir.x2-reservoir.x1));
+        //for(int v = 0; v < 9000; v++){
+        if(VisibilityCheck(reservoir.x1, reservoir.n1, normalize(reservoir.x2-reservoir.x1), length(reservoir.x2-reservoir.x1)) == 0.0f){
+            reservoir.p_hat = 0.0f;
+        }//}
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
 }
