@@ -61,7 +61,7 @@ void SampleLightBSDF(
 
 		float3 brdf = EvaluateBRDF(strategy, material, normal, -sample, outgoing);
 
-        p_hat = (brdf.x * material_ke.Ke.x + brdf.y * material_ke.Ke.y + brdf.z * material_ke.Ke.z) / 3.0f * dot(normal, -incoming) * cos_theta / dist2;
+        p_hat = length(brdf * material_ke.Ke * dot(normal, -incoming) * cos_theta / dist2);
     }
     else{
         p_hat = 0.0f;
@@ -200,7 +200,7 @@ void SampleLightNEE(
 
 
     // Evaluate the contribution
-    p_hat = (emission_l.x * brdf_light.x + emission_l.y * brdf_light.y + emission_l.z * brdf_light.z) / 3.0f * G * V;
+    p_hat = length(emission_l * brdf_light * G * V);
     pdf_light = max(EPSILON,pdf_l);
     pdf_bsdf = pdf_brdf_light * cos_theta_y/dist2;
     incoming = -L_norm;
@@ -304,6 +304,7 @@ void SampleRIS(
 // Shoot a shadow ray to check for occlusion
 float VisibilityCheck(
     float3 x1,
+    float3 n1,
     float3 dir,
     float dist
 )
@@ -312,10 +313,10 @@ float VisibilityCheck(
     //Shadow ray
     //____________________________________________________________
     RayDesc ray;
-    ray.Origin = x1; // Offset origin along the normal
+    ray.Origin = x1 + normalize(n1) * s_bias; // Offset origin along the normal
     ray.Direction = dir;
-    ray.TMin = s_bias;
-    ray.TMax = max(dist - s_bias, 2.0f * s_bias);
+    ray.TMin = 0.0f;
+    ray.TMax = max(dist - 2.0f*s_bias, 2.0f * s_bias);
     bool hit = true;
     // Initialize the ray payload
     ShadowHitInfo shadowPayload;
@@ -344,6 +345,8 @@ float3 ReconnectDI(
     float3 dir = x2 - x1;
     // Calculate distance to reconnection point
     float dist = length(dir);
+    if(length(L) == 0.0f)
+        return float3(0,0,0);
 	if (dist < 2.0f * s_bias) {
     	return float3(0, 0, 0); // or some other fallback value
 	}
@@ -355,10 +358,7 @@ float3 ReconnectDI(
     // Calculate F
     float3 F = EvaluateBRDF(strategy, material, n1, normalize(-dir), normalize(outgoing));
 
-    // Calculate V
-    float V = VisibilityCheck(x1, normalize(dir), dist);
-
-    return F * L * V * cosThetaX1 * cosThetaX2 / (dist * dist);
+    return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
 }
 
 // This function selects among the 4 candidates the pixel with the smallest world space error.
@@ -390,7 +390,7 @@ int2 GetBestReprojectedPixel(
         int2 candidate = candidates[i];
         // Convert candidate to a 1D index if your reservoir is in a buffer:
         uint index = candidate.y * uint(resolution.x) + candidate.x;
-        // Retrieve the candidate world position. (This is pseudo-code.)
+        // Retrieve the candidate world position.
         float3 candidateWorldPos = g_Reservoirs_last[index].x1;
 
         // Compute the world space error.
