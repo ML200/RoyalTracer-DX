@@ -111,12 +111,17 @@ void RayGen3() {
 
 		for (int v = 0; v < spatial_candidate_count; v++){
             // Get a random pixel in a 30 pixel radius arround this pixel
-			uint pixel_r = GetRandomPixelCircleWeighted(30, DispatchRaysDimensions().x, DispatchRaysDimensions().y, launchIndex.x, launchIndex.y, seed);
+			uint pixel_r = GetRandomPixelCircleWeighted(spatial_radius, DispatchRaysDimensions().x, DispatchRaysDimensions().y, launchIndex.x, launchIndex.y, seed);
 			// Fetch the spatial candidate
             Reservoir spatial_candidate = g_Reservoirs_current[pixel_r];
 
             // Reject the pixel if certain conditions arent fulfilled
-			if(!RejectNormal(canonical.n1, spatial_candidate.n1) && !RejectDistance(canonical.x1, spatial_candidate.x1, init_orig, 0.1f) && length(spatial_candidate.L1) == 0.0f && spatial_candidate.mID != 4294967294){
+			if(!RejectNormal(canonical.n1, spatial_candidate.n1, canonical.s)
+                && !RejectDistance(canonical.x1, spatial_candidate.x1, init_orig, 0.1f)
+                && length(spatial_candidate.L1) == 0.0f
+                && spatial_candidate.mID != 4294967294
+                && spatial_candidate.s == canonical.s
+            ){
 				spatial_candidates[v] = spatial_candidate;
                 M_sum += min(spatial_M_cap, spatial_candidates[v].M);
                 rejected[v] = false;
@@ -125,11 +130,9 @@ void RayGen3() {
                 rejected[v] = true;
 		}
 
-        float mi_c = GenPairwiseMIS_canonical(canonical, spatial_candidates, rejected, M_sum);
+        float mi_c = GenPairwiseMIS_canonical(canonical, spatial_candidates, rejected, M_sum, spatial_M_cap);
+        float w_c = mi_c * GetP_Hat(canonical, canonical, false) * canonical.W;
 
-        float W_c = GetW(canonical);
-        float w_c = mi_c * canonical.p_hat * W_c;
-        //WeightReservoir(canonical, w_c);
         UpdateReservoir(
             reservoir_spatial,
             w_c,
@@ -143,12 +146,10 @@ void RayGen3() {
         );
 
         for(int v = 0; v < spatial_candidate_count; v++){
-            if(!rejected[v] && M_sum > min(spatial_M_cap, reservoir_current.M)){
+            if(!rejected[v]){
                 Reservoir spatial_candidate = spatial_candidates[v];
-                float mi_s = GenPairwiseMIS_noncanonical(canonical, spatial_candidate, M_sum);
-
-                float W_s = GetW(spatial_candidate);
-                float w_s = mi_s * spatial_candidate.p_hat * W_s;
+                float mi_s = GenPairwiseMIS_noncanonical(canonical, spatial_candidate, M_sum, spatial_M_cap);
+                float w_s = mi_s * GetP_Hat(canonical, spatial_candidate, false) * spatial_candidate.W;
 
                 UpdateReservoir(
                     reservoir_spatial,
@@ -164,17 +165,13 @@ void RayGen3() {
             }
         }
         reservoir_current = reservoir_spatial;
-        float V = VisibilityCheck(reservoir_current.x1, reservoir_current.n1, normalize(reservoir_current.x2-reservoir_current.x1), length(reservoir_current.x2-reservoir_current.x1));
+        float p_hat = GetP_Hat(reservoir_current, reservoir_current, true);
+        reservoir_current.W = GetW(reservoir_current, p_hat);
+        accumulation = ReconnectDI(reservoir_current.x1,reservoir_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, reservoir_current.o, reservoir_current.s, materials[reservoir_current.mID]) * reservoir_current.W;
 
-        if(V == 0.0f)
-            reservoir_current.p_hat = 0.0f;
-
-        float W = GetW(reservoir_current);
-        accumulation = ReconnectDI(reservoir_current.x1,reservoir_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, reservoir_current.o, reservoir_current.s, materials[reservoir_current.mID]) * W;
-
-        float frameCount = gPermanentData[uint2(launchIndex)].w;
         //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
-        int maxFrames = 100000000;
+        float frameCount = gPermanentData[uint2(launchIndex)].w;
+        int maxFrames = 200000;
 
         // Check if the frame count is zero or uninitialized
         if (frameCount <= 0.0f && !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) && isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
@@ -194,18 +191,17 @@ void RayGen3() {
         float3 averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
         //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
 
-        //averagedColor = float3(weightsSUM, weightsSUM, weightsSUM);
-        //averagedColor = float3(M_sum/6.0f, M_sum/6.0f, M_sum/6.0f);
-        /*if(weightsSUM>=0.9f)
-            averagedColor = float3(0,1,1);
-        if(weightsSUM>1.1f)
-            averagedColor = float3(1,0,0);*/
+        // Skip temporal accumulation
         averagedColor = accumulation;
+
+        // DEBUG PIXEL COLORING
+        // NaNs in magenta
 		if(isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))
 			averagedColor = float3(1,0,1);
+        // show p_hat
+        // show x2 reconnection position
 
 
-        //__________________________________________ReSTIR__________________________________________________
         // Compare the view matrices and reset if different
         bool different = false;
         for (int row = 0; row < 4; row++)
@@ -217,7 +213,6 @@ void RayGen3() {
                 break;
             }
         }
-
         if (different)
         {
             // Reset buffers
@@ -225,11 +220,16 @@ void RayGen3() {
             frameCount = 1.0f; // Update frameCount to reflect the reset
         }
 
-
-
-        // Output the final color to layer 0
+        // Set the last reservoir to the current one to support temp. reuse
 		g_Reservoirs_last[pixelIdx] = reservoir_current;
-        gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);
+
+        //Gamma correction
+        float3 finalColor = pow(averagedColor, (float3)(1.0f/2.2f));
+        //___
+        float cosTheta = dot(reservoir_current.n1, reservoir_current.o);
+        float3 fresnel = SchlickFresnel(materials[reservoir_current.mID].Ks, cosTheta);
+        //___
+        gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
     }
     else{
         gOutput[uint3(launchIndex, 0)] = float4(reservoir_current.L1, 1.0f);

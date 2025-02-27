@@ -138,6 +138,17 @@ private:
         UINT mID;
     };
 
+    struct SampleData
+    {
+        // Hit information after camera ray (stays constant)
+        XMFLOAT3 x1;
+        XMFLOAT3 n1;
+        XMFLOAT3 L1;
+        UINT s;
+        XMFLOAT3 o;
+        UINT mID;
+    };
+
 // Buffer to store emissive triangles
     std::vector<LightTriangle> m_emissiveTriangles;
     ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
@@ -204,8 +215,12 @@ private:
   void CreateCameraBuffer();
   void UpdateCameraBuffer();
   ComPtr<ID3D12Resource> m_cameraBuffer;
+  ComPtr<ID3D12Resource> m_sampleBuffer_current;
+  ComPtr<ID3D12Resource> m_sampleBuffer_last;
   ComPtr<ID3D12Resource> m_reservoirBuffer;
   ComPtr<ID3D12Resource> m_reservoirBuffer_2;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_3;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_4;
   ComPtr<ID3D12DescriptorHeap> m_constHeap;
   uint32_t m_cameraBufferSize = 0;
 

@@ -150,7 +150,7 @@ void RayGen() {
         */
         //_______________________________RIS_DIRECT_ILLUMINATION__________________________________
         SampleRIS(
-            10,
+            4,
             1,
             -direction,
             reservoir,
@@ -158,10 +158,8 @@ void RayGen() {
             seed
             );
         //_______________________________VISIBILITY_PASS__________________________________
-        //for(int v = 0; v < 9000; v++){
-        if(VisibilityCheck(reservoir.x1, reservoir.n1, normalize(reservoir.x2-reservoir.x1), length(reservoir.x2-reservoir.x1)) == 0.0f){
-            reservoir.p_hat = 0.0f;
-        }//}
+        float p_hat = GetP_Hat(reservoir, reservoir, true);
+        reservoir.W = GetW(reservoir, p_hat);
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
 }

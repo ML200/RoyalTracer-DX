@@ -85,48 +85,83 @@ void RayGen2() {
 
 
         // Simple motion vectors:
-        int2 pixelPos = GetBestReprojectedPixel(reservoir_current.x1, prevView, prevProjection, dims);
+        int2 pixelPos;
+        pixelPos = GetBestReprojectedPixel_d(reservoir_current.x1, prevView, prevProjection, dims);
         uint tempPixelIdx = pixelPos.y * DispatchRaysDimensions().x + pixelPos.x;
         Reservoir reservoir_last = g_Reservoirs_last[tempPixelIdx];
 
         //_______________________________RESTIR_TEMPORAL__________________________________
         // Temporal reuse
-        if((reservoir_current.p_hat > 0.0f && reservoir_current.M > 0.0f) || (reservoir_last.p_hat > 0.0f && reservoir_last.M > 0.0f)){
-			float normalRejection = RejectNormal(reservoir_current.n1, reservoir_last.n1)?0.0f:1.0f;
-
-            float M_c = min(temporal_M_cap, reservoir_current.M);
-            float M_t = min(temporal_M_cap, reservoir_last.M);
-
-            // TODO:
-            float mi_c = M_c / (M_c + M_t);
-            float mi_t = 1.0f - mi_c;
-
-            float W_c = GetW(reservoir_current);
-            float W_t = GetW(reservoir_last);
+        if(
+            pixelPos.x != -1 && pixelPos.y != -1
+            && length(reservoir_last.L1) == 0.0f
+            && !RejectNormal(reservoir_current.n1, reservoir_last.n1, reservoir_current.s)
+            && !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[reservoir_current.mID])
+            && !RejectDistance(reservoir_current.x1, reservoir_last.x1, init_orig, 0.1f)
+            && (reservoir_last.x2.x != 0.0f && reservoir_last.x2.y != 0.0f && reservoir_last.x2.z != 0.0f)
+            //&& !RejectRoughness(view, prevView, tempPixelIdx, pixelIdx, reservoir_current.s, materials[reservoir_current.mID].Pr_Pm_Ps_Pc.x)
+        ){
+            float M_sum = min(temporal_M_cap, reservoir_current.M) + min(temporal_M_cap, reservoir_last.M);
+            // Pairwise MIS
+            float mi_c = GenPairwiseMIS_canonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
+            float mi_t = GenPairwiseMIS_noncanonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
 
             // Calculate the weight for the given sample: w * p_hat * W
-            float w_c = mi_c * reservoir_current.p_hat * W_c;
-            float w_t = mi_t * reservoir_last.p_hat * W_t;
+            float w_c = mi_c * GetP_Hat(reservoir_current, reservoir_current, false) * reservoir_current.W;
+            float w_t = mi_t * GetP_Hat(reservoir_current, reservoir_last, false) * reservoir_last.W;
 
+            Reservoir reservoir_temporal = {
+                (float3)0.0f,  // x1
+                (float3)0.0f,  // n1
+                (float3)0.0f,  // x2
+                (float3)0.0f,  // n2
+                (float)0.0f,  // w_sum
+                (float)0.0f,  // p_hat of the stored sample
+                (float)0.0f,  // W
+                (float)0.0f,  // M
+                (float)0.0f,    // V
+                (float3)0.0f,  // final color (L1), mostly 0
+                (float3)0.0f,  // reconnection color (L2)
+                (uint)0,  // s
+                (float3)0.0f,  //o
+                (uint)0  // mID
+            };
 
-			if(
-                pixelPos.x != -1 && pixelPos.y != -1
-                && length(reservoir_last.L1) == 0.0f
-                && normalRejection == 1.0f
-            ){
-                WeightReservoir(reservoir_current, w_c);
-            	UpdateReservoir(
-                	reservoir_current,
-                	w_t,
-                	min(temporal_M_cap, reservoir_last.M),
-                	reservoir_last.p_hat,
-                	reservoir_last.x2,
-                	reservoir_last.n2,
-                	reservoir_last.L2,
-                	reservoir_last.s,
-					seed
-            	);
-			}
+            reservoir_temporal.x1 = reservoir_current.x1;
+            reservoir_temporal.n1 = reservoir_current.n1;
+            reservoir_temporal.L1 = reservoir_current.L1;
+            reservoir_temporal.o = reservoir_current.o;
+            reservoir_temporal.mID = reservoir_current.mID;
+
+            UpdateReservoir(
+                reservoir_temporal,
+                w_c,
+                min(temporal_M_cap, reservoir_current.M),
+                reservoir_current.p_hat,
+                reservoir_current.x2,
+                reservoir_current.n2,
+                reservoir_current.L2,
+                reservoir_current.s,
+				seed
+            );
+
+            UpdateReservoir(
+                reservoir_temporal,
+                w_t,
+                min(temporal_M_cap, reservoir_last.M),
+                reservoir_last.p_hat,
+                reservoir_last.x2,
+                reservoir_last.n2,
+                reservoir_last.L2,
+                reservoir_last.s,
+				seed
+
+            );
+
+            float p_hat = GetP_Hat(reservoir_temporal, reservoir_temporal, true);
+            reservoir_temporal.W = GetW(reservoir_temporal, p_hat);
+
+            reservoir_current = reservoir_temporal;
         }
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;

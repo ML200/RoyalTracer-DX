@@ -35,7 +35,7 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
         if(roughness < 0.04f){ // adjust threshold (later 2)
             return 0;
         }
-        return 0;
+        return 1;
     }
     //Diffuse
     else if(r <= p_s + p_d){
@@ -46,6 +46,29 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
         return 0;
     }
 }
+
+float2 CalculateStrategyProbabilities(Material mat, float3 outgoing, float3 normal){
+    // Evaluate the material properties
+    float roughness = mat.Pr_Pm_Ps_Pc.x;
+    float metallic  = mat.Pr_Pm_Ps_Pc.y;
+    // Note: clearcoat and alpha are not used in this calculation
+
+    // Evaluate Fresnel term using Schlick's approximation
+    float cosTheta = dot(normal, outgoing);
+    float3 fresnel = SchlickFresnel(mat.Ks, cosTheta);
+
+    // Calculate the specular probability (strategy 1)
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
+
+    // Calculate the diffuse probability (strategy 0)
+    float p_d = 1.0f - p_s;
+
+    // Return the probabilities:
+    // - x component: diffuse (strategy 0)
+    // - y component: specular (strategy 1)
+    return float2(p_d, p_s);
+}
+
 
 // Sample the BRDF of the given strategy
 void SampleBRDF(uint strategy, Material mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
@@ -98,76 +121,4 @@ float BRDF_PDF(uint strategy, Material mat, float3 normal, float3 incidence, flo
         //return BTDF_PDF_GGX(mat, normal, incidence, outgoing);
     }
     return 0;
-}
-
-float3 EvaluateBRDF_Combined(Material mat, float3 normal, float3 incoming, float3 outgoing) {
-    float3 brdf_total = float3(0.0f, 0.0f, 0.0f);
-
-    // Evaluate individual BRDF components
-    float3 brdf_diffuse = EvaluateBRDF_Lambertian(mat, normal, incoming, outgoing);
-    float3 brdf_specular = EvaluateBRDF_GGX(mat, normal, incoming, outgoing);
-
-    // Evaluate material properties
-    float roughness = mat.Pr_Pm_Ps_Pc.x;
-    float metallic = mat.Pr_Pm_Ps_Pc.y;
-    float clearcoat = mat.Pr_Pm_Ps_Pc.w;
-    float alpha = mat.Kd.w;
-
-    // Calculate Fresnel term
-    float3 fresnel = SchlickFresnel(mat.Ks, abs(dot(normal, outgoing)));
-
-    // Sampling probabilities
-    float p_s = min(1.0f, length(fresnel)/3.0f + clearcoat + metallic);
-    float p_d = 1.0f - p_s;
-
-    // Adjust for translucency
-    p_s *= alpha;
-    p_d *= alpha;
-
-    // Normalize probabilities
-    float total_p = p_s + p_d;
-    if (total_p > 0.0f) {
-        p_s /= total_p;
-        p_d /= total_p;
-    }
-
-    // Sum the BRDF components
-    brdf_total += brdf_diffuse * p_d;
-    brdf_total += brdf_specular * p_s;
-
-    return brdf_total;
-}
-
-float BRDF_PDF_Combined(Material mat, float3 normal, float3 incoming, float3 outgoing) {
-    // Compute the individual PDFs
-    float pdf_diffuse = BRDF_PDF_Lambertian(mat, normal, incoming, outgoing);
-    float pdf_specular = BRDF_PDF_GGX(mat, normal, incoming, outgoing);
-
-    // Evaluate material properties
-    float roughness = mat.Pr_Pm_Ps_Pc.x;
-    float metallic = mat.Pr_Pm_Ps_Pc.y;
-    float clearcoat = mat.Pr_Pm_Ps_Pc.w;
-    float alpha = mat.Kd.w;
-
-    // Calculate Fresnel term
-    float3 fresnel = SchlickFresnel(mat.Ks, abs(dot(normal, outgoing)));
-
-    // Sampling probabilities
-    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + clearcoat + metallic);
-    float p_d = 1.0f - p_s;
-
-    // Adjust for translucency
-    p_d *= alpha;
-
-    // Normalize probabilities
-    float total_p = p_s + p_d;
-    if (total_p > 0.0f) {
-        p_s /= total_p;
-        p_d /= total_p;
-    }
-
-    // Compute the combined PDF
-    float pdf_combined = p_s * pdf_specular + p_d * pdf_diffuse;
-
-    return pdf_combined;
 }
