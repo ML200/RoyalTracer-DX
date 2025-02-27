@@ -46,22 +46,3 @@ void UpdateReservoir(
         reservoir.s = s;
     }
 }
-
-// Weight the reservoir.
-void WeightReservoir(
-    inout Reservoir reservoir,
-    float w
-    )
-{
-    reservoir.w_sum = w;
-}
-
-
-float GetW(
-    Reservoir reservoir
-){
-    if(reservoir.p_hat < EPSILON)
-        return 0.0f;
-    else
-        return reservoir.w_sum / reservoir.p_hat;
-}

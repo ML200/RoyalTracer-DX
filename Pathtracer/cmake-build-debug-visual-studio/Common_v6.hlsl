@@ -1,16 +1,21 @@
 #define PI 3.1415f
 #define s_bias 0.00002f // Shadow ray bias value
-#define EPSILON 0.0001f // Floating point precision correction
+#define EPSILON 0.000001f // Floating point precision correction
 
 #define LUT_SIZE_THETA 16
+#define EXPOSURE 1.0f
 
 #define samples 1
 #define bounces 1
 #define rr_threshold 3
 
-#define spatial_candidate_count 10
-#define spatial_M_cap 20
-#define temporal_M_cap 20
+#define spatial_candidate_count 3
+#define spatial_radius 32
+#define spatial_M_cap 25
+#define temporal_M_cap 25
+#define temporal_r_threshold 0.09f
+
+#define MIN_DIST   (2.0f * s_bias)      // Minimum allowed distance from shading point to light hit
 
 // Hit information, aka ray payload
 // This sample only carries a shading color and hit distance.
@@ -121,25 +126,6 @@ float RandomFloat(inout uint2 seed)
 }
 
 
-float3 getPerpendicularVector(float3 v)
-{
-    // Find the smallest component of the input vector
-    float minComponent = min(min(v.x, v.y), v.z);
-
-    // Construct a vector that is not parallel to the input vector
-    float3 nonParallelVec;
-    if (minComponent == v.x)
-        nonParallelVec = float3(1.0f, 0.0f, 0.0f);  // Input vector is mostly aligned with X-axis
-    else if (minComponent == v.y)
-        nonParallelVec = float3(0.0f, 1.0f, 0.0f);  // Input vector is mostly aligned with Y-axis
-    else
-        nonParallelVec = float3(0.0f, 0.0f, 1.0f);  // Input vector is mostly aligned with Z-axis
-
-    // Find a perpendicular vector using cross product
-    return cross(v, nonParallelVec);
-}
-
-// Sample from a weighted circle disk around a given pixel, never returning (x,y)
 uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed) {
     int newX, newY;
     do {
@@ -153,7 +139,7 @@ uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, i
         float r = float(radius) * z;
 
         // Choose an angle uniformly from [0, 2π)
-        float angle = RandomFloat(seed) * 6.2831853; // 2π
+        float angle = RandomFloat(seed) * 6.2831853;
 
         // Compute offsets
         int offsetX = int(cos(angle) * r);
@@ -169,29 +155,54 @@ uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, i
     return newY * w + newX;
 }
 
+bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
+    if(s1 == 1 && s2 == 1 && mat.Pr_Pm_Ps_Pc.x < temporal_r_threshold){
+        if(y != x)
+            return true;
+    }
+    return false;
+}
 
-
-bool RejectNormal(float3 n1, float3 n2){
+bool RejectNormal(float3 n1, float3 n2, uint s){
     float similarity = dot(n1, n2);
-    return (similarity < 0.9f);
+    if(s == 0) // diffuse
+        return (similarity < 0.9f);
+    return (similarity < 1.0f - EPSILON); // specular
+}
+
+bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uint currentPixelID, uint strategy, float roughness){
+    // Compare the view matrices and reset if different
+    bool different = false;
+    for (int row = 0; row < 4; row++)
+    {
+        float4 diff = abs(view_i[row] - prevView_i[row]);
+        if (any(diff > s_bias))
+        {
+            different = true;
+            break;
+        }
+    }
+
+    if(strategy == 1
+       && roughness < temporal_r_threshold
+       && different
+    ){
+        return true;
+    }
+    return false;
 }
 
 bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
 {
-    // Calculate distances from the camera to each point.
     float d1 = length(x1 - camPos);
     float d2 = length(x2 - camPos);
 
-    // Compute the relative difference.
-    // We divide by the maximum distance to normalize the difference.
     float relativeDifference = abs(d1 - d2) / max(d1, d2);
-
-    // Return true if the relative difference exceeds the threshold.
     return relativeDifference > threshold;
 }
 
 
-// Assume that GetLastFramePixelCoordinates_Float() returns the sub-pixel coordinate in reservoir space.
+
 float2 GetLastFramePixelCoordinates_Float(
     float3 worldPos,
     float4x4 prevView,
