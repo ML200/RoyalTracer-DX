@@ -8,8 +8,12 @@
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
 
-RWStructuredBuffer<Reservoir> g_Reservoirs_current : register(u2);
-RWStructuredBuffer<Reservoir> g_Reservoirs_last : register(u3);
+RWStructuredBuffer<Reservoir_DI> g_Reservoirs_current : register(u2);
+RWStructuredBuffer<Reservoir_DI> g_Reservoirs_last : register(u3);
+RWStructuredBuffer<Reservoir_GI> g_Reservoirs_current_gi : register(u4);
+RWStructuredBuffer<Reservoir_GI> g_Reservoirs_last_gi : register(u5);
+RWStructuredBuffer<SampleData> g_sample_current : register(u6);
+RWStructuredBuffer<SampleData> g_sample_last : register(u7);
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -51,12 +55,11 @@ void RayGen2() {
     uint2 launchIndex = DispatchRaysIndex().xy;
     uint pixelIdx = launchIndex.y * DispatchRaysDimensions().x + launchIndex.x;
     float2 dims = float2(DispatchRaysDimensions().xy);
-
     // The current reservoir
-    Reservoir reservoir_current = g_Reservoirs_current[pixelIdx];
+    Reservoir_DI reservoir_current = g_Reservoirs_current[pixelIdx];
+    SampleData sdata_current = g_sample_current[pixelIdx];
 
-	if(reservoir_current.L1.x == 0.0f && reservoir_current.L1.y == 0.0f && reservoir_current.L1.z == 0.0f){
-
+	if(sdata_current.L1.x == 0.0f && sdata_current.L1.y == 0.0f && sdata_current.L1.z == 0.0f){
         // #DXR Extra: Perspective Camera
         float aspectRatio = dims.x / dims.y;
 
@@ -86,18 +89,19 @@ void RayGen2() {
 
         // Simple motion vectors:
         int2 pixelPos;
-        pixelPos = GetBestReprojectedPixel_d(reservoir_current.x1, prevView, prevProjection, dims);
+        pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims);
         uint tempPixelIdx = pixelPos.y * DispatchRaysDimensions().x + pixelPos.x;
-        Reservoir reservoir_last = g_Reservoirs_last[tempPixelIdx];
+        Reservoir_DI reservoir_last = g_Reservoirs_last[tempPixelIdx];
+        SampleData sdata_last = g_sample_last[tempPixelIdx];
 
         //_______________________________RESTIR_TEMPORAL__________________________________
         // Temporal reuse
         if(
             pixelPos.x != -1 && pixelPos.y != -1
-            && length(reservoir_last.L1) == 0.0f
-            && !RejectNormal(reservoir_current.n1, reservoir_last.n1, reservoir_current.s)
-            && !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[reservoir_current.mID])
-            && !RejectDistance(reservoir_current.x1, reservoir_last.x1, init_orig, 0.1f)
+            && length(sdata_last.L1) == 0.0f
+            && !RejectNormal(sdata_current.n1, sdata_last.n1, reservoir_current.s)
+            && !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID])
+            && !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f)
             && (reservoir_last.x2.x != 0.0f && reservoir_last.x2.y != 0.0f && reservoir_last.x2.z != 0.0f)
             //&& !RejectRoughness(view, prevView, tempPixelIdx, pixelIdx, reservoir_current.s, materials[reservoir_current.mID].Pr_Pm_Ps_Pc.x)
         ){
@@ -107,37 +111,19 @@ void RayGen2() {
             float mi_t = GenPairwiseMIS_noncanonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
 
             // Calculate the weight for the given sample: w * p_hat * W
-            float w_c = mi_c * GetP_Hat(reservoir_current, reservoir_current, false) * reservoir_current.W;
-            float w_t = mi_t * GetP_Hat(reservoir_current, reservoir_last, false) * reservoir_last.W;
-
-            Reservoir reservoir_temporal = {
-                (float3)0.0f,  // x1
-                (float3)0.0f,  // n1
-                (float3)0.0f,  // x2
-                (float3)0.0f,  // n2
-                (float)0.0f,  // w_sum
-                (float)0.0f,  // p_hat of the stored sample
-                (float)0.0f,  // W
-                (float)0.0f,  // M
-                (float)0.0f,    // V
-                (float3)0.0f,  // final color (L1), mostly 0
-                (float3)0.0f,  // reconnection color (L2)
-                (uint)0,  // s
-                (float3)0.0f,  //o
-                (uint)0  // mID
+            float w_c = mi_c * GetP_Hat(reservoir_current, reservoir_current, sdata_current, false) * reservoir_current.W;
+            float w_t = mi_t * GetP_Hat(reservoir_current, reservoir_last, sdata_current, false) * reservoir_last.W;
+            Reservoir_DI reservoir_temporal = {
+                float3(0.0f, 0.0f, 0.0f), 0.0f,  // x2, pad0
+                float3(0.0f, 0.0f, 0.0f), 0.0f,  // n2, pad1
+                0.0f, 0.0f, 0.0f, 0.0f,          // w_sum, W, M, pad2
+                float3(0.0f, 0.0f, 0.0f), 0.0f,  // L2, pad3
+                0, 0, 0, 0                      // s, pad4, pad5, pad6
             };
-
-            reservoir_temporal.x1 = reservoir_current.x1;
-            reservoir_temporal.n1 = reservoir_current.n1;
-            reservoir_temporal.L1 = reservoir_current.L1;
-            reservoir_temporal.o = reservoir_current.o;
-            reservoir_temporal.mID = reservoir_current.mID;
-
             UpdateReservoir(
                 reservoir_temporal,
                 w_c,
                 min(temporal_M_cap, reservoir_current.M),
-                reservoir_current.p_hat,
                 reservoir_current.x2,
                 reservoir_current.n2,
                 reservoir_current.L2,
@@ -149,7 +135,6 @@ void RayGen2() {
                 reservoir_temporal,
                 w_t,
                 min(temporal_M_cap, reservoir_last.M),
-                reservoir_last.p_hat,
                 reservoir_last.x2,
                 reservoir_last.n2,
                 reservoir_last.L2,
@@ -158,9 +143,8 @@ void RayGen2() {
 
             );
 
-            float p_hat = GetP_Hat(reservoir_temporal, reservoir_temporal, true);
+            float p_hat = GetP_Hat(reservoir_temporal, reservoir_temporal, sdata_current, true);
             reservoir_temporal.W = GetW(reservoir_temporal, p_hat);
-
             reservoir_current = reservoir_temporal;
         }
     }

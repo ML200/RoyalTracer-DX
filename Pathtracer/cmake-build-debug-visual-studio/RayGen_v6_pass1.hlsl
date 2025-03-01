@@ -4,12 +4,19 @@
 #include "BRDF_v6.hlsl"
 #include "Reservoir_v6.hlsl"
 
+#define TILE_WIDTH 8
+#define TILE_HEIGHT 8
+
 // Raytracing output texture, accessed as a UAV
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
 
-RWStructuredBuffer<Reservoir> g_Reservoirs_current : register(u2);
-RWStructuredBuffer<Reservoir> g_Reservoirs_last : register(u3);
+RWStructuredBuffer<Reservoir_DI> g_Reservoirs_current : register(u2);
+RWStructuredBuffer<Reservoir_DI> g_Reservoirs_last : register(u3);
+RWStructuredBuffer<Reservoir_GI> g_Reservoirs_current_gi : register(u4);
+RWStructuredBuffer<Reservoir_GI> g_Reservoirs_last_gi : register(u5);
+RWStructuredBuffer<SampleData> g_sample_current : register(u6);
+RWStructuredBuffer<SampleData> g_sample_last : register(u7);
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -21,6 +28,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
+#include "Path_Sampler_v6.hlsl"
 
 // #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
@@ -105,7 +113,7 @@ void RayGen() {
     Material hitMaterial;
     if(payload.materialID != 4294967294){
         hitMaterial = materials[payload.materialID];
-        if(length(materials[payload.materialID].Ke) > 0.0f){
+        if(length(hitMaterial.Ke) > 0.0f){
             performSampling = false;
         }
     }
@@ -115,27 +123,20 @@ void RayGen() {
     }
 
 	//_______________________________RESERVOIRS__________________________________
-    Reservoir reservoir = {
-        (float3)0.0f,  // x1
-        (float3)0.0f,  // n1
-        (float3)0.0f,  // x2
-        (float3)0.0f,  // n2
-        (float)0.0f,  // w_sum
-        (float)0.0f,  // p_hat of the stored sample
-        (float)0.0f,  // W
-        (float)0.0f,  // M
-        (float)0.0f,    // V
-        (float3)0.0f,  // final color (L1), mostly 0
-        (float3)0.0f,  // reconnection color (L2)
-        (uint)0,  // s
-        (float3)0.0f,  //o
-        (uint)0  // mID
+    Reservoir_DI reservoir = {
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // x2, pad0
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // n2, pad1
+        0.0f, 0.0f, 0.0f, 0.0f,          // w_sum, W, M, pad2
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // L2, pad3
+        0, 0, 0, 0                      // s, pad4, pad5, pad6
     };
-	reservoir.x1 = payload.hitPosition;
-	reservoir.n1 = payload.hitNormal;
-	reservoir.L1 = (float3)hitMaterial.Ke;
-	reservoir.o = -direction;
-	reservoir.mID = payload.materialID;
+    SampleData sdata = {
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // x1, pad0
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // n1, pad1
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // L1, pad2
+        float3(0.0f, 0.0f, 0.0f), 0.0f,  // o, pad3
+        0, 0, 0, 0                      // mID, pad4, pad5, pad6
+    };
 
     //_______________________________PATH_SAMPLING__________________________________
     // Perform y bounces
@@ -158,8 +159,19 @@ void RayGen() {
             seed
             );
         //_______________________________VISIBILITY_PASS__________________________________
-        float p_hat = GetP_Hat(reservoir, reservoir, true);
+        sdata.x1 = payload.hitPosition;
+        sdata.n1 = payload.hitNormal;
+        sdata.o = -direction;
+        sdata.mID = payload.materialID;
+
+        float p_hat = GetP_Hat(reservoir, reservoir, sdata, true);
         reservoir.W = GetW(reservoir, p_hat);
+
+        // Perform path sampling (simpliefied for now)
+        float3 indirect = SamplePathSimple(payload.hitPosition, payload.hitNormal, -direction, materials[payload.materialID], seed);
+        g_Reservoirs_current_gi[pixelIdx].indirect = indirect;
     }
+    sdata.L1 = hitMaterial.Ke;
 	g_Reservoirs_current[pixelIdx] = reservoir;
+    g_sample_current[pixelIdx] = sdata;
 }

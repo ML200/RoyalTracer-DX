@@ -52,17 +52,17 @@ float3 ReconnectDI(
     return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
 }
 
-float GetP_Hat(Reservoir s, Reservoir t, bool use_visibility){
-    float f_g = LinearizeVector(ReconnectDI(s.x1, s.n1, t.x2, t.n2, t.L2, s.o, s.s, materials[s.mID]));
+float GetP_Hat(Reservoir_DI s, Reservoir_DI t, SampleData sample_s, bool use_visibility){
+    float f_g = LinearizeVector(ReconnectDI(sample_s.x1, sample_s.n1, t.x2, t.n2, t.L2, sample_s.o, s.s, materials[sample_s.mID]));
     float v = 1.0f;
 
     if(use_visibility){
-        v = VisibilityCheck(s.x1, s.n1, normalize(t.x2-s.x1), length(t.x2-s.x1));
+        v = VisibilityCheck(sample_s.x1, sample_s.n1, normalize(t.x2-sample_s.x1), length(t.x2-sample_s.x1));
     }
     return f_g * v;
 }
 
-float GetW(Reservoir r, float p_hat){
+float GetW(Reservoir_DI r, float p_hat){
     if(p_hat > EPSILON)
         return r.w_sum / p_hat;
     else
@@ -96,7 +96,7 @@ void SampleLightBSDF(
 
     // Trace the ray
     RayDesc ray;
-    ray.Origin = worldOrigin; // Offset origin along the normal
+    ray.Origin = worldOrigin;
     ray.Direction = sample;
     ray.TMin = s_bias;
     ray.TMax = 10000;
@@ -257,7 +257,7 @@ void SampleRIS(
     uint M1,
     uint M2,
     float3 outgoing,
-    inout Reservoir reservoir,
+    inout Reservoir_DI reservoir,
     HitInfo payload,
     inout uint2 seed
     ){
@@ -267,6 +267,7 @@ void SampleRIS(
     uint strategy = SelectSamplingStrategy(material, outgoing, payload.hitNormal, seed, p_strategy);
 
     // Iterate through M1 NEE samples and fill up the reservoir
+    [unroll]
     for(int i = 0; i < M1; i++){
         float pdf_light = 0.0f;
         float pdf_bsdf = 0.0f;
@@ -298,10 +299,11 @@ void SampleRIS(
         float mi = pdf_light / (M1 * pdf_light + M2 * pdf_bsdf);
         float wi = mi * p_hat / pdf_light;
         if(p_hat > 0.0f)
-            UpdateReservoir(reservoir, wi, 0.0f, p_hat, x2, n2, emission, strategy, seed);
+            UpdateReservoir(reservoir, wi, 0.0f, x2, n2, emission, strategy, seed);
     }
 
     // Iterate through M2 BSDF samples and fill the reservoir
+    [unroll]
     for(int j = 0; j < M2; j++){
         float pdf_light = 0.0f;
         float pdf_bsdf = 0.0f;
@@ -330,9 +332,8 @@ void SampleRIS(
         float mi = pdf_bsdf / (M1 * pdf_light + M2 * pdf_bsdf);
         float wi = mi * p_hat / pdf_bsdf;
         if(p_hat > 0.0f)
-            UpdateReservoir(reservoir, wi, 0.0f, p_hat, x2, n2, emission, strategy, seed);
+            UpdateReservoir(reservoir, wi, 0.0f, x2, n2, emission, strategy, seed);
     }
-
     // Set canonical weight
     reservoir.M = 1.0f;
 }
@@ -356,7 +357,7 @@ int2 GetBestReprojectedPixel_d(
     {
         int2 candidate = candidates[i];
         uint index = candidate.y * uint(resolution.x) + candidate.x;
-        float3 candidateWorldPos = g_Reservoirs_last[index].x1;
+        float3 candidateWorldPos = g_sample_last[index].x1;
         float dist = length(candidateWorldPos - worldPos);
         if (dist < minDistance)
         {

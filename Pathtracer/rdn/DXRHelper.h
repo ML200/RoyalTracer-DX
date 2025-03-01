@@ -116,6 +116,11 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
   ThrowIfFailed(pLibrary->CreateBlobWithEncodingFromPinned(
       (LPBYTE)sShader.c_str(), (uint32_t)sShader.size(), 0, &pTextBlob));
 
+  // Setup the compiler arguments:
+  // Use "-Zi" for full debug info (line table, etc.)
+  // Or use "-Zs" for minimal debug info (useful for dynamic shader editing)
+  const wchar_t* arguments[] = { L"-Zi" }; // change to L"-Zs" if needed
+
   // Compile
   IDxcOperationResult* pResult;
   ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_3", nullptr, 0, nullptr, 0,
