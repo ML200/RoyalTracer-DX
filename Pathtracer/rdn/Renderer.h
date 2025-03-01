@@ -118,36 +118,32 @@ private:
 
     #pragma pack(pop)
 
-    struct Reservoir
+    struct Reservoir_DI
     {
-        // Hit information after camera ray (stays constant)
-        XMFLOAT3 x1;
-        XMFLOAT3 n1;
-        // Current sample parameters
-        XMFLOAT3 x2;
-        XMFLOAT3 n2;
-        float w_sum;
-        float p_hat;
-        float W;
-        float M;
-        float V;
-        XMFLOAT3 L1; // in case we hit a light, this is non 0
-        XMFLOAT3 L2;
-        UINT s;
-        XMFLOAT3 o;
-        UINT mID;
+        // Current sample parameters (now padded)
+        XMFLOAT3 x2;  float pad0;  // 16 bytes total
+        XMFLOAT3 n2;  float pad1;  // 16 bytes total
+        float w_sum;  float W;  float M;  float pad2;  // 16 bytes total
+        XMFLOAT3 L2;  float pad3;  // 16 bytes total
+        UINT s;       UINT pad4;  UINT pad5;  UINT pad6;  // 16 bytes total
     };
 
     struct SampleData
     {
         // Hit information after camera ray (stays constant)
-        XMFLOAT3 x1;
-        XMFLOAT3 n1;
-        XMFLOAT3 L1;
-        UINT s;
-        XMFLOAT3 o;
-        UINT mID;
+        XMFLOAT3 x1;  float pad0;  // 16 bytes total
+        XMFLOAT3 n1;  float pad1;  // 16 bytes total
+        XMFLOAT3 L1;  float pad2;  // 16 bytes total
+        XMFLOAT3 o;   float pad3;  // 16 bytes total
+        UINT mID;     UINT pad4;  UINT pad5;  UINT pad6;  // 16 bytes total
     };
+
+    struct Reservoir_GI
+    {
+        // Hit information after camera ray (stays constant)
+        XMFLOAT3 indirect;
+    };
+
 
 // Buffer to store emissive triangles
     std::vector<LightTriangle> m_emissiveTriangles;

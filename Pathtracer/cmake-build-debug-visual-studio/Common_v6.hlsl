@@ -10,9 +10,9 @@
 #define rr_threshold 3
 
 #define spatial_candidate_count 3
-#define spatial_radius 32
-#define spatial_M_cap 25
-#define temporal_M_cap 25
+#define spatial_radius 20
+#define spatial_M_cap 500
+#define temporal_M_cap 20
 #define temporal_r_threshold 0.09f
 
 #define MIN_DIST   (2.0f * s_bias)      // Minimum allowed distance from shading point to light hit
@@ -103,6 +103,14 @@ struct Attributes {
   float2 bary;
 };
 
+struct SampleData
+{
+    float3 x1;    float pad0; // 16 bytes total
+    float3 n1;    float pad1; // 16 bytes total
+    float3 L1;    float pad2; // 16 bytes total
+    float3 o;     float pad3; // 16 bytes total
+    uint mID;     uint pad4; uint pad5; uint pad6; // 16 bytes total (if needed)
+};
 
 // Random Float Generator
 float RandomFloat(inout uint2 seed)
@@ -124,7 +132,6 @@ float RandomFloat(inout uint2 seed)
 
     return float(v0) / 4294967296.0;
 }
-
 
 uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed) {
     int newX, newY;
@@ -163,13 +170,6 @@ bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
     return false;
 }
 
-bool RejectNormal(float3 n1, float3 n2, uint s){
-    float similarity = dot(n1, n2);
-    if(s == 0) // diffuse
-        return (similarity < 0.9f);
-    return (similarity < 1.0f - EPSILON); // specular
-}
-
 bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uint currentPixelID, uint strategy, float roughness){
     // Compare the view matrices and reset if different
     bool different = false;
@@ -190,6 +190,13 @@ bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uin
         return true;
     }
     return false;
+}
+
+bool RejectNormal(float3 n1, float3 n2, uint s){
+    float similarity = dot(n1, n2);
+    if(s == 0) // diffuse
+        return (similarity < 0.9f);
+    return (similarity < 1.0f - EPSILON); // specular
 }
 
 bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
