@@ -1,10 +1,10 @@
-float LinearizeVector(float3 v){
+inline float LinearizeVector(float3 v){
     //return (v.x + v.y + v.z)/3.0f;
     return length(v);
 }
 
 // The remaining functions remain unchanged.
-float VisibilityCheck(
+inline float VisibilityCheck(
     float3 x1,
     float3 n1,
     float3 dir,
@@ -24,7 +24,7 @@ float VisibilityCheck(
     return V;
 }
 
-float3 ReconnectDI(
+inline float3 ReconnectDI(
     float3 x1,
     float3 n1,
     float3 x2,
@@ -32,7 +32,7 @@ float3 ReconnectDI(
     float3 L,
     float3 outgoing,
     uint strategy,
-    Material material
+    MaterialOptimized material
 )
 {
     float3 dir = x2 - x1;
@@ -52,17 +52,56 @@ float3 ReconnectDI(
     return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
 }
 
-float GetP_Hat(Reservoir_DI s, Reservoir_DI t, SampleData sample_s, bool use_visibility){
-    float f_g = LinearizeVector(ReconnectDI(sample_s.x1, sample_s.n1, t.x2, t.n2, t.L2, sample_s.o, s.s, materials[sample_s.mID]));
+
+inline float3 ReconnectGI(
+    float3 x1,
+    float3 n1,
+    float3 x2,
+    float3 n2,
+    float3 L,
+    float3 outgoing,
+    uint strategy,
+    MaterialOptimized material
+)
+{
+    float3 dir = x2 - x1;
+    float dist = length(dir);
+    if(length(L) == 0.0f || dist < MIN_DIST)
+        return float3(0,0,0);
+
+    float cosThetaX1 = max(0, dot(n1, normalize(dir)));
+    if(dot(n2, normalize(-dir)) < 0.0f)
+        n2 = -n2;
+    float cosThetaX2 = max(0, dot(n2, normalize(-dir)));
+    float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), n1);
+    float3 F1 = probs.x * EvaluateBRDF(0, material, n1, normalize(-dir), normalize(outgoing));
+    float3 F2 = probs.y * EvaluateBRDF(1, material, n1, normalize(-dir), normalize(outgoing));
+    float3 F = F1 + F2;
+
+    return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
+}
+
+float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
+    float f_g = LinearizeVector(ReconnectDI(x1, n1, x2, n2, L2, o, s, matOpt));
     float v = 1.0f;
 
     if(use_visibility){
-        v = VisibilityCheck(sample_s.x1, sample_s.n1, normalize(t.x2-sample_s.x1), length(t.x2-sample_s.x1));
+        v = VisibilityCheck(x1, n1, normalize(x2-x1), length(x2-x1));
     }
     return f_g * v;
 }
 
-float GetW(Reservoir_DI r, float p_hat){
+float GetP_Hat_GI(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
+    float f_g = LinearizeVector(ReconnectDI(x1, n1, x2, n2, L2, o, s, matOpt));
+    float v = 1.0f;
+
+    if(use_visibility){
+        v = VisibilityCheck(x1, n1, normalize(x2-x1), length(x2-x1));
+    }
+    return f_g * v;
+}
+
+inline float GetW(Reservoir_DI r, float p_hat){
     if(p_hat > EPSILON)
         return r.w_sum / p_hat;
     else
@@ -81,7 +120,7 @@ void SampleLightBSDF(
     float3 worldOrigin,
     float3 normal,
     float3 outgoing,
-    Material material,
+    MaterialOptimized material,
     float fresnel,
     uint strategy,
     inout float3 emission,
@@ -117,13 +156,24 @@ void SampleLightBSDF(
         float cos_theta = dot(samplePayload.hitNormal, -sample);
 
         pdf_light = ((Ke / 3.0f) / g_EmissiveTriangles[0].total_weight);
-        pdf_bsdf = max(EPSILON, BRDF_PDF(strategy, material, normal, -sample, outgoing) * cos_theta / dist2);
         incoming = -sample;
 
+        // Sample the BSDF for the light's direction
         float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), normal);
-        float3 brdf1 = probs.x * EvaluateBRDF(0, material, normal, -sample, outgoing);
-        float3 brdf2 = probs.y * EvaluateBRDF(1, material, normal, -sample, outgoing);
-        float3 brdf = brdf1 + brdf2;
+
+        float3 brdf0 = EvaluateBRDF(0, material, normal, -sample, normalize(outgoing));
+        float3 brdf1 = EvaluateBRDF(1, material, normal, -sample, normalize(outgoing));
+
+        float3 pdf0 = BRDF_PDF(0, material, normal, -sample, outgoing) * cos_theta / dist2;
+        float3 pdf1 = BRDF_PDF(1, material, normal, -sample, outgoing) * cos_theta / dist2;
+
+        float3 F1 = SafeMultiply(probs.x, brdf0);
+        float3 F2 = SafeMultiply(probs.y, brdf1);
+        float3 P1 = SafeMultiply(probs.x, pdf0);
+        float3 P2 = SafeMultiply(probs.y, pdf1);
+        float3 brdf = F1 + F2;
+        pdf_bsdf = P1 + P2;
+
         float ndot = dot(normal, sample);
 
         // Compute p_hat defensively.
@@ -133,7 +183,6 @@ void SampleLightBSDF(
         p_hat = 0.0f;
     }
 }
-
 
 void SampleLightNEE(
     inout float pdf_light, // Outputs
@@ -145,7 +194,7 @@ void SampleLightNEE(
     float3 worldOrigin,
     float3 normal,
     float3 outgoing,
-    Material material,
+    MaterialOptimized material,
     uint strategy,
     float fresnel,
     inout float3 emission,
@@ -224,9 +273,20 @@ void SampleLightNEE(
 
     // Sample the BSDF for the light's direction
     float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), normal);
-    float3 brdf_light1 = probs.x * EvaluateBRDF(0, material, normal, -L_norm, normalize(outgoing));
-    float3 brdf_light2 = probs.y * EvaluateBRDF(1, material, normal, -L_norm, normalize(outgoing));
-    float3 brdf_light = brdf_light1 + brdf_light2;
+
+    float3 brdf0 = EvaluateBRDF(0, material, normal, -L_norm, normalize(outgoing));
+    float3 brdf1 = EvaluateBRDF(1, material, normal, -L_norm, normalize(outgoing));
+
+    float3 pdf0 = BRDF_PDF(0, material, normal, -L_norm, normalize(outgoing)) * cos_theta_y / dist2;
+    float3 pdf1 = BRDF_PDF(1, material, normal, -L_norm, normalize(outgoing)) * cos_theta_y / dist2;
+
+    float3 F1 = SafeMultiply(probs.x, brdf0);
+    float3 F2 = SafeMultiply(probs.y, brdf1);
+    float3 P1 = SafeMultiply(probs.x, pdf0);
+    float3 P2 = SafeMultiply(probs.y, pdf1);
+    float3 brdf_light = F1 + F2;
+    float3 P = P1 + P2;
+
     // Optional visibility check
     float V = 1.0f;
     if(useVisibility == true){
@@ -245,8 +305,233 @@ void SampleLightNEE(
     p_hat = LinearizeVector(emission_l * brdf_light * G * V);
 
     pdf_light = max(EPSILON, pdf_l);
-    pdf_bsdf = pdf_brdf_light * cos_theta_y / dist2;
+    pdf_bsdf = P;
     incoming = -L_norm;
+}
+
+// Use visibility is mandatory
+float3 SampleLightBSDF_GI(
+    inout float pdf_light, // Outputs (this time both in solid angle measure)
+    inout float pdf_bsdf,
+    inout float3 incoming, // light direction
+    inout float3 new_origin,
+    inout float3 new_normal,
+    inout float3 new_outgoing,
+    inout MaterialOptimized new_material,
+
+    inout uint2 seed, // Inputs
+    uint strategy,
+    float3 origin,
+    float3 normal,
+    float3 outgoing,
+    inout float3 acc_l, // Inout as this might be changed in case no light is hit
+    inout float acc_pdf, // Same here
+    inout float throughput, // Same here
+    MaterialOptimized material,
+    bool isReconnection
+    ){
+
+    // Sample a BSDF direction
+    float3 sample;
+    float3 adjustedOrigin = float3(0,0,0);
+    SampleBRDF(strategy, material, outgoing, normal, normal, sample, origin, adjustedOrigin, seed);
+    if(length(sample) == 0.0f)
+        return float3(-1,0,0);
+
+    // Trace the ray
+    RayDesc ray;
+    ray.Origin = origin;
+    ray.Direction = sample;
+    ray.TMin = s_bias;
+    ray.TMax = 10000;
+    HitInfo samplePayload;
+    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, samplePayload);
+
+    // Evaluate the contribution
+    MaterialOptimized mat_ke = {
+        materials[samplePayload.materialID].Kd, materials[samplePayload.materialID].Pr_Pm_Ps_Pc,
+        materials[samplePayload.materialID].Ks, materials[samplePayload.materialID].Ke, samplePayload.materialID
+    };
+
+    // Sample the BSDF for the light's direction
+    float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), normal);
+
+    float3 brdf0 = EvaluateBRDF(0, material, normal, -sample, normalize(outgoing));
+    float3 brdf1 = EvaluateBRDF(1, material, normal, -sample, normalize(outgoing));
+
+    float3 pdf0 = BRDF_PDF(0, material, normal, -sample, outgoing);
+    float3 pdf1 = BRDF_PDF(1, material, normal, -sample, outgoing);
+
+    float3 F1 = SafeMultiply(probs.x, brdf0);
+    float3 F2 = SafeMultiply(probs.y, brdf1);
+    float3 P1 = SafeMultiply(probs.x, pdf0);
+    float3 P2 = SafeMultiply(probs.y, pdf1);
+    float3 brdf = F1 + F2;
+    float3 P = P1 + P2;
+
+    pdf_bsdf = P;
+    float NdotL = dot(normal, sample);
+
+    if(length(mat_ke.Ke) > 0.0f){
+        // If we hit a light, treat as a light sample
+        float3 L = samplePayload.hitPosition - origin;
+        float dist = length(L);
+        float dist2 = dist * dist;
+        float cos_theta = dot(samplePayload.hitNormal, -sample);
+
+        pdf_light = (((mat_ke.Ke.x + mat_ke.Ke.y + mat_ke.Ke.z) / 3.0f) / g_EmissiveTriangles[0].total_weight) * dist2 / cos_theta;
+
+        incoming = -sample;
+
+        // Compute p_hat defensively.
+        if(pdf * pdf_bsdf > 0.0f)
+            return brdf * mat_ke.Ke * NdotL * acc_l / (acc_pdf * pdf_bsdf);
+        else
+            return float3(0,0,0);
+    }
+    else{
+        // If we hit no light, continue the path. This means adjusting throughput and accumulated pdf accordingly
+        if(pdf_bsdf <= 0.0f)
+            return float3(-1,0,0);
+        acc_pdf *= pdf_bsdf;
+        acc_l *= brdf * NdotL;
+        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+            throughput = brdf * NdotL;
+        else
+            throughput = NdotL;
+
+        // Also set the returned new path parameters
+        new_origin = samplePayload.hitPosition;
+        new_normal = samplePayload.hitNormal;
+        new_outgoing = -sample;
+        new_material = mat_ke;
+
+        // return 0 contribution
+        return float3(0,0,0);
+    }
+}
+
+
+float3 SampleLightNEE_GI(
+    inout float pdf_light, // Outputs (this time both in solid angle measure)
+    inout float pdf_bsdf,
+    inout float3 incoming, // light direction
+
+    inout uint2 seed, // Inputs
+    uint strategy,
+    float3 origin,
+    float3 normal,
+    float3 outgoing,
+    float3 acc_l, // Inout as this might be changed in case no light is hit
+    float acc_pdf, // Same here
+    inout float throughput, // Same here
+    MaterialOptimized material,
+    bool useVisibility,
+    bool isReconnection
+    ){
+
+    // Sample a Light Triangle
+    float randomValue = RandomFloat(seed);
+    int left = 0;
+    int right = g_EmissiveTriangles[0].triCount - 1;
+    int selectedIndex = 0;
+
+    while (left <= right) {
+        int mid = left + (right - left) / 2;
+        float midCdf = g_EmissiveTriangles[mid].cdf;
+        if (randomValue < midCdf) {
+            selectedIndex = mid;
+            right = mid - 1;
+        } else {
+            left = mid + 1;
+        }
+    }
+    LightTriangle sampleLight = g_EmissiveTriangles[selectedIndex];
+
+    // Calculate the current world coordinates of the triangle
+    float4x4 conversionMatrix = instanceProps[sampleLight.instanceID].objectToWorld;
+    float3 x_v = mul(conversionMatrix, float4(sampleLight.x, 1.f)).xyz;
+    float3 y_v = mul(conversionMatrix, float4(sampleLight.y, 1.f)).xyz;
+    float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
+
+    // Generate random barycentric coordinates
+    float xi1 = RandomFloat(seed);
+    float xi2 = RandomFloat(seed);
+    if (xi1 + xi2 > 1.0f) {
+        xi1 = 1.0f - xi1;
+        xi2 = 1.0f - xi2;
+    }
+    float u = 1.0f - xi1 - xi2;
+    float v = xi1;
+    float w = xi2;
+    float3 samplePoint = u * x_v + v * y_v + w * z_v;
+
+    // Get the sample direction and compute distance
+    float3 L = samplePoint - origin;
+    float dist2 = dot(L, L);
+    float dist = sqrt(max(dist2, EPSILON));
+    float3 L_norm = normalize(L);
+
+    // Compute the light's surface normal from triangle geometry
+    float3 edge1 = y_v - x_v;
+    float3 edge2 = z_v - x_v;
+    float3 cross_l = cross(edge1, edge2);
+    float3 normal_l = normalize(cross_l);
+
+    if(dot(normal_l, -L_norm) < 0.0f){
+        normal_l = -normal_l;
+    }
+
+    float area_l = abs(length(cross_l) * 0.5f);
+    float pdf_l = sampleLight.weight / max(area_l, EPSILON);
+
+    // Compute cosine factors
+    float cos_theta_x = max(dot(normal, L_norm), EPSILON);
+
+    float cos_theta_y = max(dot(normal_l, -L_norm), EPSILON);
+
+
+    // Compute the geometry term
+    float G = cos_theta_x;
+    float3 emission_l = sampleLight.emission;
+
+    // Sample the BSDF for the light's direction
+    float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), normal);
+
+    float3 brdf0 = EvaluateBRDF(0, material, normal, -L_norm, normalize(outgoing));
+    float3 brdf1 = EvaluateBRDF(1, material, normal, -L_norm, normalize(outgoing));
+
+    float3 pdf0 = BRDF_PDF(0, material, normal, -L_norm, normalize(outgoing));
+    float3 pdf1 = BRDF_PDF(1, material, normal, -L_norm, normalize(outgoing));
+
+    float3 F1 = SafeMultiply(probs.x, brdf0);
+    float3 F2 = SafeMultiply(probs.y, brdf1);
+    float3 P1 = SafeMultiply(probs.x, pdf0);
+    float3 P2 = SafeMultiply(probs.y, pdf1);
+    float3 brdf_light = F1 + F2;
+    float3 P = P1 + P2;
+
+    // Optional visibility check
+    float V = 1.0f;
+    if(useVisibility == true){
+        RayDesc ray;
+        ray.Origin = origin + s_bias * normal;
+        ray.Direction = L_norm;
+        ray.TMin = 0.0f;
+        ray.TMax = dist - s_bias * 2.0f;
+        ShadowHitInfo shadowPayload;
+        shadowPayload.isHit = false;
+        TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+        V = shadowPayload.isHit ? 0.0f : 1.0f;
+    }
+
+    pdf_light = max(EPSILON, pdf_l) * dist2 / cos_theta_y;
+    pdf_bsdf = P;
+    incoming = -L_norm;
+    if(pdf * pdf_light > 0.0f)
+        return emission_l * brdf_light * G * V * acc_l / (acc_pdf * pdf_light);
+    else
+        return float3(0,0,0);
 }
 
 
@@ -259,15 +544,15 @@ void SampleRIS(
     float3 outgoing,
     inout Reservoir_DI reservoir,
     HitInfo payload,
+    MaterialOptimized matOpt,
     inout uint2 seed
     ){
 
-    Material material = materials[payload.materialID];
     float p_strategy = 1.0f;
-    uint strategy = SelectSamplingStrategy(material, outgoing, payload.hitNormal, seed, p_strategy);
+    uint strategy = SelectSamplingStrategy(matOpt, outgoing, payload.hitNormal, seed, p_strategy);
 
     // Iterate through M1 NEE samples and fill up the reservoir
-    [unroll]
+    [loop]
     for(int i = 0; i < M1; i++){
         float pdf_light = 0.0f;
         float pdf_bsdf = 0.0f;
@@ -286,7 +571,7 @@ void SampleRIS(
             payload.hitPosition,
             payload.hitNormal,
             outgoing,
-            material,
+            matOpt,
             strategy,
             p_strategy,
             emission,
@@ -303,7 +588,7 @@ void SampleRIS(
     }
 
     // Iterate through M2 BSDF samples and fill the reservoir
-    [unroll]
+    [loop]
     for(int j = 0; j < M2; j++){
         float pdf_light = 0.0f;
         float pdf_bsdf = 0.0f;
@@ -322,7 +607,7 @@ void SampleRIS(
             payload.hitPosition,
             payload.hitNormal,
             outgoing,
-            material,
+            matOpt,
             p_strategy,
             strategy,
             emission,
@@ -335,35 +620,16 @@ void SampleRIS(
             UpdateReservoir(reservoir, wi, 0.0f, x2, n2, emission, strategy, seed);
     }
     // Set canonical weight
-    reservoir.M = 1.0f;
+    reservoir.M = 1;
 }
 
-int2 GetBestReprojectedPixel_d(
+inline int2 GetBestReprojectedPixel_d(
     float3 worldPos,
     float4x4 prevView,
     float4x4 prevProjection,
     float2 resolution)
 {
     float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution);
-    int2 basePixel = int2(floor(subPixelCoord));
-    int2 candidates[4];
-    candidates[0] = basePixel;
-    candidates[1] = basePixel + int2(1, 0);
-    candidates[2] = basePixel + int2(0, 1);
-    candidates[3] = basePixel + int2(1, 1);
-    float minDistance = 1e7f;
-    int2 bestPixel = int2(-1, -1);
-    for (int i = 0; i < 4; i++)
-    {
-        int2 candidate = candidates[i];
-        uint index = candidate.y * uint(resolution.x) + candidate.x;
-        float3 candidateWorldPos = g_sample_last[index].x1;
-        float dist = length(candidateWorldPos - worldPos);
-        if (dist < minDistance)
-        {
-            minDistance = dist;
-            bestPixel = candidate;
-        }
-    }
-    return bestPixel;
+    int2 pixel = int2(round(subPixelCoord));
+    return pixel;
 }

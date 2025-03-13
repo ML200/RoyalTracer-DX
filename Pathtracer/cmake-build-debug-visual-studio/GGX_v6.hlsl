@@ -1,4 +1,4 @@
-float ESS_LUT(Material mat, float NdotV)
+inline float ESS_LUT(MaterialOptimized mat, float NdotV)
 {
     // Normalize inputs to [0, 1]
     NdotV = saturate(NdotV);
@@ -14,8 +14,8 @@ float ESS_LUT(Material mat, float NdotV)
     float wTheta = thetaIdxF - thetaIdx0;
 
     // Fetch LUT values at the two angle indices
-    float v0 = mat.LUT[thetaIdx0];
-    float v1 = mat.LUT[thetaIdx1];
+    float v0 = materials[mat.mID].LUT[thetaIdx0];
+    float v1 = materials[mat.mID].LUT[thetaIdx1];
 
     // Perform linear interpolation
     return lerp(v0, v1, wTheta);
@@ -23,12 +23,12 @@ float ESS_LUT(Material mat, float NdotV)
 }
 
 
-float3 SchlickFresnel(float3 F0, float cosTheta)
+inline float3 SchlickFresnel(float3 F0, float cosTheta)
 {
     return saturate(F0 + (1.0f - F0) * pow(abs(1.0f - cosTheta), 5.0f));
 }
 
-float D_GGX(float NdotH, float roughness)
+inline float D_GGX(float NdotH, float roughness)
 {
     float alpha = roughness * roughness;
     float alpha2 = alpha * alpha;
@@ -40,7 +40,7 @@ float D_GGX(float NdotH, float roughness)
 }
 
 // Smith's Geometry function for GGX
-float G2_SmithGGX(float NdotV, float NdotL, float alpha)
+inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
 {
     // Calculate the Smith masking term for the view direction
     float alpha2 = alpha * alpha;
@@ -52,7 +52,7 @@ float G2_SmithGGX(float NdotV, float NdotL, float alpha)
 }
 
 // Smith's Geometry function 2 for GGX
-float G1_SmithGGX(float NdotV, float alpha)
+inline float G1_SmithGGX(float NdotV, float alpha)
 {
       float alpha2 = alpha * alpha;
       float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
@@ -62,7 +62,7 @@ float G1_SmithGGX(float NdotV, float alpha)
 
 
 // Coordinate system for transforming vectors
-void CoordinateSystem(float3 N, out float3 T, out float3 B)
+inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f)
     {
@@ -77,7 +77,7 @@ void CoordinateSystem(float3 N, out float3 T, out float3 B)
 
 //______________________________________________________________________________________________________________________
 // Sample the BRDF of the given material using Heitz's VNDF sampling
-void SampleBRDF_GGX(Material mat, float3 outgoing, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed)
+inline void SampleBRDF_GGX(MaterialOptimized mat, float3 outgoing, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed)
 {
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
     float3 N = normalize(normal);
@@ -132,27 +132,25 @@ void SampleBRDF_GGX(Material mat, float3 outgoing, float3 normal, float3 flatNor
 }
 
 // Evaluate the GGX BRDF for the given material
-float3 EvaluateBRDF_GGX(Material mat, float3 normal, float3 incoming, float3 outgoing)
+inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);   // View direction
     float3 L = normalize(-incoming);  // Light direction
     float3 H = normalize(V + L);
-    float NdotV = saturate(dot(N, V));
-    float NdotL = saturate(dot(N, L));
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
+    float NdotV = max(dot(N, V), EPSILON);
+    float NdotL = max(dot(N, L), EPSILON);
+    float NdotH = max(dot(N, H), EPSILON);
+    float VdotH = max(dot(V, H), EPSILON);
 
-
-    float3 F0 = mat.Ks;
-
-    float3 F = SchlickFresnel(F0, VdotH);
+    float3 F = SchlickFresnel(mat.Ks, VdotH);
     float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
     float G = G2_SmithGGX(NdotV, NdotL, mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x);
 
     // Specular BRDF
     float denominator = 4.0f * NdotV * NdotL;
-    denominator = max(denominator, 1e-7f);
+    if(denominator < EPSILON)
+        return float3(0,0,0);
 
     float3 specular = (F * D * G) / denominator;
 
@@ -165,22 +163,18 @@ float3 EvaluateBRDF_GGX(Material mat, float3 normal, float3 incoming, float3 out
 }
 
 // Calculate the PDF for a given sample direction using GGX
-float BRDF_PDF_GGX(Material mat, float3 normal, float3 incoming, float3 outgoing)
+inline float BRDF_PDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);   // View direction
     float3 L = normalize(-incoming);  // Light direction
     float3 H = normalize(V + L);
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
-    float NdotV = saturate(dot(N,V));
+    float NdotH = max(dot(N, H), EPSILON);
+    float NdotV = max(dot(N, V), EPSILON);
 
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
-
     float G1 = G1_SmithGGX(NdotV, alpha);
     float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
 
-    float denom = NdotV * 4.0f;
-
-    return G1 * D / denom;
+    return G1 * D / (NdotV * 4.0f);
 }

@@ -20,10 +20,11 @@
 #include <iomanip>
 
 constexpr float PI = 3.14159265359f;
-constexpr int LUT_SIZE_THETA = 32; // Number of samples for cos(theta)
+constexpr int LUT_SIZE_THETA = 16; // Number of samples for cos(theta)
 constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
 
 #include <DirectXMath.h>
+#include <DirectXPackedVector.h>
 using namespace DirectX;
 
 // Add two XMFLOAT3
@@ -479,13 +480,11 @@ public:
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve);
 
             XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness);
-            XMFLOAT2 aniso_anisor(mat.anisotropy, mat.anisotropy_rotation);
             Material t_mat(diffuse, Pr_Pm_Ps_Pc);
 
             // Set emission
             t_mat.Ke = XMFLOAT3(mat.emission);
             t_mat.Ks = XMFLOAT3(mat.specular);
-            t_mat.aniso_anisor = aniso_anisor;
 
             //Calculate LUT
             GenerateEssLUT(t_mat);

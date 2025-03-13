@@ -1,7 +1,6 @@
+#pragma warning(disable: 1234)
+
 #include "Common_v6.hlsl"
-#include "GGX_v6.hlsl"
-#include "Lambertian_v6.hlsl"
-#include "BRDF_v6.hlsl"
 #include "Reservoir_v6.hlsl"
 
 // Raytracing output texture, accessed as a UAV
@@ -23,6 +22,9 @@ StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
+#include "GGX_v6.hlsl"
+#include "Lambertian_v6.hlsl"
+#include "BRDF_v6.hlsl"
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
 
@@ -52,13 +54,13 @@ cbuffer CameraParams : register(b0)
 void RayGen3() {
     // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
     uint2 launchIndex = DispatchRaysIndex().xy;
-    uint pixelIdx = launchIndex.y * DispatchRaysDimensions().x + launchIndex.x;
     float2 dims = float2(DispatchRaysDimensions().xy);
+    uint pixelIdx = MapPixelID(dims, launchIndex);
     SampleData sdata_current = g_sample_current[pixelIdx];
 
     if(sdata_current.L1.x == 0.0f && sdata_current.L1.y == 0.0f && sdata_current.L1.z == 0.0f){
         // Initialize the ray origin and direction
-        float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
+        float3 init_orig = mul(viewI, float4(0, 0, 0, 1)).xyz;
 
         // SEEDING
         const uint prime1_x = 73856093u;
@@ -74,58 +76,63 @@ void RayGen3() {
         uint2 seed;
         //_______________________________SETUP__________________________________
         // Every sample recieves a new seed (use samples+2 here to get different random numbers then the RayGen1 shader)
-        seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 3) * prime3_x ^ uint(time) * prime_time_x;
-        seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 3) * prime3_y ^ uint(time) * prime_time_y;
+        seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(3) * prime3_x ^ uint(time) * prime_time_x;
+        seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(3) * prime3_y ^ uint(time) * prime_time_y;
+
+        uint mID = sdata_current.mID;
+        // Spatial reuse
+		// 1. Aquire 5 pixels in the vicinity
+		uint spatial_candidates[spatial_candidate_count];
+        bool rejected[spatial_candidate_count];
+
+        float M_sum = min(spatial_M_cap, g_Reservoirs_current[pixelIdx].M); // c weight
+
+        // Let maxTries be the maximum number of attempts to find candidates.
+        int candidateFoundCount = 0;
+        [loop]
+        for (int attempt = 0; attempt < spatial_max_tries && candidateFoundCount < spatial_candidate_count; attempt++)
+        {
+            // Get a random pixel in a 30 pixel radius around this pixel.
+            uint pixel_r = GetRandomPixelCircleWeighted(spatial_radius, DispatchRaysDimensions().x, DispatchRaysDimensions().y, launchIndex.x, launchIndex.y, seed);
+
+            // Evaluate candidate predicate per thread.
+            bool candidateAccepted =
+                !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1) &&
+                !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
+                (length(g_sample_current[pixel_r].L1) == 0.0f) &&
+                (g_sample_current[pixel_r].mID != 4294967294) &&
+                (g_sample_current[pixel_r].mID == sdata_current.mID);
+
+            if (candidateAccepted)
+            {
+                spatial_candidates[candidateFoundCount] = pixel_r;
+                M_sum += min(spatial_M_cap, g_Reservoirs_current[pixel_r].M);
+                rejected[candidateFoundCount] = false;
+                candidateFoundCount++;
+            }
+        }
+
+        // Optionally, for any remaining slots, you could initialize them as rejected.
+        [loop]
+        for (int v = candidateFoundCount; v < spatial_candidate_count; v++){
+            rejected[v] = true;
+        }
 
         // The current reservoir
         Reservoir_DI reservoir_current = g_Reservoirs_current[pixelIdx];
-        Reservoir_GI reservoir_gi_current = g_Reservoirs_current_gi[pixelIdx];
-        Reservoir_DI reservoir_spatial = {
-            float3(0.0f, 0.0f, 0.0f), 0.0f,  // x2, pad0
-            float3(0.0f, 0.0f, 0.0f), 0.0f,  // n2, pad1
-            0.0f, 0.0f, 0.0f, 0.0f,          // w_sum, W, M, pad2
-            float3(0.0f, 0.0f, 0.0f), 0.0f,  // L2, pad3
-            0, 0, 0, 0                      // s, pad4, pad5, pad6
-        };
-
-        // Spatial reuse
-		// 1. Aquire 5 pixels in the vicinity
-		Reservoir_DI spatial_candidates[spatial_candidate_count];
-		SampleData sample_candidates[spatial_candidate_count];
-        bool rejected[spatial_candidate_count];
-
-        float M_sum = min(spatial_M_cap, reservoir_current.M); // c weight
         Reservoir_DI canonical = reservoir_current; // canonical samples M value stored
+        MaterialOptimized matOpt = {
+            materials[mID].Kd, materials[mID].Pr_Pm_Ps_Pc,
+            materials[mID].Ks, materials[mID].Ke, mID
+        };
+        float mi_c = GenPairwiseMIS_canonical(canonical, spatial_candidates, sdata_current, rejected, M_sum, spatial_M_cap, matOpt);
+        float w_c = mi_c * GetP_Hat(sdata_current.x1, sdata_current.n1, canonical.x2, canonical.n2, canonical.L2, sdata_current.o, canonical.s, matOpt, false) * canonical.W;
 
-        [loop]
-		for (int v = 0; v < spatial_candidate_count; v++){
-            // Get a random pixel in a 30 pixel radius arround this pixel
-			uint pixel_r = GetRandomPixelCircleWeighted(spatial_radius, DispatchRaysDimensions().x, DispatchRaysDimensions().y, launchIndex.x, launchIndex.y, seed);
-			// Fetch the spatial candidate
-            Reservoir_DI spatial_candidate = g_Reservoirs_current[pixel_r];
-            SampleData sdata_candidate = g_sample_current[pixel_r];
-
-            // Evaluate your candidate predicate per thread
-            bool candidateAccepted =
-                !RejectNormal(sdata_current.n1, sdata_candidate.n1, canonical.s) &&
-                !RejectDistance(sdata_current.x1, sdata_candidate.x1, init_orig, 0.1f) &&
-                (length(sdata_candidate.L1) == 0.0f) &&
-                (sdata_candidate.mID != 4294967294);// &&
-                //(spatial_candidate.s == canonical.s);
-
-            // Reject the pixel if certain conditions arent fulfilled
-			if(candidateAccepted){
-				spatial_candidates[v] = spatial_candidate;
-				sample_candidates[v] = sdata_candidate;
-                M_sum += min(spatial_M_cap, spatial_candidates[v].M);
-                rejected[v] = false;
-			}
-            else
-                rejected[v] = true;
-		}
-
-        float mi_c = GenPairwiseMIS_canonical(canonical, spatial_candidates, sdata_current, sample_candidates, rejected, M_sum, spatial_M_cap);
-        float w_c = mi_c * GetP_Hat(canonical, canonical, sdata_current, false) * canonical.W;
+        Reservoir_DI reservoir_spatial = {
+            /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+            /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+            /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0.0f), uint16_t(0.0f) }
+        };
 
         UpdateReservoir(
             reservoir_spatial,
@@ -141,30 +148,34 @@ void RayGen3() {
         [loop]
         for(int v = 0; v < spatial_candidate_count; v++){
             if(!rejected[v]){
-                Reservoir_DI spatial_candidate = spatial_candidates[v];
-                SampleData sdata_candidate = sample_candidates[v];
-                float mi_s = GenPairwiseMIS_noncanonical(canonical, spatial_candidate, sdata_current, sdata_candidate, M_sum, spatial_M_cap);
-                float w_s = mi_s * GetP_Hat(canonical, spatial_candidate, sdata_current, false) * spatial_candidate.W;
+                uint spatial_candidate = spatial_candidates[v];
+                float mi_s = GenPairwiseMIS_noncanonical(canonical, spatial_candidate, sdata_current, M_sum, spatial_M_cap, matOpt);
+                float w_s = mi_s * GetP_Hat(sdata_current.x1, sdata_current.n1, g_Reservoirs_current[spatial_candidate].x2, g_Reservoirs_current[spatial_candidate].n2, g_Reservoirs_current[spatial_candidate].L2, sdata_current.o, g_Reservoirs_current[spatial_candidate].s, matOpt, false) * g_Reservoirs_current[spatial_candidate].W;
 
                 UpdateReservoir(
                     reservoir_spatial,
                     w_s,
-                    min(spatial_M_cap,spatial_candidate.M),
-                    spatial_candidate.x2,
-                    spatial_candidate.n2,
-                    spatial_candidate.L2,
-                    spatial_candidate.s,
+                    min(spatial_M_cap,g_Reservoirs_current[spatial_candidate].M),
+                    g_Reservoirs_current[spatial_candidate].x2,
+                    g_Reservoirs_current[spatial_candidate].n2,
+                    g_Reservoirs_current[spatial_candidate].L2,
+                    g_Reservoirs_current[spatial_candidate].s,
                     seed
                 );
             }
         }
         reservoir_current = reservoir_spatial;
-        float p_hat = GetP_Hat(reservoir_current, reservoir_current, sdata_current, true);
+        float p_hat = GetP_Hat(sdata_current.x1, sdata_current.n1, reservoir_current.x2, reservoir_current.n2, reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt, true);
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         float3 accumulation = float3(0, 0, 0);
-        accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, materials[sdata_current.mID]) * reservoir_current.W;
-        accumulation += reservoir_gi_current.indirect;
+        accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt) * reservoir_current.W;
+
+
+        Reservoir_GI reservoir_gi_current = g_Reservoirs_current_gi[pixelIdx];
+        accumulation += reservoir_gi_current.E3;
+
+        float3 averagedColor;
         //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
         float frameCount = gPermanentData[uint2(launchIndex)].w;
         int maxFrames = 200000;
@@ -184,20 +195,7 @@ void RayGen3() {
 
         // Safely calculate the averaged color
         frameCount = max(frameCount, 1.0f); // Ensure frameCount is at least 1 to avoid division by zero
-        float3 averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
-        //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
-
-        // Skip temporal accumulation
-        //averagedColor = accumulation;
-
-        // DEBUG PIXEL COLORING
-        // NaNs in magenta
-		if(isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))
-			averagedColor = float3(1,0,1);
-        // show p_hat
-        // show x2 reconnection position
-
-
+        averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
         // Compare the view matrices and reset if different
         bool different = false;
         for (int row = 0; row < 4; row++)
@@ -215,12 +213,23 @@ void RayGen3() {
             gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
             frameCount = 1.0f; // Update frameCount to reflect the reset
         }
+        //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
+
+        // Skip temporal accumulation
+        //averagedColor = accumulation;
+
+        // DEBUG PIXEL COLORING
+        // NaNs in magenta
+		if(isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))
+			averagedColor = float3(1,0,1);
+        // show p_hat
+        // show x2 reconnection position
 
         // Set the last reservoir to the current one to support temp. reuse
 		g_Reservoirs_last[pixelIdx] = reservoir_current;
         g_sample_last[pixelIdx] = sdata_current;
         //Gamma correction
-        float3 finalColor = pow(averagedColor, (float3)(1.0f/2.2f));
+        float3 finalColor = sRGBGammaCorrection(averagedColor);
         gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
     }
     else{

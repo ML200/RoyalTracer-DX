@@ -1,7 +1,6 @@
+#pragma warning(disable: 1234)
+
 #include "Common_v6.hlsl"
-#include "GGX_v6.hlsl"
-#include "Lambertian_v6.hlsl"
-#include "BRDF_v6.hlsl"
 #include "Reservoir_v6.hlsl"
 
 #define TILE_WIDTH 8
@@ -26,6 +25,9 @@ StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
+#include "GGX_v6.hlsl"
+#include "Lambertian_v6.hlsl"
+#include "BRDF_v6.hlsl"
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
 #include "Path_Sampler_v6.hlsl"
@@ -55,14 +57,14 @@ cbuffer CameraParams : register(b0)
 void RayGen() {
     // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
     uint2 launchIndex = DispatchRaysIndex().xy;
-    uint pixelIdx = launchIndex.y * DispatchRaysDimensions().x + launchIndex.x;
     float2 dims = float2(DispatchRaysDimensions().xy);
+    uint pixelIdx = MapPixelID(dims, launchIndex);
 
     // #DXR Extra: Perspective Camera
     float aspectRatio = dims.x / dims.y;
 
     // Initialize the ray origin and direction
-    float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
+    float3 init_orig = mul(viewI, float4(0, 0, 0, 1)).xyz;
 
 
     // SEEDING
@@ -76,28 +78,23 @@ void RayGen() {
     const uint prime_time_y = 423977u;
 
     // Initialize once, to reduce allocs with several samples per frame
-    HitInfo payload;
     uint2 seed;
-
-
     //_______________________________SETUP__________________________________
     // Every sample recieves a new seed
-    seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
-    seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
+    seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(1) * prime3_x ^ uint(time) * prime_time_x;
+    seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(1) * prime3_y ^ uint(time) * prime_time_y;
 
     // Calculate the initial ray direction. Jitter is used to randomize the rays intersection point on subpixel level
     float jitterX = 0.0f;//RandomFloat(seed);
     float jitterY = 0.0f;//RandomFloat(seed);
     float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-    float3 init_dir = mul(viewI, float4(target.xyz, 0));
+    float3 init_dir = mul(viewI, float4(target.xyz, 0)).xyz;
 
 
     //_________________________PATH_VARIABLES______________________________
     float3 direction = normalize(init_dir);
     float3 origin = init_orig;
-
-
     //____________________________CAMERA_RAY________________________________
     RayDesc ray;
     ray.Origin = origin;
@@ -106,36 +103,51 @@ void RayGen() {
     ray.TMax = 10000;
 
     // Trace the camera ray
-    bool performSampling = true;
-
+    HitInfo payload;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
 
-    Material hitMaterial;
-    if(payload.materialID != 4294967294){
-        hitMaterial = materials[payload.materialID];
-        if(length(hitMaterial.Ke) > 0.0f){
-            performSampling = false;
-        }
-    }
-    else{
-        hitMaterial = g_DefaultMissMaterial;
+    // Use a more memory efficient and aligned material model with lower precision
+    uint mID = payload.materialID;
+    bool performSampling = true;
+    if(length(materials[mID].Ke) > 0.0f){
         performSampling = false;
     }
 
+    MaterialOptimized matOpt = {
+        materials[mID].Kd, materials[mID].Pr_Pm_Ps_Pc,
+        materials[mID].Ks, materials[mID].Ke, mID
+    };
+
+    if(mID == 4294967294)
+        matOpt = g_DefaultMissMaterial;
+
 	//_______________________________RESERVOIRS__________________________________
     Reservoir_DI reservoir = {
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // x2, pad0
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // n2, pad1
-        0.0f, 0.0f, 0.0f, 0.0f,          // w_sum, W, M, pad2
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // L2, pad3
-        0, 0, 0, 0                      // s, pad4, pad5, pad6
+        /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+        /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+        /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0), uint16_t(0)}
     };
+
+    Reservoir_GI reservoir_GI = {
+        float3(0.0f, 0.0f, 0.0f), // xn
+        float3(0.0f, 0.0f, 0.0f), // nn
+        float3(0.0f, 0.0f, 0.0f), // Vn
+        0,                       // k
+        0.0f,                    // w_sum
+        0.0f,                    // W
+        float3(0.0f, 0.0f, 0.0f), // f
+        0,                       // M
+        0,                       // s
+        half3(0.0f, 0.0f, 0.0f),  // E3
+        uint2(0, 0)              // seed
+    };
+
     SampleData sdata = {
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // x1, pad0
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // n1, pad1
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // L1, pad2
-        float3(0.0f, 0.0f, 0.0f), 0.0f,  // o, pad3
-        0, 0, 0, 0                      // mID, pad4, pad5, pad6
+        float3(0, 0, 0),  // x1
+        mID,                  // mID
+        float3(0, 0, 0),  // n1
+        matOpt.Ke,   // L1
+        float3(0, 0, 0),   // o
     };
 
     //_______________________________PATH_SAMPLING__________________________________
@@ -156,22 +168,22 @@ void RayGen() {
             -direction,
             reservoir,
             payload,
+            matOpt,
             seed
             );
         //_______________________________VISIBILITY_PASS__________________________________
         sdata.x1 = payload.hitPosition;
         sdata.n1 = payload.hitNormal;
         sdata.o = -direction;
-        sdata.mID = payload.materialID;
+        sdata.mID = mID;
 
-        float p_hat = GetP_Hat(reservoir, reservoir, sdata, true);
+        float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, reservoir.s, matOpt, true);
         reservoir.W = GetW(reservoir, p_hat);
 
         // Perform path sampling (simpliefied for now)
-        float3 indirect = SamplePathSimple(payload.hitPosition, payload.hitNormal, -direction, materials[payload.materialID], seed);
-        g_Reservoirs_current_gi[pixelIdx].indirect = indirect;
+        SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
+        g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
     }
-    sdata.L1 = hitMaterial.Ke;
 	g_Reservoirs_current[pixelIdx] = reservoir;
     g_sample_current[pixelIdx] = sdata;
 }

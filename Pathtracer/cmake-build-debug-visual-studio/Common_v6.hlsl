@@ -5,12 +5,14 @@
 #define LUT_SIZE_THETA 16
 #define EXPOSURE 1.0f
 
-#define samples 1
-#define bounces 1
-#define rr_threshold 3
+#define nee_samples 1
+#define bounces 4
+#define rr_threshold 1
 
 #define spatial_candidate_count 3
+#define spatial_max_tries 6
 #define spatial_radius 20
+#define spatial_exponent 0.0f
 #define spatial_M_cap 500
 #define temporal_M_cap 20
 #define temporal_r_threshold 0.09f
@@ -23,36 +25,30 @@
 // and that its size must be declared in the corresponding
 // D3D12_RAYTRACING_SHADER_CONFIG pipeline subobject.
 struct HitInfo {
-  float area;
-  uint materialID;
-  float3 hitPosition;
-  float3 hitNormal;
+  float3 hitPosition;   uint materialID; // 16 byte aligned
+  float3 hitNormal;  float area; // 16 byte aligned
 };
 
 struct Material
 {
      float4 Kd;
-     float3 Ks;
-     float3 Ke;
+     float3 Ks; float Ni;
+     float3 Ke; float pad0;
      float4 Pr_Pm_Ps_Pc;
-     float2 aniso_anisor;
-     float Ni;
-     float LUT[32];
+     float LUT[LUT_SIZE_THETA];
+};
+
+struct MaterialOptimized // Memory optimized material to reduce register pressure, aligned to 16 bytes per read
+{
+     half4 Kd; half4 Pr_Pm_Ps_Pc; // 8 + 8 = 16 bytes
+     half3 Ks; half3 Ke; uint mID; // 6 + 6 + 4 = 16 bytes
 };
 
 // Default background material (Ray miss)
-static const Material g_DefaultMissMaterial =
+static const MaterialOptimized g_DefaultMissMaterial =
 {
-    float4(0.0,0.0,0.0,0.0f),
-    float3(0,0,0),
-    float3(0.0,0.0,0.0),
-    float4(0,0,0,0),
-    float2(0,0),
-    1.0f,
-    {0,0,0,0,0,0,0,0,
-     0,0,0,0,0,0,0,0,
-     0,0,0,0,0,0,0,0,
-     0,0,0,0,0,0,0,0}
+    half4(0,0,0,0), half4(0,0,0,0),
+    half3(0,0,0), half3(0,0,0), 4294967294
 };
 
 struct ShadowHitInfo {
@@ -69,19 +65,17 @@ struct InstanceProperties
   float4x4 prevObjectToWorldNormal;
 };
 
-struct LightTriangle {
+ struct LightTriangle {
     float3 x;
-    float  pad0;
+    float cdf;       // 16 bytes
     float3 y;
-    float  pad1;
+    uint instanceID; // 16 bytes
     float3 z;
-    float  pad2;
-    uint   instanceID;
-    float  weight;
-    uint   triCount;
-    float  total_weight;
+    float weight;       // 16 bytes
     float3 emission;
-    float  cdf;
+    uint triCount;   // 16 bytes
+    float total_weight;
+    float3 pad0;       // 16 bytes
 };
 
 
@@ -103,13 +97,14 @@ struct Attributes {
   float2 bary;
 };
 
+// Each row is 16 bytes
 struct SampleData
 {
-    float3 x1;    float pad0; // 16 bytes total
-    float3 n1;    float pad1; // 16 bytes total
-    float3 L1;    float pad2; // 16 bytes total
-    float3 o;     float pad3; // 16 bytes total
-    uint mID;     uint pad4; uint pad5; uint pad6; // 16 bytes total (if needed)
+    float3 x1;  // (12 bytes)
+    uint  mID;   // (4 bytes)
+    float3 n1;  // (12 bytes)
+    half3 L1;   // (6 bytes)
+    float3 o;    // (12 bytes)
 };
 
 // Random Float Generator
@@ -120,6 +115,7 @@ float RandomFloat(inout uint2 seed)
     uint sum = 0u;
     const uint delta = 0x9e3779b9u;
 
+    [loop]
     for (uint i = 0u; i < 4u; i++)
     {
         sum += delta;
@@ -133,36 +129,102 @@ float RandomFloat(inout uint2 seed)
     return float(v0) / 4294967296.0;
 }
 
-uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed) {
-    int newX, newY;
-    do {
-        // Get a uniform random value
-        float u = RandomFloat(seed);
-
-        // Inverse CDF for F(z) = 3z^2 - 2z^3, with z = r/float(radius)
-        float z = 0.5 + cos((1.0/3.0)*acos(1.0 - 2.0*u) - 2.0943951); // 2π/3 ≈ 2.0943951
-
-        // Compute r with bias toward 0
-        float r = float(radius) * z;
-
-        // Choose an angle uniformly from [0, 2π)
-        float angle = RandomFloat(seed) * 6.2831853;
-
-        // Compute offsets
-        int offsetX = int(cos(angle) * r);
-        int offsetY = int(sin(angle) * r);
-
-        // Compute new coordinates clamped to the image bounds
-        newX = int(x) + offsetX;
-        newY = int(y) + offsetY;
-        newX = clamp(newX, 0, int(w) - 1);
-        newY = clamp(newY, 0, int(h) - 1);
-    } while(newX == int(x) && newY == int(y));  // Reject the center pixel
-
-    return newY * w + newX;
+// Helper function to safely multiply a scalar and a float3
+float3 SafeMultiply(float scalar, float3 vec)
+{
+    float3 result = scalar * vec;
+    // Check if any component is NaN or infinity
+    if (any(isnan(result)) || any(isinf(result)))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    return result;
 }
 
-bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
+// Column Major
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
+    return lIndex.x * dims.y + lIndex.y;
+}*/
+
+// Row Major
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
+    return lIndex.y * dims.x + lIndex.x;
+}*/
+
+// Swizzling
+inline uint MapPixelID(uint2 dims, uint2 lIndex)
+{
+    // Internal tile dimensions (square tiles).
+    // Adjust as needed, or expose as a parameter if desired.
+    const uint tileSize = 8;
+
+    // How many tiles do we have horizontally?
+    // Use integer division w/ ceiling to handle dimensions not multiples of tileSize.
+    uint tileCountX = (dims.x + tileSize - 1) / tileSize;
+
+    // Determine which tile this pixel belongs to:
+    uint tileIndexX = lIndex.x / tileSize;
+    uint tileIndexY = lIndex.y / tileSize;
+
+    // Local pixel coordinates inside that tile.
+    uint localX = lIndex.x % tileSize;
+    uint localY = lIndex.y % tileSize;
+
+    // Flatten the tile index (row-major across tiles):
+    uint flattenedTileIndex = tileIndexY * tileCountX + tileIndexX;
+
+    // Flatten the local pixel index within the tile (row-major again):
+    uint flattenedLocalIndex = localY * tileSize + localX;
+
+    // Combine: first skip all full tiles, then add the local index.
+    return flattenedTileIndex * (tileSize * tileSize) + flattenedLocalIndex;
+}
+
+
+
+
+inline uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed)
+{
+    int newX, newY;
+    do {
+        // Get a uniform random value.
+        float u = RandomFloat(seed);
+        // Adjust the weighting by using a power law.
+        float z = pow(u, spatial_exponent);
+        // Compute the radius value with the adjustable bias.
+        float r = float(radius) * z;
+        // Choose an angle uniformly from [0, 2π).
+        float angle = RandomFloat(seed) * 6.2831853;
+        // Compute offsets.
+        int offsetX = int(cos(angle) * r);
+        int offsetY = int(sin(angle) * r);
+        // Calculate new coordinates.
+        newX = int(x) + offsetX;
+        newY = int(y) + offsetY;
+
+        // Mirror newX into the [0, w-1] range.
+        while(newX < 0 || newX >= int(w)) {
+            if(newX < 0)
+                newX = -newX;
+            else // newX >= w
+                newX = 2 * int(w) - newX - 2;
+        }
+
+        // Mirror newY into the [0, h-1] range.
+        while(newY < 0 || newY >= int(h)) {
+            if(newY < 0)
+                newY = -newY;
+            else // newY >= h
+                newY = 2 * int(h) - newY - 2;
+        }
+    } while(newX == int(x) && newY == int(y));  // Reject the center pixel.
+
+    //return newX * h + newY;
+    return MapPixelID(uint2(w, h), uint2(newX,newY));
+}
+
+
+inline bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
     if(s1 == 1 && s2 == 1 && mat.Pr_Pm_Ps_Pc.x < temporal_r_threshold){
         if(y != x)
             return true;
@@ -170,7 +232,7 @@ bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
     return false;
 }
 
-bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uint currentPixelID, uint strategy, float roughness){
+inline bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uint currentPixelID, uint strategy, float roughness){
     // Compare the view matrices and reset if different
     bool different = false;
     for (int row = 0; row < 4; row++)
@@ -192,14 +254,12 @@ bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uin
     return false;
 }
 
-bool RejectNormal(float3 n1, float3 n2, uint s){
+inline bool RejectNormal(float3 n1, float3 n2){
     float similarity = dot(n1, n2);
-    if(s == 0) // diffuse
-        return (similarity < 0.9f);
-    return (similarity < 1.0f - EPSILON); // specular
+    return (similarity < 0.95f);
 }
 
-bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
+inline bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
 {
     float d1 = length(x1 - camPos);
     float d2 = length(x2 - camPos);
@@ -210,7 +270,7 @@ bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
 
 
 
-float2 GetLastFramePixelCoordinates_Float(
+inline float2 GetLastFramePixelCoordinates_Float(
     float3 worldPos,
     float4x4 prevView,
     float4x4 prevProjection,
@@ -228,6 +288,33 @@ float2 GetLastFramePixelCoordinates_Float(
     // Get the full sub-pixel coordinate in pixel space:
     return screenUV * resolution;
 }
+
+
+float3 sRGBGammaCorrection(float3 color)
+{
+    float3 result;
+
+    // Red channel
+    if (color.r <= 0.0031308f)
+        result.r = 12.92f * color.r;
+    else
+        result.r = 1.055f * pow(color.r, 1.0f / 2.4f) - 0.055f;
+
+    // Green channel
+    if (color.g <= 0.0031308f)
+        result.g = 12.92f * color.g;
+    else
+        result.g = 1.055f * pow(color.g, 1.0f / 2.4f) - 0.055f;
+
+    // Blue channel
+    if (color.b <= 0.0031308f)
+        result.b = 12.92f * color.b;
+    else
+        result.b = 1.055f * pow(color.b, 1.0f / 2.4f) - 0.055f;
+
+    return result;
+}
+
 
 
 

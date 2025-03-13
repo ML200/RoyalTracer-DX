@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monke.obj"};
+    std::vector<std::string> models = {"garage.obj", "dragon.obj"};
 
 
 
@@ -401,10 +401,10 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 100000000.0f) *
       XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 20000000.f), 0.f);*/
-    m_instances[1].second =
+    /*m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
-                                 static_cast<float>(m_time) / 10000000000.0f) *
-            XMMatrixTranslation(3.f, 2.0f, 0.f);
+                                 static_cast<float>(m_time) / 10000000.0f) *
+            XMMatrixTranslation(3.f, 2.0f, 0.f);*/
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -1079,7 +1079,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 10, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 20, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1548,9 +1548,14 @@ void Renderer::CreateShaderBindingTable() {
 // #DXR Extra: Perspective Camera
 void Renderer::CreateCameraBuffer() {
     // Calculate the buffer size
-    uint32_t nbMatrix = 6; // view, perspective, viewInv, perspectiveInv, prevView, prevProjection
-    uint32_t frustrums = 8; // frustumLeft, frustumRight, frustumTop, frustumBottom (current and previous)
-    m_cameraBufferSize = nbMatrix * sizeof(XMMATRIX) + frustrums * sizeof(float) * 3 + sizeof(float);
+    // 6 matrices + 1 float time + 8 planes of type XMFLOAT4
+    uint32_t nbMatrix   = 6;                 // view, proj, viewInv, projInv, prevView, prevProj
+    uint32_t numPlanes  = 8;                 // 4 current frustum planes + 4 previous
+    uint32_t planeBytes = numPlanes * sizeof(XMFLOAT4);
+    m_cameraBufferSize  = nbMatrix * sizeof(XMMATRIX)
+                        + planeBytes
+                        + sizeof(float);     // for time
+    // Round up to 256 for constant‐buffer alignment
     m_cameraBufferSize = (m_cameraBufferSize + 255) & ~255;
 
 
@@ -1643,10 +1648,11 @@ void Renderer::UpdateCameraBuffer() {
     //float currentTime = static_cast<float>(nanos % 1000);  // Convert milliseconds to seconds as float
     float currentTime = static_cast<uint32_t>(nanos);
 
-    memcpy(pData + 6 * sizeof(XMMATRIX), &currentTime, sizeof(float));
+    memcpy(pData + (6 * sizeof(XMMATRIX)), &currentTime, sizeof(float));
 
     // Copy the frustum planes right after the time, now using XMFLOAT4 (padded)
-    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(float), frustumPlanes.data(), 8 * sizeof(XMFLOAT4));
+    memcpy(pData + (6*sizeof(XMMATRIX) + sizeof(float)),
+       frustumPlanes.data(), 8 * sizeof(XMFLOAT4));
 
     m_cameraBuffer->Unmap(0, nullptr);
 
