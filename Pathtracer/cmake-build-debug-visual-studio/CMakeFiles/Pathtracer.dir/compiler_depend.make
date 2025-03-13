@@ -715,6 +715,8 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\Dire
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.42.34433\include\vector"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.inl"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Components\Vertex.h
@@ -1095,6 +1097,8 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dxcapi.h"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.inl"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\src\Components\Vertex.h
@@ -4568,6 +4572,12 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\_
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\d3d12video.h":
 
+"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dpapi.h":
+
+"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.h":
+
+"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\DirectXPackedVector.inl":
+
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h:
 
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\.\glm\glm.hpp:
@@ -4773,8 +4783,6 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_d
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.22621.0\shared\inaddr.h":
 
 "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\ncrypt.h":
-
-"C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um\dpapi.h":
 
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp:
 

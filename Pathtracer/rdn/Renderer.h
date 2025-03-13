@@ -16,6 +16,7 @@
 #include <dxcapi.h>
 #include <vector>
 #include <d3d12video.h>
+#include <DirectXPackedVector.h>
 
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
@@ -98,50 +99,33 @@ private:
     std::vector<UINT> m_instanceModelIndices;
     std::vector<UINT> m_materialIDOffsets;
 
-// Structure to hold emissive triangle data
-    #pragma pack(push, 1)
-    struct alignas(16) LightTriangle {
-        XMFLOAT3 x;         // 12 bytes
-        float    pad0;      // 4 bytes
-        XMFLOAT3 y;         // 12 bytes
-        float    pad1;      // 4 bytes
-        XMFLOAT3 z;         // 12 bytes
-        float    pad2;      // 4 bytes
-        UINT     instanceID; // 4 bytes
-        float    weight;     // 4 bytes
-        UINT     triCount;   // 4 bytes
-        float    totalWeight;       // 4 bytes
-        XMFLOAT3 emission;   // 12 bytes
-        float    cdf;       // 4 bytes
-        // Total size: 64 bytes
+    // Structure to hold emissive triangle data
+    struct LightTriangle {
+        XMFLOAT3 x;
+        float    cdf;       // 16 bytes
+        XMFLOAT3 y;
+        UINT     instanceID; // 16 bytes
+        XMFLOAT3 z;
+        float    weight;       // 16 bytes
+        XMFLOAT3 emission;
+        UINT     triCount;   // 16 bytes
+        float    totalWeight;       // 16 bytes
+        XMFLOAT3 pad0;
     };
-
-    #pragma pack(pop)
 
     struct Reservoir_DI
     {
-        // Current sample parameters (now padded)
-        XMFLOAT3 x2;  float pad0;  // 16 bytes total
-        XMFLOAT3 n2;  float pad1;  // 16 bytes total
-        float w_sum;  float W;  float M;  float pad2;  // 16 bytes total
-        XMFLOAT3 L2;  float pad3;  // 16 bytes total
-        UINT s;       UINT pad4;  UINT pad5;  UINT pad6;  // 16 bytes total
+        uint8_t  pad[48]; // 48 bytes
     };
 
     struct SampleData
     {
-        // Hit information after camera ray (stays constant)
-        XMFLOAT3 x1;  float pad0;  // 16 bytes total
-        XMFLOAT3 n1;  float pad1;  // 16 bytes total
-        XMFLOAT3 L1;  float pad2;  // 16 bytes total
-        XMFLOAT3 o;   float pad3;  // 16 bytes total
-        UINT mID;     UINT pad4;  UINT pad5;  UINT pad6;  // 16 bytes total
+        uint8_t  pad[48]; // 48 bytes
     };
 
     struct Reservoir_GI
     {
-        // Hit information after camera ray (stays constant)
-        XMFLOAT3 indirect;
+        uint8_t  pad[80]; // 80 bytes :(
     };
 
 

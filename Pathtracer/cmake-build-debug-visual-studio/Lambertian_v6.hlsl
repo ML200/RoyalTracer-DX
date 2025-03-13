@@ -39,7 +39,7 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
 
 
 // Sample the BRDF of the given material
-void SampleBRDF_Lambertian(Material mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
+void SampleBRDF_Lambertian(MaterialOptimized mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
     // Sample a random direction in the hemisphere oriented around the flatNormal
     sample = RandomUnitVectorInHemisphere(normal, seed);
 
@@ -48,7 +48,7 @@ void SampleBRDF_Lambertian(Material mat, float3 incoming, float3 normal, float3 
 }
 
 // Evaluate the BRDF for the given material
-float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incoming, float3 outgoing) {
+float3 EvaluateBRDF_Lambertian(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing) {
     // Ensure the vectors are normalized
     float3 N = normalize(normal);
 
@@ -58,8 +58,8 @@ float3 EvaluateBRDF_Lambertian(Material mat, float3 normal, float3 incoming, flo
 }
 
 // Calculate the PDF for a given sample direction
-float BRDF_PDF_Lambertian(Material mat, float3 normal, float3 incoming, float3 outgoing) {
+float BRDF_PDF_Lambertian(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing) {
     // For cosine-weighted hemisphere sampling over a Lambertian surface
-    return max(dot(normal, -incoming), 0.0001f) / PI;
+    return max(dot(normal, -incoming), EPSILON) / PI;
 }
 

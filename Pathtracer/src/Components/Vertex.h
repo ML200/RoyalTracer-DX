@@ -13,12 +13,10 @@ using namespace DirectX;
 
 struct Material{
  XMFLOAT4 Kd = {1,1,1,1};
- XMFLOAT3 Ks = {1,1,1};
- XMFLOAT3 Ke = {0,0,0};
+ XMFLOAT3 Ks = {1,1,1};  float Ni = 1;
+ XMFLOAT3 Ke = {0,0,0};  float pad0 = 0;
  XMFLOAT4 Pr_Pm_Ps_Pc = {0,0,0,0};
- XMFLOAT2 aniso_anisor = {0,0};
- float Ni = 1;
- float LUT[32] = {0};
+ float LUT[16] = {0};
 
  //ADD MAP IDs LATER
  Material(XMFLOAT4 kd, XMFLOAT4 pr_pm_ps_pc):Kd(kd), Pr_Pm_Ps_Pc(pr_pm_ps_pc){}

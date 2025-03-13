@@ -4,7 +4,7 @@
 // 2 - Perfect reflection
 // 3 - Refraction
 // Probability is the likelihood to select the given sampling strategy, used for weighting the contributions
-uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout uint2 seed, inout float probability){
+inline uint SelectSamplingStrategy(MaterialOptimized mat, float3 outgoing, float3 normal, inout uint2 seed, inout float probability){
     //Get random value
     float r = RandomFloat(seed);
 
@@ -47,7 +47,7 @@ uint SelectSamplingStrategy(Material mat, float3 outgoing, float3 normal, inout 
     }
 }
 
-float2 CalculateStrategyProbabilities(Material mat, float3 outgoing, float3 normal){
+inline float2 CalculateStrategyProbabilities(MaterialOptimized mat, float3 outgoing, float3 normal){
     // Evaluate the material properties
     float roughness = mat.Pr_Pm_Ps_Pc.x;
     float metallic  = mat.Pr_Pm_Ps_Pc.y;
@@ -71,7 +71,7 @@ float2 CalculateStrategyProbabilities(Material mat, float3 outgoing, float3 norm
 
 
 // Sample the BRDF of the given strategy
-void SampleBRDF(uint strategy, Material mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
+inline void SampleBRDF(uint strategy, MaterialOptimized mat, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed) {
     //Sample from the selected strategy
     if(strategy == 0){
         SampleBRDF_Lambertian(mat, incoming, normal, flatNormal, sample, origin, worldOrigin, seed);
@@ -88,7 +88,7 @@ void SampleBRDF(uint strategy, Material mat, float3 incoming, float3 normal, flo
 }
 
 // Evaluate the BRDF for the given strategy
-float3 EvaluateBRDF(uint strategy, Material mat, float3 normal, float3 incidence, float3 outgoing) {
+inline float3 EvaluateBRDF(uint strategy, MaterialOptimized mat, float3 normal, float3 incidence, float3 outgoing) {
     //Sample from the selected strategy
     if(strategy == 0){
         return EvaluateBRDF_Lambertian(mat, normal, incidence, outgoing);
@@ -106,7 +106,7 @@ float3 EvaluateBRDF(uint strategy, Material mat, float3 normal, float3 incidence
 }
 
 // Calculate the PDF for a given sample direction and strategy
-float BRDF_PDF(uint strategy, Material mat, float3 normal, float3 incidence, float3 outgoing) {
+inline float BRDF_PDF(uint strategy, MaterialOptimized mat, float3 normal, float3 incidence, float3 outgoing) {
     //Sample from the selected strategy
     if(strategy == 0){
         return BRDF_PDF_Lambertian(mat, normal, incidence, outgoing);

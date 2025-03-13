@@ -1,7 +1,6 @@
+#pragma warning(disable: 1234)
+
 #include "Common_v6.hlsl"
-#include "GGX_v6.hlsl"
-#include "Lambertian_v6.hlsl"
-#include "BRDF_v6.hlsl"
 #include "Reservoir_v6.hlsl"
 
 // Raytracing output texture, accessed as a UAV
@@ -23,6 +22,9 @@ StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
+#include "GGX_v6.hlsl"
+#include "Lambertian_v6.hlsl"
+#include "BRDF_v6.hlsl"
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
 
@@ -53,8 +55,8 @@ void RayGen2() {
 
     // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
     uint2 launchIndex = DispatchRaysIndex().xy;
-    uint pixelIdx = launchIndex.y * DispatchRaysDimensions().x + launchIndex.x;
     float2 dims = float2(DispatchRaysDimensions().xy);
+    uint pixelIdx = MapPixelID(dims, launchIndex);
     // The current reservoir
     Reservoir_DI reservoir_current = g_Reservoirs_current[pixelIdx];
     SampleData sdata_current = g_sample_current[pixelIdx];
@@ -64,7 +66,7 @@ void RayGen2() {
         float aspectRatio = dims.x / dims.y;
 
         // Initialize the ray origin and direction
-        float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
+        float3 init_orig = mul(viewI, float4(0, 0, 0, 1)).xyz;
 
 
         // SEEDING
@@ -83,14 +85,13 @@ void RayGen2() {
 
         //_______________________________SETUP__________________________________
         // Every sample recieves a new seed (use samples+2 here to get different random numbers then the RayGen1 shader)
-        seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 2) * prime3_x ^ uint(time) * prime_time_x;
-        seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 2) * prime3_y ^ uint(time) * prime_time_y;
+        seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(2) * prime3_x ^ uint(time) * prime_time_x;
+        seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(2) * prime3_y ^ uint(time) * prime_time_y;
 
 
         // Simple motion vectors:
-        int2 pixelPos;
-        pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims);
-        uint tempPixelIdx = pixelPos.y * DispatchRaysDimensions().x + pixelPos.x;
+        int2 pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims);
+        uint tempPixelIdx = MapPixelID(dims, pixelPos);
         Reservoir_DI reservoir_last = g_Reservoirs_last[tempPixelIdx];
         SampleData sdata_last = g_sample_last[tempPixelIdx];
 
@@ -99,26 +100,29 @@ void RayGen2() {
         if(
             pixelPos.x != -1 && pixelPos.y != -1
             && length(sdata_last.L1) == 0.0f
-            && !RejectNormal(sdata_current.n1, sdata_last.n1, reservoir_current.s)
+            && !RejectNormal(sdata_current.n1, sdata_last.n1)
             && !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID])
             && !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f)
             && (reservoir_last.x2.x != 0.0f && reservoir_last.x2.y != 0.0f && reservoir_last.x2.z != 0.0f)
-            //&& !RejectRoughness(view, prevView, tempPixelIdx, pixelIdx, reservoir_current.s, materials[reservoir_current.mID].Pr_Pm_Ps_Pc.x)
+            && (sdata_last.mID == sdata_current.mID)
         ){
+            uint mID = sdata_current.mID;
+            MaterialOptimized matOpt = {
+                materials[mID].Kd, materials[mID].Pr_Pm_Ps_Pc,
+                materials[mID].Ks, materials[mID].Ke, mID
+            };
             float M_sum = min(temporal_M_cap, reservoir_current.M) + min(temporal_M_cap, reservoir_last.M);
             // Pairwise MIS
             float mi_c = GenPairwiseMIS_canonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
             float mi_t = GenPairwiseMIS_noncanonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
 
             // Calculate the weight for the given sample: w * p_hat * W
-            float w_c = mi_c * GetP_Hat(reservoir_current, reservoir_current, sdata_current, false) * reservoir_current.W;
-            float w_t = mi_t * GetP_Hat(reservoir_current, reservoir_last, sdata_current, false) * reservoir_last.W;
+            float w_c = mi_c * GetP_Hat(sdata_current.x1, sdata_current.n1, reservoir_current.x2, reservoir_current.n2, reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt, false) * reservoir_current.W;
+            float w_t = mi_t * GetP_Hat(sdata_current.x1, sdata_current.n1, reservoir_last.x2, reservoir_last.n2, reservoir_last.L2, sdata_current.o, reservoir_last.s, matOpt, false) * reservoir_last.W;
             Reservoir_DI reservoir_temporal = {
-                float3(0.0f, 0.0f, 0.0f), 0.0f,  // x2, pad0
-                float3(0.0f, 0.0f, 0.0f), 0.0f,  // n2, pad1
-                0.0f, 0.0f, 0.0f, 0.0f,          // w_sum, W, M, pad2
-                float3(0.0f, 0.0f, 0.0f), 0.0f,  // L2, pad3
-                0, 0, 0, 0                      // s, pad4, pad5, pad6
+                /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+                /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
+                /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0.0f), uint16_t(0.0f) }
             };
             UpdateReservoir(
                 reservoir_temporal,
@@ -140,10 +144,9 @@ void RayGen2() {
                 reservoir_last.L2,
                 reservoir_last.s,
 				seed
-
             );
 
-            float p_hat = GetP_Hat(reservoir_temporal, reservoir_temporal, sdata_current, true);
+            float p_hat = GetP_Hat(sdata_current.x1, sdata_current.n1, reservoir_temporal.x2, reservoir_temporal.n2, reservoir_temporal.L2, sdata_current.o, reservoir_temporal.s, matOpt, true);
             reservoir_temporal.W = GetW(reservoir_temporal, p_hat);
             reservoir_current = reservoir_temporal;
         }

@@ -119,11 +119,11 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
   // Setup the compiler arguments:
   // Use "-Zi" for full debug info (line table, etc.)
   // Or use "-Zs" for minimal debug info (useful for dynamic shader editing)
-  const wchar_t* arguments[] = { L"-Zi" }; // change to L"-Zs" if needed
+  const wchar_t* arguments[] = { L"-Zi", L"-O3", L"-enable-16bit-types"}; // change to L"-Zs" if needed
 
   // Compile
   IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_3", nullptr, 0, nullptr, 0,
+  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_3", arguments, _countof(arguments), nullptr, 0,
                                    dxcIncludeHandler, &pResult));
 
   // Verify the result
