@@ -108,6 +108,13 @@ inline float GetW(Reservoir_DI r, float p_hat){
         return 0.0f;
 }
 
+inline float GetW_GI(Reservoir_GI r, float p_hat){
+    if(p_hat > EPSILON)
+        return r.w_sum / p_hat;
+    else
+        return 0.0f;
+}
+
 
 // Use visibility is mandatory
 void SampleLightBSDF(
@@ -326,7 +333,9 @@ float3 SampleLightBSDF_GI(
     float3 outgoing,
     inout float3 acc_l, // Inout as this might be changed in case no light is hit
     inout float acc_pdf, // Same here
-    inout float throughput, // Same here
+    inout float3 throughput, // Throughput change for this bounce
+    inout float pdf, // Same here for pdf
+    inout float3 emission, // Subpath emission
     MaterialOptimized material,
     bool isReconnection
     ){
@@ -383,9 +392,21 @@ float3 SampleLightBSDF_GI(
 
         incoming = -sample;
 
+        acc_pdf *= pdf_bsdf;
+        acc_l *= brdf * NdotL;
+
+        //----------------------------subpath parameters------------------------------
+        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+            throughput = brdf * NdotL;
+        else
+            throughput = NdotL;
+
+        pdf = pdf_bsdf;
+        emission = mat_ke.Ke;
+
         // Compute p_hat defensively.
         if(pdf * pdf_bsdf > 0.0f)
-            return brdf * mat_ke.Ke * NdotL * acc_l / (acc_pdf * pdf_bsdf);
+            return mat_ke.Ke * acc_l / (acc_pdf);
         else
             return float3(0,0,0);
     }
@@ -395,16 +416,21 @@ float3 SampleLightBSDF_GI(
             return float3(-1,0,0);
         acc_pdf *= pdf_bsdf;
         acc_l *= brdf * NdotL;
-        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
-            throughput = brdf * NdotL;
-        else
-            throughput = NdotL;
 
         // Also set the returned new path parameters
         new_origin = samplePayload.hitPosition;
         new_normal = samplePayload.hitNormal;
         new_outgoing = -sample;
         new_material = mat_ke;
+
+        //----------------------------subpath parameters------------------------------
+        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+            throughput = brdf * NdotL;
+        else
+            throughput = NdotL;
+
+        pdf = pdf_bsdf;
+        emission = mat_ke.Ke;
 
         // return 0 contribution
         return float3(0,0,0);
@@ -422,9 +448,11 @@ float3 SampleLightNEE_GI(
     float3 origin,
     float3 normal,
     float3 outgoing,
-    float3 acc_l, // Inout as this might be changed in case no light is hit
-    float acc_pdf, // Same here
-    inout float throughput, // Same here
+    inout float3 acc_l, // Inout as this might be changed in case no light is hit
+    inout float acc_pdf, // Same here
+    inout float3 throughput,
+    inout float pdf,
+    inout float3 emission, // Subpath emission
     MaterialOptimized material,
     bool useVisibility,
     bool isReconnection
@@ -528,8 +556,21 @@ float3 SampleLightNEE_GI(
     pdf_light = max(EPSILON, pdf_l) * dist2 / cos_theta_y;
     pdf_bsdf = P;
     incoming = -L_norm;
+
+    acc_pdf *= pdf_light;
+    acc_l *= brdf_light * G * V;
+
+    //----------------------------subpath parameters------------------------------
+    if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+        throughput = brdf_light * G * V;
+    else
+        throughput = G;
+
+    pdf = pdf_light;
+    emission = emission_l;
+
     if(pdf * pdf_light > 0.0f)
-        return emission_l * brdf_light * G * V * acc_l / (acc_pdf * pdf_light);
+        return emission_l * acc_l / (acc_pdf);
     else
         return float3(0,0,0);
 }

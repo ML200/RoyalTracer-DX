@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "dragon.obj"};
+    std::vector<std::string> models = {"garage.obj", "monke.obj"};
 
 
 
@@ -401,10 +401,10 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
                            static_cast<float>(m_time) / 100000000.0f) *
       XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 20000000.f), 0.f);*/
-    /*m_instances[1].second =
+    m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
                                  static_cast<float>(m_time) / 10000000.0f) *
-            XMMatrixTranslation(3.f, 2.0f, 0.f);*/
+            XMMatrixTranslation(0.f, 2.0f, 0.f);
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }

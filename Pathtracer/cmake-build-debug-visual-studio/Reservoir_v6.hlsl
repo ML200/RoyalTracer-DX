@@ -16,8 +16,8 @@ struct Reservoir_GI
     float W;
     float3 f; // canonical contribution (before pdf)
     uint16_t M; // confidence weight
-    uint16_t  s; //
-    half3 E3;
+    uint16_t  s;
+    half3 E3; // incoming contibution
     uint2 seed;
 };
 
@@ -44,10 +44,7 @@ inline void UpdateReservoir_GI(
 
     if (RandomFloat(seed) < wi / reservoir.w_sum)
     {
-        reservoir.x2 = x2;
-        reservoir.n2 = n2;
-        reservoir.L2 = L2;
-        reservoir.s = (uint16_t)s;
+        reservoir.f = f;
     }
 }
 
