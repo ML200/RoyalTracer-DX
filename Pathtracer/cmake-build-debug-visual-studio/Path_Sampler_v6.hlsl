@@ -160,7 +160,6 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                 s,
                 k,
                 emission_NEE * acc_f,
-                sample_seed,
                 seed
             );
         }
@@ -226,7 +225,6 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                     s,
                     k,
                     emission_BSDF * acc_f,
-                    sample_seed,
                     seed
                 );
             }
@@ -248,6 +246,9 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
             normal = new_normal;
         }
     }
+    reservoir.M = 1;
     /*if(!any(isnan(acc_L)))
-        reservoir.f = acc_L;*/
+        reservoir.f = acc_L;
+    else
+        reservoir.f = float3(0,0,0);*/
 }

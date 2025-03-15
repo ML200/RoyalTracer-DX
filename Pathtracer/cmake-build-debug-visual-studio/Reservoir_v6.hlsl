@@ -34,7 +34,6 @@ inline void UpdateReservoir_GI(
     uint s,
     uint16_t k,
     float3 f,
-    uint2 sample_seed,
     inout uint2 seed
     )
 {
@@ -44,6 +43,12 @@ inline void UpdateReservoir_GI(
 
     if (RandomFloat(seed) < wi / reservoir.w_sum)
     {
+        reservoir.xn = xn;
+        reservoir.nn = nn;
+        reservoir.Vn = Vn;
+        reservoir.E3 = E3;
+        reservoir.s = s;
+        reservoir.k = k;
         reservoir.f = f;
     }
 }
