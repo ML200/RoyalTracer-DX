@@ -27,6 +27,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 #include "BRDF_v6.hlsl"
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
+#include "MIS_GI_v6.hlsl"
 
 // #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
@@ -169,7 +170,7 @@ void RayGen3() {
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         float3 accumulation = float3(0, 0, 0);
-        //accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt) * reservoir_current.W;
+        accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt) * reservoir_current.W;
 
 
         Reservoir_GI reservoir_gi_current = g_Reservoirs_current_gi[pixelIdx];

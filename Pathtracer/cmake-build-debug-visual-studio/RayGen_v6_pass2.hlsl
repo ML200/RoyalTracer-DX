@@ -27,6 +27,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 #include "BRDF_v6.hlsl"
 #include "Sampler_v6.hlsl"
 #include "MIS_v6.hlsl"
+#include "MIS_GI_v6.hlsl"
 
 // #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
@@ -59,6 +60,7 @@ void RayGen2() {
     uint pixelIdx = MapPixelID(dims, launchIndex);
     // The current reservoir
     Reservoir_DI reservoir_current = g_Reservoirs_current[pixelIdx];
+    Reservoir_GI reservoir_gi_current = g_Reservoirs_current_gi[pixelIdx];
     SampleData sdata_current = g_sample_current[pixelIdx];
 
 	if(sdata_current.L1.x == 0.0f && sdata_current.L1.y == 0.0f && sdata_current.L1.z == 0.0f){
@@ -93,6 +95,7 @@ void RayGen2() {
         int2 pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims);
         uint tempPixelIdx = MapPixelID(dims, pixelPos);
         Reservoir_DI reservoir_last = g_Reservoirs_last[tempPixelIdx];
+        Reservoir_GI reservoir_gi_last = g_Reservoirs_last_gi[tempPixelIdx];
         SampleData sdata_last = g_sample_last[tempPixelIdx];
 
         //_______________________________RESTIR_TEMPORAL__________________________________
@@ -112,9 +115,12 @@ void RayGen2() {
                 materials[mID].Ks, materials[mID].Ke, mID
             };
             float M_sum = min(temporal_M_cap, reservoir_current.M) + min(temporal_M_cap, reservoir_last.M);
+            float M_sum_gi = min(temporal_M_cap, reservoir_gi_current.M) + min(temporal_M_cap, reservoir_gi_last.M);
             // Pairwise MIS
             float mi_c = GenPairwiseMIS_canonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
+            float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap);
             float mi_t = GenPairwiseMIS_noncanonical_temporal(reservoir_current, reservoir_last, M_sum, temporal_M_cap);
+            float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap);
 
             // Calculate the weight for the given sample: w * p_hat * W
             float w_c = mi_c * GetP_Hat(sdata_current.x1, sdata_current.n1, reservoir_current.x2, reservoir_current.n2, reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt, false) * reservoir_current.W;
@@ -123,6 +129,19 @@ void RayGen2() {
                 /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
                 /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
                 /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0.0f), uint16_t(0.0f) }
+            };
+            Reservoir_GI reservoir_GI_temporal = {
+                float3(0.0f, 0.0f, 0.0f), // xn
+                float3(0.0f, 0.0f, 0.0f), // nn
+                float3(0.0f, 0.0f, 0.0f), // Vn
+                0,                       // k
+                0.0f,                    // w_sum
+                0.0f,                    // W
+                float3(0.0f, 0.0f, 0.0f), // f
+                0,                       // M
+                0,                       // s
+                half3(0.0f, 0.0f, 0.0f),  // E3
+                uint2(0, 0)              // seed
             };
             UpdateReservoir(
                 reservoir_temporal,

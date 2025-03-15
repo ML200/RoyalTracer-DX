@@ -405,8 +405,8 @@ float3 SampleLightBSDF_GI(
         emission = mat_ke.Ke;
 
         // Compute p_hat defensively.
-        if(pdf * pdf_bsdf > 0.0f)
-            return mat_ke.Ke * acc_l / (acc_pdf);
+        if(acc_pdf > 0.0f)
+            return mat_ke.Ke * acc_l / acc_pdf;
         else
             return float3(0,0,0);
     }
@@ -569,8 +569,8 @@ float3 SampleLightNEE_GI(
     pdf = pdf_light;
     emission = emission_l;
 
-    if(pdf * pdf_light > 0.0f)
-        return emission_l * acc_l / (acc_pdf);
+    if(acc_pdf > 0.0f)
+        return emission_l * acc_l / acc_pdf;
     else
         return float3(0,0,0);
 }

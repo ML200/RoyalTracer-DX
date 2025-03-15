@@ -181,7 +181,7 @@ void RayGen() {
         reservoir.W = GetW(reservoir, p_hat);
 
         // Perform path sampling (simpliefied for now)
-        SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
+            SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
         g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
