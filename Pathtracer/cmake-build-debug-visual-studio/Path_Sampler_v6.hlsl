@@ -4,6 +4,7 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
     float3 acc_f = float3(1,1,1); // Throughput up the the current vertex WITHOUT the pdf (= f(x))
     float3 acc_f_reconnection = float3(1,1,1); // Throughput from the reconnection vertex
     float acc_pdf = 1.0f; // Accumulated pdf up to the current vertex
+    float acc_pdf_reconnection = 1.0f;
     float3 acc_L = float3(0,0,0);
 
     float3 origin = initPoint;
@@ -11,6 +12,13 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
     float3 outgoing = normalize(initOutgoing);
     MaterialOptimized material = initMaterial; // path forward variables
 
+    // Reconnection point cache
+    float3 xn;
+    float3 nn;
+    float3 Vn;
+    uint2 sample_seed = seed;
+    uint s;
+    uint k;
 
     // Perform sampling
     /*
@@ -78,12 +86,22 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
             origin = samplePayload.hitPosition;
         }
     }
+
+    // Fill in the reconnection data (in the GI case, it is constantly x2)
+    xn = origin;
+    nn = normal;
+    k = 1;
+
     /*
     After getting the first indirect hit position, we can perform unrestricted MIS weighted NEE/BSDF sampling.
     Each strategy produces an independant path that we use to update out pathracing reservoir (later).
+    Importantly, this is also the reconnection vertex. So for the first iteration, set reconnection to true
     */
     [loop]
     for(int i = 0; i < bounces; i++){
+        bool isReconnection = false;
+        if(i == 0)
+            isReconnection = true;
         // Select the sampling strategy for this path vertex
         float p_strategy = 1.0f;
         uint strategy = SelectSamplingStrategy(material, outgoing, normal, seed, p_strategy);
@@ -91,6 +109,9 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
         for(int j = 0; j < nee_samples; j++){
             float pdf_light = 1.0f;
             float pdf_bsdf = 1.0f;
+            float3 throughput_NEE = float3(1,1,1);
+            float pdf_NEE = 1.0f;
+            float3 emission_NEE = float3(0,0,0);
             float3 incoming_NEE;
             float3 contribution = SampleLightNEE_GI(
                 pdf_light, // Outputs
@@ -103,16 +124,52 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                 outgoing,
                 acc_f,
                 acc_pdf,
+                throughput_NEE,
+                pdf_NEE,
+                emission_NEE,
                 material,
-                true
+                true,
+                isReconnection
                 );
+            if(isReconnection){
+                Vn = incoming_NEE;
+                s = strategy;
+            }
             // MIS weight:
             float mi = pdf_light / (nee_samples * pdf_light + pdf_bsdf);
+            acc_f_reconnection *= throughput_NEE;
+            acc_pdf_reconnection *= pdf_NEE;
+
+            float3 E_reconnection = acc_f_reconnection * mi * emission_NEE / acc_pdf_reconnection;
+            float3 E_path = mi * contribution;
+
+            float wi = LinearizeVector(E_path);
+
             acc_L += mi * contribution;
+            
+            // Add this path to the reservoir
+            // Add this path to the reservoir
+            UpdateReservoir_GI(
+                reservoir,
+                wi,
+                0.0f,
+                xn,
+                nn,
+                Vn,
+                E_reconnection,
+                s,
+                k,
+                emission_NEE * acc_f,
+                sample_seed,
+                seed
+            );
         }
         // BSDF
         float pdf_light = 1.0f;
         float pdf_bsdf = 1.0f;
+        float3 throughput_BSDF = float3(1,1,1);
+        float pdf_BSDF = 1.0f;
+        float3 emission_BSDF = float3(0,0,0);
         float3 incoming_BSDF;
         float3 new_origin;
         float3 new_normal;
@@ -133,24 +190,64 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
             outgoing,
             acc_f, // Inout as this might be changed in case no light is hit
             acc_pdf, // Same here
-            material
+            throughput_BSDF,
+            pdf_BSDF,
+            emission_BSDF,
+            material,
+            isReconnection
             );
         // MIS weight:
         if(length(contribution) > 0.0f){
             if(contribution.x != -1.0f){
+                if(isReconnection){
+                    Vn = incoming_BSDF;
+                    s = strategy;
+                }
                 float mi = pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
+                acc_f_reconnection *= throughput_BSDF;
+                acc_pdf_reconnection *= pdf_BSDF;
+
+                float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF / acc_pdf_reconnection;
+                float3 E_path = mi * contribution;
+
+                float wi = LinearizeVector(E_path);
+
                 acc_L += mi * contribution;
+
+                // Add this path to the reservoir
+                UpdateReservoir_GI(
+                    reservoir,
+                    wi,
+                    0.0f,
+                    xn,
+                    nn,
+                    Vn,
+                    E_reconnection,
+                    s,
+                    k,
+                    emission_BSDF * acc_f,
+                    sample_seed,
+                    seed
+                );
             }
-            // terminate ray
+            // terminate path
             break;
         }
         else{
+            if(isReconnection){
+                Vn = incoming_BSDF;
+                s = strategy;
+            }
+            // Continue the path
+            acc_f_reconnection *= throughput_BSDF;
+            acc_pdf_reconnection *= pdf_BSDF;
+
             origin = new_origin;
             material = new_material;
             outgoing = new_outgoing;
             normal = new_normal;
         }
     }
-    if(!any(isnan(acc_L)))
-        reservoir.E3 = acc_L;
+    /*if(!any(isnan(acc_L)))
+        reservoir.f = acc_L;*/
 }

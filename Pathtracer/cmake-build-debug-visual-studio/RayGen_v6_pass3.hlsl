@@ -169,11 +169,13 @@ void RayGen3() {
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         float3 accumulation = float3(0, 0, 0);
-        accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt) * reservoir_current.W;
+        //accumulation = ReconnectDI(sdata_current.x1,sdata_current.n1,reservoir_current.x2,reservoir_current.n2,reservoir_current.L2, sdata_current.o, reservoir_current.s, matOpt) * reservoir_current.W;
 
 
         Reservoir_GI reservoir_gi_current = g_Reservoirs_current_gi[pixelIdx];
-        accumulation += reservoir_gi_current.E3;
+        float p_hat_gi = LinearizeVector(reservoir_gi_current.f);
+        reservoir_gi_current.W = GetW_GI(reservoir_gi_current, p_hat_gi);
+        accumulation += reservoir_gi_current.f * reservoir_gi_current.W;
 
         float3 averagedColor;
         //TEMPORAL ACCUMULATION  ___________________________________________________________________________________________
