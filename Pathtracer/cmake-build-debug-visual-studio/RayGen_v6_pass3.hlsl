@@ -277,6 +277,9 @@ void RayGen3() {
         }
 
         reservoir_current = reservoir_spatial;
+        reservoir_current_gi = reservoir_spatial_gi;
+
+
         float p_hat = GetP_Hat(sdata_current.x1, sdata_current.n1,
                                reservoir_current.x2, reservoir_current.n2,
                                reservoir_current.L2, sdata_current.o,
@@ -288,8 +291,6 @@ void RayGen3() {
                                    reservoir_current.x2, reservoir_current.n2,
                                    reservoir_current.L2, sdata_current.o,
                                    reservoir_current.s, matOpt) * reservoir_current.W;
-
-        reservoir_current_gi = reservoir_spatial_gi;
 
         MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
         float3 f_gi_final = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
