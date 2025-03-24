@@ -35,7 +35,7 @@ inline float D_GGX(float NdotH, float roughness)
     float NdotH2 = NdotH * NdotH;
 
     float denom = (NdotH2 * (alpha2 - 1.0f) + 1.0f);
-    denom = max(denom, 1e-7f);
+    denom = denom;
     return alpha2 / (PI * denom * denom);
 }
 
@@ -138,10 +138,10 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
     float3 V = normalize(outgoing);   // View direction
     float3 L = normalize(-incoming);  // Light direction
     float3 H = normalize(V + L);
-    float NdotV = max(dot(N, V), EPSILON);
-    float NdotL = max(dot(N, L), EPSILON);
-    float NdotH = max(dot(N, H), EPSILON);
-    float VdotH = max(dot(V, H), EPSILON);
+    float NdotV = dot(N, V);
+    float NdotL = dot(N, L);
+    float NdotH = dot(N, H);
+    float VdotH = dot(V, H);
 
     float3 F = SchlickFresnel(mat.Ks, VdotH);
     float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
@@ -169,8 +169,8 @@ inline float BRDF_PDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming,
     float3 V = normalize(outgoing);   // View direction
     float3 L = normalize(-incoming);  // Light direction
     float3 H = normalize(V + L);
-    float NdotH = max(dot(N, H), EPSILON);
-    float NdotV = max(dot(N, V), EPSILON);
+    float NdotH = dot(N, H);
+    float NdotV = dot(N, V);
 
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
     float G1 = G1_SmithGGX(NdotV, alpha);

@@ -133,12 +133,14 @@ void RayGen() {
         float3(0.0f, 0.0f, 0.0f), // nn
         float3(0.0f, 0.0f, 0.0f), // Vn
         0,                       // k
+        0,                       // mID2
         0.0f,                    // w_sum
         0.0f,                    // W
         float3(0.0f, 0.0f, 0.0f), // f
         0,                       // M
         0,                       // s
-        half3(0.0f, 0.0f, 0.0f),  // E3
+        float3(0.0f, 0.0f, 0.0f),  // E3
+        1.0f, //j
         uint2(0, 0)              // seed
     };
 
@@ -180,10 +182,14 @@ void RayGen() {
         float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, reservoir.s, matOpt, true);
         reservoir.W = GetW(reservoir, p_hat);
 
+        //for(int p = 0; p< 20000; p++)
+            //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, reservoir.s, matOpt, true);
+
         // Perform path sampling (simpliefied for now)
-            SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
-        g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
+        SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
+        reservoir_GI.M = 1.0f;
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
+    g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
     g_sample_current[pixelIdx] = sdata;
 }

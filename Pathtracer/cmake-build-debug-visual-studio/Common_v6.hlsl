@@ -1,6 +1,6 @@
 #define PI 3.1415f
 #define s_bias 0.00002f // Shadow ray bias value
-#define EPSILON 0.000001f // Floating point precision correction
+#define EPSILON 0.0000006f // Floating point precision correction
 
 #define LUT_SIZE_THETA 16
 #define EXPOSURE 1.0f
@@ -14,8 +14,13 @@
 #define spatial_radius 20
 #define spatial_exponent 0.0f
 #define spatial_M_cap 500
+#define spatial_M_cap_GI 40
 #define temporal_M_cap 20
+#define temporal_M_cap_GI 20
 #define temporal_r_threshold 0.09f
+
+#define GI_length_threshold 0.25f
+#define beta 1.0f
 
 #define MIN_DIST   (2.0f * s_bias)      // Minimum allowed distance from shading point to light hit
 
@@ -232,6 +237,13 @@ inline bool RejectLocation(uint x, uint y, uint s1, uint s2, Material mat){
     return false;
 }
 
+inline bool RejectLength(float l1, float l2){
+    if(l1/l2 < GI_length_threshold || l2/l1 < GI_length_threshold){
+        return true;
+    }
+    return false;
+}
+
 inline bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixelID, uint currentPixelID, uint strategy, float roughness){
     // Compare the view matrices and reset if different
     bool different = false;
@@ -254,9 +266,9 @@ inline bool RejectRoughness(float4x4 view_i, float4x4 prevView_i, uint tempPixel
     return false;
 }
 
-inline bool RejectNormal(float3 n1, float3 n2){
+inline bool RejectNormal(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
-    return (similarity < 0.95f);
+    return (similarity < threshold);
 }
 
 inline bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)

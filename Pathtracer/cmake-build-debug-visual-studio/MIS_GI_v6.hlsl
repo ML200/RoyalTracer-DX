@@ -1,5 +1,5 @@
-// ReSTIR DI generalized MIS
-/*float GenPairwiseMIS_canonical_GI(
+// ReSTIR GI Pairwise MIS canonical sample
+float GenPairwiseMIS_canonical_GI(
     Reservoir_GI c,
     uint n[spatial_candidate_count],
     SampleData   sample_c,
@@ -10,7 +10,7 @@
 {
     float c_M_min = min(M_cap, c.M);
     float c_M_max = M_sum - c_M_min;
-    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, c.s, matOpt, false);
+    float p_c     = LinearizeVector(c.f);
     float c_m_num = c_M_min * p_c;
     float m_c = c_M_min / M_sum;
 
@@ -19,9 +19,12 @@
     {
         if (!rejected[j])
         {
-            float n_M_min   = min(M_cap, g_Reservoirs_current[n[j]].M);
-            float p_hat_from = GetP_Hat(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.x2, c.n2, c.L2, g_sample_current[n[j]].o, c.s, matOpt, true);
-
+            MaterialOptimized matGI = CreateMaterialOptimized(materials[c.mID2], c.mID2);
+            float n_M_min   = min(M_cap, g_Reservoirs_current_gi[n[j]].M);
+            float j_gi = Jacobian_Reconnection(sample_c.x1, g_sample_current[n[j]].x1, c.xn, c.nn);
+            float p_hat_from = 0.0f;
+            if(j_gi > 0.0f)
+                p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n[j]].o, matOpt, matGI, true)) / j_gi;
             float m_den = c_m_num + (c_M_max * p_hat_from);
             if (m_den > 0.0f)
             {
@@ -30,11 +33,10 @@
             }
         }
     }
-
-    return m_c;
+    return clamp(m_c, 0.0f, 1.0f);
 }
 
-
+// Pairwise MIS neighbour sample
 float GenPairwiseMIS_noncanonical_GI(
     Reservoir_GI c,
     uint n,
@@ -44,20 +46,24 @@ float GenPairwiseMIS_noncanonical_GI(
     MaterialOptimized matOpt)
 {
     float c_M_min = min(M_cap, c.M);
-    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, c.s, matOpt, false);
+    float p_c     = LinearizeVector(c.f);
 
-    float p_hat_from = GetP_Hat(g_sample_current[n].x1, g_sample_current[n].n1, c.x2, c.n2, c.L2, g_sample_current[n].o, c.s, matOpt, false);
+    MaterialOptimized matGI = CreateMaterialOptimized(materials[c.mID2], c.mID2);
+    float j_gi = Jacobian_Reconnection(sample_c.x1, g_sample_current[n].x1, c.xn, c.nn);
+    float p_hat_from = 0.0f;
+    if(j_gi > 0.0f)
+        p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n].x1, g_sample_current[n].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n].o, matOpt, matGI, false)) / j_gi;
     float m_num      = (M_sum - c_M_min) * p_hat_from;
     float m_den      = m_num + (c_M_min * p_c);
 
     if (m_den > 0.0f) {
-        float n_M_min = min(M_cap, g_Reservoirs_current[n].M);
-        return (n_M_min / M_sum) * (m_num / m_den);
+        float n_M_min = min(M_cap, g_Reservoirs_current_gi[n].M);
+        return clamp((n_M_min / M_sum) * (m_num / m_den), 0.0f, 1.0f);
     }
     else {
         return 0.0f;
     }
-}*/
+}
 
 
 // Temporal variant Pairwise MIS

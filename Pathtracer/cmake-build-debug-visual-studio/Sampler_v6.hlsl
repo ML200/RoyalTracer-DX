@@ -3,6 +3,43 @@ inline float LinearizeVector(float3 v){
     return length(v);
 }
 
+
+inline float Jacobian_Reconnection(float3 x1r, float3 x1q, float3 x2q, float3 n2q)
+{
+    // Direction vectors from x2 up to x1
+    float3 vq = x2q - x1q;
+    float3 vr = x2q - x1r;
+
+    // Cosines of incidence angles
+    float cosPhi2q = abs(dot(normalize(-vq), normalize(n2q)));
+    float cosPhi2r = abs(dot(normalize(-vr), normalize(n2q)));
+
+    // Squared lengths of vq, vr
+    float len2_vq = dot(vq, vq);
+    float len2_vr = dot(vr, vr);
+
+    // Final Jacobian
+    float J = (cosPhi2r / cosPhi2q) * (len2_vq / len2_vr);
+    if(J > 40.0f || J < 1.0f/40.0f || isnan(J) || isinf(J))
+        return 0.0f;
+    return J;
+}
+
+
+MaterialOptimized CreateMaterialOptimized(in Material mat, uint materialID)
+{
+    MaterialOptimized optMat;
+
+    optMat.Kd               = half4(mat.Kd);
+    optMat.Pr_Pm_Ps_Pc      = half4(mat.Pr_Pm_Ps_Pc);
+    optMat.Ks               = half3(mat.Ks);
+    optMat.Ke               = half3(mat.Ke);
+    optMat.mID              = materialID;
+
+    return optMat;
+}
+
+
 // The remaining functions remain unchanged.
 inline float VisibilityCheck(
     float3 x1,
@@ -45,8 +82,10 @@ inline float3 ReconnectDI(
         n2 = -n2;
     float cosThetaX2 = max(0, dot(n2, normalize(-dir)));
     float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), n1);
-    float3 F1 = probs.x * EvaluateBRDF(0, material, n1, normalize(-dir), normalize(outgoing));
-    float3 F2 = probs.y * EvaluateBRDF(1, material, n1, normalize(-dir), normalize(outgoing));
+    float3 brdf0 = EvaluateBRDF(0, material, n1, normalize(-dir), normalize(outgoing));
+    float3 brdf1 = EvaluateBRDF(1, material, n1, normalize(-dir), normalize(outgoing));
+    float3 F1 = SafeMultiply(probs.x, brdf0);
+    float3 F2 = SafeMultiply(probs.y, brdf1);
     float3 F = F1 + F2;
 
     return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
@@ -58,27 +97,35 @@ inline float3 ReconnectGI(
     float3 n1,
     float3 x2,
     float3 n2,
-    float3 L,
+    float3 L, // contribution
+    float3 V, // incoming direction from path
     float3 outgoing,
-    uint strategy,
-    MaterialOptimized material
+    MaterialOptimized material1,
+    MaterialOptimized material2
 )
 {
-    float3 dir = x2 - x1;
+    float3 dir = x2 - x1; // The reconnection direction
     float dist = length(dir);
     if(length(L) == 0.0f || dist < MIN_DIST)
         return float3(0,0,0);
 
     float cosThetaX1 = max(0, dot(n1, normalize(dir)));
-    if(dot(n2, normalize(-dir)) < 0.0f)
-        n2 = -n2;
-    float cosThetaX2 = max(0, dot(n2, normalize(-dir)));
-    float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), n1);
-    float3 F1 = probs.x * EvaluateBRDF(0, material, n1, normalize(-dir), normalize(outgoing));
-    float3 F2 = probs.y * EvaluateBRDF(1, material, n1, normalize(-dir), normalize(outgoing));
-    float3 F = F1 + F2;
 
-    return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
+    float2 probs = CalculateStrategyProbabilities(material1, normalize(outgoing), n1);
+    float3 brdf0 = EvaluateBRDF(0, material1, n1, normalize(-dir), normalize(outgoing));
+    float3 brdf1 = EvaluateBRDF(1, material1, n1, normalize(-dir), normalize(outgoing));
+    float3 F1 = SafeMultiply(probs.x, brdf0);
+    float3 F2 = SafeMultiply(probs.y, brdf1);
+    float3 Fx1 = F1 + F2;
+
+    probs = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
+    brdf0 = EvaluateBRDF(0, material2, n2, normalize(V), normalize(-dir));
+    brdf1 = EvaluateBRDF(1, material2, n2, normalize(V), normalize(-dir));
+    F1 = SafeMultiply(probs.x, brdf0);
+    F2 = SafeMultiply(probs.y, brdf1);
+    float3 Fx2 = F1 + F2;
+
+    return Fx1 * Fx2 * L * cosThetaX1;
 }
 
 float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
@@ -91,8 +138,8 @@ float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, 
     return f_g * v;
 }
 
-float GetP_Hat_GI(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
-    float f_g = LinearizeVector(ReconnectDI(x1, n1, x2, n2, L2, o, s, matOpt));
+float3 GetP_Hat_GI(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 V2, float3 o, MaterialOptimized matOpt1, MaterialOptimized matOpt2, bool use_visibility){
+    float3 f_g = ReconnectGI(x1, n1, x2, n2, L2, V2, o, matOpt1, matOpt2);
     float v = 1.0f;
 
     if(use_visibility){

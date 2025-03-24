@@ -16,6 +16,7 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
     float3 xn;
     float3 nn;
     float3 Vn;
+    uint mID2;
     uint2 sample_seed = seed;
     uint s;
     uint k;
@@ -89,7 +90,8 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
 
     // Fill in the reconnection data (in the GI case, it is constantly x2)
     xn = origin;
-    nn = normal;
+    nn = normalize(normal);
+    mID2 = material.mID;
     k = 1;
 
     /*
@@ -132,7 +134,7 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                 isReconnection
                 );
             if(isReconnection){
-                Vn = incoming_NEE;
+                Vn = normalize(incoming_NEE);
                 s = strategy;
             }
             // MIS weight:
@@ -140,14 +142,13 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
             acc_f_reconnection *= throughput_NEE;
             acc_pdf_reconnection *= pdf_NEE;
 
-            float3 E_reconnection = acc_f_reconnection * mi * emission_NEE / acc_pdf_reconnection;
+            float3 E_reconnection = acc_f_reconnection * mi * emission_NEE;
             float3 E_path = mi * contribution;
 
             float wi = LinearizeVector(E_path);
 
             acc_L += mi * contribution;
-            
-            // Add this path to the reservoir
+
             // Add this path to the reservoir
             UpdateReservoir_GI(
                 reservoir,
@@ -159,7 +160,9 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                 E_reconnection,
                 s,
                 k,
+                mID2,
                 emission_NEE * acc_f,
+                1.0f,
                 seed
             );
         }
@@ -199,14 +202,14 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
         if(length(contribution) > 0.0f){
             if(contribution.x != -1.0f){
                 if(isReconnection){
-                    Vn = incoming_BSDF;
+                    Vn = normalize(incoming_BSDF);
                     s = strategy;
                 }
                 float mi = pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
                 acc_f_reconnection *= throughput_BSDF;
                 acc_pdf_reconnection *= pdf_BSDF;
 
-                float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF / acc_pdf_reconnection;
+                float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF;
                 float3 E_path = mi * contribution;
 
                 float wi = LinearizeVector(E_path);
@@ -224,7 +227,9 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
                     E_reconnection,
                     s,
                     k,
+                    mID2,
                     emission_BSDF * acc_f,
+                    1.0f,
                     seed
                 );
             }
@@ -233,7 +238,7 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
         }
         else{
             if(isReconnection){
-                Vn = incoming_BSDF;
+                Vn = normalize(incoming_BSDF);
                 s = strategy;
             }
             // Continue the path
@@ -246,7 +251,11 @@ void SamplePathSimple(inout Reservoir_GI reservoir, const float3 initPoint, cons
             normal = new_normal;
         }
     }
-    reservoir.M = 1;
+    float p_hat = LinearizeVector(reservoir.f);
+    if(p_hat > 0.0f)
+        reservoir.W = reservoir.w_sum / LinearizeVector(reservoir.f);
+    else
+        reservoir.W = 0.0f;
     /*if(!any(isnan(acc_L)))
         reservoir.f = acc_L;
     else

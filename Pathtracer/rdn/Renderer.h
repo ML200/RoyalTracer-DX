@@ -125,7 +125,7 @@ private:
 
     struct Reservoir_GI
     {
-        uint8_t  pad[80]; // 80 bytes :(
+        uint8_t  pad[116]; // 92 bytes :(
     };
 
 
