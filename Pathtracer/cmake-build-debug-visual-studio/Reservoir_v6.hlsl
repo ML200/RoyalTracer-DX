@@ -11,13 +11,15 @@ struct Reservoir_GI
     float3 xn; // Reconnection vertex position (world space)
     float3 nn; // reconnection vertex normal
     float3 Vn; // Direction into reconnection vertex
-    uint16_t  k; // Path index reconnection vertex
+    uint  k; // Path index reconnection vertex
+    uint mID2;
     float w_sum;
     float W;
     float3 f; // canonical contribution (before pdf)
-    uint16_t M; // confidence weight
-    uint16_t  s;
-    half3 E3; // incoming contibution
+    float M; // confidence weight
+    float s;
+    float3 E3; // incoming contibution
+    float j; // Jacobian
     uint2 seed;
 };
 
@@ -33,7 +35,9 @@ inline void UpdateReservoir_GI(
     float3 E3,
     uint s,
     uint16_t k,
+    uint mID2,
     float3 f,
+    float j,
     inout uint2 seed
     )
 {
@@ -46,10 +50,12 @@ inline void UpdateReservoir_GI(
         reservoir.xn = xn;
         reservoir.nn = nn;
         reservoir.Vn = Vn;
+        reservoir.mID2 = mID2;
         reservoir.E3 = E3;
         reservoir.s = s;
         reservoir.k = k;
         reservoir.f = f;
+        reservoir.j = j;
     }
 }
 
