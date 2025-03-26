@@ -180,20 +180,23 @@ void RayGen2() {
         // -------------------- Temporal Reuse for GI --------------------
         if(candidateAcceptedGI)
         {
-            float M_sum_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) + min(temporal_M_cap_GI, reservoir_gi_last.M);
-            float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
-            float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
-
-            if(mi_c_gi + mi_t_gi > 1.0f + EPSILON)
-            {
-                mi_c_gi = 1.0f;
-                mi_t_gi = 0.0f;
-            }
-
             MaterialOptimized matOpt = {
                 materials[sdata_current.mID].Kd, materials[sdata_current.mID].Pr_Pm_Ps_Pc,
                 materials[sdata_current.mID].Ks, materials[sdata_current.mID].Ke, sdata_current.mID
             };
+
+            float M_sum_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) + min(temporal_M_cap_GI, reservoir_gi_last.M);
+            //float mi_c_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) / M_sum_gi;
+            //float mi_t_gi = min(temporal_M_cap_GI, reservoir_gi_last.M) / M_sum_gi;
+
+            float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
+            float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
+
+            if(length(reservoir_gi_last.nn) <= 0.5f || length(sdata_last.n1) <= 0.5f)
+            {
+                mi_c_gi = 1.0f;
+                mi_t_gi = 0.0f;
+            }
 
             MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
             float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
@@ -262,5 +265,5 @@ void RayGen2() {
         }
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;
-    g_Reservoirs_current_gi[pixelIdx] = reservoir_gi_current;
+    //g_Reservoirs_current_gi[pixelIdx] = reservoir_gi_current;
 }

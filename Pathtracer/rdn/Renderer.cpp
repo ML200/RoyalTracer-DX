@@ -470,7 +470,7 @@ void Renderer::PopulateCommandList() {
     // Refit the top-level acceleration structure to account for the new
     // transform matrix of the triangle. Note that the build contains a barrier,
     // hence we can do the rendering in the same command list
-    //CreateTopLevelAS(m_instances, true);
+    CreateTopLevelAS(m_instances, true);
     // #DXR
     // Bind the descriptor heap giving access to the top-level acceleration
     // structure, as well as the raytracing output

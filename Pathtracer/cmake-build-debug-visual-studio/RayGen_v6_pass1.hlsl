@@ -175,7 +175,7 @@ void RayGen() {
             );
         //_______________________________VISIBILITY_PASS__________________________________
         sdata.x1 = payload.hitPosition;
-        sdata.n1 = payload.hitNormal;
+        sdata.n1 = normalize(payload.hitNormal);
         sdata.o = -direction;
         sdata.mID = mID;
 
