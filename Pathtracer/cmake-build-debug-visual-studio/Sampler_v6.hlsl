@@ -19,8 +19,8 @@ inline float Jacobian_Reconnection(float3 x1r, float3 x1q, float3 x2q, float3 n2
     float len2_vr = dot(vr, vr);
 
     // Final Jacobian
-    float J = (cosPhi2r / cosPhi2q) * (len2_vq / len2_vr);
-    if(J > 40.0f || J < 1.0f/40.0f || isnan(J) || isinf(J))
+    float J = (cosPhi2q / cosPhi2r) * (len2_vr / len2_vq);
+    if(J > 10.0f || J < 1.0f/10.0f || isnan(J) || isinf(J))
         return 0.0f;
     return J;
 }
@@ -156,7 +156,7 @@ inline float GetW(Reservoir_DI r, float p_hat){
 }
 
 inline float GetW_GI(Reservoir_GI r, float p_hat){
-    if(p_hat > EPSILON)
+    if(p_hat > 0.0f && r.w_sum <= 1.0f)
         return r.w_sum / p_hat;
     else
         return 0.0f;
@@ -415,20 +415,20 @@ float3 SampleLightBSDF_GI(
     float3 brdf0 = EvaluateBRDF(0, material, normal, -sample, normalize(outgoing));
     float3 brdf1 = EvaluateBRDF(1, material, normal, -sample, normalize(outgoing));
 
-    float3 pdf0 = BRDF_PDF(0, material, normal, -sample, outgoing);
-    float3 pdf1 = BRDF_PDF(1, material, normal, -sample, outgoing);
+    float pdf0 = BRDF_PDF(0, material, normal, -sample, outgoing);
+    float pdf1 = BRDF_PDF(1, material, normal, -sample, outgoing);
 
     float3 F1 = SafeMultiply(probs.x, brdf0);
     float3 F2 = SafeMultiply(probs.y, brdf1);
-    float3 P1 = SafeMultiply(probs.x, pdf0);
-    float3 P2 = SafeMultiply(probs.y, pdf1);
+    float P1 = SafeMultiply(probs.x, pdf0);
+    float P2 = SafeMultiply(probs.y, pdf1);
     float3 brdf = F1 + F2;
-    float3 P = P1 + P2;
+    float P = P1 + P2;
 
     pdf_bsdf = P;
     float NdotL = dot(normal, sample);
 
-    if(length(mat_ke.Ke) > 0.0f){
+    if(length(mat_ke.Ke) > 1000000.0f){
         // If we hit a light, treat as a light sample
         float3 L = samplePayload.hitPosition - origin;
         float dist = length(L);
@@ -459,8 +459,6 @@ float3 SampleLightBSDF_GI(
     }
     else{
         // If we hit no light, continue the path. This means adjusting throughput and accumulated pdf accordingly
-        if(pdf_bsdf <= 0.0f)
-            return float3(-1,0,0);
         acc_pdf *= pdf_bsdf;
         acc_l *= brdf * NdotL;
 
@@ -478,6 +476,9 @@ float3 SampleLightBSDF_GI(
 
         pdf = pdf_bsdf;
         emission = mat_ke.Ke;
+
+        if(pdf_bsdf <= 0.0f)
+            return float3(-1,0,0);
 
         // return 0 contribution
         return float3(0,0,0);
@@ -576,15 +577,15 @@ float3 SampleLightNEE_GI(
     float3 brdf0 = EvaluateBRDF(0, material, normal, -L_norm, normalize(outgoing));
     float3 brdf1 = EvaluateBRDF(1, material, normal, -L_norm, normalize(outgoing));
 
-    float3 pdf0 = BRDF_PDF(0, material, normal, -L_norm, normalize(outgoing));
-    float3 pdf1 = BRDF_PDF(1, material, normal, -L_norm, normalize(outgoing));
+    float pdf0 = BRDF_PDF(0, material, normal, -L_norm, normalize(outgoing));
+    float pdf1 = BRDF_PDF(1, material, normal, -L_norm, normalize(outgoing));
 
     float3 F1 = SafeMultiply(probs.x, brdf0);
     float3 F2 = SafeMultiply(probs.y, brdf1);
-    float3 P1 = SafeMultiply(probs.x, pdf0);
-    float3 P2 = SafeMultiply(probs.y, pdf1);
+    float P1 = SafeMultiply(probs.x, pdf0);
+    float P2 = SafeMultiply(probs.y, pdf1);
     float3 brdf_light = F1 + F2;
-    float3 P = P1 + P2;
+    float P = P1 + P2;
 
     // Optional visibility check
     float V = 1.0f;
