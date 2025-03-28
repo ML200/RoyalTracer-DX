@@ -49,6 +49,7 @@ struct MaterialOptimized // Memory optimized material to reduce register pressur
      half3 Ks; half3 Ke; uint mID; // 6 + 6 + 4 = 16 bytes
 };
 
+
 // Default background material (Ray miss)
 static const MaterialOptimized g_DefaultMissMaterial =
 {

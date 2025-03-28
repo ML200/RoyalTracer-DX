@@ -13,7 +13,6 @@ void SamplePathSimple(
     float3 acc_f               = float3(1, 1, 1);  // Throughput up to the current vertex (f(x))
     float3 acc_f_reconnection  = float3(1, 1, 1);  // Throughput from the reconnection vertex
     float  acc_pdf             = 1.0f;             // Accumulated PDF up to the current vertex
-    float  acc_pdf_reconnection= 1.0f;
 
     // Accumulated radiance
     float3 acc_L = float3(0, 0, 0);
@@ -55,7 +54,6 @@ void SamplePathSimple(
         {
             // If a direct light is immediately hit, do nothing further;
             // the reservoir is effectively invalid for this sample.
-            // (If you want to terminate here, uncomment below)
             return;
         }
         else
@@ -85,6 +83,7 @@ void SamplePathSimple(
 
             // Advance path
             outgoing = incoming;
+
             uint mID = samplePayload.materialID;
             material.Kd             = materials[mID].Kd;
             material.Pr_Pm_Ps_Pc    = materials[mID].Pr_Pm_Ps_Pc;
@@ -120,7 +119,7 @@ void SamplePathSimple(
         //
         // 3a) NEE sampling
         //
-        for (int j = 0; j < nee_samples; j++)
+        /*for (int j = 0; j < nee_samples; j++)
         {
             float   pdf_light      = 1.0f;
             float   pdf_bsdf       = 1.0f;
@@ -182,7 +181,7 @@ void SamplePathSimple(
                 1.0f,
                 seed
             );
-        }
+        }*/
 
         //
         // 3b) BSDF sampling
@@ -220,60 +219,47 @@ void SamplePathSimple(
             isReconnection
         );
 
-        if (length(contribution) > 10000.0f)
+        if (isReconnection)
         {
-            // Valid contribution (non‐zero)
-            if (contribution.x != -1.0f)
-            {
-                if (isReconnection)
-                {
-                    Vn = normalize(incoming_BSDF);
-                    s  = strategy;
-                }
+            Vn = normalize(incoming_BSDF);
+            s  = strategy;
+        }
+        else{
+            acc_f_reconnection *= throughput_BSDF;
+        }
 
-                float mi = pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
+        if (length(contribution) > 0.0f)
+        {
+            float mi = 1.0f;//pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
 
-                acc_f_reconnection   *= throughput_BSDF;
-                acc_pdf_reconnection *= pdf_BSDF;
+            float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF;
+            float3 E_path         = mi * contribution;
 
-                float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF;
-                float3 E_path         = mi * contribution;
+            float wi = LinearizeVector(E_path);
 
-                float wi = LinearizeVector(E_path);
-                acc_L += mi * contribution;
+            // DEBUG
+            acc_L += E_path;
 
-                // Reservoir update
-                UpdateReservoir_GI(
-                    reservoir,
-                    wi,
-                    0.0f,
-                    xn,
-                    normalize(nn),
-                    Vn,
-                    E_reconnection,
-                    s,
-                    k,
-                    mID2,
-                    emission_BSDF * acc_f,
-                    1.0f,
-                    seed
-                );
-            }
-            // Optionally terminate path here if desired
-            // break;
+            // Reservoir update
+            UpdateReservoir_GI(
+                reservoir,
+                wi,
+                0.0f,
+                xn,
+                normalize(nn),
+                Vn,
+                E_reconnection,
+                s,
+                k,
+                mID2,
+                emission_BSDF * acc_f * mi,
+                1.0f,
+                seed
+            );
+            break;
         }
         else
         {
-            // Continue the path
-            if (isReconnection)
-            {
-                Vn = normalize(incoming_BSDF);
-                s  = strategy;
-            }
-
-            acc_f_reconnection   *= throughput_BSDF;
-            acc_pdf_reconnection *= pdf_BSDF;
-
             origin  = new_origin;
             material= new_material;
             outgoing= new_outgoing;
@@ -286,12 +272,12 @@ void SamplePathSimple(
     //
     float p_hat = LinearizeVector(reservoir.f);
     if (p_hat > 0.0f)
-        reservoir.W = reservoir.w_sum / LinearizeVector(reservoir.f);
+        reservoir.W = reservoir.w_sum / p_hat;
     else
         reservoir.W = 0.0f;
 
-    if (!any(isnan(acc_L)) && !any(isinf(acc_L)))
+    /*if (!any(isnan(acc_L)) && !any(isinf(acc_L)))
         reservoir.f = acc_L;
     else
-        reservoir.f = float3(1, 0, 0);
+        reservoir.f = float3(0, 0, 0);*/
 }

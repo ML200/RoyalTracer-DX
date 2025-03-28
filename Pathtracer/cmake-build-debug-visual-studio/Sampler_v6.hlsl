@@ -3,6 +3,14 @@ inline float LinearizeVector(float3 v){
     return length(v);
 }
 
+inline bool IsValidReservoir_GI(Reservoir_GI r){
+    bool valid =
+        length(r.nn) > 0.0f &&
+        length(r.Vn) > 0.0f &&
+        r.M > 0.0f;
+    return valid;
+}
+
 
 inline float Jacobian_Reconnection(float3 x1r, float3 x1q, float3 x2q, float3 n2q)
 {
@@ -105,11 +113,9 @@ inline float3 ReconnectGI(
 )
 {
     float3 dir = x2 - x1; // The reconnection direction
-    float dist = length(dir);
-    if(length(L) == 0.0f || dist < MIN_DIST)
-        return float3(0,0,0);
 
-    float cosThetaX1 = max(0, dot(n1, normalize(dir)));
+    float cosThetaX1 = dot(n1, normalize(dir));
+    float cosThetaX2 = dot(n2, normalize(-V));
 
     float2 probs = CalculateStrategyProbabilities(material1, normalize(outgoing), n1);
     float3 brdf0 = EvaluateBRDF(0, material1, n1, normalize(-dir), normalize(outgoing));
@@ -118,14 +124,14 @@ inline float3 ReconnectGI(
     float3 F2 = SafeMultiply(probs.y, brdf1);
     float3 Fx1 = F1 + F2;
 
-    probs = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
-    brdf0 = EvaluateBRDF(0, material2, n2, normalize(V), normalize(-dir));
-    brdf1 = EvaluateBRDF(1, material2, n2, normalize(V), normalize(-dir));
-    F1 = SafeMultiply(probs.x, brdf0);
-    F2 = SafeMultiply(probs.y, brdf1);
-    float3 Fx2 = F1 + F2;
+    float2 probs_2 = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
+    float3 brdf0_2 = EvaluateBRDF(0, material2, n2, normalize(V), normalize(-dir));
+    float3 brdf1_2 = EvaluateBRDF(1, material2, n2, normalize(V), normalize(-dir));
+    float3 F1_2 = SafeMultiply(probs_2.x, brdf0_2);
+    float3 F2_2 = SafeMultiply(probs_2.y, brdf1_2);
+    float3 Fx2 = F1_2 + F2_2;
 
-    return Fx1 * Fx2 * L * cosThetaX1;
+    return Fx1 * Fx2 * cosThetaX1 * cosThetaX2 * L;
 }
 
 float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
@@ -390,9 +396,7 @@ float3 SampleLightBSDF_GI(
     // Sample a BSDF direction
     float3 sample;
     float3 adjustedOrigin = float3(0,0,0);
-    SampleBRDF(strategy, material, outgoing, normal, normal, sample, origin, adjustedOrigin, seed);
-    if(length(sample) == 0.0f)
-        return float3(-1,0,0);
+    SampleBRDF(strategy, material, outgoing, normal, normal, sample, adjustedOrigin, origin, seed);
 
     // Trace the ray
     RayDesc ray;
@@ -428,7 +432,7 @@ float3 SampleLightBSDF_GI(
     pdf_bsdf = P;
     float NdotL = dot(normal, sample);
 
-    if(length(mat_ke.Ke) > 1000000.0f){
+    if(length(mat_ke.Ke) > 0.0f){
         // If we hit a light, treat as a light sample
         float3 L = samplePayload.hitPosition - origin;
         float dist = length(L);
@@ -443,21 +447,17 @@ float3 SampleLightBSDF_GI(
         acc_l *= brdf * NdotL;
 
         //----------------------------subpath parameters------------------------------
-        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
-            throughput = brdf * NdotL;
-        else
-            throughput = NdotL;
+        //if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+        throughput = brdf * NdotL;
 
         pdf = pdf_bsdf;
         emission = mat_ke.Ke;
 
-        // Compute p_hat defensively.
-        if(acc_pdf > 0.0f)
-            return mat_ke.Ke * acc_l / acc_pdf;
-        else
-            return float3(0,0,0);
+        return mat_ke.Ke * acc_l / acc_pdf;
     }
     else{
+
+        incoming = -sample;
         // If we hit no light, continue the path. This means adjusting throughput and accumulated pdf accordingly
         acc_pdf *= pdf_bsdf;
         acc_l *= brdf * NdotL;
@@ -469,18 +469,11 @@ float3 SampleLightBSDF_GI(
         new_material = mat_ke;
 
         //----------------------------subpath parameters------------------------------
-        if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
-            throughput = brdf * NdotL;
-        else
-            throughput = NdotL;
+        //if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
+        throughput = brdf * NdotL;
 
         pdf = pdf_bsdf;
-        emission = mat_ke.Ke;
-
-        if(pdf_bsdf <= 0.0f)
-            return float3(-1,0,0);
-
-        // return 0 contribution
+        emission = float3(0,0,0);
         return float3(0,0,0);
     }
 }
@@ -496,8 +489,8 @@ float3 SampleLightNEE_GI(
     float3 origin,
     float3 normal,
     float3 outgoing,
-    inout float3 acc_l, // Inout as this might be changed in case no light is hit
-    inout float acc_pdf, // Same here
+    float3 acc_l, // Inout as this might be changed in case no light is hit
+    float acc_pdf, // Same here
     inout float3 throughput,
     inout float pdf,
     inout float3 emission, // Subpath emission
