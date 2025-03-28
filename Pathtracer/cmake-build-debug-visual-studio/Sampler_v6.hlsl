@@ -131,7 +131,10 @@ inline float3 ReconnectGI(
     float3 F2_2 = SafeMultiply(probs_2.y, brdf1_2);
     float3 Fx2 = F1_2 + F2_2;
 
-    return Fx1 * Fx2 * cosThetaX1 * cosThetaX2 * L;
+    float3 fr = Fx1 * Fx2 * cosThetaX1 * cosThetaX2 * L;
+    if(any(isnan(fr)) || any(isinf(fr)))
+        return float3(0,0,0);
+    else return fr;
 }
 
 float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, uint s, MaterialOptimized matOpt, bool use_visibility){
@@ -162,7 +165,7 @@ inline float GetW(Reservoir_DI r, float p_hat){
 }
 
 inline float GetW_GI(Reservoir_GI r, float p_hat){
-    if(p_hat > 0.0f && r.w_sum <= 1.0f)
+    if(p_hat > 0.0f)
         return r.w_sum / p_hat;
     else
         return 0.0f;
@@ -596,16 +599,13 @@ float3 SampleLightNEE_GI(
 
     pdf_light = max(EPSILON, pdf_l) * dist2 / cos_theta_y;
     pdf_bsdf = P;
+
     incoming = -L_norm;
 
     acc_pdf *= pdf_light;
     acc_l *= brdf_light * G * V;
 
-    //----------------------------subpath parameters------------------------------
-    if(!isReconnection) // If this is the reconnection vertex, the brdf is evalutated later in the reconnection step.
-        throughput = brdf_light * G * V;
-    else
-        throughput = G;
+    throughput = brdf_light * G * V;
 
     pdf = pdf_light;
     emission = emission_l;

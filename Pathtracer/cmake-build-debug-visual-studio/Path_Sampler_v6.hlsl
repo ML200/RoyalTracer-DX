@@ -119,7 +119,7 @@ void SamplePathSimple(
         //
         // 3a) NEE sampling
         //
-        /*for (int j = 0; j < nee_samples; j++)
+        for (int j = 0; j < nee_samples; j++)
         {
             float   pdf_light      = 1.0f;
             float   pdf_bsdf       = 1.0f;
@@ -146,20 +146,21 @@ void SamplePathSimple(
                 true,
                 isReconnection
             );
+            float3 local_throughput = float3(1,1,1);
 
             if (isReconnection)
             {
                 Vn = normalize(incoming_NEE);
                 s  = strategy;
             }
+            else{
+                local_throughput = throughput_NEE;
+            }
 
             // MIS weight
-            float mi = pdf_light / (nee_samples * pdf_light + pdf_bsdf);
+            float mi = 1.0f;//pdf_light / (nee_samples * pdf_light + pdf_bsdf);
 
-            acc_f_reconnection   *= throughput_NEE;
-            acc_pdf_reconnection *= pdf_NEE;
-
-            float3 E_reconnection = acc_f_reconnection * mi * emission_NEE;
+            float3 E_reconnection = acc_f_reconnection * mi * emission_NEE * local_throughput;
             float3 E_path         = mi * contribution;
 
             float wi = LinearizeVector(E_path);
@@ -181,7 +182,7 @@ void SamplePathSimple(
                 1.0f,
                 seed
             );
-        }*/
+        }
 
         //
         // 3b) BSDF sampling
@@ -230,7 +231,7 @@ void SamplePathSimple(
 
         if (length(contribution) > 0.0f)
         {
-            float mi = 1.0f;//pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
+            float mi = pdf_bsdf / (nee_samples * pdf_light + pdf_bsdf);
 
             float3 E_reconnection = acc_f_reconnection * mi * emission_BSDF;
             float3 E_path         = mi * contribution;
@@ -241,7 +242,7 @@ void SamplePathSimple(
             acc_L += E_path;
 
             // Reservoir update
-            UpdateReservoir_GI(
+            /*UpdateReservoir_GI(
                 reservoir,
                 wi,
                 0.0f,
@@ -255,7 +256,7 @@ void SamplePathSimple(
                 emission_BSDF * acc_f * mi,
                 1.0f,
                 seed
-            );
+            );*/
             break;
         }
         else
@@ -266,18 +267,4 @@ void SamplePathSimple(
             normal  = new_normal;
         }
     }
-
-    //
-    // 4) Final reservoir adjustment
-    //
-    float p_hat = LinearizeVector(reservoir.f);
-    if (p_hat > 0.0f)
-        reservoir.W = reservoir.w_sum / p_hat;
-    else
-        reservoir.W = 0.0f;
-
-    /*if (!any(isnan(acc_L)) && !any(isinf(acc_L)))
-        reservoir.f = acc_L;
-    else
-        reservoir.f = float3(0, 0, 0);*/
 }

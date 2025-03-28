@@ -16,7 +16,7 @@
 #define spatial_M_cap 500
 #define spatial_M_cap_GI 500
 #define temporal_M_cap 20
-#define temporal_M_cap_GI 15
+#define temporal_M_cap_GI 20
 #define temporal_r_threshold 0.09f
 
 #define GI_length_threshold 0.01f

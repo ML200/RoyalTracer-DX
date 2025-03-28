@@ -391,7 +391,7 @@ void RayGen3()
 
         // Finalize the chosen sample in each reservoir
         reservoir_current     = reservoir_spatial;
-        //reservoir_current_gi  = reservoir_spatial_gi;
+        reservoir_current_gi  = reservoir_spatial_gi;
 
         float p_hat = GetP_Hat(
             sdata_current.x1,
@@ -407,7 +407,7 @@ void RayGen3()
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         // Compute final color from DI
-        float3 accumulation = ReconnectDI(
+        float3 accumulation = 0.0f;/*ReconnectDI(
             sdata_current.x1,
             sdata_current.n1,
             reservoir_current.x2,
@@ -416,7 +416,7 @@ void RayGen3()
             sdata_current.o,
             reservoir_current.s,
             matOpt
-        ) * reservoir_current.W;
+        ) * reservoir_current.W;*/
 
 
 
@@ -435,19 +435,17 @@ void RayGen3()
                 mat_gi_final,
                 false
             );
+            reservoir_current_gi.f = f_gi_final;
 
-            float p_hat_gi = LinearizeVector(f_gi_final);
-            //reservoir_current_gi.f = f_gi_final;
-            //reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
+            float p_hat_gi = LinearizeVector(reservoir_current_gi.f);
+            reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
             accumulation += reservoir_current_gi.f * reservoir_current_gi.W;
 
 
             // DEBUG-------------------------------
             //accumulation = f_gi_final;
-            //accumulation = reservoir_current_gi.f;
+            //accumulation = reservoir_current_gi.xn;
         }
-        else
-            accumulation = 0.0f;
 
         // -----------------------------------------------------------
         // TEMPORAL ACCUMULATION
@@ -494,7 +492,7 @@ void RayGen3()
         }
 
         // Optionally skip temporal accumulation if desired:
-        //averagedColor = accumulation;
+        averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))
