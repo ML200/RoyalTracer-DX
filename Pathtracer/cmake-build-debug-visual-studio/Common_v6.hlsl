@@ -11,7 +11,7 @@
 
 #define spatial_candidate_count 3
 #define spatial_max_tries 9
-#define spatial_radius 16
+#define spatial_radius 30
 #define spatial_exponent 0.0f
 #define spatial_M_cap 500
 #define spatial_M_cap_GI 500
@@ -148,9 +148,9 @@ float3 SafeMultiply(float scalar, float3 vec)
 }
 
 // Column Major
-inline uint MapPixelID(uint2 dims, uint2 lIndex){
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
     return lIndex.x * dims.y + lIndex.y;
-}
+}*/
 
 // Row Major
 /*inline uint MapPixelID(uint2 dims, uint2 lIndex){
@@ -158,7 +158,7 @@ inline uint MapPixelID(uint2 dims, uint2 lIndex){
 }*/
 
 // Swizzling
-/*inline uint MapPixelID(uint2 dims, uint2 lIndex)
+inline uint MapPixelID(uint2 dims, uint2 lIndex)
 {
     // Internal tile dimensions (square tiles).
     // Adjust as needed, or expose as a parameter if desired.
@@ -184,7 +184,7 @@ inline uint MapPixelID(uint2 dims, uint2 lIndex){
 
     // Combine: first skip all full tiles, then add the local index.
     return flattenedTileIndex * (tileSize * tileSize) + flattenedLocalIndex;
-}*/
+}
 
 
 
@@ -242,6 +242,12 @@ inline bool RejectLength(float l1, float l2, float threshold){
     if(l1/l2 < threshold || l2/l1 < threshold){
         return true;
     }
+    return false;
+}
+
+inline bool RejectJacobian(float J, float threshold){
+    if(J > threshold || J < 1.0f/threshold || isnan(J) || isinf(J))
+        return true;
     return false;
 }
 
