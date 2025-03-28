@@ -110,7 +110,6 @@ void RayGen2() {
             !RejectNormal(sdata_current.n1, sdata_last.n1, 0.95f) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
             IsValidReservoir_GI(reservoir_gi_last) &&
-            //!RejectLength(length(sdata_current.x1 - reservoir_gi_last.xn), length(sdata_current.x1 - reservoir_gi_current.xn))&&
             (reservoir_gi_last.xn.x != 0.0f && reservoir_gi_last.xn.y != 0.0f && reservoir_gi_last.xn.z != 0.0f) &&
             (sdata_last.mID == sdata_current.mID)
         );
@@ -236,7 +235,7 @@ void RayGen2() {
                 reservoir_gi_current.s,
                 reservoir_gi_current.k,
                 reservoir_gi_current.mID2,
-                reservoir_gi_current.f,
+                f_c,
                 1.0f,
                 seed
             );
@@ -252,7 +251,7 @@ void RayGen2() {
                 reservoir_gi_last.s,
                 reservoir_gi_last.k,
                 reservoir_gi_last.mID2,
-                reservoir_gi_last.f,
+                f_t,
                 1.0f,
                 seed
             );

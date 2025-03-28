@@ -28,8 +28,6 @@ inline float Jacobian_Reconnection(float3 x1r, float3 x1q, float3 x2q, float3 n2
 
     // Final Jacobian
     float J = (cosPhi2q / cosPhi2r) * (len2_vr / len2_vq);
-    if(J > 10.0f || J < 1.0f/10.0f || isnan(J) || isinf(J))
-        return 0.0f;
     return J;
 }
 

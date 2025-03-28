@@ -155,11 +155,13 @@ void RayGen3()
                 !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.9f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
                 !RejectBelowSurface(normalize(g_Reservoirs_current_gi[pixel_r].xn - sdata_current.x1), sdata_current.n1) &&
-                !RejectLength(
-                    length(sdata_current.x1 - g_Reservoirs_current_gi[pixel_r].xn),
-                    length(sdata_current.x1 - g_Reservoirs_current_gi[pixelIdx].xn),
-                    GI_length_threshold
-                 ) &&
+                IsValidReservoir_GI(g_Reservoirs_current_gi[pixel_r]) &&
+                !RejectJacobian(Jacobian_Reconnection(
+                    g_sample_current[pixel_r].x1,
+                    sdata_current.x1,
+                    g_Reservoirs_current_gi[pixel_r].xn,
+                    g_Reservoirs_current_gi[pixel_r].nn
+                ), 10.0f) &&
                 (length(g_sample_current[pixel_r].L1) == 0.0f) &&
                 (g_sample_current[pixel_r].mID != 4294967294) &&
                 (g_sample_current[pixel_r].mID == sdata_current.mID);
@@ -407,7 +409,7 @@ void RayGen3()
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         // Compute final color from DI
-        float3 accumulation = 0.0f;/*ReconnectDI(
+        float3 accumulation = ReconnectDI(
             sdata_current.x1,
             sdata_current.n1,
             reservoir_current.x2,
@@ -416,36 +418,33 @@ void RayGen3()
             sdata_current.o,
             reservoir_current.s,
             matOpt
-        ) * reservoir_current.W;*/
+        ) * reservoir_current.W;
 
 
+        // GI -----------------------------------------------------------------------------------
+        MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
+        float3 f_gi_final = GetP_Hat_GI(
+            sdata_current.x1,
+            sdata_current.n1,
+            reservoir_current_gi.xn,
+            reservoir_current_gi.nn,
+            reservoir_current_gi.E3,
+            reservoir_current_gi.Vn,
+            sdata_current.o,
+            matOpt,
+            mat_gi_final,
+            false
+        );
+        reservoir_current_gi.f = f_gi_final;
 
-        if(IsValidReservoir_GI(reservoir_current_gi)){
-            // GI -----------------------------------------------------------------------------------
-            MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
-            float3 f_gi_final = GetP_Hat_GI(
-                sdata_current.x1,
-                sdata_current.n1,
-                reservoir_current_gi.xn,
-                reservoir_current_gi.nn,
-                reservoir_current_gi.E3,
-                reservoir_current_gi.Vn,
-                sdata_current.o,
-                matOpt,
-                mat_gi_final,
-                false
-            );
-            reservoir_current_gi.f = f_gi_final;
-
-            float p_hat_gi = LinearizeVector(reservoir_current_gi.f);
-            reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
-            accumulation += reservoir_current_gi.f * reservoir_current_gi.W;
+        float p_hat_gi = LinearizeVector(reservoir_current_gi.f);
+        reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
+        accumulation += reservoir_current_gi.f * reservoir_current_gi.W;
 
 
-            // DEBUG-------------------------------
-            //accumulation = f_gi_final;
-            //accumulation = reservoir_current_gi.xn;
-        }
+        // DEBUG-------------------------------
+        //accumulation = f_gi_final;
+        //accumulation = reservoir_current_gi.xn;
 
         // -----------------------------------------------------------
         // TEMPORAL ACCUMULATION
@@ -492,7 +491,7 @@ void RayGen3()
         }
 
         // Optionally skip temporal accumulation if desired:
-        averagedColor = accumulation;
+        //averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))

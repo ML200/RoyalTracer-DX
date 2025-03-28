@@ -158,7 +158,7 @@ void SamplePathSimple(
             }
 
             // MIS weight
-            float mi = 1.0f;//pdf_light / (nee_samples * pdf_light + pdf_bsdf);
+            float mi = pdf_light / (nee_samples * pdf_light + pdf_bsdf);
 
             float3 E_reconnection = acc_f_reconnection * mi * emission_NEE * local_throughput;
             float3 E_path         = mi * contribution;
@@ -178,7 +178,7 @@ void SamplePathSimple(
                 s,
                 k,
                 mID2,
-                emission_NEE * acc_f,
+                emission_NEE * acc_f * throughput_NEE,
                 1.0f,
                 seed
             );
@@ -242,7 +242,7 @@ void SamplePathSimple(
             acc_L += E_path;
 
             // Reservoir update
-            /*UpdateReservoir_GI(
+            UpdateReservoir_GI(
                 reservoir,
                 wi,
                 0.0f,
@@ -256,7 +256,7 @@ void SamplePathSimple(
                 emission_BSDF * acc_f * mi,
                 1.0f,
                 seed
-            );*/
+            );
             break;
         }
         else
