@@ -369,21 +369,23 @@ void RayGen3()
                 );
                 float w_s_gi = mi_s_gi * LinearizeVector(f_gi) * g_Reservoirs_current_gi[spatial_candidate].W * j_gi;
 
-                UpdateReservoir_GI(
-                    reservoir_spatial_gi,
-                    w_s_gi,
-                    min(spatial_M_cap_GI, g_Reservoirs_current_gi[spatial_candidate].M),
-                    g_Reservoirs_current_gi[spatial_candidate].xn,
-                    g_Reservoirs_current_gi[spatial_candidate].nn,
-                    g_Reservoirs_current_gi[spatial_candidate].Vn,
-                    g_Reservoirs_current_gi[spatial_candidate].E3,
-                    g_Reservoirs_current_gi[spatial_candidate].s,
-                    g_Reservoirs_current_gi[spatial_candidate].k,
-                    g_Reservoirs_current_gi[spatial_candidate].mID2,
-                    f_gi,
-                    j_gi,
-                    seed
-                );
+                if(j_gi != 0.0f){
+                    UpdateReservoir_GI(
+                        reservoir_spatial_gi,
+                        w_s_gi,
+                        min(spatial_M_cap_GI, g_Reservoirs_current_gi[spatial_candidate].M),
+                        g_Reservoirs_current_gi[spatial_candidate].xn,
+                        g_Reservoirs_current_gi[spatial_candidate].nn,
+                        g_Reservoirs_current_gi[spatial_candidate].Vn,
+                        g_Reservoirs_current_gi[spatial_candidate].E3,
+                        g_Reservoirs_current_gi[spatial_candidate].s,
+                        g_Reservoirs_current_gi[spatial_candidate].k,
+                        g_Reservoirs_current_gi[spatial_candidate].mID2,
+                        f_gi,
+                        j_gi,
+                        seed
+                    );
+                }
             }
         }
 
@@ -405,7 +407,7 @@ void RayGen3()
         reservoir_current.W = GetW(reservoir_current, p_hat);
 
         // Compute final color from DI
-        float3 accumulation = 0.0f;/*ReconnectDI(
+        float3 accumulation = ReconnectDI(
             sdata_current.x1,
             sdata_current.n1,
             reservoir_current.x2,
@@ -414,28 +416,38 @@ void RayGen3()
             sdata_current.o,
             reservoir_current.s,
             matOpt
-        ) * reservoir_current.W;*/
+        ) * reservoir_current.W;
 
-        // GI
-        MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
-        float3 f_gi_final = GetP_Hat_GI(
-            sdata_current.x1,
-            sdata_current.n1,
-            reservoir_current_gi.xn,
-            reservoir_current_gi.nn,
-            reservoir_current_gi.E3,
-            reservoir_current_gi.Vn,
-            sdata_current.o,
-            matOpt,
-            mat_gi_final,
-            false
-        );
 
-        //float p_hat_gi = LinearizeVector(f_gi_final);
-        //reservoir_current_gi.f = f_gi_final;
-        //reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
-        //accumulation += f_gi_final * reservoir_current_gi.W;
-        accumulation += reservoir_current_gi.f;
+
+        if(IsValidReservoir_GI(reservoir_current_gi)){
+            // GI -----------------------------------------------------------------------------------
+            MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
+            float3 f_gi_final = GetP_Hat_GI(
+                sdata_current.x1,
+                sdata_current.n1,
+                reservoir_current_gi.xn,
+                reservoir_current_gi.nn,
+                reservoir_current_gi.E3,
+                reservoir_current_gi.Vn,
+                sdata_current.o,
+                matOpt,
+                mat_gi_final,
+                false
+            );
+
+            float p_hat_gi = LinearizeVector(f_gi_final);
+            //reservoir_current_gi.f = f_gi_final;
+            //reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
+            accumulation += reservoir_current_gi.f * reservoir_current_gi.W;
+
+
+            // DEBUG-------------------------------
+            //accumulation = f_gi_final;
+            //accumulation = reservoir_current_gi.f;
+        }
+        else
+            accumulation = 0.0f;
 
         // -----------------------------------------------------------
         // TEMPORAL ACCUMULATION

@@ -124,10 +124,10 @@ inline void SampleBRDF_GGX(MaterialOptimized mat, float3 outgoing, float3 normal
     sample = reflect(-V, H);
 
     // Check if the sample is in the same hemisphere as the surface normal
-    if (dot(sample, N) <= 0.0f)
+    /*if (dot(sample, N) <= 0.0f)
     {
         sample = float3(0.0f, 0.0f, 0.0f); // Invalid sample
-    }
+    }*/
     origin = worldOrigin + s_bias * flatNormal;
 }
 
