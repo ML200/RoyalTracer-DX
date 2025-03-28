@@ -109,6 +109,7 @@ void RayGen2() {
             length(sdata_last.L1) == 0.0f &&
             !RejectNormal(sdata_current.n1, sdata_last.n1, 0.95f) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
+            IsValidReservoir_GI(reservoir_gi_last) &&
             //!RejectLength(length(sdata_current.x1 - reservoir_gi_last.xn), length(sdata_current.x1 - reservoir_gi_current.xn))&&
             (reservoir_gi_last.xn.x != 0.0f && reservoir_gi_last.xn.y != 0.0f && reservoir_gi_last.xn.z != 0.0f) &&
             (sdata_last.mID == sdata_current.mID)
@@ -192,18 +193,13 @@ void RayGen2() {
             float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
             float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
 
-            if(length(reservoir_gi_last.nn) <= 0.5f || length(sdata_last.n1) <= 0.5f)
-            {
-                mi_c_gi = 1.0f;
-                mi_t_gi = 0.0f;
-            }
-
             MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
             float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                      reservoir_gi_current.xn, reservoir_gi_current.nn,
                                      reservoir_gi_current.E3, reservoir_gi_current.Vn,
                                      sdata_current.o, matOpt, mat_gi_c, false);
             float w_c_gi = mi_c_gi * LinearizeVector(f_c) * reservoir_gi_current.W;
+            //float w_c_gi = mi_c_gi * LinearizeVector(reservoir_gi_current.f) * reservoir_gi_current.W;
 
             MaterialOptimized mat_gi_t = CreateMaterialOptimized(materials[reservoir_gi_last.mID2], reservoir_gi_last.mID2);
             float3 f_t = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
@@ -211,6 +207,7 @@ void RayGen2() {
                                      reservoir_gi_last.E3, reservoir_gi_last.Vn,
                                      sdata_current.o, matOpt, mat_gi_t, false);
             float w_t_gi = mi_t_gi * LinearizeVector(f_t) * reservoir_gi_last.W;
+            //float w_t_gi = mi_t_gi * LinearizeVector(reservoir_gi_last.f) * reservoir_gi_last.W;
 
             Reservoir_GI reservoir_GI_temporal = {
                 float3(0.0f, 0.0f, 0.0f), // xn
@@ -239,7 +236,7 @@ void RayGen2() {
                 reservoir_gi_current.s,
                 reservoir_gi_current.k,
                 reservoir_gi_current.mID2,
-                f_c,
+                reservoir_gi_current.f,
                 1.0f,
                 seed
             );
@@ -255,7 +252,7 @@ void RayGen2() {
                 reservoir_gi_last.s,
                 reservoir_gi_last.k,
                 reservoir_gi_last.mID2,
-                f_t,
+                reservoir_gi_last.f,
                 1.0f,
                 seed
             );
@@ -265,5 +262,5 @@ void RayGen2() {
         }
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;
-    //g_Reservoirs_current_gi[pixelIdx] = reservoir_gi_current;
+    g_Reservoirs_current_gi[pixelIdx] = reservoir_gi_current;
 }
