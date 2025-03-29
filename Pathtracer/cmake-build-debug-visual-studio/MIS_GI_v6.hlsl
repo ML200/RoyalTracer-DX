@@ -23,8 +23,7 @@ float GenPairwiseMIS_canonical_GI(
             float n_M_min   = min(M_cap, g_Reservoirs_current_gi[n[j]].M);
             float j_gi = Jacobian_Reconnection(sample_c.x1, g_sample_current[n[j]].x1, c.xn, c.nn);
             float p_hat_from = 0.0f;
-            if(j_gi > 0.0f)
-                p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n[j]].o, matOpt, matGI, true)) / j_gi;
+            p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n[j]].o, matOpt, matGI, true)) * j_gi;
             float m_den = c_m_num + (c_M_max * p_hat_from);
             if (m_den > 0.0f)
             {
@@ -51,8 +50,7 @@ float GenPairwiseMIS_noncanonical_GI(
     MaterialOptimized matGI = CreateMaterialOptimized(materials[c.mID2], c.mID2);
     float j_gi = Jacobian_Reconnection(sample_c.x1, g_sample_current[n].x1, c.xn, c.nn);
     float p_hat_from = 0.0f;
-    if(j_gi > 0.0f)
-        p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n].x1, g_sample_current[n].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n].o, matOpt, matGI, false)) / j_gi;
+    p_hat_from = LinearizeVector(GetP_Hat_GI(g_sample_current[n].x1, g_sample_current[n].n1, c.xn, c.nn, c.E3, c.Vn, g_sample_current[n].o, matOpt, matGI, false)) * j_gi;
     float m_num      = (M_sum - c_M_min) * p_hat_from;
     float m_den      = m_num + (c_M_min * p_c);
 

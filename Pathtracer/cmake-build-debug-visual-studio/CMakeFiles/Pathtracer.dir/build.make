@@ -62,19 +62,19 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: CMakeFiles\Pathtracer.dir\flags.make
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/Main.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/Main.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Main.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Main.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/Main.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\Main.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp
 <<
 
@@ -82,19 +82,19 @@ CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj: CM
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/BottomLevelASGenerator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/BottomLevelASGenerator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/BottomLevelASGenerator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp
 <<
 
@@ -102,19 +102,19 @@ CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.ob
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RaytracingPipelineGenerator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RaytracingPipelineGenerator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RaytracingPipelineGenerator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp
 <<
 
@@ -122,19 +122,19 @@ CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj: CM
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RootSignatureGenerator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RootSignatureGenerator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/RootSignatureGenerator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp
 <<
 
@@ -142,19 +142,19 @@ CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.ob
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/ShaderBindingTableGenerator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/ShaderBindingTableGenerator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/ShaderBindingTableGenerator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp
 <<
 
@@ -162,19 +162,19 @@ CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj: CMake
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/TopLevelASGenerator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/TopLevelASGenerator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/nv_helpers_dx12/TopLevelASGenerator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp
 <<
 
@@ -182,19 +182,19 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: CMakeFiles\Pathtracer.dir\flags.
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp
 <<
 
@@ -202,19 +202,19 @@ CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: CMakeFiles\Pathtracer.dir\flags.
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/DXSample.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/DXSample.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/DXSample.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\DXSample.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp
 <<
 
@@ -222,19 +222,19 @@ CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj: CMakeFiles\Pathtracer.dir\fla
 CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp
 CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/manipulator.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/manipulator.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/manipulator.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\manipulator.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp
 <<
 
@@ -242,19 +242,19 @@ CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj: CMakeFiles\Pathtracer.dir\flags.ma
 CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp
 CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/stdafx.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/stdafx.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/stdafx.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\stdafx.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp
 <<
 
@@ -262,19 +262,19 @@ CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: CMakeFiles\Pathtracer.di
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj: CMakeFiles\Pathtracer.dir\compiler_depend.ts
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/Pathtracer.dir/rdn/Win32Application.cpp.obj"
-	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	$(CMAKE_COMMAND) -E cmake_cl_compile_depends --dep-file=CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj.d --working-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /showIncludes /FoCMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj /FdCMakeFiles\Pathtracer.dir\ /FS -c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.i: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/Pathtracer.dir/rdn/Win32Application.cpp.i"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.i @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe > CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.i @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp
 <<
 
 CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/Pathtracer.dir/rdn/Win32Application.cpp.s"
-	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\cl.exe @<<
+	C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\cl.exe @<<
  /nologo /TP $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) /FoNUL /FAs /FaCMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.s /c C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp
 <<
 
@@ -309,8 +309,8 @@ Pathtracer.exe: CMakeFiles\Pathtracer.dir\rdn\Win32Application.cpp.obj
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\build.make
 Pathtracer.exe: CMakeFiles\Pathtracer.dir\objects1.rsp
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Linking CXX executable Pathtracer.exe"
-	"C:\Program Files\JetBrains\CLion 2024.3.2\bin\cmake\win\x64\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\Pathtracer.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100226~1.0\x64\mt.exe --manifests -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1442~1.344\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\Pathtracer.dir\objects1.rsp @<<
- /out:Pathtracer.exe /implib:Pathtracer.lib /pdb:C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Pathtracer.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:windows   -LIBPATH:C:\PROGRA~2\WI3CF2~1\10\Lib\100226~1.0\um\x64  d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib 
+	"C:\Program Files\JetBrains\CLion 2024.3.2\bin\cmake\win\x64\bin\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\Pathtracer.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100203~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100203~1.0\x64\mt.exe --manifests -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1443~1.348\bin\Hostx64\x64\link.exe /nologo @CMakeFiles\Pathtracer.dir\objects1.rsp @<<
+ /out:Pathtracer.exe /implib:Pathtracer.lib /pdb:C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\cmake-build-debug-visual-studio\Pathtracer.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:windows   -LIBPATH:"C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\x64"  d3d12.lib dxgi.lib dxguid.lib dxcompiler.lib d3dcompiler.lib kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib 
 <<
 
 # Rule to build all files generated by this target.

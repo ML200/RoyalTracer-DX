@@ -3,6 +3,16 @@ inline float LinearizeVector(float3 v){
     return length(v);
 }
 
+inline bool IsValidReservoir(Reservoir_DI r){
+    bool valid =
+        length(r.n2) > 0.0f &&
+        length(r.L2) > 0.0f &&
+        r.w_sum > 0.0f &&
+        r.M > 0.0f;
+    return valid;
+}
+
+
 inline bool IsValidReservoir_GI(Reservoir_GI r){
     bool valid =
         length(r.nn) > 0.0f &&
@@ -163,7 +173,7 @@ inline float GetW(Reservoir_DI r, float p_hat){
 }
 
 inline float GetW_GI(Reservoir_GI r, float p_hat){
-    if(p_hat > 0.0f)
+    if(p_hat > EPSILON)
         return r.w_sum / p_hat;
     else
         return 0.0f;

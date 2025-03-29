@@ -9,15 +9,16 @@
 #define bounces 4
 #define rr_threshold 1
 
-#define spatial_candidate_count 3
-#define spatial_max_tries 9
+#define spatial_candidate_count 2
+#define spatial_max_tries 6
 #define spatial_radius 30
 #define spatial_exponent 0.0f
 #define spatial_M_cap 500
 #define spatial_M_cap_GI 500
 #define temporal_M_cap 20
-#define temporal_M_cap_GI 20
+#define temporal_M_cap_GI 16
 #define temporal_r_threshold 0.09f
+#define w_sum_threshold 1.0f
 
 #define GI_length_threshold 0.01f
 #define beta 1.0f
@@ -247,6 +248,12 @@ inline bool RejectLength(float l1, float l2, float threshold){
 
 inline bool RejectJacobian(float J, float threshold){
     if(J > threshold || J < 1.0f/threshold || isnan(J) || isinf(J))
+        return true;
+    return false;
+}
+
+inline bool RejectWsum(float w_sum, float threshold){
+    if(w_sum > threshold)
         return true;
     return false;
 }
