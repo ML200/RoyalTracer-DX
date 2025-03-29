@@ -117,6 +117,7 @@ void RayGen3()
             bool candidateAccepted =
                 !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.9f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
+                IsValidReservoir(g_Reservoirs_current[pixel_r]) &&
                 (length(g_sample_current[pixel_r].L1) == 0.0f) &&
                 (g_sample_current[pixel_r].mID != 4294967294) &&
                 (g_sample_current[pixel_r].mID == sdata_current.mID);
@@ -155,6 +156,7 @@ void RayGen3()
                 !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.9f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
                 !RejectBelowSurface(normalize(g_Reservoirs_current_gi[pixel_r].xn - sdata_current.x1), sdata_current.n1) &&
+                !RejectWsum(g_Reservoirs_current_gi[pixel_r].w_sum, w_sum_threshold) &&
                 IsValidReservoir_GI(g_Reservoirs_current_gi[pixel_r]) &&
                 !RejectJacobian(Jacobian_Reconnection(
                     g_sample_current[pixel_r].x1,

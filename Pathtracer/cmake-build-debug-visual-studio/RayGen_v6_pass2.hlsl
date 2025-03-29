@@ -100,6 +100,7 @@ void RayGen2() {
             length(sdata_last.L1) == 0.0f &&
             !RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
             !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID]) &&
+            IsValidReservoir(reservoir_last) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
             (reservoir_last.x2.x != 0.0f && reservoir_last.x2.y != 0.0f && reservoir_last.x2.z != 0.0f) &&
             (sdata_last.mID == sdata_current.mID)
@@ -107,10 +108,10 @@ void RayGen2() {
 
         bool candidateAcceptedGI = (pixelPos.x != -1 && pixelPos.y != -1 &&
             length(sdata_last.L1) == 0.0f &&
-            !RejectNormal(sdata_current.n1, sdata_last.n1, 0.95f) &&
+            !RejectWsum(reservoir_gi_last.w_sum, w_sum_threshold) &&
+            !RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
             IsValidReservoir_GI(reservoir_gi_last) &&
-            (reservoir_gi_last.xn.x != 0.0f && reservoir_gi_last.xn.y != 0.0f && reservoir_gi_last.xn.z != 0.0f) &&
             (sdata_last.mID == sdata_current.mID)
         );
 
@@ -186,8 +187,6 @@ void RayGen2() {
             };
 
             float M_sum_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) + min(temporal_M_cap_GI, reservoir_gi_last.M);
-            //float mi_c_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) / M_sum_gi;
-            //float mi_t_gi = min(temporal_M_cap_GI, reservoir_gi_last.M) / M_sum_gi;
 
             float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
             float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
