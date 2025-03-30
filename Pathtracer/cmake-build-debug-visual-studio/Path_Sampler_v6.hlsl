@@ -26,8 +26,7 @@ void SamplePathSimple(
 
     // Reconnection point cache
     float3 xn, nn, Vn;
-    uint   mID2, s, k;
-    uint2  sample_seed = seed;
+    uint   mID2;
 
     //
     // 1) Perform an initial BSDF sampling to get the first indirect intersection
@@ -102,7 +101,6 @@ void SamplePathSimple(
     xn   = origin;
     nn   = normalize(normal);
     mID2 = material.mID;
-    k    = 1;
 
     //
     // 3) Perform multiple bounces with MIS‐weighted NEE and BSDF sampling
@@ -151,7 +149,6 @@ void SamplePathSimple(
             if (isReconnection)
             {
                 Vn = normalize(incoming_NEE);
-                s  = strategy;
             }
             else{
                 local_throughput = throughput_NEE;
@@ -175,11 +172,7 @@ void SamplePathSimple(
                 normalize(nn),
                 Vn,
                 E_reconnection,
-                s,
-                k,
                 mID2,
-                emission_NEE * acc_f * throughput_NEE,
-                1.0f,
                 seed
             );
         }
@@ -197,6 +190,8 @@ void SamplePathSimple(
         float3  new_normal;
         float3  new_outgoing;
         MaterialOptimized new_material;
+
+        strategy   = SelectSamplingStrategy(material, outgoing, normal, seed, p_strategy);
 
         float3 contribution = SampleLightBSDF_GI(
             pdf_light,       // out
@@ -223,7 +218,6 @@ void SamplePathSimple(
         if (isReconnection)
         {
             Vn = normalize(incoming_BSDF);
-            s  = strategy;
         }
         else{
             acc_f_reconnection *= throughput_BSDF;
@@ -250,11 +244,7 @@ void SamplePathSimple(
                 normalize(nn),
                 Vn,
                 E_reconnection,
-                s,
-                k,
                 mID2,
-                emission_BSDF * acc_f * mi,
-                1.0f,
                 seed
             );
             break;

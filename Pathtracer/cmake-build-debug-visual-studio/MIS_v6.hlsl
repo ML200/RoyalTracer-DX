@@ -10,7 +10,7 @@ float GenPairwiseMIS_canonical(
 {
     float c_M_min = min(M_cap, c.M);
     float c_M_max = M_sum - c_M_min;
-    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, c.s, matOpt, false);
+    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, matOpt, false);
     float c_m_num = c_M_min * p_c;
     float m_c = c_M_min / M_sum;
 
@@ -20,7 +20,7 @@ float GenPairwiseMIS_canonical(
         if (!rejected[j])
         {
             float n_M_min   = min(M_cap, g_Reservoirs_current[n[j]].M);
-            float p_hat_from = GetP_Hat(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.x2, c.n2, c.L2, g_sample_current[n[j]].o, c.s, matOpt, true);
+            float p_hat_from = GetP_Hat(g_sample_current[n[j]].x1, g_sample_current[n[j]].n1, c.x2, c.n2, c.L2, g_sample_current[n[j]].o, matOpt, true);
 
             float m_den = c_m_num + (c_M_max * p_hat_from);
             if (m_den > 0.0f)
@@ -44,9 +44,9 @@ float GenPairwiseMIS_noncanonical(
     MaterialOptimized matOpt)
 {
     float c_M_min = min(M_cap, c.M);
-    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, c.s, matOpt, false);
+    float p_c     = GetP_Hat(sample_c.x1, sample_c.n1, c.x2, c.n2, c.L2, sample_c.o, matOpt, false);
 
-    float p_hat_from = GetP_Hat(g_sample_current[n].x1, g_sample_current[n].n1, c.x2, c.n2, c.L2, g_sample_current[n].o, c.s, matOpt, false);
+    float p_hat_from = GetP_Hat(g_sample_current[n].x1, g_sample_current[n].n1, c.x2, c.n2, c.L2, g_sample_current[n].o, matOpt, false);
     float m_num      = (M_sum - c_M_min) * p_hat_from;
     float m_den      = m_num + (c_M_min * p_c);
 

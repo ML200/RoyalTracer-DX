@@ -75,61 +75,97 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
     B = cross(N, T);
 }
 
-//______________________________________________________________________________________________________________________
-// Sample the BRDF of the given material using Heitz's VNDF sampling
-inline void SampleBRDF_GGX(MaterialOptimized mat, float3 outgoing, float3 normal, float3 flatNormal, inout float3 sample, inout float3 origin, float3 worldOrigin, inout uint2 seed)
+// ------------------------------------------------------------------------------
+// SampleBRDF_GGX: samples a microfacet normal (half-vector) from Heitz’s VNDF
+// and returns the *reflected* direction in `sample`. Uses alpha_x=alpha_y for
+// isotropic GGX.  Adapts Heitz’s sampleGGXVNDF from the paper.
+//
+// Inputs:
+//    mat.Pr_Pm_Ps_Pc.x = roughness parameter "alpha"
+//    outgoing          = view (or outgoing) direction, in world space
+//    normal            = macroscopic surface normal, in world space
+//    flatNormal        = normal used for small bias offset
+//    seed              = RNG state for random floats
+// Outputs:
+//    sample            = the *reflected* direction in world space
+//    origin            = slightly bumped shading origin (optional)
+// ------------------------------------------------------------------------------
+inline void SampleBRDF_GGX(
+    MaterialOptimized mat,
+    float3  outgoing,
+    float3  normal,
+    float3  flatNormal,
+    inout float3 sample,
+    inout float3 origin,
+    float3  worldOrigin,
+    inout uint2 seed)
 {
+    // 1) Compute alpha^2 if your material encodes roughness that way
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
+
+    // 2) Set up world->local transform where "normal" is the local Z
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
-    float e0 = RandomFloat(seed);
-    float e1 = RandomFloat(seed);
-
     float3 T1, T2;
     CoordinateSystem(N, T1, T2);
-    float3 Vh = normalize(float3(dot(T1, V), dot(T2, V), dot(N, V)));
-    if (Vh.z < 0.0f)
-    {
-        Vh = -Vh;
-    }
 
+    // 3) Section 3.2: Transform view dir V -> Ve in "hemisphere config"
+    //    Ve = normalize( (alpha_x * V.x), (alpha_y * V.y), V.z ) in local coords
     float alpha_x = alpha;
     float alpha_y = alpha;
-    float3 Vh_stretched = normalize(float3(alpha_x * Vh.x, alpha_y * Vh.y, Vh.z));
 
-    // Orthonormal basis
-    float lensq = Vh_stretched.x * Vh_stretched.x + Vh_stretched.y * Vh_stretched.y;
-    float3 T1h, T2h;
-    if (lensq > 0.0f)
-    {
-        T1h = float3(-Vh_stretched.y, Vh_stretched.x, 0.0f) / sqrt(lensq);
-        T2h = cross(Vh_stretched, T1h);
-    }
-    else
-    {
-        T1h = float3(1.0f, 0.0f, 0.0f);
-        T2h = float3(0.0f, 1.0f, 0.0f);
-    }
+    // Local coords of V relative to N,T1,T2:
+    float vx = dot(T1, V);
+    float vy = dot(T2, V);
+    float vz = dot(N,  V);
 
-    // Sample point on disk
-    float r = sqrt(e0);
-    float phi = 2.0f * PI * e1;
-    float x = r * cos(phi);
-    float y = r * sin(phi);
+    float3 Ve = normalize(float3(alpha_x * vx,
+                                 alpha_y * vy,
+                                 vz));
 
-    // Compute normal in stretched hemisphere
-    float3 Nh_stretched = x * T1h + y * T2h + sqrt(max(0.0f, 1.0f - x * x - y * y)) * Vh_stretched;
-    float3 Nh = normalize(float3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, Nh_stretched.z));
-    float3 H = Nh.x * T1 + Nh.y * T2 + Nh.z * N;
+    // 4) Section 4.1: Build orthonormal basis around Ve
+    float lensq = Ve.x*Ve.x + Ve.y*Ve.y;
+    float3 T1h = (lensq > 0.0f)
+               ? float3(-Ve.y, Ve.x, 0.0f) * rsqrt(lensq)
+               : float3(1.0f, 0.0f, 0.0f);
+    float3 T2h = cross(Ve, T1h);
+
+    // 5) Section 4.2: sample disk & warp
+    float U1  = RandomFloat(seed);
+    float U2  = RandomFloat(seed);
+    float r   = sqrt(U1);
+    float phi = 2.0f * PI * U2;
+    float t1  = r * cos(phi);
+    float t2  = r * sin(phi);
+
+    // "warp" step
+    float s   = 0.5f * (1.0f + Ve.z);
+    t2 = (1.0f - s) * sqrt(saturate(1.0f - t1*t1)) + s * t2;
+
+    // 6) Section 4.3: reproject onto hemisphere
+    float3 Nh = t1*T1h + t2*T2h
+              + sqrt(saturate(1.0f - t1*t1 - t2*t2)) * Ve;
+
+    // 7) Section 3.4: transform normal back to "ellipsoid" -> final half‐vector
+    float3 Ne = float3(alpha_x * Nh.x,
+                       alpha_y * Nh.y,
+                       max(0.0f, Nh.z));
+    Ne = normalize(Ne);
+
+    // 8) Convert half‐vector from local coords to world space
+    //    (unrotate by the same transform that took N->(0,0,1))
+    float3 H = Ne.x * T1 + Ne.y * T2 + Ne.z * N;
+
+    // 9) Reflect view about H to get the *sampled* direction
+    //    The built‐in function reflect(I,N) = I - 2 (N·I) N
+    //    We want L so that V + L is “2H * (some factor)”
     sample = reflect(-V, H);
 
-    // Check if the sample is in the same hemisphere as the surface normal
-    /*if (dot(sample, N) <= 0.0f)
-    {
-        sample = float3(0.0f, 0.0f, 0.0f); // Invalid sample
-    }*/
+    // 10) Shift origin to avoid self‐intersection
     origin = worldOrigin + s_bias * flatNormal;
 }
+
+
 
 // Evaluate the GGX BRDF for the given material
 inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing)
@@ -171,6 +207,7 @@ inline float BRDF_PDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming,
     float3 H = normalize(V + L);
     float NdotH = dot(N, H);
     float NdotV = dot(N, V);
+    float VdotH = dot(H, V);
 
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
     float G1 = G1_SmithGGX(NdotV, alpha);

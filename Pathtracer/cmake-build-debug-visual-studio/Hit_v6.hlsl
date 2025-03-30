@@ -10,6 +10,7 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload, Attributes attrib) {
+    payload.objID = InstanceID();
     // Get information about the surface hit
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
     uint vertId = 3 * PrimitiveIndex();

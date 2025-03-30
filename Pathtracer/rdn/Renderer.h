@@ -115,17 +115,17 @@ private:
 
     struct Reservoir_DI
     {
-        uint8_t  pad[48]; // 48 bytes
+        uint8_t  pad[40]; // 48 bytes
+    };
+
+    struct Reservoir_GI
+    {
+        uint8_t  pad[56]; // 56 bytes :(
     };
 
     struct SampleData
     {
         uint8_t  pad[48]; // 48 bytes
-    };
-
-    struct Reservoir_GI
-    {
-        uint8_t  pad[96]; // 92 bytes :(
     };
 
 

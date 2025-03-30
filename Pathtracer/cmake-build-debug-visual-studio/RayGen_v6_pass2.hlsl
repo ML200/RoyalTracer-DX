@@ -39,14 +39,6 @@ cbuffer CameraParams : register(b0)
     float4x4 prevView;        // Previous frame's view matrix (can be removed if not used elsewhere)
     float4x4 prevProjection;  // Previous frame's projection matrix (can be removed if not used elsewhere)
     float time;
-    float4 frustumLeft;       // Left frustum plane
-    float4 frustumRight;      // Right frustum plane
-    float4 frustumTop;        // Top frustum plane
-    float4 frustumBottom;     // Bottom frustum plane
-    float4 prevFrustumLeft;   // Previous frame's frustum planes (can be removed if not used elsewhere)
-    float4 prevFrustumRight;
-    float4 prevFrustumTop;
-    float4 prevFrustumBottom;
 }
 
 // Second raygen shader is the ReSTIR pass. The reservoirs were filled in the first shader, now we recombine them
@@ -86,10 +78,8 @@ void RayGen2() {
         seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(2) * prime3_x ^ uint(time) * prime_time_x;
         seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(2) * prime3_y ^ uint(time) * prime_time_y;
 
-        float3 accumulation = float3(0, 0, 0);
-
         // Obtain the best reprojected pixel from the previous frame.
-        int2 pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims);
+        int2 pixelPos = GetBestReprojectedPixel_d(sdata_current.x1, prevView, prevProjection, dims, sdata_current.objID);
         uint tempPixelIdx = MapPixelID(dims, pixelPos);
         Reservoir_DI reservoir_last = g_Reservoirs_last[tempPixelIdx];
         Reservoir_GI reservoir_gi_last = g_Reservoirs_last_gi[tempPixelIdx];
@@ -99,7 +89,7 @@ void RayGen2() {
         bool candidateAcceptedDI = (pixelPos.x != -1 && pixelPos.y != -1 &&
             length(sdata_last.L1) == 0.0f &&
             !RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
-            !RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID]) &&
+            //!RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID]) &&
             IsValidReservoir(reservoir_last) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
             (reservoir_last.x2.x != 0.0f && reservoir_last.x2.y != 0.0f && reservoir_last.x2.z != 0.0f) &&
@@ -136,46 +126,28 @@ void RayGen2() {
 
             float w_c = mi_c * GetP_Hat(sdata_current.x1, sdata_current.n1,
                                         reservoir_current.x2, reservoir_current.n2,
-                                        reservoir_current.L2, sdata_current.o,
-                                        reservoir_current.s, matOpt, false) * reservoir_current.W;
+                                        reservoir_current.L2, sdata_current.o, matOpt, false) * reservoir_current.W;
             float w_t = mi_t * GetP_Hat(sdata_current.x1, sdata_current.n1,
                                         reservoir_last.x2, reservoir_last.n2,
-                                        reservoir_last.L2, sdata_current.o,
-                                        reservoir_last.s, matOpt, false) * reservoir_last.W;
-            Reservoir_DI reservoir_temporal = {
-                /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-                /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-                /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0), uint16_t(0) }
-            };
+                                        reservoir_last.L2, sdata_current.o, matOpt, false) * reservoir_last.W;
+
+            reservoir_current.M = min(temporal_M_cap, reservoir_current.M);
+            reservoir_current.w_sum = w_c;
 
             UpdateReservoir(
-                reservoir_temporal,
-                w_c,
-                min(temporal_M_cap, reservoir_current.M),
-                reservoir_current.x2,
-                reservoir_current.n2,
-                reservoir_current.L2,
-                reservoir_current.s,
-                seed
-            );
-
-            UpdateReservoir(
-                reservoir_temporal,
+                reservoir_current,
                 w_t,
                 min(temporal_M_cap, reservoir_last.M),
                 reservoir_last.x2,
                 reservoir_last.n2,
                 reservoir_last.L2,
-                reservoir_last.s,
                 seed
             );
 
             float p_hat = GetP_Hat(sdata_current.x1, sdata_current.n1,
-                                   reservoir_temporal.x2, reservoir_temporal.n2,
-                                   reservoir_temporal.L2, sdata_current.o,
-                                   reservoir_temporal.s, matOpt, true);
-            reservoir_temporal.W = GetW(reservoir_temporal, p_hat);
-            reservoir_current = reservoir_temporal;
+                                   reservoir_current.x2, reservoir_current.n2,
+                                   reservoir_current.L2, sdata_current.o, matOpt, false);
+            reservoir_current.W = GetW(reservoir_current, p_hat);
         }
 
         // -------------------- Temporal Reuse for GI --------------------
@@ -197,7 +169,6 @@ void RayGen2() {
                                      reservoir_gi_current.E3, reservoir_gi_current.Vn,
                                      sdata_current.o, matOpt, mat_gi_c, false);
             float w_c_gi = mi_c_gi * LinearizeVector(f_c) * reservoir_gi_current.W;
-            //float w_c_gi = mi_c_gi * LinearizeVector(reservoir_gi_current.f) * reservoir_gi_current.W;
 
             MaterialOptimized mat_gi_t = CreateMaterialOptimized(materials[reservoir_gi_last.mID2], reservoir_gi_last.mID2);
             float3 f_t = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
@@ -205,58 +176,26 @@ void RayGen2() {
                                      reservoir_gi_last.E3, reservoir_gi_last.Vn,
                                      sdata_current.o, matOpt, mat_gi_t, false);
             float w_t_gi = mi_t_gi * LinearizeVector(f_t) * reservoir_gi_last.W;
-            //float w_t_gi = mi_t_gi * LinearizeVector(reservoir_gi_last.f) * reservoir_gi_last.W;
 
-            Reservoir_GI reservoir_GI_temporal = {
-                float3(0.0f, 0.0f, 0.0f), // xn
-                float3(0.0f, 0.0f, 0.0f), // nn
-                float3(0.0f, 0.0f, 0.0f), // Vn
-                0,                       // k
-                0,                       // mID2
-                0.0f,                    // w_sum
-                0.0f,                    // W
-                float3(0.0f, 0.0f, 0.0f), // f
-                0,                       // M
-                0,                       // s
-                float3(0.0f, 0.0f, 0.0f), // E3
-                1.0f,
-                uint2(0, 0)              // seed
-            };
+            reservoir_gi_current.M = min(temporal_M_cap_GI, reservoir_gi_current.M);
+            reservoir_gi_current.w_sum = w_c_gi;
 
             UpdateReservoir_GI(
-                reservoir_GI_temporal,
-                w_c_gi,
-                min(temporal_M_cap_GI, reservoir_gi_current.M),
-                reservoir_gi_current.xn,
-                reservoir_gi_current.nn,
-                reservoir_gi_current.Vn,
-                reservoir_gi_current.E3,
-                reservoir_gi_current.s,
-                reservoir_gi_current.k,
-                reservoir_gi_current.mID2,
-                f_c,
-                1.0f,
-                seed
-            );
-
-            UpdateReservoir_GI(
-                reservoir_GI_temporal,
+                reservoir_gi_current,
                 w_t_gi,
                 min(temporal_M_cap_GI, reservoir_gi_last.M),
                 reservoir_gi_last.xn,
                 reservoir_gi_last.nn,
                 reservoir_gi_last.Vn,
                 reservoir_gi_last.E3,
-                reservoir_gi_last.s,
-                reservoir_gi_last.k,
                 reservoir_gi_last.mID2,
-                f_t,
-                1.0f,
                 seed
             );
-            float p_hat_gi = LinearizeVector(reservoir_GI_temporal.f);
-            reservoir_GI_temporal.W = GetW_GI(reservoir_GI_temporal, p_hat_gi);
-            reservoir_gi_current = reservoir_GI_temporal;
+            MaterialOptimized mat_gi = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
+            reservoir_gi_current.W = GetW_GI(reservoir_gi_current, LinearizeVector(GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
+                                     reservoir_gi_current.xn, reservoir_gi_current.nn,
+                                     reservoir_gi_current.E3, reservoir_gi_current.Vn,
+                                     sdata_current.o, matOpt, mat_gi, false)));
         }
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;

@@ -42,14 +42,6 @@ cbuffer CameraParams : register(b0)
     float4x4 prevView;        // Previous frame's view matrix (can be removed if not used elsewhere)
     float4x4 prevProjection;  // Previous frame's projection matrix (can be removed if not used elsewhere)
     float time;
-    float4 frustumLeft;       // Left frustum plane
-    float4 frustumRight;      // Right frustum plane
-    float4 frustumTop;        // Top frustum plane
-    float4 frustumBottom;     // Bottom frustum plane
-    float4 prevFrustumLeft;   // Previous frame's frustum planes (can be removed if not used elsewhere)
-    float4 prevFrustumRight;
-    float4 prevFrustumTop;
-    float4 prevFrustumBottom;
 }
 
 //Generate the initial
@@ -125,31 +117,23 @@ void RayGen() {
     Reservoir_DI reservoir = {
         /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
         /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-        /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0), uint16_t(0)}
+        /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0)}
     };
 
     Reservoir_GI reservoir_GI = {
-        float3(0.0f, 0.0f, 0.0f), // xn
-        float3(0.0f, 0.0f, 0.0f), // nn
-        float3(0.0f, 0.0f, 0.0f), // Vn
-        0,                       // k
-        0,                       // mID2
-        0.0f,                    // w_sum
-        0.0f,                    // W
-        float3(0.0f, 0.0f, 0.0f), // f
-        0,                       // M
-        0,                       // s
-        float3(0.0f, 0.0f, 0.0f),  // E3
-        1.0f, //j
-        uint2(0, 0)              // seed
+        float3(0.0f, 0.0f, 0.0f), 0.0f,
+        float3(0.0f, 0.0f, 0.0f), 0.0f,
+        float3(0.0f, 0.0f, 0.0f), 0, 0,
+        half3(0,0,0)
     };
 
     SampleData sdata = {
         float3(0, 0, 0),  // x1
         mID,                  // mID
-        float3(0, 0, 0),  // n1
         matOpt.Ke,   // L1
+        float3(0, 0, 0),  // n1
         float3(0, 0, 0),   // o
+        payload.objID,        // mID
     };
 
     //_______________________________PATH_SAMPLING__________________________________
@@ -179,15 +163,20 @@ void RayGen() {
         sdata.o = -direction;
         sdata.mID = mID;
 
-        float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, reservoir.s, matOpt, true);
+        float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
         reservoir.W = GetW(reservoir, p_hat);
 
         //for(int p = 0; p< 20000; p++)
-            //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, reservoir.s, matOpt, true);
+            //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
 
         // Perform path sampling (simpliefied for now)
         SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
-        reservoir_GI.W = GetW_GI(reservoir_GI, LinearizeVector(reservoir_GI.f));
+
+        MaterialOptimized mat_gi = CreateMaterialOptimized(materials[reservoir_GI.mID2], reservoir_GI.mID2);
+        reservoir_GI.W = GetW_GI(reservoir_GI, LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
+                                     reservoir_GI.xn, reservoir_GI.nn,
+                                     reservoir_GI.E3, reservoir_GI.Vn,
+                                     sdata.o, matOpt, mat_gi, false)));
         reservoir_GI.M = 1.0f;
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;

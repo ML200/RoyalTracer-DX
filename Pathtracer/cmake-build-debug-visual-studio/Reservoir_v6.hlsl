@@ -1,26 +1,29 @@
+// Each row is 16 bytes
+struct SampleData
+{
+    float3 x1;  // (12 bytes)
+    uint16_t  mID;   // (2 bytes)
+    half3 L1;   // (6 bytes)
+    float3 n1;  // (12 bytes)
+    float3 o;    // (12 bytes)
+    uint  objID;   // (4 bytes)
+};
+
+
 // RIS reservoir for direct lighting
 struct Reservoir_DI
 {
     float3 x2;    float w_sum; // 16 bytes total
     float3 n2;    float W;     // 16 bytes total
-    float3 L2;     uint16_t M;     uint16_t  s; // 16 bytes total
+    half3 L2;     uint16_t M; // 8 bytes total
 };
 
 struct Reservoir_GI
 {
-    float3 xn; // Reconnection vertex position (world space)
-    float3 nn; // reconnection vertex normal
-    float3 Vn; // Direction into reconnection vertex
-    uint  k; // Path index reconnection vertex
-    uint mID2;
-    float w_sum;
-    float W;
-    float3 f; // canonical contribution (before pdf)
-    float M; // confidence weight
-    float s;
-    float3 E3; // incoming contibution
-    float j; // Jacobian
-    uint2 seed;
+    float3 xn;     float w_sum; //16
+    float3 nn;     float W;  //16
+    float3 Vn;     uint16_t mID2;  uint16_t M; //16
+    half3 E3;      // 8 (6 + pad)
 };
 
 // Update the reservoir with the light
@@ -33,17 +36,13 @@ inline void UpdateReservoir_GI(
     float3 nn,
     float3 Vn,
     float3 E3,
-    uint s,
-    uint16_t k,
     uint mID2,
-    float3 f,
-    float j,
     inout uint2 seed
     )
 {
 
     reservoir.w_sum += wi;
-    reservoir.M += (uint16_t)M;
+    reservoir.M += M;
 
     if (RandomFloat(seed) < wi / reservoir.w_sum)
     {
@@ -52,10 +51,6 @@ inline void UpdateReservoir_GI(
         reservoir.Vn = Vn;
         reservoir.mID2 = mID2;
         reservoir.E3 = E3;
-        reservoir.s = s;
-        reservoir.k = k;
-        reservoir.f = f;
-        reservoir.j = j;
     }
 }
 
@@ -69,8 +64,6 @@ inline void UpdateReservoir(
     float3 x2,
     float3 n2,
     float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Alwo,we dont want to reuse sample on a lights surface
-    uint s,
-
     inout uint2 seed
     )
 {
@@ -83,10 +76,13 @@ inline void UpdateReservoir(
         reservoir.x2 = x2;
         reservoir.n2 = n2;
         reservoir.L2 = L2;
-        reservoir.s = (uint16_t)s;
     }
 }
 
 inline void SetReservoirWeight(Reservoir_DI reservoir, float weight){
+    reservoir.w_sum = weight;
+}
+
+inline void SetReservoirWeight_GI(Reservoir_DI reservoir, float weight){
     reservoir.w_sum = weight;
 }
