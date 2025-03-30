@@ -252,58 +252,6 @@ void SampleGGX(
 }
 
 
-// Sample GGX VNDF for sampling H
-/*XMFLOAT3 SampleGGX_H(const XMFLOAT3& V, float roughness, float u1, float u2) {
-    float alpha = roughness * roughness;
-
-    float phi = 2.0f * PI * u1;
-    float cosTheta = sqrt((1.0f - u2) / (1.0f + (alpha * alpha - 1.0f) * u2));
-    float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
-
-    float x = sinTheta * cosf(phi);
-    float y = sinTheta * sinf(phi);
-    float z = cosTheta;
-
-    // Create orthonormal basis (T1, T2, N)
-    XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Assuming N is along the z-axis
-    XMFLOAT3 T1, T2;
-    CoordinateSystem(N, T1, T2);
-
-    // Transform H from tangent space to world space
-    XMFLOAT3 H_world = normalize(XMFLOAT3(
-            x * T1.x + y * T2.x + z * N.x,
-            x * T1.y + y * T2.y + z * N.y,
-            x * T1.z + y * T2.z + z * N.z
-    ));
-
-    return H_world;
-}
-
-// Updated SampleGGX Function using standard GGX VNDF sampling
-void SampleGGX(
-        const Material& mat,
-        const XMFLOAT3& outgoing,      // View direction (V)
-        const XMFLOAT3& normal,        // Surface normal (N)
-        XMFLOAT3& sample,              // Output L
-        float u1,
-        float u2
-) {
-    // Normalize vectors
-    XMFLOAT3 N = normalize(normal);
-    XMFLOAT3 V = normalize(outgoing);
-
-    // Sample H from GGX distribution
-    XMFLOAT3 H = SampleGGX_H(V, mat.Pr_Pm_Ps_Pc.x, u1, u2);
-
-    // Compute L as reflection of V about H
-    XMFLOAT3 negV = V * (-1.0f);
-    XMFLOAT3 L = reflect(negV, H);
-    sample = normalize(L);
-}*/
-
-
-
-
 // Evaluate GGX BRDF
 XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3& F0, float roughness) {
     XMFLOAT3 H = normalize(V + L);

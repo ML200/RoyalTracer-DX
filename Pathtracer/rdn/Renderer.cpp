@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monke.obj"};
+    std::vector<std::string> models = {"garage.obj", "dragon.obj"};
 
 
 
@@ -397,14 +397,14 @@ void Renderer::OnUpdate() {
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
-  /*m_instances[2].second =
+  m_instances[1].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 100000000.0f) *
-      XMMatrixTranslation(0.f, 0.0f * cosf(m_time / 20000000.f), 0.f);*/
-    m_instances[1].second =
+                           static_cast<float>(m_time) / 100.0f) *
+      XMMatrixTranslation(0.f, 0.f, 0.f);
+    /*m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
-                                 static_cast<float>(m_time) / 10000000.0f) *
-            XMMatrixTranslation(0.f, 2.0f, 0.f);
+                                 static_cast<float>(m_time) / 100.0f) *
+            XMMatrixTranslation(0.f, 2.0f, 0.f);*/
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -992,7 +992,7 @@ void Renderer::CreateRaytracingPipeline() {
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
   // It is important to keep this value as low as possible as a too high value
   // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(7 * sizeof(float) + sizeof(UINT) + sizeof(BOOL));
+    pipeline.SetMaxPayloadSize(7 * sizeof(float) + 2 * sizeof(UINT) + sizeof(BOOL));
 
   // Upon hitting a surface, DXR can provide several attributes to the hit. In
   // our sample we just use the barycentric coordinates defined by the weights
@@ -1550,10 +1550,7 @@ void Renderer::CreateCameraBuffer() {
     // Calculate the buffer size
     // 6 matrices + 1 float time + 8 planes of type XMFLOAT4
     uint32_t nbMatrix   = 6;                 // view, proj, viewInv, projInv, prevView, prevProj
-    uint32_t numPlanes  = 8;                 // 4 current frustum planes + 4 previous
-    uint32_t planeBytes = numPlanes * sizeof(XMFLOAT4);
     m_cameraBufferSize  = nbMatrix * sizeof(XMMATRIX)
-                        + planeBytes
                         + sizeof(float);     // for time
     // Round up to 256 for constant‐buffer alignment
     m_cameraBufferSize = (m_cameraBufferSize + 255) & ~255;
@@ -1603,7 +1600,6 @@ void Renderer::CreateCameraBuffer() {
 //
 void Renderer::UpdateCameraBuffer() {
     std::vector<XMMATRIX> matrices(6); // view, projection, viewInv, projectionInv, prevView, prevProjection
-    std::vector<XMFLOAT4> frustumPlanes(8); // 4 current and 4 previous frustum planes
 
     // Initialize the current view matrix
     const glm::mat4 &viewMat = nv_helpers_dx12::CameraManip.getMatrix();
@@ -1621,14 +1617,6 @@ void Renderer::UpdateCameraBuffer() {
     // Previous frame matrices
     matrices[4] = m_prevViewMatrix;
     matrices[5] = m_prevProjMatrix;
-
-    // Compute frustum planes for the current view-projection matrix
-    XMMATRIX viewProjMatrix = XMMatrixMultiply(matrices[0], matrices[1]);
-    ExtractFrustumPlanes(viewProjMatrix, frustumPlanes.data());
-
-    // Compute frustum planes for the previous view-projection matrix
-    XMMATRIX prevViewProjMatrix = XMMatrixMultiply(matrices[4], matrices[5]);
-    ExtractFrustumPlanes(prevViewProjMatrix, frustumPlanes.data() + 4); // Previous frustum planes
 
     // Copy matrix contents to the buffer
     uint8_t *pData;
@@ -1650,9 +1638,6 @@ void Renderer::UpdateCameraBuffer() {
 
     memcpy(pData + (6 * sizeof(XMMATRIX)), &currentTime, sizeof(float));
 
-    // Copy the frustum planes right after the time, now using XMFLOAT4 (padded)
-    memcpy(pData + (6*sizeof(XMMATRIX) + sizeof(float)),
-       frustumPlanes.data(), 8 * sizeof(XMFLOAT4));
 
     m_cameraBuffer->Unmap(0, nullptr);
 

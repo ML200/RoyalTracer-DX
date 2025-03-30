@@ -10,7 +10,13 @@ float GenPairwiseMIS_canonical_GI(
 {
     float c_M_min = min(M_cap, c.M);
     float c_M_max = M_sum - c_M_min;
-    float p_c     = LinearizeVector(c.f);
+
+
+    MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[c.mID2], c.mID2);
+    float p_c     = LinearizeVector(GetP_Hat_GI(sample_c.x1, sample_c.n1,
+                                     c.xn, c.nn,
+                                     c.E3, c.Vn,
+                                     sample_c.o, matOpt, mat_gi_c, false));
     float c_m_num = c_M_min * p_c;
     float m_c = c_M_min / M_sum;
 
@@ -45,7 +51,14 @@ float GenPairwiseMIS_noncanonical_GI(
     MaterialOptimized matOpt)
 {
     float c_M_min = min(M_cap, c.M);
-    float p_c     = LinearizeVector(c.f);
+
+
+    MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[c.mID2], c.mID2);
+    float p_c     = LinearizeVector(GetP_Hat_GI(sample_c.x1, sample_c.n1,
+                                     c.xn, c.nn,
+                                     c.E3, c.Vn,
+                                     sample_c.o, matOpt, mat_gi_c, false));
+
 
     MaterialOptimized matGI = CreateMaterialOptimized(materials[c.mID2], c.mID2);
     float j_gi = Jacobian_Reconnection(sample_c.x1, g_sample_current[n].x1, c.xn, c.nn);

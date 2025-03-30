@@ -39,14 +39,6 @@ cbuffer CameraParams : register(b0)
     float4x4 prevView;        // Previous frame's view matrix (if needed)
     float4x4 prevProjection;  // Previous frame's projection matrix (if needed)
     float time;
-    float4 frustumLeft;
-    float4 frustumRight;
-    float4 frustumTop;
-    float4 frustumBottom;
-    float4 prevFrustumLeft;
-    float4 prevFrustumRight;
-    float4 prevFrustumTop;
-    float4 prevFrustumBottom;
 }
 
 // Second raygen shader is the ReSTIR pass. The reservoirs were filled in the first shader, now we recombine them.
@@ -54,6 +46,9 @@ cbuffer CameraParams : register(b0)
 [shader("raygeneration")]
 void RayGen3()
 {
+
+
+
     // Get the location within the dispatched 2D grid of work items (often maps to pixels).
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
@@ -163,7 +158,7 @@ void RayGen3()
                     sdata_current.x1,
                     g_Reservoirs_current_gi[pixel_r].xn,
                     g_Reservoirs_current_gi[pixel_r].nn
-                ), 10.0f) &&
+                ), j_threshold) &&
                 (length(g_sample_current[pixel_r].L1) == 0.0f) &&
                 (g_sample_current[pixel_r].mID != 4294967294) &&
                 (g_sample_current[pixel_r].mID == sdata_current.mID);
@@ -217,7 +212,6 @@ void RayGen3()
                         canonical.n2,
                         canonical.L2,
                         sdata_current.o,
-                        canonical.s,
                         matOpt,
                         false
                     ) *
@@ -233,60 +227,19 @@ void RayGen3()
             spatial_M_cap_GI,
             matOpt
         );
-        float w_c_gi = mi_c_gi * LinearizeVector(canonical_gi.f) * canonical_gi.W;
 
-        // Create empty "accumulator" reservoirs for the final selected candidate
-        Reservoir_DI reservoir_spatial =
-        {
-            /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-            /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-            /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0.0f), uint16_t(0.0f) }
-        };
+        MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[canonical_gi.mID2], canonical_gi.mID2);
+        float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
+                                 canonical_gi.xn, canonical_gi.nn,
+                                 canonical_gi.E3, canonical_gi.Vn,
+                                 sdata_current.o, matOpt, mat_gi_c, false);
+        float w_c_gi = mi_c_gi * LinearizeVector(f_c) * canonical_gi.W;
 
-        Reservoir_GI reservoir_spatial_gi =
-        {
-            float3(0.0f, 0.0f, 0.0f), // xn
-            float3(0.0f, 0.0f, 0.0f), // nn
-            float3(0.0f, 0.0f, 0.0f), // Vn
-            0,                        // k
-            0,                        // mID2
-            0.0f,                     // w_sum
-            0.0f,                     // W
-            float3(0.0f, 0.0f, 0.0f), // f
-            0,                        // M
-            0,                        // s
-            float3(0.0f, 0.0f, 0.0f), // E3
-            1.0f,
-            uint2(0, 0)               // seed
-        };
+        reservoir_current.M = min(spatial_M_cap, canonical.M);
+        reservoir_current.w_sum = w_c;
 
-        // Start by updating with the canonical sample itself
-        UpdateReservoir(
-            reservoir_spatial,
-            w_c,
-            min(spatial_M_cap, canonical.M),
-            canonical.x2,
-            canonical.n2,
-            canonical.L2,
-            canonical.s,
-            seed
-        );
-
-        UpdateReservoir_GI(
-            reservoir_spatial_gi,
-            w_c_gi,
-            min(spatial_M_cap_GI, canonical_gi.M),
-            canonical_gi.xn,
-            canonical_gi.nn,
-            canonical_gi.Vn,
-            canonical_gi.E3,
-            canonical_gi.s,
-            canonical_gi.k,
-            canonical_gi.mID2,
-            canonical_gi.f,
-            1.0f,
-            seed
-        );
+        reservoir_current_gi.M = min(spatial_M_cap_GI, canonical_gi.M);
+        reservoir_current_gi.w_sum = w_c_gi;
 
         // Now loop over DI candidate list and incorporate them into DI reservoir
         [loop]
@@ -311,20 +264,18 @@ void RayGen3()
                                 g_Reservoirs_current[spatial_candidate].n2,
                                 g_Reservoirs_current[spatial_candidate].L2,
                                 sdata_current.o,
-                                g_Reservoirs_current[spatial_candidate].s,
                                 matOpt,
                                 false
                             ) *
                             g_Reservoirs_current[spatial_candidate].W;
 
                 UpdateReservoir(
-                    reservoir_spatial,
+                    reservoir_current,
                     w_s,
                     min(spatial_M_cap, g_Reservoirs_current[spatial_candidate].M),
                     g_Reservoirs_current[spatial_candidate].x2,
                     g_Reservoirs_current[spatial_candidate].n2,
                     g_Reservoirs_current[spatial_candidate].L2,
-                    g_Reservoirs_current[spatial_candidate].s,
                     seed
                 );
             }
@@ -375,27 +326,19 @@ void RayGen3()
 
                 if(j_gi != 0.0f){
                     UpdateReservoir_GI(
-                        reservoir_spatial_gi,
+                        reservoir_current_gi,
                         w_s_gi,
                         min(spatial_M_cap_GI, g_Reservoirs_current_gi[spatial_candidate].M),
                         g_Reservoirs_current_gi[spatial_candidate].xn,
                         g_Reservoirs_current_gi[spatial_candidate].nn,
                         g_Reservoirs_current_gi[spatial_candidate].Vn,
                         g_Reservoirs_current_gi[spatial_candidate].E3,
-                        g_Reservoirs_current_gi[spatial_candidate].s,
-                        g_Reservoirs_current_gi[spatial_candidate].k,
                         g_Reservoirs_current_gi[spatial_candidate].mID2,
-                        f_gi,
-                        j_gi,
                         seed
                     );
                 }
             }
         }
-
-        // Finalize the chosen sample in each reservoir
-        reservoir_current     = reservoir_spatial;
-        reservoir_current_gi  = reservoir_spatial_gi;
 
         float p_hat = GetP_Hat(
             sdata_current.x1,
@@ -404,7 +347,6 @@ void RayGen3()
             reservoir_current.n2,
             reservoir_current.L2,
             sdata_current.o,
-            reservoir_current.s,
             matOpt,
             true
         );
@@ -418,7 +360,6 @@ void RayGen3()
             reservoir_current.n2,
             reservoir_current.L2,
             sdata_current.o,
-            reservoir_current.s,
             matOpt
         ) * reservoir_current.W;
 
@@ -437,11 +378,10 @@ void RayGen3()
             mat_gi_final,
             false
         );
-        reservoir_current_gi.f = f_gi_final;
 
-        float p_hat_gi = LinearizeVector(reservoir_current_gi.f);
+        float p_hat_gi = LinearizeVector(f_gi_final);
         reservoir_current_gi.W = GetW_GI(reservoir_current_gi, p_hat_gi);
-        accumulation += reservoir_current_gi.f * reservoir_current_gi.W;
+        accumulation += f_gi_final * reservoir_current_gi.W;
 
 
         // DEBUG-------------------------------
@@ -493,7 +433,7 @@ void RayGen3()
         }
 
         // Optionally skip temporal accumulation if desired:
-        //averagedColor = accumulation;
+        averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))

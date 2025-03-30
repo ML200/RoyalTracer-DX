@@ -6,21 +6,21 @@
 #define EXPOSURE 1.0f
 
 #define nee_samples 1
-#define bounces 4
+#define bounces 3
 #define rr_threshold 1
 
 #define spatial_candidate_count 2
-#define spatial_max_tries 6
+#define spatial_max_tries 9
 #define spatial_radius 30
 #define spatial_exponent 0.0f
 #define spatial_M_cap 500
 #define spatial_M_cap_GI 500
 #define temporal_M_cap 20
-#define temporal_M_cap_GI 16
+#define temporal_M_cap_GI 20
 #define temporal_r_threshold 0.09f
 #define w_sum_threshold 1.0f
+#define j_threshold 5.0f
 
-#define GI_length_threshold 0.01f
 #define beta 1.0f
 
 #define MIN_DIST   (2.0f * s_bias)      // Minimum allowed distance from shading point to light hit
@@ -33,6 +33,7 @@
 struct HitInfo {
   float3 hitPosition;   uint materialID; // 16 byte aligned
   float3 hitNormal;  float area; // 16 byte aligned
+  uint objID;
 };
 
 struct Material
@@ -102,16 +103,6 @@ cbuffer Colors : register(b0) {
 // here the barycentric coordinates
 struct Attributes {
   float2 bary;
-};
-
-// Each row is 16 bytes
-struct SampleData
-{
-    float3 x1;  // (12 bytes)
-    uint  mID;   // (4 bytes)
-    float3 n1;  // (12 bytes)
-    half3 L1;   // (6 bytes)
-    float3 o;    // (12 bytes)
 };
 
 // Random Float Generator
@@ -297,27 +288,6 @@ inline bool RejectDistance(float3 x1, float3 x2, float3 camPos, float threshold)
 
     float relativeDifference = abs(d1 - d2) / max(d1, d2);
     return relativeDifference > threshold;
-}
-
-
-
-inline float2 GetLastFramePixelCoordinates_Float(
-    float3 worldPos,
-    float4x4 prevView,
-    float4x4 prevProjection,
-    float2 resolution)
-{
-    float4 clipPos = mul(prevProjection, mul(prevView, float4(worldPos, 1.0f)));
-    if (clipPos.w <= 0.0f)
-        return float2(-1.0f, -1.0f);
-
-    float2 ndc = clipPos.xy / clipPos.w;
-    float2 screenUV = ndc * 0.5f + 0.5f;
-    // Flip Y if needed:
-    screenUV.y = 1.0f - screenUV.y;
-
-    // Get the full sub-pixel coordinate in pixel space:
-    return screenUV * resolution;
 }
 
 
