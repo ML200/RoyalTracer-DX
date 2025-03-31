@@ -95,6 +95,14 @@ void RayGen3()
         int candidateFoundCount_DI = 0;
         int candidateFoundCount_GI = 0;
 
+        MaterialOptimized matOpt = {
+            materials[mID].Kd,
+            materials[mID].Pr_Pm_Ps_Pc,
+            materials[mID].Ks,
+            materials[mID].Ke,
+            mID
+        };
+
         // First loop: gather DI candidates
         [loop]
         for (int attempt = 0; attempt < spatial_max_tries && candidateFoundCount_DI < spatial_candidate_count; attempt++)
@@ -148,7 +156,8 @@ void RayGen3()
 
             // Evaluate GI candidate predicate
             bool candidateAcceptedGI =
-                !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.9f) &&
+                matOpt.Pr_Pm_Ps_Pc.x > 0.5f &&
+                !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.999999f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
                 !RejectBelowSurface(normalize(g_Reservoirs_current_gi[pixel_r].xn - sdata_current.x1), sdata_current.n1) &&
                 !RejectWsum(g_Reservoirs_current_gi[pixel_r].w_sum, w_sum_threshold) &&
@@ -185,14 +194,6 @@ void RayGen3()
         Reservoir_GI reservoir_current_gi  = g_Reservoirs_current_gi[pixelIdx];
         Reservoir_DI canonical            = reservoir_current;    // DI
         Reservoir_GI canonical_gi         = reservoir_current_gi; // GI
-
-        MaterialOptimized matOpt = {
-            materials[mID].Kd,
-            materials[mID].Pr_Pm_Ps_Pc,
-            materials[mID].Ks,
-            materials[mID].Ke,
-            mID
-        };
 
         // DI: Evaluate canonical sample
         float mi_c = GenPairwiseMIS_canonical(
@@ -385,7 +386,7 @@ void RayGen3()
 
 
         // DEBUG-------------------------------
-        //accumulation = f_gi_final;
+        //accumulation = reservoir_current_gi.W;
         //accumulation = reservoir_current_gi.xn;
 
         // -----------------------------------------------------------
@@ -449,6 +450,21 @@ void RayGen3()
         // Gamma correct
         float3 finalColor = sRGBGammaCorrection(averagedColor);
         gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
+
+        /*bool r1 = RandomFloat(seed) < 0.0001f? true: false;
+        if(r1){
+            for(int d = 0; d<60; d++){
+                uint2 pixel_r_d = GetRandomPixelCircleWeighted_d(
+                        spatial_radius,
+                        DispatchRaysDimensions().x,
+                        DispatchRaysDimensions().y,
+                        launchIndex.x,
+                        launchIndex.y,
+                        seed
+                );
+                gOutput[uint3(pixel_r_d, 0)] = float4(0,1,0,1);
+            }
+        }*/
     }
     else
     {

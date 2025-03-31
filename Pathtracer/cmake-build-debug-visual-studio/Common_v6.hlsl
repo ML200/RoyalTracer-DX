@@ -9,16 +9,16 @@
 #define bounces 3
 #define rr_threshold 1
 
-#define spatial_candidate_count 2
+#define spatial_candidate_count 3
 #define spatial_max_tries 9
 #define spatial_radius 30
-#define spatial_exponent 0.0f
+#define spatial_exponent 1.0f
 #define spatial_M_cap 500
 #define spatial_M_cap_GI 500
 #define temporal_M_cap 20
 #define temporal_M_cap_GI 20
 #define temporal_r_threshold 0.09f
-#define w_sum_threshold 1.0f
+#define w_sum_threshold 5.0f
 #define j_threshold 5.0f
 
 #define beta 1.0f
@@ -145,12 +145,12 @@ float3 SafeMultiply(float scalar, float3 vec)
 }*/
 
 // Row Major
-/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
+inline uint MapPixelID(uint2 dims, uint2 lIndex){
     return lIndex.y * dims.x + lIndex.x;
-}*/
+}
 
 // Swizzling
-inline uint MapPixelID(uint2 dims, uint2 lIndex)
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex)
 {
     // Internal tile dimensions (square tiles).
     // Adjust as needed, or expose as a parameter if desired.
@@ -176,7 +176,7 @@ inline uint MapPixelID(uint2 dims, uint2 lIndex)
 
     // Combine: first skip all full tiles, then add the local index.
     return flattenedTileIndex * (tileSize * tileSize) + flattenedLocalIndex;
-}
+}*/
 
 
 
@@ -219,6 +219,46 @@ inline uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, ui
 
     //return newX * h + newY;
     return MapPixelID(uint2(w, h), uint2(newX,newY));
+}
+
+inline uint2 GetRandomPixelCircleWeighted_d(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed)
+{
+    int newX, newY;
+    do {
+        // Get a uniform random value.
+        float u = RandomFloat(seed);
+        // Adjust the weighting by using a power law.
+        float z = pow(u, spatial_exponent);
+        // Compute the radius value with the adjustable bias.
+        float r = float(radius) * z;
+        // Choose an angle uniformly from [0, 2π).
+        float angle = RandomFloat(seed) * 6.2831853;
+        // Compute offsets.
+        int offsetX = int(cos(angle) * r);
+        int offsetY = int(sin(angle) * r);
+        // Calculate new coordinates.
+        newX = int(x) + offsetX;
+        newY = int(y) + offsetY;
+
+        // Mirror newX into the [0, w-1] range.
+        while(newX < 0 || newX >= int(w)) {
+            if(newX < 0)
+                newX = -newX;
+            else // newX >= w
+                newX = 2 * int(w) - newX - 2;
+        }
+
+        // Mirror newY into the [0, h-1] range.
+        while(newY < 0 || newY >= int(h)) {
+            if(newY < 0)
+                newY = -newY;
+            else // newY >= h
+                newY = 2 * int(h) - newY - 2;
+        }
+    } while(newX == int(x) && newY == int(y));  // Reject the center pixel.
+
+    //return newX * h + newY;
+    return uint2(newX,newY);
 }
 
 

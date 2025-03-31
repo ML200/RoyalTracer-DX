@@ -39,7 +39,7 @@ void Renderer::OnInit() {
 
   nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
   nv_helpers_dx12::CameraManip.setLookat(
-      glm::vec3(-1.5f, 1.5f, 1.5f), glm::vec3(0, 0.0f, 0), glm::vec3(0, 1, 0));
+      glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
 
   LoadPipeline();
   LoadAssets();
@@ -399,7 +399,7 @@ void Renderer::OnUpdate() {
   m_time++;
   m_instances[1].second =
       XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 100.0f) *
+                           static_cast<float>(m_time) / 2000000000.0f) *
       XMMatrixTranslation(0.f, 0.f, 0.f);
     /*m_instances[1].second =
             XMMatrixRotationAxis({0.f, 2.f, 0.f},
