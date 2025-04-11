@@ -134,6 +134,7 @@ void RayGen() {
         float3(0, 0, 0),  // n1
         float3(0, 0, 0),   // o
         payload.objID,        // mID
+        float3(0,0,0),        // debug
     };
 
     //_______________________________PATH_SAMPLING__________________________________
@@ -149,8 +150,8 @@ void RayGen() {
         */
         //_______________________________RIS_DIRECT_ILLUMINATION__________________________________
         SampleRIS(
-            4,
-            1,
+            nee_samples_DI,
+            bsdf_samples_DI,
             -direction,
             reservoir,
             payload,
@@ -170,14 +171,19 @@ void RayGen() {
             //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
 
         // Perform path sampling (simpliefied for now)
-        SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
-
+        sdata.debug = SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
+        sdata.debug += ReconnectDI(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt) * reservoir.W;
         MaterialOptimized mat_gi = CreateMaterialOptimized(materials[reservoir_GI.mID2], reservoir_GI.mID2);
-        reservoir_GI.W = GetW_GI(reservoir_GI, LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
+        float3 f_c = LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
                                      reservoir_GI.xn, reservoir_GI.nn,
                                      reservoir_GI.E3, reservoir_GI.Vn,
-                                     sdata.o, matOpt, mat_gi, false)));
+                                     sdata.o, matOpt, mat_gi, false));
+        reservoir_GI.W = GetW_GI(reservoir_GI, f_c);
         reservoir_GI.M = 1.0f;
+        //sdata.debug = reservoir_GI.w_sum > 0.0f? 1.0f: 0.0f;
+        /*if(!IsValidReservoir_GI(reservoir_GI))
+            sdata.debug = float3(1,0,0);*/
+
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
     g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;

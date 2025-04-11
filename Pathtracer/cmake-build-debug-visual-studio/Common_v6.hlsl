@@ -6,17 +6,19 @@
 #define EXPOSURE 1.0f
 
 #define nee_samples 1
+#define nee_samples_DI 4
+#define bsdf_samples_DI 1
 #define bounces 3
 #define rr_threshold 1
 
 #define spatial_candidate_count 3
 #define spatial_max_tries 9
-#define spatial_radius 30
+#define spatial_radius 20
 #define spatial_exponent 1.0f
-#define spatial_M_cap 500
-#define spatial_M_cap_GI 500
-#define temporal_M_cap 20
-#define temporal_M_cap_GI 20
+#define spatial_M_cap 128
+#define spatial_M_cap_GI 128
+#define temporal_M_cap 16
+#define temporal_M_cap_GI 16
 #define temporal_r_threshold 0.09f
 #define w_sum_threshold 5.0f
 #define j_threshold 5.0f
@@ -127,15 +129,25 @@ float RandomFloat(inout uint2 seed)
     return float(v0) / 4294967296.0;
 }
 
+float3 GetColorFromValue(float value, float minValue, float maxValue)
+{
+    // Compute normalized interpolation factor between 0 and 1, clamped
+    float t = saturate((value - minValue) / (maxValue - minValue));
+
+    // Lerp between red (1,0,0) and green (0,1,0) using t
+    return lerp(float3(1, 0, 0), float3(0, 1, 0), t);
+}
+
+
 // Helper function to safely multiply a scalar and a float3
 float3 SafeMultiply(float scalar, float3 vec)
 {
     float3 result = scalar * vec;
     // Check if any component is NaN or infinity
-    if (any(isnan(result)) || any(isinf(result)))
+    /*if (any(isnan(result)) || any(isinf(result)))
     {
         return float3(0.0, 0.0, 0.0);
-    }
+    }*/
     return result;
 }
 
@@ -145,16 +157,15 @@ float3 SafeMultiply(float scalar, float3 vec)
 }*/
 
 // Row Major
-inline uint MapPixelID(uint2 dims, uint2 lIndex){
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
     return lIndex.y * dims.x + lIndex.x;
-}
+}*/
 
 // Swizzling
-/*inline uint MapPixelID(uint2 dims, uint2 lIndex)
+inline uint MapPixelID(uint2 dims, uint2 lIndex)
 {
     // Internal tile dimensions (square tiles).
-    // Adjust as needed, or expose as a parameter if desired.
-    const uint tileSize = 8;
+    const uint tileSize = 4;
 
     // How many tiles do we have horizontally?
     // Use integer division w/ ceiling to handle dimensions not multiples of tileSize.
@@ -176,7 +187,7 @@ inline uint MapPixelID(uint2 dims, uint2 lIndex){
 
     // Combine: first skip all full tiles, then add the local index.
     return flattenedTileIndex * (tileSize * tileSize) + flattenedLocalIndex;
-}*/
+}
 
 
 

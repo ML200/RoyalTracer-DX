@@ -125,7 +125,7 @@ private:
 
     struct SampleData
     {
-        uint8_t  pad[48]; // 48 bytes
+        uint8_t  pad[60]; // 48 bytes
     };
 
 

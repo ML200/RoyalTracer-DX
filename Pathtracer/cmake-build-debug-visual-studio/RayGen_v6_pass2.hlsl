@@ -88,7 +88,7 @@ void RayGen2() {
         // Define separate candidate acceptance criteria for DI and GI temporal reuse.
         bool candidateAcceptedDI = (pixelPos.x != -1 && pixelPos.y != -1 &&
             length(sdata_last.L1) == 0.0f &&
-            !RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
+            //!RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
             //!RejectLocation(tempPixelIdx, pixelIdx, reservoir_current.s, reservoir_last.s, materials[sdata_current.mID]) &&
             IsValidReservoir(reservoir_last) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
@@ -99,11 +99,13 @@ void RayGen2() {
         bool candidateAcceptedGI = (pixelPos.x != -1 && pixelPos.y != -1 &&
             length(sdata_last.L1) == 0.0f &&
             !RejectWsum(reservoir_gi_last.w_sum, w_sum_threshold) &&
-            !RejectNormal(sdata_current.n1, sdata_last.n1, 0.9f) &&
+            //!RejectNormal(sdata_current.n1, sdata_last.n1, 0.1f) &&
             !RejectDistance(sdata_current.x1, sdata_last.x1, init_orig, 0.1f) &&
             IsValidReservoir_GI(reservoir_gi_last) &&
             (sdata_last.mID == sdata_current.mID)
         );
+
+        //sdata_current.debug = float3(1,0,0);
 
         // -------------------- Temporal Reuse for DI --------------------
         if(candidateAcceptedDI)
@@ -129,7 +131,7 @@ void RayGen2() {
                                         reservoir_current.L2, sdata_current.o, matOpt, false) * reservoir_current.W;
             float w_t = mi_t * GetP_Hat(sdata_current.x1, sdata_current.n1,
                                         reservoir_last.x2, reservoir_last.n2,
-                                        reservoir_last.L2, sdata_current.o, matOpt, false) * reservoir_last.W;
+                                        reservoir_last.L2, sdata_current.o, matOpt, true) * reservoir_last.W;
 
             reservoir_current.M = min(temporal_M_cap, reservoir_current.M);
             reservoir_current.w_sum = w_c;
@@ -160,8 +162,11 @@ void RayGen2() {
 
             float M_sum_gi = min(temporal_M_cap_GI, reservoir_gi_current.M) + min(temporal_M_cap_GI, reservoir_gi_last.M);
 
-            float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
-            float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, M_sum_gi, temporal_M_cap_GI);
+            float mi_c_gi = GenPairwiseMIS_canonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, sdata_current, sdata_last, M_sum_gi, temporal_M_cap_GI, matOpt);
+            float mi_t_gi = GenPairwiseMIS_noncanonical_temporal_GI(reservoir_gi_current, reservoir_gi_last, sdata_current, sdata_last, M_sum_gi, temporal_M_cap_GI, matOpt);
+
+            //DEBUG
+            //sdata_current.debug = mi_c_gi + mi_t_gi;
 
             MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
             float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
@@ -174,7 +179,7 @@ void RayGen2() {
             float3 f_t = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                      reservoir_gi_last.xn, reservoir_gi_last.nn,
                                      reservoir_gi_last.E3, reservoir_gi_last.Vn,
-                                     sdata_current.o, matOpt, mat_gi_t, false);
+                                     sdata_current.o, matOpt, mat_gi_t, true);
             float w_t_gi = mi_t_gi * LinearizeVector(f_t) * reservoir_gi_last.W;
 
             reservoir_gi_current.M = min(temporal_M_cap_GI, reservoir_gi_current.M);
@@ -200,4 +205,5 @@ void RayGen2() {
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;
     g_Reservoirs_current_gi[pixelIdx] = reservoir_gi_current;
+    g_sample_current[pixelIdx] = sdata_current;
 }

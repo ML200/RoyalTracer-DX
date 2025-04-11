@@ -1,6 +1,6 @@
 // Traces a simple path using only BSDF sampling.
 // Accumulates and returns emission via the provided reservoir.
-void SamplePathSimple(
+float3 SamplePathSimple(
     inout Reservoir_GI reservoir,
     const float3       initPoint,
     const float3       initNormal,
@@ -53,7 +53,7 @@ void SamplePathSimple(
         {
             // If a direct light is immediately hit, do nothing further;
             // the reservoir is effectively invalid for this sample.
-            return;
+            return 0.0f;
         }
         else
         {
@@ -150,9 +150,9 @@ void SamplePathSimple(
             {
                 Vn = normalize(incoming_NEE);
             }
-            else{
+            //else{
                 local_throughput = throughput_NEE;
-            }
+            //}
 
             // MIS weight
             float mi = pdf_light / (nee_samples * pdf_light + pdf_bsdf);
@@ -162,6 +162,9 @@ void SamplePathSimple(
 
             float wi = LinearizeVector(E_path);
             acc_L += mi * contribution;
+
+            if(isnan(wi) || isinf(wi))
+                wi = 0.0f;
 
             // Reservoir update
             UpdateReservoir_GI(
@@ -219,9 +222,9 @@ void SamplePathSimple(
         {
             Vn = normalize(incoming_BSDF);
         }
-        else{
+        //else{
             acc_f_reconnection *= throughput_BSDF;
-        }
+        //}
 
         if (length(contribution) > 0.0f)
         {
@@ -234,6 +237,9 @@ void SamplePathSimple(
 
             // DEBUG
             acc_L += E_path;
+
+            if(isnan(wi) || isinf(wi))
+                wi = 0.0f;
 
             // Reservoir update
             UpdateReservoir_GI(
@@ -257,4 +263,5 @@ void SamplePathSimple(
             normal  = new_normal;
         }
     }
+    return acc_L;
 }

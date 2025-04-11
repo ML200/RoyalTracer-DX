@@ -161,6 +161,9 @@ inline void SampleBRDF_GGX(
     //    We want L so that V + L is “2H * (some factor)”
     sample = reflect(-V, H);
 
+    if(dot(sample, normal) < 0.0f)
+        sample = - sample;
+
     // 10) Shift origin to avoid self‐intersection
     origin = worldOrigin + s_bias * flatNormal;
 }
@@ -195,6 +198,10 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
     float kms = (1.0f - Ess) / Ess;
 
     float3 specular_ess = specular * (1.0f + mat.Ks * kms);
+
+    /*if(any(isnan(specular_ess)) || any(isinf(specular_ess)))
+        return float3(0,0,0);*/
+
     return specular_ess;
 }
 

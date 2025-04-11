@@ -320,7 +320,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "dragon.obj"};
+    std::vector<std::string> models = {"spanza_new.obj", /*"dragon.obj",*/ "dragon.obj"};
 
 
 
@@ -397,14 +397,16 @@ void Renderer::OnUpdate() {
   // Increment the time counter at each frame, and update the corresponding
   // instance matrix of the first triangle to animate its position
   m_time++;
-  m_instances[1].second =
-      XMMatrixRotationAxis({0.f, 1.f, 0.f},
-                           static_cast<float>(m_time) / 2000000000.0f) *
-      XMMatrixTranslation(0.f, 0.f, 0.f);
-    /*m_instances[1].second =
-            XMMatrixRotationAxis({0.f, 2.f, 0.f},
-                                 static_cast<float>(m_time) / 100.0f) *
-            XMMatrixTranslation(0.f, 2.0f, 0.f);*/
+  /*m_instances[1].second =
+      XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
+                           //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
+      //XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX scaleMatrix = XMMatrixScaling(0.7f, 0.7f, 0.7f);
+    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 0.f, 0.f);
+
+    // Multiply them in the order Scale -> Rotate -> Translate
+    m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }

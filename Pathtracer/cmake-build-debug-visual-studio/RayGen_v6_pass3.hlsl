@@ -156,17 +156,18 @@ void RayGen3()
 
             // Evaluate GI candidate predicate
             bool candidateAcceptedGI =
-                matOpt.Pr_Pm_Ps_Pc.x > 0.5f &&
-                !RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.999999f) &&
+                //matOpt.Pr_Pm_Ps_Pc.x > 0.3f &&
+                //!RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.5f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
                 !RejectBelowSurface(normalize(g_Reservoirs_current_gi[pixel_r].xn - sdata_current.x1), sdata_current.n1) &&
                 !RejectWsum(g_Reservoirs_current_gi[pixel_r].w_sum, w_sum_threshold) &&
                 IsValidReservoir_GI(g_Reservoirs_current_gi[pixel_r]) &&
                 !RejectJacobian(Jacobian_Reconnection(
-                    g_sample_current[pixel_r].x1,
-                    sdata_current.x1,
+                    g_sample_current[pixel_r],
+                    sdata_current,
                     g_Reservoirs_current_gi[pixel_r].xn,
-                    g_Reservoirs_current_gi[pixel_r].nn
+                    g_Reservoirs_current_gi[pixel_r].nn,
+                    g_Reservoirs_current_gi[pixel_r].Vn
                 ), j_threshold) &&
                 (length(g_sample_current[pixel_r].L1) == 0.0f) &&
                 (g_sample_current[pixel_r].mID != 4294967294) &&
@@ -305,10 +306,11 @@ void RayGen3()
 
                 // Jacobian for path reconnection
                 float j_gi = Jacobian_Reconnection(
-                    g_sample_current[spatial_candidate].x1,
-                    sdata_current.x1,
+                    g_sample_current[spatial_candidate],
+                    sdata_current,
                     g_Reservoirs_current_gi[spatial_candidate].xn,
-                    g_Reservoirs_current_gi[spatial_candidate].nn
+                    g_Reservoirs_current_gi[spatial_candidate].nn,
+                    g_Reservoirs_current_gi[spatial_candidate].Vn
                 );
 
                 float3 f_gi = GetP_Hat_GI(
@@ -387,13 +389,14 @@ void RayGen3()
 
         // DEBUG-------------------------------
         //accumulation = reservoir_current_gi.W;
-        //accumulation = reservoir_current_gi.xn;
+        //accumulation = sdata_current.debug;
+        //accumulation = GetColorFromValue((float)candidateFoundCount_GI,0.0f, (float)spatial_candidate_count);
 
         // -----------------------------------------------------------
         // TEMPORAL ACCUMULATION
         float3 averagedColor;
         float frameCount = gPermanentData[uint2(launchIndex)].w;
-        int maxFrames    = 200000;
+        int maxFrames    = 2000000;
 
         if (frameCount <= 0.0f &&
             !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) &&
@@ -434,7 +437,7 @@ void RayGen3()
         }
 
         // Optionally skip temporal accumulation if desired:
-        averagedColor = accumulation;
+        //averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))
@@ -451,8 +454,8 @@ void RayGen3()
         float3 finalColor = sRGBGammaCorrection(averagedColor);
         gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
 
-        /*bool r1 = RandomFloat(seed) < 0.0001f? true: false;
-        if(r1){
+        bool r1 = RandomFloat(seed) < 0.0001f? true: false;
+        /*if(r1){
             for(int d = 0; d<60; d++){
                 uint2 pixel_r_d = GetRandomPixelCircleWeighted_d(
                         spatial_radius,
@@ -469,6 +472,7 @@ void RayGen3()
     else
     {
         // If L1 is non-zero, just store that color out.
-        gOutput[uint3(launchIndex, 0)] = float4(sdata_current.L1, 1.0f);
+        float3 finalColor = sRGBGammaCorrection(sdata_current.L1);
+        gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
     }
 }
