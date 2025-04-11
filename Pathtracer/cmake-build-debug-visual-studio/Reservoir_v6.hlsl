@@ -7,6 +7,7 @@ struct SampleData
     float3 n1;  // (12 bytes)
     float3 o;    // (12 bytes)
     uint  objID;   // (4 bytes)
+    float3  debug;   // (12 bytes)
 };
 
 
@@ -15,7 +16,7 @@ struct Reservoir_DI
 {
     float3 x2;    float w_sum; // 16 bytes total
     float3 n2;    float W;     // 16 bytes total
-    half3 L2;     uint16_t M; // 8 bytes total
+    half3 L2;     uint16_t M;   // 8 bytes total
 };
 
 struct Reservoir_GI

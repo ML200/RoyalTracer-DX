@@ -1,5 +1,6 @@
 inline float LinearizeVector(float3 v){
     //return (v.x + v.y + v.z)/3.0f;
+
     return length(v);
 }
 
@@ -15,18 +16,44 @@ inline bool IsValidReservoir(Reservoir_DI r){
 
 inline bool IsValidReservoir_GI(Reservoir_GI r){
     bool valid =
-        length(r.nn) > 0.0f &&
-        length(r.Vn) > 0.0f &&
+        r.w_sum > 0.0f &&
         r.M > 0.0f;
     return valid;
 }
 
 
-inline float Jacobian_Reconnection(float3 x1r, float3 x1q, float3 x2q, float3 n2q)
+/*inline float Jacobian_Reconnection(
+    SampleData sdata_r,
+    SampleData sdata_q,
+    float3 x2q, float3 n2q,
+    float3 i2)
 {
     // Direction vectors from x2 up to x1
-    float3 vq = x2q - x1q;
-    float3 vr = x2q - x1r;
+    float3 vq = x2q - sdata_q.x1;
+    float3 vr = x2q - sdata_r.x1;
+
+    // Cosines of incidence angles
+    float cosPhi2q = abs(dot(normalize(-vq), normalize(n2q)));
+    float cosPhi2r = abs(dot(normalize(-vr), normalize(n2q)));
+
+    // Squared lengths of vq, vr
+    float len2_vq = dot(vq, vq);
+    float len2_vr = dot(vr, vr);
+
+    // Final Jacobian
+    float J = (cosPhi2q / cosPhi2r) * (len2_vr / len2_vq);
+    return J;
+}*/
+
+inline float Jacobian_Reconnection(
+    SampleData sdata_r,
+    SampleData sdata_q,
+    float3 x2q, float3 n2q,
+    float3 i2)
+{
+    // Direction vectors from x2 up to x1
+    float3 vq = x2q - sdata_q.x1;
+    float3 vr = x2q - sdata_r.x1;
 
     // Cosines of incidence angles
     float cosPhi2q = abs(dot(normalize(-vq), normalize(n2q)));
@@ -89,8 +116,6 @@ inline float3 ReconnectDI(
 {
     float3 dir = x2 - x1;
     float dist = length(dir);
-    if(length(L) == 0.0f || dist < MIN_DIST)
-        return float3(0,0,0);
 
     float cosThetaX1 = max(0, dot(n1, normalize(dir)));
     if(dot(n2, normalize(-dir)) < 0.0f)
@@ -121,7 +146,7 @@ inline float3 ReconnectGI(
 {
     float3 dir = x2 - x1; // The reconnection direction
 
-    float cosThetaX1 = dot(n1, normalize(dir));
+    float cosThetaX1 = abs(dot(n1, normalize(dir)));
     float cosThetaX2 = dot(n2, normalize(-V));
 
     float2 probs = CalculateStrategyProbabilities(material1, normalize(outgoing), n1);
@@ -131,17 +156,19 @@ inline float3 ReconnectGI(
     float3 F2 = SafeMultiply(probs.y, brdf1);
     float3 Fx1 = F1 + F2;
 
-    float2 probs_2 = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
+    /*float2 probs_2 = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
     float3 brdf0_2 = EvaluateBRDF(0, material2, n2, normalize(V), normalize(-dir));
     float3 brdf1_2 = EvaluateBRDF(1, material2, n2, normalize(V), normalize(-dir));
     float3 F1_2 = SafeMultiply(probs_2.x, brdf0_2);
     float3 F2_2 = SafeMultiply(probs_2.y, brdf1_2);
-    float3 Fx2 = F1_2 + F2_2;
+    float3 Fx2 = F1_2 + F2_2;*/
 
-    float3 fr = Fx1 * Fx2 * cosThetaX1 * cosThetaX2 * L;
+    float3 fr = Fx1 * /*Fx2 */ cosThetaX1 /* cosThetaX2*/ * L;
+
     if(any(isnan(fr)) || any(isinf(fr)))
         return float3(0,0,0);
-    else return fr;
+
+    return fr;
 }
 
 float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, MaterialOptimized matOpt, bool use_visibility){
@@ -565,9 +592,13 @@ float3 SampleLightNEE_GI(
     float pdf_l = sampleLight.weight / max(area_l, EPSILON);
 
     // Compute cosine factors
-    float cos_theta_x = max(dot(normal, L_norm), EPSILON);
+    float cos_theta_x = abs(dot(normal, L_norm));
+    if(cos_theta_x < EPSILON)
+        cos_theta_x = 0.0f;
 
-    float cos_theta_y = max(dot(normal_l, -L_norm), EPSILON);
+    float cos_theta_y = abs(dot(normal_l, -L_norm));
+    if(cos_theta_y < EPSILON)
+        cos_theta_y = 0.0f;
 
 
     // Compute the geometry term
@@ -594,17 +625,17 @@ float3 SampleLightNEE_GI(
     float V = 1.0f;
     if(useVisibility == true){
         RayDesc ray;
-        ray.Origin = origin + s_bias * normal;
+        ray.Origin = origin + s_bias * normalize(normal);
         ray.Direction = L_norm;
-        ray.TMin = 0.0f;
-        ray.TMax = dist - s_bias * 2.0f;
+        ray.TMin = 0.5f * s_bias;
+        ray.TMax = max(s_bias, dist - (s_bias * 5.0f));
         ShadowHitInfo shadowPayload;
         shadowPayload.isHit = false;
         TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
         V = shadowPayload.isHit ? 0.0f : 1.0f;
     }
-
-    pdf_light = max(EPSILON, pdf_l) * dist2 / cos_theta_y;
+    if(cos_theta_y > 0.f)
+        pdf_light = max(EPSILON, pdf_l) * dist2 / cos_theta_y;
     pdf_bsdf = P;
 
     incoming = -L_norm;
@@ -760,3 +791,114 @@ inline int2 GetBestReprojectedPixel_d(
     int2 pixel = int2(round(subPixelCoord));
     return pixel;
 }
+
+struct BilinearResult
+{
+    int2  coords[4];      // The four pixel coordinates
+    float distances[4];   // Distance from subPixelCoord
+    float weights[4];     // Bilinear weights that sum to ~1.0
+};
+
+inline BilinearResult GetBestReprojectedPixelBilinear_CenterBased(
+    float3   worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2   resolution,
+    uint     objID
+)
+{
+    BilinearResult result;
+
+    // Initialize everything to sentinel values:
+    [unroll]
+    for (int i = 0; i < 4; i++)
+    {
+        result.coords[i]    = int2(-1, -1);
+        result.distances[i] = -1.0f;
+        result.weights[i]   = 0.0f;
+    }
+
+    // (A) Get the sub-pixel coordinate in "center-based" space from prev frame:
+    float2 subPixelCoord = GetLastFramePixelCoordinates_Float(
+        worldPos, prevView, prevProjection, resolution, objID
+    );
+
+    // If off-screen or invalid, return the sentinel data:
+    if (subPixelCoord.x < 0.0f || subPixelCoord.y < 0.0f ||
+        subPixelCoord.x >= resolution.x || subPixelCoord.y >= resolution.y)
+    {
+        return result;
+    }
+
+    // (B) The integer pixel index if each pixel center = integer coordinate.
+    //     e.g. if subPixelCoord.x = 2.0 => that's exactly the center of pixel #2 in X.
+    //     We'll floor() here, but you could also cast to int if your pipeline requires rounding.
+    int2 basePixel;
+    basePixel.x = (int)floor(subPixelCoord.x);
+    basePixel.y = (int)floor(subPixelCoord.y);
+
+    // Clamp to screen bounds (avoid out-of-range):
+    basePixel.x = clamp(basePixel.x, 0, (int)resolution.x - 1);
+    basePixel.y = clamp(basePixel.y, 0, (int)resolution.y - 1);
+
+    // (C) The next pixel in X and Y, also clamped:
+    int2 nextX = int2(min(basePixel.x + 1, (int)resolution.x - 1), basePixel.y);
+    int2 nextY = int2(basePixel.x, min(basePixel.y + 1, (int)resolution.y - 1));
+    int2 nextXY = int2(nextX.x, nextY.y);
+
+    // (D) The fractional offset inside the "center-based" pixel:
+    //     e.g. if subPixelCoord.x = 2.3 => basePixel.x=2 => fracX=0.3 => we are 0.3 right of the center of pixel #2.
+    float fracX = subPixelCoord.x - (float)basePixel.x;
+    float fracY = subPixelCoord.y - (float)basePixel.y;
+
+    // Ensure 0..1 range if user’s math might push it slightly out of range:
+    fracX = saturate(fracX);
+    fracY = saturate(fracY);
+
+    // The four corners around basePixel:
+    //   c0 = basePixel
+    //   c1 = (basePixel.x+1, basePixel.y)
+    //   c2 = (basePixel.x, basePixel.y+1)
+    //   c3 = (basePixel.x+1, basePixel.y+1)
+    int2 c0 = basePixel;
+    int2 c1 = nextX;
+    int2 c2 = nextY;
+    int2 c3 = nextXY;
+
+    // (E) Distances from the subpixel center (for reference or debug):
+    float2 fCenter = subPixelCoord;
+    float2 fC0 = float2(c0);
+    float2 fC1 = float2(c1);
+    float2 fC2 = float2(c2);
+    float2 fC3 = float2(c3);
+
+    float d0 = distance(fCenter, fC0);
+    float d1 = distance(fCenter, fC1);
+    float d2 = distance(fCenter, fC2);
+    float d3 = distance(fCenter, fC3);
+
+    // (F) Bilinear weights:
+    float w0 = (1.0f - fracX) * (1.0f - fracY);
+    float w1 = fracX * (1.0f - fracY);
+    float w2 = (1.0f - fracX) * fracY;
+    float w3 = fracX * fracY;
+
+    // (G) Store final results:
+    result.coords[0]    = c0;
+    result.coords[1]    = c1;
+    result.coords[2]    = c2;
+    result.coords[3]    = c3;
+
+    result.distances[0] = d0;
+    result.distances[1] = d1;
+    result.distances[2] = d2;
+    result.distances[3] = d3;
+
+    result.weights[0]   = w0;
+    result.weights[1]   = w1;
+    result.weights[2]   = w2;
+    result.weights[3]   = w3;
+
+    return result;
+}
+
