@@ -144,10 +144,10 @@ float3 SafeMultiply(float scalar, float3 vec)
 {
     float3 result = scalar * vec;
     // Check if any component is NaN or infinity
-    /*if (any(isnan(result)) || any(isinf(result)))
+    if (any(isnan(result)) || any(isinf(result)))
     {
         return float3(0.0, 0.0, 0.0);
-    }*/
+    }
     return result;
 }
 

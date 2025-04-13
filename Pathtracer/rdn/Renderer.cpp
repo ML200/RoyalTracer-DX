@@ -24,6 +24,12 @@
 #include "manipulator.h"
 #include "../src/Util/ObjLoader.h"
 
+// This is a static/global to store the last time we actually rendered a frame.
+static std::chrono::steady_clock::time_point g_lastRenderTime
+    = std::chrono::steady_clock::now();
+
+// Our desired interval: 1 frame every 5 seconds => 0.2 FPS
+static const float FRAME_INTERVAL_SECONDS = 10.000f;
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -320,7 +326,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"spanza_new.obj", /*"dragon.obj",*/ "dragon.obj"};
+    std::vector<std::string> models = {"garage.obj", /*"dragon.obj",*/ "monke.obj"};
 
 
 
@@ -403,7 +409,7 @@ void Renderer::OnUpdate() {
       //XMMatrixTranslation(0.f, 0.f, 0.f);
     XMMATRIX scaleMatrix = XMMatrixScaling(0.7f, 0.7f, 0.7f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 1.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
@@ -411,7 +417,7 @@ void Renderer::OnUpdate() {
   UpdateInstancePropertiesBuffer();
 }
 
-void Renderer::OnRender() {
+/*void Renderer::OnRender() {
     // Record all the commands we need to render the scene into the command list.
     PopulateCommandList();
 
@@ -422,6 +428,41 @@ void Renderer::OnRender() {
     ThrowIfFailed(m_swapChain->Present(1, 0));
 
     // Wait for the frame to finish
+    WaitForPreviousFrame();
+}*/
+
+void Renderer::OnRender()
+{
+    using namespace std::chrono;
+
+    // 1) Check how long it's been since we last rendered.
+    auto now = steady_clock::now();
+    float elapsedSec = duration<float>(now - g_lastRenderTime).count();
+
+    // 2) If < 5 seconds have passed, skip GPU work entirely -> GPU stays idle.
+    if (elapsedSec < FRAME_INTERVAL_SECONDS)
+    {
+        // Optional: You can still process input messages or do CPU tasks,
+        // but skip issuing any GPU commands or calls to Present().
+        return;
+    }
+
+    // 3) Otherwise, it's time for a new frame -> do the normal render steps.
+
+    // Record the time we last rendered
+    g_lastRenderTime = now;
+
+    // [A] Record GPU commands
+    PopulateCommandList();
+
+    // [B] Execute them
+    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+    // [C] Present the frame (1, 0)
+    ThrowIfFailed(m_swapChain->Present(1, 0));
+
+    // [D] Wait for GPU to finish (or use your existing fence logic)
     WaitForPreviousFrame();
 }
 
