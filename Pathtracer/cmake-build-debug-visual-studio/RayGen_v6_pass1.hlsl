@@ -167,7 +167,7 @@ void RayGen() {
         float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
         reservoir.W = GetW(reservoir, p_hat);
 
-        //for(int p = 0; p< 20000; p++)
+        //for(int p = 0; p< 40000; p++)
             //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
 
         // Perform path sampling (simpliefied for now)

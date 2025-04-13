@@ -388,8 +388,10 @@ void RayGen3()
 
 
         // DEBUG-------------------------------
-        //accumulation = reservoir_current_gi.W;
-        //accumulation = sdata_current.debug;
+        /*accumulation = reservoir_current_gi.W;
+        accumulation = 0.0f;
+        if(length(sdata_current.debug) < 50.0f && !any(isnan(sdata_current.debug)) && !any(isinf(sdata_current.debug)))
+            accumulation = sdata_current.debug;*/
         //accumulation = GetColorFromValue((float)candidateFoundCount_GI,0.0f, (float)spatial_candidate_count);
 
         // -----------------------------------------------------------
@@ -404,6 +406,7 @@ void RayGen3()
         {
             // Initialize accumulation + frame count
             gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
+            frameCount+= 1.0f;
         }
         else if (frameCount < maxFrames &&
                  !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) &&
@@ -412,10 +415,8 @@ void RayGen3()
             // Continue accumulating valid samples
             gPermanentData[uint2(launchIndex)].xyz += accumulation;
             gPermanentData[uint2(launchIndex)].w   += 1.0f;
+            frameCount+= 1.0f;
         }
-
-        // Safely compute the averaged color
-        frameCount = max(frameCount, 1.0f);
         averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
 
         // If the view has changed significantly, reset accumulation
@@ -432,12 +433,12 @@ void RayGen3()
         if (different)
         {
             // Reset buffer
-            gPermanentData[uint2(launchIndex)] = float4(accumulation, 2.0f);
+            gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
             frameCount = 1.0f;
         }
 
         // Optionally skip temporal accumulation if desired:
-        //averagedColor = accumulation;
+        averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))

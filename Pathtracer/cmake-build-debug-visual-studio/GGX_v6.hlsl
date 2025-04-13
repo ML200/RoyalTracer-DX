@@ -199,8 +199,8 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
 
     float3 specular_ess = specular * (1.0f + mat.Ks * kms);
 
-    /*if(any(isnan(specular_ess)) || any(isinf(specular_ess)))
-        return float3(0,0,0);*/
+    if(any(isnan(specular_ess)) || any(isinf(specular_ess)))
+        return float3(0,0,0);
 
     return specular_ess;
 }
