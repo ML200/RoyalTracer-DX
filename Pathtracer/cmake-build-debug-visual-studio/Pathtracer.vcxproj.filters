@@ -1,0 +1,87 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\BottomLevelASGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RaytracingPipelineGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\RootSignatureGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\ShaderBindingTableGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_dx12\TopLevelASGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Renderer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\manipulator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\stdafx.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Components\Vertex.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\src\Util\ObjLoader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{F55F6D7D-3963-3889-9859-9162F0102181}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{A6CF55F5-3ACA-33E3-973E-F7F4A014F1C3}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

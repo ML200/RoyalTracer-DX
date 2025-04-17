@@ -15,9 +15,22 @@
 
 #include <dxcapi.h>
 #include <vector>
+#include <d3d12video.h>
+#include <DirectXPackedVector.h>
 
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
+#include "../src/Components/Vertex.h"
+
+#include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
+#include <sl_consts.h>     // the sl::kFeature… enum values
+#include <sl_dlss.h>       // DLSS Super Resolution API
+#include <sl_dlss_d.h>     // DLSS Ray‑Reconstruction (DLSS‑RR) API
+
+
+#include "../lib/imgui/imgui.h"
+#include "../lib/imgui/imgui_impl_dx12.h"
+#include "../lib/imgui/imgui_impl_win32.h"
 
 using namespace DirectX;
 
@@ -40,14 +53,9 @@ public:
 private:
   static const UINT FrameCount = 2;
 
-  struct Vertex {
-    XMFLOAT3 position;
-    XMFLOAT4 color;
-    // #DXR Extra: Indexed Geometry
-    Vertex(XMFLOAT4 pos, XMFLOAT4 /*n*/, XMFLOAT4 col)
-        : position(pos.x, pos.y, pos.z), color(col) {}
-    Vertex(XMFLOAT3 pos, XMFLOAT4 col) : position(pos), color(col) {}
-  };
+    // Streamline frame & viewport tracking
+    sl::FrameToken*     m_frameToken     = nullptr;
+    sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
 
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
@@ -66,6 +74,7 @@ private:
   // App resources.
   ComPtr<ID3D12Resource> m_vertexBuffer;
   D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
+
 
   // Synchronization objects.
   UINT m_frameIndex;
@@ -96,7 +105,46 @@ private:
   AccelerationStructureBuffers m_topLevelASBuffers;
   std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> m_instances;
 
-  /// Create the acceleration structure of an instance
+    // Map from instance index to model index
+    std::vector<UINT> m_instanceModelIndices;
+    std::vector<UINT> m_materialIDOffsets;
+
+    // Structure to hold emissive triangle data
+    struct LightTriangle {
+        XMFLOAT3 x;
+        float    cdf;       // 16 bytes
+        XMFLOAT3 y;
+        UINT     instanceID; // 16 bytes
+        XMFLOAT3 z;
+        float    weight;       // 16 bytes
+        XMFLOAT3 emission;
+        UINT     triCount;   // 16 bytes
+        float    totalWeight;       // 16 bytes
+        XMFLOAT3 pad0;
+    };
+
+    struct Reservoir_DI
+    {
+        uint8_t  pad[40]; // 48 bytes
+    };
+
+    struct Reservoir_GI
+    {
+        uint8_t  pad[40]; // 56 bytes :(
+    };
+
+    struct SampleData
+    {
+        uint8_t  pad[60]; // 48 bytes
+    };
+
+
+// Buffer to store emissive triangles
+    std::vector<LightTriangle> m_emissiveTriangles;
+    ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
+
+
+    /// Create the acceleration structure of an instance
   ///
   /// \param     vVertexBuffers : pair of buffer and vertex count
   /// \return    AccelerationStructureBuffers for TLAS
@@ -126,6 +174,8 @@ private:
   void CreateRaytracingPipeline();
 
   ComPtr<IDxcBlob> m_rayGenLibrary;
+  ComPtr<IDxcBlob> m_rayGenLibrary2;
+  ComPtr<IDxcBlob> m_rayGenLibrary3;
   ComPtr<IDxcBlob> m_hitLibrary;
   ComPtr<IDxcBlob> m_missLibrary;
 
@@ -143,6 +193,7 @@ private:
   void CreateRaytracingOutputBuffer();
   void CreateShaderResourceHeap();
   ComPtr<ID3D12Resource> m_outputResource;
+    ComPtr<ID3D12Resource> m_permanentDataTexture;
   ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
 
   // #DXR
@@ -154,12 +205,20 @@ private:
   void CreateCameraBuffer();
   void UpdateCameraBuffer();
   ComPtr<ID3D12Resource> m_cameraBuffer;
+  ComPtr<ID3D12Resource> m_sampleBuffer_current;
+  ComPtr<ID3D12Resource> m_sampleBuffer_last;
+  ComPtr<ID3D12Resource> m_reservoirBuffer;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_2;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_3;
+  ComPtr<ID3D12Resource> m_reservoirBuffer_4;
   ComPtr<ID3D12DescriptorHeap> m_constHeap;
   uint32_t m_cameraBufferSize = 0;
 
   // #DXR Extra: Perspective Camera++
   void OnButtonDown(UINT32 lParam);
   void OnMouseMove(UINT8 wParam, UINT32 lParam);
+    XMMATRIX m_prevViewMatrix;
+    XMMATRIX m_prevProjMatrix;
 
   // #DXR Extra: Per-Instance Data
   ComPtr<ID3D12Resource> m_planeBuffer;
@@ -183,14 +242,26 @@ private:
   D3D12_INDEX_BUFFER_VIEW m_indexBufferView;
 
   // #DXR Extra: Indexed Geometry
-  void CreateMengerSpongeVB();
-  ComPtr<ID3D12Resource> m_mengerVB;
-  ComPtr<ID3D12Resource> m_mengerIB;
-  D3D12_VERTEX_BUFFER_VIEW m_mengerVBView;
-  D3D12_INDEX_BUFFER_VIEW m_mengerIBView;
+  void CreateVB(std::string name);
+  ComPtr<ID3D12Resource> m_materialBuffer;
+  ComPtr<ID3D12Resource> m_materialIndexBuffer;
+  std::vector<UINT> m_materialIDs;
+  std::vector<Material> m_materials;
+  UINT materialIDOffset = 0;
+  UINT materialVertexOffset = 0;
 
-  UINT m_mengerIndexCount;
-  UINT m_mengerVertexCount;
+  //Support for several objects (instanced optionally)
+  //____________________________________________________________________________________________________________________
+  std::vector<ComPtr<ID3D12Resource>> m_VB;
+  std::vector<ComPtr<ID3D12Resource>> m_IB;
+  std::vector<D3D12_VERTEX_BUFFER_VIEW> m_VBView;
+  std::vector<D3D12_INDEX_BUFFER_VIEW> m_IBView;
+  std::vector<ComPtr<ID3D12Resource>> m_material;
+  std::vector<ComPtr<ID3D12Resource>> m_materialID;
+  std::vector<UINT> m_IndexCount;
+  std::vector<UINT> m_VertexCount;
+  //____________________________________________________________________________________________________________________
+
 
   // #DXR Extra - Another ray type
   ComPtr<IDxcBlob> m_shadowLibrary;
@@ -203,10 +274,36 @@ private:
   /// Per-instance properties
   struct InstanceProperties {
     XMMATRIX objectToWorld;
+    XMMATRIX objectToWorldInverse;
+    XMMATRIX prevObjectToWorld;
+    XMMATRIX prevObjectToWorldInverse;
     XMMATRIX objectToWorldNormal;
+    XMMATRIX prevObjectToWorldNormal;
   };
 
+    //Frametime
+    struct FrameData
+    {
+        float Time;
+    };
+
   ComPtr<ID3D12Resource> m_instanceProperties;
+  ComPtr<ID3D12Resource> m_instancePropertiesPrevious;
   void CreateInstancePropertiesBuffer();
   void UpdateInstancePropertiesBuffer();
+
+  //SL specific
+  HINSTANCE__ *m_mod;
+
+  UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
+  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28}; // Levels to cycle through
+  void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
+
+
+    void CollectEmissiveTriangles();
+
+    void CreateEmissiveTrianglesBuffer();
+
+    float
+    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor);
 };

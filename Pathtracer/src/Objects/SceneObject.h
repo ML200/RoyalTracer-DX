@@ -7,14 +7,10 @@
 
 
 #include <vector>
-#include "../Components/Transform.h"
-#include "../Components/Material.h"
-#include "../Components/Mesh.h"
+
 
 class SceneObject {
-public:
-    Mesh mesh;
-    Transform transform;
+
 };
 
 
