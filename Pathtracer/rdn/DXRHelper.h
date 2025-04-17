@@ -12,6 +12,7 @@
 #include <dxcapi.h>
 
 #include <vector>
+#include <iostream>
 
 namespace nv_helpers_dx12
 {
@@ -19,28 +20,54 @@ namespace nv_helpers_dx12
 //--------------------------------------------------------------------------------------------------
 //
 //
-inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
-                                    D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
-                                    const D3D12_HEAP_PROPERTIES& heapProps)
-{
-  D3D12_RESOURCE_DESC bufDesc = {};
-  bufDesc.Alignment = 0;
-  bufDesc.DepthOrArraySize = 1;
-  bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-  bufDesc.Flags = flags;
-  bufDesc.Format = DXGI_FORMAT_UNKNOWN;
-  bufDesc.Height = 1;
-  bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-  bufDesc.MipLevels = 1;
-  bufDesc.SampleDesc.Count = 1;
-  bufDesc.SampleDesc.Quality = 0;
-  bufDesc.Width = size;
+    inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
+                                        D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
+                                        const D3D12_HEAP_PROPERTIES& heapProps)
+    {
+        // Debug output: Print buffer size and resource flags
+        //std::wcout << L"Creating buffer of size: " << size << L" bytes" << std::endl;
+        //std::wcout << L"Resource flags: " << flags << std::endl;
+        //std::wcout << L"Initial state: " << initState << std::endl;
 
-  ID3D12Resource* pBuffer;
-  ThrowIfFailed(m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
-                                                  initState, nullptr, IID_PPV_ARGS(&pBuffer)));
-  return pBuffer;
-}
+        // Debug output: Print heap properties
+        //std::wcout << L"Heap Type: " << heapProps.Type << std::endl;
+        //std::wcout << L"CPU Page Property: " << heapProps.CPUPageProperty << std::endl;
+        //std::wcout << L"Memory Pool Preference: " << heapProps.MemoryPoolPreference << std::endl;
+
+        D3D12_RESOURCE_DESC bufDesc = {};
+        bufDesc.Alignment = 0;
+        bufDesc.DepthOrArraySize = 1;
+        bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bufDesc.Flags = flags;
+        bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+        bufDesc.Height = 1;
+        bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        bufDesc.MipLevels = 1;
+        bufDesc.SampleDesc.Count = 1;
+        bufDesc.SampleDesc.Quality = 0;
+        bufDesc.Width = size;
+
+        // Debug output: Print buffer descriptor values
+        //std::wcout << L"Buffer descriptor width: " << bufDesc.Width << std::endl;
+        //std::wcout << L"Buffer descriptor dimension: " << bufDesc.Dimension << std::endl;
+        //std::wcout << L"Buffer descriptor layout: " << bufDesc.Layout << std::endl;
+
+        ID3D12Resource* pBuffer = nullptr;
+        HRESULT hr = m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                                       initState, nullptr, IID_PPV_ARGS(&pBuffer));
+
+        // Debug output: Check if buffer creation succeeded
+        if (FAILED(hr)) {
+            //std::wcerr << L"Failed to create committed resource, HRESULT: " << std::hex << hr << std::endl;
+            HRESULT deviceRemovedReason = m_device->GetDeviceRemovedReason();
+            //std::wcerr << L"Device removed reason HRESULT: " << std::hex << deviceRemovedReason << std::endl;
+            return nullptr;
+        }
+
+        //std::wcout << L"Buffer created successfully!" << std::endl;
+        return pBuffer;
+    }
+
 
 #ifndef ROUND_UP
 #define ROUND_UP(v, powerOf2Alignment) (((v) + (powerOf2Alignment)-1) & ~((powerOf2Alignment)-1))
@@ -89,9 +116,20 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
   ThrowIfFailed(pLibrary->CreateBlobWithEncodingFromPinned(
       (LPBYTE)sShader.c_str(), (uint32_t)sShader.size(), 0, &pTextBlob));
 
+  // Setup the compiler arguments:
+  // Use "-Zi" for full debug info (line table, etc.)
+  // Or use "-Zs" for minimal debug info (useful for dynamic shader editing)
+  const wchar_t* arguments[] = {
+    L"-Zi",                        // full debug info
+    L"-O3",                        // highest optimisation
+    L"-enable-16bit-types",        // keep fp16 alive
+    L"-D",  L"MAX_REGS=96",        // <‑‑ 96‑register cap
+    L"-HV", L"2021"                // enable SM 6.7+ attributes
+};
+
   // Compile
   IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_3", nullptr, 0, nullptr, 0,
+  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_7", arguments, _countof(arguments), nullptr, 0,
                                    dxcIncludeHandler, &pResult));
 
   // Verify the result

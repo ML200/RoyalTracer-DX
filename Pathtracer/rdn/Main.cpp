@@ -9,12 +9,19 @@
 //
 //*********************************************************
 
+#include <iostream>
+
 #include "stdafx.h"
 #include "Renderer.h"
 
 _Use_decl_annotations_
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
-	Renderer sample(1280, 720, L"D3D12 Hello Triangle");
+    if (AllocConsole()) {
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        std::wcout << L"Console initialized" << std::endl;
+    }
+	Renderer sample(1920, 1080, L"DXR Pathtracer - experimental");
 	return Win32Application::Run(&sample, hInstance, nCmdShow);
 }

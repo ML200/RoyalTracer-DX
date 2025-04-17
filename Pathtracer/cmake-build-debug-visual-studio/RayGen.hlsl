@@ -1,7 +1,11 @@
 #include "Common.hlsl"
 
+#define kernelSize 5
+#define halfKernel 2
+
 // Raytracing output texture, accessed as a UAV
-RWTexture2D<float4> gOutput : register(u0);
+RWTexture2DArray<float4> gOutput : register(u0);
+RWTexture2D<float4> gPermanentData : register(u1);
 
 // Raytracing acceleration structure, accessed as a SRV
 RaytracingAccelerationStructure SceneBVH : register(t0);
@@ -9,85 +13,175 @@ RaytracingAccelerationStructure SceneBVH : register(t0);
 // #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
 {
-  float4x4 view;
-  float4x4 projection;
-  float4x4 viewI;
-  float4x4 projectionI;
+    float4x4 view;
+    float4x4 projection;
+    float4x4 viewI;
+    float4x4 projectionI;
+    float4x4 prevView;        // Previous frame's view matrix (can be removed if not used elsewhere)
+    float4x4 prevProjection;  // Previous frame's projection matrix (can be removed if not used elsewhere)
+    float time;
+    float4 frustumLeft;       // Left frustum plane
+    float4 frustumRight;      // Right frustum plane
+    float4 frustumTop;        // Top frustum plane
+    float4 frustumBottom;     // Bottom frustum plane
+    float4 prevFrustumLeft;   // Previous frame's frustum planes (can be removed if not used elsewhere)
+    float4 prevFrustumRight;
+    float4 prevFrustumTop;
+    float4 prevFrustumBottom;
 }
 
-[shader("raygeneration")] void RayGen() {
-  // Initialize the ray payload
-  HitInfo payload;
-  payload.colorAndDistance = float4(0, 0, 0, 0);
+// HELPERS
 
-  // Get the location within the dispatched 2D grid of work items
-  // (often maps to pixels, so this could represent a pixel coordinate).
-  uint2 launchIndex = DispatchRaysIndex().xy;
-  float2 dims = float2(DispatchRaysDimensions().xy);
-  float2 d = (((launchIndex.xy + 0.5f) / dims.xy) * 2.f - 1.f);
-  // Define a ray, consisting of origin, direction, and the min-max distance
-  // values
-  // #DXR Extra: Perspective Camera
-  float aspectRatio = dims.x / dims.y;
-  // Perspective
-  RayDesc ray;
-  ray.Origin = mul(viewI, float4(0, 0, 0, 1));
-  float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-  ray.Direction = mul(viewI, float4(target.xyz, 0));
-  ray.TMin = 0;
-  ray.TMax = 100000;
+// Helper function to calculate the dot product between two vectors and check if the angle is less than 10 degrees
+bool isSimilarNormal(float3 normalA, float3 normalB) {
+    float dotProduct = dot(normalA, normalB);
+    return dotProduct > cos(radians(10.0f)); // Check if the angle is less than 10 degrees
+}
 
-  // Trace the ray
-  TraceRay(
-      // Parameter name: AccelerationStructure
-      // Acceleration structure
-      SceneBVH,
+// Helper function to check if the reflectiveness difference is within 0.3
+bool isSimilarReflectiveness(float reflectA, float reflectB) {
+    return abs(reflectA - reflectB) < 0.3f;
+}
 
-      // Parameter name: RayFlags
-      // Flags can be used to specify the behavior upon hitting a surface
-      RAY_FLAG_NONE,
+// HELPERS
 
-      // Parameter name: InstanceInclusionMask
-      // Instance inclusion mask, which can be used to mask out some geometry to
-      // this ray by and-ing the mask with a geometry mask. The 0xFF flag then
-      // indicates no geometry will be masked
-      0xFF,
+[shader("raygeneration")]
+void RayGen() {
+    // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
+    uint2 launchIndex = DispatchRaysIndex().xy;
+    float2 dims = float2(DispatchRaysDimensions().xy);
 
-      // Parameter name: RayContributionToHitGroupIndex
-      // Depending on the type of ray, a given object can have several hit
-      // groups attached (ie. what to do when hitting to compute regular
-      // shading, and what to do when hitting to compute shadows). Those hit
-      // groups are specified sequentially in the SBT, so the value below
-      // indicates which offset (on 4 bits) to apply to the hit groups for this
-      // ray. In this sample we only have one hit group per object, hence an
-      // offset of 0.
-      0,
+    // #DXR Extra: Perspective Camera
+    float aspectRatio = dims.x / dims.y;
 
-      // Parameter name: MultiplierForGeometryContributionToHitGroupIndex
-      // The offsets in the SBT can be computed from the object ID, its instance
-      // ID, but also simply by the order the objects have been pushed in the
-      // acceleration structure. This allows the application to group shaders in
-      // the SBT in the same order as they are added in the AS, in which case
-      // the value below represents the stride (4 bits representing the number
-      // of hit groups) between two consecutive objects.
-      0,
+    // Initialize the ray origin and direction
+    float3 init_orig = mul(viewI, float4(0, 0, 0, 1));
+    float3 accumulation = float3(0, 0, 0);
+    float3 u_accumulation = float3(0, 0, 0);
 
-      // Parameter name: MissShaderIndex
-      // Index of the miss shader to use in case several consecutive miss
-      // shaders are present in the SBT. This allows to change the behavior of
-      // the program when no geometry have been hit, for example one to return a
-      // sky color for regular rendering, and another returning a full
-      // visibility value for shadow rays. This sample has only one miss shader,
-      // hence an index 0
-      0,
+    uint samples = 1;
+    uint bounces = 10000000;
+    uint rr_threshold = 3;
 
-      // Parameter name: Ray
-      // Ray information to trace
-      ray,
 
-      // Parameter name: Payload
-      // Payload associated to the ray, which will be used to communicate
-      // between the hit/miss shaders and the raygen
-      payload);
-  gOutput[launchIndex] = float4(payload.colorAndDistance.rgb, 1.f);
+    // SEEDING
+    const uint prime1_x = 73856093u;
+    const uint prime2_x = 19349663u;
+    const uint prime3_x = 83492791u;
+    const uint prime1_y = 37623481u;
+    const uint prime2_y = 51964263u;
+    const uint prime3_y = 68250729u;
+    const uint prime_time_x = 293803u;
+    const uint prime_time_y = 423977u;
+
+    HitInfo payload;
+
+    // Path tracing: x samples for y bounces
+    for (int x = 0; x < samples; x++) {
+        payload.seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(samples + 1) * prime3_x ^ uint(time) * prime_time_x;
+        payload.seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(samples + 1) * prime3_y ^ uint(time) * prime_time_y;
+
+        float jitterX = RandomFloat(payload.seed);
+        float jitterY = RandomFloat(payload.seed);
+
+        float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
+        float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+        float3 init_dir = mul(viewI, float4(target.xyz, 0));
+
+        // Initialize the new payload
+        payload.colorAndDistance = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        payload.emission = float3(0.0f, 0.0f, 0.0f);
+        payload.u_emission = float3(0.0f, 0.0f, 0.0f);
+        payload.origin = init_orig;
+        payload.direction = init_dir;
+        payload.pdf = 1.0f;
+
+        for (int y = 0; y < bounces; y++) {
+            RayDesc ray;
+            ray.Origin = payload.origin;
+            ray.Direction = payload.direction;
+            ray.TMin = 0.0001;
+            ray.TMax = 10000;
+
+            payload.util.x = 0;
+            payload.util.y = float(y);
+
+            // Trace the ray
+            TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
+
+            // If the last ray missed, terminate loop
+            if (payload.util.x >= 1.0f) {
+                break;
+            }
+
+            // Russian roulette: terminate the ray if the further accumulation of light would yield diminishing improvements due to a dark throughput
+            if(y > rr_threshold){
+                float3 throughput = payload.colorAndDistance.xyz;
+                float max_throughput = max(throughput.x, max(throughput.y, throughput.z));
+                float q = clamp(max_throughput, 0.05f, 1.0f); // Ensures q is at least 5%
+                float random = RandomFloat(payload.seed);
+
+                if(random > q){
+                    break;
+                }
+
+                payload.colorAndDistance.xyz *= 1.0f/q;
+
+            }
+
+
+        }
+
+        accumulation += payload.emission;
+        u_accumulation += payload.u_emission;
+    }
+
+    accumulation /= samples;
+    u_accumulation /= samples;
+
+
+    //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
+    int maxFrames = 1000000000;
+    float frameCount = gPermanentData[uint2(launchIndex)].w;
+
+    // Check if the frame count is zero or uninitialized
+    if (frameCount <= 0.0f && !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) && isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
+    {
+        // Initialize the accumulation buffer and frame count
+        gPermanentData[uint2(launchIndex)] = float4(accumulation-u_accumulation, 1.0f);
+    }
+    else if (frameCount < maxFrames && !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) && isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
+    {
+        // Continue accumulating valid samples
+        gPermanentData[uint2(launchIndex)].xyz += accumulation-u_accumulation;
+        gPermanentData[uint2(launchIndex)].w += 1.0f;
+    }
+
+    // Compare the view matrices and reset if different
+    bool different = false;
+    for (int row = 0; row < 4; row++)
+    {
+        float4 diff = abs(view[row] - prevView[row]);
+        if (any(diff > s_bias))
+        {
+            different = true;
+            break;
+        }
+    }
+
+    if (different)
+    {
+        // Reset buffers
+        gPermanentData[uint2(launchIndex)] = float4(accumulation-u_accumulation, 1.0f);
+        frameCount = 1.0f; // Update frameCount to reflect the reset
+    }
+
+    // Safely calculate the averaged color
+    frameCount = max(frameCount, 1.0f); // Ensure frameCount is at least 1 to avoid division by zero
+    float3 averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
+    //TEMPORAL ACCUMULATION  ________________________________________________________________________________________________________
+
+
+    // Output the final color to layer 0
+    gOutput[uint3(launchIndex, 0)] = float4(averagedColor, 1.0f);
 }

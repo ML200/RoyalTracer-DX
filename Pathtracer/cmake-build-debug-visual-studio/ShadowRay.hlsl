@@ -1,9 +1,11 @@
 // #DXR Extra - Another ray type
 
 // Ray payload for the shadow rays
-struct ShadowHitInfo {
-  bool isHit;
+struct [[raypayload]] ShadowHitInfo {
+  bool isHit: read(caller,anyhit,closesthit,miss)
+            : write(caller,anyhit,closesthit,miss);
 };
+
 
 struct Attributes {
   float2 uv;
