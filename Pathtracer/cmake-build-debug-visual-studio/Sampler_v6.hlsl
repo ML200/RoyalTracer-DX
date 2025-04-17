@@ -48,8 +48,7 @@ inline bool IsValidReservoir_GI(Reservoir_GI r){
 inline float Jacobian_Reconnection(
     SampleData sdata_r,
     SampleData sdata_q,
-    float3 x2q, float3 n2q,
-    float3 i2)
+    float3 x2q, float3 n2q)
 {
     // Direction vectors from x2 up to x1
     float3 vq = x2q - sdata_q.x1;
@@ -138,16 +137,13 @@ inline float3 ReconnectGI(
     float3 x2,
     float3 n2,
     float3 L, // contribution
-    float3 V, // incoming direction from path
     float3 outgoing,
-    MaterialOptimized material1,
-    MaterialOptimized material2
+    MaterialOptimized material1
 )
 {
     float3 dir = x2 - x1; // The reconnection direction
 
     float cosThetaX1 = abs(dot(n1, normalize(dir)));
-    float cosThetaX2 = dot(n2, normalize(-V));
 
     float2 probs = CalculateStrategyProbabilities(material1, normalize(outgoing), n1);
     float3 brdf0 = EvaluateBRDF(0, material1, n1, normalize(-dir), normalize(outgoing));
@@ -156,14 +152,7 @@ inline float3 ReconnectGI(
     float3 F2 = SafeMultiply(probs.y, brdf1);
     float3 Fx1 = F1 + F2;
 
-    /*float2 probs_2 = CalculateStrategyProbabilities(material2, normalize(-dir), n2);
-    float3 brdf0_2 = EvaluateBRDF(0, material2, n2, normalize(V), normalize(-dir));
-    float3 brdf1_2 = EvaluateBRDF(1, material2, n2, normalize(V), normalize(-dir));
-    float3 F1_2 = SafeMultiply(probs_2.x, brdf0_2);
-    float3 F2_2 = SafeMultiply(probs_2.y, brdf1_2);
-    float3 Fx2 = F1_2 + F2_2;*/
-
-    float3 fr = Fx1 * /*Fx2 */ cosThetaX1 /* cosThetaX2*/ * L;
+    float3 fr = Fx1 * cosThetaX1 * L;
 
     if(any(isnan(fr)) || any(isinf(fr)))
         return float3(0,0,0);
@@ -181,8 +170,8 @@ float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, 
     return f_g * v;
 }
 
-float3 GetP_Hat_GI(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 V2, float3 o, MaterialOptimized matOpt1, MaterialOptimized matOpt2, bool use_visibility){
-    float3 f_g = ReconnectGI(x1, n1, x2, n2, L2, V2, o, matOpt1, matOpt2);
+float3 GetP_Hat_GI(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, MaterialOptimized matOpt1, bool use_visibility){
+    float3 f_g = ReconnectGI(x1, n1, x2, n2, L2, o, matOpt1);
     float v = 1.0f;
 
     if(use_visibility){
@@ -520,6 +509,7 @@ float3 SampleLightNEE_GI(
     inout float pdf_light, // Outputs (this time both in solid angle measure)
     inout float pdf_bsdf,
     inout float3 incoming, // light direction
+    inout float3 x2_pos,
 
     inout uint2 seed, // Inputs
     uint strategy,
@@ -571,6 +561,8 @@ float3 SampleLightNEE_GI(
     float v = xi1;
     float w = xi2;
     float3 samplePoint = u * x_v + v * y_v + w * z_v;
+
+    x2_pos = samplePoint;
 
     // Get the sample direction and compute distance
     float3 L = samplePoint - origin;

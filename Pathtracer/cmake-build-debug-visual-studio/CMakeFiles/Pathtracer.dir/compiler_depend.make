@@ -729,6 +729,18 @@ CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual S
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xhash"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\list"
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xnode_handle.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_struct.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_consts.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\ucrt\assert.h"
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_version.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_result.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_appidentity.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_device_wrappers.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_api.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_types.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss.h
+CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss_d.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\lib\imgui\imconfig.h
 CMakeFiles\Pathtracer.dir\rdn\Main.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\ucrt\assert.h"
@@ -1111,6 +1123,18 @@ CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visu
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xhash"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\list"
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xnode_handle.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_struct.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_consts.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\ucrt\assert.h"
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_version.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_result.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_appidentity.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_device_wrappers.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_api.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_types.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss.h
+CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss_d.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\..\lib\imgui\imgui.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\lib\imgui\imconfig.h
 CMakeFiles\Pathtracer.dir\rdn\Renderer.cpp.obj: "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\ucrt\assert.h"
@@ -4020,7 +4044,11 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\nv_helpers_d
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\wow64apiset.h":
 
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_api.h:
+
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\libloaderapi.h":
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_core_types.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xcharconv.h":
 
@@ -4101,6 +4129,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\t
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\func_packing.inl:
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\mcx.h":
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl.h:
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\imm.h":
 
@@ -4203,6 +4233,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\t
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\servprov.h":
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\msxml.h":
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_version.h:
 
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\um\propidl.h":
 
@@ -4390,6 +4422,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\t
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xutility":
 
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_device_wrappers.h:
+
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\utility":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\initializer_list":
@@ -4399,6 +4433,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\t
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat2x4.inl:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\type_traits":
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_consts.h:
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\compare":
 
@@ -4502,6 +4538,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\DXSample.h:
 
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.h:
 
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss_d.h:
+
 "C:\Program Files (x86)\Windows Kits\10\include\10.0.20348.0\shared\dxgi1_6.h":
 
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\type_mat3x4.inl:
@@ -4594,6 +4632,8 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\detail\s
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\__msvc_bit_utils.hpp":
 
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_appidentity.h:
+
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xbit_ops.h":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xcharconv_ryu.h":
@@ -4621,6 +4661,12 @@ C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\glm\gtc\..\g
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\list":
 
 "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.43.34808\include\xnode_handle.h":
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_struct.h:
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_result.h:
+
+C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\streamline\include\sl_dlss.h:
 
 C:\Users\Malte\Documents\GitHub\DirectX12_pathtracer\Pathtracer\rdn\Win32Application.cpp:
 

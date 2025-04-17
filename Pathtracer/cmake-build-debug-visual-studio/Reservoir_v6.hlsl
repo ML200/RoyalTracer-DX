@@ -23,21 +23,18 @@ struct Reservoir_GI
 {
     float3 xn;     float w_sum; //16
     float3 nn;     float W;  //16
-    float3 Vn;     uint16_t mID2;  uint16_t M; //16
-    half3 E3;      // 8 (6 + pad)
+    half3 E3;     uint16_t M; //8
 };
 
 // Update the reservoir with the light
-inline void UpdateReservoir_GI(
+inline bool UpdateReservoir_GI(
     inout Reservoir_GI reservoir,
     float wi,
     float M,
 
     float3 xn,
     float3 nn,
-    float3 Vn,
     float3 E3,
-    uint mID2,
     inout uint2 seed
     )
 {
@@ -49,15 +46,15 @@ inline void UpdateReservoir_GI(
     {
         reservoir.xn = xn;
         reservoir.nn = nn;
-        reservoir.Vn = Vn;
-        reservoir.mID2 = mID2;
         reservoir.E3 = E3;
+        return true;
     }
+    return false;
 }
 
 
 // Update the reservoir with the light
-inline void UpdateReservoir(
+inline bool UpdateReservoir(
     inout Reservoir_DI reservoir,
     float wi,
     float M,
@@ -77,7 +74,9 @@ inline void UpdateReservoir(
         reservoir.x2 = x2;
         reservoir.n2 = n2;
         reservoir.L2 = L2;
+        return true;
     }
+    return false;
 }
 
 inline void SetReservoirWeight(Reservoir_DI reservoir, float weight){
