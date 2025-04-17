@@ -123,8 +123,7 @@ void RayGen() {
     Reservoir_GI reservoir_GI = {
         float3(0.0f, 0.0f, 0.0f), 0.0f,
         float3(0.0f, 0.0f, 0.0f), 0.0f,
-        float3(0.0f, 0.0f, 0.0f), 0, 0,
-        half3(0,0,0)
+        half3(0.0f, 0.0f, 0.0f), 0
     };
 
     SampleData sdata = {
@@ -173,11 +172,11 @@ void RayGen() {
         // Perform path sampling (simpliefied for now)
         sdata.debug = SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
         sdata.debug += ReconnectDI(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt) * reservoir.W;
-        MaterialOptimized mat_gi = CreateMaterialOptimized(materials[reservoir_GI.mID2], reservoir_GI.mID2);
+
         float3 f_c = LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
                                      reservoir_GI.xn, reservoir_GI.nn,
-                                     reservoir_GI.E3, reservoir_GI.Vn,
-                                     sdata.o, matOpt, mat_gi, false));
+                                     reservoir_GI.E3,
+                                     sdata.o, matOpt, false));
         reservoir_GI.W = GetW_GI(reservoir_GI, f_c);
         reservoir_GI.M = 1.0f;
         //sdata.debug = reservoir_GI.w_sum > 0.0f? 1.0f: 0.0f;

@@ -14,6 +14,9 @@ float3 SamplePathSimple(
     float3 acc_f_reconnection  = float3(1, 1, 1);  // Throughput from the reconnection vertex
     float  acc_pdf             = 1.0f;             // Accumulated PDF up to the current vertex
 
+    float3 x1_shadow = 0.0f;
+    float3 x2_shadow = 0.0f;
+
     // Accumulated radiance
     float3 acc_L = float3(0, 0, 0);
 
@@ -125,11 +128,13 @@ float3 SamplePathSimple(
             float   pdf_NEE        = 1.0f;
             float3  emission_NEE   = float3(0, 0, 0);
             float3  incoming_NEE;
+            float3  x2;
 
             float3 contribution = SampleLightNEE_GI(
                 pdf_light,       // out
                 pdf_bsdf,
                 incoming_NEE,
+                x2,
                 seed,            // in
                 strategy,
                 origin,
@@ -141,7 +146,7 @@ float3 SamplePathSimple(
                 pdf_NEE,
                 emission_NEE,
                 material,
-                true,
+                false,
                 isReconnection
             );
             float3 local_throughput = float3(1,1,1);
@@ -167,17 +172,18 @@ float3 SamplePathSimple(
                 wi = 0.0f;
 
             // Reservoir update
-            UpdateReservoir_GI(
+            if(UpdateReservoir_GI(
                 reservoir,
                 wi,
                 0.0f,
                 xn,
                 normalize(nn),
-                Vn,
                 E_reconnection,
-                mID2,
                 seed
-            );
+            )){
+                x1_shadow = origin + s_bias * normalize(normal);
+                x2_shadow = x2;
+            }
         }
 
         //
@@ -248,9 +254,7 @@ float3 SamplePathSimple(
                 0.0f,
                 xn,
                 normalize(nn),
-                Vn,
                 E_reconnection,
-                mID2,
                 seed
             );
             break;
@@ -263,5 +267,20 @@ float3 SamplePathSimple(
             normal  = new_normal;
         }
     }
+
+    if(nee_samples > 0 && length(x2_shadow - x1_shadow) > EPSILON){
+        // Perform reservoir visibility check
+        RayDesc ray;
+        ray.Origin = x1_shadow;
+        ray.Direction = normalize(x2_shadow - x1_shadow);
+        ray.TMin = 0.5f * s_bias;
+        ray.TMax = max(s_bias, length(x2_shadow - x1_shadow) - (s_bias * 5.0f));
+        ShadowHitInfo shadowPayload;
+        shadowPayload.isHit = false;
+        TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+
+        reservoir.w_sum *= shadowPayload.isHit ? 0.0f : 1.0f;
+    }
+
     return acc_L;
 }

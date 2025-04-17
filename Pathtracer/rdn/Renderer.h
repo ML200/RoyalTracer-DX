@@ -22,6 +22,12 @@
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "../src/Components/Vertex.h"
 
+#include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
+#include <sl_consts.h>     // the sl::kFeature… enum values
+#include <sl_dlss.h>       // DLSS Super Resolution API
+#include <sl_dlss_d.h>     // DLSS Ray‑Reconstruction (DLSS‑RR) API
+
+
 #include "../lib/imgui/imgui.h"
 #include "../lib/imgui/imgui_impl_dx12.h"
 #include "../lib/imgui/imgui_impl_win32.h"
@@ -46,6 +52,10 @@ public:
 
 private:
   static const UINT FrameCount = 2;
+
+    // Streamline frame & viewport tracking
+    sl::FrameToken*     m_frameToken     = nullptr;
+    sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
 
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
@@ -120,7 +130,7 @@ private:
 
     struct Reservoir_GI
     {
-        uint8_t  pad[56]; // 56 bytes :(
+        uint8_t  pad[40]; // 56 bytes :(
     };
 
     struct SampleData

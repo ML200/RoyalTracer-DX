@@ -730,6 +730,18 @@ CMakeFiles/Pathtracer.dir/rdn/Main.cpp.obj
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/xhash
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/list
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/xnode_handle.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_struct.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_consts.h
+ C:/Program Files (x86)/Windows Kits/10/include/10.0.20348.0/ucrt/assert.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_version.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_result.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_appidentity.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_device_wrappers.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_core_api.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_core_types.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_dlss.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_dlss_d.h
  C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui.h
  C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/lib/imgui/imconfig.h
  C:/Program Files (x86)/Windows Kits/10/include/10.0.20348.0/ucrt/assert.h
@@ -1112,6 +1124,18 @@ CMakeFiles/Pathtracer.dir/rdn/Renderer.cpp.obj
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/xhash
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/list
  C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.43.34808/include/xnode_handle.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_struct.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_consts.h
+ C:/Program Files (x86)/Windows Kits/10/include/10.0.20348.0/ucrt/assert.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_version.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_result.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_appidentity.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_device_wrappers.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_core_api.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_core_types.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_dlss.h
+ C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/streamline/include/sl_dlss_d.h
  C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/rdn/../lib/imgui/imgui.h
  C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/lib/imgui/imconfig.h
  C:/Program Files (x86)/Windows Kits/10/include/10.0.20348.0/ucrt/assert.h

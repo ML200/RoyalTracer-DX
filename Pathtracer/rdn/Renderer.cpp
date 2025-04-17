@@ -29,7 +29,7 @@ static std::chrono::steady_clock::time_point g_lastRenderTime
     = std::chrono::steady_clock::now();
 
 // Our desired interval: 1 frame every 5 seconds => 0.2 FPS
-static const float FRAME_INTERVAL_SECONDS = 10.000f;
+static const float FRAME_INTERVAL_SECONDS = 10.00f;
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -95,12 +95,25 @@ void Renderer::OnInit() {
   // are invoked for each instance in the  AS
   CreateShaderBindingTable();
 
+    slGetNewFrameToken(m_frameToken, nullptr);   // token is valid forever, SL recycles it internally
+
+
 
 
 }
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
+    // 3.1 Build the preferences
+    sl::Preferences pref{};
+    pref.flags             = sl::PreferenceFlags::eDisableCLStateTracking;
+    static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
+    pref.featuresToLoad    = featList;
+    pref.numFeaturesToLoad = _countof(featList);
+
+    // 3.2 Initialize Streamline and give it our D3D12 device
+    slInit(pref, sl::kSDKVersion);                             // :contentReference[oaicite:0]{index=0}
+
   UINT dxgiFactoryFlags = 0;
     // These are the exports from SL library
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory)(REFIID, void**);
@@ -109,6 +122,21 @@ void Renderer::LoadPipeline() {
     typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
 
+    #if defined(_DEBUG)
+        // Enable the debug layer (requires the Graphics Tools "optional feature").
+        // NOTE: Enabling the debug layer after device creation will invalidate the
+        // active device.
+        {
+          ComPtr<ID3D12Debug> debugController;
+          if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+              debugController->EnableDebugLayer();
+
+              // Enable additional debug layers.
+              dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+          }
+        }
+    #endif
+
     // Map functions from SL and use them instead of standard DXGI/D3D12 API
     auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
     auto slCreateDXGIFactory1 = reinterpret_cast<PFunCreateDXGIFactory1>(GetProcAddress(m_mod, "CreateDXGIFactory1"));
@@ -116,20 +144,6 @@ void Renderer::LoadPipeline() {
     auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
 
-    /*#if defined(_DEBUG)
-        // Enable the debug layer (requires the Graphics Tools "optional feature").
-        // NOTE: Enabling the debug layer after device creation will invalidate the
-        // active device.
-        {
-            ComPtr<ID3D12Debug> debugController;
-            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-                debugController->EnableDebugLayer();
-
-                // Enable additional debug layers.
-                dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-            }
-        }
-    #endif*/
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -148,6 +162,26 @@ void Renderer::LoadPipeline() {
                                     D3D_FEATURE_LEVEL_12_1,
                                     IID_PPV_ARGS(&m_device)));
   }
+  if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
+{
+    // Handle error, check the logs
+}
+
+
+    // Using helpers from sl_dlss.h
+
+    sl::DLSSOptimalSettings dlssSettings;
+    sl::DLSSOptions dlssOptions;
+    // These are populated based on user selection in the UI
+    dlssOptions.mode = sl::DLSSMode::eDLAA; // e.g. sl::eDLSSModeBalanced;
+    dlssOptions.outputWidth = 1920;    // e.g 1920;
+    dlssOptions.outputHeight = 1080; // e.g. 1080;
+    // Now let's check what should our rendering resolution be
+    slDLSSGetOptimalSettings(dlssOptions, dlssSettings);
+    // print the optimal settings:
+    std::wcout << L"DLSS settings: " << dlssSettings.renderHeightMax << std::endl;
+
+
 
   // Describe and create the command queue.
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -433,6 +467,46 @@ void Renderer::OnUpdate() {
 
 void Renderer::OnRender()
 {
+    static auto s_lastTime = std::chrono::high_resolution_clock::now();
+    static int  s_frameCount = 0;
+
+    // Normal rendering steps
+    // ----------------------------------------
+    PopulateCommandList();
+    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    ThrowIfFailed(m_swapChain->Present(0, 0));
+    WaitForPreviousFrame();
+    // ----------------------------------------
+
+    // FPS calculation
+    s_frameCount++;
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float elapsedSec =
+        std::chrono::duration<float>(currentTime - s_lastTime).count();
+
+    // Update once per second
+    if (elapsedSec >= 1.0f)
+    {
+        float fps = static_cast<float>(s_frameCount) / elapsedSec;
+        float dT = 1000.0f/fps;
+
+        // Build the string
+        std::wstringstream ss;
+        ss << std::fixed << std::setprecision(2)
+               << L"Frame Time: " << dT << L" ms (" << fps << L" fps)";
+
+        // Update the window title
+        SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
+
+        // Reset for next time
+        s_frameCount = 0;
+        s_lastTime = currentTime;
+    }
+}
+
+/*void Renderer::OnRender()
+{
     using namespace std::chrono;
 
     // 1) Check how long it's been since we last rendered.
@@ -464,7 +538,7 @@ void Renderer::OnRender()
 
     // [D] Wait for GPU to finish (or use your existing fence logic)
     WaitForPreviousFrame();
-}
+}*/
 
 
 void Renderer::OnDestroy() {
@@ -473,6 +547,10 @@ void Renderer::OnDestroy() {
   WaitForPreviousFrame();
 
   CloseHandle(m_fenceEvent);
+    if(SL_FAILED(res, slShutdown()))
+    {
+        // Handle error, check the logs
+    }
 }
 
 void Renderer::PopulateCommandList() {

@@ -166,8 +166,7 @@ void RayGen3()
                     g_sample_current[pixel_r],
                     sdata_current,
                     g_Reservoirs_current_gi[pixel_r].xn,
-                    g_Reservoirs_current_gi[pixel_r].nn,
-                    g_Reservoirs_current_gi[pixel_r].Vn
+                    g_Reservoirs_current_gi[pixel_r].nn
                 ), j_threshold) &&
                 (length(g_sample_current[pixel_r].L1) == 0.0f) &&
                 (g_sample_current[pixel_r].mID != 4294967294) &&
@@ -230,11 +229,10 @@ void RayGen3()
             matOpt
         );
 
-        MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[canonical_gi.mID2], canonical_gi.mID2);
         float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                  canonical_gi.xn, canonical_gi.nn,
-                                 canonical_gi.E3, canonical_gi.Vn,
-                                 sdata_current.o, matOpt, mat_gi_c, false);
+                                 canonical_gi.E3,
+                                 sdata_current.o, matOpt, false);
         float w_c_gi = mi_c_gi * LinearizeVector(f_c) * canonical_gi.W;
 
         reservoir_current.M = min(spatial_M_cap, canonical.M);
@@ -299,18 +297,12 @@ void RayGen3()
                     matOpt
                 );
 
-                MaterialOptimized mat_gi_t_t = CreateMaterialOptimized(
-                    materials[g_Reservoirs_current_gi[spatial_candidate].mID2],
-                    g_Reservoirs_current_gi[spatial_candidate].mID2
-                );
-
                 // Jacobian for path reconnection
                 float j_gi = Jacobian_Reconnection(
                     g_sample_current[spatial_candidate],
                     sdata_current,
                     g_Reservoirs_current_gi[spatial_candidate].xn,
-                    g_Reservoirs_current_gi[spatial_candidate].nn,
-                    g_Reservoirs_current_gi[spatial_candidate].Vn
+                    g_Reservoirs_current_gi[spatial_candidate].nn
                 );
 
                 float3 f_gi = GetP_Hat_GI(
@@ -319,10 +311,8 @@ void RayGen3()
                     g_Reservoirs_current_gi[spatial_candidate].xn,
                     g_Reservoirs_current_gi[spatial_candidate].nn,
                     g_Reservoirs_current_gi[spatial_candidate].E3,
-                    g_Reservoirs_current_gi[spatial_candidate].Vn,
                     sdata_current.o,
                     matOpt,
-                    mat_gi_t_t,
                     true
                 );
                 float w_s_gi = mi_s_gi * LinearizeVector(f_gi) * g_Reservoirs_current_gi[spatial_candidate].W * j_gi;
@@ -334,9 +324,7 @@ void RayGen3()
                         min(spatial_M_cap_GI, g_Reservoirs_current_gi[spatial_candidate].M),
                         g_Reservoirs_current_gi[spatial_candidate].xn,
                         g_Reservoirs_current_gi[spatial_candidate].nn,
-                        g_Reservoirs_current_gi[spatial_candidate].Vn,
                         g_Reservoirs_current_gi[spatial_candidate].E3,
-                        g_Reservoirs_current_gi[spatial_candidate].mID2,
                         seed
                     );
                 }
@@ -368,17 +356,14 @@ void RayGen3()
 
 
         // GI -----------------------------------------------------------------------------------
-        MaterialOptimized mat_gi_final = CreateMaterialOptimized(materials[reservoir_current_gi.mID2], reservoir_current_gi.mID2);
         float3 f_gi_final = GetP_Hat_GI(
             sdata_current.x1,
             sdata_current.n1,
             reservoir_current_gi.xn,
             reservoir_current_gi.nn,
             reservoir_current_gi.E3,
-            reservoir_current_gi.Vn,
             sdata_current.o,
             matOpt,
-            mat_gi_final,
             false
         );
 
@@ -438,7 +423,7 @@ void RayGen3()
         }
 
         // Optionally skip temporal accumulation if desired:
-        averagedColor = accumulation;
+        //averagedColor = accumulation;
 
         // Debug coloring for invalid values
         if (isnan(averagedColor.x) || isnan(averagedColor.y) || isnan(averagedColor.z))

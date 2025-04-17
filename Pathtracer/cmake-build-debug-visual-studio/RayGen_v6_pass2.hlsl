@@ -168,18 +168,16 @@ void RayGen2() {
             //DEBUG
             //sdata_current.debug = mi_c_gi + mi_t_gi;
 
-            MaterialOptimized mat_gi_c = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
             float3 f_c = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                      reservoir_gi_current.xn, reservoir_gi_current.nn,
-                                     reservoir_gi_current.E3, reservoir_gi_current.Vn,
-                                     sdata_current.o, matOpt, mat_gi_c, false);
+                                     reservoir_gi_current.E3,
+                                     sdata_current.o, matOpt, false);
             float w_c_gi = mi_c_gi * LinearizeVector(f_c) * reservoir_gi_current.W;
 
-            MaterialOptimized mat_gi_t = CreateMaterialOptimized(materials[reservoir_gi_last.mID2], reservoir_gi_last.mID2);
             float3 f_t = GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                      reservoir_gi_last.xn, reservoir_gi_last.nn,
-                                     reservoir_gi_last.E3, reservoir_gi_last.Vn,
-                                     sdata_current.o, matOpt, mat_gi_t, true);
+                                     reservoir_gi_last.E3,
+                                     sdata_current.o, matOpt, true);
             float w_t_gi = mi_t_gi * LinearizeVector(f_t) * reservoir_gi_last.W;
 
             reservoir_gi_current.M = min(temporal_M_cap_GI, reservoir_gi_current.M);
@@ -191,16 +189,13 @@ void RayGen2() {
                 min(temporal_M_cap_GI, reservoir_gi_last.M),
                 reservoir_gi_last.xn,
                 reservoir_gi_last.nn,
-                reservoir_gi_last.Vn,
                 reservoir_gi_last.E3,
-                reservoir_gi_last.mID2,
                 seed
             );
-            MaterialOptimized mat_gi = CreateMaterialOptimized(materials[reservoir_gi_current.mID2], reservoir_gi_current.mID2);
             reservoir_gi_current.W = GetW_GI(reservoir_gi_current, LinearizeVector(GetP_Hat_GI(sdata_current.x1, sdata_current.n1,
                                      reservoir_gi_current.xn, reservoir_gi_current.nn,
-                                     reservoir_gi_current.E3, reservoir_gi_current.Vn,
-                                     sdata_current.o, matOpt, mat_gi, false)));
+                                     reservoir_gi_current.E3,
+                                     sdata_current.o, matOpt, false)));
         }
     }
     g_Reservoirs_current[pixelIdx] = reservoir_current;

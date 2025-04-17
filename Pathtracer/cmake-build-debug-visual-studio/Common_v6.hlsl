@@ -5,7 +5,7 @@
 #define LUT_SIZE_THETA 16
 #define EXPOSURE 1.0f
 
-#define nee_samples 1
+#define nee_samples 4
 #define nee_samples_DI 4
 #define bsdf_samples_DI 1
 #define bounces 3
@@ -32,10 +32,22 @@
 // Note that the payload should be kept as small as possible,
 // and that its size must be declared in the corresponding
 // D3D12_RAYTRACING_SHADER_CONFIG pipeline subobject.
-struct HitInfo {
-  float3 hitPosition;   uint materialID; // 16 byte aligned
-  float3 hitNormal;  float area; // 16 byte aligned
-  uint objID;
+struct [[raypayload]] HitInfo {
+  float3 hitPosition : read(caller)
+                       : write(anyhit,closesthit,miss);
+  uint materialID : read(caller)
+                       : write(anyhit,closesthit,miss);
+  float3 hitNormal : read(caller)
+                       : write(anyhit,closesthit,miss);
+  float area: read(caller)
+                       : write(anyhit,closesthit,miss);
+  uint objID: read(caller)
+                       : write(anyhit,closesthit,miss);
+};
+
+struct [[raypayload]] ShadowHitInfo {
+  bool isHit: read(caller)
+                       : write(anyhit,closesthit,miss);
 };
 
 struct Material
@@ -59,10 +71,6 @@ static const MaterialOptimized g_DefaultMissMaterial =
 {
     half4(0,0,0,0), half4(0,0,0,0),
     half3(0,0,0), half3(0,0,0), 4294967294
-};
-
-struct ShadowHitInfo {
-  bool isHit;
 };
 
 struct InstanceProperties
