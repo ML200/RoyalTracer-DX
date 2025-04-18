@@ -17,6 +17,10 @@ set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")   # MUST exist
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 
+# ────────────────────────── extra assets to copy ─────────────────────────────
+# Every build: mirror the **contents** of the `includes` folder next to the exe
+set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
+
 # ───────────────────────── source files ──────────────────────────────────────
 add_executable(Pathtracer WIN32
         rdn/Main.cpp
@@ -51,9 +55,9 @@ target_include_directories(Pathtracer PRIVATE
 # ──────────────── Streamline import‑lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)
 set_target_properties(sl_interposer PROPERTIES
-    IMPORTED_LOCATION           "${SL_LIB_PATH}"
-    IMPORTED_LOCATION_DEBUG     "${SL_LIB_PATH}"
-    IMPORTED_LOCATION_RELEASE   "${SL_LIB_PATH}"
+        IMPORTED_LOCATION           "${SL_LIB_PATH}"
+        IMPORTED_LOCATION_DEBUG     "${SL_LIB_PATH}"
+        IMPORTED_LOCATION_RELEASE   "${SL_LIB_PATH}"
 )
 
 # ───────────────────────── link libraries ────────────────────────────────────
@@ -62,16 +66,18 @@ target_link_libraries(Pathtracer PRIVATE
         d3d12.lib dxgi.lib dxguid.lib
         dxcompiler.lib d3dcompiler.lib)
 
-# ───────────────────── copy Streamline runtime DLLs ──────────────────────────
-#add_custom_command(TARGET Pathtracer POST_BUILD
-#        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-#        "${SL_BIN_DIR}/sl.interposer.dll"
-#        "${SL_BIN_DIR}/sl.common.dll"
-#        "${SL_BIN_DIR}/sl.dlss_g.dll"
-#        "${SL_BIN_DIR}/sl.dlss_rr.dll"
-#        $<TARGET_FILE_DIR:Pathtracer>)
+# ────────────────── copy the *contents* of 'includes' on every build ─────────
+add_custom_command(
+        TARGET Pathtracer
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${INCLUDES_DIR}"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMENT "Copying contents of 'includes' into build output directory."
+)
 
 # ─────────────────────────── status messages ────────────────────────────────
 message(STATUS "Streamline include: ${SL_INCLUDE_DIR}")
 message(STATUS "Streamline lib    : ${SL_LIB_PATH}")
 message(STATUS "Streamline bin    : ${SL_BIN_DIR}")
+message(STATUS "Includes dir      : ${INCLUDES_DIR}")
