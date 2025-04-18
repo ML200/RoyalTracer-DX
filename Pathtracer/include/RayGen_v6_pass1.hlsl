@@ -46,7 +46,7 @@ cbuffer CameraParams : register(b0)
 
 //Generate the initial
 [shader("raygeneration")]
-void RayGen() {
+void RayGen_v6_pass1() {
     // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims = float2(DispatchRaysDimensions().xy);

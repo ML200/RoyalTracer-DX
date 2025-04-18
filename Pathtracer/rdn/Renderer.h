@@ -45,12 +45,20 @@ class Renderer : public DXSample {
 public:
   Renderer(UINT width, UINT height, std::wstring name);
 
+  void DLSSRR_Init();
+
   virtual void OnInit();
   virtual void OnUpdate();
   virtual void OnRender();
   virtual void OnDestroy();
 
 private:
+    // --- NEW: dynamic pass control ------------------------------------------------
+    std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
+    std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
+    std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;    // compiled DXIL blobs
+    // -----------------------------------------------------------------------------
+
   static const UINT FrameCount = 2;
 
     // Streamline frame & viewport tracking
