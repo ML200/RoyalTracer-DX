@@ -1053,7 +1053,7 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddLibrary(m_rayGenLibrary3.Get(), {L"RayGen3"});
   pipeline.AddLibrary(m_missLibrary.Get(), {L"Miss"});
   // #DXR Extra: Per-Instance Data
-  pipeline.AddLibrary(m_hitLibrary.Get(), {L"ClosestHit", L"PlaneClosestHit"});
+  pipeline.AddLibrary(m_hitLibrary.Get(), {L"ClosestHit"});
 
   // To be used, each DX12 shader needs a root signature defining which
   // parameters and buffers will be accessed.
@@ -1079,9 +1079,6 @@ void Renderer::CreateRaytracingPipeline() {
   // Hit group for the triangles, with a shader simply interpolating vertex
   // colors
   pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
-    pipeline.AddHitGroup(L"HitGroup1", L"PlaneClosestHit");
-  // #DXR Extra: Per-Instance Data
-  pipeline.AddHitGroup(L"PlaneHitGroup", L"PlaneClosestHit");
   // #DXR Extra - Another ray type
   // Hit group for all geometry when hit by a shadow ray
   pipeline.AddHitGroup(L"ShadowHitGroup", L"ShadowClosestHit");
@@ -1096,7 +1093,6 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen3"});
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup1"});
 
   // #DXR Extra - Another ray type
   pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),
@@ -1107,7 +1103,7 @@ void Renderer::CreateRaytracingPipeline() {
 
   // #DXR Extra: Per-Instance Data
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
-                                       {L"HitGroup", L"PlaneHitGroup", L"HitGroup1"});
+                                       {L"HitGroup"});
   // The payload size defines the maximum size of the data carried by the rays,
   // ie. the the data
   // exchanged between shaders, such as the HitInfo structure in the HLSL code.
