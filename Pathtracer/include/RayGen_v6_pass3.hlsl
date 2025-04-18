@@ -44,7 +44,7 @@ cbuffer CameraParams : register(b0)
 // Second raygen shader is the ReSTIR pass. The reservoirs were filled in the first shader, now we recombine them.
 
 [shader("raygeneration")]
-void RayGen3()
+void RayGen_v6_pass3()
 {
 
 

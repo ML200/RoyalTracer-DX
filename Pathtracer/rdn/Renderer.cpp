@@ -10,7 +10,7 @@
 //*********************************************************
 #include <chrono>
 #include "stdafx.h"
-
+#include <unordered_map>          // NEW
 #include "Renderer.h"
 
 #include "DXRHelper.h"
@@ -39,6 +39,14 @@ Renderer::Renderer(UINT width, UINT height,
       m_scissorRect(0, 0, static_cast<LONG>(width), static_cast<LONG>(height)),
       m_rtvDescriptorSize(0) {
     m_mod = LoadLibrary("sl.interposer.dll");
+
+    m_passSequence = {
+        L"RayGen_v6_pass1.hlsl",
+        L"barrier",
+        L"RayGen_v6_pass2.hlsl",
+        L"barrier",
+        L"RayGen_v6_pass3.hlsl"
+    };
 }
 
 void Renderer::OnInit() {
@@ -106,7 +114,8 @@ void Renderer::OnInit() {
 void Renderer::LoadPipeline() {
     // 3.1 Build the preferences
     sl::Preferences pref{};
-    pref.flags             = sl::PreferenceFlags::eDisableCLStateTracking;
+    pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
+              sl::PreferenceFlags::eLoadDownloadedPlugins;
     static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
     pref.featuresToLoad    = featList;
     pref.numFeaturesToLoad = _countof(featList);
@@ -443,7 +452,7 @@ void Renderer::OnUpdate() {
       //XMMatrixTranslation(0.f, 0.f, 0.f);
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.57f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 1.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
@@ -607,70 +616,42 @@ void Renderer::PopulateCommandList() {
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     m_commandList->ResourceBarrier(1, &transition);
 
-    // Setup the raytracing task
     D3D12_DISPATCH_RAYS_DESC desc = {};
-    // The layout of the SBT is as follows: ray generation shader, miss
-    // shaders, hit groups. As described in the CreateShaderBindingTable method,
-    // all SBT entries of a given type have the same size to allow a fixed
-    // stride.
+    desc.Width  = GetWidth();
+    desc.Height = GetHeight();
+    desc.Depth  = 1;
 
-    // The ray generation shaders are always at the beginning of the SBT.
-    uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
-    uint32_t rgSize    = m_sbtHelper.GetRayGenEntrySize();
-    uint32_t rayGenerationSectionSizeInBytes =
-        m_sbtHelper.GetRayGenSectionSize();
+    const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
+    const uint32_t rgSize   = m_sbtHelper.GetRayGenEntrySize();
+    const uint32_t numRG    = static_cast<uint32_t>(m_passIndex.size());
 
-    desc.RayGenerationShaderRecord.StartAddress = sbtStart;
-    desc.RayGenerationShaderRecord.SizeInBytes = rgSize;
-
-    // The miss shaders are in the second SBT section, right after the ray
-    // generation shader. We have one miss shader for the camera rays and one
-    // for the shadow rays, so this section has a size of 2*m_sbtEntrySize. We
-    // also indicate the stride between the two miss shaders, which is the size
-    // of a SBT entry
-    uint32_t missSectionSizeInBytes = m_sbtHelper.GetMissSectionSize();
-    desc.MissShaderTable.StartAddress =
-        m_sbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
-    desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
+    desc.MissShaderTable.StartAddress  = sbtStart + numRG * rgSize;
+    desc.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
     desc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
 
-    // The hit groups section start after the miss shaders. In this sample we
-    // have one 1 hit group for the triangle
-    uint32_t hitGroupsSectionSize = m_sbtHelper.GetHitGroupSectionSize();
-    desc.HitGroupTable.StartAddress = m_sbtStorage->GetGPUVirtualAddress() +
-                                      rayGenerationSectionSizeInBytes +
-                                      missSectionSizeInBytes;
-    desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
-    desc.HitGroupTable.StrideInBytes = m_sbtHelper.GetHitGroupEntrySize();
+    desc.HitGroupTable.StartAddress    =
+        desc.MissShaderTable.StartAddress + desc.MissShaderTable.SizeInBytes;
+    desc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
+    desc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
 
-    // Dimensions of the image to render, identical to a kernel launch dimension
-    desc.Width = GetWidth();
-    desc.Height = GetHeight();
-    desc.Depth = 1;
-
-    // Bind the raytracing pipeline
     m_commandList->SetPipelineState1(m_rtStateObject.Get());
-    // Dispatch the rays and write to the raytracing output
-    m_commandList->DispatchRays(&desc);
 
-    // Create the barrier object
-    CD3DX12_RESOURCE_BARRIER globalUAVBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-    m_commandList->ResourceBarrier(1, &globalUAVBarrier);
+    uint32_t slot = 0;
+    for (const auto& entry : m_passSequence) {
 
+        if (entry == L"barrier") {                 // UAV barrier request
+            CD3DX12_RESOURCE_BARRIER uavBarrier =
+                CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+            m_commandList->ResourceBarrier(1, &uavBarrier);
+            continue;
+        }
 
-    // Second ray gen pass
-    desc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSize; // the second RayGen
-    desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
-    m_commandList->DispatchRays(&desc);
-
-    // Insert a UAV barrier between RayGen2 and RayGen3
-    CD3DX12_RESOURCE_BARRIER uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-    m_commandList->ResourceBarrier(1, &uavBarrier);
-
-    // Dispatch third raygen shader (RayGen3)
-    desc.RayGenerationShaderRecord.StartAddress = sbtStart + 2 * rgSize;
-    desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
-    m_commandList->DispatchRays(&desc);
+        // Dispatch the ray‑generation shader that lives at `slot`
+        desc.RayGenerationShaderRecord.StartAddress = sbtStart + slot * rgSize;
+        desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
+        m_commandList->DispatchRays(&desc);
+        ++slot;
+    }
 
     // The raytracing output needs to be copied to the actual render target used
     // for display. For this, we need to transition the raytracing output from a
@@ -1024,36 +1005,45 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 //
 //
 void Renderer::CreateRaytracingPipeline() {
-  nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_device.Get());
 
-  // The pipeline contains the DXIL code of all the shaders potentially executed
-  // during the raytracing process. This section compiles the HLSL code into a
-  // set of DXIL libraries. We chose to separate the code in several libraries
-  // by semantic (ray generation, hit, miss) for clarity. Any code layout can be
-  // used.
-  m_rayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass1.hlsl");
-  m_rayGenLibrary2 = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass2.hlsl");
-  m_rayGenLibrary3 = nv_helpers_dx12::CompileShaderLibrary(L"RayGen_v6_pass3.hlsl");
-  m_missLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
-  m_hitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
+    nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_device.Get());
 
-  // #DXR Extra - Another ray type
-  m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
-  pipeline.AddLibrary(m_shadowLibrary.Get(),
-                      {L"ShadowClosestHit", L"ShadowMiss"});
-  m_shadowSignature = CreateHitSignature();
+    // 1)  RAY‑GENERATION LIBRARIES  (from .hlsl file names)
+    // ------------------------------------------------------------------------
+    m_rayGenLibs.clear();
+    m_passIndex.clear();
+    uint32_t shaderSlot = 0;
 
-  // In a way similar to DLLs, each library is associated with a number of
-  // exported symbols. This
-  // has to be done explicitly in the lines below. Note that a single library
-  // can contain an arbitrary number of symbols, whose semantic is given in HLSL
-  // using the [shader("xxx")] syntax
-  pipeline.AddLibrary(m_rayGenLibrary.Get(), {L"RayGen"});
-    pipeline.AddLibrary(m_rayGenLibrary2.Get(), {L"RayGen2"});
-    pipeline.AddLibrary(m_rayGenLibrary3.Get(), {L"RayGen3"});
-  pipeline.AddLibrary(m_missLibrary.Get(), {L"Miss"});
-  // #DXR Extra: Per-Instance Data
-  pipeline.AddLibrary(m_hitLibrary.Get(), {L"ClosestHit"});
+    for (const auto& entry : m_passSequence) {
+
+        if (entry == L"barrier")           // skip barriers
+            continue;
+
+        const std::wstring& fileName = entry;
+
+        // Derive the exported symbol:  strip folder & extension
+        std::wstring base = fileName.substr(fileName.find_last_of(L"/\\") + 1);
+        base = base.substr(0, base.rfind(L'.'));
+
+        // NEW – always a WRL smart pointer, so .Get() is available
+        Microsoft::WRL::ComPtr<IDxcBlob> lib =
+                nv_helpers_dx12::CompileShaderLibrary(fileName.c_str());
+
+        m_rayGenLibs.push_back(lib);                         // keep it alive
+        pipeline.AddLibrary(lib.Get(), { base.c_str() });    // ← now compiles
+
+        m_passIndex[fileName] = shaderSlot++;              // map file ➜ slot
+    }
+
+    // 2)  ALL *FIXED* LIBRARIES AND ROOT‑SIGS (unchanged from original)
+    // ----------------------------------------------------------------
+    m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
+    m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
+    m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
+
+    pipeline.AddLibrary(m_missLibrary.Get(),    { L"Miss" });
+    pipeline.AddLibrary(m_shadowLibrary.Get(),  { L"ShadowClosestHit", L"ShadowMiss" });
+    pipeline.AddLibrary(m_hitLibrary.Get(),     { L"ClosestHit" });
 
   // To be used, each DX12 shader needs a root signature defining which
   // parameters and buffers will be accessed.
@@ -1088,9 +1078,25 @@ void Renderer::CreateRaytracingPipeline() {
   // (eg. Miss and ShadowMiss). Note that the hit shaders are now only referred
   // to as hit groups, meaning that the underlying intersection, any-hit and
   // closest-hit shaders share the same root signature.
-  pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen"});
-    pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen2"});
-    pipeline.AddRootSignatureAssociation(m_rayGenSignature.Get(), {L"RayGen3"});
+    // After you’ve done:
+    //   for each entry in m_passSequence (skipping "barrier")
+    //     CompileShaderLibrary(fileName) and pipeline.AddLibrary(lib, {baseName})
+    // Now wire up the root‑signature for each of those bases:
+
+    for (const auto& entry : m_passSequence)
+    {
+        if (entry == L"barrier") continue;
+
+        // strip off the “.hlsl” to get exactly the name you exported
+        std::wstring base = entry.substr(0, entry.rfind(L'.'));
+
+        pipeline.AddRootSignatureAssociation(
+            m_rayGenSignature.Get(),
+            { base.c_str() }
+        );
+    }
+
+
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
   pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
 
@@ -1122,7 +1128,7 @@ void Renderer::CreateRaytracingPipeline() {
   // then requires a trace depth of 1. Note that this recursion depth should be
   // kept to a minimum for best performance. Path tracing algorithms can be
   // easily flattened into a simple loop in the ray generation.
-  pipeline.SetMaxRecursionDepth(2);
+  pipeline.SetMaxRecursionDepth(1);
 
   // Compile the pipeline for execution on the GPU
   m_rtStateObject = pipeline.Generate();
@@ -1586,25 +1592,21 @@ void Renderer::CreateShaderResourceHeap() {
 // Using the helper class, those can be specified in arbitrary order.
 //
 void Renderer::CreateShaderBindingTable() {
-    // The SBT helper class collects calls to Add*Program. If called several
-    // times, the helper must be emptied before re-adding shaders.
-    std::wcout << L"Resetting SBT helper..." << std::endl;
     m_sbtHelper.Reset();
+    D3D12_GPU_DESCRIPTOR_HANDLE heapHandle =
+        m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+    auto heapPointer = reinterpret_cast<UINT64*>(heapHandle.ptr);
 
-    // The pointer to the beginning of the heap is the only parameter required by
-    // shaders without root parameters
-    D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
-    std::wcout << L"Got GPU descriptor handle for heap start." << std::endl;
+    //  RAY‑GEN SECTION  -------------------------------------------------------
+    for (const auto& entry : m_passSequence) {
 
-    // The heap pointer is reinterpreted as a UINT64 pointer
-    auto heapPointer = reinterpret_cast<UINT64 *>(srvUavHeapHandle.ptr);
-    std::wcout << L"Heap pointer address: " << srvUavHeapHandle.ptr << std::endl;
+        if (entry == L"barrier")
+            continue;
 
-    // The ray generation only uses heap data
-    std::wcout << L"Adding ray generation program..." << std::endl;
-    m_sbtHelper.AddRayGenerationProgram(L"RayGen", {heapPointer});
-    m_sbtHelper.AddRayGenerationProgram(L"RayGen2", {heapPointer});
-    m_sbtHelper.AddRayGenerationProgram(L"RayGen3", {heapPointer});
+        std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
+        base = base.substr(0, base.rfind(L'.'));          // strip extension
+        m_sbtHelper.AddRayGenerationProgram(base.c_str(), { heapPointer });
+    }
 
 
     // The miss and hit shaders do not access any external resources

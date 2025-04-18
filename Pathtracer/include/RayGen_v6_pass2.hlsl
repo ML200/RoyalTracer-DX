@@ -44,7 +44,7 @@ cbuffer CameraParams : register(b0)
 // Second raygen shader is the ReSTIR pass. The reservoirs were filled in the first shader, now we recombine them
 
 [shader("raygeneration")]
-void RayGen2() {
+void RayGen_v6_pass2() {
 
     // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
     uint2 launchIndex = DispatchRaysIndex().xy;
