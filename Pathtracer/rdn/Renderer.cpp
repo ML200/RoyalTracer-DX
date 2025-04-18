@@ -360,7 +360,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", /*"dragon.obj",*/ "bugatti.obj"};
+    std::vector<std::string> models = {"garage.obj", "monke.obj"};
 
 
 
