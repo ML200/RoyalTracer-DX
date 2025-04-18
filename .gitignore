@@ -31,4 +31,4 @@
 *.app
 
 /Pathtracer/cmake-build-debug-visual-studio
-.idea
+*.idea
