@@ -360,7 +360,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", /*"dragon.obj",*/ "monke.obj"};
+    std::vector<std::string> models = {"garage.obj", /*"dragon.obj",*/ "bugatti.obj"};
 
 
 
@@ -441,9 +441,9 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
-    XMMATRIX scaleMatrix = XMMatrixScaling(0.7f, 0.7f, 0.7f);
-    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 1.f, 0.f);
+    XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.57f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(0.f, 0.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;

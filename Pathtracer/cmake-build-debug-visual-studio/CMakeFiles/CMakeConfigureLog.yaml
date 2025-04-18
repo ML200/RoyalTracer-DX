@@ -109,8 +109,8 @@ events:
     checks:
       - "Detecting C compiler ABI info"
     directories:
-      source: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-swvwcr"
-      binary: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-swvwcr"
+      source: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-4y8ywy"
+      binary: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-4y8ywy"
     cmakeVariables:
       CMAKE_C_FLAGS: "/DWIN32 /D_WINDOWS"
       CMAKE_C_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
@@ -119,28 +119,28 @@ events:
       variable: "CMAKE_C_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-swvwcr'
+        Change Dir: 'C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-4y8ywy'
         
-        Run Build Command(s): "C:/Program Files/JetBrains/CLion 2024.3.2/bin/cmake/win/x64/bin/cmake.exe" -E env VERBOSE=1 nmake -f Makefile /nologo cmTC_e7409\\fast
-        	"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.43.34808\\bin\\HostX64\\x64\\nmake.exe"  -f CMakeFiles\\cmTC_e7409.dir\\build.make /nologo -L                  CMakeFiles\\cmTC_e7409.dir\\build
-        Building C object CMakeFiles/cmTC_e7409.dir/CMakeCCompilerABI.c.obj
-        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\\cmTC_e7409.dir\\CMakeCCompilerABI.c.obj.d --working-dir=C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-swvwcr --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\cl.exe @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm201E.tmp
+        Run Build Command(s): "C:/Program Files/JetBrains/CLion 2024.3.2/bin/cmake/win/x64/bin/cmake.exe" -E env VERBOSE=1 nmake -f Makefile /nologo cmTC_3f4df\\fast
+        	"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.43.34808\\bin\\HostX64\\x64\\nmake.exe"  -f CMakeFiles\\cmTC_3f4df.dir\\build.make /nologo -L                  CMakeFiles\\cmTC_3f4df.dir\\build
+        Building C object CMakeFiles/cmTC_3f4df.dir/CMakeCCompilerABI.c.obj
+        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\\cmTC_3f4df.dir\\CMakeCCompilerABI.c.obj.d --working-dir=C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-4y8ywy --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\cl.exe @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm90C0.tmp
         CMakeCCompilerABI.c
-        Linking C executable cmTC_e7409.exe
-        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_e7409.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe --manifests -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_e7409.dir\\objects1.rsp @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm204E.tmp
+        Linking C executable cmTC_3f4df.exe
+        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_3f4df.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe --manifests -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_3f4df.dir\\objects1.rsp @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm9100.tmp
         Visual Studio Incremental Link with embedded manifests
-        Create CMakeFiles\\cmTC_e7409.dir/manifest.rc
-        Create empty: CMakeFiles\\cmTC_e7409.dir/embed.manifest
+        Create CMakeFiles\\cmTC_3f4df.dir/manifest.rc
+        Create empty: CMakeFiles\\cmTC_3f4df.dir/embed.manifest
         RC Pass 1:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_e7409.dir/manifest.res CMakeFiles\\cmTC_e7409.dir/manifest.rc
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_3f4df.dir/manifest.res CMakeFiles\\cmTC_3f4df.dir/manifest.rc
         LINK Pass 1:
-        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_e7409.dir\\objects1.rsp /out:cmTC_e7409.exe /implib:cmTC_e7409.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-swvwcr\\cmTC_e7409.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_e7409.dir/intermediate.manifest CMakeFiles\\cmTC_e7409.dir/manifest.res
+        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_3f4df.dir\\objects1.rsp /out:cmTC_3f4df.exe /implib:cmTC_3f4df.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-4y8ywy\\cmTC_3f4df.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_3f4df.dir/intermediate.manifest CMakeFiles\\cmTC_3f4df.dir/manifest.res
         MT:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe /nologo /manifest CMakeFiles\\cmTC_e7409.dir/intermediate.manifest /out:CMakeFiles\\cmTC_e7409.dir/embed.manifest /notify_update
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe /nologo /manifest CMakeFiles\\cmTC_3f4df.dir/intermediate.manifest /out:CMakeFiles\\cmTC_3f4df.dir/embed.manifest /notify_update
         RC Pass 2:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_e7409.dir/manifest.res CMakeFiles\\cmTC_e7409.dir/manifest.rc
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_3f4df.dir/manifest.res CMakeFiles\\cmTC_3f4df.dir/manifest.rc
         FINAL LINK:
-        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_e7409.dir\\objects1.rsp /out:cmTC_e7409.exe /implib:cmTC_e7409.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-swvwcr\\cmTC_e7409.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_e7409.dir/intermediate.manifest CMakeFiles\\cmTC_e7409.dir/manifest.res
+        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_3f4df.dir\\objects1.rsp /out:cmTC_3f4df.exe /implib:cmTC_3f4df.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-4y8ywy\\cmTC_3f4df.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_3f4df.dir/intermediate.manifest CMakeFiles\\cmTC_3f4df.dir/manifest.res
         
       exitCode: 0
   -
@@ -180,8 +180,8 @@ events:
     checks:
       - "Detecting CXX compiler ABI info"
     directories:
-      source: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-d283za"
-      binary: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-d283za"
+      source: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-91quv6"
+      binary: "C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-91quv6"
     cmakeVariables:
       CMAKE_CXX_FLAGS: "/DWIN32 /D_WINDOWS /EHsc"
       CMAKE_CXX_FLAGS_DEBUG: "/Ob0 /Od /RTC1"
@@ -191,28 +191,28 @@ events:
       variable: "CMAKE_CXX_ABI_COMPILED"
       cached: true
       stdout: |
-        Change Dir: 'C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-d283za'
+        Change Dir: 'C:/Users/Malte/Documents/GitHub/DirectX12_pathtracer/Pathtracer/cmake-build-debug-visual-studio/CMakeFiles/CMakeScratch/TryCompile-91quv6'
         
-        Run Build Command(s): "C:/Program Files/JetBrains/CLion 2024.3.2/bin/cmake/win/x64/bin/cmake.exe" -E env VERBOSE=1 nmake -f Makefile /nologo cmTC_7e283\\fast
-        	"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.43.34808\\bin\\HostX64\\x64\\nmake.exe"  -f CMakeFiles\\cmTC_7e283.dir\\build.make /nologo -L                  CMakeFiles\\cmTC_7e283.dir\\build
-        Building CXX object CMakeFiles/cmTC_7e283.dir/CMakeCXXCompilerABI.cpp.obj
-        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\\cmTC_7e283.dir\\CMakeCXXCompilerABI.cpp.obj.d --working-dir=C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-d283za --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\cl.exe @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm2137.tmp
+        Run Build Command(s): "C:/Program Files/JetBrains/CLion 2024.3.2/bin/cmake/win/x64/bin/cmake.exe" -E env VERBOSE=1 nmake -f Makefile /nologo cmTC_4b0df\\fast
+        	"C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC\\14.43.34808\\bin\\HostX64\\x64\\nmake.exe"  -f CMakeFiles\\cmTC_4b0df.dir\\build.make /nologo -L                  CMakeFiles\\cmTC_4b0df.dir\\build
+        Building CXX object CMakeFiles/cmTC_4b0df.dir/CMakeCXXCompilerABI.cpp.obj
+        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E cmake_cl_compile_depends --dep-file=CMakeFiles\\cmTC_4b0df.dir\\CMakeCXXCompilerABI.cpp.obj.d --working-dir=C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-91quv6 --filter-prefix="Hinweis: Einlesen der Datei: " -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\cl.exe @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm91F9.tmp
         CMakeCXXCompilerABI.cpp
-        Linking CXX executable cmTC_7e283.exe
-        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_7e283.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe --manifests -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_7e283.dir\\objects1.rsp @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm2177.tmp
+        Linking CXX executable cmTC_4b0df.exe
+        	"C:\\Program Files\\JetBrains\\CLion 2024.3.2\\bin\\cmake\\win\\x64\\bin\\cmake.exe" -E vs_link_exe --intdir=CMakeFiles\\cmTC_4b0df.dir --rc=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe --mt=C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe --manifests -- C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_4b0df.dir\\objects1.rsp @C:\\Users\\Malte\\AppData\\Local\\Temp\\nm9229.tmp
         Visual Studio Incremental Link with embedded manifests
-        Create CMakeFiles\\cmTC_7e283.dir/manifest.rc
-        Create empty: CMakeFiles\\cmTC_7e283.dir/embed.manifest
+        Create CMakeFiles\\cmTC_4b0df.dir/manifest.rc
+        Create empty: CMakeFiles\\cmTC_4b0df.dir/embed.manifest
         RC Pass 1:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_7e283.dir/manifest.res CMakeFiles\\cmTC_7e283.dir/manifest.rc
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_4b0df.dir/manifest.res CMakeFiles\\cmTC_4b0df.dir/manifest.rc
         LINK Pass 1:
-        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_7e283.dir\\objects1.rsp /out:cmTC_7e283.exe /implib:cmTC_7e283.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-d283za\\cmTC_7e283.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_7e283.dir/intermediate.manifest CMakeFiles\\cmTC_7e283.dir/manifest.res
+        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_4b0df.dir\\objects1.rsp /out:cmTC_4b0df.exe /implib:cmTC_4b0df.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-91quv6\\cmTC_4b0df.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_4b0df.dir/intermediate.manifest CMakeFiles\\cmTC_4b0df.dir/manifest.res
         MT:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe /nologo /manifest CMakeFiles\\cmTC_7e283.dir/intermediate.manifest /out:CMakeFiles\\cmTC_7e283.dir/embed.manifest /notify_update
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\mt.exe /nologo /manifest CMakeFiles\\cmTC_4b0df.dir/intermediate.manifest /out:CMakeFiles\\cmTC_4b0df.dir/embed.manifest /notify_update
         RC Pass 2:
-        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_7e283.dir/manifest.res CMakeFiles\\cmTC_7e283.dir/manifest.rc
+        C:\\PROGRA~2\\WI3CF2~1\\10\\bin\\100203~1.0\\x64\\rc.exe /fo CMakeFiles\\cmTC_4b0df.dir/manifest.res CMakeFiles\\cmTC_4b0df.dir/manifest.rc
         FINAL LINK:
-        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_7e283.dir\\objects1.rsp /out:cmTC_7e283.exe /implib:cmTC_7e283.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-d283za\\cmTC_7e283.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_7e283.dir/intermediate.manifest CMakeFiles\\cmTC_7e283.dir/manifest.res
+        C:\\PROGRA~1\\MICROS~2\\2022\\COMMUN~1\\VC\\Tools\\MSVC\\1443~1.348\\bin\\Hostx64\\x64\\link.exe /nologo @CMakeFiles\\cmTC_4b0df.dir\\objects1.rsp /out:cmTC_4b0df.exe /implib:cmTC_4b0df.lib /pdb:C:\\Users\\Malte\\Documents\\GitHub\\DirectX12_pathtracer\\Pathtracer\\cmake-build-debug-visual-studio\\CMakeFiles\\CMakeScratch\\TryCompile-91quv6\\cmTC_4b0df.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\\cmTC_4b0df.dir/intermediate.manifest CMakeFiles\\cmTC_4b0df.dir/manifest.res
         
       exitCode: 0
   -

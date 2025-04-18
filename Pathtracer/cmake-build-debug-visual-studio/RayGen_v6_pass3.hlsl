@@ -156,7 +156,7 @@ void RayGen3()
 
             // Evaluate GI candidate predicate
             bool candidateAcceptedGI =
-                //matOpt.Pr_Pm_Ps_Pc.x > 0.3f &&
+                matOpt.Pr_Pm_Ps_Pc.x > 0.3f &&
                 //!RejectNormal(sdata_current.n1, g_sample_current[pixel_r].n1, 0.5f) &&
                 !RejectDistance(sdata_current.x1, g_sample_current[pixel_r].x1, init_orig, 0.1f) &&
                 !RejectBelowSurface(normalize(g_Reservoirs_current_gi[pixel_r].xn - sdata_current.x1), sdata_current.n1) &&
