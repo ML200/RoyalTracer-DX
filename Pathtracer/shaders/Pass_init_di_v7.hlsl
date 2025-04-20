@@ -40,5 +40,9 @@ cbuffer CameraParams : register(b0)
 
 [shader("raygeneration")]
 void Pass_init_di_v7() {
+    uint2 launchIndex = DispatchRaysIndex().xy;
+    float2 dims       = float2(DispatchRaysDimensions().xy);
+    uint pixelIdx     = MapPixelID(dims, launchIndex);
 
+    SampleCameraRay(pixelIdx);
 }

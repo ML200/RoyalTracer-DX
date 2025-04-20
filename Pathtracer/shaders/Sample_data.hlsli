@@ -20,85 +20,61 @@ static const uint P_obj  = P_o     + B_o;
 static const uint P_mID  = P_obj    + B_obj;
 
 //__________________________x1_____________________________
-float3 load_x1(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
+float3 load_x1(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_x1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_x1;
     return asfloat(buffer.Load3(addr));
 }
-void store_x1(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
+void store_x1(float3 x1, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_x1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_x1;
     buffer.Store3(addr, asuint(x1));
 }
 
 //__________________________n1_____________________________
-float3 load_n1(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    return asfloat(buffer.Load3(addr));
+float3 load_n1(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_n1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_n1;
+    return UnpackNormal(buffer.Load(addr));
 }
-void store_n1(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    buffer.Store3(addr, asuint(x1));
+void store_n1(float3 n1, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_n1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_n1;
+    buffer.Store(addr, PackNormal(n1));
 }
 
 //__________________________L1_____________________________
-float3 load_L1(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    return asfloat(buffer.Load3(addr));
+float3 load_L1(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_L1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_L1;
+    return UnpackRGB9E5(buffer.Load(addr));
 }
-void store_L1(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    buffer.Store3(addr, asuint(x1));
+void store_L1(float3 L1, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_L1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_L1;
+    buffer.Store(addr, PackRGB9E5(L1));
 }
 
 //__________________________o_____________________________
-float3 load_o(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    return asfloat(buffer.Load3(addr));
+float3 load_o(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_o * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_o;
+    return UnpackNormal(buffer.Load(addr));
 }
-void store_o(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    buffer.Store3(addr, asuint(x1));
+void store_o(float3 o, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_o * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_o;
+    buffer.Store(addr, PackNormal(o));
 }
 
 //__________________________objID_____________________________
-float3 load_objID(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
+float3 load_objID(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_obj * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_obj;
     return asfloat(buffer.Load3(addr));
 }
-void store_objID(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    buffer.Store3(addr, asuint(x1));
+void store_objID(uint objID, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_obj * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_obj;
+    buffer.Store3(addr, asuint(objID));
 }
 
 //__________________________matID_____________________________
-float3 load_matID(RWByteAddressBuffer buffer){
-    // Get the pixel position:
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    // We get the buffer location using the size of the entry (base is 0:
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
+float3 load_matID(RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_mID * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_mID;
     return asfloat(buffer.Load3(addr));
 }
-void store_matID(float3 x1, RWByteAddressBuffer buffer){
-    uint pixelIdx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-    uint addr = P_x1 * (float)(DispatchRaysDimensions().x +DispatchRaysDimensions().y) + pixelIdx * B_x1;
-    buffer.Store3(addr, asuint(x1));
+void store_matID(uint matID, RWByteAddressBuffer buffer, uint pixelIdx){
+    uint addr = P_mID * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_mID;
+    buffer.Store3(addr, asuint(matID));
 }

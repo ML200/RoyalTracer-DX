@@ -5,6 +5,8 @@ static const int  RGB9E5_EXP_BIAS       = 15;
 static const uint RGB9E5_MANT_MASK      = (1u << RGB9E5_MANTISSA_BITS) - 1;   // 0x1FF
 static const uint RGB9E5_EXP_MASK       = (1u << RGB9E5_EXP_BITS) - 1;       // 0x1F
 
+
+
 uint PackRGB9E5(float3 v)
 {
     // 1) clamp to [0, sharedexp_max]:
@@ -29,10 +31,23 @@ uint PackRGB9E5(float3 v)
     // 5) denominator = 2^(sharedExp − B − N)
     float denom = exp2(float(sharedExp - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
-    // 6) quantize each channel
-    uint rm = uint(floor(c.x/denom + 0.5f)) & RGB9E5_MANT_MASK;
-    uint gm = uint(floor(c.y/denom + 0.5f)) & RGB9E5_MANT_MASK;
-    uint bm = uint(floor(c.z/denom + 0.5f)) & RGB9E5_MANT_MASK;
+    // 6) quantize each channel (compute *unclamped* mantissas first)
+    uint rm = uint(floor(c.x / denom + 0.5f));
+    uint gm = uint(floor(c.y / denom + 0.5f));
+    uint bm = uint(floor(c.z / denom + 0.5f));
+
+    uint maxMant = max(max(rm, gm), bm);
+    if (maxMant > RGB9E5_MANT_MASK)          // ==512 after rounding?
+    {
+        rm >>= 1;  gm >>= 1;  bm >>= 1;      // divide all by 2
+        sharedExp = min(sharedExp + 1, int(RGB9E5_EXP_MASK));
+    }
+
+    // **now** clamp into 9 bits
+    rm &= RGB9E5_MANT_MASK;
+    gm &= RGB9E5_MANT_MASK;
+    bm &= RGB9E5_MANT_MASK;
+
 
     // 7) pack: [ r:9 | g:9 | b:9 | exp:5 ]
     return (rm <<  0) |
@@ -57,53 +72,39 @@ float3 UnpackRGB9E5(uint p)
 
 
 
-//— Pack 3×float Normal into a 32‑bit uint via octahedral mapping —//
-// Projects the unit‑vector onto the octahedron, folds negative Z,
-// remaps XY into [0..1], quantizes to 16 bits each, and bit‑fields.
-// ~15 arithmetic ops + 2 shifts/or per pack; ~12 ops per unpack.
+static const uint  kMax16 = 65535;
 
+// ------------------------------------------------------------------ helpers
+float2 signNotZero(float2 v)       // branch‑free, works on any GPU
+{
+    return step(0.0f, v) * 2.0f - 1.0f;
+}
+
+// ------------------------------------------------------------------ pack
 uint PackNormal(float3 n)
 {
-    // 1) normalize (if not already)
     n = normalize(n);
+    float3 a = abs(n);
+    float2 p = n.xy / (a.x + a.y + a.z);
 
-    // 2) project onto octahedron
-    float3  a = abs(n);
-    float2  p = n.xy / (a.x + a.y + a.z);
+    if (n.z < 0.0f)
+        p = (1.0f - abs(p.yx)) * signNotZero(p);
 
-    // 3) fold lower hemisphere
-    //    if n.z < 0: reflect p across diagonal
-    p = (n.z >= 0.0f)
-        ? p
-        : (1.0f - abs(p.yx)) * float2(sign(p.x), sign(p.y));
-
-    // 4) remap to [0..1] and quantize to 16 bits
-    float2 m = p * 0.5f + 0.5f;
-    uint2  q = uint2(m * 65535.0f + 0.5f);
-
-    // 5) pack
+    uint2 q = uint2(round((p * 0.5f + 0.5f) * kMax16));
     return q.x | (q.y << 16);
 }
 
-float3 UnpackNormal(uint pack)
+// ------------------------------------------------------------------ unpack
+float3 UnpackNormal(uint bits)
 {
-    // 1) extract & remap to [-1..1]
-    float2 p = float2(
-        float((pack       & 0xFFFF)) / 65535.0f,
-        float((pack >> 16 & 0xFFFF)) / 65535.0f
-    ) * 2.0f - 1.0f;
+    float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
-    // 2) unfold Z
-    float3 n;
-    n.z = 1.0f - abs(p.x) - abs(p.y);
+    float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
 
-    // 3) reflect if negative hemisphere
-    float2 folded = (n.z >= 0.0f)
-        ? p
-        : (1.0f - abs(p.yx)) * float2(sign(p.x), sign(p.y));
+    float  t  = saturate(-n.z);          // Rune Stubbe “clamp‑back”
+    n.xy     += -t * signNotZero(n.xy);  // no vector‑ternary
 
-    // 4) reconstruct and normalize
-    n.x = folded.x;
-    n.y = folded.y;
     return normalize(n);
 }
+
+

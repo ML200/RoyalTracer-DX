@@ -42,14 +42,14 @@ Renderer::Renderer(UINT width, UINT height,
 
     m_passSequence = {
         L"Pass_init_di_v7.hlsl",
-        L"barrier",
+        /*L"barrier",
         L"Pass_init_gi_v7.hlsl",
         L"barrier",
         L"Pass_temp_di_v7.hlsl",
         L"Pass_temp_gi_v7.hlsl",
         L"barrier",
         L"Pass_spat_di_v7.hlsl",
-        L"Pass_spat_gi_v7.hlsl",
+        L"Pass_spat_gi_v7.hlsl",*/
         L"barrier",
         L"Pass_shading_v7.hlsl",
     };

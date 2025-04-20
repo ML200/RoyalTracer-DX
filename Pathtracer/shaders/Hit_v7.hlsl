@@ -1,77 +1,61 @@
-#include "Structures_misc.hlsli"
+#include "Common_v6.hlsl"
 
-StructuredBuffer<STriVertex> BTriVertex      : register(t2);
-StructuredBuffer<int>        indices         : register(t1);
-RaytracingAccelerationStructure SceneBVH      : register(t0);
+StructuredBuffer<STriVertex> BTriVertex : register(t2);
+StructuredBuffer<int> indices : register(t1);
+RaytracingAccelerationStructure SceneBVH : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint>       materialIDs     : register(t4);
-StructuredBuffer<Material>   materials       : register(t5);
+StructuredBuffer<uint> materialIDs : register(t4);
+StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
 
-[shader("closesthit")]
-void ClosestHit(inout HitInfo payload, Attributes attrib)
-{
-    uint   primIdx     = PrimitiveIndex();
-    uint   baseIdx     = 3 * primIdx;
-    int    i0          = indices[baseIdx + 0];
-    int    i1          = indices[baseIdx + 1];
-    int    i2          = indices[baseIdx + 2];
 
-    // Cache all triangle vertices & normals in one go
-    STriVertex v0     = BTriVertex[i0];
-    STriVertex v1     = BTriVertex[i1];
-    STriVertex v2     = BTriVertex[i2];
+[shader("closesthit")] void ClosestHit(inout HitInfo payload, Attributes attrib) {
+    payload.objID = InstanceID();
+    // Get information about the surface hit
+    float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+    uint vertId = 3 * PrimitiveIndex();
+    uint materialID = materialIDs[vertId+BTriVertex[indices[vertId]].normal.w];
+    float3 barycentrics = float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
-    float3 p0         = v0.vertex;
-    float3 p1         = v1.vertex;
-    float3 p2         = v2.vertex;
+    // Calculate the position of the intersection point
+    float3 hitPosition = BTriVertex[indices[vertId]].vertex * barycentrics.x +
+           BTriVertex[indices[vertId + 1]].vertex * barycentrics.y +
+           BTriVertex[indices[vertId + 2]].vertex * barycentrics.z;
 
-    float3 n0         = v0.normal.xyz;
-    float3 n1         = v1.normal.xyz;
-    float3 n2         = v2.normal.xyz;
+    //Determine the impact normal. Apply interpolation.
+    float3 normal = float3(0, 0, 0);
+    // Always calculate the flat shading normal
+    float3 e1 = BTriVertex[indices[vertId + 1]].vertex - BTriVertex[indices[vertId]].vertex;
+    float3 e2 = BTriVertex[indices[vertId + 2]].vertex - BTriVertex[indices[vertId]].vertex;
+    float3 cross_a = cross(e1, e2);
+    float area_l = abs(length(cross_a) * 0.5f);
+    float3 flatNormal = normalize(cross_a);
 
-    // Material lookup: the original code did `vertId + normal.w`, but
-    // w is stored per-vertex so we only need it once. Take it from v0.
-    uint materialID   = materialIDs[baseIdx + v0.normal.w];
+    payload.area = area_l;
 
-    // Compute hit position in world‐space
-    float tHit         = RayTCurrent();
-    float3 rayOrig     = WorldRayOrigin();
-    float3 rayDir      = WorldRayDirection();
-    float3 hitPosWorld = rayOrig + tHit * rayDir;
+    // Smooth shading normal
+    float3 smoothNormal = float3(0, 0, 0);
 
-    // Barycentrics
-    float3 b = float3(1 - attrib.bary.x - attrib.bary.y,
-                      attrib.bary.x,
-                      attrib.bary.y);
-
-    // Precompute edges & flat normal
-    float3 e1          = p1 - p0;
-    float3 e2          = p2 - p0;
-    float3 flatN       = normalize(cross(e1, e2));
-    float  triArea     = 0.5 * length(cross(e1, e2));
-
-    // Smooth‐shading normal (fall back per-vertex if zero)
-    float3 smoothN = n0 * b.x + n1 * b.y + n2 * b.z;
-    if (length(smoothN) < 1e-4)
-    {
-        // if all vertex normals zero, just use flat
-        smoothN = flatN;
-    }
-    else
-    {
-        smoothN = normalize(smoothN);
+    // Check each vertex normal; accumulate if not zero, otherwise use flat normal
+    for (int i = 0; i < 3; i++) {
+        if (all(BTriVertex[indices[vertId + i]].normal.xyz != float3(0, 0, 0))) {
+            smoothNormal += BTriVertex[indices[vertId + i]].normal.xyz * barycentrics[i];
+        } else {
+            smoothNormal += flatNormal * barycentrics[i];
+        }
     }
 
-    // Transform to world‐space only once
-    float3 worldN = normalize(
-        mul(instanceProps[InstanceID()].objectToWorldNormal, float4(smoothN, 0)).xyz
-    );
+    // Normalize the smooth normal if it's not near-zero
+    if (length(smoothNormal) > 0.0001) {
+        normal = normalize(smoothNormal);
+    } else {
+        // Fallback to flat shading if the smooth normal is near-zero
+        normal = flatNormal;
+    }
 
-    // Fill payload
-    payload.objID      = InstanceID();
-    payload.area       = triArea;
-    payload.hitNormal  = worldN;
+    normal = normalize(mul(instanceProps[InstanceID()].objectToWorldNormal, float4(normal, 0.f)).xyz);     // Transform normal to world space
+
+    payload.hitNormal = normal;
     payload.materialID = materialID;
-    payload.hitPosition= hitPosWorld;
+    payload.hitPosition = worldOrigin;
 }
