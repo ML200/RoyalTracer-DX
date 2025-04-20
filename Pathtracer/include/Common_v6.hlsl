@@ -160,9 +160,9 @@ float3 SafeMultiply(float scalar, float3 vec)
 }
 
 // Column Major
-/*inline uint MapPixelID(uint2 dims, uint2 lIndex){
+inline uint MapPixelID(uint2 dims, uint2 lIndex){
     return lIndex.x * dims.y + lIndex.y;
-}*/
+}
 
 // Row Major
 /*inline uint MapPixelID(uint2 dims, uint2 lIndex){
@@ -170,32 +170,32 @@ float3 SafeMultiply(float scalar, float3 vec)
 }*/
 
 // Swizzling
-inline uint MapPixelID(uint2 dims, uint2 lIndex)
+/*inline uint MapPixelID(uint2 dims, uint2 lIndex)
 {
-    // Internal tile dimensions (square tiles).
-    const uint tileSize = 4;
+    // NVIDIA’s 2D warp tiles are 8×4
+    const uint tileWidth  = 4;
+    const uint tileHeight = 8;
 
-    // How many tiles do we have horizontally?
-    // Use integer division w/ ceiling to handle dimensions not multiples of tileSize.
-    uint tileCountX = (dims.x + tileSize - 1) / tileSize;
+    // how many tiles fit across (ceiling)
+    uint tileCountX = (dims.x + tileWidth  - 1) / tileWidth;
+    // (we don’t need tileCountY explicitly for flattening)
 
-    // Determine which tile this pixel belongs to:
-    uint tileIndexX = lIndex.x / tileSize;
-    uint tileIndexY = lIndex.y / tileSize;
+    // which tile (x, y) this pixel lives in
+    uint tileX = lIndex.x / tileWidth;
+    uint tileY = lIndex.y / tileHeight;
 
-    // Local pixel coordinates inside that tile.
-    uint localX = lIndex.x % tileSize;
-    uint localY = lIndex.y % tileSize;
+    // local coords inside that tile
+    uint localX = lIndex.x % tileWidth;
+    uint localY = lIndex.y % tileHeight;
 
-    // Flatten the tile index (row-major across tiles):
-    uint flattenedTileIndex = tileIndexY * tileCountX + tileIndexX;
+    // flatten tile index in row‑major across the grid of tiles
+    uint tileIndex = tileY * tileCountX + tileX;
+    // flatten local index in row‑major within the 8×4 tile
+    uint localIndex = localY * tileWidth + localX;
 
-    // Flatten the local pixel index within the tile (row-major again):
-    uint flattenedLocalIndex = localY * tileSize + localX;
-
-    // Combine: first skip all full tiles, then add the local index.
-    return flattenedTileIndex * (tileSize * tileSize) + flattenedLocalIndex;
-}
+    // combine: skip all pixels in earlier tiles, then add this one
+    return tileIndex * (tileWidth * tileHeight) + localIndex;
+}*/
 
 
 
