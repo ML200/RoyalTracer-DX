@@ -20,6 +20,7 @@ set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 # ────────────────────────── extra assets to copy ─────────────────────────────
 # Every build: mirror the **contents** of the `includes` folder next to the exe
 set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
+set(SHADERS_DIR   "${CMAKE_SOURCE_DIR}/shaders")
 
 # ───────────────────────── source files ──────────────────────────────────────
 add_executable(Pathtracer WIN32
@@ -45,7 +46,8 @@ add_executable(Pathtracer WIN32
         rdn/stdafx.h
         rdn/Win32Application.h
         src/Components/Vertex.h
-        src/Util/ObjLoader.h)
+        src/Util/ObjLoader.h
+)
 
 # ───────────────────────── include directories ───────────────────────────────
 target_include_directories(Pathtracer PRIVATE
@@ -76,8 +78,35 @@ add_custom_command(
         COMMENT "Copying contents of 'includes' into build output directory."
 )
 
+# ────────────────── copy the *contents* of 'shaders' (new shaders) on every build ─────────
+add_custom_command(
+        TARGET Pathtracer
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${SHADERS_DIR}"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMENT "Copying contents of 'shaders' into build output directory."
+)
+
 # ─────────────────────────── status messages ────────────────────────────────
 message(STATUS "Streamline include: ${SL_INCLUDE_DIR}")
 message(STATUS "Streamline lib    : ${SL_LIB_PATH}")
 message(STATUS "Streamline bin    : ${SL_BIN_DIR}")
 message(STATUS "Includes dir      : ${INCLUDES_DIR}")
+
+# ────────────── copy‐assets target ──────────────
+# This target will always run when you build the project,
+# and will copy include/ and shaders/ into your exe folder.
+add_custom_target(copy_assets ALL
+        COMMENT "Copying include/ and shaders/ to runtime directory"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${INCLUDES_DIR}"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${SHADERS_DIR}"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+)
+
+# Make sure the exe is built before we try to copy into its folder
+add_dependencies(copy_assets Pathtracer)
+

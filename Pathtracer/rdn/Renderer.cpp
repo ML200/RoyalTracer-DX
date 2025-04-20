@@ -41,13 +41,20 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"RayGen_v6_pass1.hlsl",
+        L"Pass_init_di_v7.hlsl",
         L"barrier",
-        L"RayGen_v6_pass2.hlsl",
+        L"Pass_init_gi_v7.hlsl",
         L"barrier",
-        L"RayGen_v6_pass3.hlsl"
+        L"Pass_temp_di_v7.hlsl",
+        L"Pass_temp_gi_v7.hlsl",
+        L"barrier",
+        L"Pass_spat_di_v7.hlsl",
+        L"Pass_spat_gi_v7.hlsl",
+        L"barrier",
+        L"Pass_shading_v7.hlsl",
     };
 }
+
 
 void Renderer::OnInit() {
 
@@ -1038,7 +1045,7 @@ void Renderer::CreateRaytracingPipeline() {
     // 2)  ALL *FIXED* LIBRARIES AND ROOT‑SIGS (unchanged from original)
     // ----------------------------------------------------------------
     m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
-    m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v6.hlsl");
+    m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v7.hlsl");
     m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
 
     pipeline.AddLibrary(m_missLibrary.Get(),    { L"Miss" });
