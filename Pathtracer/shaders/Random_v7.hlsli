@@ -12,6 +12,15 @@ uint2 GetSeed(uint2 idx, uint t, uint c)
       ^ uint2(293803u,    423977u)   * t;
 }
 
+// Generate a seed that is exactly the same in every lane - used for example to reduce cache pressure when sampling NEE samples
+uint GetWaveSeed(uint2 idx, uint t, uint c)
+{
+    uint2 seed2 = GetSeed(idx, t, c);
+    uint laneSeed = seed2.x;
+    return WaveReadLaneFirst(laneSeed);
+}
+
+
 // Optimized random function
 float RandomFloat(inout uint2 s)
 {
