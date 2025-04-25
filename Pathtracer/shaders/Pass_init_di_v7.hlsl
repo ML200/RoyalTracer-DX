@@ -1,4 +1,5 @@
 #include "Constants_v7.hlsli"
+#include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
 #include "Motion_vectors_v7.hlsli"
 #include "Random_v7.hlsli"
@@ -21,9 +22,14 @@ StructuredBuffer<InstanceProperties> instanceProps : register(t3);
 StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
+StructuredBuffer<float> g_AliasProb  : register(t7);
+StructuredBuffer<uint>  g_AliasIdx   : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
+#include "GGX_v7.hlsli"
+#include "Lambertian_v7.hlsli"
+#include "BSDF_v7.hlsli"
 
 cbuffer CameraParams : register(b0)
 {
@@ -37,6 +43,7 @@ cbuffer CameraParams : register(b0)
 }
 // These includes need access to ALL previous buffers
 #include "Camera_ray_v7.hlsli"
+#include "NEE_v7.hlsli"
 
 [shader("raygeneration")]
 void Pass_init_di_v7() {
@@ -44,5 +51,13 @@ void Pass_init_di_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    SampleCameraRay(pixelIdx);
+    SampleData sdata = SampleCameraRay(pixelIdx);
+
+    // Get a random seed
+    uint2 seed = GetSeed(pixelIdx, time, 1);
+
+    for(int i = 0; i<10; i++){
+        SampleReturn result = SampleNEE(sdata, seed);
+        gOutput[uint3(launchIndex, 0)] = float4(result.n2, 1.0f);
+    }
 }

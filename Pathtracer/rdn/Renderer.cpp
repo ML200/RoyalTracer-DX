@@ -913,6 +913,10 @@ void Renderer::CreateAccelerationStructures() {
     // Create buffer for emissive triangles
     CreateEmissiveTrianglesBuffer();
 
+    // Build & upload alias table ---------------------------------------------
+    BuildAliasTableSoA(m_emissiveTriangles);
+    CreateAliasBuffers();
+
   // Flush the command list and wait for it to finish
   m_commandList->Close();
   ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
@@ -956,7 +960,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {4 /*u4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,10},
                     {5 /*u5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,11},
                     {6 /*u6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,12},
-                    {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13}
+                    {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
+                    {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
+                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15} // aliasIdx
             }
     );
 
@@ -1209,7 +1215,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 20, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 22, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1330,7 +1336,6 @@ void Renderer::CreateShaderResourceHeap() {
 
     // Create the UAV in the heap at the current descriptor slot (heap slot 7)
     m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &permanentDataUavDesc, srvHandle);
-
 
 
     //_________________________________
@@ -1585,6 +1590,33 @@ void Renderer::CreateShaderResourceHeap() {
     );
     //_________________________________
 
+    // ── alias PROB array  (R32_FLOAT) ────────────────────────────────────────────
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);   // ← reuse the increment variable you already use
+    D3D12_SHADER_RESOURCE_VIEW_DESC probDesc = {};
+    probDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    probDesc.Format            = DXGI_FORMAT_R32_FLOAT;
+    probDesc.ViewDimension     = D3D12_SRV_DIMENSION_BUFFER;
+    probDesc.Buffer.FirstElement = 0;
+    probDesc.Buffer.NumElements  =
+            static_cast<UINT>(m_aliasProb.size());
+    probDesc.Buffer.StructureByteStride = 0;
+    m_device->CreateShaderResourceView(
+            m_aliasProbBuffer.Get(), &probDesc, srvHandle);
+
+    // ── alias IDX array (R32_UINT) ───────────────────────────────────────────────
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_SHADER_RESOURCE_VIEW_DESC idxDesc = {};
+    idxDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    idxDesc.Format            = DXGI_FORMAT_R32_UINT;
+    idxDesc.ViewDimension     = DXGI_FORMAT_UNKNOWN ?
+                                 D3D12_SRV_DIMENSION_BUFFER :
+                                 D3D12_SRV_DIMENSION_BUFFER;
+    idxDesc.Buffer.FirstElement = 0;
+    idxDesc.Buffer.NumElements  =
+            static_cast<UINT>(m_aliasIdx.size());
+    idxDesc.Buffer.StructureByteStride = 0;
+    m_device->CreateShaderResourceView(
+            m_aliasIdxBuffer.Get(), &idxDesc, srvHandle);
 
     std::wcout << L"SRVs created!" << std::endl;
 }
@@ -2284,7 +2316,64 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
     ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
 }
 
+//──────────────────────────────────────────────────────────────────────────────
+// Small helper that builds two SoA arrays (prob + alias index)
+void Renderer::BuildAliasTableSoA(const std::vector<LightTriangle>& tris)
+{
+    const uint32_t N = static_cast<uint32_t>(tris.size());
+    std::vector<float>      scaled(N);
+    std::vector<uint32_t>   _small, _large;
 
+    m_aliasProb.resize(N);
+    m_aliasIdx .resize(N);
 
+    // 1) scale weights so that Σ w = N
+    for (uint32_t i=0;i<N;++i) scaled[i] = tris[i].weight * N;
+    for (uint32_t i=0;i<N;++i) (scaled[i] < 1.f ? _small:_large).push_back(i);
 
+    // 2) alias algorithm
+    while (!_small.empty() && !_large.empty()) {
+        uint32_t s = _small.back(); _small.pop_back();
+        uint32_t l = _large.back(); _large.pop_back();
+        m_aliasProb[s] = scaled[s];
+        m_aliasIdx [s] = l;
+        scaled[l] = (scaled[l]+scaled[s]) - 1.f;
+        (scaled[l] < 1.f ? _small:_large).push_back(l);
+    }
+    for (uint32_t i : _large) { m_aliasProb[i] = 1.f; m_aliasIdx[i] = i; }
+    for (uint32_t i : _small) { m_aliasProb[i] = 1.f; m_aliasIdx[i] = i; }
+}
 
+//──────────────────────────────────────────────────────────────────────────────
+void Renderer::CreateAliasBuffers()
+{
+    if (m_aliasProb.empty()) return;
+
+    UINT N          = static_cast<UINT>(m_aliasProb.size());
+    UINT probBytes  = N*sizeof(float);
+    UINT idxBytes   = N*sizeof(uint32_t);
+
+    auto makeDefault = [&](const void* src, UINT bytes,
+                           ComPtr<ID3D12Resource>& dst)
+    {
+        ComPtr<ID3D12Resource> upload =
+            nv_helpers_dx12::CreateBuffer(m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+                  D3D12_RESOURCE_STATE_GENERIC_READ,
+                  nv_helpers_dx12::kUploadHeapProps);
+        void* p; CD3DX12_RANGE r(0,0); upload->Map(0,&r,&p);
+        memcpy(p,src,bytes); upload->Unmap(0,nullptr);
+
+        dst = nv_helpers_dx12::CreateBuffer(m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+                  D3D12_RESOURCE_STATE_COPY_DEST,
+                  nv_helpers_dx12::kDefaultHeapProps);
+
+        m_commandList->CopyBufferRegion(dst.Get(),0, upload.Get(),0, bytes);
+        CD3DX12_RESOURCE_BARRIER br = CD3DX12_RESOURCE_BARRIER::Transition(
+            dst.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ);
+        m_commandList->ResourceBarrier(1,&br);
+    };
+
+    makeDefault(m_aliasProb.data(), probBytes, m_aliasProbBuffer);
+    makeDefault(m_aliasIdx .data(), idxBytes , m_aliasIdxBuffer );
+}

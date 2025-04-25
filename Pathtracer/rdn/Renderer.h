@@ -131,6 +131,15 @@ private:
         XMFLOAT3 pad0;
     };
 
+    // ── ALIAS TABLE (SoA) ───────────────────────────────\n
+    std::vector<float> m_aliasProb;
+    // probability array (R32_FLOAT)\n
+    std::vector<uint32_t> m_aliasIdx;
+    // alias‑index array (R32_UINT)\n
+    ComPtr<ID3D12Resource> m_aliasProbBuffer;
+    // default‑heap GPU copies\n
+    ComPtr<ID3D12Resource> m_aliasIdxBuffer;
+
     struct Reservoir_DI
     {
         uint8_t  pad[40]; // 48 bytes
@@ -312,6 +321,10 @@ private:
 
     void CreateEmissiveTrianglesBuffer();
 
-    float
+  void BuildAliasTableSoA(const std::vector<LightTriangle> &tris);
+
+  void CreateAliasBuffers();
+
+  float
     ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor);
 };

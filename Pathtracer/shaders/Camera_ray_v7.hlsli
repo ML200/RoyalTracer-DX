@@ -15,7 +15,7 @@ float3 InitDirection(){
 }
 
 //Pixel idx for directly writing into the sample data -> more efficient
-void SampleCameraRay(uint idx){
+SampleData SampleCameraRay(uint idx){
     RayDesc ray;
     ray.Origin = InitOrigin();
     ray.Direction = InitDirection();
@@ -28,9 +28,23 @@ void SampleCameraRay(uint idx){
     HitInfo payload;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
 
+    float3 ke = materials[payload.materialID].Ke;
+
     // Compress and save relevant data: x1, L1, n1, mID and oID
     store_x1(payload.hitPosition, g_sample_current, idx);
     store_n1(payload.hitNormal, g_sample_current, idx);
-    store_L1(materials[payload.materialID].Ke, g_sample_current, idx);
+    store_L1(ke, g_sample_current, idx);
+    store_matID(payload.materialID, g_sample_current, idx);
+    store_objID(payload.objID, g_sample_current, idx);
 
+    SampleData sdata;
+    sdata.x1 = payload.hitPosition;
+    sdata.n1 = payload.hitNormal;
+    sdata.L1 = ke;
+    sdata.o = -ray.Direction;
+    sdata.objID = payload.objID;
+    sdata.matID = payload.materialID;
+
+    //return the sample data
+    return sdata;
 }
