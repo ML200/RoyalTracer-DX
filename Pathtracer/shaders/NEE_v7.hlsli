@@ -1,8 +1,8 @@
-uint pickAlias(inout uint2 seed)
+uint pickAlias(inout uint seed)
 {
     float2 rnd;
-    rnd.x = RandomFloatSingle(seed.x);
-    rnd.y = RandomFloatSingle(seed.x);
+    rnd.x = RandomFloatSingle(seed);
+    rnd.y = RandomFloatSingle(seed);
 
     uint   N;
     uint   strideInBytes;
@@ -16,10 +16,10 @@ uint pickAlias(inout uint2 seed)
 // Sample a NEE sample
 SampleReturn SampleNEE(
     SampleData sdata,
-    inout uint2 seed
+    inout uint waveSeed
 ){
     // Pick a random light id using alias table
-    uint idx = pickAlias(seed);
+    uint idx = pickAlias(waveSeed);
     LightTriangle sampleLight = g_EmissiveTriangles[idx];
 
     // Calculate the current world coordinates of the triangle
@@ -29,8 +29,8 @@ SampleReturn SampleNEE(
     float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
 
     // Generate random barycentric coordinates
-    float xi1 = RandomFloatSingle(seed.x);
-    float xi2 = RandomFloatSingle(seed.x);
+    float xi1 = RandomFloatSingle(waveSeed.x);
+    float xi2 = RandomFloatSingle(waveSeed.x);
     if (xi1 + xi2 > 1.0f) {
         xi1 = 1.0f - xi1;
         xi2 = 1.0f - xi2;
