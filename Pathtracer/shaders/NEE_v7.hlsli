@@ -12,14 +12,46 @@ uint pickAlias(inout uint seed)
     return (rnd.y < g_AliasProb[i]) ? i : g_AliasIdx[i];
 }
 
+// ---- wave-uniform helpers (lane 0 touches memory / RNG) ----
+uint pickAliasWave(inout uint waveSeed)
+{
+    uint idx = 0;
+    if (WaveIsFirstLane())
+        idx = pickAlias(waveSeed);        // alias table uses waveSeed
+    return WaveReadLaneFirst(idx);
+}
+
+LightTriangle LoadLightWave(uint idx)
+{
+    LightTriangle tri;
+    if (WaveIsFirstLane()) tri = g_EmissiveTriangles[idx];
+
+    tri.x          = WaveReadLaneFirst(tri.x);
+    tri.y          = WaveReadLaneFirst(tri.y);
+    tri.z          = WaveReadLaneFirst(tri.z);
+    tri.weight     = WaveReadLaneFirst(tri.weight);
+    tri.instanceID = WaveReadLaneFirst(tri.instanceID);
+    return tri;
+}
+
+float4x4 LoadMatrixWave(uint instID)
+{
+    float4x4 M;
+    if (WaveIsFirstLane()) M = instanceProps[instID].objectToWorld;
+    [unroll] for (int r = 0; r < 4; ++r)
+        M[r] = WaveReadLaneFirst(M[r]);
+    return M;
+}
+
 
 // Sample a NEE sample
 SampleReturn SampleNEE(
     SampleData sdata,
-    inout uint waveSeed
+    inout uint waveSeed,
+    inout uint2 threadSeed
 ){
     // Pick a random light id using alias table
-    uint idx = pickAlias(waveSeed);
+    uint idx = pickAliasWave(waveSeed);
     LightTriangle sampleLight = g_EmissiveTriangles[idx];
 
     // Calculate the current world coordinates of the triangle
@@ -29,8 +61,8 @@ SampleReturn SampleNEE(
     float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
 
     // Generate random barycentric coordinates
-    float xi1 = RandomFloatSingle(waveSeed.x);
-    float xi2 = RandomFloatSingle(waveSeed.x);
+    float xi1 = RandomFloatSingle(threadSeed.x);
+    float xi2 = RandomFloatSingle(threadSeed.x);
     if (xi1 + xi2 > 1.0f) {
         xi1 = 1.0f - xi1;
         xi2 = 1.0f - xi2;

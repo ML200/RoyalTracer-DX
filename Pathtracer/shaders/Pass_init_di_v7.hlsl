@@ -57,8 +57,10 @@ void Pass_init_di_v7() {
     uint2 seed = GetSeed(pixelIdx, time, 1);
     uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
 
-    for(int i = 0; i<40; i++){
-        SampleReturn result = SampleNEE(sdata, waveSeed);
-        gOutput[uint3(launchIndex, 0)] = float4(result.n2, 1.0f);
+    float3 DEBUG = 0.0f;
+    for(int i = 0; i<22; i++){
+        SampleReturn result = SampleNEE(sdata, waveSeed, seed);
+        DEBUG +=result.n2;
     }
+    gOutput[uint3(launchIndex, 0)] = float4(DEBUG, 1.0f);
 }
