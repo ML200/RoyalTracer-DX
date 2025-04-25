@@ -19,6 +19,17 @@ static const uint P_o    = P_L1    + B_L1;
 static const uint P_obj  = P_o     + B_o;
 static const uint P_mID  = P_obj    + B_obj;
 
+
+// Struct version for in-pass caching
+struct SampleData{
+    float3 x1;
+    float3 n1;
+    float3 L1;
+    float3 o;
+    uint objID;
+    uint matID;
+};
+
 //__________________________x1_____________________________
 float3 load_x1(RWByteAddressBuffer buffer, uint pixelIdx){
     uint addr = P_x1 * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_x1;
@@ -62,19 +73,19 @@ void store_o(float3 o, RWByteAddressBuffer buffer, uint pixelIdx){
 //__________________________objID_____________________________
 float3 load_objID(RWByteAddressBuffer buffer, uint pixelIdx){
     uint addr = P_obj * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_obj;
-    return asfloat(buffer.Load3(addr));
+    return buffer.Load(addr);
 }
 void store_objID(uint objID, RWByteAddressBuffer buffer, uint pixelIdx){
     uint addr = P_obj * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_obj;
-    buffer.Store3(addr, asuint(objID));
+    buffer.Store(addr, objID);
 }
 
 //__________________________matID_____________________________
 float3 load_matID(RWByteAddressBuffer buffer, uint pixelIdx){
     uint addr = P_mID * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_mID;
-    return asfloat(buffer.Load3(addr));
+    return buffer.Load(addr);
 }
 void store_matID(uint matID, RWByteAddressBuffer buffer, uint pixelIdx){
     uint addr = P_mID * (DispatchRaysDimensions().x * DispatchRaysDimensions().y) + pixelIdx * B_mID;
-    buffer.Store3(addr, asuint(matID));
+    buffer.Store(addr, matID);
 }

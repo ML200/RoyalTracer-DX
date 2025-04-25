@@ -41,5 +41,5 @@ void Pass_shading_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    gOutput[uint3(launchIndex, 0)] = float4(load_x1(g_sample_current, pixelIdx), 1.0f);
+    //gOutput[uint3(launchIndex, 0)] = float4(load_matID(g_sample_current, pixelIdx) * 0.1f, 1.0f);
 }
