@@ -1,8 +1,8 @@
 uint pickAlias(inout uint2 seed)
 {
     float2 rnd;
-    rnd.x = RandomFloat(seed);
-    rnd.y = RandomFloat(seed);
+    rnd.x = RandomFloatSingle(seed.x);
+    rnd.y = RandomFloatSingle(seed.x);
 
     uint   N;
     uint   strideInBytes;
@@ -29,8 +29,8 @@ SampleReturn SampleNEE(
     float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
 
     // Generate random barycentric coordinates
-    float xi1 = RandomFloat(seed);
-    float xi2 = RandomFloat(seed);
+    float xi1 = RandomFloatSingle(seed.x);
+    float xi2 = RandomFloatSingle(seed.x);
     if (xi1 + xi2 > 1.0f) {
         xi1 = 1.0f - xi1;
         xi2 = 1.0f - xi2;
