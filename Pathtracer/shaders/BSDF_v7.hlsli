@@ -4,9 +4,9 @@
 // 2 - Perfect reflection
 // 3 - Refraction
 // Probability is the likelihood to select the given sampling strategy, used for weighting the contributions
-inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout uint2 seed, inout float probability){
+inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout uint2 seed){
     //Get random value
-    float r = RandomFloat(seed);
+    float r = RandomFloatSingle(seed.x);
 
     // Evaluate the material properties
     float roughness = materials[mID].Pr_Pm_Ps_Pc.x;
@@ -24,10 +24,6 @@ inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, ino
     // Sampling probabilities
     float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
     float p_d = (1.0f - p_s); // Sample the diffuse part of the lobe
-
-    //Adjust for translucency
-    //p_d *= alpha;
-    probability = p_s;
 
     //Select the strategy based on the probabilities (CDF)
     //Specular

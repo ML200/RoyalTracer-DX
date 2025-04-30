@@ -37,7 +37,7 @@ SampleData SampleCameraRay(uint idx){
     store_matID(payload.materialID, g_sample_current, idx);
     store_objID(payload.objID, g_sample_current, idx);
 
-    SampleData sdata;
+    SampleData sdata = (SampleData)0;
     sdata.x1 = payload.hitPosition;
     sdata.n1 = payload.hitNormal;
     sdata.L1 = ke;

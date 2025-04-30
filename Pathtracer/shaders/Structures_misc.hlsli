@@ -64,12 +64,13 @@ struct [[raypayload]] ShadowHitInfo {
                          : write(anyhit,closesthit,miss);
 };
 
-
 struct SampleReturn
 {
     float3 x2;
     float3 n2;
+    float3 L2;
     uint objID; // Of the light/x2 hit
+    uint matID; // Of the light/x2 hit
     float pdf_bsdf;
     float pdf_nee;
 };
