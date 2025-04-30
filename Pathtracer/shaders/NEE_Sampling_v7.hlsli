@@ -21,28 +21,6 @@ uint pickAliasWave(inout uint waveSeed)
     return WaveReadLaneFirst(idx);
 }
 
-LightTriangle LoadLightWave(uint idx)
-{
-    LightTriangle tri;
-    if (WaveIsFirstLane()) tri = g_EmissiveTriangles[idx];
-
-    tri.x          = WaveReadLaneFirst(tri.x);
-    tri.y          = WaveReadLaneFirst(tri.y);
-    tri.z          = WaveReadLaneFirst(tri.z);
-    tri.weight     = WaveReadLaneFirst(tri.weight);
-    tri.instanceID = WaveReadLaneFirst(tri.instanceID);
-    return tri;
-}
-
-float4x4 LoadMatrixWave(uint instID)
-{
-    float4x4 M;
-    if (WaveIsFirstLane()) M = instanceProps[instID].objectToWorld;
-    [unroll] for (int r = 0; r < 4; ++r)
-        M[r] = WaveReadLaneFirst(M[r]);
-    return M;
-}
-
 
 // Sample a NEE sample
 SampleReturn SampleNEE(
@@ -96,12 +74,15 @@ SampleReturn SampleNEE(
     float pdf1 = BRDF_PDF(1, sdata.matID, sdata.n1, -L_norm, sdata.o);
     float P1 = SafeMultiplyScalar(probs.x, pdf0);
     float P2 = SafeMultiplyScalar(probs.y, pdf1);
-    float pdf_b = P1 + P2;
+    float cos_light = dot(normal_l, -L_norm);
+    float pdf_b = (P1 + P2) * cos_light / dist2;
+
 
     // Fill in the sample and return
     SampleReturn sreturn;
     sreturn.x2 = x2;
     sreturn.n2 = normal_l;
+    sreturn.L2 = sampleLight.emission;
     sreturn.objID = sampleLight.instanceID;
     sreturn.pdf_bsdf = pdf_b;
     sreturn.pdf_nee = pdf_l;
