@@ -9,6 +9,28 @@ struct Reservoir_DI
     uint M_di;
 };
 
+inline bool RejectNormal_DI(float3 n1, float3 n2, float threshold){
+    float similarity = dot(n1, n2);
+    return (similarity < threshold);
+}
+inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float threshold)
+{
+    float d1 = length(x1 - camPos);
+    float d2 = length(x2 - camPos);
+
+    float relativeDifference = abs(d1 - d2) / max(d1, d2);
+    return relativeDifference > threshold;
+}
+
+inline bool IsValidReservoir_DI(Reservoir_DI r){
+    bool valid =
+        any(r.n2_di > 0.0f) &&
+        any(r.L2_di > 0.0f) &&
+        r.W_di > 0.0f &&
+        r.M_di > 0.0f;
+    return valid;
+}
+
 // The remaining functions remain unchanged.
 float VisibilityCheck(
     float3 x1,
@@ -50,10 +72,10 @@ float3 ReconnectDI(
     float3 ndirN = normalize(-dir);
     float dist = length(dir);
 
-    float cosThetaX1 = dot(n1, -ndirN);
+    float cosThetaX1 = max(EPSILON,dot(n1, -ndirN));
     if(dot(n2, ndirN) < 0.0f)
         n2 = -n2;
-    float cosThetaX2 = dot(n2, ndirN);
+    float cosThetaX2 = max(EPSILON,dot(n2, ndirN));
 
     float2 probs = CalculateStrategyProbabilities(mID, o, n1);
     float3 brdf0 = EvaluateBRDF(0, mID, n1, ndirN, o);

@@ -62,6 +62,13 @@ void Pass_shading_v7() {
         float3 contribution = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
         accumulation = float3(contribution);
+
+        // Store the current reservoir as previous if valid
+        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
+        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
+        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
+        store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
+        store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
     }
     else{
         accumulation = float3(sdata.L1);
@@ -119,5 +126,4 @@ void Pass_shading_v7() {
         finalColor = float3(0, 1, 1); // cyan for infinity
 
     gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
-
 }

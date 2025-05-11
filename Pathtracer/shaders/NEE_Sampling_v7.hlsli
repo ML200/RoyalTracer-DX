@@ -30,13 +30,13 @@ SampleReturn SampleNEE(
 ){
     // Pick a random light id using alias table
     uint idx = pickAliasWave(waveSeed);
-    LightTriangle sampleLight = g_EmissiveTriangles[idx];
+    //LightTriangle sampleLight = g_EmissiveTriangles[idx];
 
     // Calculate the current world coordinates of the triangle
-    float4x4 conversionMatrix = instanceProps[sampleLight.instanceID].objectToWorld;
-    float3 x_v = mul(conversionMatrix, float4(sampleLight.x, 1.f)).xyz;
-    float3 y_v = mul(conversionMatrix, float4(sampleLight.y, 1.f)).xyz;
-    float3 z_v = mul(conversionMatrix, float4(sampleLight.z, 1.f)).xyz;
+    float4x4 conversionMatrix = instanceProps[g_EmissiveTriangles[idx].instanceID].objectToWorld;
+    float3 x_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].x, 1.f)).xyz;
+    float3 y_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].y, 1.f)).xyz;
+    float3 z_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].z, 1.f)).xyz;
 
     // Generate random barycentric coordinates
     float xi1 = RandomFloatSingle(threadSeed.x);
@@ -67,7 +67,7 @@ SampleReturn SampleNEE(
     }
 
     float area_l = abs(length(cross_l) * 0.5f);
-    float pdf_l = sampleLight.weight / max(area_l, EPSILON);
+    float pdf_l = g_EmissiveTriangles[idx].weight / max(area_l, EPSILON);
 
     float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
     float pdf0 = BRDF_PDF(0, sdata.matID, sdata.n1, -L_norm, sdata.o);
@@ -82,8 +82,8 @@ SampleReturn SampleNEE(
     SampleReturn sreturn;
     sreturn.x2 = x2;
     sreturn.n2 = normal_l;
-    sreturn.L2 = sampleLight.emission;
-    sreturn.objID = sampleLight.instanceID;
+    sreturn.L2 = g_EmissiveTriangles[idx].emission;
+    sreturn.objID = g_EmissiveTriangles[idx].instanceID;
     sreturn.pdf_bsdf = pdf_b;
     sreturn.pdf_nee = pdf_l;
 
