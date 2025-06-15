@@ -771,6 +771,42 @@ inline float2 GetLastFramePixelCoordinates_Float(
     return screenUV * resolution;
 }
 
+inline float2 GetLastFramePixelCoordinates_Float(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution,
+    uint objID)
+{
+    // 1. Convert current world-space position back into the local space of this object:
+    float4 localPos = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+
+    // 2. Transform that local position by the *previous* frame's object-to-world matrix:
+    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
+
+    // 3. Project it into clip space using the previous frame’s view and projection:
+    float4 clipPos = mul(prevProjection, mul(prevView, prevWorldPos));
+
+    // If the clip-space w is not positive, it means the position was behind the camera last frame:
+    if (clipPos.w <= 0.0f)
+    {
+        // Return some sentinel value that indicates it's off-screen or invalid:
+        return float2(-1.0f, -1.0f);
+    }
+
+    // 4. Convert clip space to normalized device coordinates:
+    float2 ndc = clipPos.xy / clipPos.w;
+
+    // 5. Transform NDC (-1..1) to screen UV (0..1):
+    float2 screenUV = ndc * 0.5f + 0.5f;
+
+    // 6. Flip Y if needed (common in many rendering APIs):
+    screenUV.y = 1.0f - screenUV.y;
+
+    // 7. Finally convert to actual pixel coordinates:
+    return screenUV * resolution;
+}
+
 inline int2 GetBestReprojectedPixel_d(
     float3 worldPos,
     float4x4 prevView,

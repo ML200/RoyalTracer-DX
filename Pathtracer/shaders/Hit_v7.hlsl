@@ -59,7 +59,3 @@ StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
     payload.materialID = materialID;
     payload.hitPosition = worldOrigin;
 }
-
-//Unused for now
-[shader("closesthit")] void PlaneClosestHit(inout HitInfo payload, Attributes attrib) {
-}

@@ -1,21 +1,19 @@
-#pragma warning(disable: 1234)
+#include "Constants_v7.hlsli"
+#include "Common_v7.hlsli"
+#include "Structures_misc.hlsli"
+#include "Motion_vectors_v7.hlsli"
+#include "Random_v7.hlsli"
+#include "Compression_v7.hlsli"
 
-#include "Common_v6.hlsl"
-#include "Reservoir_v6.hlsl"
-
-#define TILE_WIDTH 8
-#define TILE_HEIGHT 8
-
-// Raytracing output texture, accessed as a UAV
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
 
-RWStructuredBuffer<Reservoir_DI> g_Reservoirs_current : register(u2);
-RWStructuredBuffer<Reservoir_DI> g_Reservoirs_last : register(u3);
-RWStructuredBuffer<Reservoir_GI> g_Reservoirs_current_gi : register(u4);
-RWStructuredBuffer<Reservoir_GI> g_Reservoirs_last_gi : register(u5);
-RWStructuredBuffer<SampleData> g_sample_current : register(u6);
-RWStructuredBuffer<SampleData> g_sample_last : register(u7);
+RWByteAddressBuffer g_sample_current : register(u6);
+RWByteAddressBuffer g_sample_last : register(u7);
+RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
+RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
+RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
+RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -24,167 +22,92 @@ StructuredBuffer<InstanceProperties> instanceProps : register(t3);
 StructuredBuffer<uint> materialIDs : register(t4);
 StructuredBuffer<Material> materials : register(t5);
 StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
+StructuredBuffer<float> g_AliasProb  : register(t7);
+StructuredBuffer<uint>  g_AliasIdx   : register(t8);
 
-#include "GGX_v6.hlsl"
-#include "Lambertian_v6.hlsl"
-#include "BRDF_v6.hlsl"
-#include "Sampler_v6.hlsl"
-#include "MIS_v6.hlsl"
-#include "Path_Sampler_v6.hlsl"
+// Needs access to all structured/random buffers
+#include "Sample_data.hlsli"
+#include "GGX_v7.hlsli"
+#include "Lambertian_v7.hlsli"
+#include "BSDF_v7.hlsli"
 
-// #DXR Extra: Perspective Camera
 cbuffer CameraParams : register(b0)
 {
     float4x4 view;
     float4x4 projection;
     float4x4 viewI;
     float4x4 projectionI;
-    float4x4 prevView;        // Previous frame's view matrix (can be removed if not used elsewhere)
-    float4x4 prevProjection;  // Previous frame's projection matrix (can be removed if not used elsewhere)
+    float4x4 prevView;
+    float4x4 prevProjection;
     float time;
 }
+// These includes need access to ALL previous buffers
+#include "Camera_ray_v7.hlsli"
+#include "Reservoir_DI_v7.hlsli"
+#include "MIS_v7.hlsli"
+#include "NEE_Sampling_v7.hlsli"
+#include "BSDF_Sampling_v7.hlsli"
 
-//Generate the initial
 [shader("raygeneration")]
-void RayGen() {
-    // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
+void Pass_init_di_v7() {
     uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx = MapPixelID(dims, launchIndex);
+    float2 dims       = float2(DispatchRaysDimensions().xy);
+    uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    // #DXR Extra: Perspective Camera
-    float aspectRatio = dims.x / dims.y;
+    SampleData sdata = SampleCameraRay(pixelIdx);
 
-    // Initialize the ray origin and direction
-    float3 init_orig = mul(viewI, float4(0, 0, 0, 1)).xyz;
+    // Get a random seed
+    uint2 seed = GetSeed(pixelIdx, time, 1);
+    uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
 
+    Reservoir_DI reservoir = (Reservoir_DI)0;
 
-    // SEEDING
-    const uint prime1_x = 73856093u;
-    const uint prime2_x = 19349663u;
-    const uint prime3_x = 83492791u;
-    const uint prime1_y = 37623481u;
-    const uint prime2_y = 51964263u;
-    const uint prime3_y = 68250729u;
-    const uint prime_time_x = 293803u;
-    const uint prime_time_y = 423977u;
-
-    // Initialize once, to reduce allocs with several samples per frame
-    uint2 seed;
-    //_______________________________SETUP__________________________________
-    // Every sample recieves a new seed
-    seed.x = launchIndex.y * prime1_x ^ launchIndex.x * prime2_x ^ uint(1) * prime3_x ^ uint(time) * prime_time_x;
-    seed.y = launchIndex.x * prime1_y ^ launchIndex.y * prime2_y ^ uint(1) * prime3_y ^ uint(time) * prime_time_y;
-
-    // Calculate the initial ray direction. Jitter is used to randomize the rays intersection point on subpixel level
-    float jitterX = 0.0f;//RandomFloat(seed);
-    float jitterY = 0.0f;//RandomFloat(seed);
-    float2 d = (((launchIndex.xy + float2(jitterX, jitterY)) / dims.xy) * 2.f - 1.f);
-    float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-    float3 init_dir = mul(viewI, float4(target.xyz, 0)).xyz;
-
-
-    //_________________________PATH_VARIABLES______________________________
-    float3 direction = normalize(init_dir);
-    float3 origin = init_orig;
-    //____________________________CAMERA_RAY________________________________
-    RayDesc ray;
-    ray.Origin = origin;
-    ray.Direction = direction;
-    ray.TMin = 0.0001;
-    ray.TMax = 10000;
-
-    // Trace the camera ray
-    HitInfo payload;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
-
-    // Use a more memory efficient and aligned material model with lower precision
-    uint mID = payload.materialID;
-    bool performSampling = true;
-    if(length(materials[mID].Ke) > 0.0f){
-        performSampling = false;
+    // NEE sample(s)
+    for(int i = 0; i<NEE_SAMPLES_DI; i++){
+        // Get the sample result
+        SampleReturn result = SampleNEE(sdata, waveSeed, seed);
+        // Calculate contribution and p_hat.
+        float3 c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, result.x2, result.n2, result.L2);
+        float p_hat = GetPHat(c);
+        float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_nee;
+        if(isnan(w_mis))
+            w_mis = 0.0f;
+        // Update reservoir
+        UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed);
+    }
+    bool requires_shadow_ray = true;
+    // BSDF sample(s)
+    for(int j = 0; j<BSDF_SAMPLES_DI; j++){
+        // Get the sample result
+        SampleReturn result = SampleBSDF(sdata, waveSeed, seed);
+        // Calculate contribution and p_hat.
+        if(any(result.L2 > 0.0f)){
+            float3 c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, result.x2, result.n2, result.L2);
+            float p_hat = GetPHat(c);
+            float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_bsdf;
+            if(isnan(w_mis) || isinf(w_mis))
+                w_mis = 0.0f;
+        // Update reservoir
+            if(UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed)){
+                requires_shadow_ray = false;
+            }
+        }
     }
 
-    MaterialOptimized matOpt = {
-        materials[mID].Kd, materials[mID].Pr_Pm_Ps_Pc,
-        materials[mID].Ks, materials[mID].Ke, mID
-    };
-
-    if(mID == 4294967294)
-        matOpt = g_DefaultMissMaterial;
-
-	//_______________________________RESERVOIRS__________________________________
-    Reservoir_DI reservoir = {
-        /* Row 0: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-        /* Row 1: */ float3(0.0f, 0.0f, 0.0f), 0.0f,
-        /* Row 2: */ { float3(0.0f, 0.0f, 0.0f), uint16_t(0)}
-    };
-
-    Reservoir_GI reservoir_GI = {
-        float3(0.0f, 0.0f, 0.0f), 0.0f,
-        float3(0.0f, 0.0f, 0.0f), 0.0f,
-        half3(0.0f, 0.0f, 0.0f), 0
-    };
-
-    SampleData sdata = {
-        float3(0, 0, 0),  // x1
-        mID,                  // mID
-        matOpt.Ke,   // L1
-        float3(0, 0, 0),  // n1
-        float3(0, 0, 0),   // o
-        payload.objID,        // mID
-        float3(0,0,0),        // debug
-    };
-
-    //_______________________________PATH_SAMPLING__________________________________
-    // Perform y bounces
-    if(performSampling){
-        /*
-        Pathtracing concept:
-        To support advanced algorithms like ReSTIR, the path tracing will be always structured the same. Most of the work will be
-        done in the raygeneration shader. Sampling works always the same:
-        - Evaluate direct NEE: Perform light sampling using NEE. This can be done with or without visibility check which will significantly speed up RIS
-        - Evaluate direct BSDF: Sample the BSDF to evaluate direct light contribution
-        - Evaluate indirect BSDF: Sample the BSDF to trace a ray with several bounces accumulating the pdf (ReSTIR GI/PT, later)
-        */
-        //_______________________________RIS_DIRECT_ILLUMINATION__________________________________
-        SampleRIS(
-            nee_samples_DI,
-            bsdf_samples_DI,
-            -direction,
-            reservoir,
-            payload,
-            matOpt,
-            seed
-            );
-        //_______________________________VISIBILITY_PASS__________________________________
-        sdata.x1 = payload.hitPosition;
-        sdata.n1 = normalize(payload.hitNormal);
-        sdata.o = -direction;
-        sdata.mID = mID;
-
-        float p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
-        reservoir.W = GetW(reservoir, p_hat);
-
-        //for(int p = 0; p< 40000; p++)
-            //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
-
-        // Perform path sampling (simpliefied for now)
-        sdata.debug = SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
-        sdata.debug += ReconnectDI(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt) * reservoir.W;
-
-        float3 f_c = LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
-                                     reservoir_GI.xn, reservoir_GI.nn,
-                                     reservoir_GI.E3,
-                                     sdata.o, matOpt, false));
-        reservoir_GI.W = GetW_GI(reservoir_GI, f_c);
-        reservoir_GI.M = 1.0f;
-        //sdata.debug = reservoir_GI.w_sum > 0.0f? 1.0f: 0.0f;
-        /*if(!IsValidReservoir_GI(reservoir_GI))
-            sdata.debug = float3(1,0,0);*/
-
+    // Visbility check for the stored sample, if fail, set W to 0
+    float V = 1.0f;
+    if(requires_shadow_ray){
+        V = VisibilityCheck(sdata.x1, reservoir.x2_di, sdata.n1);
     }
-	g_Reservoirs_current[pixelIdx] = reservoir;
-    g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
-    g_sample_current[pixelIdx] = sdata;
+    // Calculate W
+    float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_di, reservoir.n2_di, reservoir.L2_di));
+    if(p_hat > 0.0f)
+        reservoir.W_di = V * reservoir.w_sum_di / p_hat;
+
+    // Save the resulting reservoir to memory
+    store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx);
+    store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx);
+    store_L2_di(reservoir.L2_di, g_Reservoirs_current_di, pixelIdx);
+    store_W_di(reservoir.W_di, g_Reservoirs_current_di, pixelIdx);
+    store_M_di(1, g_Reservoirs_current_di, pixelIdx);
 }

@@ -1,21 +1,21 @@
-inline float ESS_LUT(MaterialOptimized mat, float NdotV)
+inline float ESS_LUT(uint mID, float NdotV)
 {
     // Normalize inputs to [0, 1]
     NdotV = saturate(NdotV);
 
     // Compute fractional index for the angle (NdotV)
-    float thetaIdxF = NdotV * (LUT_SIZE_THETA - 1);
+    float thetaIdxF = NdotV * (LUT_SIZE - 1);
 
     // Compute integer indices for interpolation
     int thetaIdx0 = (int)floor(thetaIdxF);
-    int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE_THETA - 1);
+    int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE - 1);
 
     // Compute interpolation weight
     float wTheta = thetaIdxF - thetaIdx0;
 
     // Fetch LUT values at the two angle indices
-    float v0 = materials[mat.mID].LUT[thetaIdx0];
-    float v1 = materials[mat.mID].LUT[thetaIdx1];
+    float v0 = materials[mID].LUT[thetaIdx0];
+    float v1 = materials[mID].LUT[thetaIdx1];
 
     // Perform linear interpolation
     return lerp(v0, v1, wTheta);
@@ -91,17 +91,16 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 //    origin            = slightly bumped shading origin (optional)
 // ------------------------------------------------------------------------------
 inline void SampleBRDF_GGX(
-    MaterialOptimized mat,
+    uint mID,
     float3  outgoing,
     float3  normal,
     float3  flatNormal,
     inout float3 sample,
-    inout float3 origin,
     float3  worldOrigin,
     inout uint2 seed)
 {
     // 1) Compute alpha^2 if your material encodes roughness that way
-    float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
+    float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
 
     // 2) Set up world->local transform where "normal" is the local Z
     float3 N = normalize(normal);
@@ -163,15 +162,12 @@ inline void SampleBRDF_GGX(
 
     if(dot(sample, normal) < 0.0f)
         sample = - sample;
-
-    // 10) Shift origin to avoid self‐intersection
-    origin = worldOrigin + s_bias * flatNormal;
 }
 
 
 
 // Evaluate the GGX BRDF for the given material
-inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing)
+inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);   // View direction
@@ -182,9 +178,9 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
     float NdotH = dot(N, H);
     float VdotH = dot(V, H);
 
-    float3 F = SchlickFresnel(mat.Ks, VdotH);
-    float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
-    float G = G2_SmithGGX(NdotV, NdotL, mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x);
+    float3 F = SchlickFresnel(materials[mID].Ks, VdotH);
+    float D = D_GGX(NdotH, materials[mID].Pr_Pm_Ps_Pc.x);
+    float G = G2_SmithGGX(NdotV, NdotL, materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x);
 
     // Specular BRDF
     float denominator = 4.0f * NdotV * NdotL;
@@ -194,10 +190,10 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
     float3 specular = (F * D * G) / denominator;
 
     //Multiscatter GGX
-    float Ess = ESS_LUT(mat, NdotV);
+    float Ess = ESS_LUT(mID, NdotV);
     float kms = (1.0f - Ess) / Ess;
 
-    float3 specular_ess = specular * (1.0f + mat.Ks * kms);
+    float3 specular_ess = specular * (1.0f + materials[mID].Ks * kms);
 
     if(any(isnan(specular_ess)) || any(isinf(specular_ess)))
         return float3(0,0,0);
@@ -206,7 +202,7 @@ inline float3 EvaluateBRDF_GGX(MaterialOptimized mat, float3 normal, float3 inco
 }
 
 // Calculate the PDF for a given sample direction using GGX
-inline float BRDF_PDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming, float3 outgoing)
+inline float BRDF_PDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);   // View direction
@@ -216,9 +212,9 @@ inline float BRDF_PDF_GGX(MaterialOptimized mat, float3 normal, float3 incoming,
     float NdotV = dot(N, V);
     float VdotH = dot(H, V);
 
-    float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
+    float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
     float G1 = G1_SmithGGX(NdotV, alpha);
-    float D = D_GGX(NdotH, mat.Pr_Pm_Ps_Pc.x);
+    float D = D_GGX(NdotH, materials[mID].Pr_Pm_Ps_Pc.x);
 
     return G1 * D / (NdotV * 4.0f);
 }
