@@ -40,7 +40,7 @@ Renderer::Renderer(UINT width, UINT height,
       m_rtvDescriptorSize(0) {
     m_mod = LoadLibrary("sl.interposer.dll");
 
-    /*m_passSequence = {
+    m_passSequence = {
         L"Pass_init_di_v7.hlsl",
         L"barrier",
         //L"Pass_init_gi_v7.hlsl",
@@ -52,15 +52,15 @@ Renderer::Renderer(UINT width, UINT height,
         //L"Pass_spat_gi_v7.hlsl",
         L"barrier",
         L"Pass_shading_v7.hlsl",
-    };*/
+    };
 
-    m_passSequence = {
+    /*m_passSequence = {
         L"RayGen_v6_pass1.hlsl",
         L"barrier",
         L"RayGen_v6_pass2.hlsl",
         L"barrier",
         L"RayGen_v6_pass3.hlsl"
-    };
+    };*/
 }
 
 
@@ -470,7 +470,7 @@ void Renderer::OnUpdate() {
 
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(oscillation, 1.f, 0.f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
