@@ -69,6 +69,15 @@ void Pass_shading_v7() {
         store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
         store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
         store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
+
+        // Compress and save relevant data: x1, L1, n1, mID and oID
+        store_x1(sdata.x1, g_sample_last, pixelIdx);
+        store_n1(sdata.n1, g_sample_last, pixelIdx);
+        store_L1(sdata.L1, g_sample_last, pixelIdx);
+        store_o(sdata.o, g_sample_last, pixelIdx);
+        store_matID(sdata.matID, g_sample_last, pixelIdx);
+        store_objID(sdata.objID, g_sample_last, pixelIdx);
+
     }
     else{
         accumulation = float3(sdata.L1);
@@ -76,7 +85,7 @@ void Pass_shading_v7() {
 
 
     // ___ Accumulation ___
-    float3 averagedColor;
+    float3 averagedColor = accumulation;
     float frameCount = gPermanentData[uint2(launchIndex)].w;
     int maxFrames    = 10000000;
 
@@ -97,7 +106,7 @@ void Pass_shading_v7() {
         gPermanentData[uint2(launchIndex)].w   += 1.0f;
         frameCount+= 1.0f;
     }
-    averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
+    //averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
 
     // If the view has changed significantly, reset accumulation
     bool different = false;

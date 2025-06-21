@@ -90,7 +90,6 @@ inline float VisibilityCheck(
     float dist
 )
 {
-    float V = 0.0f;
     RayDesc ray;
     ray.Origin = x1 + normalize(n1) * s_bias;
     ray.Direction = dir;
@@ -99,7 +98,7 @@ inline float VisibilityCheck(
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
-    V = shadowPayload.isHit ? 0.0f : 1.0f;
+    float V = shadowPayload.isHit ? 0.0f : 1.0f;
     return V;
 }
 
