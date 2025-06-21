@@ -72,17 +72,32 @@ void Pass_temp_di_v7() {
             IsValidReservoir_DI(rdi_r) &&
             !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.5f) &&
             !RejectDistance_DI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
-            (sdata_r.matID == sdata.matID));
+            (sdata_r.matID == sdata.matID))
+            ;
 
         // Merge the reservoirs
         if(candidateAcceptedDI){
+            // Calculate the canonical target function
+            float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+            float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * VisibilityCheck(sdata_r.x1, rdi.x2_di, sdata_r.n1);
+            float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheck(sdata.x1, rdi_r.x2_di, sdata.n1);
+            float M_c = rdi.M_di;
+            float M_sum = M_c + rdi_r.M_di;
             // Calculate the MIS weights
+            float mis_c = PairwiseMIS_canonical_Temp(M_c, p_c, p_n, rdi, rdi_r, sdata, sdata_r, M_sum);
+            float mis_n = PairwiseMIS_noncanonical_Temp(M_c, p_c, p_n, rdi, rdi_r, sdata, sdata_r, M_sum);
 
             // Calculate the reservoirs weights
+            float w_c = mis_c * p_c * rdi.W_di;
+            float w_n = mis_n * n_c * rdi_r.W_di;
 
             // Adjust W of the existing reservoir
+            rdi.W_di = w_c;
 
             // Update the reservoir
+            // Get a random seed
+            uint2 seed = GetSeed(pixelIdx, time, 1);
+            UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, seed);
 
             // Store the merged reservoir
             store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx);
