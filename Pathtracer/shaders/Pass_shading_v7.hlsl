@@ -52,6 +52,11 @@ void Pass_shading_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
+    //DEBUG:
+    SampleData sdata_debug = loadSampleData(g_sample_last, pixelIdx);
+    Reservoir_DI rdi_debug = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
+
+
     // Load most recent data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     float3 accumulation = float3(0,0,0);
@@ -77,12 +82,11 @@ void Pass_shading_v7() {
         store_o(sdata.o, g_sample_last, pixelIdx);
         store_matID(sdata.matID, g_sample_last, pixelIdx);
         store_objID(sdata.objID, g_sample_last, pixelIdx);
-
     }
     else{
         accumulation = float3(sdata.L1);
     }
-
+    //accumulation = abs(rdi_debug.W_di);
 
     // ___ Accumulation ___
     float3 averagedColor = accumulation;

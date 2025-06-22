@@ -24,10 +24,11 @@ inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float thresho
 
 inline bool IsValidReservoir_DI(Reservoir_DI r){
     bool valid =
-        any(r.n2_di > 0.0f) &&
+        any(abs(r.n2_di) > 0.0f) &&
         any(r.L2_di > 0.0f) &&
         r.W_di > 0.0f &&
-        r.M_di > 0.0f;
+        r.M_di > 0.0f
+        ;
     return valid;
 }
 
@@ -44,7 +45,7 @@ float VisibilityCheck(
     RayDesc ray;
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
-    ray.TMin = 0.001f;
+    ray.TMin = EPSILON;
     ray.TMax = max(dist - 3.0f * EPSILON, 2.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;

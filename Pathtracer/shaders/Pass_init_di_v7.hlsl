@@ -101,8 +101,16 @@ void Pass_init_di_v7() {
     }
     // Calculate W
     float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_di, reservoir.n2_di, reservoir.L2_di));
-    if(p_hat > 0.0f)
-        reservoir.W_di = V * reservoir.w_sum_di / p_hat;
+    float W = 0.0f;
+    if (p_hat > EPSILON) {
+        W = V * reservoir.w_sum_di / p_hat;
+        // Protect against NaN/Inf
+        if (isnan(W) || isinf(W)) {
+            W = 0.0f;
+        }
+    }
+    reservoir.W_di = W;
+
 
     // Save the resulting reservoir to memory
     store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx);
