@@ -1,27 +1,29 @@
-// Swizzling
-inline uint MapPixelID(uint2 dims, uint2 lIndex)
+// Safe 2-D→1-D swizzle; returns 0xFFFFFFFF on invalid input
+inline uint MapPixelID(uint2 dims, int2 lIndex)
 {
-    // NVIDIA’s 2D warp tiles are 8×4
+    // ---------- 1. validate input ----------
+    // negatives or out-of-range ──► sentinel
+    if (lIndex.x < 0 || lIndex.y < 0 ||
+        lIndex.x >= int(dims.x) || lIndex.y >= int(dims.y))
+    {
+        return uint(-1);          // invalid
+    }
+
+    // ---------- 2. original mapping ----------
     const uint tileWidth  = 4;
     const uint tileHeight = 8;
 
-    // how many tiles fit across (ceiling)
-    uint tileCountX = (dims.x + tileWidth  - 1) / tileWidth;
-    // (we don’t need tileCountY explicitly for flattening)
+    uint2 uIndex   = uint2(lIndex);               // now safe to cast
+    uint tileCountX = (dims.x + tileWidth - 1u) / tileWidth;
 
-    // which tile (x, y) this pixel lives in
-    uint tileX = lIndex.x / tileWidth;
-    uint tileY = lIndex.y / tileHeight;
+    uint tileX = uIndex.x / tileWidth;
+    uint tileY = uIndex.y / tileHeight;
 
-    // local coords inside that tile
-    uint localX = lIndex.x % tileWidth;
-    uint localY = lIndex.y % tileHeight;
+    uint localX = uIndex.x % tileWidth;
+    uint localY = uIndex.y % tileHeight;
 
-    // flatten tile index in row‑major across the grid of tiles
-    uint tileIndex = tileY * tileCountX + tileX;
-    // flatten local index in row‑major within the 8×4 tile
+    uint tileIndex  = tileY * tileCountX + tileX;
     uint localIndex = localY * tileWidth + localX;
 
-    // combine: skip all pixels in earlier tiles, then add this one
     return tileIndex * (tileWidth * tileHeight) + localIndex;
 }
