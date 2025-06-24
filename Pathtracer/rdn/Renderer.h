@@ -53,6 +53,49 @@ public:
   virtual void OnDestroy();
 
 private:
+    // --------------------------------------------------------------------
+    // Utilities  (ideally put in a .cpp close to Renderer)
+    enum class Stage { RayGen, Compute, Barrier };
+
+    struct PassDesc
+    {
+        std::wstring file;     // empty when Stage == Barrier
+        Stage        stage;
+        XMUINT3        groupDim {8,8,1};   // only used for compute
+    };
+
+    // Split “foo|cs:8x8” into tokens and fill PassDesc
+    static PassDesc ParsePass(const std::wstring& raw)
+    {
+        if (raw == L"barrier") return {L"", Stage::Barrier, {}};
+
+        PassDesc out;
+        size_t p = raw.find(L'|');
+        out.file = raw.substr(0, p);
+
+        // default = ray-gen
+        out.stage = Stage::RayGen;
+
+        if (p != std::wstring::npos)
+        {
+            std::wstring tag = raw.substr(p+1);           // “cs:8x8” or “rg”
+            if (tag.rfind(L"cs",0) == 0)                  // starts with “cs”
+            {
+                out.stage = Stage::Compute;
+
+                // optional “:NxM”
+                size_t q = tag.find(L':');
+                if (q != std::wstring::npos)
+                {
+                    UINT x=8,y=8,z=1;
+                    swscanf_s(tag.c_str()+q+1, L"%ux%ux%u", &x,&y,&z);
+                    out.groupDim = {x,y,z};
+                }
+            }
+        }
+        return out;
+    }
+
     // --- NEW: dynamic pass control ------------------------------------------------
     std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
     std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
@@ -64,6 +107,10 @@ private:
     // Streamline frame & viewport tracking
     sl::FrameToken*     m_frameToken     = nullptr;
     sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
+
+    std::vector<PassDesc>                           m_passes;      // parsed list
+    std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
+
 
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
