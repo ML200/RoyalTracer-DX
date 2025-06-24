@@ -13,13 +13,48 @@ uint pickAlias(inout uint seed)
 }
 
 // ---- wave-uniform helpers (lane 0 touches memory / RNG) ----
-uint pickAliasWave(inout uint waveSeed)
+/*uint pickAliasWave(inout uint waveSeed)
 {
     uint idx = 0;
     if (WaveIsFirstLane())
         idx = pickAlias(waveSeed);        // alias table uses waveSeed
     return WaveReadLaneFirst(idx);
+}*/
+
+//------------------------------------------
+//  Wave-level alias-table pick (WAVE_CANDIDATES k variants)
+//  – Each of the first k lanes generates
+//    a light index with its local seed.
+//  – Every lane then draws one of those k
+//    indices at random.
+//  – k should be a small power of two
+//    (1, 2, 4, 8, 16, 32) for best warp occupancy.
+//  – Powerful GPUs can use their full range for DI sampling, should be limited for GI at each vertex to ~4-8 tho
+//------------------------------------------
+uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
+{
+    // Safety: k shouldnt exceed the lane cound -> we cant have more samples than lanes]
+    uint k = clamp(WAVE_CANDIDATES, 1u, WaveGetLaneCount());
+
+    const uint lane   = WaveGetLaneIndex();
+    uint       idx_k  = 0;
+
+    // Step 1: compute the light indices for the specified number of varienty. Importantly, use several lanes in parallel to maximise paralellism
+    if (lane < k)
+    {
+        idx_k = pickAlias(threadSeed.x);
+    }
+
+    // Step 2: every lane chooses which candidate (0…k-1) to use randomly. This is unbiased as we drew the indices with replacement
+    uint choice = (uint)(RandomFloatSingle(threadSeed.x) * k);
+
+    // Step 3: fetch the chosen index from the generating lane
+    uint idx = WaveReadLaneAt(idx_k, choice);
+
+    return idx;
 }
+
+
 
 
 // Sample a NEE sample
@@ -29,7 +64,7 @@ SampleReturn SampleNEE(
     inout uint2 threadSeed
 ){
     // Pick a random light id using alias table
-    uint idx = pickAliasWave(waveSeed);
+    uint idx = pickAliasWave(waveSeed, threadSeed);
     //LightTriangle sampleLight = g_EmissiveTriangles[idx];
 
     // Calculate the current world coordinates of the triangle
