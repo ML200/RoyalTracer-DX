@@ -28,42 +28,72 @@ inline uint MapPixelID(uint2 dims, int2 lIndex)
     return tileIndex * (tileWidth * tileHeight) + localIndex;
 }
 
-inline uint GetRandomPixelCircleWeighted(uint radius, uint w, uint h, uint x, uint y, inout uint2 seed)
-{
-    int newX, newY;
-    do {
-        // Get a uniform random value.
-        float u = RandomFloat(seed);
-        // Adjust the weighting by using a power law.
-        float z = pow(u, SPAT_EXP_DI);
-        // Compute the radius value with the adjustable bias.
-        float r = float(radius) * z;
-        // Choose an angle uniformly from [0, 2π).
-        float angle = RandomFloat(seed) * 6.2831853;
-        // Compute offsets.
-        int offsetX = int(cos(angle) * r);
-        int offsetY = int(sin(angle) * r);
-        // Calculate new coordinates.
-        newX = int(x) + offsetX;
-        newY = int(y) + offsetY;
+//-----------------------------------------------
+//  Wave-level spatial picker
+//    – first k lanes create k offset vectors
+//    – every lane randomly chooses one of them
+//    – use the chosen offset to build a neighbour
+//-----------------------------------------------
+inline uint GetRandomPixelCircleWeighted(
+    uint   radius,
+    uint   w,
+    uint   h,
+    uint   x,
+    uint   y,
+    inout  uint2 threadSeed
+){
+    // Clamp k to a sensible range
+    uint k = clamp(SPAT_WAVE_CANDIDATES_DI, 1u, WaveGetLaneCount());
 
-        // Mirror newX into the [0, w-1] range.
-        while(newX < 0 || newX >= int(w)) {
-            if(newX < 0)
-                newX = -newX;
-            else // newX >= w
-                newX = 2 * int(w) - newX - 2;
-        }
+    const uint lane = WaveGetLaneIndex();
 
-        // Mirror newY into the [0, h-1] range.
-        while(newY < 0 || newY >= int(h)) {
-            if(newY < 0)
-                newY = -newY;
-            else // newY >= h
-                newY = 2 * int(h) - newY - 2;
-        }
-    } while(newX == int(x) && newY == int(y));  // Reject the center pixel.
+    // -------------------------------------------------
+    // 1.  Generate k candidate offsets  (lanes 0…k-1)
+    // -------------------------------------------------
+    int candX = 0, candY = 0;
 
-    //return newX * h + newY;
-    return MapPixelID(uint2(w, h), uint2(newX,newY));
+    if (lane < k)
+    {
+        // Decorrelate the generators’ RNG streams a little
+        uint2 localSeed = threadSeed;
+        localSeed.x ^= lane * 0x9E3779B9u;
+
+        do {
+            float  u     = RandomFloat(localSeed);
+            float  z     = pow(u, SPAT_EXP_DI);
+            float  r     = float(radius) * z;
+            float  angle = RandomFloat(localSeed) * 6.2831853;
+
+            candX = int(cos(angle) * r);
+            candY = int(sin(angle) * r);
+            // repeat until offset ≠ (0,0) so nobody ever gets the centre
+        } while (candX == 0 && candY == 0);
+    }
+
+    // -------------------------------------------------
+    // 2.  Every lane picks one of those k candidates
+    // -------------------------------------------------
+    uint choice = (uint)(RandomFloat(threadSeed) * k);
+
+    int offX = WaveReadLaneAt(candX, choice);
+    int offY = WaveReadLaneAt(candY, choice);
+
+    // -------------------------------------------------
+    // 3.  Apply the offset and mirror to screen bounds
+    // -------------------------------------------------
+    int newX = int(x) + offX;
+    int newY = int(y) + offY;
+
+    // mirror X
+    while (newX < 0 || newX >= int(w)) {
+        newX = (newX < 0) ? -newX
+                          : 2 * int(w) - newX - 2;
+    }
+    // mirror Y
+    while (newY < 0 || newY >= int(h)) {
+        newY = (newY < 0) ? -newY
+                          : 2 * int(h) - newY - 2;
+    }
+
+    return MapPixelID(uint2(w, h), uint2(newX, newY));
 }
