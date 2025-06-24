@@ -48,8 +48,8 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_temp_di_v7.hlsl",
         //L"Pass_temp_gi_v7.hlsl",
         L"barrier",
-        L"Pass_spat_di_v7.hlsl",
-        //L"Pass_spat_gi_v7.hlsl",
+        L"Pass_spat_di_v7_1.hlsl",
+        //L"Pass_spat_gi_v7_1.hlsl",
         L"barrier",
         L"Pass_shading_v7.hlsl",
     };
@@ -470,7 +470,7 @@ void Renderer::OnUpdate() {
 
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 2.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;

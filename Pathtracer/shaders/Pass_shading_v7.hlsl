@@ -3,7 +3,6 @@
 #include "Structures_misc.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
-#include "Motion_vectors_v7.hlsli"
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
@@ -45,6 +44,7 @@ cbuffer CameraParams : register(b0)
 #include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
 [shader("raygeneration")]
 void Pass_shading_v7() {
@@ -110,7 +110,7 @@ void Pass_shading_v7() {
         gPermanentData[uint2(launchIndex)].w   += 1.0f;
         frameCount+= 1.0f;
     }
-    //averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
+    averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
 
     // If the view has changed significantly, reset accumulation
     bool different = false;
