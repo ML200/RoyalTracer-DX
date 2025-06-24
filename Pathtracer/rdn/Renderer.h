@@ -211,6 +211,8 @@ private:
   void CreateShaderResourceHeap();
   ComPtr<ID3D12Resource> m_outputResource;
     ComPtr<ID3D12Resource> m_permanentDataTexture;
+    ComPtr<ID3D12Resource> m_scratchPing;
+    ComPtr<ID3D12Resource> m_svgfConstBuffer;
   ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
 
   // #DXR

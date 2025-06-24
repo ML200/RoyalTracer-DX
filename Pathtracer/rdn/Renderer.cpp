@@ -52,6 +52,16 @@ Renderer::Renderer(UINT width, UINT height,
         //L"Pass_spat_gi_v7_1.hlsl",
         L"barrier",
         L"Pass_shading_v7.hlsl",
+        L"barrier",
+        L"Pass_denoiser_temp_v7.hlsl",
+        L"barrier",
+        L"Pass_denoiser_blur_1_v7.hlsl",
+        L"barrier",
+        L"Pass_denoiser_blur_2_v7.hlsl",
+        L"barrier",
+        L"Pass_denoiser_blur_4_v7.hlsl",
+        L"barrier",
+        L"Pass_denoiser_copy_v7.hlsl"
     };
 
     /*m_passSequence = {
@@ -973,7 +983,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {6 /*u6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,12},
                     {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
-                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15} // aliasIdx
+                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
             }
     );
 
@@ -1210,6 +1221,25 @@ void Renderer::CreateRaytracingOutputBuffer() {
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             nullptr,
             IID_PPV_ARGS(&m_permanentDataTexture)));
+
+    D3D12_RESOURCE_DESC desc = {};
+    desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width              = GetWidth();
+    desc.Height             = GetHeight();
+    desc.DepthOrArraySize   = 1;
+    desc.MipLevels          = 1;
+    desc.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;   // 48-bit colour is enough
+    desc.SampleDesc.Count   = 1;
+    desc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &desc,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(&m_scratchPing)));
 
 }
 
@@ -1628,6 +1658,19 @@ void Renderer::CreateShaderResourceHeap() {
     idxDesc.Buffer.StructureByteStride = 0;
     m_device->CreateShaderResourceView(
             m_aliasIdxBuffer.Get(), &idxDesc, srvHandle);
+
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
+                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);   // move to slot 16
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
+    scratchDesc.ViewDimension          = D3D12_UAV_DIMENSION_TEXTURE2D;
+    scratchDesc.Format                 = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    scratchDesc.Texture2D.MipSlice     = 0;
+    scratchDesc.Texture2D.PlaneSlice   = 0;
+
+    m_device->CreateUnorderedAccessView(
+            m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);
+
 
     std::wcout << L"SRVs created!" << std::endl;
 }

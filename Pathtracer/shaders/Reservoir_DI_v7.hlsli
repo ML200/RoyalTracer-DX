@@ -46,7 +46,7 @@ float VisibilityCheck(
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
     ray.TMin = EPSILON;
-    ray.TMax = max(dist - 3.0f * EPSILON, 2.0f * EPSILON);
+    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
