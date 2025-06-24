@@ -1,9 +1,9 @@
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
-#include "Motion_vectors_v7.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
@@ -73,7 +73,6 @@ void Pass_temp_di_v7() {
                 IsValidReservoir_DI(rdi_r) &&
                 !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.5f) &&
                 !RejectDistance_DI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
-
                 (sdata_r.matID == sdata.matID));
 
             // Merge the reservoirs
@@ -84,8 +83,8 @@ void Pass_temp_di_v7() {
                 float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheck(sdata.x1, rdi_r.x2_di, sdata.n1);
                 float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
                 float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * visReuse;
-                float M_c = min(TEMP_MCAP,rdi.M_di);
-                float M_n = min(TEMP_MCAP,rdi_r.M_di);
+                float M_c = min(TEMP_MCAP_DI,rdi.M_di);
+                float M_n = min(TEMP_MCAP_DI,rdi_r.M_di);
                 float M_sum = M_c + M_n;
                 // Calculate the MIS weights
                 float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);

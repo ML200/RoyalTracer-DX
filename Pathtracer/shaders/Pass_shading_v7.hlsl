@@ -1,9 +1,9 @@
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
-#include "Motion_vectors_v7.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
