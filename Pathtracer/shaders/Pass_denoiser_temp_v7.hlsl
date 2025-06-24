@@ -64,9 +64,10 @@ void Pass_denoiser_temp_v7()
     uint   pIdx   = MapPixelID(dims, launch);
 
     float3     Ccur = gOutput[uint3(launch, 1)].rgb;
-    SampleData sCur = loadSampleData(g_sample_current, pIdx);
+    float3 x1_cur = load_x1(g_sample_current,pIdx);
+    float3 n1_cur = load_n1(g_sample_current, pIdx);
 
-    float4 prevClip = mul(prevProjection, mul(prevView, float4(sCur.x1, 1.0)));
+    float4 prevClip = mul(prevProjection, mul(prevView, float4(x1_cur, 1.0)));
     if (prevClip.w <= 1e-4) {
         gPermanentData[launch] = float4(Ccur, 0);
         gScratchPing  [launch] = float4(Ccur, 0);
@@ -101,13 +102,14 @@ void Pass_denoiser_temp_v7()
                  gPermanentData[i01]*w01 + gPermanentData[i11]*w11;
 
         int2        nearestPx = clamp(int2(reprojF + 0.5), 0, int2(dims)-1);
-        SampleData  sPrev     = loadSampleData(g_sample_last, MapPixelID(dims, nearestPx));
+        float3 x1_prev = load_x1(g_sample_current, MapPixelID(dims, nearestPx));
+        float3 n1_prev = load_n1(g_sample_current, MapPixelID(dims, nearestPx));
 
         float3 camPos = mul(viewI, float4(0,0,0,1)).xyz;
-        float  d0 = length(sCur .x1 - camPos);
-        float  d1 = length(sPrev.x1 - camPos);
+        float  d0 = length(x1_cur - camPos);
+        float  d1 = length(x1_prev - camPos);
         dz        = abs(d0 - d1) / max(d0, d1);
-        float  nDot = dot(sCur.n1, sPrev.n1);
+        float  nDot = dot(n1_cur, n1_prev);
 
         histValid = (dz < 0.025) && (nDot > 0.9);
         if (!histValid) hist4 = float4(Ccur, 0);
@@ -147,7 +149,7 @@ void Pass_denoiser_temp_v7()
         float2 curSS = (float2(launch) + 0.5) / dims;
         float2 velSS = curSS - prevSS;
         float  velPx = length(velSS * dims);
-        mvFac        = saturate((velPx - 1.0) / 1.0);  // 0‑1 over 1‑4 px
+        mvFac        = saturate((velPx - 0.75) / 1.0);  // 0‑1 over 1‑4 px
 
         reactiveDepth = saturate((dz - 0.03) * 35.0);
     }

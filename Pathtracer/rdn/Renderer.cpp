@@ -59,8 +59,6 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl",
         L"barrier",
-        L"Pass_denoiser_blur_4_v7.hlsl",
-        L"barrier",
         L"Pass_denoiser_copy_v7.hlsl"
     };
 
@@ -480,7 +478,7 @@ void Renderer::OnUpdate() {
 
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 2.f, 0.f);
+    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
 
     // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
@@ -551,7 +549,7 @@ void Renderer::OnRender()
     float elapsedSec = duration<float>(now - g_lastRenderTime).count();
 
     // 2) If < 5 seconds have passed, skip GPU work entirely -> GPU stays idle.
-    if (elapsedSec < FRAME_INTERVAL_SECONDS)
+    if (elapsedSec < 0.001f)
     {
         // Optional: You can still process input messages or do CPU tasks,
         // but skip issuing any GPU commands or calls to Present().
