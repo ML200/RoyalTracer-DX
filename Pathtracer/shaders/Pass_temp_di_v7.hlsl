@@ -3,7 +3,6 @@
 #include "Structures_misc.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
-#include "Motion_vectors_v7.hlsli"
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
@@ -47,6 +46,7 @@ cbuffer CameraParams : register(b0)
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
 [shader("raygeneration")]
 void Pass_temp_di_v7() {
@@ -87,8 +87,8 @@ void Pass_temp_di_v7() {
                 float M_n = min(TEMP_MCAP_DI,rdi_r.M_di);
                 float M_sum = M_c + M_n;
                 // Calculate the MIS weights
-                float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);
-                float mis_n = PairwiseMIS_Neighbour_Temp_NonDef(M_c, M_n, n_c, n_n, M_sum);
+                float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
+                float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
 
                 // Calculate the reservoirs weights
                 float w_c = mis_c * p_c * rdi.W_di;
@@ -104,7 +104,7 @@ void Pass_temp_di_v7() {
 
                 // Calculate new W
                 float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-                if (p_hat > 0.0f) {
+                if (p_hat > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
                     float W = rdi.w_sum_di / p_hat;
                     // NaN/Inf protection
                     if (isnan(W) || isinf(W)) {

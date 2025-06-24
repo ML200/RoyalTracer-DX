@@ -3,7 +3,6 @@
 #include "Structures_misc.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
-#include "Motion_vectors_v7.hlsli"
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
@@ -47,29 +46,31 @@ cbuffer CameraParams : register(b0)
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
 [shader("raygeneration")]
-void Pass_spat_di_v7()
+void Pass_spat_di_v7_1()
 {
-    // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
-    uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx = MapPixelID(dims, launchIndex);
+    if(SPAT_COUNT_DI > 0){
+        // Get the location within the dispatched 2D grid of work items (often maps to pixels, so this could represent a pixel coordinate).
+        uint2 launchIndex = DispatchRaysIndex().xy;
+        float2 dims = float2(DispatchRaysDimensions().xy);
+        uint pixelIdx = MapPixelID(dims, launchIndex);
 
-    // Load the sample data
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    if(all(sdata.L1 < EPSILON)){
-        // Load current reservoir
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-        // Get the reprojected pixel position
-        // Get a random seed
-        uint2 seed = GetSeed(pixelIdx, time, 2);
-        uint tempPixelIdx = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
-        if(tempPixelIdx != uint(-1)){
+        // Load the sample data
+        SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+        if(all(sdata.L1 < EPSILON)){
+            // Load current reservoir
+            Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+            // Get the reprojected pixel position
+            // Get a random seed
+            uint2 seed = GetSeed(pixelIdx, time, 2);
+            uint tempPixelIdx = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+
             // Get the reprojected sample data
-            SampleData sdata_r = loadSampleData(g_sample_current, tempPixelIdx);
+            SampleData sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
             // Get the reprojected reservoir
-            Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, tempPixelIdx);
+            Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
             // Check wether the reservoir is valid for merge
             bool candidateAcceptedDI =
                 (all(sdata_r.L1 < EPSILON) &&
@@ -90,8 +91,8 @@ void Pass_spat_di_v7()
                 float M_n = min(SPAT_MCAP_DI,rdi_r.M_di);
                 float M_sum = M_c + M_n;
                 // Calculate the MIS weights
-                float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);
-                float mis_n = PairwiseMIS_Neighbour_Temp_NonDef(M_c, M_n, n_c, n_n, M_sum);
+                float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
+                float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
 
                 // Calculate the reservoirs weights
                 float w_c = mis_c * p_c * rdi.W_di;
@@ -105,7 +106,7 @@ void Pass_spat_di_v7()
 
                 // Calculate new W
                 float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-                if (p_hat > 0.0f) {
+                if (p_hat > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
                     float W = rdi.w_sum_di / p_hat;
                     // NaN/Inf protection
                     if (isnan(W) || isinf(W)) {

@@ -28,7 +28,7 @@ cbuffer CameraParams : register(b0)
 }
 
 [shader("raygeneration")]
-void Pass_spat_gi_v7()
+void Pass_spat_gi_v7_1()
 {
 
 }
