@@ -31,6 +31,7 @@ static std::chrono::steady_clock::time_point g_lastRenderTime
 // Our desired interval: 1 frame every 5 seconds => 0.2 FPS
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
 
+
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
     : DXSample(width, height, name), m_frameIndex(0),
