@@ -34,7 +34,7 @@ uint pickAlias(inout uint seed)
 uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
 {
     // Safety: k shouldnt exceed the lane cound -> we cant have more samples than lanes]
-    uint k = clamp(WAVE_CANDIDATES, 1u, WaveGetLaneCount());
+    uint k = clamp(WAVE_CANDIDATES_DI, 1u, WaveGetLaneCount());
 
     const uint lane   = WaveGetLaneIndex();
     uint       idx_k  = 0;

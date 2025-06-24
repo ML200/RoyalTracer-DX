@@ -57,9 +57,72 @@ void Pass_spat_di_v7()
     uint pixelIdx = MapPixelID(dims, launchIndex);
 
     // Load the sample data
-    SampleData sdata_c = loadSampleData(g_sample_current, pixelIdx);
-    if(all(sdata_c.L1 < EPSILON)){
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
-        Reservoir_DI rdi_c = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+        // Get the reprojected pixel position
+        // Get a random seed
+        uint2 seed = GetSeed(pixelIdx, time, 2);
+        uint tempPixelIdx = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+        if(tempPixelIdx != uint(-1)){
+            // Get the reprojected sample data
+            SampleData sdata_r = loadSampleData(g_sample_current, tempPixelIdx);
+            // Get the reprojected reservoir
+            Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, tempPixelIdx);
+            // Check wether the reservoir is valid for merge
+            bool candidateAcceptedDI =
+                (all(sdata_r.L1 < EPSILON) &&
+                IsValidReservoir_DI(rdi_r) &&
+                !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
+                !RejectDistance_DI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
+                (sdata_r.matID == sdata.matID));
+
+            // Merge the reservoirs
+            if(candidateAcceptedDI){
+                // Calculate the canonical target function
+                float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+                float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * VisibilityCheck(sdata_r.x1, rdi.x2_di, sdata_r.n1);
+                float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheck(sdata.x1, rdi_r.x2_di, sdata.n1);
+                float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
+                float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * visReuse;
+                float M_c = min(SPAT_MCAP_DI,rdi.M_di);
+                float M_n = min(SPAT_MCAP_DI,rdi_r.M_di);
+                float M_sum = M_c + M_n;
+                // Calculate the MIS weights
+                float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);
+                float mis_n = PairwiseMIS_Neighbour_Temp_NonDef(M_c, M_n, n_c, n_n, M_sum);
+
+                // Calculate the reservoirs weights
+                float w_c = mis_c * p_c * rdi.W_di;
+                float w_n = mis_n * n_c * rdi_r.W_di;
+
+                // Adjust wsum of the existing reservoir
+                rdi.w_sum_di = w_c;
+
+                // Update the reservoir
+                UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, seed);
+
+                // Calculate new W
+                float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+                if (p_hat > 0.0f) {
+                    float W = rdi.w_sum_di / p_hat;
+                    // NaN/Inf protection
+                    if (isnan(W) || isinf(W)) {
+                        W = 0.0f;
+                    }
+                    rdi.W_di = W;
+                }
+                else
+                    rdi.W_di = 0.0f;
+
+                // Store the merged reservoir
+                store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx);
+                store_n2_di(rdi.n2_di, g_Reservoirs_current_di, pixelIdx);
+                store_L2_di(rdi.L2_di, g_Reservoirs_current_di, pixelIdx);
+                store_W_di(rdi.W_di, g_Reservoirs_current_di, pixelIdx);
+                store_M_di(rdi.M_di, g_Reservoirs_current_di, pixelIdx);
+            }
+        }
     }
 }
