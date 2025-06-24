@@ -6,6 +6,7 @@
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
+RWTexture2D<float4> gScratchPing : register(u8); // Storage for denoiser
 
 RWByteAddressBuffer g_sample_current : register(u6);
 RWByteAddressBuffer g_sample_last : register(u7);
@@ -47,48 +48,17 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 
 [shader("raygeneration")]
-void Pass_shading_v7() {
+void Pass_denoiser_copy_v7() {
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    // Load most recent data
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    float3 accumulation = float3(0,0,0);
+    SampleData cur = loadSampleData(g_sample_current, pixelIdx);
 
-    if(all(sdata.L1 < EPSILON)){
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-
-        float3 contribution = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
-
-        accumulation = float3(contribution);
-
-        // Store the current reservoir as previous if valid
-        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
-        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
-        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
-        store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
-
-        // Compress and save relevant data: x1, L1, n1, mID and oID
-        /*store_x1(sdata.x1, g_sample_last, pixelIdx);
-        store_n1(sdata.n1, g_sample_last, pixelIdx);
-        store_L1(sdata.L1, g_sample_last, pixelIdx);
-        store_o(sdata.o, g_sample_last, pixelIdx);
-        store_matID(sdata.matID, g_sample_last, pixelIdx);
-        store_objID(sdata.objID, g_sample_last, pixelIdx);*/
-    }
-    else{
-        accumulation = float3(sdata.L1);
-    }
-
-    float3 finalColor = sRGBGammaCorrection(accumulation);
-
-    // Debug coloring for invalid values
-    if (isnan(finalColor.x) || isnan(finalColor.y) || isnan(finalColor.z))
-        finalColor = float3(1, 0, 1); // magenta for NaN
-    if (isinf(finalColor.x) || isinf(finalColor.y) || isinf(finalColor.z))
-        finalColor = float3(0, 1, 1); // cyan for infinity
-
-    gOutput[uint3(launchIndex, 1)] = float4(finalColor, 1.0f);
+    store_x1 (cur.x1 , g_sample_last , pixelIdx);
+    store_n1 (cur.n1 , g_sample_last , pixelIdx);
+    store_L1 (cur.L1 , g_sample_last , pixelIdx);
+    store_o  (cur.o  , g_sample_last , pixelIdx);
+    store_matID(cur.matID , g_sample_last , pixelIdx);
+    store_objID(cur.objID , g_sample_last , pixelIdx);
 }

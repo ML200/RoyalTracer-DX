@@ -1,4 +1,4 @@
-#define EPSILON 0.00002
+#define EPSILON 0.000006
 #define PI 3.1415926535
 #define LUT_SIZE 16
 
