@@ -65,11 +65,13 @@ void Pass_denoiser_blur_1_v7()
 
     // ── Central sample ------------------------------------------------------
     float3     c0 = gScratchPing[launch].xyz;
-    SampleData s0 = loadSampleData(g_sample_current, MapPixelID(dims, launch));
+    uint pIdx0 = MapPixelID(dims, launch);
+    float3 x10 = load_x1(g_sample_current, pIdx0);
+    float3 n10 = load_n1(g_sample_current, pIdx0);
 
     // Camera position in world space (needed for linear‑depth test)
     float3 camPos = mul(viewI, float4(0, 0, 0, 1)).xyz;
-    float  d0     = length(s0.x1 - camPos);
+    float  d0     = length(x10 - camPos);
 
     float3 sum  = 0;
     float  wSum = 0;
@@ -92,12 +94,14 @@ void Pass_denoiser_blur_1_v7()
 
         // neighbour sample
         float3     c = gScratchPing[coord].xyz;
-        SampleData s = loadSampleData(g_sample_current, MapPixelID(dims, coord));
+        uint pIdx = MapPixelID(dims, coord);
+        float3 x1 = load_x1(g_sample_current, pIdx);
+        float3 n1 = load_n1(g_sample_current, pIdx);
 
         // ── Hit‑valid check (depth + normal) --------------------------------
-        float d1   = length(s.x1 - camPos);
+        float d1   = length(x1 - camPos);
         float dz   = abs(d0 - d1) / max(d0, d1);   // relative depth diff
-        float nDot = dot(s0.n1, s.n1);
+        float nDot = dot(n10, n1);
         bool  hitValid = (dz < 0.2f) && (nDot > 0.999f);
         if (!hitValid)
             continue;   // completely reject this neighbour
