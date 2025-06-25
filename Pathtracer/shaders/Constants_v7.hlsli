@@ -3,7 +3,7 @@
 #define LUT_SIZE 16
 
 // ___ DI initial sampling ___
-#define NEE_SAMPLES_DI 8
+#define NEE_SAMPLES_DI 4
 #define BSDF_SAMPLES_DI 1
 
 #define WAVE_CANDIDATES_DI 16

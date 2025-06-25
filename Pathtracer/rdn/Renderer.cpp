@@ -41,35 +41,33 @@ Renderer::Renderer(UINT width, UINT height,
       m_rtvDescriptorSize(0) {
     m_mod = LoadLibrary("sl.interposer.dll");
 
-    m_passSequence = {
-        L"Pass_init_di_v7.hlsl",
-        L"barrier",
-        //L"Pass_init_gi_v7.hlsl",
-        //L"barrier",
-        L"Pass_temp_di_v7.hlsl",
-        //L"Pass_temp_gi_v7.hlsl",
-        L"barrier",
-        L"Pass_spat_di_v7_1.hlsl",
-        //L"Pass_spat_gi_v7_1.hlsl",
-        L"barrier",
-        L"Pass_shading_v7.hlsl",
-        L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl",
-        L"barrier",
-        L"Pass_denoiser_blur_1_v7.hlsl",
-        L"barrier",
-        L"Pass_denoiser_blur_2_v7.hlsl",
-        L"barrier",
-        L"Pass_denoiser_copy_v7.hlsl"
-    };
-
     /*m_passSequence = {
+        L"Pass_init_di_v7.hlsl|rg",
+        L"barrier",
+        L"Pass_temp_di_v7.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_spat_di_v7_1.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_shading_v7.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_denoiser_temp_v7.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_denoiser_blur_1_v7.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_denoiser_blur_2_v7.hlsl|cs:32x8",
+        L"barrier",
+        L"Pass_denoiser_copy_v7.hlsl|cs:32x8"
+    };*/
+    m_passSequence = {
         L"RayGen_v6_pass1.hlsl",
         L"barrier",
         L"RayGen_v6_pass2.hlsl",
         L"barrier",
         L"RayGen_v6_pass3.hlsl"
-    };*/
+    };
+
+    for (auto& s : m_passSequence)
+        m_passes.push_back(ParsePass(s));
 }
 
 
@@ -155,20 +153,33 @@ void Renderer::LoadPipeline() {
     typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
 
-    #if defined(_DEBUG)
-        // Enable the debug layer (requires the Graphics Tools "optional feature").
-        // NOTE: Enabling the debug layer after device creation will invalidate the
-        // active device.
-        {
-          ComPtr<ID3D12Debug> debugController;
-          if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-              debugController->EnableDebugLayer();
+/*#if defined(_DEBUG)
+    // ── CPU-side debug layer (what you already had) ──────────────────────────
+    {
+        ComPtr<ID3D12Debug> debug;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+            debug->EnableDebugLayer();
+    }
 
-              // Enable additional debug layers.
-              dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-          }
+    // ── GPU-based validation (catches “bad descriptor ↔ shader access” bugs) ─
+    {
+        ComPtr<ID3D12Debug1> debug1;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug1))))
+        {
+            // Full validation on every queue-submit
+            debug1->SetEnableGPUBasedValidation(TRUE);
+
+            // Optional but handy: forces an immediate GPU sync when an error
+            // is detected so the call-stack in the debugger matches the error
+            debug1->SetEnableSynchronizedCommandQueueValidation(TRUE);
         }
-    #endif
+    }
+
+    // This flag only affects the *factory* creation – keep it if you already
+    // had it for live object reporting, otherwise you may drop it.
+    dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+#endif*/
+
 
     // Map functions from SL and use them instead of standard DXGI/D3D12 API
     auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
@@ -589,138 +600,168 @@ void Renderer::OnDestroy() {
     }
 }
 
-void Renderer::PopulateCommandList() {
-  // Command list allocators can only be reset when the associated
-  // command lists have finished execution on the GPU; apps should use
-  // fences to determine GPU execution progress.
-  ThrowIfFailed(m_commandAllocator->Reset());
+void Renderer::PopulateCommandList()
+{
+    // 1) Reset allocator & list
+    ThrowIfFailed(m_commandAllocator->Reset());
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
 
-  // However, when ExecuteCommandList() is called on a particular command
-  // list, that command list can then be reset at any time and must be before
-  // re-recording.
-  ThrowIfFailed(
-      m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    // 2) Graphics setup: signature, viewports, RTV/DSV
+    m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+    m_commandList->RSSetViewports(1, &m_viewport);
+    m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
-  // Set necessary state.
-  m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
-  m_commandList->RSSetViewports(1, &m_viewport);
-  m_commandList->RSSetScissorRects(1, &m_scissorRect);
-
-    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+    // Transition backbuffer PRESENT->RENDER_TARGET
+    {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(
             m_renderTargets[m_frameIndex].Get(),
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
+        m_commandList->ResourceBarrier(1, &b);
+    }
 
-    m_commandList->ResourceBarrier(1, &barrier);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
+        m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        m_frameIndex, m_rtvDescriptorSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-  CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
-      m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), m_frameIndex,
-      m_rtvDescriptorSize);
-  // #DXR Extra: Depth Buffering
-  // Bind the depth buffer as a render target
-  CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(
-      m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
-
-  m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
-
-    // #DXR Extra - Refitting
-    // Refit the top-level acceleration structure to account for the new
-    // transform matrix of the triangle. Note that the build contains a barrier,
-    // hence we can do the rendering in the same command list
+    // 3) Refit TLAS
     CreateTopLevelAS(m_instances, true);
-    // #DXR
-    // Bind the descriptor heap giving access to the top-level acceleration
-    // structure, as well as the raytracing output
-    std::vector<ID3D12DescriptorHeap *> heaps = {m_srvUavHeap.Get()};
-    m_commandList->SetDescriptorHeaps(static_cast<UINT>(heaps.size()),
-                                      heaps.data());
 
-    // On the last frame, the raytracing output was used as a copy source, to
-    // copy its contents into the render target. Now we need to transition it to
-    // a UAV so that the shaders can write in it.
-    CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    m_commandList->ResourceBarrier(1, &transition);
+    // 4) Bind SRV/UAV heap once
+    {
+        ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
+        m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+    }
 
-    D3D12_DISPATCH_RAYS_DESC desc = {};
-    desc.Width  = GetWidth();
-    desc.Height = GetHeight();
-    desc.Depth  = 1;
+    // 5) Prepare raytracing descriptors
+    D3D12_DISPATCH_RAYS_DESC raysDesc{};
+    raysDesc.Width  = GetWidth();
+    raysDesc.Height = GetHeight();
+    raysDesc.Depth  = 1;
 
     const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
     const uint32_t rgSize   = m_sbtHelper.GetRayGenEntrySize();
-    const uint32_t numRG    = static_cast<uint32_t>(m_passIndex.size());
+    const uint32_t numRG    = (uint32_t)m_passIndex.size();
 
-    desc.MissShaderTable.StartAddress  = sbtStart + numRG * rgSize;
-    desc.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
-    desc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
+    raysDesc.MissShaderTable.StartAddress  = sbtStart + numRG * rgSize;
+    raysDesc.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
+    raysDesc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
 
-    desc.HitGroupTable.StartAddress    =
-        desc.MissShaderTable.StartAddress + desc.MissShaderTable.SizeInBytes;
-    desc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
-    desc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
+    raysDesc.HitGroupTable.StartAddress    =
+        raysDesc.MissShaderTable.StartAddress + raysDesc.MissShaderTable.SizeInBytes;
+    raysDesc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
+    raysDesc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
 
-    m_commandList->SetPipelineState1(m_rtStateObject.Get());
-
-    uint32_t slot = 0;
-    for (const auto& entry : m_passSequence) {
-
-        if (entry == L"barrier") {                 // UAV barrier request
-            CD3DX12_RESOURCE_BARRIER uavBarrier =
-                CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-            m_commandList->ResourceBarrier(1, &uavBarrier);
-            continue;
-        }
-
-        // Dispatch the ray‑generation shader that lives at `slot`
-        desc.RayGenerationShaderRecord.StartAddress = sbtStart + slot * rgSize;
-        desc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
-        m_commandList->DispatchRays(&desc);
-        ++slot;
+    // 6) Ray-trace output -> UAV
+    {
+        auto u = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_outputResource.Get(),
+            D3D12_RESOURCE_STATE_COPY_SOURCE,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        m_commandList->ResourceBarrier(1, &u);
     }
 
-    // The raytracing output needs to be copied to the actual render target used
-    // for display. For this, we need to transition the raytracing output from a
-    // UAV to a copy source, and the render target buffer to a copy destination.
-    // We can then do the actual copy, before transitioning the render target
-    // buffer into a render target, that will be then used to display the image
-    // Transition the raytracing output texture array from UAV to COPY_SOURCE
-    transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    m_commandList->ResourceBarrier(1, &transition);
+    // 7) Loop over passes
+    uint32_t rgSlot = 0;
+    for (auto& p : m_passes)
+    {
+        switch (p.stage)
+        {
+        case Stage::Barrier:
+            {
+                auto u = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+                m_commandList->ResourceBarrier(1, &u);
+            }
+            break;
 
-    // Transition the current render target from RENDER_TARGET to COPY_DEST
-    transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
-    m_commandList->ResourceBarrier(1, &transition);
+        case Stage::RayGen:
+        {
+            // ── RE-BIND THE DXR PSO HERE ──────────────────────────────────────
+            m_commandList->SetPipelineState1(m_rtStateObject.Get());
+            // ────────────────────────────────────────────────────────────────
 
-    UINT selectedLayer = m_displayLevels[m_currentDisplayLevel];
-    // Calculate the subresource index for the specific layer of the texture array
-    UINT subresourceIndex = D3D12CalcSubresource(0, selectedLayer, 0, 1, 30);
-    CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), subresourceIndex);
-    CD3DX12_TEXTURE_COPY_LOCATION dest(m_renderTargets[m_frameIndex].Get(), 0);
+            // bind the matching root signature
+            m_commandList->SetComputeRootSignature(m_rayGenSignature.Get());
 
-    // Define the region to copy - in this case, the whole layer
-    D3D12_BOX srcBox = {0, 0, 0, static_cast<UINT>(m_width), static_cast<UINT>(m_height), 1};
-    m_commandList->CopyTextureRegion(&dest, 0, 0, 0, &src, &srcBox);
+            // descriptor‐table + two constants
+            m_commandList->SetComputeRootDescriptorTable(
+                0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+            UINT imSize[2] = { GetWidth(), GetHeight() };
+            m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
 
-    // Transition the render target back to RENDER_TARGET to be used for presentation
-    transition = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    m_commandList->ResourceBarrier(1, &transition);
+            // point the SBT at the correct ray‐gen entry
+            raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
+            raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
 
-  //}
+            m_commandList->DispatchRays(&raysDesc);
+            ++rgSlot;
+        }
+        break;
 
-    barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_renderTargets[m_frameIndex].Get(),
-        D3D12_RESOURCE_STATE_RENDER_TARGET,
-        D3D12_RESOURCE_STATE_PRESENT
-    );
-    m_commandList->ResourceBarrier(1, &barrier);
 
-  ThrowIfFailed(m_commandList->Close());
+        case Stage::Compute:
+            {
+                // switch to CS PSO + bind its root signature
+                m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
+                m_commandList->SetComputeRootSignature(m_computeSignature.Get());
+
+                // descriptor‐table + two constants for compute
+                m_commandList->SetComputeRootDescriptorTable(
+                   0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+                UINT imSize[2] = { GetWidth(), GetHeight() };
+                m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
+
+                // dispatch
+                uint32_t gx = (GetWidth()  + p.groupX - 1) / p.groupX;
+                uint32_t gy = (GetHeight() + p.groupY - 1) / p.groupY;
+                m_commandList->Dispatch(gx, gy, 1);
+            }
+            break;
+        }
+    }
+
+    // 8) Copy ray-output -> backbuffer and barrier back to RT/PRESENT
+    {
+        auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_outputResource.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+        m_commandList->ResourceBarrier(1, &toSrc);
+
+        auto toDst = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_renderTargets[m_frameIndex].Get(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->ResourceBarrier(1, &toDst);
+
+        UINT layer  = m_displayLevels[m_currentDisplayLevel];
+        UINT sub    = D3D12CalcSubresource(0, layer, 0, 1, 60);
+        CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), sub);
+        CD3DX12_TEXTURE_COPY_LOCATION dst(m_renderTargets[m_frameIndex].Get(), 0);
+        D3D12_BOX box = {0,0,0, GetWidth(), GetHeight(), 1};
+        m_commandList->CopyTextureRegion(&dst,0,0,0, &src, &box);
+
+        auto backToRT = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_renderTargets[m_frameIndex].Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        m_commandList->ResourceBarrier(1, &backToRT);
+
+        // final PRESENT barrier
+        auto pres = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_renderTargets[m_frameIndex].Get(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PRESENT);
+        m_commandList->ResourceBarrier(1, &pres);
+    }
+
+    // 9) Close
+    ThrowIfFailed(m_commandList->Close());
 }
+
+
 
 void Renderer::WaitForPreviousFrame() {
   // WAITING FOR THE FRAME TO COMPLETE BEFORE CONTINUING IS NOT BEST PRACTICE.
@@ -990,6 +1031,45 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     return rsc.Generate(m_device.Get(), true);
 }
 
+ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
+    nv_helpers_dx12::RootSignatureGenerator rsc;
+
+    // ← exactly the same heap ranges you already had in your RayGen RS:
+    rsc.AddHeapRangesParameter(
+            {
+                    {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
+                    {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
+                    {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
+                    {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
+                    {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
+                    {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
+                    {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
+                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6},
+                    {2 /*u2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,8},
+                    {3 /*u3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,9},
+                    {4 /*u4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,10},
+                    {5 /*u5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,11},
+                    {6 /*u6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,12},
+                    {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
+                    {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
+                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
+            }
+    );
+
+    // ← same two 32-bit constants in b1:
+    rsc.AddRootParameter(
+        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        /* shaderRegister = */ 1,
+        /* registerSpace  = */ 0,
+        /* numConstants   = */ 2
+    );
+
+    // note: allowInputAssembler=false for compute
+    return rsc.Generate(m_device.Get(), /*allowInputAssembler=*/false);
+}
+
+
 
 //-----------------------------------------------------------------------------
 // The hit shader communicates only through the ray payload, and therefore does
@@ -1038,140 +1118,139 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 // manage temporary memory during raytracing
 //
 //
-void Renderer::CreateRaytracingPipeline() {
-
+// -----------------------------------------------------------------------------
+// Builds the hybrid DXR + CS pipeline.
+// -----------------------------------------------------------------------------
+void Renderer::CreateRaytracingPipeline()
+{
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_device.Get());
 
-    // 1)  RAY‑GENERATION LIBRARIES  (from .hlsl file names)
-    // ------------------------------------------------------------------------
+    // ─────────────────────────────────────────────────────────────────────────
+    // 0)  Root-signatures (same ones you already had)
+    // ─────────────────────────────────────────────────────────────────────────
+    m_rayGenSignature = CreateRayGenSignature();   // now has slot-1 constants
+    m_computeSignature = CreateComputeSignature();
+    m_missSignature   = CreateMissSignature();
+    m_hitSignature    = CreateHitSignature();
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1)  Iterate over the parsed pass list
+    // ─────────────────────────────────────────────────────────────────────────
     m_rayGenLibs.clear();
+    m_csPSOs   .clear();
     m_passIndex.clear();
-    uint32_t shaderSlot = 0;
 
-    for (const auto& entry : m_passSequence) {
+    uint32_t nextCs = 0;      // running index for compute PSOs
+    uint32_t rgSlot = 0;      // running SBT slot for ray-gen shaders
 
-        if (entry == L"barrier")           // skip barriers
-            continue;
+    for (PassDesc& p : m_passes)            //       ^ note: non-const
+    {
+        if (p.stage == Stage::Barrier) continue;
 
-        const std::wstring& fileName = entry;
+        if (p.stage == Stage::Compute)
+        {
+            // --- compile CS & make a PSO ------------------------------------
+            ComPtr<IDxcBlob> cs =
+                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");  // cs_6_6
 
-        // Derive the exported symbol:  strip folder & extension
-        std::wstring base = fileName.substr(fileName.find_last_of(L"/\\") + 1);
+            D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+            desc.pRootSignature = m_computeSignature.Get();            // reuse RS
+            desc.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
+
+            ComPtr<ID3D12PipelineState> pso;
+            ThrowIfFailed(m_device->CreateComputePipelineState(
+                              &desc, IID_PPV_ARGS(&pso)));
+
+            m_csPSOs.push_back(pso);
+            p.psoIdx = nextCs++;            // <── remember *our* slot
+            continue;                       // nothing to add to the DXR pipeline
+        }
+
+        // ------ ray-generation library  -------------------------------------
+        std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
 
-        // NEW – always a WRL smart pointer, so .Get() is available
-        Microsoft::WRL::ComPtr<IDxcBlob> lib =
-                nv_helpers_dx12::CompileShaderLibrary(fileName.c_str());
+        ComPtr<IDxcBlob> lib =
+            nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
 
-        m_rayGenLibs.push_back(lib);                         // keep it alive
-        pipeline.AddLibrary(lib.Get(), { base.c_str() });    // ← now compiles
+        m_rayGenLibs.push_back(lib);
+        pipeline.AddLibrary(lib.Get(), { base.c_str() });
 
-        m_passIndex[fileName] = shaderSlot++;              // map file ➜ slot
+        m_passIndex[p.file] = rgSlot++;     // SBT slot for this RG shader
     }
 
-    // 2)  ALL *FIXED* LIBRARIES AND ROOT‑SIGS (unchanged from original)
-    // ----------------------------------------------------------------
+
+    // ─── Renderer::CreateRaytracingPipeline()  (just after ‘for (const PassDesc& p : m_passes)’ loop) ──
+
+    for (PassDesc& p : m_passes)
+    {
+        if (p.stage != Stage::Compute) continue;
+
+        // compile + create the PSO exactly as you already do …
+        ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+        desc.pRootSignature = m_computeSignature.Get();   // same RS for CS
+        desc.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
+
+        ComPtr<ID3D12PipelineState> pso;
+        ThrowIfFailed(m_device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
+
+        m_csPSOs.push_back(pso);   // keep alive
+        p.psoIdx = nextCs++;       // remember slot number for dispatch
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // 2)  Fixed libraries:  miss / hit / shadow
+    // ─────────────────────────────────────────────────────────────────────────
     m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
     m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v7.hlsl");
     m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
 
-    pipeline.AddLibrary(m_missLibrary.Get(),    { L"Miss" });
-    pipeline.AddLibrary(m_shadowLibrary.Get(),  { L"ShadowClosestHit", L"ShadowMiss" });
-    pipeline.AddLibrary(m_hitLibrary.Get(),     { L"ClosestHit" });
+    pipeline.AddLibrary(m_missLibrary.Get(),   { L"Miss" });
+    pipeline.AddLibrary(m_shadowLibrary.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
+    pipeline.AddLibrary(m_hitLibrary.Get(),    { L"ClosestHit" });
 
-  // To be used, each DX12 shader needs a root signature defining which
-  // parameters and buffers will be accessed.
-  m_rayGenSignature = CreateRayGenSignature();
-  m_missSignature = CreateMissSignature();
-  m_hitSignature = CreateHitSignature();
+    // -------------------------------------------------------------------------
+    // 3)  Hit-groups
+    // -------------------------------------------------------------------------
+    pipeline.AddHitGroup(L"HitGroup",        L"ClosestHit");
+    pipeline.AddHitGroup(L"ShadowHitGroup",  L"ShadowClosestHit");
 
-  // 3 different shaders can be invoked to obtain an intersection: an
-  // intersection shader is called
-  // when hitting the bounding box of non-triangular geometry. This is beyond
-  // the scope of this tutorial. An any-hit shader is called on potential
-  // intersections. This shader can, for example, perform alpha-testing and
-  // discard some intersections. Finally, the closest-hit program is invoked on
-  // the intersection point closest to the ray origin. Those 3 shaders are bound
-  // together into a hit group.
-
-  // Note that for triangular geometry the intersection shader is built-in. An
-  // empty any-hit shader is also defined by default, so in our simple case each
-  // hit group contains only the closest hit shader. Note that since the
-  // exported symbols are defined above the shaders can be simply referred to by
-  // name.
-
-  // Hit group for the triangles, with a shader simply interpolating vertex
-  // colors
-  pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
-  // #DXR Extra - Another ray type
-  // Hit group for all geometry when hit by a shadow ray
-  pipeline.AddHitGroup(L"ShadowHitGroup", L"ShadowClosestHit");
-
-  // The following section associates the root signature to each shader. Note
-  // that we can explicitly show that some shaders share the same root signature
-  // (eg. Miss and ShadowMiss). Note that the hit shaders are now only referred
-  // to as hit groups, meaning that the underlying intersection, any-hit and
-  // closest-hit shaders share the same root signature.
-    // After you’ve done:
-    //   for each entry in m_passSequence (skipping "barrier")
-    //     CompileShaderLibrary(fileName) and pipeline.AddLibrary(lib, {baseName})
-    // Now wire up the root‑signature for each of those bases:
-
-    for (const auto& entry : m_passSequence)
+    // -------------------------------------------------------------------------
+    // 4)  Root-signature associations
+    //     – every exported ray-gen name gets m_rayGenSignature
+    //     – miss / hit stay as before
+    // -------------------------------------------------------------------------
+    for (const PassDesc& p : m_passes)
     {
-        if (entry == L"barrier") continue;
+        if (p.stage != Stage::RayGen) continue;
 
-        // strip off the “.hlsl” to get exactly the name you exported
-        std::wstring base = entry.substr(0, entry.rfind(L'.'));
-
+        std::wstring base = p.file.substr(0, p.file.rfind(L'.'));
         pipeline.AddRootSignatureAssociation(
-            m_rayGenSignature.Get(),
-            { base.c_str() }
-        );
+            m_rayGenSignature.Get(), { base.c_str() });
     }
 
+    pipeline.AddRootSignatureAssociation(m_missSignature.Get(),  { L"Miss", L"ShadowMiss" });
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),   { L"HitGroup" });
+    pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
-    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), {L"Miss"});
-  pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), {L"HitGroup"});
+    // -------------------------------------------------------------------------
+    // 5)  Payload / attribute / recursion depth (unchanged)
+    // -------------------------------------------------------------------------
+    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 2*sizeof(UINT) + sizeof(BOOL) );
+    pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
+    pipeline.SetMaxRecursionDepth(1);
 
-  // #DXR Extra - Another ray type
-  pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),
-                                       {L"ShadowHitGroup"});
-  // #DXR Extra - Another ray type
-  pipeline.AddRootSignatureAssociation(m_missSignature.Get(),
-                                       {L"Miss", L"ShadowMiss"});
-
-  // #DXR Extra: Per-Instance Data
-  pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
-                                       {L"HitGroup"});
-  // The payload size defines the maximum size of the data carried by the rays,
-  // ie. the the data
-  // exchanged between shaders, such as the HitInfo structure in the HLSL code.
-  // It is important to keep this value as low as possible as a too high value
-  // would result in unnecessary memory consumption and cache trashing.
-    pipeline.SetMaxPayloadSize(7 * sizeof(float) + 2 * sizeof(UINT) + sizeof(BOOL));
-
-  // Upon hitting a surface, DXR can provide several attributes to the hit. In
-  // our sample we just use the barycentric coordinates defined by the weights
-  // u,v of the last two vertices of the triangle. The actual barycentrics can
-  // be obtained using float3 barycentrics = float3(1.f-u-v, u, v);
-  pipeline.SetMaxAttributeSize(2 * sizeof(float)); // barycentric coordinates
-
-  // The raytracing process can shoot rays from existing hit points, resulting
-  // in nested TraceRay calls. Our sample code traces only primary rays, which
-  // then requires a trace depth of 1. Note that this recursion depth should be
-  // kept to a minimum for best performance. Path tracing algorithms can be
-  // easily flattened into a simple loop in the ray generation.
-  pipeline.SetMaxRecursionDepth(1);
-
-  // Compile the pipeline for execution on the GPU
-  m_rtStateObject = pipeline.Generate();
-
-  // Cast the state object into a properties object, allowing to later access
-  // the shader pointers by name
-  ThrowIfFailed(
-      m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
+    // -------------------------------------------------------------------------
+    // 6)  Generate state object
+    // -------------------------------------------------------------------------
+    m_rtStateObject = pipeline.Generate();
+    ThrowIfFailed(
+        m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 }
+
 
 //-----------------------------------------------------------------------------
 //
@@ -1270,7 +1349,7 @@ void Renderer::CreateShaderResourceHeap() {
     uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // Ensure this matches your resource format
     uavDesc.Texture2DArray.MipSlice = 0; // Assuming you're using the first MIP level
     uavDesc.Texture2DArray.FirstArraySlice = 0; // Starting at the first layer of the array
-    uavDesc.Texture2DArray.ArraySize = 30; // The number of layers in the array
+    uavDesc.Texture2DArray.ArraySize = 60; // The number of layers in the array
   m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc,
                                       srvHandle);
 
@@ -1414,20 +1493,17 @@ void Renderer::CreateShaderResourceHeap() {
             IID_PPV_ARGS(&m_reservoirBuffer)
     ));
 
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc = {};
-    reservoirUavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc.Buffer.FirstElement = 0;
-    reservoirUavDesc.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc.Buffer.StructureByteStride = reservoirElementSize_di;
-    reservoirUavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_1 = {};
+    reservoirUavDesc_1.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_1.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_1.Buffer.FirstElement        = 0;
+    reservoirUavDesc_1.Buffer.NumElements         = reservoirBufferSize_di / 4;             // 4-byte elems
+    reservoirUavDesc_1.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_1.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_reservoirBuffer.Get(),
-            nullptr,
-            &reservoirUavDesc,
-            srvHandle
-    );
+        m_reservoirBuffer.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_1, srvHandle);
+
     //_________________________________
 
     //_________________________________
@@ -1456,19 +1532,15 @@ void Renderer::CreateShaderResourceHeap() {
     ));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_2 = {};
-    reservoirUavDesc_2.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_2.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc_2.Buffer.FirstElement = 0;
-    reservoirUavDesc_2.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc_2.Buffer.StructureByteStride = reservoirElementSize_di;
-    reservoirUavDesc_2.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    reservoirUavDesc_2.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_2.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_2.Buffer.FirstElement        = 0;
+    reservoirUavDesc_2.Buffer.NumElements         = reservoirBufferSize_di / 4;             // 4-byte elems
+    reservoirUavDesc_2.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_2.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_reservoirBuffer_2.Get(),
-            nullptr,
-            &reservoirUavDesc_2,
-            srvHandle
-    );
+        m_reservoirBuffer_2.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_2, srvHandle);
     //_________________________________
 
     //_________________________________
@@ -1496,19 +1568,15 @@ void Renderer::CreateShaderResourceHeap() {
     ));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_3 = {};
-    reservoirUavDesc_2.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_2.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc_2.Buffer.FirstElement = 0;
-    reservoirUavDesc_2.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc_2.Buffer.StructureByteStride = reservoirElementSize_gi;
-    reservoirUavDesc_2.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    reservoirUavDesc_3.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_3.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_3.Buffer.FirstElement        = 0;
+    reservoirUavDesc_3.Buffer.NumElements         = reservoirBufferSize_gi / 4;             // 4-byte elems
+    reservoirUavDesc_3.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_3.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_reservoirBuffer_3.Get(),
-            nullptr,
-            &reservoirUavDesc_2,
-            srvHandle
-    );
+        m_reservoirBuffer_3.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_3, srvHandle);
     //_________________________________
 
     //_________________________________
@@ -1536,19 +1604,15 @@ void Renderer::CreateShaderResourceHeap() {
     ));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_4 = {};
-    reservoirUavDesc_4.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_4.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc_4.Buffer.FirstElement = 0;
-    reservoirUavDesc_4.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc_4.Buffer.StructureByteStride = reservoirElementSize_gi;
-    reservoirUavDesc_4.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    reservoirUavDesc_4.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_4.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_4.Buffer.FirstElement        = 0;
+    reservoirUavDesc_4.Buffer.NumElements         = reservoirBufferSize_gi / 4;             // 4-byte elems
+    reservoirUavDesc_4.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_4.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_reservoirBuffer_4.Get(),
-            nullptr,
-            &reservoirUavDesc_4,
-            srvHandle
-    );
+        m_reservoirBuffer_4.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_4, srvHandle);
     //_________________________________
     //_________________________________
     srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1575,19 +1639,15 @@ void Renderer::CreateShaderResourceHeap() {
     ));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_5 = {};
-    reservoirUavDesc_5.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_5.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc_5.Buffer.FirstElement = 0;
-    reservoirUavDesc_5.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc_5.Buffer.StructureByteStride = reservoirElementSize_sample;
-    reservoirUavDesc_5.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    reservoirUavDesc_5.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_5.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_5.Buffer.FirstElement        = 0;
+    reservoirUavDesc_5.Buffer.NumElements         = reservoirBufferSize_sample / 4;             // 4-byte elems
+    reservoirUavDesc_5.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_5.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_sampleBuffer_current.Get(),
-            nullptr,
-            &reservoirUavDesc_5,
-            srvHandle
-    );
+        m_sampleBuffer_current.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_5, srvHandle);
     //_________________________________
 
     //_________________________________
@@ -1615,19 +1675,15 @@ void Renderer::CreateShaderResourceHeap() {
     ));
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_6 = {};
-    reservoirUavDesc_6.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_6.Format = DXGI_FORMAT_UNKNOWN; // For structured buffers
-    reservoirUavDesc_6.Buffer.FirstElement = 0;
-    reservoirUavDesc_6.Buffer.NumElements = reservoirCount;
-    reservoirUavDesc_6.Buffer.StructureByteStride = reservoirElementSize_sample;
-    reservoirUavDesc_6.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
-
+    reservoirUavDesc_6.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    reservoirUavDesc_6.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_6.Buffer.FirstElement        = 0;
+    reservoirUavDesc_6.Buffer.NumElements         = reservoirBufferSize_sample / 4;             // 4-byte elems
+    reservoirUavDesc_6.Buffer.StructureByteStride = 0;                          // RAW
+    reservoirUavDesc_6.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
     m_device->CreateUnorderedAccessView(
-            m_sampleBuffer_last.Get(),
-            nullptr,
-            &reservoirUavDesc_6,
-            srvHandle
-    );
+        m_sampleBuffer_last.Get(),       // or m_reservoirBuffer_2 …
+        nullptr, &reservoirUavDesc_6, srvHandle);
     //_________________________________
 
     // ── alias PROB array  (R32_FLOAT) ────────────────────────────────────────────
@@ -1690,16 +1746,15 @@ void Renderer::CreateShaderBindingTable() {
     auto heapPointer = reinterpret_cast<UINT64*>(heapHandle.ptr);
 
     //  RAY‑GEN SECTION  -------------------------------------------------------
-    for (const auto& entry : m_passSequence) {
-
-        if (entry == L"barrier")
-            continue;
+    for (const auto& entry : m_passSequence)
+    {
+        if (entry == L"barrier") continue;
+        if (entry.find(L"|cs:") != std::wstring::npos) continue; // ← add this
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
-        base = base.substr(0, base.rfind(L'.'));          // strip extension
+        base = base.substr(0, base.rfind(L'.'));
         m_sbtHelper.AddRayGenerationProgram(base.c_str(), { heapPointer });
     }
-
 
     // The miss and hit shaders do not access any external resources
     std::wcout << L"Adding miss programs..." << std::endl;

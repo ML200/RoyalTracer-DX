@@ -125,7 +125,7 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
     L"-enable-16bit-types",        // keep fp16 alive
     L"-D",  L"MAX_REGS=96",        // <‑‑ 96‑register cap
     L"-HV", L"2021"                // enable SM 6.7+ attributes
-};
+  };
 
   // Compile
   IDxcOperationResult* pResult;
@@ -342,5 +342,75 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
     c.enqueueVertices(outputVertices, outputIndices);
   }
 }
+
+  //------------------------------------------------------------------------------
+// Compile a HLSL file as a *compute* shader  (profile: cs_6_6)
+// Re-uses the same DXC boiler-plate as CompileShaderLibrary().
+//------------------------------------------------------------------------------
+inline Microsoft::WRL::ComPtr<IDxcBlob>
+CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    static IDxcCompiler*        s_compiler        = nullptr;
+    static IDxcLibrary*         s_library         = nullptr;
+    static IDxcIncludeHandler*  s_includeHandler  = nullptr;
+
+    if (!s_compiler)                                // one-time DXC init
+    {
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler,
+                         IID_PPV_ARGS(&s_compiler)));
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcLibrary,
+                         IID_PPV_ARGS(&s_library)));
+        ThrowIfFailed(s_library->CreateIncludeHandler(&s_includeHandler));
+    }
+
+    /* 1) load the file ------------------------------------------------------*/
+    std::ifstream shaderFile(fileName);
+    if (!shaderFile.good())
+        throw std::logic_error("Cannot find shader file");
+
+    std::stringstream ss;  ss << shaderFile.rdbuf();
+    std::string        src = ss.str();
+
+    Microsoft::WRL::ComPtr<IDxcBlobEncoding> textBlob;
+    ThrowIfFailed(s_library->CreateBlobWithEncodingFromPinned(
+            (LPBYTE)src.data(), (uint32_t)src.size(), 0, &textBlob));
+
+    /* 2) compile ------------------------------------------------------------*/
+    const wchar_t* args[] =
+    {
+        L"-Zi",                    // debug info
+        L"-O3",                    // full optimisation
+        L"-enable-16bit-types",
+        L"-HV", L"2021"
+    };
+
+    Microsoft::WRL::ComPtr<IDxcOperationResult> result;
+    ThrowIfFailed(s_compiler->Compile(
+        textBlob.Get(), fileName,
+        entryPoint,                      // e.g.  "main"
+        L"cs_6_6",                       // <── compute profile
+        args, _countof(args),
+        nullptr, 0,
+        s_includeHandler,
+        &result));
+
+    HRESULT hrStatus = S_OK;
+    ThrowIfFailed(result->GetStatus(&hrStatus));
+    if (FAILED(hrStatus))
+    {
+        Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
+        result->GetErrorBuffer(&errors);
+        std::vector<char> log(errors->GetBufferSize() + 1);
+        memcpy(log.data(), errors->GetBufferPointer(), errors->GetBufferSize());
+        log.back() = 0;
+        OutputDebugStringA(log.data());
+        throw std::logic_error("DXC compute-shader compilation failed.");
+    }
+
+    Microsoft::WRL::ComPtr<IDxcBlob> blob;
+    ThrowIfFailed(result->GetResult(&blob));
+    return blob;
+}
+
 
 } // namespace nv_helpers_dx12
