@@ -160,7 +160,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
             hist4     = float4(Ccur, 0);
             histValid = false;
         }
-        
     }
 
     // neighbourhood clamp
@@ -195,7 +194,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float2 curSS = (float2(launch) + 0.5) / dims;
         float2 velSS = curSS - (reprojF + 0.5) / dims;
         float  velPx = length(velSS * dims);
-        mvFac        = saturate((velPx - 0.75) / 1.0);
+        mvFac        = saturate((velPx - 1.0) / 4.0);
 
         reactiveDepth = saturate((dz - 0.03) * 35.0);
     }
