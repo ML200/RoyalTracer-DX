@@ -1,32 +1,17 @@
-// ────────────────────────────────────────────────────────────────────────────
-//  Denoiser - temporal accumulation v12   •   ***COMPUTE VERSION***
-// ────────────────────────────────────────────────────────────────────────────
-
-//---------------------------------------------------------------------------
-//  ROOT-CONSTANTS  (slot 1 : two uints = 8 bytes)
-//---------------------------------------------------------------------------
 cbuffer Push : register(b1)
 {
-    uint2 gImageSize;                    // ↳ filled from SetComputeRoot32BitConstants
+    uint2 gImageSize;
 }
 
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
 
-//---------------------------------------------------------------------------
-//  Fake DXR intrinsics many headers rely on
-//---------------------------------------------------------------------------
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
 
-// We will copy SV_DispatchThreadID into this global so that the legacy
-// macros work unchanged.
-groupshared uint3 gDispatchIdxShared[1];    // dummy shared so every thread gets its own storage
+groupshared uint3 gDispatchIdxShared[1];
 static     uint3  gDispatchIdx;
 #define DispatchRaysIndex()      gDispatchIdx
 
-// ────────────────────────────────────────────────────────────────────────────
-//  All your regular includes – unchanged
-// ────────────────────────────────────────────────────────────────────────────
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
@@ -75,17 +60,10 @@ cbuffer CameraParams : register(b0)
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
-//---------------------------------------------------------------------------
-//  Compute kernel
-//  (32×8 threads -- matches the launch grid you used in C++)
-//---------------------------------------------------------------------------
 [numthreads(32, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    // ---- emulate DispatchRaysIndex ---------------------------------------
     gDispatchIdx = DTid;
-
-    // ---- guard against over-dispatch (optional) --------------------------
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     uint2  launch = DTid.xy;
@@ -97,7 +75,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3  x1_cur = load_x1(g_sample_current, pIdx);
     float3  n1_cur = load_n1(g_sample_current, pIdx);
 
-    // ---- reprojection -----------------------------------------------------
+    // reprojection
     float4 prevClip = mul(prevProjection, mul(prevView, float4(x1_cur, 1.0)));
     if (prevClip.w <= 1e-4f)
     {
@@ -118,7 +96,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if (reprojOK)
     {
-        // --- bilinear fetch from history ----------------------------------
+        // bilinear fetch from history
         float2 rc   = clamp(reprojF, 0, dims - 1.001);
         int2  i00   = int2(rc);
         float2 frac = rc - float2(i00);
@@ -134,7 +112,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         hist4 = gPermanentData[i00]*w00 + gPermanentData[i10]*w10 +
                 gPermanentData[i01]*w01 + gPermanentData[i11]*w11;
 
-        // --- depth/normal validation --------------------------------------
+        // ancestor rejection
         int2 nearestPx = clamp(int2(reprojF + 0.5), 0, int2(dims)-1);
         float3 x1_prev = load_x1(g_sample_current, MapPixelID(dims, nearestPx));
         float3 n1_prev = load_n1(g_sample_current, MapPixelID(dims, nearestPx));
@@ -149,7 +127,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (!histValid) hist4 = float4(Ccur, 0);
     }
 
-    // ---- neighbourhood clamp ---------------------------------------------
+    // neighbourhood clamp
     float3 cMin = Ccur, cMax = Ccur;
     [unroll] for(int ny = -1; ny <= 1; ++ny)
     [unroll] for(int nx = -1; nx <= 1; ++nx)
@@ -163,12 +141,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     cMax += 0.01 * cMax;
     Ccur  = clamp(Ccur, cMin, cMax);
 
-    // ---- confidence -------------------------------------------------------
+    // confidence adjusted alpha -> the better the sampler, the stronger the stability
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pIdx);
     float conf      = saturate(rdi.M_di / 30.0);   // 0-1
     float alphaBase = lerp(0.25, 0.03, conf);
 
-    // ---- colour / motion / reactive gates ---------------------------------
+    // colour / motion / reactive gates
     float3 diffRGB = abs(Ccur - hist4.rgb);
     float  err     = max(max(diffRGB.r, diffRGB.g), diffRGB.b);
     float  errFac  = (histValid) ? saturate((err - 0.06) * 5.0) : 0.0;
@@ -191,7 +169,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     alpha = lerp(alpha, 1.0, mvFac);
     alpha = lerp(alpha, 1.0, reactiveDepth);
 
-    // ---- blend & store ----------------------------------------------------
     float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
 
