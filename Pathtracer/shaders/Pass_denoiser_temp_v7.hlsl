@@ -60,6 +60,15 @@ cbuffer CameraParams : register(b0)
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
+// Utility
+uint2     MapPixelXY(float2 dims, uint id)
+{
+    uint y = id / uint(dims.x);
+    uint x = id - y * uint(dims.x);
+    return uint2(x, y);
+}
+
+
 [numthreads(32, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
@@ -74,19 +83,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3  Ccur   = gOutput[uint3(launch, 1)].rgb;
     float3  x1_cur = load_x1(g_sample_current, pIdx);
     float3  n1_cur = load_n1(g_sample_current, pIdx);
+    float3  objID_cur = load_objID(g_sample_current, pIdx);
 
-    // reprojection
-    float4 prevClip = mul(prevProjection, mul(prevView, float4(x1_cur, 1.0)));
-    if (prevClip.w <= 1e-4f)
-    {
-        gPermanentData[launch] = float4(Ccur, 0);
-        gScratchPing  [launch] = float4(Ccur, 0);
-        return;
-    }
-
-    float2 prevNDC = prevClip.xy / prevClip.w;
-    float2 prevSS  = prevNDC * float2(0.5, -0.5) + 0.5;
-    float2 reprojF = prevSS * dims;
+    float2 reprojF = GetLastFramePixelCoordinates_Float(x1_cur, prevView, prevProjection, dims, objID_cur);
 
     bool reprojOK = all(reprojF >= 0) && reprojF.x < dims.x && reprojF.y < dims.y;
 
@@ -96,7 +95,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if (reprojOK)
     {
-        // bilinear fetch from history
         float2 rc   = clamp(reprojF, 0, dims - 1.001);
         int2  i00   = int2(rc);
         float2 frac = rc - float2(i00);
@@ -104,27 +102,65 @@ void main(uint3 DTid : SV_DispatchThreadID)
         int2  i01   = min(i00 + int2(0,1), int2(dims)-1);
         int2  i11   = min(i00 + int2(1,1), int2(dims)-1);
 
-        float w00 = (1 - frac.x) * (1 - frac.y);
-        float w10 =      frac.x  * (1 - frac.y);
-        float w01 = (1 - frac.x) *      frac.y;
-        float w11 =      frac.x  *      frac.y;
+        float w[4]  = {
+            (1 - frac.x) * (1 - frac.y),
+                  frac.x  * (1 - frac.y),
+            (1 - frac.x) *      frac.y ,
+                  frac.x  *      frac.y
+        };
+        int2  taps[4] = { i00, i10, i01, i11 };
 
-        hist4 = gPermanentData[i00]*w00 + gPermanentData[i10]*w10 +
-                gPermanentData[i01]*w01 + gPermanentData[i11]*w11;
-
-        // ancestor rejection
-        int2 nearestPx = clamp(int2(reprojF + 0.5), 0, int2(dims)-1);
-        float3 x1_prev = load_x1(g_sample_current, MapPixelID(dims, nearestPx));
-        float3 n1_prev = load_n1(g_sample_current, MapPixelID(dims, nearestPx));
+        float v[4]  = { 0,0,0,0 };
+        float wSum  = 0.0;
 
         float3 camPos = mul(viewI, float4(0,0,0,1)).xyz;
-        float  d0     = length(x1_cur - camPos);
-        float  d1     = length(x1_prev - camPos);
-        dz            = abs(d0 - d1) / max(d0, d1);
-        float  nDot   = dot(n1_cur, n1_prev);
+        float  dCur   = length(x1_cur - camPos);
 
-        histValid = (dz < 0.025f) && (nDot > 0.9f);
-        if (!histValid) hist4 = float4(Ccur, 0);
+        [unroll]
+        for (int k = 0; k < 4; ++k)
+        {
+            if (w[k] == 0.0) continue;
+
+            uint  pidLast  = MapPixelID(dims, taps[k]);
+            float3 xPrev   = load_x1   (g_sample_last, pidLast);   // <-- was _current
+            float3 nPrev   = load_n1   (g_sample_last, pidLast);
+            uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5); // int compare
+
+            float  dPrev   = length(xPrev - camPos);
+            float  dzTap   = abs(dCur - dPrev) / max(dCur, dPrev);
+            float  nDotTap = dot(n1_cur, nPrev);
+
+            // object-ID rejection – integer exact match
+            bool   idOK    = all(idPrev == asuint(objID_cur + 0.5));
+
+            bool ok = (dzTap  < 0.025f) &&
+                      (nDotTap > 0.90f) &&
+                       idOK;
+
+            if (ok)
+            {
+                v[k]   = w[k];
+                wSum  += w[k];
+            }
+        }
+
+        if (wSum > 0.0)
+        {
+            float invSum = rcp(wSum);
+            hist4 =   gPermanentData[i00] * v[0] +
+                      gPermanentData[i10] * v[1] +
+                      gPermanentData[i01] * v[2] +
+                      gPermanentData[i11] * v[3];
+            hist4 *= invSum;
+
+            histValid = true;
+        }
+        else
+        {
+            hist4     = float4(Ccur, 0);
+            histValid = false;
+        }
+        
     }
 
     // neighbourhood clamp
@@ -157,7 +193,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (histValid)
     {
         float2 curSS = (float2(launch) + 0.5) / dims;
-        float2 velSS = curSS - prevSS;
+        float2 velSS = curSS - (reprojF + 0.5) / dims;
         float  velPx = length(velSS * dims);
         mvFac        = saturate((velPx - 0.75) / 1.0);
 
