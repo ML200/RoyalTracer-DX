@@ -1,3 +1,30 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  ROOT-CONSTANTS  (slot 1 : two uints = 8 bytes)
+//
+//  These map 1-to-1 to the `Set*Root32BitConstants` call in Renderer.cpp.
+//──────────────────────────────────────────────────────────────────────────────
+cbuffer Push : register(b1)
+{
+    uint2 gImageSize;
+}
+
+// Convenience aliases – some of the legacy headers still expect them
+#define gImageWidth   (gImageSize.x)
+#define gImageHeight  (gImageSize.y)
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Fake the two DXR intrinsics that many helpers rely on.
+//  We just substitute the thread-ID and the constant dimensions.
+//──────────────────────────────────────────────────────────────────────────────
+#define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
+
+// DTid is only visible inside `main`, so we stash a copy in a globals so that
+// the macro below can see it.  Each thread overwrites its own instance, so no
+// synchronisation is needed.
+static uint3 gDispatchIdx;
+#define DispatchRaysIndex()      gDispatchIdx
+
+
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
@@ -47,18 +74,29 @@ cbuffer CameraParams : register(b0)
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
-[shader("raygeneration")]
-void Pass_denoiser_copy_v7() {
-    uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx     = MapPixelID(dims, launchIndex);
+//──────────────────────────────────────────────────────────────────────────────
+//  Compute kernel: 8×8 threads
+//──────────────────────────────────────────────────────────────────────────────
+[numthreads(32, 8, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
+{
+    // Guard against fringe threads in a non-multiple dispatch.
+    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
+
+    // Make the faux-intrinsics macros work for any helper that uses them.
+    gDispatchIdx = uint3(DTid.xy, 0);
+
+    // Pixel linear index
+    uint  pixelIdx = MapPixelID(float2(gImageWidth, gImageHeight), DTid.xy);
+
+    // Load current-frame data and push it into the “last-frame” buffer.
     SampleData cur = loadSampleData(g_sample_current, pixelIdx);
 
-    store_x1 (cur.x1 , g_sample_last , pixelIdx);
-    store_n1 (cur.n1 , g_sample_last , pixelIdx);
-    store_L1 (cur.L1 , g_sample_last , pixelIdx);
-    store_o  (cur.o  , g_sample_last , pixelIdx);
-    store_matID(cur.matID , g_sample_last , pixelIdx);
-    store_objID(cur.objID , g_sample_last , pixelIdx);
+    store_x1   (cur.x1   , g_sample_last, pixelIdx);
+    store_n1   (cur.n1   , g_sample_last, pixelIdx);
+    store_L1   (cur.L1   , g_sample_last, pixelIdx);
+    store_o    (cur.o    , g_sample_last, pixelIdx);
+    store_matID(cur.matID, g_sample_last, pixelIdx);
+    store_objID(cur.objID, g_sample_last, pixelIdx);
 }

@@ -143,7 +143,7 @@ void RayGen_v6_pass3()
 
         // Second loop: gather GI candidates
         [loop]
-        for (int attempt = 0; attempt < spatial_max_tries && candidateFoundCount_GI < spatial_candidate_count; attempt++)
+        for (int attempt = 0; attempt < 0; attempt++)//spatial_max_tries && candidateFoundCount_GI < spatial_candidate_count; attempt++)
         {
             uint pixel_r = GetRandomPixelCircleWeighted(
                 spatial_radius,

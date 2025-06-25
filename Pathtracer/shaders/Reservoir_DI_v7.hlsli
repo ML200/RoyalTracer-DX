@@ -54,6 +54,28 @@ float VisibilityCheck(
     return V;
 }
 
+#ifdef ENABLE_RAY_QUERY_INLINE
+float VisibilityCheckCP( float3 P, float3 L, float3 N ) {
+    RayDesc ray;
+    ray.Origin    = P + N * EPSILON;
+    ray.Direction = normalize(L - P);
+    ray.TMin      = EPSILON;
+    ray.TMax      = length(L - P) - EPSILON*10;
+
+    // 1) compile-time flag to accept the first hit
+    RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH > rq;
+
+    // 2) dynamic flags = none
+    rq.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+
+    // 3) consume the query
+    while (rq.Proceed()) { }
+
+    // COMMITTED_TRIANGLE_HIT means “blocked”
+    return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+#endif // ENABLE_RAY_QUERY_INLINE
+
 
 
 // Calculate reconnection

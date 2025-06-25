@@ -82,26 +82,6 @@ MaterialOptimized CreateMaterialOptimized(in Material mat, uint materialID)
 }
 
 
-// The remaining functions remain unchanged.
-inline float VisibilityCheck(
-    float3 x1,
-    float3 n1,
-    float3 dir,
-    float dist
-)
-{
-    RayDesc ray;
-    ray.Origin = x1 + normalize(n1) * s_bias;
-    ray.Direction = dir;
-    ray.TMin = 0.0f;
-    ray.TMax = max(dist - 10.0f * s_bias, 2.0f * s_bias);
-    ShadowHitInfo shadowPayload;
-    shadowPayload.isHit = false;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
-    float V = shadowPayload.isHit ? 0.0f : 1.0f;
-    return V;
-}
-
 inline float3 ReconnectDI(
     float3 x1,
     float3 n1,

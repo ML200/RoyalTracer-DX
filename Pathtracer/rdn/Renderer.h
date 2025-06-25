@@ -53,48 +53,58 @@ public:
   virtual void OnDestroy();
 
 private:
-    // --------------------------------------------------------------------
-    // Utilities  (ideally put in a .cpp close to Renderer)
+    // ── utilities ───────────────────────────────────────────────────────────────
     enum class Stage { RayGen, Compute, Barrier };
 
     struct PassDesc
     {
-        std::wstring file;     // empty when Stage == Barrier
-        Stage        stage;
-        XMUINT3        groupDim {8,8,1};   // only used for compute
+        std::wstring file;          // *.hlsl ( no “|” suffix )
+        Stage        stage   = Stage::RayGen;
+        uint32_t     groupX  = 0;   // for compute
+        uint32_t     groupY  = 0;
+        uint32_t     psoIdx  = UINT32_MAX;   // <── NEW: index in m_csPSOs
     };
 
-    // Split “foo|cs:8x8” into tokens and fill PassDesc
-    static PassDesc ParsePass(const std::wstring& raw)
+
+
+    Renderer::PassDesc ParsePass(const std::wstring& token)
     {
-        if (raw == L"barrier") return {L"", Stage::Barrier, {}};
+        PassDesc p{};
 
-        PassDesc out;
-        size_t p = raw.find(L'|');
-        out.file = raw.substr(0, p);
-
-        // default = ray-gen
-        out.stage = Stage::RayGen;
-
-        if (p != std::wstring::npos)
+        // explicit barrier
+        if (token == L"barrier")
         {
-            std::wstring tag = raw.substr(p+1);           // “cs:8x8” or “rg”
-            if (tag.rfind(L"cs",0) == 0)                  // starts with “cs”
-            {
-                out.stage = Stage::Compute;
-
-                // optional “:NxM”
-                size_t q = tag.find(L':');
-                if (q != std::wstring::npos)
-                {
-                    UINT x=8,y=8,z=1;
-                    swscanf_s(tag.c_str()+q+1, L"%ux%ux%u", &x,&y,&z);
-                    out.groupDim = {x,y,z};
-                }
-            }
+            p.stage = Stage::Barrier;
+            return p;
         }
-        return out;
+
+        // split “file|suffix”
+        const size_t bar = token.find(L'|');
+        p.file = token.substr(0, bar);              // part before ‘|’
+
+        // no ‘|’  → plain ray-gen
+        if (bar == std::wstring::npos)
+            return p;
+
+        const std::wstring tail = token.substr(bar + 1);
+
+        // explicit ray-gen tag
+        if (tail == L"rg" || tail == L"raygen")
+            return p;                               // still Stage::RayGen
+
+        // compute shader tag  “cs:WxH”
+        if (tail.rfind(L"cs:", 0) == 0)
+        {
+            p.stage = Stage::Compute;
+            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
+                p.groupX == 0 || p.groupY == 0)
+                throw std::runtime_error("Invalid group size in pass string");
+            return p;
+        }
+
+        throw std::runtime_error("Unknown stage spec in pass string");
     }
+
 
     // --- NEW: dynamic pass control ------------------------------------------------
     std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
@@ -121,6 +131,7 @@ private:
   ComPtr<ID3D12CommandAllocator> m_commandAllocator;
   ComPtr<ID3D12CommandQueue> m_commandQueue;
   ComPtr<ID3D12RootSignature> m_rootSignature;
+    ComPtr<ID3D12RootSignature>   m_computeSignature;
   ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
   ComPtr<ID3D12PipelineState> m_pipelineState;
   ComPtr<ID3D12GraphicsCommandList4> m_commandList;
@@ -232,6 +243,9 @@ private:
 
   // #DXR
   ComPtr<ID3D12RootSignature> CreateRayGenSignature();
+
+  ComPtr<ID3D12RootSignature> CreateComputeSignature();
+
   ComPtr<ID3D12RootSignature> CreateMissSignature();
   ComPtr<ID3D12RootSignature> CreateHitSignature();
 
