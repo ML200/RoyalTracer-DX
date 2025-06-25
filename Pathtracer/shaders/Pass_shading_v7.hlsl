@@ -1,31 +1,16 @@
-// ─────────────────────────────────────────────────────────────────────────────
-//  ROOT-CONSTANTS  (slot 1 : two uints = 8 bytes)
-// ─────────────────────────────────────────────────────────────────────────────
 cbuffer Push : register(b1)
 {
     uint2 gImageSize;
 }
 
-// Convenience aliases – some of the legacy headers still expect them
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Fake the two DXR intrinsics many helpers rely on.
-// ─────────────────────────────────────────────────────────────────────────────
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
 
-// DTid is only visible inside `main`, so we stash a copy in a global so that
-// the macro below can see it. Each thread overwrites its own instance, so no
-// synchronisation is needed.
 static uint3 gDispatchIdx;
 #define DispatchRaysIndex()      gDispatchIdx
 
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Includes & resources — identical to the original ray-gen version
-// ─────────────────────────────────────────────────────────────────────────────
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
@@ -75,26 +60,22 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  COMPUTE ENTRY
+//  SHADING PASS
 // ─────────────────────────────────────────────────────────────────────────────
 [numthreads(32, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    // Out-of-bounds threads exit early (thread-group padding)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-
-    // Make this thread’s ID visible to the “DXR-style” macros
     gDispatchIdx = DTid;
 
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint   pixelIdx   = MapPixelID(dims, launchIndex);
 
-    // ── Load the most recent sample data ────────────────────────────────────
+    // Load only L1 first
     float3 L1 = load_L1(g_sample_current, pixelIdx);
     float3 accumulation = 0;
 
-    // If first-bounce lighting is empty → fall back to ReSTIR DI reservoir
     if (all(L1 < EPSILON))
     {
         float3 x1 = load_x1(g_sample_current, pixelIdx);
@@ -109,7 +90,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         accumulation = contrib;
 
-        // Swap-ping current → previous reservoir for next frame
         store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
         store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
         store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
@@ -121,10 +101,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         accumulation = L1;
     }
 
-    // ── Tone-map / gamma-correct to sRGB ─────────────────────────────────────
     float3 finalColor = sRGBGammaCorrection(accumulation);
 
-    // Debug-colour invalid values
+    // Debug
     //if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
     //if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
 

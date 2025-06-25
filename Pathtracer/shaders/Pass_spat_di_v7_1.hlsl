@@ -1,34 +1,19 @@
-// ─────────────────────────────────────────────────────────────────────────────
-//  ROOT-CONSTANTS  (slot 1 : two uints = 8 bytes)
-// ─────────────────────────────────────────────────────────────────────────────
 cbuffer Push : register(b1)
 {
     uint2 gImageSize;
 }
 #define ENABLE_RAY_QUERY_INLINE // Activate support for inline ray tracing
 
-// keep both naming styles alive
 #define gImageWidth  (gImageSize.x)
 #define gImageHeight (gImageSize.y)
-#define IMG_W        (gImageSize.x)   // ← needed by legacy code
+#define IMG_W        (gImageSize.x)
 #define IMG_H        (gImageSize.y)
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Fake the two DXR intrinsics many helpers rely on.
-// ─────────────────────────────────────────────────────────────────────────────
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
 
-// DTid is only visible inside `main`, so we stash a copy in a global so that
-// the macro below can see it. Each thread overwrites its own instance, so no
-// synchronisation is needed.
 static uint3 gDispatchIdx;
 #define DispatchRaysIndex()      gDispatchIdx
 
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Includes & resources — identical to the original ray-gen version
-// ─────────────────────────────────────────────────────────────────────────────
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
@@ -80,14 +65,13 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 
 //─────────────────────────────────────────────────────────────────────────────
-//  TEMPORAL  DI  –  Compute kernel
+//  SPATIAL  DI
 //─────────────────────────────────────────────────────────────────────────────
 [numthreads(32, 8, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
-    // Guard against the padded threads at the image edges
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
-    gDispatchIdx = tid;                           // for legacy macros
+    gDispatchIdx = tid;
 
     uint2  launchIndex   = tid.xy;
     float2 dims = float2(IMG_W, IMG_H);

@@ -41,7 +41,7 @@ Renderer::Renderer(UINT width, UINT height,
       m_rtvDescriptorSize(0) {
     m_mod = LoadLibrary("sl.interposer.dll");
 
-    /*m_passSequence = {
+    m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:32x8",
@@ -57,14 +57,14 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_denoiser_blur_2_v7.hlsl|cs:32x8",
         L"barrier",
         L"Pass_denoiser_copy_v7.hlsl|cs:32x8"
-    };*/
-    m_passSequence = {
+    };
+    /*m_passSequence = {
         L"RayGen_v6_pass1.hlsl",
         L"barrier",
         L"RayGen_v6_pass2.hlsl",
         L"barrier",
         L"RayGen_v6_pass3.hlsl"
-    };
+    };*/
 
     for (auto& s : m_passSequence)
         m_passes.push_back(ParsePass(s));
