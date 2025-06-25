@@ -69,7 +69,7 @@ float VisibilityCheckCP( float3 P, float3 L, float3 N ) {
     rq.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
     // 3) consume the query
-    while (rq.Proceed()) { }
+    rq.Proceed();
 
     // COMMITTED_TRIANGLE_HIT means “blocked”
     return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
