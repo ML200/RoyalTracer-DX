@@ -51,7 +51,7 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 
 // --------------------- Filter Parameters ------------------------------------
-#define STEP_WIDTH            4   // change per pass (1,2,4)
+#define STEP_WIDTH            4
 #define C_PHI                 0.6f
 #define P_PHI                 3.0f
 #define N_POWER               32.0f
