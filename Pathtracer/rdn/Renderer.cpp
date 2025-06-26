@@ -60,7 +60,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_copy_v7.hlsl|cs:16x16"
+        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
     };
     /*m_passSequence = {
         L"RayGen_v6_pass1.hlsl",
