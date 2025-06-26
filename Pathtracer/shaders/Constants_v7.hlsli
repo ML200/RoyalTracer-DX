@@ -16,4 +16,5 @@
 #define SPAT_RAD 20
 
 #define SPAT_COUNT_DI 1
+#define SPAT_TRIS_DI 2
 #define SPAT_WAVE_CANDIDATES_DI 16

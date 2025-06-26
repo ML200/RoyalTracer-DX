@@ -67,7 +67,7 @@ cbuffer CameraParams : register(b0)
 //─────────────────────────────────────────────────────────────────────────────
 //  TEMPORAL  DI
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(32, 8, 1)]
+[numthreads(8, 4, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;

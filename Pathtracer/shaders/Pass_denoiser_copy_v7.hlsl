@@ -77,7 +77,7 @@ cbuffer CameraParams : register(b0)
 //──────────────────────────────────────────────────────────────────────────────
 //  Compute kernel: 8×8 threads
 //──────────────────────────────────────────────────────────────────────────────
-[numthreads(32, 8, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     // Guard against fringe threads in a non-multiple dispatch.
