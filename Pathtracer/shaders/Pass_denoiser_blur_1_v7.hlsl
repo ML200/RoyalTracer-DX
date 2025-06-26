@@ -13,7 +13,6 @@ static     uint3  gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-// --------------------------- Resources --------------------------------------
 RWTexture2DArray<float4> gOutput              : register(u0);
 RWTexture2D<float4>      gPermanentData       : register(u1);
 RWTexture2D<float4>      gScratchPing         : register(u8);
@@ -64,7 +63,7 @@ cbuffer CameraParams : register(b0)
 // ---------------------- LDS tile configuration ------------------------------
 #define TILE_X   16
 #define TILE_Y   16
-#define RADIUS   (2*STEP_WIDTH)                    // halo for ±2*STEP
+#define RADIUS   (2*STEP_WIDTH)
 #define LDS_W    (TILE_X + 2*RADIUS)
 #define LDS_H    (TILE_Y + 2*RADIUS)
 

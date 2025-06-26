@@ -60,6 +60,8 @@ cbuffer CameraParams : register(b0)
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
+static const float3 kLUMA = float3(0.2126, 0.7152, 0.0722);
+
 // Utility
 uint2     MapPixelXY(float2 dims, uint id)
 {
@@ -69,7 +71,7 @@ uint2     MapPixelXY(float2 dims, uint id)
 }
 
 
-[numthreads(8, 4, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     gDispatchIdx = DTid;
@@ -122,15 +124,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (w[k] == 0.0) continue;
 
             uint  pidLast  = MapPixelID(dims, taps[k]);
-            float3 xPrev   = load_x1   (g_sample_last, pidLast);   // <-- was _current
+            float3 xPrev   = load_x1   (g_sample_last, pidLast);
             float3 nPrev   = load_n1   (g_sample_last, pidLast);
-            uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5); // int compare
+            uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5);
 
             float  dPrev   = length(xPrev - camPos);
             float  dzTap   = abs(dCur - dPrev) / max(dCur, dPrev);
             float  nDotTap = dot(n1_cur, nPrev);
 
-            // object-ID rejection – integer exact match
             bool   idOK    = all(idPrev == asuint(objID_cur + 0.5));
 
             bool ok = (dzTap  < 0.025f) &&
@@ -182,8 +183,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float alphaBase = lerp(0.25, 0.03, conf);
 
     // colour / motion / reactive gates
-    float3 diffRGB = abs(Ccur - hist4.rgb);
-    float  err     = max(max(diffRGB.r, diffRGB.g), diffRGB.b);
+    float  lumCur   = dot(Ccur      , kLUMA);
+    float  lumHist  = dot(hist4.rgb , kLUMA);
+    float  err      = abs(lumCur - lumHist);
     float  errFac  = (histValid) ? saturate((err - 0.06) * 5.0) : 0.0;
     errFac        *= (1.0 - conf);
 

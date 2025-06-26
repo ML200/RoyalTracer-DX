@@ -64,7 +64,7 @@ cbuffer CameraParams : register(b0)
 // ---------------------- LDS tile configuration ------------------------------
 #define TILE_X   16
 #define TILE_Y   16
-#define RADIUS   (2*STEP_WIDTH)                    // halo for ±2*STEP
+#define RADIUS   (2*STEP_WIDTH)
 #define LDS_W    (TILE_X + 2*RADIUS)
 #define LDS_H    (TILE_Y + 2*RADIUS)
 
