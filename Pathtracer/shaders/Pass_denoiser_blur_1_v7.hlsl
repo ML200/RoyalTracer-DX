@@ -1,12 +1,3 @@
-// -----------------------------------------------------------------------------
-// AtrousEAW_Pass0.hlsl – Edge‑Aware à‑trous filter (LDS‑tiled variant)
-// -----------------------------------------------------------------------------
-//  * Loads each 32×8 tile plus a STEP‑dependent halo into group‑shared memory.
-//  * All 9 taps are then fetched from LDS ⇒ **~5‑6× lower L2 bandwidth**.
-//  * Still respects material‑ID matching and skybox bypass.
-//  * Compile one copy per pass; change only STEP_WIDTH.
-// -----------------------------------------------------------------------------
-
 cbuffer Push : register(b1) { uint2 gImageSize; }
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
