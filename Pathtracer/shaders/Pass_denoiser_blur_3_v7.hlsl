@@ -1,15 +1,3 @@
-// -----------------------------------------------------------------------------
-// AtrousEAW_Pass0.hlsl – Edge‑Aware à‑trous filter (LDS‑tiled, 32 KiB‑safe)
-// -----------------------------------------------------------------------------
-//  • Tile dimensions reduced to **16×8** so that, even with STEP_WIDTH = 4
-//    (RADIUS = 8), the groupshared footprint stays < 32 KiB on all hardware.
-//    ‑ STEP 1  →  7.7 KiB
-//    ‑ STEP 2  → 12.3 KiB
-//    ‑ STEP 4  → 24.6 KiB
-//  • All other logic unchanged – material matching, skybox bypass, Gaussian
-//    weights, etc.
-// -----------------------------------------------------------------------------
-
 cbuffer Push : register(b1) { uint2 gImageSize; }
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
