@@ -69,7 +69,7 @@ uint2     MapPixelXY(float2 dims, uint id)
 }
 
 
-[numthreads(32, 8, 1)]
+[numthreads(8, 4, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     gDispatchIdx = DTid;

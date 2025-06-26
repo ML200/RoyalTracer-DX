@@ -1,15 +1,11 @@
-cbuffer Push : register(b1)
-{
-    uint2 gImageSize;
-}
-
+cbuffer Push : register(b1) { uint2 gImageSize; }
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
-
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
-static uint3 gDispatchIdx;
-#define DispatchRaysIndex()      gDispatchIdx
 
+groupshared uint3 gDispatchIdxShared[1];
+static     uint3  gDispatchIdx;
+#define DispatchRaysIndex() gDispatchIdx
 
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
@@ -17,28 +13,27 @@ static uint3 gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput : register(u0);
-RWTexture2D<float4> gPermanentData : register(u1);
-RWTexture2D<float4> gScratchPing : register(u8); // Storage for denoiser
+RWTexture2DArray<float4> gOutput              : register(u0);
+RWTexture2D<float4>      gPermanentData       : register(u1);
+RWTexture2D<float4>      gScratchPing         : register(u8);
 
-RWByteAddressBuffer g_sample_current : register(u6);
-RWByteAddressBuffer g_sample_last : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer      g_sample_current         : register(u6);
+RWByteAddressBuffer      g_sample_last            : register(u7);
+RWByteAddressBuffer      g_Reservoirs_current_di  : register(u2);
+RWByteAddressBuffer      g_Reservoirs_last_di     : register(u3);
+RWByteAddressBuffer      g_Reservoirs_current_gi  : register(u4);
+RWByteAddressBuffer      g_Reservoirs_last_gi     : register(u5);
 
-StructuredBuffer<STriVertex> BTriVertex : register(t2);
-StructuredBuffer<int> indices : register(t1);
-RaytracingAccelerationStructure SceneBVH : register(t0);
+StructuredBuffer<STriVertex>  BTriVertex           : register(t2);
+StructuredBuffer<int>         indices              : register(t1);
+RaytracingAccelerationStructure SceneBVH           : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint> materialIDs : register(t4);
-StructuredBuffer<Material> materials : register(t5);
-StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
-StructuredBuffer<float> g_AliasProb  : register(t7);
-StructuredBuffer<uint>  g_AliasIdx   : register(t8);
+StructuredBuffer<uint>             materialIDs     : register(t4);
+StructuredBuffer<Material>         materials       : register(t5);
+StructuredBuffer<LightTriangle>    g_EmissiveTriangles : register(t6);
+StructuredBuffer<float>            g_AliasProb     : register(t7);
+StructuredBuffer<uint>             g_AliasIdx      : register(t8);
 
-// Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
@@ -52,117 +47,101 @@ cbuffer CameraParams : register(b0)
     float4x4 projectionI;
     float4x4 prevView;
     float4x4 prevProjection;
-    float time;
+    float     time;
 }
-// These includes need access to ALL previous buffers
+
 #include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
-// Utility
-static const float3 LUMA  = float3(0.2126, 0.7152, 0.0722);
-static const float  LARGE = 1e30;
+// --------------------- Filter Parameters ------------------------------------
+#define STEP_WIDTH            2
+#define C_PHI                 0.6f
+#define P_PHI                 3.0f
+#define N_POWER               32.0f
+#define EDGE_COLOR_CUTOFF     2.0f
+#define EDGE_DEPTH_CUTOFF     2.0f
+#define EDGE_NORMAL_MIN       0.5f
+#define SKYBOX_MATID  4294967294u
 
-inline float3 ClampFirefly(float3 c, float3 neighMax)
+static const float  KERNEL[9] = { 0.0625, 0.25, 0.25, 0.25, 0.375, 0.25, 0.25, 0.25, 0.0625 };
+static const int2   OFFS[9]   = { int2(-2,0), int2(-1,0), int2(0,-2), int2(0,-1), int2(0,0),
+                                  int2(0,1), int2(0,2),  int2(1,0),  int2(2,0) };
+static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
+
+struct SurfSample { float3 colour; float3 normal; float depth; uint matID; };
+
+inline SurfSample GetSurf(uint2 pix, uint imgW)
 {
-    float lumC  = dot(c,        LUMA);
-    float lumMx = dot(neighMax, LUMA) * 1.5;
-    return (lumC > lumMx) ? c * (lumMx / max(lumC, 1e-4)) : c;
+    SurfSample s; uint idx = MapPixelID(uint2(imgW, gImageHeight), pix);
+    s.colour = gScratchPing[pix].xyz;
+    float3 pos = load_x1(g_sample_current, idx);
+    s.depth  = length(pos - mul(viewI, float4(0,0,0,1)).xyz);
+    s.normal = load_n1(g_sample_current, idx);
+    s.matID  = load_matID(g_sample_current, idx);
+    return s;
 }
 
-//-----------------------------------------------------------------------------
-//  à-trous bilateral blur
-//-----------------------------------------------------------------------------
-[numthreads(32, 8, 1)]
-void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+[numthreads(16, 16, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
 {
-    uint2 launch = dispatchThreadId.xy;
-    uint2 dims   = gImageSize;
+    uint2 launch = tid.xy;
+    if (launch.x >= gImageWidth || launch.y >= gImageHeight) return;
 
-    if (launch.x >= dims.x || launch.y >= dims.y)
-        return;                           // out-of-bounds guard
+    SurfSample centre = GetSurf(launch, gImageWidth);
 
-    const int   STRIDE = 2;               // first à-trous step
-    const int   K      = 2;               // ±2 radius → 5 × 5
-    static const float kernel[5] = { 1.0/16, 4.0/16, 6.0/16, 4.0/16, 1.0/16 };
-
-    // centre sample
-    float3  c0   = gScratchPing[launch].xyz;
-
-    uint  pIdx0  = MapPixelID(dims, launch);
-    float3 x10   = load_x1(g_sample_current, pIdx0);
-    float3 n10   = load_n1(g_sample_current, pIdx0);
-
-    float3 camPos = mul(viewI, float4(0,0,0,1)).xyz;
-    float  d0     = length(x10 - camPos);
-
-    float3 sum  = 0.0;
-    float  wSum = 0.0;
-
-    // separable stencil
-    [unroll]
-    for (int dy = -K; dy <= K; ++dy)
+    // If the centre is a skybox miss, just copy through.
+    if (centre.matID == SKYBOX_MATID)
     {
-        [unroll]
-        for (int dx = -K; dx <= K; ++dx)
-        {
-            int2 coord = int2(launch) + int2(dx, dy) * STRIDE;
-
-            // bounds check
-            if (coord.x < 0 || coord.y < 0 ||
-                coord.x >= int(dims.x) || coord.y >= int(dims.y))
-                continue;
-
-            float3 c    = gScratchPing[coord].xyz;
-            uint   pIdx = MapPixelID(dims, coord);
-            float3 x1   = load_x1(g_sample_current, pIdx);
-            float3 n1   = load_n1(g_sample_current, pIdx);
-
-            float d1   = length(x1 - camPos);
-            float dz   = abs(d0 - d1) / max(d0, d1);    // relative depth diff
-            float nDot = dot(n10, n1);
-
-            // depth / normal rejection
-            if (dz >= 0.2f || nDot <= 0.999f)
-                continue;
-
-            // weights
-            float kW = kernel[dx + K] * kernel[dy + K];
-            float wN = saturate(nDot * 16.0);
-            float wZ = saturate(exp(-dz * 20.0));
-            float wC = exp(-dot(c - c0, c - c0) * 4.0);
-
-            float lum0 = dot(c0, LUMA);
-            float lumN = dot(c , LUMA);
-            float wF = saturate(lum0 * 4.0 / max(lumN, 1e-4)); // anti-firefly
-
-            float w  = kW * wN * wZ * wC * wF;
-            sum  += w * c;
-            wSum += w;
-        }
+        gOutput[uint3(launch, 0)] = float4(centre.colour, 1.0);
+        return;
     }
 
-    float3 Cout = sum / max(wSum, 1e-4);
+    float sigma_c = C_PHI * (float)STEP_WIDTH;
+    float sigma_z = P_PHI * (float)STEP_WIDTH;
 
-    // neighbourhood clamp against fireflies
-    float3 neighMin = float3( LARGE,  LARGE,  LARGE);
-    float3 neighMax = float3(-LARGE, -LARGE, -LARGE);
+    float3 accum = 0.0; float wSum = 0.0;
 
-    for (int ny = -1; ny <= 1; ++ny)
-        for (int nx = -1; nx <= 1; ++nx)
-        {
-            if (nx == 0 && ny == 0) continue;
-            int2 pc = int2(launch) + int2(nx, ny);
-            if (pc.x < 0 || pc.y < 0 || pc.x >= int(dims.x) || pc.y >= int(dims.y))
-                continue;
-            float3 cn = gScratchPing[pc].xyz;
-            neighMin  = min(neighMin, cn);
-            neighMax  = max(neighMax, cn);
-        }
+    [unroll]
+    for (int i = 0; i < 9; ++i)
+    {
+        int2 coord = int2(launch) + OFFS[i] * STEP_WIDTH;
+        if (coord.x < 0 || coord.y < 0 || coord.x >= int(gImageWidth) || coord.y >= int(gImageHeight))
+            continue;
 
-    Cout = clamp       (Cout, neighMin, neighMax);
-    Cout = ClampFirefly(Cout, neighMax);
+        SurfSample s = GetSurf(uint2(coord), gImageWidth);
 
-    gOutput[uint3(launch, 0)] = float4(Cout, 1.0);
+        // Skip if material IDs differ (prevents cross‑edge bleeding)
+        if (s.matID != centre.matID) continue;
+
+        float3 dc = centre.colour - s.colour;
+        float  colDist2 = dot(dc, dc);
+        float  colCut2 = (EDGE_COLOR_CUTOFF * sigma_c) * (EDGE_COLOR_CUTOFF * sigma_c);
+        if (colDist2 > colCut2) continue;
+
+        float nDot = saturate(dot(centre.normal, s.normal));
+        if (nDot < EDGE_NORMAL_MIN) continue;
+
+        float dz = abs(centre.depth - s.depth);
+        if (dz > EDGE_DEPTH_CUTOFF * sigma_z) continue;
+
+        float c_w = exp(-colDist2 / (sigma_c * sigma_c));
+        float n_w = pow(nDot, N_POWER);
+        float p_w = exp(-dz / sigma_z);
+        float w = c_w * n_w * p_w * KERNEL[i];
+
+        accum += s.colour * w; wSum += w;
+    }
+
+    const float centreBias = KERNEL[4];
+    accum += centre.colour * centreBias; wSum += centreBias;
+
+    float3 outColour = accum / max(wSum, 1e-6);
+
+    float lumC = dot(centre.colour, LUMA);
+    float lumO = dot(outColour,     LUMA);
+    if (lumO > lumC * 4.0) outColour *= (lumC * 4.0) / lumO;
+
+    gOutput[uint3(launch, 0)] = float4(outColour, 1.0);
 }

@@ -67,7 +67,7 @@ cbuffer CameraParams : register(b0)
 //─────────────────────────────────────────────────────────────────────────────
 //  SPATIAL  DI
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(32, 8, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
@@ -85,22 +85,31 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Get the reprojected pixel position
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 2);
-        uint tempPixelIdx = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+        uint tempPixelIdx = 0xFFFFFFFF; // For now, we expect an invalid pixel
+        SampleData sdata_r;
+        Reservoir_DI rdi_r;
+        for(int i = 0; i < SPAT_TRIS_DI; i++){
+            // Get the candidate ID
+            uint iID = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+            // Load the data (MAYBE can be optimized later???) and cache it already
+            sdata_r = loadSampleData(g_sample_last, iID);
+            rdi_r = loadReservoirDI(g_Reservoirs_last_di, iID);
 
-        // Get the reprojected sample data
-        SampleData sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-        // Get the reprojected reservoir
-        Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
-        // Check wether the reservoir is valid for merge
-        bool candidateAcceptedDI =
-            (all(sdata_r.L1 < EPSILON) &&
-            IsValidReservoir_DI(rdi_r) &&
-            !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
-            !RejectDistance_DI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
-            (sdata_r.matID == sdata.matID));
+            // Check wether the reservoir is valid for merge
+            bool candidateAcceptedDI =
+                (all(sdata_r.L1 < EPSILON) &&
+                IsValidReservoir_DI(rdi_r) &&
+                !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
+                !RejectDistance_DI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
+                (sdata_r.matID == sdata.matID));
+            if(candidateAcceptedDI){
+                tempPixelIdx = iID;
+                break;
+            }
+        }
 
         // Merge the reservoirs
-        if(candidateAcceptedDI){
+        if(tempPixelIdx != 0xFFFFFFFF){
             // Calculate the canonical target function
             float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
             float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1);

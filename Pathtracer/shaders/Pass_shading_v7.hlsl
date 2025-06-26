@@ -62,7 +62,7 @@ cbuffer CameraParams : register(b0)
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
 // ─────────────────────────────────────────────────────────────────────────────
-[numthreads(32, 8, 1)]
+[numthreads(8, 4, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
