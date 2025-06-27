@@ -13,6 +13,7 @@ RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
 RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -26,6 +27,7 @@ StructuredBuffer<uint>  g_AliasIdx   : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -91,6 +93,17 @@ void Pass_init_di_v7() {
                 if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed)){
                     requires_shadow_ray = false;
                 }
+                store_n2_init(float3(0,0,0), g_InitialBSDFRays, pixelIdx);
+            }
+            else{
+                // Store the sample for the GI pass!
+                store_dir_init(normalize(result.x2-sdata.x1), g_InitialBSDFRays, pixelIdx);
+                store_x2_init(result.x2, g_InitialBSDFRays, pixelIdx);
+                store_n2_init(result.n2, g_InitialBSDFRays, pixelIdx);
+                store_objID_init(result.objID, g_InitialBSDFRays, pixelIdx);
+                store_matID_init(result.matID, g_InitialBSDFRays, pixelIdx);
+                store_pdfB_init(result.pdf_bsdf, g_InitialBSDFRays, pixelIdx);
+                store_pdfN_init(result.pdf_nee, g_InitialBSDFRays, pixelIdx);
             }
         }
 
