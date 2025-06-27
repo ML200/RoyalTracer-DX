@@ -1022,7 +1022,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */}
             }
     );
 
@@ -1051,7 +1052,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
                     {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */}
             }
     );
 
@@ -1326,7 +1328,7 @@ void Renderer::CreateShaderResourceHeap() {
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 22, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 23, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1717,6 +1719,40 @@ void Renderer::CreateShaderResourceHeap() {
 
     m_device->CreateUnorderedAccessView(
             m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);
+
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    UINT initialRayCount       = width * height;              // one ray / pixel
+    UINT initialRayBufferSize  = initialRayCount * sizeof(InitialBSDFRay);
+
+    D3D12_RESOURCE_DESC initialRayDesc = {};
+    initialRayDesc.Dimension           = D3D12_RESOURCE_DIMENSION_BUFFER;
+    initialRayDesc.Width               = initialRayBufferSize;
+    initialRayDesc.Height              = 1;
+    initialRayDesc.DepthOrArraySize    = 1;
+    initialRayDesc.MipLevels           = 1;
+    initialRayDesc.Format              = DXGI_FORMAT_UNKNOWN;
+    initialRayDesc.SampleDesc.Count    = 1;
+    initialRayDesc.Layout              = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    initialRayDesc.Flags               = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+            &initialRayDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr, IID_PPV_ARGS(&m_initialBSDFRayBuffer)));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC initialRayUavDesc = {};
+    initialRayUavDesc.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    initialRayUavDesc.Format                     = DXGI_FORMAT_R32_TYPELESS; // RAW
+    initialRayUavDesc.Buffer.FirstElement        = 0;
+    initialRayUavDesc.Buffer.NumElements         = initialRayBufferSize / 4;
+    initialRayUavDesc.Buffer.StructureByteStride = 0;
+    initialRayUavDesc.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
+
+    m_device->CreateUnorderedAccessView(
+            m_initialBSDFRayBuffer.Get(), nullptr,
+            &initialRayUavDesc, srvHandle);
 
 
     std::wcout << L"SRVs created!" << std::endl;

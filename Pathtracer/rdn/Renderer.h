@@ -197,6 +197,7 @@ private:
     ComPtr<ID3D12Resource> m_aliasProbBuffer;
     // default‑heap GPU copies\n
     ComPtr<ID3D12Resource> m_aliasIdxBuffer;
+    ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
 
     struct Reservoir_DI
     {
@@ -211,6 +212,11 @@ private:
     struct SampleData
     {
         uint8_t  pad[60]; // 48 bytes
+    };
+
+    struct InitialBSDFRay
+    {
+        uint8_t  pad[48];
     };
 
 

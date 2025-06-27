@@ -13,6 +13,7 @@ RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
 RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
 StructuredBuffer<STriVertex> BTriVertex : register(t2);
 StructuredBuffer<int> indices : register(t1);
@@ -26,6 +27,7 @@ StructuredBuffer<uint>  g_AliasIdx   : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -55,11 +57,15 @@ void Pass_init_gi_v7() {
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
     // Load initial sample data
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
 
     // Also load the initial bsdf ray direction from the DI pass. If it is 0,0,0, the pass hit a light, do nothing
+    InitialBSDFRay rdata = loadInitialBSDFRay(g_InitialBSDFRays, pixelIdx);
 
     // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
     // At every intersection, perform NEE and add the subpath to the reservoir
 
-    
+    // Visibility check after tracing
+
+    // Store initial reservoir
 }
