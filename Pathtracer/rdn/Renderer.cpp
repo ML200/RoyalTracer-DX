@@ -217,16 +217,12 @@ void Renderer::LoadPipeline() {
 
 
     // Using helpers from sl_dlss.h
-
     sl::DLSSOptimalSettings dlssSettings;
     sl::DLSSOptions dlssOptions;
-    // These are populated based on user selection in the UI
-    dlssOptions.mode = sl::DLSSMode::eDLAA; // e.g. sl::eDLSSModeBalanced;
-    dlssOptions.outputWidth = 1920;    // e.g 1920;
-    dlssOptions.outputHeight = 1080; // e.g. 1080;
-    // Now let's check what should our rendering resolution be
+    dlssOptions.mode = sl::DLSSMode::eDLAA;
+    dlssOptions.outputWidth = 1920;
+    dlssOptions.outputHeight = 1080;
     slDLSSGetOptimalSettings(dlssOptions, dlssSettings);
-    // print the optimal settings:
     std::wcout << L"DLSS settings: " << dlssSettings.renderHeightMax << std::endl;
 
 
@@ -489,14 +485,12 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
-    // Side-to-side movement using a sine wave
     float oscillation = sinf(static_cast<float>(m_time) * 0.001f) * 2.0f; // amplitude = 2.0 units
 
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
     XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
 
-    // Multiply them in the order Scale -> Rotate -> Translate
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
@@ -1166,8 +1160,8 @@ void Renderer::CreateRaytracingPipeline()
                               &desc, IID_PPV_ARGS(&pso)));
 
             m_csPSOs.push_back(pso);
-            p.psoIdx = nextCs++;            // <── remember *our* slot
-            continue;                       // nothing to add to the DXR pipeline
+            p.psoIdx = nextCs++;
+            continue;
         }
 
         // ------ ray-generation library  -------------------------------------
@@ -1183,14 +1177,9 @@ void Renderer::CreateRaytracingPipeline()
         m_passIndex[p.file] = rgSlot++;     // SBT slot for this RG shader
     }
 
-
-    // ─── Renderer::CreateRaytracingPipeline()  (just after ‘for (const PassDesc& p : m_passes)’ loop) ──
-
     for (PassDesc& p : m_passes)
     {
         if (p.stage != Stage::Compute) continue;
-
-        // compile + create the PSO exactly as you already do …
         ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
@@ -1201,12 +1190,12 @@ void Renderer::CreateRaytracingPipeline()
         ThrowIfFailed(m_device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
 
         m_csPSOs.push_back(pso);   // keep alive
-        p.psoIdx = nextCs++;       // remember slot number for dispatch
+        p.psoIdx = nextCs++;
     }
 
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 2)  Fixed libraries:  miss / hit / shadow
+    // 2)  Libraries:  miss / hit / shadow
     // ─────────────────────────────────────────────────────────────────────────
     m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
     m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v7.hlsl");
@@ -1225,7 +1214,6 @@ void Renderer::CreateRaytracingPipeline()
     // -------------------------------------------------------------------------
     // 4)  Root-signature associations
     //     – every exported ray-gen name gets m_rayGenSignature
-    //     – miss / hit stay as before
     // -------------------------------------------------------------------------
     for (const PassDesc& p : m_passes)
     {
@@ -1241,7 +1229,7 @@ void Renderer::CreateRaytracingPipeline()
     pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
     // -------------------------------------------------------------------------
-    // 5)  Payload / attribute / recursion depth (unchanged)
+    // 5)  Payload / attribute / recursion depth (we dont use recursion)
     // -------------------------------------------------------------------------
     pipeline.SetMaxPayloadSize( 7*sizeof(float) + 2*sizeof(UINT) + sizeof(BOOL) );
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
@@ -1680,18 +1668,18 @@ void Renderer::CreateShaderResourceHeap() {
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_6 = {};
     reservoirUavDesc_6.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_6.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
+    reservoirUavDesc_6.Format                     = DXGI_FORMAT_R32_TYPELESS;
     reservoirUavDesc_6.Buffer.FirstElement        = 0;
-    reservoirUavDesc_6.Buffer.NumElements         = reservoirBufferSize_sample / 4;             // 4-byte elems
-    reservoirUavDesc_6.Buffer.StructureByteStride = 0;                          // RAW
-    reservoirUavDesc_6.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;  // <─ IMPORTANT
+    reservoirUavDesc_6.Buffer.NumElements         = reservoirBufferSize_sample / 4;
+    reservoirUavDesc_6.Buffer.StructureByteStride = 0;
+    reservoirUavDesc_6.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
     m_device->CreateUnorderedAccessView(
-        m_sampleBuffer_last.Get(),       // or m_reservoirBuffer_2 …
+        m_sampleBuffer_last.Get(),
         nullptr, &reservoirUavDesc_6, srvHandle);
     //_________________________________
 
     // ── alias PROB array  (R32_FLOAT) ────────────────────────────────────────────
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);   // ← reuse the increment variable you already use
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_SHADER_RESOURCE_VIEW_DESC probDesc = {};
     probDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     probDesc.Format            = DXGI_FORMAT_R32_FLOAT;
@@ -1719,7 +1707,7 @@ void Renderer::CreateShaderResourceHeap() {
             m_aliasIdxBuffer.Get(), &idxDesc, srvHandle);
 
     srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);   // move to slot 16
+                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
     scratchDesc.ViewDimension          = D3D12_UAV_DIMENSION_TEXTURE2D;
