@@ -59,4 +59,7 @@ void Pass_init_gi_v7() {
     // Also load the initial bsdf ray direction from the DI pass. If it is 0,0,0, the pass hit a light, do nothing
 
     // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
+    // At every intersection, perform NEE and add the subpath to the reservoir
+
+    
 }
