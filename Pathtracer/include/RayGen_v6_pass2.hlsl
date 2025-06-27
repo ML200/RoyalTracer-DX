@@ -153,7 +153,7 @@ void RayGen_v6_pass2() {
         }
 
         // -------------------- Temporal Reuse for GI --------------------
-        if(candidateAcceptedGI)
+        if(false)//candidateAcceptedGI)
         {
             MaterialOptimized matOpt = {
                 materials[sdata_current.mID].Kd, materials[sdata_current.mID].Pr_Pm_Ps_Pc,

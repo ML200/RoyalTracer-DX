@@ -53,6 +53,59 @@ public:
   virtual void OnDestroy();
 
 private:
+    // ── utilities ───────────────────────────────────────────────────────────────
+    enum class Stage { RayGen, Compute, Barrier };
+
+    struct PassDesc
+    {
+        std::wstring file;          // *.hlsl ( no “|” suffix )
+        Stage        stage   = Stage::RayGen;
+        uint32_t     groupX  = 0;   // for compute
+        uint32_t     groupY  = 0;
+        uint32_t     psoIdx  = UINT32_MAX;   // <── NEW: index in m_csPSOs
+    };
+
+
+
+    Renderer::PassDesc ParsePass(const std::wstring& token)
+    {
+        PassDesc p{};
+
+        // explicit barrier
+        if (token == L"barrier")
+        {
+            p.stage = Stage::Barrier;
+            return p;
+        }
+
+        // split “file|suffix”
+        const size_t bar = token.find(L'|');
+        p.file = token.substr(0, bar);              // part before ‘|’
+
+        // no ‘|’  → plain ray-gen
+        if (bar == std::wstring::npos)
+            return p;
+
+        const std::wstring tail = token.substr(bar + 1);
+
+        // explicit ray-gen tag
+        if (tail == L"rg" || tail == L"raygen")
+            return p;                               // still Stage::RayGen
+
+        // compute shader tag  “cs:WxH”
+        if (tail.rfind(L"cs:", 0) == 0)
+        {
+            p.stage = Stage::Compute;
+            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
+                p.groupX == 0 || p.groupY == 0)
+                throw std::runtime_error("Invalid group size in pass string");
+            return p;
+        }
+
+        throw std::runtime_error("Unknown stage spec in pass string");
+    }
+
+
     // --- NEW: dynamic pass control ------------------------------------------------
     std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
     std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
@@ -65,6 +118,10 @@ private:
     sl::FrameToken*     m_frameToken     = nullptr;
     sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
 
+    std::vector<PassDesc>                           m_passes;      // parsed list
+    std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
+
+
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
   CD3DX12_RECT m_scissorRect;
@@ -74,6 +131,7 @@ private:
   ComPtr<ID3D12CommandAllocator> m_commandAllocator;
   ComPtr<ID3D12CommandQueue> m_commandQueue;
   ComPtr<ID3D12RootSignature> m_rootSignature;
+    ComPtr<ID3D12RootSignature>   m_computeSignature;
   ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
   ComPtr<ID3D12PipelineState> m_pipelineState;
   ComPtr<ID3D12GraphicsCommandList4> m_commandList;
@@ -185,6 +243,9 @@ private:
 
   // #DXR
   ComPtr<ID3D12RootSignature> CreateRayGenSignature();
+
+  ComPtr<ID3D12RootSignature> CreateComputeSignature();
+
   ComPtr<ID3D12RootSignature> CreateMissSignature();
   ComPtr<ID3D12RootSignature> CreateHitSignature();
 
@@ -211,6 +272,8 @@ private:
   void CreateShaderResourceHeap();
   ComPtr<ID3D12Resource> m_outputResource;
     ComPtr<ID3D12Resource> m_permanentDataTexture;
+    ComPtr<ID3D12Resource> m_scratchPing;
+    ComPtr<ID3D12Resource> m_svgfConstBuffer;
   ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
 
   // #DXR

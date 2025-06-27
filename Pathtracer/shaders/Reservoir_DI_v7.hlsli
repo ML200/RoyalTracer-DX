@@ -24,10 +24,11 @@ inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float thresho
 
 inline bool IsValidReservoir_DI(Reservoir_DI r){
     bool valid =
-        any(r.n2_di > 0.0f) &&
+        any(abs(r.n2_di) > 0.0f) &&
         any(r.L2_di > 0.0f) &&
         r.W_di > 0.0f &&
-        r.M_di > 0.0f;
+        r.M_di > 0.0f
+        ;
     return valid;
 }
 
@@ -44,14 +45,36 @@ float VisibilityCheck(
     RayDesc ray;
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
-    ray.TMin = 0.001f;
-    ray.TMax = max(dist - 3.0f * EPSILON, 2.0f * EPSILON);
+    ray.TMin = EPSILON;
+    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
     V = shadowPayload.isHit ? 0.0f : 1.0f;
     return V;
 }
+
+#ifdef ENABLE_RAY_QUERY_INLINE
+float VisibilityCheckCP( float3 P, float3 L, float3 N ) {
+    RayDesc ray;
+    ray.Origin    = P + N * EPSILON;
+    ray.Direction = normalize(L - P);
+    ray.TMin      = EPSILON;
+    ray.TMax      = length(L - P) - EPSILON*10;
+
+    // 1) compile-time flag to accept the first hit
+    RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH > rq;
+
+    // 2) dynamic flags = none
+    rq.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+
+    // 3) consume the query
+    rq.Proceed();
+
+    // COMMITTED_TRIANGLE_HIT means “blocked”
+    return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+#endif // ENABLE_RAY_QUERY_INLINE
 
 
 

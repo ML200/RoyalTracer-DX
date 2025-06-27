@@ -1,16 +1,3 @@
-// Each row is 16 bytes
-struct SampleData
-{
-    float3 x1;  // (12 bytes)
-    uint16_t  mID;   // (2 bytes)
-    half3 L1;   // (6 bytes)
-    float3 n1;  // (12 bytes)
-    float3 o;    // (12 bytes)
-    uint  objID;   // (4 bytes)
-    float3  debug;   // (12 bytes)
-};
-
-
 // RIS reservoir for direct lighting
 struct Reservoir_DI
 {
