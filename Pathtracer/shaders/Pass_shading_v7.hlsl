@@ -1,29 +1,41 @@
+cbuffer Push : register(b1)
+{
+    uint2 gImageSize;
+}
+
+#define gImageWidth   (gImageSize.x)
+#define gImageHeight  (gImageSize.y)
+
+#define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
+
+static uint3 gDispatchIdx;
+#define DispatchRaysIndex()      gDispatchIdx
+
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
-#include "Motion_vectors_v7.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput : register(u0);
-RWTexture2D<float4> gPermanentData : register(u1);
+RWTexture2DArray<float4> gOutput             : register(u0);
+RWTexture2D<float4>      gPermanentData      : register(u1);
 
-RWByteAddressBuffer g_sample_current : register(u6);
-RWByteAddressBuffer g_sample_last : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer g_sample_current         : register(u6);
+RWByteAddressBuffer g_sample_last            : register(u7);
+RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
+RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
+RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
+RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
 
-StructuredBuffer<STriVertex> BTriVertex : register(t2);
-StructuredBuffer<int> indices : register(t1);
-RaytracingAccelerationStructure SceneBVH : register(t0);
-StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint> materialIDs : register(t4);
-StructuredBuffer<Material> materials : register(t5);
-StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
-StructuredBuffer<float> g_AliasProb  : register(t7);
-StructuredBuffer<uint>  g_AliasIdx   : register(t8);
+StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
+StructuredBuffer<int>                 indices           : register(t1);
+RaytracingAccelerationStructure       SceneBVH          : register(t0);
+StructuredBuffer<InstanceProperties>  instanceProps     : register(t3);
+StructuredBuffer<uint>                materialIDs       : register(t4);
+StructuredBuffer<Material>            materials         : register(t5);
+StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
+StructuredBuffer<float>               g_AliasProb       : register(t7);
+StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
@@ -45,85 +57,55 @@ cbuffer CameraParams : register(b0)
 #include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Motion_vectors_v7.hlsli"
 
-[shader("raygeneration")]
-void Pass_shading_v7() {
+// ─────────────────────────────────────────────────────────────────────────────
+//  SHADING PASS
+// ─────────────────────────────────────────────────────────────────────────────
+[numthreads(8, 4, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
+{
+    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
+    gDispatchIdx = DTid;
+
     uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx     = MapPixelID(dims, launchIndex);
+    uint   pixelIdx   = MapPixelID(dims, launchIndex);
 
-    // Load most recent data
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    float3 accumulation = float3(0,0,0);
+    // Load only L1 first
+    float3 L1 = load_L1(g_sample_current, pixelIdx);
+    float3 accumulation = 0;
 
-    if(all(sdata.L1 < EPSILON)){
+    if (all(L1 < EPSILON))
+    {
+        float3 x1 = load_x1(g_sample_current, pixelIdx);
+        float3 n1 = load_n1(g_sample_current, pixelIdx);
+        float3 o = load_o(g_sample_current, pixelIdx);
+        uint matID = load_matID(g_sample_current, pixelIdx);
+
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+        float3 contrib = ReconnectDI(
+                             x1, n1, o, matID,
+                             rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
-        float3 contribution = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
+        accumulation = contrib;
 
-        accumulation = float3(contribution);
-
-        // Store the current reservoir as previous if valid
         store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
         store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
         store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
-        store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
+        store_W_di (rdi.W_di , g_Reservoirs_last_di, pixelIdx);
+        store_M_di (rdi.M_di , g_Reservoirs_last_di, pixelIdx);
     }
-    else{
-        accumulation = float3(sdata.L1);
-    }
-
-
-    // ___ Accumulation ___
-    float3 averagedColor;
-    float frameCount = gPermanentData[uint2(launchIndex)].w;
-    int maxFrames    = 10000000;
-
-    if (frameCount <= 0.0f &&
-        !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) &&
-        isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
+    else
     {
-        // Initialize accumulation + frame count
-        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
-        frameCount+= 1.0f;
+        accumulation = L1;
     }
-    else if (frameCount < maxFrames &&
-             !isnan(accumulation.x) && !isnan(accumulation.y) && !isnan(accumulation.z) &&
-             isfinite(accumulation.x) && isfinite(accumulation.y) && isfinite(accumulation.z))
-    {
-        // Continue accumulating valid samples
-        gPermanentData[uint2(launchIndex)].xyz += accumulation;
-        gPermanentData[uint2(launchIndex)].w   += 1.0f;
-        frameCount+= 1.0f;
-    }
-    averagedColor = gPermanentData[uint2(launchIndex)].xyz / frameCount;
 
-    // If the view has changed significantly, reset accumulation
-    bool different = false;
-    for (int row = 0; row < 4; row++)
-    {
-        float4 diff = abs(view[row] - prevView[row]);
-        if (any(diff > EPSILON))
-        {
-            different = true;
-            break;
-        }
-    }
-    if (different)
+    float3 finalColor = sRGBGammaCorrection(accumulation);
 
-    {
-        // Reset buffer
-        gPermanentData[uint2(launchIndex)] = float4(accumulation, 1.0f);
-        frameCount = 1.0f;
-    }
-    float3 finalColor = sRGBGammaCorrection(averagedColor);
+    // Debug
+    //if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
+    //if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
 
-    // Debug coloring for invalid values
-    if (isnan(averagedColor.x) || isnan(finalColor.y) || isnan(finalColor.z))
-        finalColor = float3(1, 0, 1); // magenta for NaN
-    if (isinf(finalColor.x) || isinf(finalColor.y) || isinf(finalColor.z))
-        finalColor = float3(0, 1, 1); // cyan for infinity
-
-    gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1.0f);
+    gOutput[uint3(launchIndex, 1)] = float4(finalColor, 1);
 }
