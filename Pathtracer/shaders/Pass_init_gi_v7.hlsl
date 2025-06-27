@@ -54,5 +54,9 @@ void Pass_init_gi_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
+    // Load initial sample data
+
     // Also load the initial bsdf ray direction from the DI pass. If it is 0,0,0, the pass hit a light, do nothing
+
+    // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
 }
