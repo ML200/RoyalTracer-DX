@@ -45,6 +45,7 @@ cbuffer CameraParams : register(b0)
 // These includes need access to ALL previous buffers
 #include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
