@@ -29,10 +29,10 @@ inline uint GetRandomPixelCircleWeighted(
         localSeed.x ^= lane * 0x9E3779B9u;
 
         do {
-            float  u     = RandomFloat(localSeed);
+            float  u     = RandomFloatSingle(localSeed.x);
             float  z     = pow(u, SPAT_EXP_DI);
             float  r     = float(radius) * z;
-            float  angle = RandomFloat(localSeed) * 6.2831853;
+            float  angle = RandomFloatSingle(localSeed.x) * 6.2831853;
 
             candX = int(cos(angle) * r);
             candY = int(sin(angle) * r);
