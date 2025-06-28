@@ -1294,16 +1294,17 @@ void Renderer::CreateRaytracingOutputBuffer() {
             nullptr,
             IID_PPV_ARGS(&m_permanentDataTexture)));
 
+    // ──  REPLACE the old 'desc' block used for m_scratchPing  ─────────────
     D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width              = GetWidth();
-    desc.Height             = GetHeight();
-    desc.DepthOrArraySize   = 1;
-    desc.MipLevels          = 1;
-    desc.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;   // 48-bit colour is enough
-    desc.SampleDesc.Count   = 1;
-    desc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = GetWidth();
+    desc.Height           = GetHeight();
+    desc.DepthOrArraySize = 8;                       // ← # slices you need
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;  // HDR, 64-bit total
+    desc.SampleDesc.Count = 1;
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     ThrowIfFailed(m_device->CreateCommittedResource(
         &nv_helpers_dx12::kDefaultHeapProps,
@@ -1311,7 +1312,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
         &desc,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         nullptr,
-        IID_PPV_ARGS(&m_scratchPing)));
+        IID_PPV_ARGS(&m_scratchPing)));       // same variable, bigger now
 
 }
 
@@ -1712,10 +1713,11 @@ void Renderer::CreateShaderResourceHeap() {
                      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
-    scratchDesc.ViewDimension          = D3D12_UAV_DIMENSION_TEXTURE2D;
-    scratchDesc.Format                 = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    scratchDesc.Texture2D.MipSlice     = 0;
-    scratchDesc.Texture2D.PlaneSlice   = 0;
+    scratchDesc.ViewDimension            = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    scratchDesc.Format                   = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    scratchDesc.Texture2DArray.MipSlice  = 0;
+    scratchDesc.Texture2DArray.FirstArraySlice = 0;
+    scratchDesc.Texture2DArray.ArraySize = 8;       // same as DepthOrArraySize
 
     m_device->CreateUnorderedAccessView(
             m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);

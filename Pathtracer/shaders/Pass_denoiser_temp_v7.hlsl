@@ -20,7 +20,7 @@ static     uint3  gDispatchIdx;
 
 RWTexture2DArray<float4> gOutput              : register(u0);
 RWTexture2D<float4>      gPermanentData       : register(u1);
-RWTexture2D<float4>      gScratchPing         : register(u8);   // Storage for denoiser
+RWTexture2DArray<float4>      gScratchPing         : register(u8);   // Storage for denoiser
 
 RWByteAddressBuffer      g_sample_current     : register(u6);
 RWByteAddressBuffer      g_sample_last        : register(u7);
@@ -82,7 +82,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float2 dims   = float2(dimsI);
     uint   pIdx   = MapPixelID(dims, launch);
 
-    float3  Ccur   = gOutput[uint3(launch, 1)].rgb;
+    float3  Ccur   = gScratchPing[uint3(launch, 0)].rgb;
     float3  x1_cur = load_x1(g_sample_current, pIdx);
     float3  n1_cur = load_n1(g_sample_current, pIdx);
     float3  objID_cur = load_objID(g_sample_current, pIdx);
@@ -169,7 +169,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     [unroll] for(int nx = -1; nx <= 1; ++nx)
     {
         int2 p = clamp(int2(launch) + int2(nx,ny), 0, int2(dims)-1);
-        float3 cN = gOutput[uint3(p,1)].rgb;
+        float3 cN = gScratchPing[uint3(p,0)].rgb;
         cMin = min(cMin, cN);
         cMax = max(cMax, cN);
     }
@@ -210,5 +210,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
 
     gPermanentData[launch] = float4(Cacc, frames);
-    gScratchPing  [launch] = float4(Cacc, 0.0);
+    gScratchPing[uint3(launch, 1)] = float4(Cacc, 0.0);
 }

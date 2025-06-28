@@ -13,10 +13,9 @@ static     uint3  gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-// --------------------------- Resources --------------------------------------
 RWTexture2DArray<float4> gOutput              : register(u0);
 RWTexture2D<float4>      gPermanentData       : register(u1);
-RWTexture2D<float4>      gScratchPing         : register(u8);
+RWTexture2DArray<float4>      gScratchPing         : register(u8);
 
 RWByteAddressBuffer      g_sample_current         : register(u6);
 RWByteAddressBuffer      g_sample_last            : register(u7);
@@ -85,7 +84,7 @@ struct SurfSample { float3 colour; float3 normal; float depth; uint matID; };
 inline SurfSample GetSurf(uint2 pix, uint imgW)
 {
     SurfSample s; uint idx = MapPixelID(uint2(imgW, gImageHeight), pix);
-    s.colour = gScratchPing[pix].xyz;
+    s.colour = gScratchPing[uint3(pix, 2)].xyz;
     float3 pos = load_x1(g_sample_current, idx);
     s.depth  = length(pos - mul(viewI, float4(0,0,0,1)).xyz);
     s.normal = load_n1(g_sample_current, idx);
@@ -131,7 +130,7 @@ void main(uint3 dtid : SV_DispatchThreadID,
     // Skybox pass‑through
     if (centreMat == SKYBOX_MATID)
     {
-        gOutput[uint3(launch,0)] = float4(centreClr,1.0);
+        gScratchPing[uint3(launch,3)] = float4(centreClr,1.0);
         return;
     }
 
@@ -182,5 +181,5 @@ void main(uint3 dtid : SV_DispatchThreadID,
     float lumC = dot(centreClr, LUMA); float lumO = dot(outColour,LUMA);
     if (lumO > lumC*4.0) outColour *= (lumC*4.0)/lumO;
 
-    gOutput[uint3(launch,0)] = float4(outColour,1.0);
+    gScratchPing[uint3(launch,3)] = float4(outColour,1.0);
 }

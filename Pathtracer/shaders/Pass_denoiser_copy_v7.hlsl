@@ -20,7 +20,7 @@ static uint3 gDispatchIdx;
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
-RWTexture2D<float4> gScratchPing : register(u8); // Storage for denoiser
+RWTexture2DArray<float4> gScratchPing : register(u8); // Storage for denoiser
 
 RWByteAddressBuffer g_sample_current : register(u6);
 RWByteAddressBuffer g_sample_last : register(u7);
@@ -76,4 +76,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     store_o    (cur.o    , g_sample_last, pixelIdx);
     store_matID(cur.matID, g_sample_last, pixelIdx);
     store_objID(cur.objID, g_sample_last, pixelIdx);
+
+    // Post Processing and image write
+    float3 finalColor = gScratchPing[uint3(DTid.xy, 4)].xyz;
+    finalColor = sRGBGammaCorrection(finalColor);
+    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }

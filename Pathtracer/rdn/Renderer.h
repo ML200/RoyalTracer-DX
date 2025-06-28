@@ -201,17 +201,17 @@ private:
 
     struct Reservoir_DI
     {
-        uint8_t  pad[40]; // 48 bytes
+        uint8_t  pad[28];
     };
 
     struct Reservoir_GI
     {
-        uint8_t  pad[40]; // 56 bytes :(
+        uint8_t  pad[32];
     };
 
     struct SampleData
     {
-        uint8_t  pad[60]; // 48 bytes
+        uint8_t  pad[32];
     };
 
     struct InitialBSDFRay
