@@ -102,13 +102,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
         accumulation = L1;
     }
 
-    //float3 finalColor = sRGBGammaCorrection(accumulation);
 
     // Debug
     //if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
     //if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
-
-    //gOutput[uint3(launchIndex, 1)] = float4(finalColor, 1);
+    /*float3 finalColor = sRGBGammaCorrection(accumulation);
+    gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1);*/
 
     //Write to the scratch buffer internally
     gScratchPing[uint3(launchIndex, 0)] = float4(accumulation, 0.0);

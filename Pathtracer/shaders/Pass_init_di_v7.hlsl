@@ -57,7 +57,7 @@ void Pass_init_di_v7() {
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
     SampleData sdata = SampleCameraRay(pixelIdx);
-    if(sdata.matID != 4294967294){
+    if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
         uint waveSeed = GetWaveSeed(pixelIdx, time, 1);

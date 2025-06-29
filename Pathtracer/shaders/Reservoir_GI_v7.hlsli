@@ -35,27 +35,79 @@ inline bool IsValidReservoir_GI(Reservoir_GI r){
 
 
 
-// Calculate reconnection
+// Calculate reconnection (two–sided)
 float3 ReconnectGI(
-    float3 x1,
-    float3 n1,
-    float3 o,
-    uint mID,
-    float3 x2,
-    float3 n2,
-    float3 L
+    float3  x1,
+    float3  n1,
+    float3  o,
+    uint    mID1,
+
+    uint    mID2,
+    float3  x2,
+    float3  n2,
+    float3  L2,
+    float3  V2
 )
 {
-    if(all(L<EPSILON))
-        return float3(0,0,0);
+    if (all(L2 < EPSILON))
+        return float3(0, 0, 0);
+
+    float3 dir      = x2 - x1;
+    float  dist     = length(dir);
+    float3 ndir     = dir / dist;
+
+    if (dot(n2, -ndir) < 0.0f)
+        n2 = -n2;
+
+    float  cosThetaX1 = max(EPSILON, dot(n1,  ndir));
+    float  cosThetaX2 = max(EPSILON, dot(n2, -V2));
+
+    // BRDF and MIS weights at x1
+    float2 probs1 = CalculateStrategyProbabilities(mID1, o, n1);
+
+    // incoming  = ndir (x1→x2)
+    // outgoing  = o    (already given)
+    float3 brdf1_0 = EvaluateBRDF(0, mID1, n1, ndir, o);
+    float3 brdf1_1 = EvaluateBRDF(1, mID1, n1, ndir, o);
+    float3 F1      = SafeMultiply(probs1.x, brdf1_0) +
+                     SafeMultiply(probs1.y, brdf1_1);
+
+    // BRDF and MIS weights at x2
+    float2 probs2 = CalculateStrategyProbabilities(mID2, -ndir, n2);
+
+    // outgoing  = -ndir (x2→x1)
+    // incoming  = V2
+    float3 brdf2_0 = EvaluateBRDF(0, mID2, n2, V2, -ndir);
+    float3 brdf2_1 = EvaluateBRDF(1, mID2, n2, V2, -ndir);
+    float3 F2      = SafeMultiply(probs2.x, brdf2_0) +
+                     SafeMultiply(probs2.y, brdf2_1);
+
+    // Final reconnection throughput (no geometry term because in angle space)
+    float3 r = F1 * F2
+             * L2
+             * cosThetaX1 * cosThetaX2;
+
+    // Guard against NaNs.
+    if (any(isnan(r)))
+        r = float3(0, 0, 0);
+
+    return r;
+}
+
+// Calculate reconnection (two–sided)
+float3 Reconnect_partial(
+float3 x1,
+float3 n1,
+float3 o,
+uint mID,
+float3 x2
+)
+{
     float3 dir = x2 - x1;
     float3 ndirN = normalize(-dir);
     float dist = length(dir);
 
     float cosThetaX1 = max(EPSILON,dot(n1, -ndirN));
-    if(dot(n2, ndirN) < 0.0f)
-        n2 = -n2;
-    float cosThetaX2 = max(EPSILON,dot(n2, ndirN));
 
     float2 probs = CalculateStrategyProbabilities(mID, o, n1);
     float3 brdf0 = EvaluateBRDF(0, mID, n1, ndirN, o);
@@ -64,11 +116,12 @@ float3 ReconnectGI(
     float3 F2 = SafeMultiply(probs.y, brdf1);
     float3 F = F1 + F2;
 
-    float3 r = F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
+    float3 r = F * cosThetaX1;
     if(any(isnan(r)))
         r = float3(0,0,0);
     return r;
 }
+
 
 // Update DI reservoir
 bool UpdateReservoirGI(

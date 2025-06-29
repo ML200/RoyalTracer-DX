@@ -8,6 +8,10 @@
 
 #define WAVE_CANDIDATES_DI 16
 
+// ___ GI initial sampling ___
+#define NEE_SAMPLES_GI 4
+#define BSDF_SAMPLES_GI 3
+
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30
 
