@@ -105,3 +105,60 @@ SampleData loadSampleData(RWByteAddressBuffer buffer, uint pixelIdx)
 
     return s;
 }
+
+
+// Helpers ---------------------------------------------------------------------
+
+/*float3 WorldToObjectPos(uint id, float3 Pw)
+{
+    // Po = M_inv · Pw               (column vector form)
+    return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
+}
+
+float3 ObjectToWorldPos(uint id, float3 Po)
+{
+    // Pw = M · Po
+    return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
+}
+
+float3 ObjectToWorldNrm(uint id, float3 No)
+{
+    // Nw = (M-1)ᵀ · No      ← you already have that in objectToWorldNormal
+    return normalize( mul(instanceProps[id].objectToWorldNormal, No) );
+}
+
+float3 WorldToObjectNrm(uint id, float3 Nw)
+{
+    // No =  ( (M-1)ᵀ )-1 · Nw   =  (Mᵀ) · Nw
+    // We can build Mᵀ on the fly: transpose of the upper-left 3×3 of M
+    float3x3 MT = transpose( (float3x3)instanceProps[id].objectToWorld );
+    return normalize( mul( MT, Nw ) );
+}*/
+
+
+// Debug ---------------------------------------------------------------------
+
+float3 WorldToObjectPos(uint /*id*/, float3 Pw)
+{
+    // Identity transform: leave world-space position unchanged.
+    return Pw;
+}
+
+float3 ObjectToWorldPos(uint /*id*/, float3 Po)
+{
+    // Identity transform: leave object-space position unchanged.
+    return Po;
+}
+
+float3 ObjectToWorldNrm(uint /*id*/, float3 No)
+{
+    // Identity transform: leave object-space normal unchanged.
+    return No;
+}
+
+float3 WorldToObjectNrm(uint /*id*/, float3 Nw)
+{
+    // Identity transform: leave world-space normal unchanged.
+    return Nw;
+}
+

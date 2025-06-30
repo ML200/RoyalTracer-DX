@@ -8,9 +8,10 @@
 // PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
 //
 //*********************************************************
+#define ENABLE_D3D12_DIAGNOSTICS        1
 #include <chrono>
 #include "stdafx.h"
-#include <unordered_map>          // NEW
+#include <unordered_map>
 #include "Renderer.h"
 
 #include "DXRHelper.h"
@@ -23,6 +24,7 @@
 #include "glm/gtc/type_ptr.hpp"
 #include "manipulator.h"
 #include "../src/Util/ObjLoader.h"
+#include "Diagnostics.h"
 
 // This is a static/global to store the last time we actually rendered a frame.
 static std::chrono::steady_clock::time_point g_lastRenderTime
@@ -44,8 +46,8 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
-        /*L"Pass_init_gi_v7.hlsl|rg",
-        L"barrier",*/
+        L"Pass_init_gi_v7.hlsl|rg",
+        L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:8x4",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
@@ -58,7 +60,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
+        L"Pass_denoiser_blur_3_v7.hlsl|cs:8x4",
         L"barrier",
         L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
     };
@@ -138,12 +140,16 @@ void Renderer::OnInit() {
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
+    // ── NEW ──
+    #if ENABLE_D3D12_DIAGNOSTICS
+        dxdiag::EnableDebugLayerAndDred();     // CPU debug-layer + DRED breadcrumbs
+    #endif
     // 3.1 Build the preferences
     sl::Preferences pref{};
     pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
               sl::PreferenceFlags::eLoadDownloadedPlugins;
     static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
-    pref.featuresToLoad    = featList;
+    pref.featuresToLoad    = nullptr;//featList;
     pref.numFeaturesToLoad = _countof(featList);
 
     // 3.2 Initialize Streamline and give it our D3D12 device
@@ -156,34 +162,6 @@ void Renderer::LoadPipeline() {
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
-
-/*#if defined(_DEBUG)
-    // ── CPU-side debug layer (what you already had) ──────────────────────────
-    {
-        ComPtr<ID3D12Debug> debug;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-            debug->EnableDebugLayer();
-    }
-
-    // ── GPU-based validation (catches “bad descriptor ↔ shader access” bugs) ─
-    {
-        ComPtr<ID3D12Debug1> debug1;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug1))))
-        {
-            // Full validation on every queue-submit
-            debug1->SetEnableGPUBasedValidation(TRUE);
-
-            // Optional but handy: forces an immediate GPU sync when an error
-            // is detected so the call-stack in the debugger matches the error
-            debug1->SetEnableSynchronizedCommandQueueValidation(TRUE);
-        }
-    }
-
-    // This flag only affects the *factory* creation – keep it if you already
-    // had it for live object reporting, otherwise you may drop it.
-    dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-#endif*/
-
 
     // Map functions from SL and use them instead of standard DXGI/D3D12 API
     auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
@@ -209,6 +187,9 @@ void Renderer::LoadPipeline() {
     ThrowIfFailed(slD3D12CreateDevice(hardwareAdapter.Get(),
                                     D3D_FEATURE_LEVEL_12_1,
                                     IID_PPV_ARGS(&m_device)));
+    #if ENABLE_D3D12_DIAGNOSTICS
+          dxdiag::HookDevice(m_device.Get());
+    #endif
   }
   if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
 {
@@ -485,11 +466,12 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
-    float oscillation = sinf(static_cast<float>(m_time) * 0.001f) * 2.0f; // amplitude = 2.0 units
+    float oscillation = sinf(static_cast<float>(m_time) * 0.001f) * 6.0f; // amplitude = 2.0 units
+    float oscillation2 = sinf(static_cast<float>(m_time) * 0.001f) * 6.0f; // amplitude = 2.0 units
 
     XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
+    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, oscillation2);
+    XMMATRIX translationMatrix = XMMatrixTranslation(1.f * oscillation, 1.f, 0.f);
 
     m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
   // #DXR Extra - Refitting
@@ -548,6 +530,9 @@ void Renderer::OnRender()
         s_frameCount = 0;
         s_lastTime = currentTime;
     }
+    #if ENABLE_D3D12_DIAGNOSTICS
+        dxdiag::DumpNewMessages();             // prints any warnings/errors this frame
+    #endif
 }
 
 /*void Renderer::OnRender()
@@ -779,6 +764,9 @@ void Renderer::WaitForPreviousFrame() {
   }
 
   m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+#if ENABLE_D3D12_DIAGNOSTICS
+    dxdiag::CheckDeviceRemoved(m_device.Get());   // dumps reason + breadcrumbs
+#endif
 }
 
 void Renderer::CheckRaytracingSupport() {
@@ -1026,6 +1014,11 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */}
             }
     );
+    rsc.AddRootParameter(
+        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        /* shaderRegister = */ 1,   //  b1
+        /* registerSpace  = */ 0,
+        /* numConstants   = */ 2);  //  uint2
 
     return rsc.Generate(m_device.Get(), true);
 }

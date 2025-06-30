@@ -53,7 +53,7 @@ cbuffer CameraParams : register(b0)
 
 [shader("raygeneration")]
 void Pass_init_gi_v7() {
-    uint2 launchIndex = DispatchRaysIndex().xy;
+/*    uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
@@ -72,55 +72,129 @@ void Pass_init_gi_v7() {
         // Store path variables that are used to fill the reservoirs
         // path_x2 is rdata.x2
         // path_n2 is rdata.n2
-        //L2
-        float3 L2 = (float3)0;
-        // V2
         float3 V2 = (float3)0;
 
         // Store path variables
         // full path throughput
-        float3 tp_full = Reconnect_partial(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdata.x2);
+        float3 tp_full = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdata.x2, rdata.n2, float3(1,1,1)); // reconnect without L
         //float3 tp_full = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdata.matID, rdata.x2, rdata.n2, float3(0,0,0), rdata.n2);
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
         // Full path pdf of a given subpath
         float pdf_full = rdata.pdf_bsdf;
+        bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
 
         // Variables to cache path data
         float3 position = rdata.x2;
         float3 normal = rdata.n2;
         float3 outgoing = normalize(sdata.x1 - rdata.x2);
-        utin matID = rdata.matID;
+        uint matID = rdata.matID;
+
+        // Postponed shadow ray
+        float3 s_x1;
+        float3 s_x2;
+        float3 s_n1;
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
+            // NEE samples
+            for(int j = 0; i<NEE_SAMPLES_GI; j++){
+                // Get the sample result
+                SampleReturn result = SampleNEE(sdata, waveSeed, seed);
+                // Calculate contribution and p_hat.
+                float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
+                tp_full *= c;
+                float p_hat = GetPHat(tp_full * result.L2);
+                float pdf = result.pdf_nee * pdf_full;
+                float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;
+                if(isnan(w_mis))
+                    w_mis = 0.0f;
+
+                float3 L2 = result.L2;
+                float3 V2_temp = V2;
+                if(i != 0)
+                    L2 *= tp_partial;
+                else {
+                    V2_temp = rdata.x2 - result.x2;
+                    L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
+                }
+
+                // Update reservoir
+                if(UpdateReservoirGI(reservoir, w_mis, 0, rdata.x2, rdata.n2, L2, normalize(V2_temp), seed)){
+                    s_x1 = position;
+                    s_x2 = result.x2;
+                    s_n1 = normal;
+                }
+            }
+
+            // BSDF advancement
             {
                 // Get a sample direction
                 SampleReturn result = SampleBSDF(sdata, waveSeed, seed);
+                float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                 // Calculate contribution and p_hat.
                 if(any(result.L2 > 0.0f)){
-                    float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, result.L2);
-                    float p_hat = GetPHat(c);
-                    float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_bsdf;
+                    tp_full *= c;
+                    float p_hat = GetPHat(tp_full * result.L2);
+                    float pdf = result.pdf_bsdf * pdf_full;
+                    float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / pdf;
                     if(isnan(w_mis) || isinf(w_mis))
                         w_mis = 0.0f;
+
+                    float3 L2 = result.L2;
+                    float3 V2_temp = V2;
+                    if(i != 0)
+                        L2 *= tp_partial;
+                    else {
+                        V2_temp = rdata.x2 - result.x2;
+                        L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
+                    }
+
                     // Update reservoir with the sub path
-                    //UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed);
-                    return;
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, rdata.x2, rdata.n2, L2, V2_temp, seed)){
+                        requires_shadow_ray = false;
                 }
                 else{
                     // Advance ray
+                    pdf_full *= result.pdf_bsdf;
+                    tp_full *= c;
+                    outgoing = position - result.x2;
+                    position = result.x2;
+                    normal = result.n2;
+                    matID = result.matID;
 
+                    if(i == 0)
+                        V2 = rdata.x2 - result.x2;
+                    else
+                        tp_partial *= c;
                 }
             }
         }
 
+        // Visbility check for the stored sample, if fail, set W to 0
+        /*float V = 1.0f;
+        if(requires_shadow_ray){
+            V = VisibilityCheck(s_x1, s_x2, s_n1);
+        }
+        // Calculate W
+        float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_di, reservoir.n2_di, reservoir.L2_di));
+        float W = 0.0f;
+        if (p_hat > EPSILON) {
+            W = V * reservoir.w_sum_di / p_hat;
+            // Protect against NaN/Inf
+            if (isnan(W) || isinf(W)) {
+                W = 0.0f;
+            }
+        }
+        reservoir.W_gi = W;*/
+
 
         // Save the resulting reservoir to memory
-        store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx);
+        /*store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
         store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
-    }
+        }
+    }*/
 }

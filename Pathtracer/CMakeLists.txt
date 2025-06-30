@@ -47,6 +47,7 @@ add_executable(Pathtracer WIN32
         rdn/Win32Application.h
         src/Components/Vertex.h
         src/Util/ObjLoader.h
+        rdn/Diagnostics.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────

@@ -75,7 +75,7 @@ void Pass_init_di_v7() {
             if(isnan(w_mis))
                 w_mis = 0.0f;
             // Update reservoir
-            UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed);
+            UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed);
         }
         bool requires_shadow_ray = true;
         // BSDF sample(s)
@@ -90,7 +90,7 @@ void Pass_init_di_v7() {
                 if(isnan(w_mis) || isinf(w_mis))
                     w_mis = 0.0f;
                 // Update reservoir
-                if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed)){
+                if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed)){
                     requires_shadow_ray = false;
                 }
                 store_n2_init(float3(0,0,0), g_InitialBSDFRays, pixelIdx);
@@ -124,12 +124,12 @@ void Pass_init_di_v7() {
         }
         reservoir.W_di = W;
 
-
         // Save the resulting reservoir to memory
-        store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx);
-        store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx);
+        store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
+        store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
         store_L2_di(reservoir.L2_di, g_Reservoirs_current_di, pixelIdx);
         store_W_di(reservoir.W_di, g_Reservoirs_current_di, pixelIdx);
         store_M_di(1, g_Reservoirs_current_di, pixelIdx);
+        store_objID_di(reservoir.objID_di, g_Reservoirs_current_di, pixelIdx);
     }
 }

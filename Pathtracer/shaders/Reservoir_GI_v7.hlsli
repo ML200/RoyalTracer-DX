@@ -125,25 +125,27 @@ float3 x2
 
 // Update DI reservoir
 bool UpdateReservoirGI(
-    inout Reservoir_DI reservoir,
+    inout Reservoir_GI reservoir,
     float wi,
     uint M,
 
     float3 x2,
     float3 n2,
     float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Also,we dont want to reuse sample on a lights surface
+    float3 V2,
     inout uint2 seed
     )
 {
 
-    reservoir.w_sum_di += wi;
-    reservoir.M_di += M;
+    reservoir.w_sum_gi += wi;
+    reservoir.M_gi += M;
 
-    if (RandomFloatSingle(seed.x) < wi / reservoir.w_sum_di)
+    if (RandomFloatSingle(seed.x) < wi / reservoir.w_sum_gi)
     {
-        reservoir.x2_di = x2;
-        reservoir.n2_di = n2;
-        reservoir.L2_di = L2;
+        reservoir.x2_gi = x2;
+        reservoir.n2_gi = n2;
+        reservoir.L2_gi = L2;
+        reservoir.V2_gi = V2;
         return true;
     }
     return false;
@@ -169,27 +171,31 @@ static const uint P_M_gi  = P_W_gi  + B_W_gi;
 #define PIXEL_COUNT (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
 
 //────────────────────────── x2 ───────────────────────────────────────────────
-float3 load_x2_gi(RWByteAddressBuffer buf, uint pixelIdx)
+float3 load_x2_gi(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
     uint addr = P_x2_gi * PIXEL_COUNT + pixelIdx * B_x2_gi;
-    return asfloat(buf.Load3(addr));
+    float3 xO = asfloat(buf.Load3(addr));
+    return ObjectToWorldPos(objID, xO);
 }
-void store_x2_gi(float3 v, RWByteAddressBuffer buf, uint pixelIdx)
+void store_x2_gi(float3 v, RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
     uint addr = P_x2_gi * PIXEL_COUNT + pixelIdx * B_x2_gi;
-    buf.Store3(addr, asuint(v));
+    float3 xO = WorldToObjectPos(objID, v);
+    buf.Store3(addr, asuint(xO));
 }
 
 //────────────────────────── n2 ───────────────────────────────────────────────
-float3 load_n2_gi(RWByteAddressBuffer buf, uint pixelIdx)
+float3 load_n2_gi(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
     uint addr = P_n2_gi * PIXEL_COUNT + pixelIdx * B_n2_gi;
-    return UnpackNormal(buf.Load(addr));
+    float3 nO = UnpackNormal(buf.Load(addr));
+    return ObjectToWorldNrm(objID, nO);
 }
-void store_n2_gi(float3 v, RWByteAddressBuffer buf, uint pixelIdx)
+void store_n2_gi(float3 v, RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
     uint addr = P_n2_gi * PIXEL_COUNT + pixelIdx * B_n2_gi;
-    buf.Store(addr, PackNormal(v));
+    float3 nO = WorldToObjectNrm(objID, v);
+    buf.Store(addr, PackNormal(nO));
 }
 
 //────────────────────────── L2 ───────────────────────────────────────────────
@@ -244,8 +250,8 @@ void store_M_gi(uint m, RWByteAddressBuffer buf, uint pixelIdx)
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 {
     Reservoir_GI r;
-    r.x2_gi   = load_x2_gi(buf, pixelIdx);
-    r.n2_gi   = load_n2_gi(buf, pixelIdx);
+    //r.x2_gi   = load_x2_gi(buf, pixelIdx);
+    //r.n2_gi   = load_n2_gi(buf, pixelIdx);
     r.L2_gi   = load_L2_gi(buf, pixelIdx);
     r.V2_gi   = load_V2_gi(buf, pixelIdx);
     r.W_gi    = load_W_gi (buf, pixelIdx);

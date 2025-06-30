@@ -179,8 +179,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // confidence adjusted alpha -> the better the sampler, the stronger the stability
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pIdx);
-    float conf      = saturate(rdi.M_di / 30.0);   // 0-1
-    float alphaBase = lerp(0.25, 0.03, conf);
+    float conf      = saturate(min(rdi.M_di, 30.0f) / 30.0);   // 0-1
+    float alphaBase = 0.02f;//lerp(1.0, 0.02, conf);
 
     // colour / motion / reactive gates
     float  lumCur   = dot(Ccur      , kLUMA);
@@ -202,9 +202,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     float alpha = alphaBase;
-    alpha = lerp(alpha, 1.0, errFac);
-    alpha = lerp(alpha, 1.0, mvFac);
-    alpha = lerp(alpha, 1.0, reactiveDepth);
+    //alpha = lerp(alpha, 1.0, errFac);
+    //alpha = lerp(alpha, 1.0, mvFac);
+    //alpha = lerp(alpha, 1.0, reactiveDepth);
 
     float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
