@@ -101,7 +101,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(candidateAcceptedDI){
                 // Calculate the canonical target function
                 float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-                float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1);
+                float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
                 float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
                 float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
                 float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * visReuse;
@@ -122,7 +122,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Update the reservoir
                 // Get a random seed
                 uint2 seed = GetSeed(pixelIdx, time, 2);
-                UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, seed);
+                UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed);
 
                 // Calculate new W
                 float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
@@ -138,11 +138,12 @@ void main(uint3 tid : SV_DispatchThreadID)
                     rdi.W_di = 0.0f;
 
                 // Store the merged reservoir
-                store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx);
-                store_n2_di(rdi.n2_di, g_Reservoirs_current_di, pixelIdx);
+                store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx, rdi.objID_di);
+                store_n2_di(rdi.n2_di, g_Reservoirs_current_di, pixelIdx, rdi.objID_di);
                 store_L2_di(rdi.L2_di, g_Reservoirs_current_di, pixelIdx);
                 store_W_di(rdi.W_di, g_Reservoirs_current_di, pixelIdx);
                 store_M_di(rdi.M_di, g_Reservoirs_current_di, pixelIdx);
+                store_objID_di(rdi.objID_di, g_Reservoirs_current_di, pixelIdx);
             }
         }
     }

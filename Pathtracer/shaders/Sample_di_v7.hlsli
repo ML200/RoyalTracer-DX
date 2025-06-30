@@ -82,34 +82,6 @@ MaterialOptimized CreateMaterialOptimized(in Material mat, uint materialID)
 }
 
 
-inline float3 ReconnectDI(
-    float3 x1,
-    float3 n1,
-    float3 x2,
-    float3 n2,
-    float3 L,
-    float3 outgoing,
-    MaterialOptimized material
-)
-{
-    float3 dir = x2 - x1;
-    float dist = length(dir);
-
-    float cosThetaX1 = max(0, dot(n1, normalize(dir)));
-    if(dot(n2, normalize(-dir)) < 0.0f)
-        n2 = -n2;
-    float cosThetaX2 = max(0, dot(n2, normalize(-dir)));
-    float2 probs = CalculateStrategyProbabilities(material, normalize(outgoing), n1);
-    float3 brdf0 = EvaluateBRDF(0, material, n1, normalize(-dir), normalize(outgoing));
-    float3 brdf1 = EvaluateBRDF(1, material, n1, normalize(-dir), normalize(outgoing));
-    float3 F1 = SafeMultiply(probs.x, brdf0);
-    float3 F2 = SafeMultiply(probs.y, brdf1);
-    float3 F = F1 + F2;
-
-    return F * L * cosThetaX1 * cosThetaX2 / (dist * dist);
-}
-
-
 inline float3 ReconnectGI(
     float3 x1,
     float3 n1,

@@ -84,18 +84,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 o = load_o(g_sample_current, pixelIdx);
         uint matID = load_matID(g_sample_current, pixelIdx);
 
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
         float3 contrib = ReconnectDI(
                              x1, n1, o, matID,
                              rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
         accumulation = contrib;
-
-        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
-        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
-        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di (rdi.W_di , g_Reservoirs_last_di, pixelIdx);
-        store_M_di (rdi.M_di , g_Reservoirs_last_di, pixelIdx);
     }
     else
     {
@@ -104,9 +98,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 
     // Debug
-    //if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
-    //if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
     /*float3 finalColor = sRGBGammaCorrection(accumulation);
+    if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
+    if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
     gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1);*/
 
     //Write to the scratch buffer internally

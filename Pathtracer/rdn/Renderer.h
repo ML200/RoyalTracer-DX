@@ -201,12 +201,12 @@ private:
 
     struct Reservoir_DI
     {
-        uint8_t  pad[28];
+        uint8_t  pad[32];
     };
 
     struct Reservoir_GI
     {
-        uint8_t  pad[32];
+        uint8_t  pad[36];
     };
 
     struct SampleData
