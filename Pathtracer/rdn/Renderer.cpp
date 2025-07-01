@@ -385,7 +385,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monke.obj"};
+    std::vector<std::string> models = {"garage.obj", "monke.obj", "monke_2.obj"};
 
 
 
@@ -466,14 +466,24 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
-    float oscillation = sinf(static_cast<float>(m_time) * 0.001f) * 6.0f; // amplitude = 2.0 units
-    float oscillation2 = sinf(static_cast<float>(m_time) * 0.001f) * 6.0f; // amplitude = 2.0 units
 
-    XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, oscillation2);
-    XMMATRIX translationMatrix = XMMatrixTranslation(1.f * oscillation, 1.f, 0.f);
+    float angle = static_cast<float>(m_time) * 0.001f;
+    float r     = 3.0f;
 
-    m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
+    float x = cosf(angle) * r + 1.0f;   // + centre.x
+    float z = sinf(angle) * r + 0.0f;   // + centre.z
+
+    XMMATRIX scale        = XMMatrixScaling(1.f, 1.f, 1.f);
+    XMMATRIX selfRotation = XMMatrixRotationY(angle);
+    XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
+
+    m_instances[2].second = scale * selfRotation * translate;
+
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(1.f, 1.f, 0.f);
+
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
