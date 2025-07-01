@@ -48,20 +48,20 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_init_gi_v7.hlsl|rg",
         L"barrier",
-        L"Pass_temp_di_v7.hlsl|cs:8x4",
+        L"Pass_temp_di_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:8x4",
         L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
+        /*L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:8x4",
-        L"barrier",
+        L"barrier",*/
         L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
     };
     /*m_passSequence = {
