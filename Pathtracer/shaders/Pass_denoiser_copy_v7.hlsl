@@ -80,5 +80,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Post Processing and image write
     float3 finalColor = gScratchPing[uint3(DTid.xy, 4)].xyz;
     finalColor = sRGBGammaCorrection(finalColor);
-    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }

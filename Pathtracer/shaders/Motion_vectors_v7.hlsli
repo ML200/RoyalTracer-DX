@@ -4,7 +4,7 @@
 //    – every lane randomly chooses one of them
 //    – use the chosen offset to build a neighbour
 //-----------------------------------------------
-inline uint GetRandomPixelCircleWeighted(
+/*inline uint GetRandomPixelCircleWeighted(
     uint   radius,
     uint   w,
     uint   h,
@@ -65,6 +65,59 @@ inline uint GetRandomPixelCircleWeighted(
                           : 2 * int(h) - newY - 2;
     }
 
+    return MapPixelID(uint2(w, h), uint2(newX, newY));
+}*/
+
+//─────────────────────────────────────────────────────────────────────────────
+//  GetRandomPixelCircleWeighted  – thread-local variant
+//    • Picks ONE random offset inside a radius-weighted disk
+//    • No wave intrinsics; each thread works independently
+//    • Mirrors out-of-bounds coordinates back into the image
+//─────────────────────────────────────────────────────────────────────────────
+inline int MirrorCoord(int v, int extent)          // branch-free mirror
+{
+    v = abs(v);
+    int  period = extent * 2;
+    int  m      = v % period;
+    return (m < extent) ? m : period - m - 1;
+}
+
+inline uint GetRandomPixelCircleWeighted(
+    uint   radius,      // search radius in pixels
+    uint   w,           // image width
+    uint   h,           // image height
+    uint   x,           // caller’s pixel x
+    uint   y,           // caller’s pixel y
+    inout  uint2 threadSeed)
+{
+    //---------------------------------------------------------------------
+    // 1.  Draw ONE random offset in a radius-weighted disk
+    //---------------------------------------------------------------------
+    if (radius == 0)   // degenerate case → stay at centre
+        return MapPixelID(uint2(w, h), uint2(x, y));
+
+    int offX, offY;
+    do
+    {
+        float  u     = RandomFloatSingle(threadSeed.x);     // [0,1)
+        float  z     = pow(u, SPAT_EXP_DI);                 // weight fall-off
+        float  r     = float(radius) * z;
+        float  angle = RandomFloatSingle(threadSeed.x) * 6.2831853;
+
+        offX = int(cos(angle) * r);
+        offY = int(sin(angle) * r);
+        // repeat until we do NOT pick the centre
+    } while (offX == 0 && offY == 0);
+
+    //---------------------------------------------------------------------
+    // 2.  Apply offset and mirror to stay inside frame bounds
+    //---------------------------------------------------------------------
+    int newX = MirrorCoord(int(x) + offX, int(w));
+    int newY = MirrorCoord(int(y) + offY, int(h));
+
+    //---------------------------------------------------------------------
+    // 3.  Map back to your linear pixel ID convention
+    //---------------------------------------------------------------------
     return MapPixelID(uint2(w, h), uint2(newX, newY));
 }
 
