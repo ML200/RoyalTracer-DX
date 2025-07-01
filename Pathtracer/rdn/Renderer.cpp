@@ -269,10 +269,15 @@ void Renderer::LoadPipeline() {
     }
   }
 
-  ThrowIfFailed(m_device->CreateCommandAllocator(
-      D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
+    for (UINT n = 0; n < FrameCount; ++n)
+    {
+        ThrowIfFailed(m_device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&m_commandAllocators[n])));
+    }
 
-  // #DXR Extra: Depth Buffering
+
+    // #DXR Extra: Depth Buffering
   // The original sample does not support depth buffering, so we need to
   // allocate a depth buffer, and later bind it before rasterization
   CreateDepthBuffer();
@@ -381,7 +386,7 @@ void Renderer::LoadAssets() {
 
   // Create the command list.
   ThrowIfFailed(m_device->CreateCommandList(
-      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(),
+      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
@@ -596,8 +601,10 @@ void Renderer::OnDestroy() {
 void Renderer::PopulateCommandList()
 {
     // 1) Reset allocator & list
-    ThrowIfFailed(m_commandAllocator->Reset());
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    auto* allocator = m_commandAllocators[m_frameIndex].Get();
+    ThrowIfFailed(allocator->Reset());
+    ThrowIfFailed(m_commandList->Reset(
+            allocator, m_pipelineState.Get()));
 
     // 2) Graphics setup: signature, viewports, RTV/DSV
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
@@ -986,10 +993,11 @@ void Renderer::CreateAccelerationStructures() {
 
   // Once the command list is finished executing, reset it to be reused for
   // rendering
-  ThrowIfFailed(
-      m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    ThrowIfFailed(
+            m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(),
+                                 m_pipelineState.Get()));
 
-  // Store the AS buffers. The rest of the buffers will be released once we exit
+    // Store the AS buffers. The rest of the buffers will be released once we exit
   // the function
   //m_bottomLevelAS = bottomLevelBuffers.pResult;
 }
@@ -2449,12 +2457,24 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
             D3D12_RESOURCE_STATE_GENERIC_READ);
     m_commandList->ResourceBarrier(1, &barrier);
 
-    // Execute and flush the command list
+    // ─────────────────────────────────────────────────────────────────────────────
+// Execute everything we just recorded and wait for it to finish
+// ─────────────────────────────────────────────────────────────────────────────
     ThrowIfFailed(m_commandList->Close());
+
     ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+// Fence-sync; this also updates m_frameIndex to the back buffer that will be
+// rendered next, i.e. the allocator that the GPU is now finished with.
     WaitForPreviousFrame();
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reset the allocator *for this frame* and then the command list
+// ─────────────────────────────────────────────────────────────────────────────
+    auto* allocator = m_commandAllocators[m_frameIndex].Get();   // pick the right one
+    ThrowIfFailed(allocator->Reset());                           // 1️⃣ allocator first
+    ThrowIfFailed(m_commandList->Reset(allocator, nullptr));     // 2️⃣ command list
 }
 
 //──────────────────────────────────────────────────────────────────────────────
