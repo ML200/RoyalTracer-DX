@@ -233,8 +233,6 @@ void main(uint3 dtid : SV_DispatchThreadID,
     }
 
     float3 outCol = accum / max(wSum,1e-6);
-
-    // optional fire-fly clamp (unchanged)
     float lumC = dot(colC,LUMA), lumO = dot(outCol,LUMA);
     if(lumO > lumC*4) outCol *= (lumC*4)/lumO;
 

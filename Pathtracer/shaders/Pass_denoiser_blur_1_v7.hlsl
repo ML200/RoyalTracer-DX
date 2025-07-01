@@ -101,7 +101,7 @@ inline SurfSample GetSurf(uint2 pix, uint imgW)
 {
     SurfSample s;
     uint idx     = MapPixelID(uint2(imgW, gImageHeight), pix);
-    s.colour     = gScratchPing[uint3(pix, 1)].xyz;
+    s.colour     = gScratchPing[uint3(pix, 0)].xyz;
     float3 pos   = load_x1(g_sample_current, idx);
     s.depth      = length(pos - mul(viewI, float4(0,0,0,1)).xyz);
     s.normal     = load_n1(g_sample_current, idx);
@@ -233,8 +233,6 @@ void main(uint3 dtid : SV_DispatchThreadID,
     }
 
     float3 outCol = accum / max(wSum,1e-6);
-
-    // optional fire-fly clamp (unchanged)
     float lumC = dot(colC,LUMA), lumO = dot(outCol,LUMA);
     if(lumO > lumC*4) outCol *= (lumC*4)/lumO;
 

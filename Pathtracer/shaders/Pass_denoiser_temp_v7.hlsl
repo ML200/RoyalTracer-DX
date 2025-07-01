@@ -74,7 +74,7 @@ uint2     MapPixelXY(float2 dims, uint id)
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    gDispatchIdx = DTid;
+    /*gDispatchIdx = DTid;
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     uint2  launch = DTid.xy;
@@ -210,5 +210,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
 
     gPermanentData[launch] = float4(Cacc, frames);
-    gScratchPing[uint3(launch, 1)] = float4(Cacc, 0.0);
+    gScratchPing[uint3(launch, 1)] = float4(Cacc, 0.0);*/
 }
