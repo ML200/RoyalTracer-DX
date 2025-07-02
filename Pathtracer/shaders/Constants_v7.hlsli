@@ -33,6 +33,7 @@
 #define SIGMA_ROUGH    4.0f
 #define ROUGH_DIFF_SIGMA 0.15f
 #define ILLUM_SIGMA 0.2f
+#define COLOR_RANGE_REL  .07f
 
 // Denoiser settings temporal
 #define ROUGHNESS_DECAY 0.05f

@@ -54,6 +54,8 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:8x4",
         L"barrier",
+        L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
+        L"barrier",
         L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
@@ -390,7 +392,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"garage.obj", "smoothMonke.obj", "monke_2.obj"};
 
 
 
