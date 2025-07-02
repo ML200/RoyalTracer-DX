@@ -135,23 +135,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //Write to the scratch buffer internally
     gScratchPing[uint3(launchIndex, 0)] = float4(accumulation, 0.0);
 
-    /*Defined as (0 is general render output):
-    - 7: albedo
-    - 8: emission, roughness, objID
-    - 9: normal
-    - 10: position_curr, M_curr
-    - 1: position_last
-    */
-    //update the last data
-    gScratchPing[uint3(launchIndex, 7)] = gScratchPing[uint3(launchIndex, 2)];
-    gScratchPing[uint3(launchIndex, 8)] = gScratchPing[uint3(launchIndex, 3)];
-    gScratchPing[uint3(launchIndex, 9)] = gScratchPing[uint3(launchIndex, 4)];
-    gScratchPing[uint3(launchIndex, 10)] = gScratchPing[uint3(launchIndex, 5)];
-    gScratchPing[uint3(launchIndex, 11)] = gScratchPing[uint3(launchIndex, 6)];
     // write the current data
     gScratchPing[uint3(launchIndex, 2)] = float4(albedo, 0.0f);
     gScratchPing[uint3(launchIndex, 3)] = float4(emission, roughness, objID, 0.0f);
     gScratchPing[uint3(launchIndex, 4)] = float4(normal, 0.0f);
     gScratchPing[uint3(launchIndex, 5)] = float4(position_curr, M_curr);
     gScratchPing[uint3(launchIndex, 6)] = float4(position_last, 0.0f);
+
+    // Debug
+    //gOutput[uint3(DTid.xy, 0)] = gScratchPing[uint3(launchIndex, 8)];
 }
