@@ -209,7 +209,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float alpha = alphaBase;
     alpha = lerp(alpha, 1.0, errFac);
-    alpha = lerp(alpha, 1.0, mvFac);
+    //alpha = lerp(alpha, 1.0, mvFac);
     alpha = lerp(alpha, 1.0, reactiveDepth);
     alpha = lerp(alpha, 1.0, glossyFactor);
 
