@@ -49,51 +49,64 @@ SampleData SampleCameraRay(uint idx){
     return sdata;
 }
 
-inline float2 GetLastFramePixelCoordinates_Float(
-    float3 worldPos,
-    float4x4 prevView,
-    float4x4 prevProjection,
-    float2 resolution,
-    uint objID)
+//---------------------------------------------------------------
+//  Common helpers / sentinels
+//---------------------------------------------------------------
+static const float2  kInvalidUV     = float2(-2.0f, -2.0f);    // <- outside [0,1]² by design
+static const int2    kInvalidPixel  = int2(-1, -1);
+
+//---------------------------------------------------------------
+//  Reprojects a world-space point to previous-frame *UV* coordinates
+//  • stays in 0-1 space  → avoids half-float quantisation at 4K+
+//  • returns kInvalidUV  → caller can early-out cheaply
+//---------------------------------------------------------------
+inline float2 GetLastFrameUV(
+    float3     worldPos,
+    float4x4   prevView,
+    float4x4   prevProjection, // MUST already contain last frame’s jitter
+    uint       objID           // per-instance transforms
+)
 {
-    // 1. Convert current world-space position back into the local space of this object:
-    float4 localPos = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    // 1. Current world → previous local → previous world
+    float4 localPos   = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float4 prevWorld  = mul(instanceProps[objID].prevObjectToWorld,  localPos);
 
-    // 2. Transform that local position by the *previous* frame's object-to-world matrix:
-    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
+    // 2. Previous world → clip
+    float4 clipPos    = mul(prevProjection, mul(prevView, prevWorld));
 
-    // 3. Project it into clip space using the previous frame’s view and projection:
-    float4 clipPos = mul(prevProjection, mul(prevView, prevWorldPos));
-
-    // If the clip-space w is not positive, it means the position was behind the camera last frame:
+    // 3. Cull points that were behind the camera
     if (clipPos.w <= 0.0f)
-    {
-        // Return some sentinel value that indicates it's off-screen or invalid:
-        return float2(-1.0f, -1.0f);
-    }
+        return kInvalidUV;
 
-    // 4. Convert clip space to normalized device coordinates:
-    float2 ndc = clipPos.xy / clipPos.w;
+    // 4. Clip → NDC → UV
+    float2 uv = clipPos.xy / clipPos.w * 0.5f + 0.5f;
+    uv.y      = 1.0f - uv.y;                   // API-specific Y-flip
 
-    // 5. Transform NDC (-1..1) to screen UV (0..1):
-    float2 screenUV = ndc * 0.5f + 0.5f;
+    // 5. Off-screen clamp (after the flip!)
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        return kInvalidUV;
 
-    // 6. Flip Y if needed (common in many rendering APIs):
-    screenUV.y = 1.0f - screenUV.y;
-
-    // 7. Finally convert to actual pixel coordinates:
-    return screenUV * resolution;
+    return uv;                                 // high-precision 0-1 UV
 }
 
+//---------------------------------------------------------------
+//  Wrapper that converts the valid UV into an integer pixel
+//  • multiplies by *resolution* only once, right at the end
+//  • rounds with an explicit +0.5  → avoids the “-1 sentinel → 0” artefact
+//---------------------------------------------------------------
 inline int2 GetBestReprojectedPixel_d(
-    float3 worldPos,
-    float4x4 prevView,
-    float4x4 prevProjection,
-    float2 resolution,
-    uint objID
-    )
+    float3     worldPos,
+    float4x4   prevView,
+    float4x4   prevProjection,
+    float2     resolution,
+    uint       objID
+)
 {
-    float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
-    int2 pixel = int2(round(subPixelCoord));
-    return pixel;
+    float2 uv = GetLastFrameUV(worldPos, prevView, prevProjection, objID);
+
+    if (uv.x < 0.0f)            // saw kInvalidUV
+        return kInvalidPixel;
+
+    // Convert *once* to pixel space and round to nearest integer
+    return int2(uv * resolution + 0.5f);
 }
