@@ -115,7 +115,7 @@ float J_term(
 }
 
 // Calculate reconnection
-float3 ReconnectDI(
+inline float3 ReconnectDI(
     float3 x1,
     float3 n1,
     float3 o,

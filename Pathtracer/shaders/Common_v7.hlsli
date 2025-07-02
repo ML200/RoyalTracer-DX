@@ -54,7 +54,7 @@ float SafeMultiplyScalar(float scalar, float vec)
 }
 
 // Conversion to scalar value used for phat
-float GetPHat(float3 v){
+inline float GetPHat(float3 v){
     return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
 }
 

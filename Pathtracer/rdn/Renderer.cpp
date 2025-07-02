@@ -54,13 +54,13 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:8x4",
         L"barrier",
-        /*L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
+        L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_blur_3_v7.hlsl|cs:8x4",
+        /*L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
         L"barrier",*/
         L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
     };
@@ -1310,7 +1310,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
     desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.Width            = GetWidth();
     desc.Height           = GetHeight();
-    desc.DepthOrArraySize = 8;                       // ← # slices you need
+    desc.DepthOrArraySize = 16;                       // ← # slices you need
     desc.MipLevels        = 1;
     desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;  // HDR, 64-bit total
     desc.SampleDesc.Count = 1;

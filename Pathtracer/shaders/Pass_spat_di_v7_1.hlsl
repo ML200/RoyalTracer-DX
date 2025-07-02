@@ -89,7 +89,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Based on the quality of the current canonical sample, reduce the number of spatial reuses.
         float conf = min(30.0f, rdi.M_di / TEMP_MCAP_DI);
         uint nbrBudget = SPAT_COUNT_MIN_DI +
-                 uint( (1.0f - conf) * float(SPAT_COUNT_MAX_DI - SPAT_COUNT_MIN_DI) + 0.5f );
+                 uint((1.0f - conf) * float(SPAT_COUNT_MAX_DI - SPAT_COUNT_MIN_DI) + 0.5f);
 
         for( int j = 0; j < nbrBudget; j++){
             uint tempPixelIdx = 0xFFFFFFFF;
