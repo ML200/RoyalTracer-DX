@@ -126,6 +126,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint  pidLast  = MapPixelID(dims, taps[k]);
             float3 xPrev   = load_x1   (g_sample_last, pidLast);
             float3 nPrev   = load_n1   (g_sample_last, pidLast);
+            uint  eprev = gScratchPing[uint3(taps[k], 3)].x;
             uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5);
 
             float  dPrev   = length(xPrev - camPos);
@@ -136,6 +137,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             bool ok = (dzTap  < 0.025f) &&
                       (nDotTap > 0.90f) &&
+                      (eprev == 0) &&
                        idOK;
 
             if (ok)
