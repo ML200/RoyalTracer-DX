@@ -182,8 +182,8 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
               DEmissionWeight (emiN)                   *
               DRoughnessWeight(distPx, roughC, roughN) *
               DObjIDWeight    (idC,  idN)              *
-              DMWeight        (motC)                   *
-              DMWeight        (motN)                   *
+              //DMWeight        (motC)                   *
+              //DMWeight        (motN)                   *
               DLumaWeight     (colC, colN);
 
         /* Bias-free contribution -------------------- */

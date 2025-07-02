@@ -59,6 +59,7 @@ cbuffer CameraParams : register(b0)
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
+#include "Denoiser_helper_v7.hlsli"
 
 static const float3 kLUMA = float3(0.2126, 0.7152, 0.0722);
 
@@ -142,13 +143,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             bool   idOK    = all(idPrev == asuint(objID_cur + 0.5));
 
-            bool ok = (dzTap  < 0.025f) &&
-                      (nDotTap > 0.999f) &&
+            float4 hTap = gPermanentData[taps[k]];
+            bool validColour = (hTap.a > 0.0);
+
+            float  planeW  = DDistanceWeight(x1_cur, xPrev, n1_cur);
+            bool   planeOK = planeW > 0.0f;
+
+            bool ok = (nDotTap > 0.999f) &&
+                      validColour &&
+                      planeOK &&
                        idOK;
 
-            if (ok)
+            if (ok && validColour )
             {
-                v[k]   = w[k];
+                v[k]   = w[k] * planeW;
                 wSum  += w[k];
             }
         }
@@ -194,8 +202,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // confidence adjusted alpha -> the better the sampler, the stronger the stability
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pIdx);
-    float conf      = saturate(rdi.M_di / 30.0);   // 0-1
-    float alphaBase = lerp(0.25, 0.03, conf);
+    float conf      = saturate(rdi.M_di / 60.0);   // 0-1
+    float alphaBase = lerp(0.5, 0.03, conf);
 
     // colour / motion / reactive gates
     float  lumCur   = dot(Ccur      , kLUMA);
@@ -225,6 +233,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     alpha = lerp(alpha, 1.0, mvFac);
     alpha = lerp(alpha, 1.0, reactiveDepth);
     alpha = lerp(alpha, 1.0, glossyFactor);
+
+    if (!histValid || (hist4.a < 0.5))
+        alpha = 1.0;
 
     float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);

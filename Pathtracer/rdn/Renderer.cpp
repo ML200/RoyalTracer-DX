@@ -62,8 +62,8 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
-        /*L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
-        L"barrier",*/
+        L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
+        L"barrier",
         L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
     };
     /*m_passSequence = {
@@ -474,7 +474,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.001f;
+    float angle = static_cast<float>(m_time) * 0.01f;
     float r     = 3.0f;
 
     float x = cosf(angle) * r + 1.0f;   // + centre.x
@@ -561,7 +561,7 @@ void Renderer::OnRender()
     float elapsedSec = duration<float>(now - g_lastRenderTime).count();
 
     // 2) If < 5 seconds have passed, skip GPU work entirely -> GPU stays idle.
-    if (elapsedSec < 0.001f)
+    if (elapsedSec < 0.05f)
     {
         // Optional: You can still process input messages or do CPU tasks,
         // but skip issuing any GPU commands or calls to Present().
