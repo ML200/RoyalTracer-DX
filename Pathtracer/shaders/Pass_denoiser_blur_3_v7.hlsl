@@ -49,194 +49,24 @@ cbuffer CameraParams : register(b0)
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
+#include "Denoiser_helper_v7.hlsli"
 
-// --------------------- Filter Parameters ------------------------------------
-#define STEP_WIDTH            4
-#define C_PHI                 0.6f
-#define P_PHI                 3.0f
-#define N_POWER               32.0f
-#define EDGE_COLOR_CUTOFF     2.0f
-#define EDGE_DEPTH_CUTOFF     2.0f
-#define EDGE_NORMAL_MIN       0.5f
-#define SKYBOX_MATID  4294967294u
-
-// ---------------------- LDS tile configuration ------------------------------
-#define TILE_X   8
-#define TILE_Y   4
-#define RADIUS   (2*STEP_WIDTH)
-#define LDS_W    (TILE_X + 2*RADIUS)
-#define LDS_H    (TILE_Y + 2*RADIUS)
-
-// ------------------------------ Kernel ---------------------------------------
-static const float  KERNEL[9] = { 0.0625, 0.25, 0.25, 0.25, 0.375,
-                                  0.25,  0.25, 0.25, 0.0625 };
-static const int2   OFFS  [9] = { int2(-2,0), int2(-1,0), int2(0,-2),
-                                  int2(0,-1), int2(0,0),  int2(0,1),
-                                  int2(0,2),  int2(1,0),  int2(2,0) };
-static const float3 LUMA       = float3(0.2126, 0.7152, 0.0722);
-
-// ---------- median parameters (tweak if desired) -----------------------------
-#define MED_SIGMA    2.5f      // deviation tolerated (× median)
-#define MED_REDUCE   0.001f      // weight scale for outliers
-
-// -------------------- groupshared buffers ------------------------------------
-groupshared float3 sColor [LDS_H][LDS_W];
-groupshared float  sDepth [LDS_H][LDS_W];
-groupshared float3 sNormal[LDS_H][LDS_W];
-groupshared uint   sMatID [LDS_H][LDS_W];
-groupshared float  sM     [LDS_H][LDS_W];   // M_di per pixel
-
-inline float ReservoirWeight(float Mdi)
+[numthreads(16, 16, 1)]
+void main(uint3 DTid : SV_DispatchThreadID)
 {
-    return saturate(Mdi / TEMP_MCAP_DI);    // linear 0→1
-}
+    gDispatchIdx = DTid;
+    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
-struct SurfSample
-{
-    float3 colour; float3 normal; float depth;
-    uint   matID;  float  Mdi;
-};
+    uint2  launch = DTid.xy;
+    uint2  dimsI  = DispatchRaysDimensions().xy;
+    float2 dims   = float2(dimsI);
+    uint   pIdx   = MapPixelID(dims, launch);
 
-inline SurfSample GetSurf(uint2 pix, uint imgW)
-{
-    SurfSample s;
-    uint idx     = MapPixelID(uint2(imgW, gImageHeight), pix);
-    s.colour     = gScratchPing[uint3(pix, 3)].xyz;
-    float3 pos   = load_x1(g_sample_current, idx);
-    s.depth      = length(pos - mul(viewI, float4(0,0,0,1)).xyz);
-    s.normal     = load_n1(g_sample_current, idx);
-    s.matID      = load_matID(g_sample_current, idx);
-    s.Mdi        = load_M_di (g_Reservoirs_current_di, idx);
-    return s;
-}
+    // Blur kernel
+    //float3 output = AtrousKernel(launch, 2, 1);
 
-// -----------------------------------------------------------------------------
-//                            MAIN KERNEL
-// -----------------------------------------------------------------------------
-[numthreads(TILE_X, TILE_Y, 1)]
-void main(uint3 dtid : SV_DispatchThreadID,
-          uint3 gid  : SV_GroupID,
-          uint3 tid  : SV_GroupThreadID)
-{
-    // ---------- cooperative LDS load ----------------------------------------
-    int2 groupBase = int2(gid.xy)*int2(TILE_X,TILE_Y) - int2(RADIUS,RADIUS);
-
-    for(uint yy=tid.y; yy<LDS_H; yy+=TILE_Y)
-        for(uint xx=tid.x; xx<LDS_W; xx+=TILE_X)
-        {
-            uint2 gPix = uint2(groupBase.x+xx, groupBase.y+yy);
-            gPix = clamp(gPix, uint2(0,0), gImageSize-1);
-
-            SurfSample s = GetSurf(gPix, gImageWidth);
-            sColor [yy][xx] = s.colour;
-            sDepth [yy][xx] = s.depth;
-            sNormal[yy][xx] = s.normal;
-            sMatID [yy][xx] = s.matID;
-            sM     [yy][xx] = s.Mdi;
-        }
-    GroupMemoryBarrierWithGroupSync();
-
-    // ---------- per-pixel filtering -----------------------------------------
-    uint2 launch = dtid.xy;
-    if(launch.x>=gImageWidth || launch.y>=gImageHeight) return;
-
-    uint lX = tid.x + RADIUS;
-    uint lY = tid.y + RADIUS;
-
-    uint   matC  = sMatID[lY][lX];
-    float3 colC  = sColor[lY][lX];
-    float  M_c   = sM    [lY][lX];
-    float  wMc   = ReservoirWeight(M_c);
-
-    if(matC == SKYBOX_MATID)
-    {
-        gScratchPing[uint3(launch,4)] = float4(colC,1);
-        return;
-    }
-
-    float3 nC = sNormal[lY][lX];
-    float  zC = sDepth [lY][lX];
-
-    float sigma_c = C_PHI * STEP_WIDTH;
-    float sigma_z = P_PHI * STEP_WIDTH;
-
-    float3 tapClr[10];   // centre + up to 9 taps
-    float  tapW  [10];
-    int    tapCnt = 0;
-
-    // centre first -----------------------------------------------------------
-    tapClr[tapCnt] = colC;
-    tapW  [tapCnt] = wMc * KERNEL[4];
-    ++tapCnt;
-
-    // neighbours -------------------------------------------------------------
-    [unroll]
-    for(int i=0;i<9;++i)
-    {
-        int2 o = OFFS[i]*STEP_WIDTH;
-        uint lx=lX+o.x, ly=lY+o.y;
-        if(lx==lX && ly==lY) continue; // centre already done
-
-        if(sMatID[ly][lx]!=matC) continue;
-
-        float3 colN = sColor [ly][lx];
-        float3 dc   = colC - colN;
-        float  colDist2 = dot(dc,dc);
-        if(colDist2 > (EDGE_COLOR_CUTOFF*sigma_c)*(EDGE_COLOR_CUTOFF*sigma_c))
-            continue;
-
-        float3 nN = sNormal[ly][lx];
-        float  nDot = saturate(dot(nC,nN));
-        if(nDot < EDGE_NORMAL_MIN) continue;
-
-        float zN = sDepth[ly][lx];
-        float dz = abs(zC - zN);
-        if(dz > EDGE_DEPTH_CUTOFF*sigma_z) continue;
-
-        float M_n = sM[ly][lx];
-        float wMn = ReservoirWeight(M_n);
-
-        float c_w = exp(-colDist2/(sigma_c*sigma_c));
-        float n_w = pow(nDot, N_POWER);
-        float p_w = exp(-dz/sigma_z);
-
-        float w = c_w*n_w*p_w*wMn*KERNEL[i];
-
-        tapClr[tapCnt] = colN;
-        tapW  [tapCnt] = w;
-        ++tapCnt;
-    }
-
-    // ---------- median-guided rejection ------------------------------------
-    // compute median luminance of collected taps
-    float lum[10];
-    for(int i=0;i<tapCnt;++i) lum[i]=dot(tapClr[i],LUMA);
-
-    // insertion sort small array
-    for(int i=1;i<tapCnt;++i){
-        float key=lum[i]; int j=i-1;
-        while(j>=0 && lum[j]>key){ lum[j+1]=lum[j]; --j; }
-        lum[j+1]=key;
-    }
-    float med = lum[tapCnt>>1];
-
-    // second accumulation with median check
-    float3 accum=0; float wSum=0;
-    for(int i=0;i<tapCnt;++i)
-    {
-        float w = tapW[i];
-        float l = dot(tapClr[i],LUMA);
-        if(l > med*MED_SIGMA)      // outlier?
-            w *= MED_REDUCE;
-        accum += tapClr[i]*w;
-        wSum  += w;
-    }
-
-    float3 outCol = accum / max(wSum,1e-6);
-    float lumC = dot(colC,LUMA), lumO = dot(outCol,LUMA);
-    if(lumO > lumC*4) outCol *= (lumC*4)/lumO;
-
-    gScratchPing[uint3(launch,4)] = float4(outCol,1);
+    // Store accumulated result
+    gScratchPing[uint3(launch, 0)] = gScratchPing[uint3(launch, 1)];//float4(output, 1);
 }
 
 

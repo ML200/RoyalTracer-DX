@@ -31,7 +31,7 @@ uint pickAlias(inout uint seed)
 //    (1, 2, 4, 8, 16, 32) for best warp occupancy.
 //  – Powerful GPUs can use their full range for DI sampling, should be limited for GI at each vertex to ~4-8 tho
 //------------------------------------------
-uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
+/*uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
 {
     // Safety: k shouldnt exceed the lane cound -> we cant have more samples than lanes]
     uint k = clamp(WAVE_CANDIDATES_DI, 1u, WaveGetLaneCount());
@@ -52,6 +52,11 @@ uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
     uint idx = WaveReadLaneAt(idx_k, choice);
 
     return idx;
+}*/
+
+uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
+{
+    return pickAlias(threadSeed.x);;
 }
 
 

@@ -8,7 +8,7 @@ float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
 }
 
 // defensive pair-wise MIS, canonical sample
-float PairwiseMIS_Canonical_Temp(
+inline float PairwiseMIS_Canonical_Temp(
     float M_c,      // multiplicity / confidence of canonical
     float M_n,      // multiplicity / confidence of neighbour
     float p_c,      // p̂_c(y_c)
@@ -26,7 +26,7 @@ float PairwiseMIS_Canonical_Temp(
 }
 
 // defensive pair-wise MIS, neighbour sample
-float PairwiseMIS_Neighbour_Temp(
+inline float PairwiseMIS_Neighbour_Temp(
     float M_c,
     float M_n,
     float p_c,      // p̂_c(y_c)

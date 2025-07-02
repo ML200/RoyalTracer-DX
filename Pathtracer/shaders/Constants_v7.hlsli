@@ -3,10 +3,10 @@
 #define LUT_SIZE 16
 
 // ___ DI initial sampling ___
-#define NEE_SAMPLES_DI 8
+#define NEE_SAMPLES_DI 4
 #define BSDF_SAMPLES_DI 1
 
-#define WAVE_CANDIDATES_DI 8
+//#define WAVE_CANDIDATES_DI 32
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 4
@@ -19,7 +19,20 @@
 #define SPAT_EXP_DI 1.0f
 #define SPAT_RAD 20
 
-#define SPAT_COUNT_MAX_DI 5
+#define SPAT_COUNT_MAX_DI 3
 #define SPAT_COUNT_MIN_DI 1
 #define SPAT_TRIS_DI 3
-#define SPAT_WAVE_CANDIDATES_DI 32
+//#define SPAT_WAVE_CANDIDATES_DI 32
+
+
+// Denoiser settings spatial
+#define PLANE_DISTANCE_THRESHOLD 0.02f
+#define NORMAL_POWER 16.0f
+#define ALBEDO_SIGMA 0.2f
+#define SIGMA_SMOOTH   1.0f
+#define SIGMA_ROUGH    4.0f
+#define ROUGH_DIFF_SIGMA 0.15f
+#define ILLUM_SIGMA 0.2f
+
+// Denoiser settings temporal
+#define ROUGHNESS_DECAY 0.05f
