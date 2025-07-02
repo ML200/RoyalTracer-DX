@@ -72,6 +72,19 @@ inline float DMWeight(float M)
     return saturate(M / (2.0f * TEMP_MCAP_DI));
 }
 
+#define LUMA_REL_SIGMA  0.15f
+#define LUMA_KNEE       0.6f       // controls how much ever gets *truly* muted
+
+inline float DLumaWeight(float3 colC, float3 colN)
+{
+    float lumC = dot(colC, float3(0.2126,0.7152,0.0722));
+    float lumN = dot(colN, float3(0.2126,0.7152,0.0722));
+    float d    = abs(lumC - lumN) / max(max(lumC, lumN), 1e-3f);
+
+    float w    = exp(-d / LUMA_REL_SIGMA);   // classic bilateral core
+    return w / (w + LUMA_KNEE);              // compress instead of kill
+}
+
 
 
 // Pre-computed B-spline kernel, Σ = 16  (centre=4, cross=2, corners=1)
@@ -128,7 +141,7 @@ inline void LoadGBuffer(
 
 float3 AtrousKernel(int2 pixelPos, int step, uint slice)
 {
-    /* ── Load centre sample ───────────────────────────── */
+    /* ── Load centre sample (same as before) ─────────── */
     float3 albC, norC, posC;
     float  emiC, roughC, motC;
     uint   idC;
@@ -136,23 +149,19 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
                 albC, emiC, roughC,
                 idC , norC, posC, motC);
 
-    // Get center pixel color
     float3 colC = gScratchPing[uint3(pixelPos, slice)].xyz;
-    // Exit on emitter
-    if (emiC != 0.0f)
+    if (emiC != 0.0f)                  // emitters stay crisp
         return colC;
 
+    /* --- Accumulate --------------------------------------------------- */
+    float3 accum = 0.0f;
 
-    float3 accum = 0.0;
-    float  wSum  = 0.0;
-
-    /* ── 9-tap à-trous pass (fully unrolled) ─────────── */
     [unroll]
     for (uint i = 0; i < 9; ++i)
     {
         const int2 uv = pixelPos + OFF[i] * step;
 
-        /* Load neighbour */
+        /* Neighbour data -------------------------- */
         float3 albN, norN, posN;
         float  emiN, roughN, motN;
         uint   idN;
@@ -160,11 +169,13 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
                     albN, emiN, roughN,
                     idN , norN, posN, motN);
 
-        /* Pixel-space distance (for roughness Gaussian) */
+        float3 colN  = gScratchPing[uint3(uv, slice)].xyz;
+
+        /* Distance in pixel space (for roughness term) */
         const float distPx = length(float2(OFF[i])) * step;
 
-        /* Combined bilateral weight */
-        float w =
+        /* Feature-guided scalar in [0,1] ------------ */
+        float guide =
               DDistanceWeight (posC, posN, norC)       *
               DNormalWeight   (norC, norN)             *
               DAlbedoWeight   (albC, albN)             *
@@ -172,15 +183,15 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
               DRoughnessWeight(distPx, roughC, roughN) *
               DObjIDWeight    (idC,  idN)              *
               DMWeight        (motC)                   *
-              DMWeight        (motN);
+              DMWeight        (motN)                   *
+              DLumaWeight     (colC, colN);
 
-        w *= KERNEL[i];
-
-        /* Accumulate neighbour colour (slice 0) */
-        float3 colourN = gScratchPing[uint3(uv, slice)].xyz;
-        accum += w * colourN;
-        wSum  += w;
+        /* Bias-free contribution -------------------- */
+        float3 sample = lerp(colC, colN, guide);   // if guide==0 → centre
+        accum += KERNEL[i] * sample;               // kernel sums to 1
     }
-    return accum / max(wSum, 1e-5);
+
+    return accum;            // no need for explicit normalisation!
 }
+
 

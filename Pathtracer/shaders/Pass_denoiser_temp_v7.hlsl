@@ -82,7 +82,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float2 dims   = float2(dimsI);
     uint   pIdx   = MapPixelID(dims, launch);
 
-    float3  Ccur   = gScratchPing[uint3(launch, 0)].rgb;
+    float3  Ccur   = gScratchPing[uint3(launch, 1)].rgb;
     float3  x1_cur = load_x1(g_sample_current, pIdx);
     float3  n1_cur = load_n1(g_sample_current, pIdx);
     float3  objID_cur = load_objID(g_sample_current, pIdx);
@@ -118,6 +118,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 camPos = mul(viewI, float4(0,0,0,1)).xyz;
         float  dCur   = length(x1_cur - camPos);
 
+        uint e00 = asuint(gScratchPing[uint3(i00,8)].x);
+        uint e10 = asuint(gScratchPing[uint3(i10,8)].x);
+        uint e01 = asuint(gScratchPing[uint3(i01,8)].x);
+        uint e11 = asuint(gScratchPing[uint3(i11,8)].x);
+
+        bool emissiveHit =
+               (e00|e10|e01|e11) != 0;   // any of the 4 taps is emissive?
+
         [unroll]
         for (int k = 0; k < 4; ++k)
         {
@@ -126,7 +134,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint  pidLast  = MapPixelID(dims, taps[k]);
             float3 xPrev   = load_x1   (g_sample_last, pidLast);
             float3 nPrev   = load_n1   (g_sample_last, pidLast);
-            uint  eprev = gScratchPing[uint3(taps[k], 8)].x;
             uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5);
 
             float  dPrev   = length(xPrev - camPos);
@@ -137,7 +144,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             bool ok = (dzTap  < 0.025f) &&
                       (nDotTap > 0.999f) &&
-                      (eprev == 0) &&
                        idOK;
 
             if (ok)
@@ -163,7 +169,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
             hist4     = float4(Ccur, 0);
             histValid = false;
         }
+
+        if (emissiveHit)
+        {
+            histValid = false;          // force a fresh start
+            hist4 = float4(Ccur, 0);    //   (keeps your neighbourhood clamp happy)
+        }
     }
+
 
     // neighbourhood clamp
     float3 cMin = Ccur, cMax = Ccur;
@@ -171,7 +184,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     [unroll] for(int nx = -1; nx <= 1; ++nx)
     {
         int2 p = clamp(int2(launch) + int2(nx,ny), 0, int2(dims)-1);
-        float3 cN = gScratchPing[uint3(p,0)].rgb;
+        float3 cN = gScratchPing[uint3(p,1)].rgb;
         cMin = min(cMin, cN);
         cMax = max(cMax, cN);
     }
@@ -198,7 +211,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float2 curSS = (float2(launch) + 0.5) / dims;
         float2 velSS = curSS - (reprojF + 0.5) / dims;
         float  velPx = length(velSS * dims);
-        mvFac        = saturate((velPx - 1.0) / 10.0);
+        mvFac        = saturate((velPx - 1.0) / 100.0);
 
         reactiveDepth = saturate((dz - 0.03) * 35.0);
     }
@@ -216,6 +229,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
     float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
 
-    gPermanentData[launch] = float4(Cacc, frames);
-    gScratchPing[uint3(launch, 1)] = float4(Cacc, 0.0);
+    //gPermanentData[launch] = float4(Cacc, frames);
+    gScratchPing[uint3(launch, 0)] = float4(Cacc, 0.0);
 }
