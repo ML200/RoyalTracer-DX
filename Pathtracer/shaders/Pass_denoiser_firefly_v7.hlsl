@@ -61,8 +61,6 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 
 static const float3 kLUMA = float3(0.2126, 0.7152, 0.0722);
-
-// RGB → luminance helper (rec. 709 constants are fine for HDR too)
 inline float Luma(float3 rgb)
 {
     return dot(rgb, float3(0.2126, 0.7152, 0.0722));
@@ -77,15 +75,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         return;
 
     uint2 launch = DTid.xy;
-
-    //------------------------------------------------------------------
-    // 1. Fetch the centre pixel
-    //------------------------------------------------------------------
     float3 centerRGB = gScratchPing[uint3(launch, 0)].rgb;
-
-    //------------------------------------------------------------------
-    // 2. Accumulate the eight neighbours (guarding image borders)
-    //------------------------------------------------------------------
     float3 neighbourSum = 0.0;
     uint    neighbourCnt = 0;
 
@@ -95,11 +85,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
         [unroll]
         for (int dx = -1; dx <= 1; ++dx)
         {
-            if (dx == 0 && dy == 0) continue;               // skip centre
+            if (dx == 0 && dy == 0) continue;
 
             int2 n = int2(launch) + int2(dx, dy);
             if (n.x < 0 || n.y < 0 || n.x >= int(gImageWidth) || n.y >= int(gImageHeight))
-                continue;                                   // clamp outside
+                continue;
 
             neighbourSum += gScratchPing[uint3(n, 0)].rgb;
             ++neighbourCnt;
@@ -107,18 +97,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     float3 neighbourAvg = neighbourSum / float(neighbourCnt);
-
-    //------------------------------------------------------------------
-    // 3. Decide if centre is a firefly
-    //------------------------------------------------------------------
     float centerLum     = Luma(centerRGB);
     float neighbourLum  = Luma(neighbourAvg);
 
     if (centerLum > neighbourLum * (1.0 + uThreshold))
-        centerRGB = neighbourAvg;      // replace the outlier
-
-    //------------------------------------------------------------------
-    // 4. Store to the "pong" slice
-    //------------------------------------------------------------------
+        centerRGB = neighbourAvg;
     gScratchPing[uint3(launch, 1)] = float4(centerRGB, 1.0);
 }

@@ -63,9 +63,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     uint   pIdx   = MapPixelID(dims, launch);
 
     // Blur kernel
-    float3 output = AtrousKernel(launch, 1, 0);
+    float3 output = AtrousKernel(launch, 4, 0);
 
     // Store accumulated result
+    //gPermanentData[DTid.xy] = float4(output, 1);
     gScratchPing[uint3(launch, 1)] = float4(output, 1);
 }
 

@@ -88,7 +88,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3  n1_cur = load_n1(g_sample_current, pIdx);
     float3  objID_cur = load_objID(g_sample_current, pIdx);
 
-    float2 reprojF = GetLastFramePixelCoordinates_Float(x1_cur, prevView, prevProjection, dims, objID_cur);
+    int2 reprojF = GetBestReprojectedPixel_d(x1_cur, prevView, prevProjection, dims, objID_cur);
 
     bool reprojOK = all(reprojF >= 0) && reprojF.x < dims.x && reprojF.y < dims.y;
 
@@ -98,9 +98,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if (reprojOK)
     {
-        float2 rc   = clamp(reprojF, 0, dims - 1.001);
-        int2  i00   = int2(rc);
-        float2 frac = rc - float2(i00);
+        int2  i00   = reprojF;
+        float2 frac = float2(reprojF) - float2(i00);
         int2  i10   = min(i00 + int2(1,0), int2(dims)-1);
         int2  i01   = min(i00 + int2(0,1), int2(dims)-1);
         int2  i11   = min(i00 + int2(1,1), int2(dims)-1);
@@ -238,8 +237,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         alpha = 1.0;
 
     float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
-    float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
+    //float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
 
-    //gPermanentData[launch] = float4(Cacc, frames);
+    gPermanentData[launch] = float4(Cacc, 1);
     gScratchPing[uint3(launch, 0)] = float4(Cacc, 0.0);
 }

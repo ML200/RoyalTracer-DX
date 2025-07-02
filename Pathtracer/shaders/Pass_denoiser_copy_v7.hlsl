@@ -93,7 +93,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // Post Processing and image write
     float3 finalColor = gScratchPing[uint3(DTid.xy, 1)].xyz;
-    gPermanentData[DTid.xy] = float4(finalColor, 1);
+    //gPermanentData[DTid.xy] = float4(finalColor, 1);
     finalColor = sRGBGammaCorrection(finalColor);
     gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)] = gPermanentData[DTid.xy];
 }

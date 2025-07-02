@@ -72,32 +72,62 @@ inline float DMWeight(float M)
     return saturate(M / (2.0f * TEMP_MCAP_DI));
 }
 
-#define LUMA_REL_SIGMA  0.15f
-#define LUMA_KNEE       0.6f       // controls how much ever gets *truly* muted
+//--------------------------------------------------------------------
+// Luminance-guided bilateral weight with
+//  • inverse scaling by ReSTIR weight M   (low-M  ⇒   weight→1)
+//  • gentler behaviour in very dark tones
+//--------------------------------------------------------------------
+#define LUMA_REL_SIGMA   0.2f    // bilateral fall-off (unchanged)
+#define LUMA_KNEE        0.1f    // compression knee    (unchanged)
+#define LUMA_EPS         1e-2f    // protects deep-shadow division
+#define M_REF            (2.0f * TEMP_MCAP_DI)   // same normalisation you use elsewhere
 
-inline float DLumaWeight(float3 colC, float3 colN)
+inline float DLumaWeight(float3 colC,
+                         float3 colN,
+                         float   M)      // ← NEW PARAM
 {
-    float lumC = dot(colC, float3(0.2126,0.7152,0.0722));
-    float lumN = dot(colN, float3(0.2126,0.7152,0.0722));
-    float d    = abs(lumC - lumN) / max(max(lumC, lumN), 1e-3f);
+    //----------------------------------------------------------------
+    // 1. Luminance in *linear* space (Rec.-709 coeffs are fine here)
+    //----------------------------------------------------------------
+    float lumC = dot(colC, float3(0.2126, 0.7152, 0.0722));
+    float lumN = dot(colN, float3(0.2126, 0.7152, 0.0722));
 
-    float w    = exp(-d / LUMA_REL_SIGMA);   // classic bilateral core
-    return w / (w + LUMA_KNEE);              // compress instead of kill
+    //----------------------------------------------------------------
+    // 2. Relative difference – robust in deep shadows
+    //----------------------------------------------------------------
+    float relMax   = max(max(lumC, lumN), LUMA_EPS);     // avoid blow-up
+    float d        = abs(lumC - lumN) / relMax;          //   ∈ [0,∞)
+
+    //----------------------------------------------------------------
+    // 3. Classic bilateral ⇒ compressed (same as before)
+    //----------------------------------------------------------------
+    float wLum     = exp(-d / LUMA_REL_SIGMA);           // bilateral core
+    wLum           = wLum / (wLum + LUMA_KNEE);          // knee compression
+
+    //----------------------------------------------------------------
+    // 4. Inverse scaling by ReSTIR weight M
+    //    • normalise M to [0,1]   (≈ confidence in the *current* sample)
+    //    • blend towards 1 as confidence drops
+    //----------------------------------------------------------------
+    float invM     = 1.0f - saturate(M / M_REF);         // low-M ⇒ invM→1
+    float wMerged  = lerp(wLum, 1.0f, invM);             // low-M relaxes test
+
+    return wMerged;
 }
 
 
 
 // Pre-computed B-spline kernel, Σ = 16  (centre=4, cross=2, corners=1)
 static const float KERNEL[9] = {
-    4.0f/16,  // center
-    2.0f/16,  // left
-    2.0f/16,  // right
-    2.0f/16,  // up
-    2.0f/16,  // down
-    1.0f/16,  // upper-left
-    1.0f/16,  // upper-right
-    1.0f/16,  // lower-left
-    1.0f/16   // lower-right
+    4.0f,  // center
+    2.0f,  // left
+    2.0f,  // right
+    2.0f,  // up
+    2.0f,  // down
+    1.0f,  // upper-left
+    1.0f,  // upper-right
+    1.0f,  // lower-left
+    1.0f   // lower-right
 };
 
 // Pixel offsets (matches KERNEL order)
@@ -141,7 +171,7 @@ inline void LoadGBuffer(
 
 float3 AtrousKernel(int2 pixelPos, int step, uint slice)
 {
-    /* ── Load centre sample (same as before) ─────────── */
+    /* ── 1. Centre sample ─────────────────────────────────────────── */
     float3 albC, norC, posC;
     float  emiC, roughC, motC;
     uint   idC;
@@ -150,18 +180,21 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
                 idC , norC, posC, motC);
 
     float3 colC = gScratchPing[uint3(pixelPos, slice)].xyz;
-    if (emiC != 0.0f)                  // emitters stay crisp
+
+    // Keep emissive surfaces untouched
+    if (emiC != 0.0f)
         return colC;
 
-    /* --- Accumulate --------------------------------------------------- */
-    float3 accum = 0.0f;
+    /* ── 2. First pass: compute weights only ─────────────────────── */
+    float   w[9];          // per-tap weights
+    float   wSum = 0.0f;   // total (for normalisation)
 
     [unroll]
     for (uint i = 0; i < 9; ++i)
     {
         const int2 uv = pixelPos + OFF[i] * step;
 
-        /* Neighbour data -------------------------- */
+        /* Neighbour attributes ------------------------------------ */
         float3 albN, norN, posN;
         float  emiN, roughN, motN;
         uint   idN;
@@ -169,29 +202,57 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
                     albN, emiN, roughN,
                     idN , norN, posN, motN);
 
-        float3 colN  = gScratchPing[uint3(uv, slice)].xyz;
+        /* Early-out: skip emissive neighbours – they never contribute */
+        if (emiN != 0.0f)
+        {
+            w[i] = 0.0f;
+            continue;
+        }
 
-        /* Distance in pixel space (for roughness term) */
+        /* Pixel-space distance for roughness falloff */
         const float distPx = length(float2(OFF[i])) * step;
 
-        /* Feature-guided scalar in [0,1] ------------ */
-        float guide =
+        /* Feature-guided bilateral term (∈ [0,1]) */
+        float3 colN = gScratchPing[uint3(uv, slice)].xyz;
+        const float guide =
               DDistanceWeight (posC, posN, norC)       *
               DNormalWeight   (norC, norN)             *
               DAlbedoWeight   (albC, albN)             *
               DEmissionWeight (emiN)                   *
               DRoughnessWeight(distPx, roughC, roughN) *
               DObjIDWeight    (idC,  idN)              *
-              //DMWeight        (motC)                   *
-              //DMWeight        (motN)                   *
-              DLumaWeight     (colC, colN);
+              DLumaWeight     (colC, colN, motN);
 
-        /* Bias-free contribution -------------------- */
-        float3 sample = lerp(colC, colN, guide);   // if guide==0 → centre
-        accum += KERNEL[i] * sample;               // kernel sums to 1
+        /* Spatial kernel (e.g. Gaussian) --------------------------- */
+        w[i] = KERNEL[i] * guide;
+
+        wSum += w[i];
     }
 
-    return accum;            // no need for explicit normalisation!
+    /* Robust fallback: if all weights vanished, keep centre sample */
+    if (wSum == 0.0f)
+        return colC;
+
+    /* ── 3. Second pass: accumulate with **normalised** weights ─── */
+    float3 accum = 0.0f;
+
+    [unroll]
+    for (uint i = 0; i < 9; ++i)
+    {
+        if (w[i] == 0.0f)          // cheap branch; avoid useless reads
+            continue;
+
+        const int2 uv = pixelPos + OFF[i] * step;
+        float3 colN = gScratchPing[uint3(uv, slice)].xyz;
+
+        /* Bias-free lerp toward C as in original */
+        float3 sample = lerp(colC, colN,           // if guide==0 → centre
+                             w[i] / KERNEL[i]);    // undo spatial kernel part
+
+        accum += (w[i] / wSum) * sample;           // **normalised** weight
+    }
+
+    return accum;  // fully normalised, no extra division needed
 }
 
 
