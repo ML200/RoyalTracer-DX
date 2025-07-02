@@ -1728,7 +1728,7 @@ void Renderer::CreateShaderResourceHeap() {
     scratchDesc.Format                   = DXGI_FORMAT_R16G16B16A16_FLOAT;
     scratchDesc.Texture2DArray.MipSlice  = 0;
     scratchDesc.Texture2DArray.FirstArraySlice = 0;
-    scratchDesc.Texture2DArray.ArraySize = 8;       // same as DepthOrArraySize
+    scratchDesc.Texture2DArray.ArraySize = 16;       // same as DepthOrArraySize
 
     m_device->CreateUnorderedAccessView(
             m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);

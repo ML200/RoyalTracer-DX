@@ -77,6 +77,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
     store_matID(cur.matID, g_sample_last, pixelIdx);
     store_objID(cur.objID, g_sample_last, pixelIdx);
 
+    /*Defined as (0 is general render output):
+    - 7: albedo
+    - 8: emission, roughness, objID
+    - 9: normal
+    - 10: position_curr, M_curr
+    - 1: position_last
+    */
+    //update the last data
+    gScratchPing[uint3(DTid.xy, 7)] = gScratchPing[uint3(DTid.xy, 2)];
+    gScratchPing[uint3(DTid.xy, 8)] = gScratchPing[uint3(DTid.xy, 3)];
+    gScratchPing[uint3(DTid.xy, 9)] = gScratchPing[uint3(DTid.xy, 4)];
+    gScratchPing[uint3(DTid.xy, 10)] = gScratchPing[uint3(DTid.xy, 5)];
+    gScratchPing[uint3(DTid.xy, 11)] = gScratchPing[uint3(DTid.xy, 6)];
+
     // Post Processing and image write
     float3 finalColor = gScratchPing[uint3(DTid.xy, 1)].xyz;
     gPermanentData[DTid.xy] = float4(finalColor, 1);

@@ -126,7 +126,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint  pidLast  = MapPixelID(dims, taps[k]);
             float3 xPrev   = load_x1   (g_sample_last, pidLast);
             float3 nPrev   = load_n1   (g_sample_last, pidLast);
-            uint  eprev = gScratchPing[uint3(taps[k], 3)].x;
+            uint  eprev = gScratchPing[uint3(taps[k], 8)].x;
             uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5);
 
             float  dPrev   = length(xPrev - camPos);
@@ -136,7 +136,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             bool   idOK    = all(idPrev == asuint(objID_cur + 0.5));
 
             bool ok = (dzTap  < 0.025f) &&
-                      (nDotTap > 0.90f) &&
+                      (nDotTap > 0.999f) &&
                       (eprev == 0) &&
                        idOK;
 
@@ -198,7 +198,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float2 curSS = (float2(launch) + 0.5) / dims;
         float2 velSS = curSS - (reprojF + 0.5) / dims;
         float  velPx = length(velSS * dims);
-        mvFac        = saturate((velPx - 1.0) / 4.0);
+        mvFac        = saturate((velPx - 1.0) / 10.0);
 
         reactiveDepth = saturate((dz - 0.03) * 35.0);
     }
@@ -209,7 +209,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float alpha = alphaBase;
     alpha = lerp(alpha, 1.0, errFac);
-    //alpha = lerp(alpha, 1.0, mvFac);
+    alpha = lerp(alpha, 1.0, mvFac);
     alpha = lerp(alpha, 1.0, reactiveDepth);
     alpha = lerp(alpha, 1.0, glossyFactor);
 
