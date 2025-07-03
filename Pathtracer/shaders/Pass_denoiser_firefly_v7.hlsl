@@ -75,7 +75,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
         return;
 
     uint2 launch = DTid.xy;
-    float3 centerRGB = gScratchPing[uint3(launch, 0)].rgb;
+    // Feed forward emitters
+    if(gScratchPing[uint3(launch, 3)].x == 1){
+        gScratchPing[uint3(launch, 0)] = gScratchPing[uint3(launch, 2)];
+        return;
+    }
+
+    float3 centerRGB = gScratchPing[uint3(launch, 1)].rgb;
     float3 neighbourSum = 0.0;
     uint    neighbourCnt = 0;
 
@@ -91,7 +97,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (n.x < 0 || n.y < 0 || n.x >= int(gImageWidth) || n.y >= int(gImageHeight))
                 continue;
 
-            neighbourSum += gScratchPing[uint3(n, 0)].rgb;
+            neighbourSum += gScratchPing[uint3(n, 1)].rgb;
             ++neighbourCnt;
         }
     }
@@ -102,5 +108,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if (centerLum > neighbourLum * (1.0 + uThreshold))
         centerRGB = neighbourAvg;
-    gScratchPing[uint3(launch, 1)] = float4(centerRGB, 1.0);
+    gScratchPing[uint3(launch, 0)] = float4(centerRGB, 1.0);
 }

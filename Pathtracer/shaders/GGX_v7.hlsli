@@ -90,7 +90,7 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 //    sample            = the *reflected* direction in world space
 //    origin            = slightly bumped shading origin (optional)
 // ------------------------------------------------------------------------------
-inline void SampleBRDF_GGX(
+void SampleBRDF_GGX(
     uint mID,
     float3  outgoing,
     float3  normal,
@@ -167,7 +167,7 @@ inline void SampleBRDF_GGX(
 
 
 // Evaluate the GGX BRDF for the given material
-inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
+float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);   // View direction
