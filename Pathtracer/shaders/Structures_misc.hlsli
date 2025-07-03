@@ -74,3 +74,12 @@ struct SampleReturn
     float pdf_bsdf;
     float pdf_nee;
 };
+
+//--------------------------------------------------------------------
+//  A single pixel + its weight for bilinear reprojection
+//--------------------------------------------------------------------
+struct WeightedPixel
+{
+    int2  pix;       // integer pixel coordinate   (kInvalidPixel if unused)
+    float w;         // normalised weight in [0,1] (0 ⇢ ignore)
+};

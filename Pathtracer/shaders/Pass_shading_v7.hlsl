@@ -86,12 +86,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     - 5: position_curr, M_curr
     - 6: position_last
     */
-    float3 albedo = (float3)0;
+    half3 albedo = (float3)0;
     uint emission = 0u;
-    float3 normal = (float3)0;
-    float roughness = 0.0f;
-    float3 position_curr = (float3)0;
-    float3 position_last = (float3)0;
+    half3 normal = (float3)0;
+    half roughness = 0.0f;
+    half3 position_curr = (float3)0;
+    half3 position_last = (float3)0;
     uint objID = (uint)0;
     uint M_curr = (uint)0;
 
@@ -123,7 +123,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
     else
     {
         accumulation = L1;
-        emission = 1u;
+        emission     = 1u;
+
+        float3 x1   = load_x1(g_sample_current, pixelIdx);
+        float3 n1   = load_n1(g_sample_current, pixelIdx);
+        uint   matID= load_matID(g_sample_current, pixelIdx);
+
+        albedo          = materials[matID].Ke.xyz;
+        roughness       = 1.0h;
+        normal          = n1;
+        position_curr   = x1;
+        position_last   = load_x1(g_sample_last, pixelIdx);
+
+        objID           = load_objID(g_sample_current, pixelIdx);
+        M_curr          = 60u;
     }
 
     // Debug
