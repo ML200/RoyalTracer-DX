@@ -82,7 +82,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     - 8: emission, roughness, objID
     - 9: normal
     - 10: position_curr, M_curr
-    - 1: position_last
+    - 11: position_last
     */
     //update the last data
     gScratchPing[uint3(DTid.xy, 7)] = gScratchPing[uint3(DTid.xy, 2)];

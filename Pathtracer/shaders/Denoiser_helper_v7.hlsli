@@ -256,3 +256,105 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
 }
 
 
+//--------------------------------------------------------------------
+//  Bilinear reprojection with inverse-distance weighting
+//  • returns four neighbours + weight, already normalised so Σw = 1
+//  • if GetLastFrameUV() fails → all weights are 0 and pix = kInvalidPixel
+//--------------------------------------------------------------------
+inline void GetBilinearReprojectedPixels_d(
+    float3      worldPos,
+    float4x4    prevView,
+    float4x4    prevProjection,     // must already contain last frame’s jitter
+    float2      resolution,         // (width, height)
+    uint        objID,
+    out WeightedPixel outPx[4]      // order: (0,0) (1,0) (0,1) (1,1)
+)
+{
+    //----------------------------------------------------------------
+    // 1. Reproject to previous-frame UV ------------------------------
+    //----------------------------------------------------------------
+    float2 uv = GetLastFrameUV(worldPos, prevView, prevProjection, objID);
+
+    // Early out on failure
+    if (uv.x < 0.0f)
+    {
+        [unroll] for (int i = 0; i < 4; ++i)
+        {
+            outPx[i].pix = kInvalidPixel;
+            outPx[i].w   = 0.0f;
+        }
+        return;
+    }
+
+    //----------------------------------------------------------------
+    // 2. Continuous pixel position & fractional part -----------------
+    //----------------------------------------------------------------
+    //   Our earlier helper rounded with “+0.5” → pixel centres live
+    //   at integer coordinates.  Undo that so that (0,0) sits at the
+    //       centre of the **first** pixel and we can do bilinear maths.
+    //----------------------------------------------------------------
+    float2 posF   = uv * resolution;   // continuous pixel position
+    int2   pix00  = int2(floor(posF));        // top-left integer pixel
+    float2 frac   = posF - pix00;             // (= uv in [0,1) inside cell)
+
+    //----------------------------------------------------------------
+    // 3. Prepare the 4 neighbours ------------------------------------
+    //----------------------------------------------------------------
+    const int2 offs[4] = { int2(0,0), int2(1,0), int2(0,1), int2(1,1) };
+    float      basis[4] =               // pure bilinear kernel
+    {
+        (1.0f - frac.x) * (1.0f - frac.y),   // w00
+        frac.x          * (1.0f - frac.y),   // w10
+        (1.0f - frac.x) * frac.y,            // w01
+        frac.x          * frac.y             // w11
+    };
+
+    //----------------------------------------------------------------
+    // 4. Combine bilinear kernel with inverse-distance fall-off ------
+    //----------------------------------------------------------------
+    //   gScratchPing stores previous-frame *world* positions in layer 10
+    //   (same layout you hinted at).  We weight each neighbour by
+    //
+    //        w = bilinearKernel / (ε + ‖Δworld‖)
+    //
+    //   so that:
+    //   • far-away re-projected pixels contribute less
+    //   • all four weights are renormalised to Σw = 1
+    //----------------------------------------------------------------
+    float  sumW = 0.0f;
+    [unroll] for (int i = 0; i < 4; ++i)
+    {
+        int2 p = pix00 + offs[i];
+
+        // Cull neighbours that ended up off-screen (can happen at borders)
+        if (any(p < 0) || any(p >= int2(resolution)))
+        {
+            outPx[i].pix = kInvalidPixel;
+            outPx[i].w   = 0.0f;
+            continue;
+        }
+
+        float3 prevWorld = gScratchPing[uint3(p, 10)].xyz;
+        float  dist      = length(prevWorld - worldPos);     // metres (or whatever unit)
+        float  w         = basis[i] / (dist + 1e-4f);        // ε avoids div-by-zero
+
+        outPx[i].pix = p;
+        outPx[i].w   = w;
+        sumW        += w;
+    }
+
+    //----------------------------------------------------------------
+    // 5. Normalise so that Σw = 1 ------------------------------------
+    //----------------------------------------------------------------
+    if (sumW > 0.0f)
+    {
+        float invSum = rcp(sumW);        // ← keep using the intrinsic
+        [unroll] for (int i = 0; i < 4; ++i)
+            outPx[i].w *= invSum;
+    }
+    else
+    {
+        [unroll] for (int i = 0; i < 4; ++i)
+            outPx[i].w = 0.0f;
+    }
+}

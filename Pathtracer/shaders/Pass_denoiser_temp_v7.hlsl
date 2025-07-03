@@ -61,184 +61,179 @@ cbuffer CameraParams : register(b0)
 #include "Motion_vectors_v7.hlsli"
 #include "Denoiser_helper_v7.hlsli"
 
-static const float3 kLUMA = float3(0.2126, 0.7152, 0.0722);
+#define half  min16float
+#define half2 min16float2
+#define half3 min16float3
+#define half4 min16float4
 
-// Utility
-uint2     MapPixelXY(float2 dims, uint id)
+static const half3 kLUMA = half3(0.2126h, 0.7152h, 0.0722h);
+
+//----------------------------------------------
+//  Hash32_To_RGB – returns a vivid RGB in [0,1]
+//  • id    : integer you want to visualise
+//  • gamma : 1 = linear  (leave it this way if you write to HDR buffer)
+//           2.2 = sRGB  (for LDR back-buffer debug)
+//----------------------------------------------
+float3 Hash32_To_RGB(uint id, float gamma /* = 1.0 */)
 {
-    uint y = id / uint(dims.x);
-    uint x = id - y * uint(dims.x);
-    return uint2(x, y);
+    // 1. Thomas Wang’s 32-bit mix
+    id = (id ^ 61u) ^ (id >> 16);
+    id += id << 3;
+    id ^= id >> 4;
+    id *= 0x27d4eb2du;
+    id ^= id >> 15;
+
+    // 2. Take the high 24 bits as R,G,B (8 bits each)
+    float3 rgb = float3(
+        ( (id >>  0) & 0xFFu ) / 255.0,
+        ( (id >>  8) & 0xFFu ) / 255.0,
+        ( (id >> 16) & 0xFFu ) / 255.0 );
+
+    // 3. Optional gamma correction so that the colours look
+    //    equally bright on an sRGB monitor.
+    if (gamma != 1.0)
+        rgb = pow(rgb, 1.0 / gamma);
+
+    return rgb;
 }
 
-
+//----------------------------------------------------------------------------
+//  Main CS kernel (4-tap upgrade)
+//----------------------------------------------------------------------------
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-    gDispatchIdx = DTid;
-    if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
+    // ── guard ──────────────────────────────────────────────────────────────
+    if (any(DTid.xy >= uint2(gImageWidth, gImageHeight))) return;
 
     uint2  launch = DTid.xy;
-    uint2  dimsI  = DispatchRaysDimensions().xy;
-    float2 dims   = float2(dimsI);
-    uint   pIdx   = MapPixelID(dims, launch);
+    half2  dimsH  = half2(gImageWidth, gImageHeight);
 
-    float3  Ccur   = gScratchPing[uint3(launch, 1)].rgb;
-    float3  x1_cur = load_x1(g_sample_current, pIdx);
-    float3  n1_cur = load_n1(g_sample_current, pIdx);
-    float3  objID_cur = load_objID(g_sample_current, pIdx);
 
-    int2 reprojF = GetBestReprojectedPixel_d(x1_cur, prevView, prevProjection, dims, objID_cur);
+    // DEBUG
+    //gOutput[uint3(DTid.xy, 0)] = float4(Hash32_To_RGB((uint)gScratchPing[uint3(launch, 3)].z, 1.0f), 0);
+    //return;
+    // DEBUG
 
-    bool reprojOK = all(reprojF >= 0) && reprojF.x < dims.x && reprojF.y < dims.y;
 
-    float  dz        = 0.0;
-    float4 hist4     = float4(Ccur, 0);
+
+    // ── current-frame G-buffer pulls ───────────────────────────────────────
+    float4 misc3      = gScratchPing[uint3(launch, 3)];
+    float  roughness  = misc3.y;
+    uint   objID_cur  = (uint)misc3.z;
+    uint   emission   = (uint)misc3.x;
+    if (emission == 1u) return;                       // emissive = no history
+
+    half3 Ccur        = (half3)gScratchPing[uint3(launch, 1)].rgb;
+
+    float4 pos_M      = gScratchPing[uint3(launch, 5)];
+    float3 x1_cur     = pos_M.xyz;
+    float  M_di_cur   = pos_M.w;
+
+    float3 n1_cur     = gScratchPing[uint3(launch, 4)].xyz;
+
+    // ── 1. 4-tap reprojection (helper already handles screen bounds) ───────
+    WeightedPixel taps[4];
+    GetBilinearReprojectedPixels_d(
+        x1_cur, prevView, prevProjection,
+        float2(dimsH), objID_cur,
+        taps);
+
+    // ── 2. Validate each tap & compose weighted history colour ─────────────
+    float  sumW    = 0.0f;           // surviving-weight accumulator
+    float3 histRGB = 0.0f.xxx;       // weighted history colour
+    float  dz_acc  = 0.0f;           // weighted depth-difference (for motion)
+    bool   anyOK   = false;
+
+    const float3 camPos = viewI[3].xyz;
+
+    [unroll] for (int i = 0; i < 4; ++i)
+    {
+        if (taps[i].w == 0.0f || all(taps[i].pix == kInvalidPixel))
+            continue;   // helper rejected → skip early
+
+        const int2 pix = taps[i].pix;
+
+        // Fetch per-tap metadata --------------------------------------------------
+        float4 g8    = gScratchPing[uint3(pix, 8)];   // emissive(.x) | objID(.z)
+        if ((uint)g8.x != 0u)               // previous frame pixel became emissive
+        {
+            taps[i].w = 0.0f;
+            continue;
+        }
+
+        const uint  objID_prev = (uint)g8.z;
+        if (objID_prev != objID_cur)          // different object → reject
+        {
+            taps[i].w = 0.0f;
+            continue;
+        }
+
+        // Geometry pulls ----------------------------------------------------------
+        float3 xPrev = gScratchPing[uint3(pix,10)].xyz;
+        float3 nPrev = gScratchPing[uint3(pix, 9)].xyz;
+
+        // Normal-congruence & distance-weight rejection (same as before) ----------
+        if (dot(n1_cur, nPrev) <= 0.9f ||
+            DDistanceWeight(x1_cur, xPrev, n1_cur) <= 0.0f)
+        {
+            taps[i].w = 0.0f;
+            continue;
+        }
+
+        // Tap survives –––––––––––––––––––––––––––––––––––––––––––––––––––––––––––
+        float  dCur  = length(x1_cur - camPos);
+        float  dPrev = length(xPrev  - camPos);
+        float  dzTap = abs(dCur - dPrev) / max(dCur, dPrev);
+
+        float4 hTap  = gPermanentData[pix];   // stored history colour (α in .a)
+        if (hTap.a == 0.0f)                   // history unavailable → reject
+        {
+            taps[i].w = 0.0f;
+            continue;
+        }
+
+        // Accumulate weighted contributions --------------------------------------
+        histRGB += taps[i].w * hTap.rgb;
+        dz_acc  += taps[i].w * dzTap;
+        sumW    += taps[i].w;
+        anyOK    = true;
+    }
+
+    // ── 3. Normalise / decide validity ─────────────────────────────────────
+    float3 histCol   = Ccur;     // default: current colour
+    float  dz        = 0.0f;
     bool   histValid = false;
 
-    if (reprojOK)
+    if (anyOK && sumW > 0.0f)
     {
-        int2  i00   = reprojF;
-        float2 frac = float2(reprojF) - float2(i00);
-        int2  i10   = min(i00 + int2(1,0), int2(dims)-1);
-        int2  i01   = min(i00 + int2(0,1), int2(dims)-1);
-        int2  i11   = min(i00 + int2(1,1), int2(dims)-1);
-
-        float w[4]  = {
-            (1 - frac.x) * (1 - frac.y),
-                  frac.x  * (1 - frac.y),
-            (1 - frac.x) *      frac.y ,
-                  frac.x  *      frac.y
-        };
-        int2  taps[4] = { i00, i10, i01, i11 };
-
-        float v[4]  = { 0,0,0,0 };
-        float wSum  = 0.0;
-
-        float3 camPos = mul(viewI, float4(0,0,0,1)).xyz;
-        float  dCur   = length(x1_cur - camPos);
-
-        uint e00 = asuint(gScratchPing[uint3(i00,8)].x);
-        uint e10 = asuint(gScratchPing[uint3(i10,8)].x);
-        uint e01 = asuint(gScratchPing[uint3(i01,8)].x);
-        uint e11 = asuint(gScratchPing[uint3(i11,8)].x);
-
-        bool emissiveHit =
-               (e00|e10|e01|e11) != 0;   // any of the 4 taps is emissive?
-
-        [unroll]
-        for (int k = 0; k < 4; ++k)
-        {
-            if (w[k] == 0.0) continue;
-
-            uint  pidLast  = MapPixelID(dims, taps[k]);
-            float3 xPrev   = load_x1   (g_sample_last, pidLast);
-            float3 nPrev   = load_n1   (g_sample_last, pidLast);
-            uint3  idPrev  = asuint(load_objID(g_sample_last, pidLast) + 0.5);
-
-            float  dPrev   = length(xPrev - camPos);
-            float  dzTap   = abs(dCur - dPrev) / max(dCur, dPrev);
-            float  nDotTap = dot(n1_cur, nPrev);
-
-            bool   idOK    = all(idPrev == asuint(objID_cur + 0.5));
-
-            float4 hTap = gPermanentData[taps[k]];
-            bool validColour = (hTap.a > 0.0);
-
-            float  planeW  = DDistanceWeight(x1_cur, xPrev, n1_cur);
-            bool   planeOK = planeW > 0.0f;
-
-            bool ok = (nDotTap > 0.999f) &&
-                      validColour &&
-                      planeOK &&
-                       idOK;
-
-            if (ok && validColour )
-            {
-                v[k]   = w[k] * planeW;
-                wSum  += w[k];
-            }
-        }
-
-        if (wSum > 0.0)
-        {
-            float invSum = rcp(wSum);
-            hist4 =   gPermanentData[i00] * v[0] +
-                      gPermanentData[i10] * v[1] +
-                      gPermanentData[i01] * v[2] +
-                      gPermanentData[i11] * v[3];
-            hist4 *= invSum;
-
-            histValid = true;
-        }
-        else
-        {
-            hist4     = float4(Ccur, 0);
-            histValid = false;
-        }
-
-        if (emissiveHit)
-        {
-            histValid = false;          // force a fresh start
-            hist4 = float4(Ccur, 0);    //   (keeps your neighbourhood clamp happy)
-        }
+        float invSum = rcp(sumW);
+        histCol   = histRGB * invSum;
+        dz        = dz_acc  * invSum;
+        histValid = true;
     }
 
+    // else: histValid stays false, keeping histCol = Ccur
+    float  Nprev = gPermanentData[launch].a;   // 0 … nSamples-1
+    float3 Cprev = gPermanentData[launch].rgb; // running mean up to frame-1
 
-    // neighbourhood clamp
-    float3 cMin = Ccur, cMax = Ccur;
-    [unroll] for(int ny = -1; ny <= 1; ++ny)
-    [unroll] for(int nx = -1; nx <= 1; ++nx)
+    bool   reset = !histValid;                 // disocclusion, emissive, etc.
+
+    if (reset)
     {
-        int2 p = clamp(int2(launch) + int2(nx,ny), 0, int2(dims)-1);
-        float3 cN = gScratchPing[uint3(p,1)].rgb;
-        cMin = min(cMin, cN);
-        cMax = max(cMax, cN);
-    }
-    cMin -= 0.01 * cMax;
-    cMax += 0.01 * cMax;
-    Ccur  = clamp(Ccur, cMin, cMax);
-
-    // confidence adjusted alpha -> the better the sampler, the stronger the stability
-    Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pIdx);
-    float conf      = saturate(rdi.M_di / 60.0);   // 0-1
-    float alphaBase = lerp(0.5, 0.03, conf);
-
-    // colour / motion / reactive gates
-    float  lumCur   = dot(Ccur      , kLUMA);
-    float  lumHist  = dot(hist4.rgb , kLUMA);
-    float  err      = abs(lumCur - lumHist);
-    float  errFac  = (histValid) ? saturate((err - 0.06) * 5.0) : 0.0;
-    errFac        *= (1.0 - conf);
-
-    float mvFac = 0.0;
-    float reactiveDepth = 0.0;
-    if (histValid)
-    {
-        float2 curSS = (float2(launch) + 0.5) / dims;
-        float2 velSS = curSS - (reprojF + 0.5) / dims;
-        float  velPx = length(velSS * dims);
-        mvFac        = saturate((velPx - 1.0) / 100.0);
-
-        reactiveDepth = saturate((dz - 0.03) * 35.0);
+        // force first-frame initialise
+        Nprev = 0.0;
+        Cprev = 0.0.xxx;
     }
 
-    // specular with an higher alpha
-    float roughness = gScratchPing[uint3(launch, 3)].y;
-    float glossyFactor = exp(-roughness / ROUGHNESS_DECAY);
+    //--------------------------------------------------------------------
+    // Incremental arithmetic mean:  Cnew = (Nprev·Cprev + Ccur) / (Nprev+1)
+    //--------------------------------------------------------------------
+    float Nnew   = min(Nprev + 1.0, 64);   // clamp if desired
+    float alpha   = 1.0 / Nnew;                             // ← YOUR α
 
-    float alpha = alphaBase;
-    alpha = lerp(alpha, 1.0, errFac);
-    alpha = lerp(alpha, 1.0, mvFac);
-    alpha = lerp(alpha, 1.0, reactiveDepth);
-    alpha = lerp(alpha, 1.0, glossyFactor);
+    half3 Cacc   = lerp( (half3)Cprev, Ccur, (half)alpha );
 
-    if (!histValid || (hist4.a < 0.5))
-        alpha = 1.0;
-
-    float3 Cacc   = lerp(hist4.rgb, Ccur, alpha);
-    //float  frames = clamp(hist4.a + 1.0, 1.0, 64.0);
-
-    gPermanentData[launch] = float4(Cacc, 1);
-    gScratchPing[uint3(launch, 0)] = float4(Cacc, 0.0);
+    gPermanentData[launch]        = float4((float3)Cacc, Nnew);
+    gScratchPing   [uint3(launch,0)] = float4((float3)Cacc, 0);   // as before
 }
