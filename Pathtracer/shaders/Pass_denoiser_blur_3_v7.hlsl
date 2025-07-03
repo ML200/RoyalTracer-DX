@@ -13,9 +13,9 @@ static     uint3  gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput              : register(u0);
-RWTexture2D<float4>      gPermanentData       : register(u1);
-RWTexture2DArray<float4>      gScratchPing         : register(u8);
+RWTexture2DArray<half4> gOutput              : register(u0);
+RWTexture2D<half4>      gPermanentData       : register(u1);
+RWTexture2DArray<half4>      gScratchPing         : register(u8);
 
 RWByteAddressBuffer      g_sample_current         : register(u6);
 RWByteAddressBuffer      g_sample_last            : register(u7);

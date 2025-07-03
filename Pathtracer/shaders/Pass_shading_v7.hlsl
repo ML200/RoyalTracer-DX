@@ -17,9 +17,9 @@ static uint3 gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput             : register(u0);
-RWTexture2D<float4>      gPermanentData      : register(u1);
-RWTexture2DArray<float4> gScratchPing         : register(u8);
+RWTexture2DArray<half4> gOutput             : register(u0);
+RWTexture2D<half4>      gPermanentData      : register(u1);
+RWTexture2DArray<half4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
@@ -70,14 +70,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gDispatchIdx = DTid;
 
     uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint   pixelIdx   = MapPixelID(dims, launchIndex);
+    uint   pixelIdx   = MapPixelID(DispatchRaysDimensions().xy, launchIndex);
 
-    // Load only L1 first
-    float3 L1 = load_L1(g_sample_current, pixelIdx);
-    float3 accumulation = 0;
-
-    // Also fill "gbuffer" gScratchPing slice 2,3,4...
+    // Fill "gbuffer" gScratchPing slice 2,3,4...
     /*
     Defined as (0 is general render output):
     - 2: albedo
@@ -86,75 +81,66 @@ void main(uint3 DTid : SV_DispatchThreadID)
     - 5: position_curr, M_curr
     - 6: position_last
     */
-    half3 albedo = (float3)0;
-    uint emission = 0u;
-    half3 normal = (float3)0;
-    half roughness = 0.0f;
-    half3 position_curr = (float3)0;
-    half3 position_last = (float3)0;
-    uint objID = (uint)0;
-    uint M_curr = (uint)0;
+    half3 accumulation;                                      // only live var
+
+    // ---------------------------------------------------------------------
+    //  Fast path – pixel has no valid L1 (sky, miss, etc.)
+    // ---------------------------------------------------------------------
+    float3 L1 = load_L1(g_sample_current, pixelIdx);
 
     if (all(L1 < EPSILON))
     {
-        float3 x1 = load_x1(g_sample_current, pixelIdx);
-        float3 n1 = load_n1(g_sample_current, pixelIdx);
-        float3 o = load_o(g_sample_current, pixelIdx);
-        uint matID = load_matID(g_sample_current, pixelIdx);
+        float3 x1    = load_x1 (g_sample_current, pixelIdx);
+        float3 n1    = load_n1 (g_sample_current, pixelIdx);
+        float3 o     = load_o  (g_sample_current, pixelIdx);
+        uint   matID = load_matID(g_sample_current, pixelIdx);
 
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
-        float3 contrib = ReconnectDI(
-                             x1, n1, o, matID,
-                             rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
-        accumulation = contrib;
+        accumulation = ReconnectDI(x1, n1, o, matID,
+                                   rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
-        // Set denoiser gbuffer entries
-        albedo = materials[matID].Kd.xyz;
-        roughness = materials[matID].Pr_Pm_Ps_Pc.x;
-
-        normal = n1;
-        position_curr = x1;
-        position_last = load_x1(g_sample_last, pixelIdx);
-
-        objID = load_objID(g_sample_current, pixelIdx);
-        M_curr = rdi.M_di;
+        // g-buffer slices – written immediately, no temporaries kept alive
+        gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Kd.xyz, 0);
+        gScratchPing[uint3(launchIndex, 3)] = half4(
+                                                0u,
+                                                materials[matID].Pr_Pm_Ps_Pc.x,
+                                                load_objID(g_sample_current, pixelIdx),
+                                                0.0f);
+        gScratchPing[uint3(launchIndex, 4)] = half4(n1, 0.0f);
+        gScratchPing[uint3(launchIndex, 5)] = half4(x1, rdi.M_di);
+        gScratchPing[uint3(launchIndex, 6)] = half4(
+                                                load_x1(g_sample_last, pixelIdx), 0.0f);
     }
+    // ---------------------------------------------------------------------
+    //  Slow path – pixel already has valid radiance in L1
+    // ---------------------------------------------------------------------
     else
     {
         accumulation = L1;
-        emission     = 1u;
 
-        float3 x1   = load_x1(g_sample_current, pixelIdx);
-        float3 n1   = load_n1(g_sample_current, pixelIdx);
-        uint   matID= load_matID(g_sample_current, pixelIdx);
+        uint matID = load_matID(g_sample_current, pixelIdx);
 
-        albedo          = materials[matID].Ke.xyz;
-        roughness       = 1.0h;
-        normal          = n1;
-        position_curr   = x1;
-        position_last   = load_x1(g_sample_last, pixelIdx);
-
-        objID           = load_objID(g_sample_current, pixelIdx);
-        M_curr          = 60u;
+        gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Ke.xyz, 0);
+        gScratchPing[uint3(launchIndex, 3)] = half4(
+                                                1u,        // emission flag
+                                                1.0h,      // roughness (placeholder)
+                                                load_objID(g_sample_current, pixelIdx),
+                                                0.0f);
+        gScratchPing[uint3(launchIndex, 4)] = half4(
+                                                load_n1(g_sample_current, pixelIdx), 0.0f);
+        gScratchPing[uint3(launchIndex, 5)] = half4(
+                                                load_x1(g_sample_current, pixelIdx), 60u);
+        gScratchPing[uint3(launchIndex, 6)] = half4(
+                                                load_x1(g_sample_last, pixelIdx), 0.0f);
     }
 
-    // Debug
-    /*float3 finalColor = sRGBGammaCorrection(accumulation);
-    if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
-    if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
-    gOutput[uint3(launchIndex, 0)] = float4(finalColor, 1);*/
+    // ---------------------------------------------------------------------
+    //  Common: write final radiance slice
+    // ---------------------------------------------------------------------
+    gScratchPing[uint3(launchIndex, 0)] = half4(accumulation, 0.0f);
 
-    //Write to the scratch buffer internally
-    gScratchPing[uint3(launchIndex, 0)] = float4(accumulation, 0.0);
-
-    // write the current data
-    gScratchPing[uint3(launchIndex, 2)] = float4(albedo, 0.0f);
-    gScratchPing[uint3(launchIndex, 3)] = float4(emission, roughness, objID, 0.0f);
-    gScratchPing[uint3(launchIndex, 4)] = float4(normal, 0.0f);
-    gScratchPing[uint3(launchIndex, 5)] = float4(position_curr, M_curr);
-    gScratchPing[uint3(launchIndex, 6)] = float4(position_last, 0.0f);
-
-    // Debug
-    //gOutput[uint3(DTid.xy, 0)] = gScratchPing[uint3(launchIndex, 8)];
+    // DEBUG
+    float3 finalColor = sRGBGammaCorrection(accumulation);
+    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }

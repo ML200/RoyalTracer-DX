@@ -54,9 +54,9 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:8x4",
         L"barrier",
-        L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
+        L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
+        L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
         L"barrier",
@@ -474,7 +474,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.01f;
+    float angle = static_cast<float>(m_time) * 0.000f;
     float r     = 3.0f;
 
     float x = cosf(angle) * r + 1.0f;   // + centre.x
