@@ -56,6 +56,7 @@ void Pass_init_di_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
+    //SampleData sdata = SampleCameraRay(pixelIdx);
     SampleData sdata = SampleCameraRay(pixelIdx);
     if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON)){
         // Get a random seed
@@ -63,7 +64,7 @@ void Pass_init_di_v7() {
         uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
 
         Reservoir_DI reservoir = (Reservoir_DI)0;
-
+        float phat_final = 0.0f;
         // NEE sample(s)
         for(int i = 0; i<NEE_SAMPLES_DI; i++){
             // Get the sample result
@@ -75,7 +76,8 @@ void Pass_init_di_v7() {
             if(isnan(w_mis))
                 w_mis = 0.0f;
             // Update reservoir
-            UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed);
+            if(UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed))
+                phat_final = p_hat;
         }
         bool requires_shadow_ray = true;
         // BSDF sample(s)
@@ -92,6 +94,7 @@ void Pass_init_di_v7() {
                 // Update reservoir
                 if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed)){
                     requires_shadow_ray = false;
+                    phat_final = p_hat;
                 }
                 store_n2_init(float3(0,0,0), g_InitialBSDFRays, pixelIdx);
             }
@@ -113,10 +116,9 @@ void Pass_init_di_v7() {
             V = VisibilityCheck(sdata.x1, reservoir.x2_di, sdata.n1);
         }
         // Calculate W
-        float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_di, reservoir.n2_di, reservoir.L2_di));
         float W = 0.0f;
-        if (p_hat > EPSILON) {
-            W = V * reservoir.w_sum_di / p_hat;
+        if (phat_final > EPSILON) {
+            W = V * reservoir.w_sum_di / phat_final;
             // Protect against NaN/Inf
             if (isnan(W) || isinf(W)) {
                 W = 0.0f;
