@@ -29,6 +29,7 @@ RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
 RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
 StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
 StructuredBuffer<int>                 indices           : register(t1);
@@ -42,6 +43,7 @@ StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -59,6 +61,7 @@ cbuffer CameraParams : register(b0)
 // These includes need access to ALL previous buffers
 #include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
