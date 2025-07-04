@@ -67,18 +67,11 @@ SampleReturn SampleNEE(
     SampleData sdata,
     inout uint waveSeed,
     inout uint2 threadSeed
-){
-    // Pick a random light id using alias table
-    uint idx = pickAliasWave(waveSeed, threadSeed);
-    //LightTriangle sampleLight = g_EmissiveTriangles[idx];
+) {
+    // Pick a random emissive triangle
+    uint lightIdx = pickAliasWave(waveSeed, threadSeed);
 
-    // Calculate the current world coordinates of the triangle
-    float4x4 conversionMatrix = instanceProps[g_EmissiveTriangles[idx].instanceID].objectToWorld;
-    float3 x_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].x, 1.f)).xyz;
-    float3 y_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].y, 1.f)).xyz;
-    float3 z_v = mul(conversionMatrix, float4(g_EmissiveTriangles[idx].z, 1.f)).xyz;
-
-    // Generate random barycentric coordinates
+    // Generate barycentric coordinates early
     float xi1 = RandomFloatSingle(threadSeed.x);
     float xi2 = RandomFloatSingle(threadSeed.x);
     if (xi1 + xi2 > 1.0f) {
@@ -88,42 +81,47 @@ SampleReturn SampleNEE(
     float uu = 1.0f - xi1 - xi2;
     float vv = xi1;
     float ww = xi2;
-    float3 x2 = uu * x_v + vv * y_v + ww * z_v;
 
-    // Get the sample direction and compute distance
+    // Transform triangle vertices & compute sampled point immediately
+    float3 x = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].x, 1.f)).xyz;
+    float3 y = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].y, 1.f)).xyz;
+    float3 z = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].z, 1.f)).xyz;
+
+    float3 x2 = uu * x + vv * y + ww * z;
+
+    // Compute sample direction and normalized vector
     float3 L = x2 - sdata.x1;
     float dist2 = dot(L, L);
     float dist = sqrt(dist2);
-    float3 L_norm = normalize(L);
+    float3 L_norm = L / dist;
 
-    // Compute the light's surface normal from triangle geometry
-    float3 edge1 = y_v - x_v;
-    float3 edge2 = z_v - x_v;
-    float3 cross_l = cross(edge1, edge2);
-    float3 normal_l = normalize(cross_l);
+    // Compute normal and area
+    float3 edge1 = y - x;
+    float3 edge2 = z - x;
+    float3 normal = cross(edge1, edge2);
+    float area = 0.5f * length(normal);
+    float3 normal_l = normal / (2.0f * area + EPSILON); // = normalize(cross(...))
 
-    if(dot(normal_l, -L_norm) < 0.0f){
+    // Flip normal if needed
+    if (dot(normal_l, -L_norm) < 0.0f) {
         normal_l = -normal_l;
     }
 
-    float area_l = abs(length(cross_l) * 0.5f);
-    float pdf_l = g_EmissiveTriangles[idx].weight / max(area_l, EPSILON);
+    // Compute NEE PDF
+    float pdf_l = g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON);
 
+    // Compute BSDF importance PDF
     float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
     float pdf0 = BRDF_PDF(0, sdata.matID, sdata.n1, -L_norm, sdata.o);
     float pdf1 = BRDF_PDF(1, sdata.matID, sdata.n1, -L_norm, sdata.o);
-    float P1 = SafeMultiplyScalar(probs.x, pdf0);
-    float P2 = SafeMultiplyScalar(probs.y, pdf1);
-    float cos_light = dot(normal_l, -L_norm);
-    float pdf_b = (P1 + P2) * cos_light / dist2;
+    float pdf_b = (probs.x * pdf0 + probs.y * pdf1) * max(dot(normal_l, -L_norm), 0.0f) / dist2;
 
-
-    // Fill in the sample and return
+    // Pack results
     SampleReturn sreturn;
     sreturn.x2 = x2;
     sreturn.n2 = normal_l;
-    sreturn.L2 = g_EmissiveTriangles[idx].emission;
-    sreturn.objID = g_EmissiveTriangles[idx].instanceID;
+    sreturn.L2 = g_EmissiveTriangles[lightIdx].emission;
+    sreturn.objID = g_EmissiveTriangles[lightIdx].instanceID;
     sreturn.pdf_bsdf = pdf_b;
     sreturn.pdf_nee = pdf_l;
 
