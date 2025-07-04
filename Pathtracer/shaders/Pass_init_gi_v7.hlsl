@@ -53,15 +53,17 @@ cbuffer CameraParams : register(b0)
 
 [shader("raygeneration")]
 void Pass_init_gi_v7() {
-/*    uint2 launchIndex = DispatchRaysIndex().xy;
+    uint2 launchIndex = DispatchRaysIndex().xy;
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
     // Load initial sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    // Also load the initial bsdf ray direction from the DI pass. If it is 0,0,0, the pass hit a light, do nothing
-    InitialBSDFRay rdata = loadInitialBSDFRay(g_InitialBSDFRays, pixelIdx);
-    if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON) && any(rdata.n2 != 0.0f)){
+    // path_x2 is x2
+    float3 px2 = load_x2_init(g_InitialBSDFRays, pixelIdx);
+    // path_n2 is n2
+    float3 pn2 = load_n2_init(g_InitialBSDFRays, pixelIdx);
+    if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON) && any(pn2 != 0.0f)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
         uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
@@ -70,25 +72,22 @@ void Pass_init_gi_v7() {
         Reservoir_GI reservoir = (Reservoir_GI)0;
 
         // Store path variables that are used to fill the reservoirs
-        // path_x2 is rdata.x2
-        // path_n2 is rdata.n2
         float3 V2 = (float3)0;
 
         // Store path variables
         // full path throughput
-        float3 tp_full = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdata.x2, rdata.n2, float3(1,1,1)); // reconnect without L
-        //float3 tp_full = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdata.matID, rdata.x2, rdata.n2, float3(0,0,0), rdata.n2);
+        float3 tp_full = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, px2, pn2, float3(1,1,1)); // reconnect without L
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
         // Full path pdf of a given subpath
-        float pdf_full = rdata.pdf_bsdf;
+        float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx);
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
 
         // Variables to cache path data
-        float3 position = rdata.x2;
-        float3 normal = rdata.n2;
-        float3 outgoing = normalize(sdata.x1 - rdata.x2);
-        uint matID = rdata.matID;
+        float3 position = px2;
+        float3 normal = pn2;
+        float3 outgoing = normalize(sdata.x1 - px2);
+        uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
 
         // Postponed shadow ray
         float3 s_x1;
@@ -97,7 +96,7 @@ void Pass_init_gi_v7() {
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             // NEE samples
-            for(int j = 0; i<NEE_SAMPLES_GI; j++){
+            for(int j = 0; j<NEE_SAMPLES_GI; j++){
                 // Get the sample result
                 SampleReturn result = SampleNEE(sdata, waveSeed, seed);
                 // Calculate contribution and p_hat.
@@ -114,12 +113,12 @@ void Pass_init_gi_v7() {
                 if(i != 0)
                     L2 *= tp_partial;
                 else {
-                    V2_temp = rdata.x2 - result.x2;
+                    V2_temp = px2 - result.x2;
                     L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
                 }
 
                 // Update reservoir
-                if(UpdateReservoirGI(reservoir, w_mis, 0, rdata.x2, rdata.n2, L2, normalize(V2_temp), seed)){
+                if(UpdateReservoirGI(reservoir, w_mis, 0, px2, pn2, L2, normalize(V2_temp), seed)){
                     s_x1 = position;
                     s_x2 = result.x2;
                     s_n1 = normal;
@@ -145,12 +144,12 @@ void Pass_init_gi_v7() {
                     if(i != 0)
                         L2 *= tp_partial;
                     else {
-                        V2_temp = rdata.x2 - result.x2;
+                        V2_temp = px2 - result.x2;
                         L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
                     }
 
                     // Update reservoir with the sub path
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, rdata.x2, rdata.n2, L2, V2_temp, seed)){
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, px2, pn2, L2, V2_temp, seed)){
                         requires_shadow_ray = false;
                 }
                 else{
@@ -163,7 +162,7 @@ void Pass_init_gi_v7() {
                     matID = result.matID;
 
                     if(i == 0)
-                        V2 = rdata.x2 - result.x2;
+                        V2 = px2 - result.x2;
                     else
                         tp_partial *= c;
                 }
@@ -189,12 +188,12 @@ void Pass_init_gi_v7() {
 
 
         // Save the resulting reservoir to memory
-        /*store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx);
-        store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx);
+        store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, sdata.objID);
+        store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, sdata.objID);
         store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
         store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
         store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
         }
-    }*/
+    }
 }
