@@ -28,9 +28,8 @@ inline float3 SchlickFresnel(float3 F0, float cosTheta)
     return saturate(F0 + (1.0f - F0) * pow(abs(1.0f - cosTheta), 5.0f));
 }
 
-inline float D_GGX(float NdotH, float roughness)
+inline float D_GGX(float NdotH, float alpha)
 {
-    float alpha = roughness * roughness;
     float alpha2 = alpha * alpha;
     float NdotH2 = NdotH * NdotH;
 
@@ -179,8 +178,9 @@ float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoin
     float VdotH = dot(V, H);
 
     float3 F = SchlickFresnel(materials[mID].Ks, VdotH);
-    float D = D_GGX(NdotH, materials[mID].Pr_Pm_Ps_Pc.x);
-    float G = G2_SmithGGX(NdotV, NdotL, materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x);
+    float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
+    float D = D_GGX(NdotH, alpha);
+    float G = G2_SmithGGX(NdotV, NdotL, alpha);
 
     // Specular BRDF
     float denominator = 4.0f * NdotV * NdotL;
@@ -210,11 +210,11 @@ inline float BRDF_PDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgo
     float3 H = normalize(V + L);
     float NdotH = dot(N, H);
     float NdotV = dot(N, V);
-    float VdotH = dot(H, V);
+    //float VdotH = dot(H, V);
 
     float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
     float G1 = G1_SmithGGX(NdotV, alpha);
-    float D = D_GGX(NdotH, materials[mID].Pr_Pm_Ps_Pc.x);
+    float D = D_GGX(NdotH, alpha);
 
-    return G1 * D / (NdotV * 4.0f);
+    return G1 * D / max(NdotV * 4.0f, EPSILON);
 }

@@ -96,10 +96,10 @@ SampleData loadSampleData(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     SampleData s;
 
-    s.x1    = load_x1   (buffer, pixelIdx);
-    s.n1    = load_n1   (buffer, pixelIdx);
-    s.L1    = load_L1   (buffer, pixelIdx);
-    s.o     = load_o    (buffer, pixelIdx);
+    s.x1    = load_x1(buffer, pixelIdx);
+    s.n1    = load_n1(buffer, pixelIdx);
+    s.L1    = load_L1(buffer, pixelIdx);
+    s.o     = load_o(buffer, pixelIdx);
     s.objID = load_objID(buffer, pixelIdx);
     s.matID = load_matID(buffer, pixelIdx);
 
