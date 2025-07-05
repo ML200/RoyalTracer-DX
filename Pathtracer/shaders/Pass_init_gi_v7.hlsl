@@ -79,9 +79,15 @@ void Pass_init_gi_v7() {
         float3 tp_full = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, px2, pn2, float3(1,1,1)); // reconnect without L
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
+
         // Full path pdf of a given subpath
         float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx);
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
+        float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
+        // Postponed shadow ray
+        float3 s_x1;
+        float3 s_x2;
+        float3 s_n1;
 
         // Variables to cache path data
         float3 position = px2;
@@ -89,10 +95,6 @@ void Pass_init_gi_v7() {
         float3 outgoing = normalize(sdata.x1 - px2);
         uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
 
-        // Postponed shadow ray
-        float3 s_x1;
-        float3 s_x2;
-        float3 s_n1;
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             // NEE samples
