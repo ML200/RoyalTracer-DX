@@ -136,12 +136,12 @@ void Pass_init_gi_v7() {
                 // Get a sample direction
                 SampleReturn result = SampleBSDF_gen(position, normal, matID, outgoing, waveSeed, seed);
                 float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
+                    debugPixel = result.x2;
                 // Calculate contribution and p_hat.
                 if(any(result.L2 > 0.0f)){
                     tp_full *= c;
                     float p_hat = GetPHat(tp_full * result.L2);
                     float pdf = result.pdf_bsdf * pdf_full;
-                    debugPixel = result.x2;
                     float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / pdf;
                     if(isnan(w_mis) || isinf(w_mis))
                         w_mis = 0.0f;

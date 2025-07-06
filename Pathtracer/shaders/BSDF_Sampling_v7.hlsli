@@ -70,11 +70,11 @@ SampleReturn SampleBSDF_gen(
 
     // Trace the ray
     RayDesc ray;
-    ray.Origin = x1;
-    ray.Direction = sample;
-    ray.TMin = 0.001f;
+    ray.Origin = x1 + normalize(-n1) * EPSILON;
+    ray.Direction = normalize(sample);
+    ray.TMin = EPSILON;
     ray.TMax = 10000;
-    HitInfo samplePayload;
+    HitInfo samplePayload = (HitInfo)0;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, samplePayload);
 
     // Evaluate the contribution
