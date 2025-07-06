@@ -50,7 +50,9 @@ float VisibilityCheck(
     ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 1, 0, 1, ray, shadowPayload);
+    const uint flags =
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+    TraceRay(SceneBVH, flags, 0xFF, 1, 0, 1, ray, shadowPayload);
     V = shadowPayload.isHit ? 0.0f : 1.0f;
     return V;
 }

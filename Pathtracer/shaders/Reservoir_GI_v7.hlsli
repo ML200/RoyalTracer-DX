@@ -8,6 +8,8 @@ struct Reservoir_GI
     float3 L2_gi;
     float3 V2_gi;
     uint M_gi;
+    uint objID_gi;
+    uint matID_gi;
 };
 
 inline bool RejectNormal_gI(float3 n1, float3 n2, float threshold){
@@ -50,75 +52,25 @@ float3 ReconnectGI(
 )
 {
     if (all(L2 < EPSILON))
-        return float3(0, 0, 0);
+        return 0;
 
-    float3 dir      = x2 - x1;
-    float  dist     = length(dir);
-    float3 ndir     = dir / dist;
+    // Geometric prep
+    float3 dir   = x2 - x1;
+    float  dist  = length(dir);
+    float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
-    if (dot(n2, -ndir) < 0.0f)
-        n2 = -n2;
+    // Terms
+    float3 F1 = BSDF_term(mID1, n1, ndirN, o);
+    float3 F2 = BSDF_term(mID2, n2, V2, -ndirN);
+    float   G = G_term(n1, ndirN);
+    float   J = J_term(n2, ndirN, dist);
 
-    float  cosThetaX1 = max(EPSILON, dot(n1,  ndir));
-    float  cosThetaX2 = max(EPSILON, dot(n2, -V2));
+    // Throughput
+    float3 r = F1 * F2 * L2 * (G * J);
 
-    // BRDF and MIS weights at x1
-    float2 probs1 = CalculateStrategyProbabilities(mID1, o, n1);
-
-    // incoming  = ndir (x1→x2)
-    // outgoing  = o    (already given)
-    float3 brdf1_0 = EvaluateBRDF(0, mID1, n1, ndir, o);
-    float3 brdf1_1 = EvaluateBRDF(1, mID1, n1, ndir, o);
-    float3 F1      = SafeMultiply(probs1.x, brdf1_0) +
-                     SafeMultiply(probs1.y, brdf1_1);
-
-    // BRDF and MIS weights at x2
-    float2 probs2 = CalculateStrategyProbabilities(mID2, -ndir, n2);
-
-    // outgoing  = -ndir (x2→x1)
-    // incoming  = V2
-    float3 brdf2_0 = EvaluateBRDF(0, mID2, n2, V2, -ndir);
-    float3 brdf2_1 = EvaluateBRDF(1, mID2, n2, V2, -ndir);
-    float3 F2      = SafeMultiply(probs2.x, brdf2_0) +
-                     SafeMultiply(probs2.y, brdf2_1);
-
-    // Final reconnection throughput (no geometry term because in angle space)
-    float3 r = F1 * F2
-             * L2
-             * cosThetaX1 * cosThetaX2;
-
-    // Guard against NaNs.
     if (any(isnan(r)))
-        r = float3(0, 0, 0);
+        r = 0;
 
-    return r;
-}
-
-// Calculate reconnection (two–sided)
-float3 Reconnect_partial(
-float3 x1,
-float3 n1,
-float3 o,
-uint mID,
-float3 x2
-)
-{
-    float3 dir = x2 - x1;
-    float3 ndirN = normalize(-dir);
-    float dist = length(dir);
-
-    float cosThetaX1 = max(EPSILON,dot(n1, -ndirN));
-
-    float2 probs = CalculateStrategyProbabilities(mID, o, n1);
-    float3 brdf0 = EvaluateBRDF(0, mID, n1, ndirN, o);
-    float3 brdf1 = EvaluateBRDF(1, mID, n1, ndirN, o);
-    float3 F1 = SafeMultiply(probs.x, brdf0);
-    float3 F2 = SafeMultiply(probs.y, brdf1);
-    float3 F = F1 + F2;
-
-    float3 r = F * cosThetaX1;
-    if(any(isnan(r)))
-        r = float3(0,0,0);
     return r;
 }
 
@@ -158,6 +110,7 @@ static const uint B_L2_gi =  4;   // packed  – incident radiance
 static const uint B_V2_gi =  4;   // packed  – V2 direction  (WAS 12)
 static const uint B_W_gi  =  4;   // float   – reservoir weight
 static const uint B_M_gi  =  4;   // uint    – sample count
+static const uint B_objID_gi  =  4;
 
 // ── byte offsets of each field block within the buffer ─────────────────────
 static const uint P_x2_gi = 0;
@@ -166,6 +119,7 @@ static const uint P_L2_gi = P_n2_gi + B_n2_gi;
 static const uint P_V2_gi = P_L2_gi + B_L2_gi;
 static const uint P_W_gi  = P_V2_gi + B_V2_gi;
 static const uint P_M_gi  = P_W_gi  + B_W_gi;
+static const uint P_objID_gi = P_M_gi     + B_M_gi;
 
 // helper: total number of pixels in the dispatch
 #define PIXEL_COUNT (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
@@ -246,12 +200,29 @@ void store_M_gi(uint m, RWByteAddressBuffer buf, uint pixelIdx)
     buf.Store(addr, m);
 }
 
+//__________________________objID___________________________
+uint load_objID_gi(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint addr = P_objID_gi * (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
+              + pixelIdx * B_objID_gi;
+    return buf.Load(addr);
+}
+
+void store_objID_gi(uint objID, RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint addr = P_objID_gi * (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
+              + pixelIdx * B_objID_gi;
+    buf.Store(addr, objID);
+}
+
 //──────────────────── load the complete GI reservoir ─────────────────────────
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 {
     Reservoir_GI r;
-    //r.x2_gi   = load_x2_gi(buf, pixelIdx);
-    //r.n2_gi   = load_n2_gi(buf, pixelIdx);
+    r.objID_gi  = load_objID_gi(buf, pixelIdx);
+
+    r.x2_gi   = load_x2_gi(buf, pixelIdx, r.objID_gi);
+    r.n2_gi   = load_n2_gi(buf, pixelIdx, r.objID_gi);
     r.L2_gi   = load_L2_gi(buf, pixelIdx);
     r.V2_gi   = load_V2_gi(buf, pixelIdx);
     r.W_gi    = load_W_gi (buf, pixelIdx);

@@ -27,6 +27,7 @@ RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
 RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
 StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
 StructuredBuffer<int>                 indices           : register(t1);
@@ -40,6 +41,7 @@ StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -58,6 +60,7 @@ cbuffer CameraParams : register(b0)
 #include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,9 +99,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
         uint   matID = load_matID(g_sample_current, pixelIdx);
 
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
-
         accumulation = ReconnectDI(x1, n1, o, matID,
                                    rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
+
+        Reservoir_GI rgi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+        uint matID2 = load_matID_init(g_InitialBSDFRays, pixelIdx);
+        accumulation = rgi.W_gi;//ReconnectGI(x1, n1, o, matID, matID2, rgi.x2_gi, rgi.n2_gi, rgi.L2_gi, rgi.V2_gi) * rgi.W_gi;
 
         // g-buffer slices – written immediately, no temporaries kept alive
         gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Kd.xyz, 0);
@@ -142,5 +148,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // DEBUG
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }
