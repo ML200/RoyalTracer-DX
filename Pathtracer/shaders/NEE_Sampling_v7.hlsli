@@ -127,3 +127,74 @@ SampleReturn SampleNEE(
 
     return sreturn;
 }
+
+
+
+// Sample a NEE sample
+SampleReturn SampleNEE_gen(
+    in float3 x1,
+    in float3 n1,
+    in uint matID1,
+    in uint o,
+    inout uint waveSeed,
+    inout uint2 threadSeed
+) {
+    // Pick a random emissive triangle
+    uint lightIdx = pickAliasWave(waveSeed, threadSeed);
+
+    // Generate barycentric coordinates early
+    float xi1 = RandomFloatSingle(threadSeed.x);
+    float xi2 = RandomFloatSingle(threadSeed.x);
+    if (xi1 + xi2 > 1.0f) {
+        xi1 = 1.0f - xi1;
+        xi2 = 1.0f - xi2;
+    }
+    float uu = 1.0f - xi1 - xi2;
+    float vv = xi1;
+    float ww = xi2;
+
+    // Transform triangle vertices & compute sampled point immediately
+    float3 x = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].x, 1.f)).xyz;
+    float3 y = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].y, 1.f)).xyz;
+    float3 z = mul(instanceProps[g_EmissiveTriangles[lightIdx].instanceID].objectToWorld, float4(g_EmissiveTriangles[lightIdx].z, 1.f)).xyz;
+
+    float3 x2 = uu * x + vv * y + ww * z;
+
+    // Compute sample direction and normalized vector
+    float3 L = x2 - x1;
+    float dist2 = dot(L, L);
+    float dist = sqrt(dist2);
+    float3 L_norm = L / dist;
+
+    // Compute normal and area
+    float3 edge1 = y - x;
+    float3 edge2 = z - x;
+    float3 normal = cross(edge1, edge2);
+    float area = 0.5f * length(normal);
+    float3 normal_l = normal / (2.0f * area + EPSILON); // = normalize(cross(...))
+
+    // Flip normal if needed
+    if (dot(normal_l, -L_norm) < 0.0f) {
+        normal_l = -normal_l;
+    }
+
+    // Compute NEE PDF
+    float pdf_l = g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON);
+
+    // Compute BSDF importance PDF
+    float2 probs = CalculateStrategyProbabilities(matID1, o, n1);
+    float pdf0 = BRDF_PDF(0, matID1, n1, -L_norm, o);
+    float pdf1 = BRDF_PDF(1, matID1, n1, -L_norm, o);
+    float pdf_b = (probs.x * pdf0 + probs.y * pdf1) * max(dot(normal_l, -L_norm), 0.0f) / dist2;
+
+    // Pack results
+    SampleReturn sreturn;
+    sreturn.x2 = x2;
+    sreturn.n2 = normal_l;
+    sreturn.L2 = g_EmissiveTriangles[lightIdx].emission;
+    sreturn.objID = g_EmissiveTriangles[lightIdx].instanceID;
+    sreturn.pdf_bsdf = pdf_b;
+    sreturn.pdf_nee = pdf_l;
+
+    return sreturn;
+}
