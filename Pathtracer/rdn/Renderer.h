@@ -206,7 +206,7 @@ private:
 
     struct Reservoir_GI
     {
-        uint8_t  pad[36];
+        uint8_t  pad[40];
     };
 
     struct SampleData

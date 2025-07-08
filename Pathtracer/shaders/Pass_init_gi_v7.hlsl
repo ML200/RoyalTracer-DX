@@ -57,30 +57,31 @@ void Pass_init_gi_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    // path_x2 is x2
-    float3 px2 = load_x2_init(g_InitialBSDFRays, pixelIdx);
-    // path_n2 is n2
-    float3 pn2 = load_n2_init(g_InitialBSDFRays, pixelIdx);
-
     // DEBUG PIXEL
     float3 debugPixel = float3(0,0,0);
 
+    // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
+    Reservoir_GI reservoir = (Reservoir_GI)0;
+
     float3 L1 = load_L1(g_sample_current, pixelIdx);
     uint matIDtep = load_matID(g_sample_current, pixelIdx);
-    if(matIDtep != 4294967294 && all(L1 < EPSILON) && any(pn2 != 0.0f)){
+    if(matIDtep != 4294967294 && all(L1 < EPSILON) && any(load_n2_init(g_InitialBSDFRays, pixelIdx) != 0.0f)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
         uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
-
-        // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
-        Reservoir_GI reservoir = (Reservoir_GI)0;
 
         // Store path variables that are used to fill the reservoirs
         float3 V2 = (float3)0;
 
         // Store path variables
+        // Variables to cache path data
+        float3 position = load_x2_init(g_InitialBSDFRays, pixelIdx);
+        float3 normal = normalize(load_n2_init(g_InitialBSDFRays, pixelIdx));
+        float3 outgoing = normalize(load_x1(g_sample_current, pixelIdx) - position);
+        uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
         // full path throughput
-        float3 tp_full = ReconnectDI(load_x1(g_sample_current, pixelIdx), load_n1(g_sample_current, pixelIdx), load_o(g_sample_current, pixelIdx), load_matID(g_sample_current, pixelIdx), px2, pn2, float3(1,1,1)); // reconnect without L
+        float3 tp_full = ReconnectDI(load_x1(g_sample_current, pixelIdx), load_n1(g_sample_current, pixelIdx), load_o(g_sample_current, pixelIdx), load_matID(g_sample_current, pixelIdx), position, normal, float3(1,1,1)); // reconnect without L
+
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
 
@@ -93,12 +94,6 @@ void Pass_init_gi_v7() {
         float3 s_x2 = (float3)0;
         float3 s_n1 = (float3)0;
 
-        // Variables to cache path data
-        float3 position = px2;
-        float3 normal = pn2;
-        float3 outgoing = normalize(load_x1(g_sample_current, pixelIdx) - px2);
-        uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
-
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             // NEE samples
             for(int j = 0; j<NEE_SAMPLES_GI; j++){
@@ -108,22 +103,22 @@ void Pass_init_gi_v7() {
                 float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                 float p_hat = GetPHat(c * tp_full * result.L2);
                 float pdf = result.pdf_nee * pdf_full;
-                float w_mis = /*MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * */p_hat / pdf;
-                //debugPixel = c/result.pdf_nee* result.L2;
+                float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;
                 if(isnan(w_mis))
                     w_mis = 0.0f;
 
                 float3 L2 = result.L2;
                 float3 V2_temp = V2;
                 if(i != 0)
-                    L2 *= tp_partial * c;
+                    L2 *= c * tp_partial;
                 else {
-                    V2_temp = px2 - result.x2;
-                    L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
+                    V2_temp = position - result.x2;
+                    float3 V2_norm = normalize(V2_temp);
+                    L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                 }
 
                 // Update reservoir
-                if(UpdateReservoirGI(reservoir, w_mis, 0, px2, pn2, L2, normalize(V2_temp), seed)){
+                if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0, 0, seed)){
                     p_hat_final = p_hat;
                     s_x1 = position;
                     s_x2 = result.x2;
@@ -136,81 +131,74 @@ void Pass_init_gi_v7() {
                 // Get a sample direction
                 SampleReturn result = SampleBSDF_gen(position, normal, matID, outgoing, waveSeed, seed);
                 float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
-                    debugPixel = result.x2;
                 // Calculate contribution and p_hat.
                 if(any(result.L2 > 0.0f)){
                     tp_full *= c;
                     float p_hat = GetPHat(tp_full * result.L2);
                     float pdf = result.pdf_bsdf * pdf_full;
-                    float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / pdf;
+                    float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;
                     if(isnan(w_mis) || isinf(w_mis))
                         w_mis = 0.0f;
 
                     float3 L2 = result.L2;
                     float3 V2_temp = V2;
                     if(i != 0)
-                        L2 *= tp_partial;
+                        L2 *= tp_partial * c;
                     else {
-                        V2_temp = px2 - result.x2;
-                        L2 *= J_term(result.n2, normalize(V2_temp), length(V2_temp)) * G_term(result.n2, normalize(-V2_temp));
+                        V2_temp = position - result.x2;
+                        float3 V2_norm = normalize(V2_temp);
+                        L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                     }
 
                     // Update reservoir with the sub path
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, px2, pn2, L2, V2_temp, seed)){
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0,0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
                     }
                     break;
                 }
                 else{
-                    // Advance ray
-                    pdf_full *= result.pdf_bsdf;
-                    tp_full *= c;
-                    outgoing = position - result.x2;
-                    position = result.x2;
-                    normal = result.n2;
-                    matID = result.matID;
-
                     if(i == 0){
-                        V2 = px2 - result.x2;
-                        tp_partial *= J_term(result.n2, normalize(V2), length(V2)) * G_term(result.n2, normalize(-V2));
+                        V2 = position - result.x2;
+                        tp_partial *= J_term(result.n2, normalize(V2), length(V2)) * G_term(normal, normalize(V2));
                     }
                     else
                         tp_partial *= c;
+
+                    // Advance ray
+                    pdf_full *= result.pdf_bsdf;
+                    tp_full *= c;
+                    outgoing = normalize(position - result.x2);
+                    position = result.x2;
+                    normal = result.n2;
+                    matID = result.matID;
                 }
             }
         }
 
-    // Visbility check for the stored sample, if fail, set W to 0
-    float V = 1.0f;
-    if(requires_shadow_ray && length(s_n1)>EPSILON){
-        V = VisibilityCheck(s_x1, s_x2, s_n1);
-    }
-    // Calculate W
-    float W = 0.0f;
-    if (p_hat_final > EPSILON) {
-        W = V * reservoir.w_sum_gi / p_hat_final;
-        // Protect against NaN/Inf
-        if (isnan(W) || isinf(W)) {
-            W = 0.0f;
+        // Visbility check for the stored sample, if fail, set W to 0
+        float V = 1.0f;
+        if(requires_shadow_ray && length(s_n1)>EPSILON){
+            V = VisibilityCheck(s_x1, s_x2, s_n1);
         }
+        // Calculate W
+        float W = 0.0f;
+        if (p_hat_final > 0.0f) {
+            W = V * reservoir.w_sum_gi / p_hat_final;
+            // Protect against NaN/Inf
+            if (isnan(W) || isinf(W)) {
+                W = 0.0f;
+            }
+        }
+        reservoir.W_gi = W;
+
     }
-    reservoir.W_gi = W;
-
-
-    // Save the resulting reservoir to memory
-    store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID(g_sample_current, pixelIdx));
-    store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID(g_sample_current, pixelIdx));
+    store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
+    store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
     store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
     store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
     store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
     store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
-    store_objID_gi(reservoir.objID_gi, g_Reservoirs_current_gi, pixelIdx);
-    }
-
-    // DEBUG PIXEL
-    if(!isnan(any(debugPixel)) && !isinf(any(debugPixel)))
-        gOutput[uint3(launchIndex.xy, 0)] = float4(debugPixel.xyz, 1);
-    else
-        gOutput[uint3(launchIndex.xy, 0)] = float4(1,0,1, 1);
+    store_objID_gi(load_objID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
+    store_matID_gi(load_matID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
 }

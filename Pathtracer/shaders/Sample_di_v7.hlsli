@@ -82,35 +82,6 @@ MaterialOptimized CreateMaterialOptimized(in Material mat, uint materialID)
 }
 
 
-inline float3 ReconnectGI(
-    float3 x1,
-    float3 n1,
-    float3 x2,
-    float3 n2,
-    float3 L, // contribution
-    float3 outgoing,
-    MaterialOptimized material1
-)
-{
-    float3 dir = x2 - x1; // The reconnection direction
-
-    float cosThetaX1 = abs(dot(n1, normalize(dir)));
-
-    float2 probs = CalculateStrategyProbabilities(material1, normalize(outgoing), n1);
-    float3 brdf0 = EvaluateBRDF(0, material1, n1, normalize(-dir), normalize(outgoing));
-    float3 brdf1 = EvaluateBRDF(1, material1, n1, normalize(-dir), normalize(outgoing));
-    float3 F1 = SafeMultiply(probs.x, brdf0);
-    float3 F2 = SafeMultiply(probs.y, brdf1);
-    float3 Fx1 = F1 + F2;
-
-    float3 fr = Fx1 * cosThetaX1 * L;
-
-    if(any(isnan(fr)) || any(isinf(fr)))
-        return float3(0,0,0);
-
-    return fr;
-}
-
 float GetP_Hat(float3 x1, float3 n1, float3 x2, float3 n2, float3 L2, float3 o, MaterialOptimized matOpt, bool use_visibility){
     float f_g = LinearizeVector(ReconnectDI(x1, n1, x2, n2, L2, o, matOpt));
     float v = 1.0f;
