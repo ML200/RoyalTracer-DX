@@ -59,7 +59,7 @@ SampleReturn SampleBSDF_gen(
     in float3 x1,
     in float3 n1,
     in uint matID,
-    in uint o,
+    in float3 o,
     inout uint waveSeed,
     inout uint2 threadSeed
 ){
@@ -70,11 +70,11 @@ SampleReturn SampleBSDF_gen(
 
     // Trace the ray
     RayDesc ray;
-    ray.Origin = x1 + normalize(-n1) * EPSILON;
+    ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(sample);
     ray.TMin = EPSILON;
-    ray.TMax = 10000;
-    HitInfo samplePayload = (HitInfo)0;
+    ray.TMax = 10000.0f;
+    HitInfo samplePayload;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, samplePayload);
 
     // Evaluate the contribution

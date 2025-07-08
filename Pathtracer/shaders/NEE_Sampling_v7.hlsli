@@ -135,7 +135,7 @@ SampleReturn SampleNEE_gen(
     in float3 x1,
     in float3 n1,
     in uint matID1,
-    in uint o,
+    in float3 o,
     inout uint waveSeed,
     inout uint2 threadSeed
 ) {

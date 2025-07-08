@@ -38,18 +38,16 @@ inline bool IsValidReservoir_GI(Reservoir_GI r){
 
 
 // Calculate reconnection (two–sided)
-float3 ReconnectGI(
+inline float3 ReconnectGI(
     float3  x1,
     float3  n1,
     float3  o,
     uint    mID1,
-
     uint    mID2,
     float3  x2,
     float3  n2,
     float3  L2,
-    float3  V2
-)
+    float3  V2)
 {
     if (all(L2 < EPSILON))
         return 0;
@@ -60,13 +58,14 @@ float3 ReconnectGI(
     float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
     // Terms
+    float3 F2 = BSDF_term(mID2, n2, V2, ndirN);
+
     float3 F1 = BSDF_term(mID1, n1, ndirN, o);
-    float3 F2 = BSDF_term(mID2, n2, V2, -ndirN);
     float   G = G_term(n1, ndirN);
     float   J = J_term(n2, ndirN, dist);
 
     // Throughput
-    float3 r = F1 * F2 * L2 * (G * J);
+    float3 r = F1 * F2 * L2 * G * J;
 
     if (any(isnan(r)))
         r = 0;
@@ -85,6 +84,8 @@ bool UpdateReservoirGI(
     float3 n2,
     float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Also,we dont want to reuse sample on a lights surface
     float3 V2,
+    uint matID,
+    uint objID,
     inout uint2 seed
     )
 {
@@ -98,6 +99,8 @@ bool UpdateReservoirGI(
         reservoir.n2_gi = n2;
         reservoir.L2_gi = L2;
         reservoir.V2_gi = V2;
+        reservoir.objID_gi = objID;
+        reservoir.matID_gi = matID;
         return true;
     }
     return false;
@@ -111,6 +114,7 @@ static const uint B_V2_gi =  4;   // packed  – V2 direction  (WAS 12)
 static const uint B_W_gi  =  4;   // float   – reservoir weight
 static const uint B_M_gi  =  4;   // uint    – sample count
 static const uint B_objID_gi  =  4;
+static const uint B_matID_gi  =  4;
 
 // ── byte offsets of each field block within the buffer ─────────────────────
 static const uint P_x2_gi = 0;
@@ -120,6 +124,7 @@ static const uint P_V2_gi = P_L2_gi + B_L2_gi;
 static const uint P_W_gi  = P_V2_gi + B_V2_gi;
 static const uint P_M_gi  = P_W_gi  + B_W_gi;
 static const uint P_objID_gi = P_M_gi     + B_M_gi;
+static const uint P_matID_gi = P_objID_gi     + B_objID_gi;
 
 // helper: total number of pixels in the dispatch
 #define PIXEL_COUNT (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
@@ -215,11 +220,27 @@ void store_objID_gi(uint objID, RWByteAddressBuffer buf, uint pixelIdx)
     buf.Store(addr, objID);
 }
 
+//__________________________matID___________________________
+uint load_matID_gi(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint addr = P_matID_gi * (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
+              + pixelIdx * B_matID_gi;
+    return buf.Load(addr);
+}
+
+void store_matID_gi(uint matID, RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint addr = P_matID_gi * (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
+              + pixelIdx * B_matID_gi;
+    buf.Store(addr, matID);
+}
+
 //──────────────────── load the complete GI reservoir ─────────────────────────
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 {
     Reservoir_GI r;
     r.objID_gi  = load_objID_gi(buf, pixelIdx);
+    r.matID_gi  = load_matID_gi(buf, pixelIdx);
 
     r.x2_gi   = load_x2_gi(buf, pixelIdx, r.objID_gi);
     r.n2_gi   = load_n2_gi(buf, pixelIdx, r.objID_gi);

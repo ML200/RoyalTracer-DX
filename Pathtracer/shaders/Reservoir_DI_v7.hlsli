@@ -89,32 +89,32 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
 float3 BSDF_term(
     uint   mID,
     float3 n1,
-    float3 ndirN,   // -wi (x1←x2) normalised
-    float3 o)       // outgoing/view dir at x1
+    float3 ndirN,
+    float3 o)
 {
     float2  p      = CalculateStrategyProbabilities(mID, o, n1);
     float3  f0     = EvaluateBRDF(0, mID, n1, ndirN, o);
     float3  f1     = EvaluateBRDF(1, mID, n1, ndirN, o);
 
     return SafeMultiply(p.x, f0) +
-           SafeMultiply(p.y, f1);          //  F
+           SafeMultiply(p.y, f1);
 }
 
-float G_term(float3 n1, float3 ndirN)                // ndirN = -wi
+float G_term(float3 n1, float3 ndirN)
 {
-    return max(EPSILON, dot(n1, -ndirN));            // cos θ₁
+    return max(EPSILON, dot(n1, -ndirN));
 }
 
 float J_term(
-    inout float3 n2,
+    float3 n2,
     float3 ndirN,
-    float  dist)        // |x₂−x₁|
+    float  dist)
 {
     if (dot(n2, ndirN) < 0.0f)
         n2 = -n2;
 
     float cosThetaX2 = max(EPSILON, dot(n2, ndirN));
-    return cosThetaX2 / max(EPSILON, dist * dist);   // cos θ₂ / d²
+    return cosThetaX2 / max(EPSILON, dist * dist);
 }
 
 // Calculate reconnection

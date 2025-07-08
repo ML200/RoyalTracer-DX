@@ -122,12 +122,15 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Update the reservoir
                 // Get a random seed
                 uint2 seed = GetSeed(pixelIdx, time, 2);
-                UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed);
+                float p_hat_final = p_c;
+                if(UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed)){
+                    p_hat_final = n_c;
+                }
 
                 // Calculate new W
-                float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-                if (p_hat > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
-                    float W = rdi.w_sum_di / p_hat;
+                //float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+                if (p_hat_final > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
+                    float W = rdi.w_sum_di / p_hat_final;
                     // NaN/Inf protection
                     if (isnan(W) || isinf(W)) {
                         W = 0.0f;
