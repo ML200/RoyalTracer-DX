@@ -124,7 +124,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
             continue;
 
         float4 hTap = gPermanentData[pix];     // history colour (alpha = Nprev)
-        if (hTap.a == 0.0)                     // no history stored
+        bool any_nan = isnan(hTap.r) || isnan(hTap.g) || isnan(hTap.b);
+        if (hTap.a == 0.0 || any_nan)                     // no history stored
             continue;
 
         histRGB += taps[i].w * hTap.rgb;
