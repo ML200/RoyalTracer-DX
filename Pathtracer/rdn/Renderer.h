@@ -63,11 +63,12 @@ private:
         uint32_t     groupX  = 0;   // for compute
         uint32_t     groupY  = 0;
         uint32_t     psoIdx  = UINT32_MAX;   // <── NEW: index in m_csPSOs
+        bool isWorkGraph = false;
     };
 
 
 
-    Renderer::PassDesc ParsePass(const std::wstring& token)
+    PassDesc ParsePass(const std::wstring& token)
     {
         PassDesc p{};
 
@@ -92,7 +93,18 @@ private:
         if (tail == L"rg" || tail == L"raygen")
             return p;                               // still Stage::RayGen
 
-        // compute shader tag  “cs:WxH”
+        // --- work graph pass “wg:WxH” ---
+        if (tail.rfind(L"wg:", 0) == 0)
+        {
+            p.stage = Stage::Compute;   // or Stage::WorkGraph if you want a new enum
+            p.isWorkGraph = true;
+            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
+                p.groupX == 0 || p.groupY == 0)
+                throw std::runtime_error("Invalid group size in work graph pass string");
+            return p;
+        }
+
+        // classic compute shader tag  “cs:WxH”
         if (tail.rfind(L"cs:", 0) == 0)
         {
             p.stage = Stage::Compute;
@@ -104,7 +116,6 @@ private:
 
         throw std::runtime_error("Unknown stage spec in pass string");
     }
-
 
     // --- NEW: dynamic pass control ------------------------------------------------
     std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
