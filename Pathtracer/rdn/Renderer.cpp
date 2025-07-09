@@ -33,6 +33,8 @@ static std::chrono::steady_clock::time_point g_lastRenderTime
 // Our desired interval: 1 frame every 5 seconds => 0.2 FPS
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
 
+extern "C" __declspec(dllexport) UINT D3D12SDKVersion = 717;
+extern "C" __declspec(dllexport) const char* D3D12SDKPath = ".\\";
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -46,10 +48,10 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
-        L"Pass_init_gi_v7.hlsl|rg",
-        L"barrier",
+        /*L"Pass_init_gi_v7.hlsl|rg",
+        L"barrier",*/
         L"Pass_temp_di_v7.hlsl|cs:16x8",
-        L"Pass_temp_gi_v7.hlsl|cs:16x8",
+        //L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
         L"barrier",
@@ -78,7 +80,6 @@ Renderer::Renderer(UINT width, UINT height,
     for (auto& s : m_passSequence)
         m_passes.push_back(ParsePass(s));
 }
-
 
 void Renderer::OnInit() {
 
@@ -148,7 +149,7 @@ void Renderer::LoadPipeline() {
         dxdiag::EnableDebugLayerAndDred();     // CPU debug-layer + DRED breadcrumbs
     #endif
     // 3.1 Build the preferences
-    sl::Preferences pref{};
+    /*sl::Preferences pref{};
     pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
               sl::PreferenceFlags::eLoadDownloadedPlugins;
     static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
@@ -156,7 +157,7 @@ void Renderer::LoadPipeline() {
     pref.numFeaturesToLoad = _countof(featList);
 
     // 3.2 Initialize Streamline and give it our D3D12 device
-    slInit(pref, sl::kSDKVersion);                             // :contentReference[oaicite:0]{index=0}
+    slInit(pref, sl::kSDKVersion); */                            // :contentReference[oaicite:0]{index=0}
 
   UINT dxgiFactoryFlags = 0;
     // These are the exports from SL library
@@ -795,6 +796,7 @@ void Renderer::CheckRaytracingSupport() {
                                               &options5, sizeof(options5)));
   if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
     throw std::runtime_error("Raytracing not supported on device");
+
 }
 
 //-----------------------------------------------------------------------------

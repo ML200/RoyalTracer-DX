@@ -129,7 +129,7 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
 
   // Compile
   IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_6", arguments, _countof(arguments), nullptr, 0,
+  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_8", arguments, _countof(arguments), nullptr, 0,
                                    dxcIncludeHandler, &pResult));
 
   // Verify the result
@@ -388,7 +388,7 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     ThrowIfFailed(s_compiler->Compile(
         textBlob.Get(), fileName,
         entryPoint,                      // e.g.  "main"
-        L"cs_6_6",                       // <── compute profile
+        L"cs_6_8",                       // <── compute profile
         args, _countof(args),
         nullptr, 0,
         s_includeHandler,
@@ -414,3 +414,74 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 
 
 } // namespace nv_helpers_dx12
+
+//------------------------------------------------------------------------------
+// Compile a HLSL file as a *Work Graph* library (profile: lib_6_8)
+// Usage: CompileWG(L"MyWG.hlsl", L"MyGraphEntry")
+//------------------------------------------------------------------------------
+inline Microsoft::WRL::ComPtr<IDxcBlob>
+CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"MainGraph")
+{
+    static IDxcCompiler*        s_compiler        = nullptr;
+    static IDxcLibrary*         s_library         = nullptr;
+    static IDxcIncludeHandler*  s_includeHandler  = nullptr;
+
+    if (!s_compiler)                                // one-time DXC init
+    {
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler,
+                         IID_PPV_ARGS(&s_compiler)));
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcLibrary,
+                         IID_PPV_ARGS(&s_library)));
+        ThrowIfFailed(s_library->CreateIncludeHandler(&s_includeHandler));
+    }
+
+    // 1) Load the HLSL file
+    std::ifstream shaderFile(fileName);
+    if (!shaderFile.good())
+        throw std::logic_error("Cannot find shader file");
+
+    std::stringstream ss;  ss << shaderFile.rdbuf();
+    std::string        src = ss.str();
+
+    Microsoft::WRL::ComPtr<IDxcBlobEncoding> textBlob;
+    ThrowIfFailed(s_library->CreateBlobWithEncodingFromPinned(
+            (LPBYTE)src.data(), (uint32_t)src.size(), 0, &textBlob));
+
+    // 2) Set DXC compile arguments for Work Graph (lib_6_8)
+    const wchar_t* args[] =
+    {
+        L"-Zi",                    // debug info
+        L"-O3",                    // optimization
+        L"-enable-16bit-types",
+        L"-HV", L"2021",
+        L"-D", L"MAX_REGS=96",     // (optional macro, as in your code)
+    };
+
+    Microsoft::WRL::ComPtr<IDxcOperationResult> result;
+    ThrowIfFailed(s_compiler->Compile(
+        textBlob.Get(), fileName,
+        entryPoint,                      // e.g. "MainGraph"
+        L"lib_6_8",                      // <── Work Graph library profile!
+        args, _countof(args),
+        nullptr, 0,
+        s_includeHandler,
+        &result));
+
+    HRESULT hrStatus = S_OK;
+    ThrowIfFailed(result->GetStatus(&hrStatus));
+    if (FAILED(hrStatus))
+    {
+        Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
+        result->GetErrorBuffer(&errors);
+        std::vector<char> log(errors->GetBufferSize() + 1);
+        memcpy(log.data(), errors->GetBufferPointer(), errors->GetBufferSize());
+        log.back() = 0;
+        OutputDebugStringA(log.data());
+        throw std::logic_error("DXC work graph library compilation failed.");
+    }
+
+    Microsoft::WRL::ComPtr<IDxcBlob> blob;
+    ThrowIfFailed(result->GetResult(&blob));
+    return blob;
+}
+
