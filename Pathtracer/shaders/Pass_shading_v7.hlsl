@@ -137,6 +137,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(launchIndex, 0)] = half4(accumulation, 0.0f);
 
     // DEBUG
-    float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
+    //float3 finalColor = sRGBGammaCorrection(accumulation);
+    //gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }
