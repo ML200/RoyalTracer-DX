@@ -26,15 +26,36 @@
 #include "../src/Util/ObjLoader.h"
 #include "Diagnostics.h"
 
-// This is a static/global to store the last time we actually rendered a frame.
+void DumpD3D12Messages(ID3D12Device* device)
+{
+    ComPtr<ID3D12InfoQueue> info;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&info)))) {
+        std::wcout << L"No debug layer." << std::endl;
+        return;
+    }
+
+    const UINT64 n = info->GetNumStoredMessages();
+    for (UINT64 i = 0; i < n; ++i)
+    {
+        SIZE_T size = 0;
+        info->GetMessage(i, nullptr, &size);      // get required size
+        std::vector<char> bytes(size);
+        auto* msg = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+        info->GetMessage(i, msg, &size);          // get the message
+
+        std::wcout << L"[D3D12] " << msg->pDescription << std::endl;
+    }
+    info->ClearStoredMessages();
+}
+
 static std::chrono::steady_clock::time_point g_lastRenderTime
     = std::chrono::steady_clock::now();
-
-// Our desired interval: 1 frame every 5 seconds => 0.2 FPS
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
 
-extern "C" __declspec(dllexport) UINT D3D12SDKVersion = 717;
-extern "C" __declspec(dllexport) const char* D3D12SDKPath = ".\\";
+extern "C" {
+    __declspec(dllexport) extern const UINT  D3D12SDKVersion = 717;
+    __declspec(dllexport) extern const char* D3D12SDKPath    = ".\\";
+}
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -48,8 +69,8 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
-        /*L"Pass_init_gi_v7.hlsl|rg",
-        L"barrier",*/
+        //L"Pass_init_gi_v7.hlsl|rg",
+        //L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:16x8",
         //L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
@@ -57,7 +78,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:8x4",
         L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
+        /*L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
         L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
         L"barrier",
@@ -66,8 +87,10 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
-        L"barrier",
+        L"barrier",*/
         L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
+        //L"barrier",
+        //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
     /*m_passSequence = {
         L"RayGen_v6_pass1.hlsl",
@@ -89,91 +112,46 @@ void Renderer::OnInit() {
 
   LoadPipeline();
   LoadAssets();
-
-  // Check the raytracing capabilities of the device
   CheckRaytracingSupport();
-
-  // Setup the acceleration structures (AS) for raytracing. When setting up
-  // geometry, each bottom-level AS has its own transform matrix.
   CreateAccelerationStructures();
-
-  // Command lists are created in the recording state, but there is
-  // nothing to record yet. The main loop expects it to be closed, so
-  // close it now.
   ThrowIfFailed(m_commandList->Close());
-
-  // Create the raytracing pipeline, associating the shader code to symbol names
-  // and to their root signatures, and defining the amount of memory carried by
-  // rays (ray payload)
-  CreateRaytracingPipeline(); // #DXR
-
-  // #DXR Extra: Per-Instance Data
+  CreateRaytracingPipeline();
   CreatePerInstanceConstantBuffers();
-
-  // #DXR Extra: Per-Instance Data
-  // Create a constant buffers, with a color for each vertex of the triangle,
-  // for each triangle instance
   CreateGlobalConstantBuffer();
-
-  // Allocate the buffer storing the raytracing output, with the same dimensions
-  // as the target image
-  CreateRaytracingOutputBuffer(); // #DXR
-
-  // #DXR Extra - Refitting
+  CreateRaytracingOutputBuffer();
   CreateInstancePropertiesBuffer();
-
-  // #DXR Extra: Perspective Camera
-  // Create a buffer to store the modelview and perspective camera matrices
   CreateCameraBuffer();
-
-  // Create the buffer containing the raytracing result (always output in a
-  // UAV), and create the heap referencing the resources used by the raytracing,
-  // such as the acceleration structure
-  CreateShaderResourceHeap(); // #DXR
-
-  // Create the shader binding table and indicating which shaders
-  // are invoked for each instance in the  AS
+  CreateShaderResourceHeap();
   CreateShaderBindingTable();
-
     slGetNewFrameToken(m_frameToken, nullptr);   // token is valid forever, SL recycles it internally
-
-
-
-
 }
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
     // ── NEW ──
     #if ENABLE_D3D12_DIAGNOSTICS
-        dxdiag::EnableDebugLayerAndDred();     // CPU debug-layer + DRED breadcrumbs
+        dxdiag::EnableDebugLayerAndDred();
     #endif
-    // 3.1 Build the preferences
-    /*sl::Preferences pref{};
+
+    sl::Preferences pref{};
     pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
               sl::PreferenceFlags::eLoadDownloadedPlugins;
     static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
-    pref.featuresToLoad    = nullptr;//featList;
+    pref.featuresToLoad    = featList;
     pref.numFeaturesToLoad = _countof(featList);
-
-    // 3.2 Initialize Streamline and give it our D3D12 device
-    slInit(pref, sl::kSDKVersion); */                            // :contentReference[oaicite:0]{index=0}
+    slInit(pref, sl::kSDKVersion);
 
   UINT dxgiFactoryFlags = 0;
-    // These are the exports from SL library
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory1)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
-
-    // Map functions from SL and use them instead of standard DXGI/D3D12 API
     auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
     auto slCreateDXGIFactory1 = reinterpret_cast<PFunCreateDXGIFactory1>(GetProcAddress(m_mod, "CreateDXGIFactory1"));
     auto slCreateDXGIFactory2 = reinterpret_cast<PFunCreateDXGIFactory2>(GetProcAddress(m_mod, "CreateDXGIFactory2"));
     auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
-
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -196,23 +174,18 @@ void Renderer::LoadPipeline() {
     #endif
   }
   if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
-{
-    // Handle error, check the logs
-}
-
-
+    {
+        // Handle error, check the logs
+    }
     // Using helpers from sl_dlss.h
     sl::DLSSOptimalSettings dlssSettings;
     sl::DLSSOptions dlssOptions;
     dlssOptions.mode = sl::DLSSMode::eDLAA;
-    dlssOptions.outputWidth = 1920;
-    dlssOptions.outputHeight = 1080;
+    dlssOptions.outputWidth = m_width;
+    dlssOptions.outputHeight = m_height;
     slDLSSGetOptimalSettings(dlssOptions, dlssSettings);
     std::wcout << L"DLSS settings: " << dlssSettings.renderHeightMax << std::endl;
 
-
-
-  // Describe and create the command queue.
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -232,17 +205,21 @@ void Renderer::LoadPipeline() {
 
   ComPtr<IDXGISwapChain1> swapChain;
   ThrowIfFailed(factory->CreateSwapChainForHwnd(
-      m_commandQueue.Get(), // Swap chain needs the queue so that it can force a
-                            // flush on it.
+      m_commandQueue.Get(),
       Win32Application::GetHwnd(), &swapChainDesc, nullptr, nullptr,
       &swapChain));
-
-  // This sample does not support fullscreen transitions.
   ThrowIfFailed(factory->MakeWindowAssociation(Win32Application::GetHwnd(),
                                                DXGI_MWA_NO_ALT_ENTER));
 
   ThrowIfFailed(swapChain.As(&m_swapChain));
   m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    if(!m_viewportHandle)
+    {
+        slAllocateResources(
+            /*cmdList*/  nullptr,
+            /*feature*/  sl::kFeatureDLSS,
+            /*out*/      m_viewportHandle);
+    }
 
   // Create descriptor heaps.
   {
@@ -279,45 +256,25 @@ void Renderer::LoadPipeline() {
                 D3D12_COMMAND_LIST_TYPE_DIRECT,
                 IID_PPV_ARGS(&m_commandAllocators[n])));
     }
-
-
-    // #DXR Extra: Depth Buffering
-  // The original sample does not support depth buffering, so we need to
-  // allocate a depth buffer, and later bind it before rasterization
   CreateDepthBuffer();
 }
 
-// Load the sample assets.
 void Renderer::LoadAssets() {
-  // Create an empty root signature.
   {
-    // #DXR Extra: Perspective Camera
-    // The root signature describes which data is accessed by the shader. The
-    // camera matrices are held in a constant buffer, itself referenced the
-    // heap. To do this we reference a range in the heap, and use that range as
-    // the sole parameter of the shader. The camera buffer is associated in the
-    // index 0, making it accessible in the shader in the b0 register.
     CD3DX12_ROOT_PARAMETER constantParameter;
     CD3DX12_DESCRIPTOR_RANGE range;
     range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
     constantParameter.InitAsDescriptorTable(1, &range,
                                             D3D12_SHADER_VISIBILITY_ALL);
-
-    // #DXR Extra - Refitting
-    // Per-instance properties buffer
     CD3DX12_ROOT_PARAMETER matricesParameter;
     CD3DX12_DESCRIPTOR_RANGE matricesRange;
     matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /* desc count*/,
                        0 /*register*/, 0 /*space*/, 1 /*heap slot*/);
     matricesParameter.InitAsDescriptorTable(1, &matricesRange,
                                             D3D12_SHADER_VISIBILITY_ALL);
-
-    // #DXR Extra - Refitting
-    // Per-instance properties index for the current geometry
     CD3DX12_ROOT_PARAMETER indexParameter;
     indexParameter.InitAsConstants(1 /*value count*/, 1 /*register*/);
 
-    // #DXR Extra - Refitting
     std::vector<CD3DX12_ROOT_PARAMETER> params = {
         constantParameter, matricesParameter, indexParameter};
 
@@ -335,13 +292,11 @@ void Renderer::LoadAssets() {
         IID_PPV_ARGS(&m_rootSignature)));
   }
 
-  // Create the pipeline state, which includes compiling and loading shaders.
   {
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
 #if defined(_DEBUG)
-    // Enable better shader debugging with the graphics debugging tools.
     UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #else
     UINT compileFlags = 0;
@@ -354,14 +309,12 @@ void Renderer::LoadAssets() {
                                      nullptr, nullptr, "PSMain", "ps_5_0",
                                      compileFlags, 0, &pixelShader, nullptr));
 
-    // Define the vertex input layout.
     D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
 
-    // Describe and create the graphics pipeline state object (PSO).
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.InputLayout = {inputElementDescs, _countof(inputElementDescs)};
     psoDesc.pRootSignature = m_rootSignature.Get();
@@ -376,29 +329,22 @@ void Renderer::LoadAssets() {
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
-    // #DXR Extra: Depth Buffering
-    // Add support for depth testing, using a 32-bit floating-point depth buffer
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-    // #DXR Extra - Refitting
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
     ThrowIfFailed(m_device->CreateGraphicsPipelineState(
         &psoDesc, IID_PPV_ARGS(&m_pipelineState)));
   }
 
-  // Create the command list.
   ThrowIfFailed(m_device->CreateCommandList(
       0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "smoothMonke.obj", "monke_2.obj"};
-
-
-
-    //Iterate through the models in the scene (currently one hardcoded, later provided by list)
+    std::vector<std::string> models = {"garage.obj", "iowa.obj", "monke_2.obj"};
+    //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
     }
@@ -453,10 +399,6 @@ void Renderer::LoadAssets() {
     if (m_fenceEvent == nullptr) {
       ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
     }
-
-    // Wait for the command list to execute; we are reusing the same command
-    // list in our main loop but for now, we just want to wait for setup to
-    // complete before continuing.
     WaitForPreviousFrame();
   }
 }
@@ -479,8 +421,8 @@ void Renderer::OnUpdate() {
     float angle = static_cast<float>(m_time) * 0.000f;
     float r     = 3.0f;
 
-    float x = cosf(angle) * r + 1.0f;   // + centre.x
-    float z = sinf(angle) * r + 0.0f;   // + centre.z
+    float x = 2.5f;//cosf(angle) * r + 1.0f;   // + centre.x
+    float z = 2.5f;//sinf(angle) * r + 0.0f;   // + centre.z
 
     XMMATRIX scale        = XMMatrixScaling(1.f, 1.f, 1.f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
@@ -496,20 +438,6 @@ void Renderer::OnUpdate() {
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
-
-/*void Renderer::OnRender() {
-    // Record all the commands we need to render the scene into the command list.
-    PopulateCommandList();
-
-    // Execute the command list.
-    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-    // Present the frame
-    ThrowIfFailed(m_swapChain->Present(1, 0));
-
-    // Wait for the frame to finish
-    WaitForPreviousFrame();
-}*/
 
 void Renderer::OnRender()
 {
@@ -554,42 +482,6 @@ void Renderer::OnRender()
     #endif
 }
 
-/*void Renderer::OnRender()
-{
-    using namespace std::chrono;
-
-    // 1) Check how long it's been since we last rendered.
-    auto now = steady_clock::now();
-    float elapsedSec = duration<float>(now - g_lastRenderTime).count();
-
-    // 2) If < 5 seconds have passed, skip GPU work entirely -> GPU stays idle.
-    if (elapsedSec < 0.05f)
-    {
-        // Optional: You can still process input messages or do CPU tasks,
-        // but skip issuing any GPU commands or calls to Present().
-        return;
-    }
-
-    // 3) Otherwise, it's time for a new frame -> do the normal render steps.
-
-    // Record the time we last rendered
-    g_lastRenderTime = now;
-
-    // [A] Record GPU commands
-    PopulateCommandList();
-
-    // [B] Execute them
-    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
-    // [C] Present the frame (1, 0)
-    ThrowIfFailed(m_swapChain->Present(1, 0));
-
-    // [D] Wait for GPU to finish (or use your existing fence logic)
-    WaitForPreviousFrame();
-}*/
-
-
 void Renderer::OnDestroy() {
   // Ensure that the GPU is no longer referencing resources that are about to be
   // cleaned up by the destructor.
@@ -615,6 +507,8 @@ void Renderer::PopulateCommandList()
     m_commandList->RSSetViewports(1, &m_viewport);
     m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
+
+
     // Transition backbuffer PRESENT->RENDER_TARGET
     {
         auto b = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -638,6 +532,7 @@ void Renderer::PopulateCommandList()
         ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
     }
+
 
     // 5) Prepare raytracing descriptors
     D3D12_DISPATCH_RAYS_DESC raysDesc{};
@@ -707,17 +602,38 @@ void Renderer::PopulateCommandList()
 
         case Stage::Compute:
             {
+                if (p.isWorkGraph)
+                {   // -------- Work-Graph path ------------------------------------
+                    const uint32_t wgIndex = p.wgIdx;
+                    const auto& rt = m_wgRuntime[wgIndex];   // which graph you want to run
+
+                    D3D12_SET_PROGRAM_DESC setProg{};
+                    setProg.Type                        = D3D12_PROGRAM_TYPE_WORK_GRAPH;
+                    setProg.WorkGraph.ProgramIdentifier = rt.id;
+                    setProg.WorkGraph.BackingMemory     = rt.backing;
+
+                    // Initialise the graph only the **first** time you bind it this frame
+                    setProg.WorkGraph.Flags = D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
+                    m_commandList->SetProgram(&setProg);
+
+                    // 6-b) dispatch – single “record” into entrypoint 0
+                    D3D12_DISPATCH_GRAPH_DESC dg{};
+                    dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
+                    dg.NodeCPUInput.EntrypointIndex      = 0;
+                    dg.NodeCPUInput.NumRecords           = 1;
+                    dg.NodeCPUInput.pRecords             = nullptr;
+                    dg.NodeCPUInput.RecordStrideInBytes  = 0;   // replicate the one record
+                    m_commandList->DispatchGraph(&dg);
+
+                    break;
+                }
                 // switch to CS PSO + bind its root signature
                 m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 m_commandList->SetComputeRootSignature(m_computeSignature.Get());
-
-                // descriptor‐table + two constants for compute
-                m_commandList->SetComputeRootDescriptorTable(
-                   0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+                m_commandList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
                 UINT imSize[2] = { GetWidth(), GetHeight() };
                 m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
 
-                // dispatch
                 uint32_t gx = (GetWidth()  + p.groupX - 1) / p.groupX;
                 uint32_t gy = (GetHeight() + p.groupY - 1) / p.groupY;
                 m_commandList->Dispatch(gx, gy, 1);
@@ -725,6 +641,8 @@ void Renderer::PopulateCommandList()
             break;
         }
     }
+
+
 
     // 8) Copy ray-output -> backbuffer and barrier back to RT/PRESENT
     {
@@ -1163,11 +1081,106 @@ void Renderer::CreateRaytracingPipeline()
     {
         if (p.stage == Stage::Barrier) continue;
 
-        if (p.stage == Stage::Compute)
+        if (p.isWorkGraph)
+        {
+            // ── compile WG DXIL ─────────────────────────────────────────────
+            ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileWG(p.file.c_str());
+
+            // export every public symbol found in the library
+            static const D3D12_EXPORT_DESC kExports[] =
+            {
+                { L"main",  nullptr, D3D12_EXPORT_FLAG_NONE }   // must match the HLSL attribute
+            };
+
+            D3D12_DXIL_LIBRARY_DESC dxilDesc{};
+            dxilDesc.DXILLibrary = { lib->GetBufferPointer(), lib->GetBufferSize() };
+            dxilDesc.NumExports  = 0;//_countof(kExports);
+            dxilDesc.pExports    = nullptr;//kExports;
+
+            D3D12_STATE_SUBOBJECT subobjects[3]{};
+            subobjects[0].Type  = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+            subobjects[0].pDesc = &dxilDesc;
+
+            subobjects[1].Type  = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+            subobjects[1].pDesc = m_computeSignature.GetAddressOf();
+
+            static const LPCWSTR kWorkGraphName = L"main";
+
+            D3D12_WORK_GRAPH_DESC wgDesc = {};
+            wgDesc.ProgramName               = kWorkGraphName;
+            wgDesc.Flags                     = D3D12_WORK_GRAPH_FLAG_INCLUDE_ALL_AVAILABLE_NODES;
+            wgDesc.NumEntrypoints            = 0;            // no explicit entrypoints
+            wgDesc.pEntrypoints              = nullptr;
+            wgDesc.NumExplicitlyDefinedNodes = 0;            // no overrides
+            wgDesc.pExplicitlyDefinedNodes   = nullptr;
+
+            // plug into your subobject array:
+            subobjects[2].Type  = D3D12_STATE_SUBOBJECT_TYPE_WORK_GRAPH;
+            subobjects[2].pDesc = &wgDesc;
+
+            D3D12_STATE_OBJECT_DESC soDesc{};
+            soDesc.Type          = D3D12_STATE_OBJECT_TYPE_EXECUTABLE;
+            soDesc.NumSubobjects = _countof(subobjects);
+            soDesc.pSubobjects   = subobjects;
+
+            D3D12_FEATURE_DATA_D3D12_OPTIONS21 opts = {};
+            HRESULT hr = m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS21, &opts, sizeof(opts));
+            if (FAILED(hr) || opts.WorkGraphsTier == D3D12_WORK_GRAPHS_TIER_NOT_SUPPORTED) {
+                // Print a fatal error and bail out
+                MessageBoxA(nullptr, "Work Graphs not supported on this device/driver/OS", "Error", MB_OK);
+                abort();
+            }
+
+            ComPtr<ID3D12StateObject> so;
+            HRESULT hr2 = m_device->CreateStateObject(&soDesc, IID_PPV_ARGS(&so));
+            DumpD3D12Messages(m_device.Get());           // <- prints full explanation
+            ThrowIfFailed(hr2);
+
+            // ── runtime information ────────────────────────────────────────
+            ComPtr<ID3D12StateObjectProperties1> soProps1;
+            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&soProps1)));
+
+            ComPtr<ID3D12WorkGraphProperties> wgProps;
+            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&wgProps)));
+
+            WgRuntimeData rt{};
+
+            D3D12_PROGRAM_IDENTIFIER pid = soProps1->GetProgramIdentifier(L"main");
+            rt.id = pid;
+
+            D3D12_WORK_GRAPH_MEMORY_REQUIREMENTS mem{};
+            wgProps->GetWorkGraphMemoryRequirements(0, &mem);            // index 0
+
+            UINT64 backingSize = mem.MaxSizeInBytes;
+            if (backingSize)
+            {
+                CD3DX12_HEAP_PROPERTIES hp(D3D12_HEAP_TYPE_DEFAULT);
+                CD3DX12_RESOURCE_DESC   buf =
+                    CD3DX12_RESOURCE_DESC::Buffer(backingSize,
+                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+                ThrowIfFailed(m_device->CreateCommittedResource(
+                    &hp, D3D12_HEAP_FLAG_NONE, &buf,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                    IID_PPV_ARGS(&rt.backingRes)));
+
+                rt.backing.StartAddress = rt.backingRes->GetGPUVirtualAddress();
+                rt.backing.SizeInBytes  = backingSize;
+            }
+
+            p.wgIdx = static_cast<uint32_t>(m_wgStateObjects.size());
+            m_wgStateObjects.push_back(so);
+            m_wgProps      .push_back(wgProps);
+            m_wgRuntime    .push_back(std::move(rt));
+            continue;
+        }
+
+
+        if (p.stage == Stage::Compute && !p.isWorkGraph)
         {
             // --- compile CS & make a PSO ------------------------------------
             ComPtr<IDxcBlob> cs =
-                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");  // cs_6_6
+                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
             D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
             desc.pRootSignature = m_computeSignature.Get();            // reuse RS
@@ -1195,9 +1208,10 @@ void Renderer::CreateRaytracingPipeline()
         m_passIndex[p.file] = rgSlot++;     // SBT slot for this RG shader
     }
 
+
     for (PassDesc& p : m_passes)
     {
-        if (p.stage != Stage::Compute) continue;
+        if (p.stage != Stage::Compute || p.isWorkGraph) continue;
         ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
@@ -1796,6 +1810,7 @@ void Renderer::CreateShaderBindingTable() {
     {
         if (entry == L"barrier") continue;
         if (entry.find(L"|cs:") != std::wstring::npos) continue; // ← add this
+        if (entry.find(L"|wg:") != std::wstring::npos) continue; // ← add this
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));

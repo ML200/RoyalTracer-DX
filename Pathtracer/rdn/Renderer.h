@@ -24,8 +24,9 @@
 
 #include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
 #include <sl_consts.h>     // the sl::kFeature… enum values
+#include <sl_helpers.h>
 #include <sl_dlss.h>       // DLSS Super Resolution API
-#include <sl_dlss_d.h>     // DLSS Ray‑Reconstruction (DLSS‑RR) API
+#include "sl_dlss_d.h"
 
 
 #include "../lib/imgui/imgui.h"
@@ -58,12 +59,12 @@ private:
 
     struct PassDesc
     {
-        std::wstring file;          // *.hlsl ( no “|” suffix )
-        Stage        stage   = Stage::RayGen;
-        uint32_t     groupX  = 0;   // for compute
-        uint32_t     groupY  = 0;
-        uint32_t     psoIdx  = UINT32_MAX;   // <── NEW: index in m_csPSOs
-        bool isWorkGraph = false;
+        std::wstring  file;               // *.hlsl
+        Stage         stage   = Stage::RayGen;
+        uint32_t      groupX  = 0, groupY = 0;   // legacy CS
+        uint32_t      psoIdx  = UINT32_MAX;      // legacy CS
+        bool          isWorkGraph = false;       // NEW
+        uint32_t      wgIdx  = UINT32_MAX;       // NEW – index into state-object array
     };
 
 
@@ -94,13 +95,11 @@ private:
             return p;                               // still Stage::RayGen
 
         // --- work graph pass “wg:WxH” ---
-        if (tail.rfind(L"wg:", 0) == 0)
+        if (tail.rfind(L"wg:",0)==0)                // “|wg:16x16”
         {
-            p.stage = Stage::Compute;   // or Stage::WorkGraph if you want a new enum
-            p.isWorkGraph = true;
-            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
-                p.groupX == 0 || p.groupY == 0)
-                throw std::runtime_error("Invalid group size in work graph pass string");
+            p.stage        = Stage::Compute;        // will be scheduled like CS
+            p.isWorkGraph  = true;
+            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY); // only used for sanity
             return p;
         }
 
@@ -128,16 +127,29 @@ private:
     // Streamline frame & viewport tracking
     sl::FrameToken*     m_frameToken     = nullptr;
     sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
+    // ──────────────────────────────────────────────────────────────
+    sl::DLSSDOptions     m_dlssdOptions   {};   // user-driven
+    sl::Constants        m_slConstants    {};   // per-frame
+    // ──────────────────────────────────────────────────────────────
 
     std::vector<PassDesc>                           m_passes;      // parsed list
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
+    std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
+
+    struct WgRuntimeData
+    {
+        D3D12_PROGRAM_IDENTIFIER        id;
+        D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing;
+        ComPtr<ID3D12Resource>          backingRes;
+    };
+    std::vector<WgRuntimeData> m_wgRuntime;
 
 
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
   CD3DX12_RECT m_scissorRect;
   ComPtr<IDXGISwapChain3> m_swapChain;
-  ComPtr<ID3D12Device5> m_device;
+  ComPtr<ID3D12Device10> m_device;
   ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
     ComPtr<ID3D12CommandAllocator> m_commandAllocators[FrameCount];
   ComPtr<ID3D12CommandQueue> m_commandQueue;
@@ -145,7 +157,7 @@ private:
     ComPtr<ID3D12RootSignature>   m_computeSignature;
   ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
   ComPtr<ID3D12PipelineState> m_pipelineState;
-  ComPtr<ID3D12GraphicsCommandList4> m_commandList;
+  ComPtr<ID3D12GraphicsCommandList10> m_commandList;
   UINT m_rtvDescriptorSize;
 
   // App resources.
@@ -284,10 +296,14 @@ private:
   // to use in the Shader Binding Table
   ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
 
+    std::vector< ComPtr<ID3D12StateObject>          > m_wgStateObjects;
+    std::vector< ComPtr<ID3D12WorkGraphProperties>  > m_wgProps;
+
   // #DXR
   void CreateRaytracingOutputBuffer();
   void CreateShaderResourceHeap();
   ComPtr<ID3D12Resource> m_outputResource;
+    ComPtr<ID3D12Resource> m_dlssOutputBuffer;
     ComPtr<ID3D12Resource> m_permanentDataTexture;
     ComPtr<ID3D12Resource> m_scratchPing;
     ComPtr<ID3D12Resource> m_svgfConstBuffer;

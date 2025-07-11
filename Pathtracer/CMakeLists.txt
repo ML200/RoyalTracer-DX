@@ -132,6 +132,7 @@ add_dependencies(copy_assets Pathtracer)
 add_custom_command(TARGET Pathtracer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${D3D12_AGILITY_LIB}/D3D12Core.dll"
+        "${D3D12_AGILITY_LIB}/d3d12SDKLayers.dll"
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )

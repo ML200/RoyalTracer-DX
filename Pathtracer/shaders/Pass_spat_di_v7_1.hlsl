@@ -85,19 +85,92 @@ void main(uint3 tid : SV_DispatchThreadID)
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-        // Get the reprojected pixel position
+
+
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 2);
 
+        // ########################################### NODE #############################################################
         // Based on the quality of the current canonical sample, reduce the number of spatial reuses.
         float conf = min(60.0f, rdi.M_di) / TEMP_MCAP_DI;
         uint nbrBudget = SPAT_COUNT_MIN_DI +
                  uint((1.0f - conf) * float(SPAT_COUNT_MAX_DI - SPAT_COUNT_MIN_DI) + 0.5f);
 
+        // Array to hold valid neighbor IDs
+        uint nIds[SPAT_COUNT_MAX_DI];
+        // loop over all candidates and select those that are best
+        [unroll(SPAT_COUNT_MAX_DI)]
+        for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
+            if(i < nbrBudget){
+                // loop until we find a valid candidate
+                [unroll(SPAT_TRIS_DI)]
+                for(uint j = 0; j < SPAT_TRIS_DI; j++){
+                    nIds[i] = 0xFFFFFFFF; // Set the id to invalid for that neighbor, until a valid one is found
+                    // Get the candidate ID
+                    uint iID = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+                    // Only load data required for the comparison (x1, n1, n2, L1, L2, W, M, matID)
+                    // Check wether the reservoir is valid for merge (Later, replace this with a weight -> the neighbor with the highest weight is selected)
+                    bool candidateAcceptedDI =
+                        (all(load_L1(g_sample_current, iID) < EPSILON) &&
+                        IsValidReservoir_DI_opt(load_n2_di(g_Reservoirs_current_di, iID, load_objID_di(g_Reservoirs_current_di, iID)), load_L2_di(g_Reservoirs_current_di, iID), load_W_di(g_Reservoirs_current_di, iID), load_M_di(g_Reservoirs_current_di, iID)) &&
+                        !RejectNormal_DI(sdata.n1, load_n1(g_sample_current, iID), 0.9f) &&
+                        !RejectDistance_DI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
+                        (load_matID(g_sample_current, iID) == sdata.matID));
+                    if(candidateAcceptedDI){
+                        nIds[i] = iID;
+                        break;
+                    }
+                }
+            }
+            else
+                nIds[i] = 0xFFFFFFFF; // Fill the rest with invalid pixels -> fast loop over it (divergence, but fuck it)
+        }
+        // ########################################### NODE #############################################################
+
+        // Calculate M_sum for all valid candidates
+        float M_sum = .0f;
+        [unroll(SPAT_COUNT_MAX_DI)]
+        for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
+            if(nIds[i] != 0xFFFFFFFF)
+                M_sum += (float)load_M_di(g_Reservoirs_current_di, nIds[i]);
+        }
+
+        // Calculate canonical pixel p_hat before loading the expensive data
+        float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+        // Compute the pairwise MIS weight for the canonical sample
+        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, rdi.M_di, nIds, rdi.x2_di, rdi.n2_di, rdi.L2_di);
+        // Adjust the weight in the canonical reservoir
+        rdi.w_sum_di = mis_c * p_c * rdi.W_di;
+
+        // Iterate through all valid neighbors and add update the canonical reservoir with them
+        for(int i = 0; i < SPAT_COUNT_MAX_DI; i++){
+            if(nIds[i] != 0xFFFFFFFF){
+                // Calculate p_hat for the neighbor using the canonical sample position
+                float3 x2_n = ;
+                float3 n2_n = ;
+                float3 L2_n = ;
+                float p_hat_from = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, x2_n, n2_n, L2_n)) * VisibilityCheckCP(sdata.x1, x2_n, sdata.n1);
+                // Calculate the samples MIS weight
+                float mis_n = PairwiseMIS_Neighbor_Spat_DI();
+                // Calculate the sample weight
+                float w_n = mis_n * p_hat_from * ;
+
+                // Update the reservoir
+
+            }
+        }
+
+
+
+
+
+        [unroll(SPAT_COUNT_MAX_DI)]
         for( int j = 0; j < nbrBudget; j++){
             uint tempPixelIdx = 0xFFFFFFFF;
             SampleData sdata_r;
             Reservoir_DI rdi_r;
+
+            [unroll(SPAT_TRIS_DI)]
             for(int i = 0; i < SPAT_TRIS_DI; i++){
                 // Get the candidate ID
                 uint iID = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
@@ -127,7 +200,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1);
                 float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
                 float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
-                float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * visReuse;
+                float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di));// * visReuse;
                 float M_c = min(SPAT_MCAP_DI,rdi.M_di);
                 float M_n = min(SPAT_MCAP_DI,rdi_r.M_di);
                 float M_sum = M_c + M_n;

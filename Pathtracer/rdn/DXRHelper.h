@@ -412,15 +412,12 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     return blob;
 }
 
-
-} // namespace nv_helpers_dx12
-
-//------------------------------------------------------------------------------
+  //------------------------------------------------------------------------------
 // Compile a HLSL file as a *Work Graph* library (profile: lib_6_8)
 // Usage: CompileWG(L"MyWG.hlsl", L"MyGraphEntry")
 //------------------------------------------------------------------------------
 inline Microsoft::WRL::ComPtr<IDxcBlob>
-CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"MainGraph")
+CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
     static IDxcCompiler*        s_compiler        = nullptr;
     static IDxcLibrary*         s_library         = nullptr;
@@ -484,4 +481,6 @@ CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"MainGraph")
     ThrowIfFailed(result->GetResult(&blob));
     return blob;
 }
+
+} // namespace nv_helpers_dx12
 
