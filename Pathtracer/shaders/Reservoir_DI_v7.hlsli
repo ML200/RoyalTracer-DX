@@ -33,6 +33,16 @@ inline bool IsValidReservoir_DI(Reservoir_DI r){
     return valid;
 }
 
+inline bool IsValidReservoir_DI_opt(float3 n2, float3 L2, float W, uint M){
+    bool valid =
+        any(abs(n2) > 0.0f) &&
+        any(L2 > 0.0f) &&
+        W > 0.0f &&
+        M > 0.0f
+        ;
+    return valid;
+}
+
 // The remaining functions remain unchanged.
 float VisibilityCheck(
     float3 x1,
