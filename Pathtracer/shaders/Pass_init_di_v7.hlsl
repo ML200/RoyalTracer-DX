@@ -131,7 +131,7 @@ void Pass_init_di_v7() {
         store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
         store_L2_di(reservoir.L2_di, g_Reservoirs_current_di, pixelIdx);
         store_W_di(reservoir.W_di, g_Reservoirs_current_di, pixelIdx);
-        store_M_di(1, g_Reservoirs_current_di, pixelIdx);
         store_objID_di(reservoir.objID_di, g_Reservoirs_current_di, pixelIdx);
     }
+    store_M_di(1, g_Reservoirs_current_di, pixelIdx);
 }

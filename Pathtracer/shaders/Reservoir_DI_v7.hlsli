@@ -26,8 +26,8 @@ inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float thresho
 inline bool IsValidReservoir_DI(Reservoir_DI r){
     bool valid =
         any(abs(r.n2_di) > 0.0f) &&
-        any(r.L2_di > 0.0f) &&
-        r.W_di > 0.0f &&
+        //any(r.L2_di > 0.0f) &&
+        //r.W_di > 0.0f &&
         r.M_di > 0.0f
         ;
     return valid;
@@ -36,8 +36,8 @@ inline bool IsValidReservoir_DI(Reservoir_DI r){
 inline bool IsValidReservoir_DI_opt(float3 n2, float3 L2, float W, uint M){
     bool valid =
         any(abs(n2) > 0.0f) &&
-        any(L2 > 0.0f) &&
-        W > 0.0f &&
+        //any(L2 > 0.0f) &&
+        //W > 0.0f &&
         M > 0.0f
         ;
     return valid;
@@ -57,7 +57,7 @@ float VisibilityCheck(
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
     ray.TMin = EPSILON;
-    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
+    ray.TMax = max(dist - 5.0f * EPSILON, 1.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     const uint flags =
@@ -68,7 +68,6 @@ float VisibilityCheck(
 }
 
 #ifdef ENABLE_RAY_QUERY_INLINE
-[forceinline]
 float VisibilityCheckCP(float3 P, float3 L, float3 N)
 {
     float3 dir = normalize(L - P);
@@ -78,7 +77,7 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     ray.Origin    = P + normalize(N) * EPSILON;            // ← offset *along ray*
     ray.Direction = dir;
     ray.TMin      = EPSILON;
-    ray.TMax      = max(len - EPSILON*10, 2*EPSILON);
+    ray.TMax      = max(len - EPSILON*5.0f, 1.0f*EPSILON);
 
     RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
               //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES

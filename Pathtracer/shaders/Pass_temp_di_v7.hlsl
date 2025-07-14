@@ -100,7 +100,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             // Merge the reservoirs
             if(candidateAcceptedDI){
                 // Calculate the canonical target function
-                float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+                float visReuse_c = rdi.W_di > 0.0f ? 1.0f : 0.0f;
+                float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * visReuse_c;
                 float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
                 float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
                 float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;

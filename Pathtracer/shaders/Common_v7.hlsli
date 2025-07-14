@@ -6,7 +6,7 @@ inline uint MapPixelID(uint2 dims, int2 lIndex)
     if (lIndex.x < 0 || lIndex.y < 0 ||
         lIndex.x >= int(dims.x) || lIndex.y >= int(dims.y))
     {
-        return uint(-1);          // invalid
+        return 0xFFFFFFFF;          // invalid
     }
 
     // ---------- 2. original mapping ----------

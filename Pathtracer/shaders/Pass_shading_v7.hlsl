@@ -96,11 +96,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
         uint   matID = load_matID(g_sample_current, pixelIdx);
 
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
-        accumulation = ReconnectDI(x1, n1, o, matID,
-                                   rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
+        accumulation = ReconnectDI(x1, n1, o, matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
 
         Reservoir_GI rgi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-        accumulation += ReconnectGI(x1, n1, o, matID, rgi.matID_gi, rgi.x2_gi, rgi.n2_gi, rgi.L2_gi, rgi.V2_gi) * rgi.W_gi;
+        accumulation = ReconnectGI(x1, n1, o, matID, rgi.matID_gi, rgi.x2_gi, rgi.n2_gi, rgi.L2_gi, rgi.V2_gi) * rgi.W_gi;
 
         // g-buffer slices – written immediately, no temporaries kept alive
         gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Kd.xyz, 0);
@@ -113,6 +112,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gScratchPing[uint3(launchIndex, 5)] = half4(x1, rdi.M_di);
         gScratchPing[uint3(launchIndex, 6)] = half4(
                                                 load_x1(g_sample_last, pixelIdx), 0.0f);
+
+        //DEBUG
+        store_x2_gi(rgi.x2_gi, g_Reservoirs_last_gi, pixelIdx, rgi.objID_gi);
+        store_n2_gi(rgi.n2_gi, g_Reservoirs_last_gi, pixelIdx, rgi.objID_gi);
+        store_L2_gi(rgi.L2_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_V2_gi(rgi.V2_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_W_gi(rgi.W_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_M_gi(rgi.M_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_objID_gi(rgi.objID_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_matID_gi(rgi.matID_gi, g_Reservoirs_last_gi, pixelIdx);
     }
     else
     {
@@ -137,6 +146,44 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(launchIndex, 0)] = half4(accumulation, 0.0f);
 
     // DEBUG
+
+    // ───────────────────────── Accumulation (capped) ───────────────────────────
+    bool cameraChanged = false;
+    [unroll]
+    for (uint i = 0; i < 4; ++i) {
+        if (any(view[i] != prevView[i])) cameraChanged = true;
+    }
+    static const half MAX_SAMPLES     = 500.0h;  // tune to taste
+
+    half4 prev        = gPermanentData[launchIndex];   // rgb = running avg, a = N
+    half3 prevAvg     = prev.rgb;
+    half  prevSamples = prev.a;
+
+    // --- online running average --------------------------------------------------
+    half3 newAvg;
+    half  newSamples;
+    if (cameraChanged)
+    {
+        // Camera moved: reset running average and sample count
+        //newAvg     = gScratchPing[uint3(DTid.xy, 1)];
+        newAvg     = accumulation;
+        newSamples = 1.0h;
+    }
+    else
+    {
+        newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);   // clamp N
+        half invN  = 1.0h / newSamples;
+        //newAvg     = mad(gScratchPing[uint3(DTid.xy, 1)] - prevAvg, invN, prevAvg);
+        newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
+    }
+
+    // --- store back to the permanent UAV ----------------------------------------
+    gPermanentData[launchIndex] = half4(newAvg, newSamples);
+
+    // --- display/debug -----------------------------------------------------------
+    float3 fColor = sRGBGammaCorrection(newAvg);
+    gOutput[uint3(DTid.xy, 0)]  = half4(fColor, 1);
+
     float3 finalColor = sRGBGammaCorrection(accumulation);
     gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
 }

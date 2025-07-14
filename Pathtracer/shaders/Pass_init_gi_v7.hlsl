@@ -6,6 +6,7 @@
 
 RWTexture2DArray<float4> gOutput : register(u0);
 RWTexture2D<float4> gPermanentData : register(u1);
+RWTexture2DArray<half4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current : register(u6);
 RWByteAddressBuffer g_sample_last : register(u7);
@@ -65,6 +66,7 @@ void Pass_init_gi_v7() {
 
     float3 L1 = load_L1(g_sample_current, pixelIdx);
     uint matIDtep = load_matID(g_sample_current, pixelIdx);
+float3 debug = .0f;
     if(matIDtep != 4294967294 && all(L1 < EPSILON) && any(load_n2_init(g_InitialBSDFRays, pixelIdx) != 0.0f)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
@@ -116,7 +118,6 @@ void Pass_init_gi_v7() {
                     float3 V2_norm = normalize(V2_temp);
                     L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                 }
-
                 // Update reservoir
                 if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0, 0, seed)){
                     p_hat_final = p_hat;
@@ -124,6 +125,7 @@ void Pass_init_gi_v7() {
                     s_x2 = result.x2;
                     s_n1 = normal;
                 }
+//debug += MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * c * tp_full * result.L2 / pdf * VisibilityCheck(position, result.x2, normal);
             }
 
             // BSDF advancement
@@ -149,12 +151,12 @@ void Pass_init_gi_v7() {
                         float3 V2_norm = normalize(V2_temp);
                         L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                     }
-
                     // Update reservoir with the sub path
                     if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0,0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
                     }
+//debug += MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * tp_full * result.L2 / pdf;
                     break;
                 }
                 else{
@@ -181,6 +183,7 @@ void Pass_init_gi_v7() {
         if(requires_shadow_ray && length(s_n1)>EPSILON){
             V = VisibilityCheck(s_x1, s_x2, s_n1);
         }
+        reservoir.L2_gi *= V;
         // Calculate W
         float W = 0.0f;
         if (p_hat_final > 0.0f) {
@@ -192,13 +195,14 @@ void Pass_init_gi_v7() {
         }
         reservoir.W_gi = W;
 
+        store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
+        store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
+        store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
+        store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
+        store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
+        store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
+        store_objID_gi(load_objID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
+        store_matID_gi(load_matID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
     }
-    store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
-    store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
-    store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
-    store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
-    store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
-    store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
-    store_objID_gi(load_objID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
-    store_matID_gi(load_matID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
+    //gScratchPing[uint3(launchIndex.xy, 1)] = float4(debug, 1);
 }
