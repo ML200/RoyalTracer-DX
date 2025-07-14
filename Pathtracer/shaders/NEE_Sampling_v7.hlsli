@@ -56,7 +56,7 @@ uint pickAlias(inout uint seed)
 
 uint pickAliasWave(inout uint waveSeed, inout uint2 threadSeed)
 {
-    return pickAlias(threadSeed.x);;
+    return pickAlias(threadSeed.x);
 }
 
 

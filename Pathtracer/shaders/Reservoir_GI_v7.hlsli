@@ -12,7 +12,7 @@ struct Reservoir_GI
     uint matID_gi;
 };
 
-inline bool RejectNormal_gI(float3 n1, float3 n2, float threshold){
+inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
     return (similarity < threshold);
 }
@@ -28,8 +28,8 @@ inline bool RejectDistance_GI(float3 x1, float3 x2, float3 camPos, float thresho
 inline bool IsValidReservoir_GI(Reservoir_GI r){
     bool valid =
         any(abs(r.n2_gi) > 0.0f) &&
-        any(r.L2_gi > 0.0f) &&
-        r.W_gi > 0.0f &&
+        //any(r.L2_gi > 0.0f) &&
+        //r.W_gi > 0.0f &&
         r.M_gi > 0.0f
         ;
     return valid;

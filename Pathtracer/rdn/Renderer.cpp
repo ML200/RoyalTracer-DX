@@ -69,10 +69,10 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
-        //L"Pass_init_gi_v7.hlsl|rg",
-        //L"barrier",
+        L"Pass_init_gi_v7.hlsl|rg",
+        L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:16x8",
-        //L"Pass_temp_gi_v7.hlsl|cs:16x8",
+        L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
         L"barrier",
@@ -343,7 +343,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "iowa.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"garage.obj", "iowa.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -428,11 +428,11 @@ void Renderer::OnUpdate() {
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
 
-    m_instances[2].second = scale * selfRotation * translate;
+    //m_instances[2].second = scale * selfRotation * translate;
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.4f, 0.4f, 0.4f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(1.f, 1.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
   // #DXR Extra - Refitting

@@ -101,7 +101,8 @@ float PairwiseMIS_Canonical_Spat_DI(
             float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), x2_c, n2_c, L2_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
-            m_c += (load_M_di(g_Reservoirs_current_di, nIds[i])/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
+            if(m_den > 0.0f)
+                m_c += (min(SPAT_MCAP_DI, 1.0f)/*,load_M_di(g_Reservoirs_current_di, nIds[i]))*//M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
         }
     }
     return m_c;
@@ -115,6 +116,8 @@ float PairwiseMIS_Canonical_Spat_DI(
 float PairwiseMIS_Neighbor_Spat_DI(
     in float M_sum,
     in float M_c,
+    in float M_n,
+    in float p_c,
     in float p_hat_from,
     in uint nID,// ID of the current candidate
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
@@ -124,11 +127,79 @@ float PairwiseMIS_Neighbor_Spat_DI(
     )
 {
     // Reconstruct p_n from the neigbour reservoir
-    float p_n = GetPHat(ReconnectDI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), x2_n, n2_n, L2_n));
+    float visReuse = load_W_di(g_Reservoirs_current_di, nID) > 0.0f ? 1.0f : 0.0f;
+    float p_n = visReuse * GetPHat(ReconnectDI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), x2_n, n2_n, L2_n));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
-    float m_num = (M_sum - M_c) * p_hat_from;
-    float m_den = m_num + M_c * p_n;
+    float m_num = (M_sum - M_c) * p_n;
+    float m_den = m_num + M_c * p_hat_from;
+    if(m_den>0.0f)
+        return (M_n/M_sum) * (m_num/m_den);
+    return 0.0f;
+}
+#endif // ENABLE_RAY_QUERY_INLINE
 
-    return (load_M_di(g_Reservoirs_current_di, nID)/M_sum) * (m_num/m_den);
+
+#ifdef ENABLE_RAY_QUERY_INLINE
+// Algorithm 7 from the gentle intro
+float PairwiseMIS_Canonical_Spat_GI(
+    in float M_sum,
+    in float p_c,
+    in float M_c,
+    in uint nIds[SPAT_COUNT_MAX_DI],// IDs of the candidates; early out if id is invalid
+    // data needed from the canonical reseroir (we dont want to load the complete struct in here)
+    in float3 x2_c,
+    in float3 n2_c,
+    in float3 L2_c,
+    in float3 V2_c,
+    in float3 matID_c
+    )
+{
+    float m_c = M_c / M_sum;
+    float m_num = M_c * p_c;
+
+    [unroll]
+    for(int i = 0; i < SPAT_COUNT_MAX_DI; i++){ // Iterate over all spatial neighbor candidates, skip invalid entries
+        if(nIds[i] != 0xFFFFFFFF){
+            float3 x1 = load_x1(g_sample_current, nIds[i]);
+            float3 n1 = load_n1(g_sample_current, nIds[i]);
+            float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), x2_c, n2_c, L2_c)); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
+            float m_den = m_num + (M_sum - M_c) * p_hat_from;
+            if(m_den > 0.0f)
+                m_c += (min(SPAT_MCAP_DI, 1.0f)/*,load_M_di(g_Reservoirs_current_di, nIds[i]))*//M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
+        }
+    }
+    return m_c;
+
+}
+#endif // ENABLE_RAY_QUERY_INLINE
+
+
+
+#ifdef ENABLE_RAY_QUERY_INLINE
+float PairwiseMIS_Neighbor_Spat_GI(
+    in float M_sum,
+    in float M_c,
+    in float M_n,
+    in float p_c,
+    in float p_hat_from,
+    in uint nID,// ID of the current candidate
+    // data needed from the canonical reseroir (we dont want to load the complete struct in here)
+    in float3 x2_n,
+    in float3 n2_n,
+    in float3 L2_n,
+    in float3 V2_n,
+    in float3 matID_n
+    )
+{
+    // Reconstruct p_n from the neigbour reservoir
+    float visReuse = load_W_di(g_Reservoirs_current_di, nID) > 0.0f ? 1.0f : 0.0f;
+    float p_n = visReuse * GetPHat(ReconnectDI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), x2_n, n2_n, L2_n));
+    // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
+    float m_num = (M_sum - M_c) * p_n;
+    float m_den = m_num + M_c * p_hat_from;
+    if(m_den>0.0f)
+        return (M_n/M_sum) * (m_num/m_den);
+    return 0.0f;
 }
 #endif // ENABLE_RAY_QUERY_INLINE
