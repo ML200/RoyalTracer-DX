@@ -13,7 +13,7 @@
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30
 
-#define SPAT_MCAP_DI 1
+#define SPAT_MCAP_DI 30
 #define SPAT_EXP_DI 1.0f
 #define SPAT_RAD 20
 

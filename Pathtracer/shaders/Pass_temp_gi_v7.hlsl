@@ -102,7 +102,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(candidateAcceptedDI){
                 // Calculate the canonical target function
                 float visReuse_c = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
-                float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi));// * visReuse_c;
+                float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)) * visReuse_c;
                 float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
                 float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
                 float visReuse = rdi_r.W_gi > 0.0f ? 1.0f : 0.0f;
@@ -143,14 +143,14 @@ void main(uint3 tid : SV_DispatchThreadID)
                     rdi.W_gi = 0.0f;
 
                 // Store the merged reservoir
-                store_x2_gi(rdi.x2_gi, g_Reservoirs_current_gi, pixelIdx, rdi.objID_gi);
+                /*store_x2_gi(rdi.x2_gi, g_Reservoirs_current_gi, pixelIdx, rdi.objID_gi);
                 store_n2_gi(rdi.n2_gi, g_Reservoirs_current_gi, pixelIdx, rdi.objID_gi);
                 store_L2_gi(rdi.L2_gi, g_Reservoirs_current_gi, pixelIdx);
                 store_V2_gi(rdi.V2_gi, g_Reservoirs_current_gi, pixelIdx);
                 store_W_gi(rdi.W_gi, g_Reservoirs_current_gi, pixelIdx);
                 store_M_gi(rdi.M_gi, g_Reservoirs_current_gi, pixelIdx);
                 store_objID_gi(rdi.objID_gi, g_Reservoirs_current_gi, pixelIdx);
-                store_matID_gi(rdi.matID_gi, g_Reservoirs_current_gi, pixelIdx);
+                store_matID_gi(rdi.matID_gi, g_Reservoirs_current_gi, pixelIdx);*/
             }
         }
     }
