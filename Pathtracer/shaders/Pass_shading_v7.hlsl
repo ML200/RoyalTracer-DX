@@ -70,7 +70,6 @@ cbuffer CameraParams : register(b0)
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    uint2 launchIndex = DispatchRaysIndex().xy;
 
     // Load the DI pipeline output
     float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
@@ -87,7 +86,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
     static const half MAX_SAMPLES     = 500.0h;  // tune to taste
 
-    half4 prev        = gPermanentData[launchIndex];   // rgb = running avg, a = N
+    half4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
     half3 prevAvg     = prev.rgb;
     half  prevSamples = prev.a;
 
@@ -108,7 +107,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     // --- store back to the permanent UAV ----------------------------------------
-    gPermanentData[launchIndex] = half4(newAvg, newSamples);
+    gPermanentData[DTid.xy] = half4(newAvg, newSamples);
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);

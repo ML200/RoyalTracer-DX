@@ -83,13 +83,8 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // Load the sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    // Store it temporally
-    store_x1   (sdata.x1   , g_sample_last, pixelIdx);
-    store_n1   (sdata.n1   , g_sample_last, pixelIdx);
-    store_L1   (sdata.L1   , g_sample_last, pixelIdx);
-    store_o    (sdata.o    , g_sample_last, pixelIdx);
-    store_matID(sdata.matID, g_sample_last, pixelIdx);
-    store_objID(sdata.objID, g_sample_last, pixelIdx);
+    // Store SampleData temporally
+    storeSampleData(g_sample_last, pixelIdx, sdata);
 
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
@@ -102,9 +97,13 @@ void main(uint3 tid : SV_DispatchThreadID)
         float conf = min(60.0f, rdi.M_di) / TEMP_MCAP_DI;
         uint nbrBudget = SPAT_COUNT_MIN_DI +
                  uint((1.0f - conf) * float(SPAT_COUNT_MAX_DI - SPAT_COUNT_MIN_DI) + 0.5f);
+        uint radiusBudget = SPAT_RAD_MIN +
+                         uint((1.0f - conf) * float(SPAT_RAD_MAX - SPAT_RAD_MIN) + 0.5f);
+
 
         // Array to hold valid neighbor IDs
         uint nIds[SPAT_COUNT_MAX_DI];
+        float M_sum = 0.0f;
         // loop over all candidates and select those that are best
         [unroll(SPAT_COUNT_MAX_DI)]
         for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
@@ -114,18 +113,19 @@ void main(uint3 tid : SV_DispatchThreadID)
                 [unroll(SPAT_TRIS_DI)]
                 for(uint j = 0; j < SPAT_TRIS_DI; j++){
                     // Get the candidate ID
-                    uint iID = GetRandomPixelCircleWeighted(SPAT_RAD, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
-                    // Only load data required for the comparison (x1, n1, n2, L1, L2, W, M, matID)
+                    uint iID = GetRandomPixelCircleWeighted(radiusBudget, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
+                    // Only load data required for the comparison (L2 + M)
                     Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, iID);
                     // Check wether the reservoir is valid for merge (Later, replace this with a weight -> the neighbor with the highest weight is selected)
                     bool candidateAcceptedDI =
-                        IsValidReservoir_DI_opt(rdi_r.n2_di, rdi_r.L2_di, rdi_r.W_di, rdi_r.M_di) &&
+                        IsValidReservoir_DI_opt(rdi_r.n2_di, rdi_r.M_di) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
                         !RejectNormal_DI(sdata.n1, load_n1(g_sample_current, iID), 0.9f) &&
                         !RejectDistance_DI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedDI){
                         nIds[i] = iID;
+                        M_sum += min(SPAT_MCAP_DI, rdi_r.M_di);
                         break;
                     }
                 }
@@ -148,15 +148,9 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         // Calculate M_sum for all valid candidates
-        float M_sum = min(SPAT_MCAP_DI, rdi.M_di);
-        float M_c = M_sum;
+        M_sum += min(SPAT_MCAP_DI, rdi.M_di);
+        float M_c = min(SPAT_MCAP_DI, rdi.M_di);
         rdi.M_di = M_c;
-
-        [unroll(SPAT_COUNT_MAX_DI)]
-        for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
-            if(nIds[i] != 0xFFFFFFFF)
-                M_sum += min(SPAT_MCAP_DI,load_M_di(g_Reservoirs_current_di, nIds[i]));
-        }
 
         //float debug = 0.0f;
 
@@ -171,6 +165,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_di = mis_c * p_c * rdi.W_di;
 
+        // ########################################### NODE #############################################################
         // Iterate through all valid neighbors and update the canonical reservoir with them
         [unroll(SPAT_COUNT_MAX_DI)]
         for(int i = 0; i < SPAT_COUNT_MAX_DI; i++){
@@ -192,6 +187,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
             }
         }
+        // ########################################### NODE #############################################################
 
         // Calculate new W
         //float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
@@ -208,12 +204,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.W_di = 0.0f;
 
         // Store the merged reservoir
-        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx, rdi.objID_di);
-        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx, rdi.objID_di);
-        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
-        store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
-        store_objID_di(rdi.objID_di, g_Reservoirs_last_di, pixelIdx);
+        storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
 
         // Store the final output
         gScratchPing[uint3(tid.xy, 1)] = float4(contrib_final * rdi.W_di, 0);
