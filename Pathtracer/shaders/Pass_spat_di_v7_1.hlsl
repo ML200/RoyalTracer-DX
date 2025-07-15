@@ -22,6 +22,7 @@ static uint3 gDispatchIdx;
 
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
+RWTexture2DArray<half4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
@@ -82,6 +83,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // Load the sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    // Store it temporally
+    store_x1   (sdata.x1   , g_sample_last, pixelIdx);
+    store_n1   (sdata.n1   , g_sample_last, pixelIdx);
+    store_L1   (sdata.L1   , g_sample_last, pixelIdx);
+    store_o    (sdata.o    , g_sample_last, pixelIdx);
+    store_matID(sdata.matID, g_sample_last, pixelIdx);
+    store_objID(sdata.objID, g_sample_last, pixelIdx);
+
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
@@ -139,24 +148,28 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         // Calculate M_sum for all valid candidates
-        float M_sum = min(SPAT_MCAP_DI, 1.0f);//,rdi.M_di);
+        float M_sum = min(SPAT_MCAP_DI, rdi.M_di);
+        float M_c = M_sum;
+        rdi.M_di = M_c;
+
         [unroll(SPAT_COUNT_MAX_DI)]
         for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
             if(nIds[i] != 0xFFFFFFFF)
-                M_sum += min(SPAT_MCAP_DI, 1.0f);//,load_M_di(g_Reservoirs_current_di, nIds[i]));
+                M_sum += min(SPAT_MCAP_DI,load_M_di(g_Reservoirs_current_di, nIds[i]));
         }
 
-        float debug = 0.0f;
+        //float debug = 0.0f;
 
         // Calculate canonical pixel p_hat before loading the expensive data
         float visReuse = rdi.W_di > 0.0f ? 1.0f : 0.0f;
-        float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * visReuse;
+        float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * visReuse;
+        float p_c = GetPHat(contrib_c);
+        float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
-        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, min(SPAT_MCAP_DI, 1.0f)/*,rdi.M_di)*/, nIds, rdi.x2_di, rdi.n2_di, rdi.L2_di);
-        debug += mis_c;
+        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, M_c, nIds, rdi.x2_di, rdi.n2_di, rdi.L2_di);
+        //debug += mis_c;
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_di = mis_c * p_c * rdi.W_di;
-        float p_hat_final = p_c;
 
         // Iterate through all valid neighbors and update the canonical reservoir with them
         [unroll(SPAT_COUNT_MAX_DI)]
@@ -164,16 +177,17 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nIds[i]);
-                float p_hat_from = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
+                float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
+                float p_hat_from = GetPHat(contrib_n);
                 // Calculate the samples MIS weight
-                float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, min(SPAT_MCAP_DI, 1.0f)/*,rdi.M_di)*/, min(SPAT_MCAP_DI, 1.0f)/*,rdi_r.M_di)*/, p_c, p_hat_from, nIds[i], rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di);
-                debug += mis_n;
+                float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, M_c, min(SPAT_MCAP_DI ,rdi_r.M_di), p_c, p_hat_from, nIds[i], rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di);
+                //debug += mis_n;
                 // Calculate the sample weight
                 float w_n = mis_n * p_hat_from * rdi_r.W_di;
 
                 // Update the reservoir
-                if(UpdateReservoirDI(rdi, w_n, min(SPAT_MCAP_DI, 1.0f)/*,rdi_r.M_di)*/, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed)){
-                    p_hat_final = p_hat_from;
+                if(UpdateReservoirDI(rdi, w_n, min(SPAT_MCAP_DI ,rdi_r.M_di), rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed)){
+                    contrib_final = contrib_n;
                 }
 
             }
@@ -181,6 +195,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate new W
         //float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
+        float p_hat_final = GetPHat(contrib_final);
         if (p_hat_final > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
             float W = rdi.w_sum_di / p_hat_final;
             // NaN/Inf protection
@@ -200,12 +215,17 @@ void main(uint3 tid : SV_DispatchThreadID)
         store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
         store_objID_di(rdi.objID_di, g_Reservoirs_last_di, pixelIdx);
 
+        // Store the final output
+        gScratchPing[uint3(tid.xy, 1)] = float4(contrib_final * rdi.W_di, 0);
+
         // DEBUG
-        float3 heat;
+        /*float3 heat;
         heat.r = step(debug, 0.9);          // red when <1
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
-        //gOutput[uint3(tid.xy, 0)] = float4(heat, 1);
+        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
 
     }
+    else
+        gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0);
 }

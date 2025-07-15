@@ -139,23 +139,24 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         // Calculate M_sum for all valid candidates
-        float M_sum = min(SPAT_MCAP_DI, 1.0f);//,rdi.M_di);
+        float M_sum = min(SPAT_MCAP_DI,rdi.M_gi);
+        float M_c = min(SPAT_MCAP_DI,rdi.M_gi);
         [unroll(SPAT_COUNT_MAX_DI)]
         for(uint i = 0; i < SPAT_COUNT_MAX_DI; i++){
             if(nIds[i] != 0xFFFFFFFF)
-                M_sum += min(SPAT_MCAP_DI, 1.0f);//,load_M_di(g_Reservoirs_current_di, nIds[i]));
+                M_sum += min(SPAT_MCAP_DI,load_M_gi(g_Reservoirs_current_di, nIds[i]));
         }
 
         float debug = 0.0f;
 
         // Calculate canonical pixel p_hat before loading the expensive data
         float visReuse = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
-        float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)); * visReuse;
+        float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi))* visReuse;
         // Compute the pairwise MIS weight for the canonical sample
-        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, min(SPAT_MCAP_DI, 1.0f)/*,rdi.M_di)*/, nIds, rdi.x2_di, rdi.n2_di, rdi.L2_di);
+        float mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi);
         debug += mis_c;
         // Adjust the weight in the canonical reservoir
-        rdi.w_sum_di = mis_c * p_c * rdi.W_di;
+        rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
         float p_hat_final = p_c;
 
         // Iterate through all valid neighbors and update the canonical reservoir with them
@@ -163,16 +164,16 @@ void main(uint3 tid : SV_DispatchThreadID)
         for(int i = 0; i < SPAT_COUNT_MAX_DI; i++){
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
-                Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nIds[i]);
-                float p_hat_from = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1);
+                Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nIds[i]);
+                float p_hat_from = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
                 // Calculate the samples MIS weight
-                float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, min(SPAT_MCAP_DI, 1.0f)/*,rdi.M_di)*/, min(SPAT_MCAP_DI, 1.0f)/*,rdi_r.M_di)*/, p_c, p_hat_from, nIds[i], rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di);
+                float mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_DI,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi);
                 debug += mis_n;
                 // Calculate the sample weight
-                float w_n = mis_n * p_hat_from * rdi_r.W_di;
+                float w_n = mis_n * p_hat_from * rdi_r.W_gi;
 
                 // Update the reservoir
-                if(UpdateReservoirDI(rdi, w_n, min(SPAT_MCAP_DI, 1.0f)/*,rdi_r.M_di)*/, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed)){
+                if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_DI,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, seed)){
                     p_hat_final = p_hat_from;
                 }
 
@@ -181,24 +182,26 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate new W
         //float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-        if (p_hat_final > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
-            float W = rdi.w_sum_di / p_hat_final;
+        if (p_hat_final > 0.0f && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f) {
+            float W = rdi.w_sum_gi / p_hat_final;
             // NaN/Inf protection
             if (isnan(W) || isinf(W)) {
                 W = 0.0f;
             }
-            rdi.W_di = W;
+            rdi.W_gi = W;
         }
         else
-            rdi.W_di = 0.0f;
+            rdi.W_gi = 0.0f;
 
         // Store the merged reservoir
-        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx, rdi.objID_di);
-        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx, rdi.objID_di);
-        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di(rdi.W_di, g_Reservoirs_last_di, pixelIdx);
-        store_M_di(rdi.M_di, g_Reservoirs_last_di, pixelIdx);
-        store_objID_di(rdi.objID_di, g_Reservoirs_last_di, pixelIdx);
+        store_x2_gi(rdi.x2_gi, g_Reservoirs_last_gi, pixelIdx, rdi.objID_gi);
+        store_n2_gi(rdi.n2_gi, g_Reservoirs_last_gi, pixelIdx, rdi.objID_gi);
+        store_L2_gi(rdi.L2_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_V2_gi(rdi.V2_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_W_gi(rdi.W_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_M_gi(rdi.M_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_objID_gi(rdi.objID_gi, g_Reservoirs_last_gi, pixelIdx);
+        store_matID_gi(rdi.matID_gi, g_Reservoirs_last_gi, pixelIdx);
 
         // DEBUG
         float3 heat;

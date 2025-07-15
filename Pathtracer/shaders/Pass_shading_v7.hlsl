@@ -66,86 +66,18 @@ cbuffer CameraParams : register(b0)
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
 // ─────────────────────────────────────────────────────────────────────────────
-[numthreads(8, 4, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gDispatchIdx = DTid;
-
     uint2 launchIndex = DispatchRaysIndex().xy;
-    uint   pixelIdx   = MapPixelID(DispatchRaysDimensions().xy, launchIndex);
 
-    // Fill "gbuffer" gScratchPing slice 2,3,4...
-    /*
-    Defined as (0 is general render output):
-    - 2: albedo
-    - 3: emission, roughness, objID
-    - 4: normal
-    - 5: position_curr, M_curr
-    - 6: position_last
-    */
-    half3 accumulation;
+    // Load the DI pipeline output
+    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
+    // Load the GI pipeline output
+    //float3 output_GI = ;
 
-    float3 L1 = load_L1(g_sample_current, pixelIdx);
-
-    if (all(L1 < EPSILON))
-    {
-        float3 x1    = load_x1(g_sample_current, pixelIdx);
-        float3 n1    = load_n1(g_sample_current, pixelIdx);
-        float3 o     = load_o(g_sample_current, pixelIdx);
-        uint   matID = load_matID(g_sample_current, pixelIdx);
-
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_last_di, pixelIdx);
-        accumulation = ReconnectDI(x1, n1, o, matID, rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
-
-        Reservoir_GI rgi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-        accumulation = ReconnectGI(x1, n1, o, matID, rgi.matID_gi, rgi.x2_gi, rgi.n2_gi, rgi.L2_gi, rgi.V2_gi) * rgi.W_gi;
-
-        // g-buffer slices – written immediately, no temporaries kept alive
-        gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Kd.xyz, 0);
-        gScratchPing[uint3(launchIndex, 3)] = half4(
-                                                0u,
-                                                materials[matID].Pr_Pm_Ps_Pc.x,
-                                                load_objID(g_sample_current, pixelIdx),
-                                                0.0f);
-        gScratchPing[uint3(launchIndex, 4)] = half4(n1, 0.0f);
-        gScratchPing[uint3(launchIndex, 5)] = half4(x1, rdi.M_di);
-        gScratchPing[uint3(launchIndex, 6)] = half4(
-                                                load_x1(g_sample_last, pixelIdx), 0.0f);
-
-        //DEBUG
-        store_x2_gi(rgi.x2_gi, g_Reservoirs_last_gi, pixelIdx, rgi.objID_gi);
-        store_n2_gi(rgi.n2_gi, g_Reservoirs_last_gi, pixelIdx, rgi.objID_gi);
-        store_L2_gi(rgi.L2_gi, g_Reservoirs_last_gi, pixelIdx);
-        store_V2_gi(rgi.V2_gi, g_Reservoirs_last_gi, pixelIdx);
-        store_W_gi(rgi.W_gi, g_Reservoirs_last_gi, pixelIdx);
-        store_M_gi(rgi.M_gi, g_Reservoirs_last_gi, pixelIdx);
-        store_objID_gi(rgi.objID_gi, g_Reservoirs_last_gi, pixelIdx);
-        store_matID_gi(rgi.matID_gi, g_Reservoirs_last_gi, pixelIdx);
-    }
-    else
-    {
-        accumulation = L1;
-
-        uint matID = load_matID(g_sample_current, pixelIdx);
-
-        gScratchPing[uint3(launchIndex, 2)] = half4(materials[matID].Ke.xyz, 0);
-        gScratchPing[uint3(launchIndex, 3)] = half4(
-                                                1u,        // emission flag
-                                                1.0h,      // roughness (placeholder)
-                                                load_objID(g_sample_current, pixelIdx),
-                                                0.0f);
-        gScratchPing[uint3(launchIndex, 4)] = half4(
-                                                load_n1(g_sample_current, pixelIdx), 0.0f);
-        gScratchPing[uint3(launchIndex, 5)] = half4(
-                                                load_x1(g_sample_current, pixelIdx), 60u);
-        gScratchPing[uint3(launchIndex, 6)] = half4(
-                                                load_x1(g_sample_last, pixelIdx), 0.0f);
-    }
-
-    gScratchPing[uint3(launchIndex, 0)] = half4(accumulation, 0.0f);
-
-    // DEBUG
+    float3 accumulation = output_DI;
 
     // ───────────────────────── Accumulation (capped) ───────────────────────────
     bool cameraChanged = false;
@@ -165,7 +97,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (cameraChanged)
     {
         // Camera moved: reset running average and sample count
-        //newAvg     = gScratchPing[uint3(DTid.xy, 1)];
         newAvg     = accumulation;
         newSamples = 1.0h;
     }
@@ -173,7 +104,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     {
         newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);   // clamp N
         half invN  = 1.0h / newSamples;
-        //newAvg     = mad(gScratchPing[uint3(DTid.xy, 1)] - prevAvg, invN, prevAvg);
         newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
 
@@ -182,7 +112,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);
-    gOutput[uint3(DTid.xy, 0)]  = half4(fColor, 1);
+    //gOutput[uint3(DTid.xy, 0)]  = half4(fColor, 1);
 
     float3 finalColor = sRGBGammaCorrection(accumulation);
     gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);

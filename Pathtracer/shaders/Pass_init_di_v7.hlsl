@@ -45,6 +45,7 @@ cbuffer CameraParams : register(b0)
 // These includes need access to ALL previous buffers
 #include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
@@ -116,15 +117,16 @@ void Pass_init_di_v7() {
             V = VisibilityCheck(sdata.x1, reservoir.x2_di, sdata.n1);
         }
         // Calculate W
-        float W = 0.0f;
+        reservoir.W_di = 0.0f;
+        reservoir.L2_di *= V;
         if (phat_final > EPSILON) {
-            W = V * reservoir.w_sum_di / phat_final;
+            reservoir.W_di = V * reservoir.w_sum_di / phat_final;
             // Protect against NaN/Inf
-            if (isnan(W) || isinf(W)) {
-                W = 0.0f;
+            if (isnan(reservoir.W_di) || isinf(reservoir.W_di)) {
+                reservoir.W_di = 0.0f;
+                reservoir.L2_di = 0.0f;
             }
         }
-        reservoir.W_di = W;
 
         // Save the resulting reservoir to memory
         store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
