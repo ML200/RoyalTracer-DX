@@ -119,6 +119,7 @@ void Pass_init_di_v7() {
         // Calculate W
         reservoir.W_di = 0.0f;
         reservoir.L2_di *= V;
+        reservoir.M_di = 1u;
         if (phat_final > EPSILON) {
             reservoir.W_di = V * reservoir.w_sum_di / phat_final;
             // Protect against NaN/Inf
@@ -129,11 +130,12 @@ void Pass_init_di_v7() {
         }
 
         // Save the resulting reservoir to memory
-        store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
+        storeReservoirDI(g_Reservoirs_current_di, pixelIdx, reservoir);
+        /*store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
         store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
         store_L2_di(reservoir.L2_di, g_Reservoirs_current_di, pixelIdx);
         store_W_di(reservoir.W_di, g_Reservoirs_current_di, pixelIdx);
         store_objID_di(reservoir.objID_di, g_Reservoirs_current_di, pixelIdx);
+        store_M_di(1, g_Reservoirs_current_di, pixelIdx);*/
     }
-    store_M_di(1, g_Reservoirs_current_di, pixelIdx);
 }

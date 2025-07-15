@@ -69,7 +69,7 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v7.hlsl|rg",
         L"barrier",
-        //L"Pass_init_gi_v7.hlsl|rg",
+        L"Pass_init_gi_v7.hlsl|rg",
         L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:16x8",
         //L"Pass_temp_gi_v7.hlsl|cs:16x8",
@@ -418,11 +418,11 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.000f;
-    float r     = 3.0f;
+    float angle = static_cast<float>(m_time) * 0.001f;
+    float r     = 4.0f;
 
-    float x = 2.5f;//cosf(angle) * r + 1.0f;   // + centre.x
-    float z = 2.5f;//sinf(angle) * r + 0.0f;   // + centre.z
+    float x = cosf(angle) * r + 1.0f;   // + centre.x
+    float z = 3.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
     XMMATRIX scale        = XMMatrixScaling(1.f, 1.f, 1.f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);

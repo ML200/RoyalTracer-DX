@@ -22,8 +22,6 @@ SampleData SampleCameraRay(uint idx){
     ray.TMin = 0.0001;
     ray.TMax = 10000;
 
-    store_o(-ray.Direction, g_sample_current, idx);
-
     // Trace the camera ray
     HitInfo payload;
     TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
@@ -31,11 +29,11 @@ SampleData SampleCameraRay(uint idx){
     float3 ke = materials[payload.materialID].Ke;
 
     // Compress and save relevant data: x1, L1, n1, mID and oID
-    store_x1(payload.hitPosition, g_sample_current, idx);
+    /*store_x1(payload.hitPosition, g_sample_current, idx);
     store_n1(payload.hitNormal, g_sample_current, idx);
     store_L1(ke, g_sample_current, idx);
     store_matID(payload.materialID, g_sample_current, idx);
-    store_objID(payload.objID, g_sample_current, idx);
+    store_objID(payload.objID, g_sample_current, idx);*/
 
     SampleData sdata = (SampleData)0;
     sdata.x1 = payload.hitPosition;
@@ -44,6 +42,8 @@ SampleData SampleCameraRay(uint idx){
     sdata.o = -ray.Direction;
     sdata.objID = payload.objID;
     sdata.matID = payload.materialID;
+
+    storeSampleData(g_sample_current, idx, sdata);
 
     //return the sample data
     return sdata;

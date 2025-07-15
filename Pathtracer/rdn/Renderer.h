@@ -224,7 +224,7 @@ private:
 
     struct Reservoir_DI
     {
-        uint8_t  pad[32];
+        uint8_t  pad[28];
     };
 
     struct Reservoir_GI
@@ -234,7 +234,7 @@ private:
 
     struct SampleData
     {
-        uint8_t  pad[32];
+        uint8_t  pad[28];
     };
 
     struct InitialBSDFRay

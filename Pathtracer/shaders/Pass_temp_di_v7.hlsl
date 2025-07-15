@@ -143,12 +143,13 @@ void main(uint3 tid : SV_DispatchThreadID)
                     rdi.W_di = 0.0f;
 
                 // Store the merged reservoir
-                store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx, rdi.objID_di);
+                storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
+                /*store_x2_di(rdi.x2_di, g_Reservoirs_current_di, pixelIdx, rdi.objID_di);
                 store_n2_di(rdi.n2_di, g_Reservoirs_current_di, pixelIdx, rdi.objID_di);
                 store_L2_di(rdi.L2_di, g_Reservoirs_current_di, pixelIdx);
                 store_W_di(rdi.W_di, g_Reservoirs_current_di, pixelIdx);
                 store_M_di(rdi.M_di, g_Reservoirs_current_di, pixelIdx);
-                store_objID_di(rdi.objID_di, g_Reservoirs_current_di, pixelIdx);
+                store_objID_di(rdi.objID_di, g_Reservoirs_current_di, pixelIdx);*/
             }
         }
     }
