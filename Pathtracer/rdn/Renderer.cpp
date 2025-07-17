@@ -72,10 +72,10 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_init_gi_v7.hlsl|rg",
         L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:16x8",
-        //L"Pass_temp_gi_v7.hlsl|cs:16x8",
+        L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
-        //L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
+        L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:16x16",
         /*L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
@@ -93,11 +93,11 @@ Renderer::Renderer(UINT width, UINT height,
         //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
     /*m_passSequence = {
-        L"RayGen_v6_pass1.hlsl",
+        L"RayGen_v6_pass1.hlsl|rg",
         L"barrier",
-        L"RayGen_v6_pass2.hlsl",
+        L"RayGen_v6_pass2.hlsl|rg",
         L"barrier",
-        L"RayGen_v6_pass3.hlsl"
+        L"RayGen_v6_pass3.hlsl|rg"
     };*/
 
     for (auto& s : m_passSequence)
@@ -343,7 +343,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "2A4.obj"};
+    std::vector<std::string> models = {"garage.obj", "2A4.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -422,16 +422,16 @@ void Renderer::OnUpdate() {
     float r     = 4.0f;
 
     float x = cosf(angle) * r + 1.0f;   // + centre.x
-    float z = 3.0f;//sinf(angle) * r + 0.0f;   // + centre.z
+    float z = sinf(angle) * r + 0.0f;   // + centre.z
 
-    XMMATRIX scale        = XMMatrixScaling(1.f, 1.f, 1.f);
+    XMMATRIX scale        = XMMatrixScaling(.5f, .5f, .5f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
 
-    //m_instances[2].second = scale * selfRotation * translate;
+    m_instances[2].second = scale * selfRotation * translate;
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.5f, 0.5f, 0.5f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;

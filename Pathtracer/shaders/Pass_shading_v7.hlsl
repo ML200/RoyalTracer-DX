@@ -74,9 +74,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Load the DI pipeline output
     float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
-    //float3 output_GI = ;
+    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
-    float3 accumulation = output_DI;
+    float3 accumulation = output_DI + output_GI;
 
     // ───────────────────────── Accumulation (capped) ───────────────────────────
     bool cameraChanged = false;

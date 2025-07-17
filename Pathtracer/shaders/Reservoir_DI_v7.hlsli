@@ -54,7 +54,7 @@ float VisibilityCheck(
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
     ray.TMin = EPSILON;
-    ray.TMax = max(dist - 5.0f * EPSILON, 1.0f * EPSILON);
+    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
     ShadowHitInfo shadowPayload;
     shadowPayload.isHit = false;
     const uint flags =
@@ -74,7 +74,7 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     ray.Origin    = P + normalize(N) * EPSILON;            // ← offset *along ray*
     ray.Direction = dir;
     ray.TMin      = EPSILON;
-    ray.TMax      = max(len - EPSILON*5.0f, 1.0f*EPSILON);
+    ray.TMax      = max(len - EPSILON*10.0f, 2.0f*EPSILON);
 
     RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
               //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES

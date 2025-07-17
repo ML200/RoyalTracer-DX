@@ -58,15 +58,12 @@ void Pass_init_gi_v7() {
     float2 dims       = float2(DispatchRaysDimensions().xy);
     uint pixelIdx     = MapPixelID(dims, launchIndex);
 
-    // DEBUG PIXEL
-    float3 debugPixel = float3(0,0,0);
-
     // Initialize the GI reservoir and trace the path (2-4 consecutive bsdf rays)
     Reservoir_GI reservoir = (Reservoir_GI)0;
 
     float3 L1 = load_L1(g_sample_current, pixelIdx);
     uint matIDtep = load_matID(g_sample_current, pixelIdx);
-float3 debug = .0f;
+//float3 debug = .0f;
     if(matIDtep != 4294967294 && all(L1 < EPSILON) && any(load_n2_init(g_InitialBSDFRays, pixelIdx) != 0.0f)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
@@ -119,7 +116,7 @@ float3 debug = .0f;
                     L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                 }
                 // Update reservoir
-                if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0, 0, seed)){
+                if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, seed)){
                     p_hat_final = p_hat;
                     s_x1 = position;
                     s_x2 = result.x2;
@@ -152,7 +149,7 @@ float3 debug = .0f;
                         L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
                     }
                     // Update reservoir with the sub path
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, load_x2_init(g_InitialBSDFRays, pixelIdx), load_n2_init(g_InitialBSDFRays, pixelIdx), L2, normalize(V2_temp), 0,0, seed)){
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0,0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
                     }
@@ -190,19 +187,18 @@ float3 debug = .0f;
             W = V * reservoir.w_sum_gi / p_hat_final;
             // Protect against NaN/Inf
             if (isnan(W) || isinf(W)) {
-                W = 0.0f;
+                reservoir.n2_gi = 0; // Dont pick this sample, its nan!
             }
         }
         reservoir.W_gi = W;
 
-        store_x2_gi(reservoir.x2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
-        store_n2_gi(reservoir.n2_gi, g_Reservoirs_current_gi, pixelIdx, load_objID_init(g_InitialBSDFRays, pixelIdx));
-        store_L2_gi(reservoir.L2_gi, g_Reservoirs_current_gi, pixelIdx);
-        store_V2_gi(reservoir.V2_gi, g_Reservoirs_current_gi, pixelIdx);
-        store_W_gi(reservoir.W_gi, g_Reservoirs_current_gi, pixelIdx);
-        store_M_gi(1, g_Reservoirs_current_gi, pixelIdx);
-        store_objID_gi(load_objID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
-        store_matID_gi(load_matID_init(g_InitialBSDFRays, pixelIdx), g_Reservoirs_current_gi, pixelIdx);
+        reservoir.objID_gi = load_objID_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.matID_gi = load_matID_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.x2_gi = load_x2_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.n2_gi = load_n2_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.M_gi = 1;
+
+        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
     }
-    //gScratchPing[uint3(launchIndex.xy, 1)] = float4(debug, 1);
+    //gScratchPing[uint3(launchIndex.xy, 2)] = float4(debug, 1);
 }
