@@ -83,8 +83,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+        // Get a random seed
+        uint2 seed = GetSeed(pixelIdx, time, 2);
         // Get the reprojected pixel position
-        uint tempPixelIdx = MapPixelID(dims, GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID));
+        uint tempPixelIdx = MapPixelID(dims, GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID, seed.x));
         if(tempPixelIdx != uint(-1)){
             // Get the reprojected sample data
             SampleData sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
@@ -122,8 +124,6 @@ void main(uint3 tid : SV_DispatchThreadID)
                 rdi.w_sum_di = w_c;
 
                 // Update the reservoir
-                // Get a random seed
-                uint2 seed = GetSeed(pixelIdx, time, 2);
                 float p_hat_final = p_c;
                 if(UpdateReservoirDI(rdi, w_n, rdi_r.M_di, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di, seed)){
                     p_hat_final = n_c;
