@@ -79,13 +79,15 @@ void Pass_init_gi_v7() {
         float3 outgoing = normalize(load_x1(g_sample_current, pixelIdx) - position);
         uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
         // full path throughput
-        float3 tp_full = ReconnectDI(load_x1(g_sample_current, pixelIdx), load_n1(g_sample_current, pixelIdx), load_o(g_sample_current, pixelIdx), load_matID(g_sample_current, pixelIdx), position, normal, float3(1,1,1)); // reconnect without L
+        float3 tp_full = ReconnectGISingle(load_x1(g_sample_current, pixelIdx), load_n1(g_sample_current, pixelIdx), load_o(g_sample_current, pixelIdx), load_matID(g_sample_current, pixelIdx), position, normal, float3(1,1,1)); // reconnect without L
 
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
 
         // Full path pdf of a given subpath
-        float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx);
+        float3 ldir = position - load_x1(g_sample_current, pixelIdx);
+        float dist2 = length(ldir) * length(ldir);
+        float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx) * dist2 /dot(normalize(-ldir), normal); // Convert to solid angle space
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
         float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
         // Postponed shadow ray
@@ -99,7 +101,7 @@ void Pass_init_gi_v7() {
                 // Get the sample result
                 SampleReturn result = SampleNEE_gen(position, normal, matID, outgoing, waveSeed, seed);
                 // Calculate contribution and p_hat.
-                float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
+                float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                 float p_hat = GetPHat(c * tp_full * result.L2);
                 float pdf = result.pdf_nee * pdf_full;
                 float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;
@@ -113,7 +115,7 @@ void Pass_init_gi_v7() {
                 else {
                     V2_temp = position - result.x2;
                     float3 V2_norm = normalize(V2_temp);
-                    L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
+                    L2 *= G_term(normal, V2_norm);
                 }
                 // Update reservoir
                 if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, seed)){
@@ -129,7 +131,7 @@ void Pass_init_gi_v7() {
             {
                 // Get a sample direction
                 SampleReturn result = SampleBSDF_gen(position, normal, matID, outgoing, waveSeed, seed);
-                float3 c = ReconnectDI(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
+                float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                 // Calculate contribution and p_hat.
                 if(any(result.L2 > 0.0f)){
                     tp_full *= c;
@@ -146,7 +148,7 @@ void Pass_init_gi_v7() {
                     else {
                         V2_temp = position - result.x2;
                         float3 V2_norm = normalize(V2_temp);
-                        L2 *= J_term(result.n2, V2_norm, length(V2_temp)) * G_term(normal, V2_norm);
+                        L2 *= G_term(normal, V2_norm);
                     }
                     // Update reservoir with the sub path
                     if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0,0, seed)){
@@ -159,7 +161,7 @@ void Pass_init_gi_v7() {
                 else{
                     if(i == 0){
                         V2 = position - result.x2;
-                        tp_partial *= J_term(result.n2, normalize(V2), length(V2)) * G_term(normal, normalize(V2));
+                        tp_partial *= G_term(normal, normalize(V2));
                     }
                     else
                         tp_partial *= c;

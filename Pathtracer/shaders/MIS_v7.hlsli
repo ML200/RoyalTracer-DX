@@ -182,6 +182,7 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
+    in float3 x1_c,
     in float3 x2_c,
     in float3 n2_c,
     in float3 L2_c,
@@ -197,7 +198,7 @@ float PairwiseMIS_Canonical_Spat_GI(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 0.0f)
@@ -256,6 +257,7 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
+    in float3 x1_c,
     in float3 x2_c,
     in float3 n2_c,
     in float3 L2_c,
@@ -275,7 +277,7 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
 
             float D = SymRatio(p_c, p_hat_from, beta);

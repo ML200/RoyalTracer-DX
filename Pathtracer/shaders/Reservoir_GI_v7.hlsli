@@ -12,6 +12,22 @@ struct Reservoir_GI
     uint matID_gi;
 };
 
+float JacobianDeterminant( float3 x1_c,
+                           float3 x2_c,
+                           float3 x1_n,
+                           float3 n2_c )
+{
+    float3  v_c   = x1_c - x2_c;
+    float   distc = dot(v_c, v_c);          // ‖v_c‖²
+    float   cosc  = abs(dot(normalize(v_c), n2_c));   // |cos φ2r|
+
+    float3  v_n   = x1_n - x2_c;
+    float   distn = dot(v_n, v_n);          // ‖v_n‖²
+    float   cosn  = abs(dot(normalize(v_n), n2_c));   // |cos φ2q|
+
+    return (cosc / max(cosn, EPSILON)) * (distn / distc);
+}
+
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
     return (similarity < threshold);
@@ -33,29 +49,10 @@ inline bool RejectDistance_GI(float3 x1, float3 x2, float3 normal, float thresho
 }
 
 inline bool RejectLength_GI(float3 x2_c, float3 n2_c,
-                            float3 x2_n, float3 n2_n,
-                            float3 x1,
+                            float3 x1_c, float3 x1_n,
                             float  threshold)
 {
-    // Vectors from the anchor (x1) toward the two secondary points
-    float3 V_c = x1 - x2_c;
-    float3 V_n = x1 - x2_n;
-
-    float d_c = length(V_c);
-    float d_n = length(V_n);
-
-    // Neighbour too close / degenerate → reject
-    if (d_n <= EPSILON)
-        return false;
-
-    // Normalised direction vectors
-    float3 Vc_n = V_c / d_c;
-    float3 Vn_n = V_n / d_n;
-
-    // Area-to-solid-angle Jacobian  J = |dot(n, V)| / d²
-    float J = (abs(dot(n2_c, Vc_n)) / abs(dot(n2_n, Vn_n))) * ((d_n * d_n)/(d_c * d_c));
-
-    // Accept only if Jacobians are within the allowed percentage
+    float J = JacobianDeterminant(x1_c, x2_c, x1_n, n2_c);
     return J <= threshold || J >= 1.0f/threshold;
 }
 
@@ -101,10 +98,40 @@ inline float3 ReconnectGI(
 
     float3 F1 = BSDF_term(mID1, n1, ndirN, o);
     float   G = G_term(n1, ndirN);
-    float   J = J_term(n2, ndirN, dist);
 
     // Throughput
-    float3 r = F1 * F2 * L2 * G * J;
+    float3 r = F1 * F2 * L2 * G;
+
+    if (any(isnan(r)))
+        r = 0;
+
+    return r;
+}
+
+// Calculate reconnection
+inline float3 ReconnectGISingle(
+    in float3 x1,
+    in float3 n1,
+    in float3 o,
+    in uint   mID,
+    in float3 x2,
+    in float3 n2,
+    in float3 L)
+{
+    if (all(L < EPSILON))
+        return 0;
+
+    // Geometric prep
+    float3 dir   = x2 - x1;
+    float  dist  = length(dir);
+    float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
+
+    // Terms
+    float3 F = BSDF_term(mID, n1, ndirN, o);
+    float   G = G_term(n1, ndirN);
+
+    // Throughput
+    float3 r = F * L * G;
 
     if (any(isnan(r)))
         r = 0;

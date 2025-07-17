@@ -94,8 +94,8 @@ SampleReturn SampleBSDF_gen(
         float dist = length(L);
         float dist2 = dist * dist;
 
-        pdf_b = (P1 + P2) * cos_light / dist2;
-        pdf_l = ((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight;
+        pdf_b = (P1 + P2);
+        pdf_l = ((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight * dist2 / cos_light;
     //}
 
     // Fill in the sample and return

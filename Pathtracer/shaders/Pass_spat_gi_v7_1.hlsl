@@ -122,7 +122,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.5f) &&
                         //!RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
-                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, rdi_r.x2_gi, rdi_r.n2_gi, sdata.x1, 0.01f) &&
+                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -162,8 +162,13 @@ void main(uint3 tid : SV_DispatchThreadID)
         float p_c = GetPHat(contrib_c);
         float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
-        float mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi);
-        //float mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, 3.0f);
+        float mis_c = 0.0f;
+        if(rdi.M_gi <= SPAT_MIN_M_GI){
+            mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, 3.0f);
+        }
+        else{
+            mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi);
+        }
         //debug += mis_c;
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
@@ -176,10 +181,13 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nIds[i]);
                 float3 contrib_n = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
-                float p_hat_from = GetPHat(contrib_n);
-                // Calculate the samples MIS weight
-                float mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi);
-                //float mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, 3.0f);
+                float p_hat_from = GetPHat(contrib_n/JacobianDeterminant(load_x1(g_sample_current, nIds[i]), rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi));
+                // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
+                float mis_n = 0.0f;
+                if(rdi.M_gi <= SPAT_MIN_M_GI)
+                    mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, 3.0f);
+                else
+                    mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi);
                 //debug += mis_n;
                 // Calculate the sample weight
                 float w_n = mis_n * p_hat_from * rdi_r.W_gi;
