@@ -112,7 +112,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 !RejectNormal_GI(sdata.n1, sdata_r.n1, 0.5f) &&
                 !RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1, 0.02f) &&
                 //!(rdi.W_gi > 1.0f/1e-10 || rdi.W_gi < 1e-10) &&
-                //!RejectLength_GI(rdi.x2_gi, rdi.n2_gi, rdi_r.x2_gi, rdi_r.n2_gi, sdata.x1, EPSILON) &&
+                !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, sdata_r.x1, 0.01f) &&
                 //!RejectDistance_GI(sdata.x1, sdata_r.x1, mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
                 (sdata_r.matID == sdata.matID));
 
@@ -121,8 +121,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Calculate the canonical target function
                 float visReuse_c = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
                 float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)) * visReuse_c;
-                float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
-                float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
+                float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)/JacobianDeterminant(sdata.x1, rdi.x2_gi, sdata_r.x1, rdi.n2_gi));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
+                float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)/JacobianDeterminant(sdata_r.x1, rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
                 float visReuse = rdi_r.W_gi > 0.0f ? 1.0f : 0.0f;
                 float n_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)) * visReuse;
                 float M_c = min(TEMP_MCAP_GI,rdi.M_gi);

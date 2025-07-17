@@ -178,14 +178,14 @@ SampleReturn SampleNEE_gen(
         normal_l = -normal_l;
     }
 
-    // Compute NEE PDF
-    float pdf_l = g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON);
+    // Compute NEE PDF (solid angle!)
+    float pdf_l = g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);
 
     // Compute BSDF importance PDF
     float2 probs = CalculateStrategyProbabilities(matID1, o, n1);
     float pdf0 = BRDF_PDF(0, matID1, n1, -L_norm, o);
     float pdf1 = BRDF_PDF(1, matID1, n1, -L_norm, o);
-    float pdf_b = (probs.x * pdf0 + probs.y * pdf1) * max(dot(normal_l, -L_norm), 0.0f) / dist2;
+    float pdf_b = (probs.x * pdf0 + probs.y * pdf1);
 
     // Pack results
     SampleReturn sreturn;
