@@ -44,6 +44,8 @@ using Microsoft::WRL::ComPtr;
 
 class Renderer : public DXSample {
 public:
+    void BuildGlobalMeshBuffers();
+
   Renderer(UINT width, UINT height, std::wstring name);
 
   void DLSSRR_Init();
@@ -121,6 +123,22 @@ private:
     std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
     std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;    // compiled DXIL blobs
     // -----------------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------------
+//  Global arrays used by EvalSurface() in the inline‑ray‑query path
+// -----------------------------------------------------------------------------
+struct BTriVertex          // same layout as in HLSL
+{
+    DirectX::XMFLOAT3 vertex;
+    DirectX::XMFLOAT4 normal;      // xyz = normal,  w = optional matID
+};
+
+ComPtr<ID3D12Resource> m_vertexGlobal;   // new
+ComPtr<ID3D12Resource> m_indexGlobal;    // new
+UINT                   m_totalVertexCount = 0;
+UINT                   m_totalIndexCount  = 0;
+// -----------------------------------------------------------------------------
+
 
   static const UINT FrameCount = 2;
 
@@ -392,6 +410,10 @@ private:
     XMMATRIX prevObjectToWorldInverse;
     XMMATRIX objectToWorldNormal;
     XMMATRIX prevObjectToWorldNormal;
+      UINT  indexBase;
+      UINT  vertexBase;
+      UINT  materialBase;
+      UINT  _pad_;
   };
 
     //Frametime
@@ -402,6 +424,13 @@ private:
 
   ComPtr<ID3D12Resource> m_instanceProperties;
   ComPtr<ID3D12Resource> m_instancePropertiesPrevious;
+    struct GeometryOffsets
+    {
+        UINT vertexBase;
+        UINT indexBase;
+        UINT materialBase;
+    };
+    std::vector<GeometryOffsets> m_geoOffsets;
   void CreateInstancePropertiesBuffer();
   void UpdateInstancePropertiesBuffer();
 

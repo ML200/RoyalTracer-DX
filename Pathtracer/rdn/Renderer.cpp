@@ -57,6 +57,95 @@ extern "C" {
     __declspec(dllexport) extern const char* D3D12SDKPath    = ".\\";
 }
 
+void Renderer::BuildGlobalMeshBuffers()
+{
+    m_geoOffsets.clear();
+    std::vector<BTriVertex>    flatVerts;
+    std::vector<uint32_t>      flatIdx;
+
+    for (size_t m = 0; m < m_VB.size(); ++m)
+    {
+        GeometryOffsets go{};
+        go.vertexBase = static_cast<UINT>(flatVerts.size()); // before we push verts
+        go.indexBase  = static_cast<UINT>(flatIdx .size());  // before we push indices
+        go.materialBase = m_materialIDOffsets[m];
+        // ----- 1) copy vertices ------------------------------------------------
+        Vertex* srcVerts = nullptr;
+        {   CD3DX12_RANGE r(0,0);
+            m_VB[m]->Map(0,&r, reinterpret_cast<void**>(&srcVerts));
+            for (UINT i=0;i<m_VertexCount[m];++i)
+            {
+                BTriVertex out{};
+                out.vertex = srcVerts[i].position;
+                out.normal.x = srcVerts[i].normal_material.x;           // .w already = matID
+                out.normal.y = srcVerts[i].normal_material.y;           // .w already = matID
+                out.normal.z = srcVerts[i].normal_material.z;           // .w already = matID
+                flatVerts.push_back(out);
+            }
+            m_VB[m]->Unmap(0,nullptr);
+        }
+
+        // ----- 2) copy & re‑base indices --------------------------------------
+        uint32_t firstVert = static_cast<uint32_t>(flatVerts.size())
+                             - m_VertexCount[m];
+        uint32_t* srcIdx = nullptr;
+        {   CD3DX12_RANGE r(0,0);
+            m_IB[m]->Map(0,&r, reinterpret_cast<void**>(&srcIdx));
+            for (UINT i=0;i<m_IndexCount[m]; ++i)
+                flatIdx.push_back(srcIdx[i] + firstVert);  // re‑base
+            m_IB[m]->Unmap(0,nullptr);
+        }
+        m_geoOffsets.push_back(go);
+    }
+
+    m_totalVertexCount = static_cast<UINT>(flatVerts.size());
+    m_totalIndexCount  = static_cast<UINT>(flatIdx .size());
+
+    // ---- create default‑heap buffers and upload once -------------------------
+    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst)
+    {
+        dst = nv_helpers_dx12::CreateBuffer(
+              m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+              D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+    };
+
+    const UINT vbBytes = m_totalVertexCount*sizeof(BTriVertex);
+    const UINT ibBytes = m_totalIndexCount *sizeof(uint32_t);
+
+    makeDefault(vbBytes, m_vertexGlobal);
+    makeDefault(ibBytes, m_indexGlobal);
+
+    // single staging upload buffer for both
+    ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), vbBytes+ibBytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    // copy data into the upload heap
+    {
+        uint8_t* p;  CD3DX12_RANGE r(0,0);
+        upload->Map(0,&r,reinterpret_cast<void**>(&p));
+        memcpy(p,                         flatVerts.data(), vbBytes);
+        memcpy(p + vbBytes,               flatIdx .data(), ibBytes);
+        upload->Unmap(0,nullptr);
+    }
+
+    // record copy commands
+    m_commandList->CopyBufferRegion(m_vertexGlobal.Get(),0, upload.Get(),0,         vbBytes);
+    m_commandList->CopyBufferRegion(m_indexGlobal .Get(),0, upload.Get(),vbBytes,   ibBytes);
+
+    CD3DX12_RESOURCE_BARRIER br[] =
+    {
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ),
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_indexGlobal.Get(),  D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+    m_commandList->ResourceBarrier(_countof(br), br);
+}
+
+
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
     : DXSample(width, height, name), m_frameIndex(0),
@@ -67,9 +156,9 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Pass_init_di_v7.hlsl|rg",
+        L"Pass_init_di_v7.hlsl|cs:16x8",
         L"barrier",
-        L"Pass_init_gi_v7.hlsl|rg",
+        L"Pass_init_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_temp_di_v7.hlsl|cs:16x8",
         L"Pass_temp_gi_v7.hlsl|cs:16x8",
@@ -114,7 +203,13 @@ void Renderer::OnInit() {
   LoadAssets();
   CheckRaytracingSupport();
   CreateAccelerationStructures();
-  ThrowIfFailed(m_commandList->Close());
+    BuildGlobalMeshBuffers();
+    ThrowIfFailed(m_commandList->Close());
+
+    // **NEW**: execute and wait for the upload to finish
+    ID3D12CommandList* initLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(initLists), initLists);
+    WaitForPreviousFrame();
   CreateRaytracingPipeline();
   CreatePerInstanceConstantBuffers();
   CreateGlobalConstantBuffer();
@@ -343,7 +438,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "2A4.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "buddha.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -418,11 +513,11 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.001f;
+    float angle = static_cast<float>(m_time) * 0.00f;
     float r     = 4.0f;
 
-    float x = cosf(angle) * r + 1.0f;   // + centre.x
-    float z = sinf(angle) * r + 0.0f;   // + centre.z
+    float x = 4.0f;//cosf(angle) * r + 1.0f;   // + centre.x
+    float z = 4.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
     XMMATRIX scale        = XMMatrixScaling(.5f, .5f, .5f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
@@ -430,7 +525,7 @@ void Renderer::OnUpdate() {
 
     m_instances[2].second = scale * selfRotation * translate;
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.5f, 0.5f, 0.5f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(3.0f, 3.0f, 3.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
 
@@ -973,6 +1068,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
                     {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
                     {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
                     {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
+                    {1 /*t1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18},   // <‑ indices[]
+                    {2 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 19},   // <‑ BTriVertex[]
                     {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
                     {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
                     {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
@@ -1410,6 +1507,8 @@ void Renderer::CreateShaderResourceHeap() {
 // Debug output: Confirm that the CreateConstantBufferView call was made
     std::wcout << L"Constant buffer view created for the camera." << std::endl;
 
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(
+                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     //# DXR Extra - Simple Lighting
     srvHandle.ptr +=
@@ -1785,6 +1884,44 @@ void Renderer::CreateShaderResourceHeap() {
     m_device->CreateUnorderedAccessView(
             m_initialBSDFRayBuffer.Get(), nullptr,
             &initialRayUavDesc, srvHandle);
+
+    // -----------------------------------------------------------------------------
+    // slots 18 & 19  –  indices[t1]  and  BTriVertex[t2]   for inline queries
+    // -----------------------------------------------------------------------------
+    srvHandle.ptr += inc;    // ← move to slot 18  (after initialBSDFRayBuffer)
+
+    // -- indices[]  ---------------------------------------------------------------
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC idxSrv = {};
+        idxSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        idxSrv.Format                     = DXGI_FORMAT_UNKNOWN;          // typed
+        idxSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+        idxSrv.Buffer.FirstElement        = 0;
+        idxSrv.Buffer.NumElements         = m_totalIndexCount;             // global
+        idxSrv.Buffer.StructureByteStride = sizeof(uint32_t);
+        idxSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
+
+        m_device->CreateShaderResourceView(
+            m_indexGlobal.Get(), &idxSrv, srvHandle);      //  slot 18
+        srvHandle.ptr += inc;                              //  advance to slot 19
+    }
+
+    // -- BTriVertex[]  ------------------------------------------------------------
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = {};
+        vbSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        vbSrv.Format                     = DXGI_FORMAT_UNKNOWN;             // structured
+        vbSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+        vbSrv.Buffer.FirstElement        = 0;
+        vbSrv.Buffer.NumElements         = m_totalVertexCount;
+        vbSrv.Buffer.StructureByteStride = sizeof(BTriVertex);
+        vbSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
+
+        m_device->CreateShaderResourceView(
+            m_vertexGlobal.Get(), &vbSrv, srvHandle);      //  slot 19
+        srvHandle.ptr += inc;                              //  ready for next item
+    }
+
 
 
     std::wcout << L"SRVs created!" << std::endl;
@@ -2275,6 +2412,7 @@ void Renderer::CreateVB(std::string name) {
     m_IndexCount.push_back(l_IndexCount);
     m_material.push_back(l_material);
     m_materialID.push_back(l_materialID);
+
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2291,39 +2429,53 @@ void Renderer::CreateInstancePropertiesBuffer() {
       D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 }
 
-//--------------------------------------------------------------------------------------------------
-// Copy the per-instance data into the buffer
-// #DXR Extra - Refitting
-void Renderer::UpdateInstancePropertiesBuffer() {
-  InstanceProperties *current = nullptr;
-  CD3DX12_RANGE readRange(
-      0, 0); // We do not intend to read from this resource on the CPU.
-  ThrowIfFailed(m_instanceProperties->Map(0, &readRange,
-                                          reinterpret_cast<void **>(&current)));
-    for (const auto &inst : m_instances)
-    {
-        XMVECTOR det_filler;
-        current->prevObjectToWorld = current->objectToWorld;
-        current->prevObjectToWorldInverse = XMMatrixInverse(&det_filler,current->objectToWorld);
-        current->objectToWorld = inst.second;
-        current->objectToWorldInverse = XMMatrixInverse(&det_filler,inst.second);
+//---------------------------------------------------------------------------
+// Copy the per‑instance data into the buffer
+// (called once per frame)
+//---------------------------------------------------------------------------
+void Renderer::UpdateInstancePropertiesBuffer()
+{
+    InstanceProperties* dst = nullptr;
+    CD3DX12_RANGE  r(0,0);                         // we never read from CPU
+    ThrowIfFailed(
+        m_instanceProperties->Map(0,&r,
+                                  reinterpret_cast<void**>(&dst)));
 
-        //# DXR Extra - Simple Lighting
-        XMMATRIX upper3x3 = inst.second;
-        // Remove the translation and lower vector of the matrix
-        upper3x3.r[0].m128_f32[3] = 0.f;
-        upper3x3.r[1].m128_f32[3] = 0.f;
-        upper3x3.r[2].m128_f32[3] = 0.f;
-        upper3x3.r[3].m128_f32[0] = 0.f;
-        upper3x3.r[3].m128_f32[1] = 0.f;
-        upper3x3.r[3].m128_f32[2] = 0.f;
-        upper3x3.r[3].m128_f32[3] = 1.f;
+    //-----------------------------------------------------------
+    //  one loop iteration  ==  one instance in the TLAS
+    //-----------------------------------------------------------
+    for (size_t inst = 0; inst < m_instances.size(); ++inst, ++dst)
+    {
+        // ───────────────────── existing matrix bookkeeping ───
+        const XMMATRIX& M = m_instances[inst].second;
         XMVECTOR det;
-        current->prevObjectToWorldNormal = current->objectToWorldNormal;
-        current->objectToWorldNormal = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
-        current++;
+
+        dst->prevObjectToWorld        = dst->objectToWorld;
+        dst->prevObjectToWorldInverse = XMMatrixInverse(&det, dst->objectToWorld);
+
+        dst->objectToWorld            = M;
+        dst->objectToWorldInverse     = XMMatrixInverse(&det, M);
+
+        XMMATRIX upper3x3             = M;
+        upper3x3.r[0].m128_f32[3] = upper3x3.r[1].m128_f32[3] =
+        upper3x3.r[2].m128_f32[3] = upper3x3.r[3].m128_f32[0] =
+        upper3x3.r[3].m128_f32[1] = upper3x3.r[3].m128_f32[2] = 0.f;
+        upper3x3.r[3].m128_f32[3] = 1.f;
+
+        dst->prevObjectToWorldNormal  = dst->objectToWorldNormal;
+        dst->objectToWorldNormal      = XMMatrixTranspose(
+                                            XMMatrixInverse(&det, upper3x3));
+
+        // ───────────────────── NEW: per‑geometry offsets ──────
+        UINT   modelIdx = m_instanceModelIndices[inst];   // which mesh?
+        const GeometryOffsets& go = m_geoOffsets[modelIdx];
+
+        dst->indexBase    = go.indexBase;     // first index of this mesh
+        dst->vertexBase   = go.vertexBase;    // first vertex of this mesh
+        dst->materialBase = go.materialBase;  // first mat‑ID of this mesh
+        dst->_pad_        = 0;                // keep 16‑byte alignment
     }
-  m_instanceProperties->Unmap(0, nullptr);
+    m_instanceProperties->Unmap(0,nullptr);
 }
 
 void Renderer::CollectEmissiveTriangles() {

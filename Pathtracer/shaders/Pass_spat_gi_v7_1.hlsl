@@ -60,9 +60,10 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
+#include "Camera_ray_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
@@ -122,7 +123,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.5f) &&
                         //!RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
-                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
+                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.05f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -164,7 +165,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Compute the pairwise MIS weight for the canonical sample
         float mis_c = 0.0f;
         if(rdi.M_gi <= SPAT_MIN_M_GI){
-            mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, 3.0f);
+            mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, SPAT_BETA_GI);
         }
         else{
             mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi);
@@ -185,7 +186,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
                 float mis_n = 0.0f;
                 if(rdi.M_gi <= SPAT_MIN_M_GI)
-                    mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, 3.0f);
+                    mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, SPAT_BETA_GI);
                 else
                     mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi);
                 //debug += mis_n;
@@ -203,7 +204,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate new W
         float p_hat_final = GetPHat(contrib_final);
-        if (p_hat_final > 0.0f && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f) {
+        if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f) {
             float W = rdi.w_sum_gi / p_hat_final;
             // NaN/Inf protection
             if (isnan(W) || isinf(W)) {

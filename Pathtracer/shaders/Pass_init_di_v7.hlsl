@@ -1,29 +1,45 @@
+cbuffer Push : register(b1)
+{
+    uint2 gImageSize;
+}
+#define ENABLE_RAY_QUERY_INLINE // Activate support for inline ray tracing
+
+#define gImageWidth  (gImageSize.x)
+#define gImageHeight (gImageSize.y)
+#define IMG_W        (gImageSize.x)
+#define IMG_H        (gImageSize.y)
+
+#define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
+
+static uint3 gDispatchIdx;
+#define DispatchRaysIndex()      gDispatchIdx
+
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput : register(u0);
-RWTexture2D<float4> gPermanentData : register(u1);
+RWTexture2DArray<float4> gOutput             : register(u0);
+RWTexture2D<float4>      gPermanentData      : register(u1);
 
-RWByteAddressBuffer g_sample_current : register(u6);
-RWByteAddressBuffer g_sample_last : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer g_sample_current         : register(u6);
+RWByteAddressBuffer g_sample_last            : register(u7);
+RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
+RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
+RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
+RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
 RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
-StructuredBuffer<STriVertex> BTriVertex : register(t2);
-StructuredBuffer<int> indices : register(t1);
-RaytracingAccelerationStructure SceneBVH : register(t0);
-StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint> materialIDs : register(t4);
-StructuredBuffer<Material> materials : register(t5);
-StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
-StructuredBuffer<float> g_AliasProb  : register(t7);
-StructuredBuffer<uint>  g_AliasIdx   : register(t8);
+StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
+StructuredBuffer<int>                 indices           : register(t1);
+RaytracingAccelerationStructure       SceneBVH          : register(t0);
+StructuredBuffer<InstanceProperties>  instanceProps     : register(t3);
+StructuredBuffer<uint>                materialIDs       : register(t4);
+StructuredBuffer<Material>            materials         : register(t5);
+StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
+StructuredBuffer<float>               g_AliasProb       : register(t7);
+StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
 // Needs access to all structured/random buffers
 #include "Sample_data.hlsli"
@@ -43,22 +59,33 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
+#include "Camera_ray_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
-[shader("raygeneration")]
-void Pass_init_di_v7() {
-    uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx     = MapPixelID(dims, launchIndex);
+//─────────────────────────────────────────────────────────────────────────────
+//  Initial Sampling GI
+//─────────────────────────────────────────────────────────────────────────────
+[numthreads(16, 8, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= IMG_W || tid.y >= IMG_H) return;
+    gDispatchIdx = tid;
+
+    uint2  launchIndex   = tid.xy;
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, launchIndex);
 
     //SampleData sdata = SampleCameraRay(pixelIdx);
-    SampleData sdata = SampleCameraRay(pixelIdx);
+    SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);
+    //gOutput[uint3(tid.xy, 0)] = float4(abs(sdata.n1),1);
+    //gOutput[uint3(tid.xy, 0)] = float4(sdata.L1,1);
+
     if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
@@ -114,7 +141,7 @@ void Pass_init_di_v7() {
         // Visbility check for the stored sample, if fail, set W to 0
         float V = 1.0f;
         if(requires_shadow_ray){
-            V = VisibilityCheck(sdata.x1, reservoir.x2_di, sdata.n1);
+            V = VisibilityCheckCP(sdata.x1, reservoir.x2_di, sdata.n1);
         }
         // Calculate W
         reservoir.W_di = 0.0f;

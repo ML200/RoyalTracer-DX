@@ -16,7 +16,7 @@ SampleReturn SampleBSDF(
     ray.TMin = 0.001f;
     ray.TMax = 10000;
     HitInfo samplePayload;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, samplePayload);
+    TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
 
     // Evaluate the contribution
     float3 emission = materials[samplePayload.materialID].Ke;
@@ -53,7 +53,7 @@ SampleReturn SampleBSDF(
     return sreturn;
 }
 
-
+#ifdef ENABLE_RAY_QUERY_INLINE
 // Sample a NEE sample
 SampleReturn SampleBSDF_gen(
     in float3 x1,
@@ -75,7 +75,7 @@ SampleReturn SampleBSDF_gen(
     ray.TMin = EPSILON;
     ray.TMax = 10000.0f;
     HitInfo samplePayload;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, samplePayload);
+    TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
 
     // Evaluate the contribution
     float3 emission = materials[samplePayload.materialID].Ke;
@@ -111,3 +111,4 @@ SampleReturn SampleBSDF_gen(
 
     return sreturn;
 }
+#endif
