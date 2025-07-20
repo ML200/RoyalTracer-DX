@@ -57,10 +57,10 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
 #include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -114,5 +114,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //gOutput[uint3(DTid.xy, 0)]  = half4(fColor, 1);
 
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
+    gOutput[uint3(DTid.xy, 0)]  = half4(finalColor, 1);
 }

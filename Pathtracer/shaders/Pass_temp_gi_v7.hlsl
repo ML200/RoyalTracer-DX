@@ -61,6 +61,7 @@ cbuffer CameraParams : register(b0)
 // These includes need access to ALL previous buffers
 #include "Reservoir_DI_v7.hlsli"
 #include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
 #include "Camera_ray_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
@@ -129,8 +130,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float M_n = min(TEMP_MCAP_GI,rdi_r.M_gi);
                 float M_sum = M_c + M_n;
                 // Calculate the MIS weights
-                float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
-                float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
+                float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);
+                float mis_n = PairwiseMIS_Neighbour_Temp_NonDef(M_c, M_n, n_c, n_n, M_sum);
 
                 // Calculate the reservoirs weights
                 float w_c = mis_c * p_c * rdi.W_gi;
@@ -147,7 +148,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
                 // Calculate new W
                 //float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di));
-                if (p_hat_final > 0.0f && rdi.w_sum_gi > 0.0f) {
+                if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f) {
                     float W = rdi.w_sum_gi / p_hat_final;
                     // NaN/Inf protection
                     if (isnan(W) || isinf(W)) {

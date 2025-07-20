@@ -40,57 +40,6 @@ inline bool IsValidReservoir_DI_opt(in float3 n2, in uint M){
     return valid;
 }
 
-// The remaining functions remain unchanged.
-float VisibilityCheck(
-    float3 x1,
-    float3 x2,
-    float3 n1
-)
-{
-    float V = 0.0f;
-    float3 dir = x2-x1;
-    float dist = length(dir);
-    RayDesc ray;
-    ray.Origin = x1 + normalize(n1) * EPSILON;
-    ray.Direction = normalize(dir);
-    ray.TMin = EPSILON;
-    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
-    ShadowHitInfo shadowPayload;
-    shadowPayload.isHit = false;
-    const uint flags =
-        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
-    TraceRay(SceneBVH, flags, 0xFF, 1, 0, 1, ray, shadowPayload);
-    V = shadowPayload.isHit ? 0.0f : 1.0f;
-    return V;
-}
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-float VisibilityCheckCP(float3 P, float3 L, float3 N)
-{
-    float3 dir = normalize(L - P);
-    float  len = length(L - P);
-
-    RayDesc ray;
-    ray.Origin    = P + normalize(N) * EPSILON;            // ← offset *along ray*
-    ray.Direction = dir;
-    ray.TMin      = EPSILON;
-    ray.TMax      = max(len - EPSILON*10.0f, 2.0f*EPSILON);
-
-    RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-              //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES
-              > rq;
-
-    rq.TraceRayInline(SceneBVH,        // TLAS
-                      RAY_FLAG_NONE,   // dynamic flags
-                      0xFF,            // mask
-                      ray);
-
-    rq.Proceed();            // ← DRIVE TO COMPLETION
-
-    return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
-}
-#endif // ENABLE_RAY_QUERY_INLINE
-
 
 float3 BSDF_term(
     uint   mID,

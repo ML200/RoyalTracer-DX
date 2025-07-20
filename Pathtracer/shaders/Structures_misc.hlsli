@@ -21,6 +21,10 @@ struct InstanceProperties
     float4x4 prevObjectToWorldInverse;
     float4x4 objectToWorldNormal;
     float4x4 prevObjectToWorldNormal;
+    uint  indexBase;
+    uint  vertexBase;
+    uint  materialBase;
+    uint  _pad_;
 };
 
 struct LightTriangle {

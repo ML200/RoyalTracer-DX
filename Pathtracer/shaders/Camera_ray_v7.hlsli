@@ -8,23 +8,23 @@ float3 InitOrigin(){
 }
 
 //Initial ray direction
-float3 InitDirection(){
-    float2 d = (((DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy)) * 2.f - 1.f);
+float3 InitDirection(uint2 pixel, uint2 imgSize){
+    float2 d = (((pixel) / float2(imgSize)) * 2.f - 1.f);
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
     return normalize(mul(viewI, float4(target.xyz, 0)).xyz);
 }
 
 //Pixel idx for directly writing into the sample data -> more efficient
-SampleData SampleCameraRay(uint idx){
+SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     RayDesc ray;
     ray.Origin = InitOrigin();
-    ray.Direction = InitDirection();
+    ray.Direction = InitDirection(pixel, imgSize);
     ray.TMin = 0.0001;
     ray.TMax = 10000;
 
     // Trace the camera ray
     HitInfo payload;
-    TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
+    TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
 
     float3 ke = materials[payload.materialID].Ke;
 

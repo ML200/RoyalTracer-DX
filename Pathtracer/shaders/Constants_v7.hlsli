@@ -29,13 +29,14 @@
 #define SPAT_MCAP_GI 120
 #define SPAT_EXP_GI 1.0f
 #define SPAT_RAD_MAX_GI 32
-#define SPAT_RAD_MIN_GI 16
+#define SPAT_RAD_MIN_GI 32
 
-#define SPAT_COUNT_MAX_GI 2
+#define SPAT_COUNT_MAX_GI 3
 #define SPAT_COUNT_MIN_GI 1
-#define SPAT_TRIS_GI 3
+#define SPAT_TRIS_GI 6
 
 #define SPAT_MIN_M_GI 5
+#define SPAT_BETA_GI 3.0f
 
 
 // Denoiser settings spatial
