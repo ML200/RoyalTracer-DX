@@ -116,15 +116,14 @@ void main(uint3 tid : SV_DispatchThreadID)
                     uint iID = GetRandomPixelCircleWeighted(radiusBudget, dims.x, dims.y, launchIndex.x, launchIndex.y, seed);
                     // Only load data required for the comparison (L2 + M)
                     Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, iID);
-
                     // Check wether the reservoir is valid for merge (Later, replace this with a weight -> the neighbor with the highest weight is selected)
                     bool candidateAcceptedGI =
                         IsValidReservoir_GI_opt(rdi_r.n2_gi, rdi_r.M_gi) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
                         !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.5f) &&
+                        //!RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
                         !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.05f) &&
-                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.05f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -182,8 +181,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nIds[i]);
-                float3 contrib_n = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi);
-                contrib_n *= VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
+                float3 contrib_n = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
                 float p_hat_from = GetPHat(contrib_n/JacobianDeterminant(load_x1(g_sample_current, nIds[i]), rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi));
                 // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
                 float mis_n = 0.0f;
@@ -205,7 +203,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         // Calculate new W
-        float p_hat_final = GetPHat(contrib_final) /* VisibilityCheckCP(sdata.x1, rdi.x2_gi, sdata.n1)*/;
+        float p_hat_final = GetPHat(contrib_final);
         if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f) {
             float W = rdi.w_sum_gi / p_hat_final;
             // NaN/Inf protection

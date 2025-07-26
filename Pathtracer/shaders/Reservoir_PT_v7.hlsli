@@ -25,9 +25,7 @@ float JacobianDeterminant( float3 x1_c,
     float   distn = dot(v_n, v_n);          // ‖v_n‖²
     float   cosn  = abs(dot(normalize(v_n), n2_c));   // |cos φ2q|
 
-    float J = (cosc / cosn) * (distn / distc);
-
-    return !isnan(J)?J:0.0f;
+    return (cosc / max(cosn, EPSILON)) * (distn / distc);
 }
 
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){

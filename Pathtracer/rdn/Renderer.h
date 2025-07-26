@@ -182,7 +182,7 @@ UINT                   m_totalIndexCount  = 0;
   ComPtr<ID3D12Resource> m_vertexBuffer;
   D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
 
-
+    bool g_keys[256] = {};
   // Synchronization objects.
   UINT m_frameIndex;
   HANDLE m_fenceEvent;
@@ -196,7 +196,9 @@ UINT                   m_totalIndexCount  = 0;
 
   void CheckRaytracingSupport();
 
-  virtual void OnKeyUp(UINT8 key);
+    void OnKeyDown(UINT8 key);
+
+    virtual void OnKeyUp(UINT8 key);
   bool m_raster = true;
 
   // #DXR

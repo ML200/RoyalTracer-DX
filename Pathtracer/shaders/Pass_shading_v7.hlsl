@@ -18,7 +18,7 @@ static uint3 gDispatchIdx;
 #include "Compression_v7.hlsli"
 
 RWTexture2DArray<half4> gOutput             : register(u0);
-RWTexture2D<half4>      gPermanentData      : register(u1);
+RWTexture2D<float4>      gPermanentData      : register(u1);
 RWTexture2DArray<half4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
@@ -84,15 +84,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
     for (uint i = 0; i < 4; ++i) {
         if (any(view[i] != prevView[i])) cameraChanged = true;
     }
-    static const half MAX_SAMPLES     = 500.0h;  // tune to taste
+    static const float MAX_SAMPLES     = 10000.0h;  // tune to taste
 
-    half4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
-    half3 prevAvg     = prev.rgb;
-    half  prevSamples = prev.a;
+    float4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
+    float3 prevAvg     = prev.rgb;
+    float  prevSamples = prev.a;
 
     // --- online running average --------------------------------------------------
-    half3 newAvg;
-    half  newSamples;
+    float3 newAvg;
+    float  newSamples;
     if (cameraChanged)
     {
         // Camera moved: reset running average and sample count
@@ -102,17 +102,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
     else
     {
         newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);   // clamp N
-        half invN  = 1.0h / newSamples;
+        float invN  = 1.0h / newSamples;
         newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
 
     // --- store back to the permanent UAV ----------------------------------------
-    gPermanentData[DTid.xy] = half4(newAvg, newSamples);
+    gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);
-    //gOutput[uint3(DTid.xy, 0)]  = half4(fColor, 1);
+    //gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
 
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)]  = half4(finalColor, 1);
+    gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 }

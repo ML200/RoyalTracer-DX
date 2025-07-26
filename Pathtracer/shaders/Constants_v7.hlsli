@@ -24,7 +24,7 @@
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 20
+#define TEMP_MCAP_GI 30
 
 #define SPAT_MCAP_GI 120
 #define SPAT_EXP_GI 1.0f
@@ -36,7 +36,7 @@
 #define SPAT_TRIS_GI 6
 
 #define SPAT_MIN_M_GI 5
-#define SPAT_BETA_GI 3.0f
+#define SPAT_BETA_GI 1.0f
 
 
 // Denoiser settings spatial
