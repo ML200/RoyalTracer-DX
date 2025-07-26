@@ -198,6 +198,9 @@ void Renderer::OnInit() {
   nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
   nv_helpers_dx12::CameraManip.setLookat(
       glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
+    nv_helpers_dx12::CameraManip.setMode(
+    nv_helpers_dx12::Manipulator::Fly);   // <- **FPS mode**
+    nv_helpers_dx12::CameraManip.setSpeed(0.0f);
 
   LoadPipeline();
   LoadAssets();
@@ -438,7 +441,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "buddha.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -500,6 +503,40 @@ void Renderer::LoadAssets() {
 
 // Update frame-based values.
 void Renderer::OnUpdate() {
+    using clock   = std::chrono::high_resolution_clock;
+    static auto tPrev = clock::now();
+
+    auto  tCurr = clock::now();
+    float dt    =
+        std::chrono::duration<float>(tCurr - tPrev).count(); // seconds
+    tPrev = tCurr;
+
+    //----------------------------------------------------------
+    //  WASD + Ctrl/Space translation
+    //----------------------------------------------------------
+    glm::vec3 eye, center, up;
+    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+
+    glm::vec3 fwd   = glm::normalize(center - eye);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+
+    glm::vec3 move(0.0f);
+    float     speed = 5.0f;                // metres/second
+
+    if (g_keys['W'])          move +=  fwd;
+    if (g_keys['S'])          move -=  fwd;
+    if (g_keys['D'])          move +=  right;
+    if (g_keys['A'])          move -=  right;
+    if (g_keys[VK_SPACE])     move +=  up;
+    if (g_keys[VK_CONTROL])   move -=  up;
+
+    if (glm::length(move) > 0.0f)
+    {
+        move = glm::normalize(move) * (speed * dt);
+        eye    += move;
+        center += move;
+        nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
+    }
   // #DXR Extra: Perspective Camera
   UpdateCameraBuffer();
 
@@ -525,9 +562,9 @@ void Renderer::OnUpdate() {
 
     m_instances[2].second = scale * selfRotation * translate;
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(3.0f, 3.0f, 3.0f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 2.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
   // #DXR Extra - Refitting
@@ -815,7 +852,13 @@ void Renderer::CheckRaytracingSupport() {
 //-----------------------------------------------------------------------------
 //
 //
+// Renderer.cpp
+void Renderer::OnKeyDown(UINT8 key)
+{
+    g_keys[key] = true;
+}
 void Renderer::OnKeyUp(UINT8 key) {
+    g_keys[key] = false;
     // Check if a specific key (e.g., 'C' for cycle) is pressed
     if (key == 'C') {
         m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
