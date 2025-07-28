@@ -57,7 +57,7 @@ float3 BSDF_term(
 
 float G_term(float3 n1, float3 ndirN)
 {
-    return max(EPSILON, dot(n1, -ndirN));
+    return max(1e-15, dot(n1, -ndirN));
 }
 
 float J_term(

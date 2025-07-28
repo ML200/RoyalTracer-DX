@@ -53,162 +53,135 @@ static const int2    kInvalidPixel  = int2(-1, -1);
 //---------------------------------------------------------------
 static const float kReprojectionProbExponent = 1.0f;   // γ  (1 = current behaviour)
 
-//---------------------------------------------------------------
-//  Reprojects a world‑space point to previous‑frame *UV* coords
-//  • returns kInvalidUV on failure
-//  • snaps the UV to one of the 4 bilinear neighbours
-//  • probability weights are (wᵢ)ᵞ and renormalised
-//---------------------------------------------------------------
-inline float2 GetLastFrameUV(
-    float3     worldPos,
-    float4x4   prevView,
-    float4x4   prevProjection,   // already contains last‑frame jitter
-    uint       objID,
-    float2     resolution,
-    inout uint seed)
+inline float2 GetLastFramePixelCoordinates_Float(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution,
+    uint objID)
 {
-    //-----------------------------------------------------------
-    // 1‑5.  Same as before  (world → prev‑local → clip → UV)
-    //-----------------------------------------------------------
-    float4 localPos  = mul(instanceProps[objID].objectToWorldInverse,
-                           float4(worldPos, 1.0f));
-    float4 prevWorld = mul(instanceProps[objID].prevObjectToWorld,
-                           localPos);
+    // 1. Convert current world-space position back into the local space of this object:
+    float4 localPos = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
 
-    float4 clipPos   = mul(prevProjection, mul(prevView, prevWorld));
+    // 2. Transform that local position by the *previous* frame's object-to-world matrix:
+    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
 
-    if (clipPos.w <= 0.0f)
-        return kInvalidUV;
+    // 3. Project it into clip space using the previous frame’s view and projection:
+    float4 clipPos = mul(prevProjection, mul(prevView, prevWorldPos));
 
-    float2 uv = clipPos.xy / clipPos.w * 0.5f + 0.5f;
-    uv.y      = 1.0f - uv.y;            // API‑specific Y‑flip
-    if (any(uv < 0.0f) || any(uv > 1.0f))
-        return kInvalidUV;
-
-    //-----------------------------------------------------------
-    // 6.  Bilinear‑probability snap with exponent γ
-    //-----------------------------------------------------------
-    float2 p    = uv * resolution;          // pixel‑corner coords
-    int2   base = int2(floor(p));           // top‑left integer pixel
-    base = clamp(base, int2(0, 0), int2(resolution) - 2);
-
-    float2 f = p - base;                    // fractional part  [0,1)
-
-    // Classical bilinear weights (still in [0,1])
-    float w00 = (1.0f - f.x) * (1.0f - f.y);
-    float w10 =  f.x        * (1.0f - f.y);
-    float w01 = (1.0f - f.x) *  f.y;
-    float w11 = 1.0f - (w00 + w10 + w01);   // 4th corner
-
-    // Apply exponent γ and renormalise
-    float g   = kReprojectionProbExponent;
-    float p00 = pow(w00, g);
-    float p10 = pow(w10, g);
-    float p01 = pow(w01, g);
-    float p11 = pow(w11, g);
-
-    float norm = 1.0f / max(p00 + p10 + p01 + p11, 1e-6f); // guard against div‑by‑zero
-    p00 *= norm;
-    p10 *= norm;
-    p01 *= norm;
-    p11 = 1.0f - (p00 + p10 + p01);          // exact closure
-
-    // Resolve the random pick
-    float r = RandomFloatSingle(seed);
-    int2 offset;
-         if (r < p00)                     offset = int2(0, 0);
-    else if (r < p00 + p10)               offset = int2(1, 0);
-    else if (r < p00 + p10 + p01)         offset = int2(0, 1);
-    else                                  offset = int2(1, 1);
-
-    // 7. Back to 0‑1 space, at the *centre* of the chosen pixel
-    return (float2(base + offset)) / resolution;
-}
-
-//---------------------------------------------------------------
-//  Wrapper that converts the valid UV into an integer pixel
-//  • multiplies by *resolution* only once, right at the end
-//  • rounds with an explicit +0.5  → avoids the “-1 sentinel → 0” artefact
-//---------------------------------------------------------------
-inline int2 GetBestReprojectedPixel_d(
-    float3     worldPos,
-    float4x4   prevView,
-    float4x4   prevProjection,
-    float2     resolution,
-    uint       objID,
-    inout uint seed
-)
-{
-    float2 uv = GetLastFrameUV(worldPos, prevView, prevProjection, objID, resolution, seed);
-
-    if (uv.x < 0.0f)            // saw kInvalidUV
-        return kInvalidPixel;
-
-    // Convert *once* to pixel space and round to nearest integer
-    return int2(uv * resolution + 0.5f);
-}
-
-
-//--------------------------------------------------------------------
-//  Reproject the current sample into last-frame pixel space and
-//  return the four neighbours needed for a bilinear history fetch.
-//  • NO call to GetLastFrameUV – everything is done locally
-//  • Multiplication by *resolution* happens once, with an explicit +0.5
-//  • Each neighbour is range-checked independently
-//--------------------------------------------------------------------
-inline bool GetLastFramePixels4(
-    float3              worldPos,
-    float4x4            prevView,
-    float4x4            prevProjection,
-    uint                objID,
-    float2              resolution,       // (width, height)
-    out int2            outPixels[4])     // ← result
-{
-    //--------------------------------------------------------------- 1-5
-    float4 localPos  = mul(instanceProps[objID].objectToWorldInverse,
-                           float4(worldPos, 1.0f));
-    float4 prevWorld = mul(instanceProps[objID].prevObjectToWorld, localPos);
-    float4 clipPos   = mul(prevProjection, mul(prevView, prevWorld));
-
-    // Behind the camera → hopeless, abort early
+    // If the clip-space w is not positive, it means the position was behind the camera last frame:
     if (clipPos.w <= 0.0f)
     {
-        [unroll] for (int i = 0; i < 4; ++i)
-            outPixels[i] = kInvalidPixel;
-        return false;
+        // Return some sentinel value that indicates it's off-screen or invalid:
+        return float2(-1.0f, -1.0f);
     }
 
-    //--------------------------------------------------------------- 6
-    float2 uv = clipPos.xy / clipPos.w * 0.5f + 0.5f;
-    uv.y      = 1.0f - uv.y;            // API-specific Y-flip
+    // 4. Convert clip space to normalized device coordinates:
+    float2 ndc = clipPos.xy / clipPos.w;
 
-    // Convert **once** to pixel space and round to nearest integer.
-    // (+0.5 avoids the  -1  sentinel → 0  artefact.)
-    int2 centrePix = int2(uv * resolution + 0.5f);
+    // 5. Transform NDC (-1..1) to screen UV (0..1):
+    float2 screenUV = ndc * 0.5f + 0.5f;
 
-    //--------------------------------------------------------------- 7
-    static const int2 OFFS[4] = {
-        int2(-1, -1),   // top-left
-        int2( 0, -1),   // top-right
-        int2(-1,  0),   // bottom-left
-        int2( 0,  0)    // bottom-right
-    };
+    // 6. Flip Y if needed (common in many rendering APIs):
+    screenUV.y = 1.0f - screenUV.y;
 
-    bool anyValid = false;
+    // 7. Finally convert to actual pixel coordinates:
+    return screenUV * resolution;
+}
 
+inline int2 GetBestReprojectedPixel_d(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution,
+    uint objID
+    )
+{
+    float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
+    int2 pixel = int2(round(subPixelCoord));
+    return pixel;
+}
+
+
+inline void GetBestReprojectedPixel_d_Advanced(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution,
+    uint objID,
+    out int2 outPixels[4],
+    out float outDist[4])
+{
+    float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
+
+    // Early out if invalid reprojection
+    if (subPixelCoord.x < 0.0f || subPixelCoord.y < 0.0f ||
+        subPixelCoord.x >= resolution.x || subPixelCoord.y >= resolution.y)
+    {
+        [unroll]
+        for (int i = 0; i < 4; ++i)
+        {
+            outPixels[i] = int2(-1, -1);
+            outDist[i] = 1e9f;
+        }
+        return;
+    }
+
+    // Rounded integer pixel (nearest)
+    int2 basePixel = int2(round(subPixelCoord));
+    float2 pixelCenter = float2(basePixel) + 0.5f;
+
+    // Compute the subpixel offset from pixel center
+    float2 offset = subPixelCoord - pixelCenter;
+
+    // Decide the quadrant of the subpixel
+    bool right = offset.x > 0.0f;
+    bool top = offset.y > 0.0f;
+
+    // Determine pixel patch based on quadrant
+    // Always include base pixel
+    outPixels[0] = basePixel;
+
+    if (right && top)
+    {
+        // Top-right quadrant → include base, right, top, top-right
+        outPixels[1] = basePixel + int2(1, 0);  // right
+        outPixels[2] = basePixel + int2(0, 1);  // top
+        outPixels[3] = basePixel + int2(1, 1);  // top-right
+    }
+    else if (!right && top)
+    {
+        // Top-left quadrant → include base, left, top, top-left
+        outPixels[1] = basePixel + int2(-1, 0); // left
+        outPixels[2] = basePixel + int2(0, 1);  // top
+        outPixels[3] = basePixel + int2(-1, 1); // top-left
+    }
+    else if (right && !top)
+    {
+        // Bottom-right quadrant → include base, right, bottom, bottom-right
+        outPixels[1] = basePixel + int2(1, 0);  // right
+        outPixels[2] = basePixel + int2(0, -1); // bottom
+        outPixels[3] = basePixel + int2(1, -1); // bottom-right
+    }
+    else
+    {
+        // Bottom-left quadrant → include base, left, bottom, bottom-left
+        outPixels[1] = basePixel + int2(-1, 0); // left
+        outPixels[2] = basePixel + int2(0, -1); // bottom
+        outPixels[3] = basePixel + int2(-1, -1); // bottom-left
+    }
+
+    // Compute squared distances to pixel centers (to avoid sqrt unless you really need it)
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
-        int2 pix = centrePix + OFFS[i];
-
-        bool inside =
-             (pix.x >= 0) && (pix.y >= 0) &&
-             (pix.x <  (int)resolution.x) &&
-             (pix.y <  (int)resolution.y);
-
-        outPixels[i] = inside ? pix : kInvalidPixel;
-        anyValid    |= inside;
+        float2 center = float2(outPixels[i]) + 0.5f;
+        float2 diff = center - subPixelCoord;
+        outDist[i] = dot(diff, diff); // squared distance
     }
-
-    return anyValid;      // “true”  ⇢ at least one neighbour usable
 }
+
+
+
+
+

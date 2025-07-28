@@ -89,10 +89,16 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint matIDtep = load_matID(g_sample_current, pixelIdx);
 //float3 debug = .0f;
     if(matIDtep != 4294967294 && all(L1 < EPSILON) && any(load_n2_init(g_InitialBSDFRays, pixelIdx) != 0.0f)){
+        bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
+        float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
+        // Postponed shadow ray
+        float3 s_x1 = (float3)0;
+        float3 s_x2 = (float3)0;
+        float3 s_n1 = (float3)0;
         for(int i = 0; i < 1; i++){
             // Get a random seed
-            uint2 seed = GetSeed(pixelIdx, time, 1);
-            uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
+            uint2 seed = GetSeed(pixelIdx, time, i+1);
+            uint waveSeed = GetWaveSeed(pixelIdx, time, i+1);
 
             // Store path variables that are used to fill the reservoirs
             float3 V2 = (float3)0;
@@ -113,12 +119,6 @@ void main(uint3 tid : SV_DispatchThreadID)
             float3 ldir = position - load_x1(g_sample_current, pixelIdx);
             float dist2 = length(ldir) * length(ldir);
             float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx) * dist2 /dot(normalize(-ldir), normal); // Convert to solid angle space
-            bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
-            float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
-            // Postponed shadow ray
-            float3 s_x1 = (float3)0;
-            float3 s_x2 = (float3)0;
-            float3 s_n1 = (float3)0;
 
             for(int i = 0; i < BSDF_SAMPLES_GI; i++){
                 // NEE samples
@@ -129,7 +129,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                     float p_hat = GetPHat(c * tp_full * result.L2);
                     float pdf = result.pdf_nee * pdf_full;
-                    float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;
+                    float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;// * VisibilityCheckCP(position, result.x2, normal);
                     if(isnan(w_mis))
                         w_mis = 0.0f;
 
@@ -201,30 +201,29 @@ void main(uint3 tid : SV_DispatchThreadID)
                     }
                 }
             }
-
-            // Visbility check for the stored sample, if fail, set W to 0
-            float V = 1.0f;
-            if(requires_shadow_ray && length(s_n1)>EPSILON){
-                V = VisibilityCheckCP(s_x1, s_x2, s_n1);
-            }
-            reservoir.L2_gi *= V;
-            // Calculate W
-            float W = 0.0f;
-            if (p_hat_final > 0.0f) {
-                W = V * reservoir.w_sum_gi / p_hat_final;
-                // Protect against NaN/Inf
-                if (isnan(W) || isinf(W)) {
-                    reservoir.n2_gi = 0; // Dont pick this sample, its nan!
-                }
-            }
-            reservoir.W_gi = W;
-
-            reservoir.objID_gi = load_objID_init(g_InitialBSDFRays, pixelIdx);
-            reservoir.matID_gi = load_matID_init(g_InitialBSDFRays, pixelIdx);
-            reservoir.x2_gi = load_x2_init(g_InitialBSDFRays, pixelIdx);
-            reservoir.n2_gi = load_n2_init(g_InitialBSDFRays, pixelIdx);
-            reservoir.M_gi = 1;
         }
+       // Visbility check for the stored sample, if fail, set W to 0
+        float V = 1.0f;
+        if(requires_shadow_ray && length(s_n1)>EPSILON){
+            V = VisibilityCheckCP(s_x1, s_x2, s_n1);
+        }
+        reservoir.L2_gi *= V;
+        // Calculate W
+        float W = 0.0f;
+        if (p_hat_final > EPSILON) {
+            W = V * reservoir.w_sum_gi / p_hat_final;
+            // Protect against NaN/Inf
+            if (isnan(W) || isinf(W)) {
+                reservoir.n2_gi = 0; // Dont pick this sample, its nan!
+            }
+        }
+        reservoir.W_gi = W / 1.0f;
+
+        reservoir.objID_gi = load_objID_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.matID_gi = load_matID_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.x2_gi = load_x2_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.n2_gi = load_n2_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.M_gi = 1;
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
     //gScratchPing[uint3(launchIndex.xy, 2)] = float4(debug, 1);

@@ -57,7 +57,7 @@ inline float2 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
     float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
 
     // Calculate the diffuse probability (strategy 0)
-    float p_d = 1.0f;//1.0f - p_s;
+    float p_d = 1.0f - p_s;
 
     // Return the probabilities:
     // - x component: diffuse (strategy 0)
@@ -79,7 +79,7 @@ inline void SampleBRDF(uint strategy, uint mID, float3 incoming, float3 normal, 
 
     }
     else{
-        //SampleBTDF_GGX(mat, incoming, normal, flatNormal, sample, origin, worldOrigin, seed);
+        SampleBRDF_Lambertian(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
     }
 }
 
@@ -96,7 +96,7 @@ inline float3 EvaluateBRDF(uint strategy, uint mID, float3 normal, float3 incide
 
     }
     else{
-        //return EvaluateBTDF_GGX(mID, normal, incidence, outgoing);
+        return EvaluateBRDF_Lambertian(mID, normal, incidence, outgoing);
     }
     return float3(0,0,0);
 }
@@ -114,7 +114,7 @@ inline float BRDF_PDF(uint strategy, uint mID, float3 normal, float3 incidence, 
 
     }
     else{
-        //return BTDF_PDF_GGX(mat, normal, incidence, outgoing);
+        return BRDF_PDF_Lambertian(mID, normal, incidence, outgoing);
     }
     return 0;
 }
