@@ -93,10 +93,24 @@ void main(uint3 tid : SV_DispatchThreadID)
         SampleData sdata_r;
         Reservoir_GI rdi_r;
         uint tempPixelIdx = 0xFFFFFFFF;
+/*uint tempPixelIdx = MapPixelID(dims, GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID));//0xFFFFFFFF;
+// Get the reprojected sample data
+sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+// Get the reprojected reservoir
+rdi_r = loadReservoirGI(g_Reservoirs_last_gi, tempPixelIdx);
+
+// Weight the current sample - is it valid? And select the one closest in world space
+bool valid =
+    (all(sdata_r.L1 < EPSILON) &&
+    IsValidReservoir_GI(rdi_r) &&
+    !RejectNormal_GI(sdata.n1, sdata_r.n1, 0.999f) &&
+    (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
+    (sdata_r.matID == sdata.matID));*/
 
         // Set the pixel id to the best option in the bilinear patch. Select the one with the most similar normal AND position
         int2 outPixels[4];
-        bool valid_history = GetLastFramePixels4(sdata.x1, prevView, prevProjection, sdata.objID, dims, outPixels);
+        float outDist[4];
+        GetBestReprojectedPixel_d_Advanced(sdata.x1, prevView, prevProjection, dims, sdata.objID, outPixels, outDist);
         float max_weight = 0.0f;
         // Loop over all candidates and select the optimal one.
         for(int i = 0; i<4; i++){
@@ -111,7 +125,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 bool valid =
                     (all(sdata_r_temp.L1 < EPSILON) &&
                     IsValidReservoir_GI(rdi_r_temp) &&
-                    !RejectNormal_GI(sdata.n1, sdata_r_temp.n1, 0.5f) &&
+                    !RejectNormal_GI(sdata.n1, sdata_r_temp.n1, 0.99f) &&
                     (!RejectDistance_GI(sdata.x1, sdata_r_temp.x1, sdata.n1, 0.05f))  &&
                     (sdata_r_temp.matID == sdata.matID));
                 float weight = 1.0f/(1.0f + length(sdata_r_temp.x1 - sdata.x1)) * (valid?1.0f:0.0f);
@@ -120,10 +134,11 @@ void main(uint3 tid : SV_DispatchThreadID)
                     rdi_r = rdi_r_temp;
                     max_weight = weight;
                     tempPixelIdx = tempIdx;
+//gOutput[uint3(tid.xy, 0)] = float4(abs((float2(outPixels[i] - int2(tid.xy))) / float2(IMG_W, IMG_H))*100.0f, 0.0f, 1.0f);
                 }
             }
         }
-        if(tempPixelIdx != 0xFFFFFFFF && valid_history){
+        if(tempPixelIdx != 0xFFFFFFFF /*&& valid*/){
             // Calculate the canonical target function
             float visReuse_c = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
             float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)) * visReuse_c;
@@ -135,8 +150,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             float M_n = min(TEMP_MCAP_GI,rdi_r.M_gi);
             float M_sum = M_c + M_n;
             // Calculate the MIS weights
-            float mis_c = PairwiseMIS_Canonical_Temp_NonDef(M_c, M_n, p_c, p_n, M_sum);
-            float mis_n = PairwiseMIS_Neighbour_Temp_NonDef(M_c, M_n, n_c, n_n, M_sum);
+            float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
+            float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
 
             // Calculate the reservoirs weights
             float w_c = mis_c * p_c * rdi.W_gi;

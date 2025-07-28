@@ -27,7 +27,7 @@ float JacobianDeterminant( float3 x1_c,
 
     float J = (cosc / cosn) * (distn / distc);
 
-    return !isnan(J)?J:0.0f;
+    return !isnan(J)?J:1e10;
 }
 
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
@@ -104,8 +104,8 @@ inline float3 ReconnectGI(
     // Throughput
     float3 r = F1 * F2 * L2 * G;
 
-    if (any(isnan(r)))
-        r = 0;
+    if (any(isnan(r)) || all(r < EPSILON))
+        r = (float3)EPSILON;
 
     return r;
 }

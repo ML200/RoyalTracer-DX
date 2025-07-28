@@ -88,11 +88,22 @@ void main(uint3 tid : SV_DispatchThreadID)
         uint2 seed = GetSeed(pixelIdx, time, 2);
         SampleData sdata_r;
         Reservoir_DI rdi_r;
-        uint tempPixelIdx = 0xFFFFFFFF;
+        //uint tempPixelIdx = 0xFFFFFFFF;
+
+uint tempPixelIdx = MapPixelID(dims, GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID));
+sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
+bool valid =
+    (all(sdata_r.L1 < EPSILON) &&
+    IsValidReservoir_DI(rdi_r) &&
+    !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
+    (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
+    (sdata_r.matID == sdata.matID));
 
         // Set the pixel id to the best option in the bilinear patch. Select the one with the most similar normal AND position
-        int2 outPixels[4];
-        bool valid_history = GetLastFramePixels4(sdata.x1, prevView, prevProjection, sdata.objID, dims, outPixels);
+        /*int2 outPixels[4];
+        float outDist[4];
+        bool valid_history = GetLastFramePixels4(sdata.x1, prevView, prevProjection, sdata.objID, dims, outPixels, outDist);
         float max_weight = 0.0f;
         // Loop over all candidates and select the optimal one.
         for(int i = 0; i<4; i++){
@@ -110,7 +121,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     !RejectNormal_DI(sdata.n1, sdata_r_temp.n1, 0.5f) &&
                     (!RejectDistance_DI(sdata.x1, sdata_r_temp.x1, sdata.n1, 0.05f))  &&
                     (sdata_r_temp.matID == sdata.matID));
-                float weight = 1.0f/(1.0f + length(sdata_r_temp.x1 - sdata.x1)) * (valid?1.0f:0.0f);
+                float weight = 1.0f/(1.0f + outDist[i]) * (valid?1.0f:0.0f);
                 if(weight > max_weight){
                     sdata_r = sdata_r_temp;
                     rdi_r = rdi_r_temp;
@@ -118,8 +129,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                     tempPixelIdx = tempIdx;
                 }
             }
-        }
-        if(tempPixelIdx != 0xFFFFFFFF && valid_history){
+        }*/
+        if(tempPixelIdx != 0xFFFFFFFF /*&& valid_history*/ && valid){
             // Calculate the canonical target function
             float visReuse_c = rdi.W_di > 0.0f ? 1.0f : 0.0f;
             float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di)) * visReuse_c;
