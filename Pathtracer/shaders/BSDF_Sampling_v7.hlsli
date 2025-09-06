@@ -1,4 +1,4 @@
-// Sample a NEE sample
+// Sample a BSDF sample
 SampleReturn SampleBSDF(
     SampleData sdata,
     inout uint waveSeed,
@@ -8,6 +8,9 @@ SampleReturn SampleBSDF(
     float3 sample;
     uint strategy = SelectSamplingStrategy(sdata.matID, sdata.o, sdata.n1, threadSeed);
     SampleBRDF(strategy, sdata.matID, sdata.o, sdata.n1, sdata.n1, sample, sdata.x1, threadSeed);
+
+    if(all(sample == 0.0f))
+        return (SampleReturn)0;
 
     // Trace the ray
     RayDesc ray;
@@ -25,18 +28,20 @@ SampleReturn SampleBSDF(
 
     //if(any(emission > 0.0f)){
         float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
-        float3 pdf0 = BRDF_PDF(0, sdata.matID, sdata.n1, -sample, sdata.o);
-        float3 pdf1 = BRDF_PDF(1, sdata.matID, sdata.n1, -sample, sdata.o);
-        float3 P1 = SafeMultiply(probs.x, pdf0);
-        float3 P2 = SafeMultiply(probs.y, pdf1);
+        float pdf0 = BRDF_PDF(0, sdata.matID, sdata.n1, -sample, sdata.o);
+        float pdf1 = BRDF_PDF(1, sdata.matID, sdata.n1, -sample, sdata.o);
+        float P1 = probs.x * pdf0;
+        float P2 = probs.y * pdf1;
 
         float3 L =  sdata.x1 - samplePayload.hitPosition;
         float cos_light = dot(samplePayload.hitNormal, normalize(L));
+        if(cos_light<0.0f)
+            return (SampleReturn)0;
         float dist = length(L);
         float dist2 = dist * dist;
 
         pdf_b = (P1 + P2) * cos_light / dist2;
-        pdf_l = ((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight;
+        pdf_l = LT_Pdf_LightTree_Area(sdata.x1, sdata.n1, samplePayload.lightID, samplePayload.objID);//((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight;
     //}
 
     // Fill in the sample and return
@@ -68,6 +73,9 @@ SampleReturn SampleBSDF_gen(
     uint strategy = SelectSamplingStrategy(matID, o, n1, threadSeed);
     SampleBRDF(strategy, matID, o, n1, n1, sample, x1, threadSeed);
 
+    if(all(sample == 0.0f))
+        return (SampleReturn)0;
+
     // Trace the ray
     RayDesc ray;
     ray.Origin = x1 + normalize(n1) * EPSILON;
@@ -84,18 +92,27 @@ SampleReturn SampleBSDF_gen(
 
     //if(any(emission > 0.0f)){
         float2 probs = CalculateStrategyProbabilities(matID, o, n1);
-        float3 pdf0 = BRDF_PDF(0, matID, n1, -sample, o);
-        float3 pdf1 = BRDF_PDF(1, matID, n1, -sample, o);
-        float3 P1 = SafeMultiply(probs.x, pdf0);
-        float3 P2 = SafeMultiply(probs.y, pdf1);
+        float pdf0 = BRDF_PDF(0, matID, n1, -sample, o);
+        float pdf1 = BRDF_PDF(1, matID, n1, -sample, o);
+        float P1 = probs.x * pdf0;
+        float P2 = probs.y * pdf1;
 
         float3 L =  x1 - samplePayload.hitPosition;
         float cos_light = dot(samplePayload.hitNormal, normalize(L));
+        if(cos_light<0.0f){
+            if(any(emission > 0.0f))
+                return (SampleReturn)0;
+            else{
+                samplePayload.hitNormal = -samplePayload.hitNormal;
+                cos_light = dot(samplePayload.hitNormal, normalize(L));
+            }
+        }
+
         float dist = length(L);
         float dist2 = dist * dist;
 
         pdf_b = (P1 + P2);
-        pdf_l = ((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight * dist2 / cos_light;
+        pdf_l = LT_Pdf_LightTree_Area(x1, n1, samplePayload.lightID, samplePayload.objID) * dist2 / cos_light;//((emission.x + emission.y + emission.z) / 3.0f) / g_EmissiveTriangles[0].total_weight * dist2 / cos_light;
     //}
 
     // Fill in the sample and return

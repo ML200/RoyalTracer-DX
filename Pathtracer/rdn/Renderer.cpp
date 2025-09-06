@@ -145,6 +145,43 @@ void Renderer::BuildGlobalMeshBuffers()
     m_commandList->ResourceBarrier(_countof(br), br);
 }
 
+static inline InstanceXformCPU ToInstanceXform(const DirectX::XMMATRIX& M)
+{
+    InstanceXformCPU x{};
+    XMStoreFloat4x4(&x.objectToWorld, M);   // no transpose needed
+    return x;
+}
+
+void Renderer::CreateTriToLightIdBuffer()
+{
+    if (m_triToLightId.empty()) return;
+
+    const UINT bytes = static_cast<UINT>(m_triToLightId.size() * sizeof(uint32_t));
+
+    // Upload
+    ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    {   void* p = nullptr; CD3DX12_RANGE r(0,0);
+        ThrowIfFailed(upload->Map(0, &r, &p));
+        memcpy(p, m_triToLightId.data(), bytes);
+        upload->Unmap(0, nullptr);
+    }
+
+    // Default
+    m_triToLightIdBuffer = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+
+    m_commandList->CopyBufferRegion(m_triToLightIdBuffer.Get(), 0, upload.Get(), 0, bytes);
+
+    CD3DX12_RESOURCE_BARRIER br = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+    m_commandList->ResourceBarrier(1, &br);
+}
+
+
 
 Renderer::Renderer(UINT width, UINT height,
                    std::wstring name)
@@ -205,6 +242,7 @@ void Renderer::OnInit() {
   LoadPipeline();
   LoadAssets();
   CheckRaytracingSupport();
+
   CreateAccelerationStructures();
     BuildGlobalMeshBuffers();
     ThrowIfFailed(m_commandList->Close());
@@ -226,7 +264,6 @@ void Renderer::OnInit() {
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
-    // ── NEW ──
     #if ENABLE_D3D12_DIAGNOSTICS
         dxdiag::EnableDebugLayerAndDred();
     #endif
@@ -441,7 +478,7 @@ void Renderer::LoadAssets() {
       m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"city_v2.obj", "smoothMonke.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -501,6 +538,26 @@ void Renderer::LoadAssets() {
   }
 }
 
+void Renderer::OnInitTransform() {
+    XMMATRIX scale        = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 200.f, -100.0f); // centre.y = 1
+
+    m_instances[2].second = scale * selfRotation * translate;
+
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 2.f, 0.f);
+
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+
+    XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
+
+    m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;
+}
+
 // Update frame-based values.
 void Renderer::OnUpdate() {
     using clock   = std::chrono::high_resolution_clock;
@@ -521,7 +578,7 @@ void Renderer::OnUpdate() {
     glm::vec3 right = glm::normalize(glm::cross(fwd, up));
 
     glm::vec3 move(0.0f);
-    float     speed = 5.0f;                // metres/second
+    float     speed = 50.0f;                // metres/second
 
     if (g_keys['W'])          move +=  fwd;
     if (g_keys['S'])          move -=  fwd;
@@ -550,23 +607,29 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.00f;
+    /*float angle = static_cast<float>(m_time) * 0.00f;
     float r     = 4.0f;
 
     float x = 4.0f;//cosf(angle) * r + 1.0f;   // + centre.x
     float z = 4.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
-    XMMATRIX scale        = XMMatrixScaling(.5f, .5f, .5f);
+    XMMATRIX scale        = XMMatrixScaling(0.5f, 0.5f, 0.5f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
 
     m_instances[2].second = scale * selfRotation * translate;
 
     XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 2.f, 0.f);
+    XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 1.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+
+    XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
+
+    m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;*/
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
@@ -1031,12 +1094,29 @@ void Renderer::CreateAccelerationStructures() {
         m_instances.emplace_back(buffers.pResult, XMMatrixIdentity());
         m_instanceModelIndices.push_back(static_cast<UINT>(i));
     }
+    OnInitTransform();
   CreateTopLevelAS(m_instances);
     // Collect emissive triangles
     CollectEmissiveTriangles();
 
+    // Build & upload light tree
+    lt::LightTreeBuilder::Settings cfg;
+    cfg.maxLeafTris = 4;
+    cfg.useTwoLevel = true;
+
+    // Build per‑instance object→world matrices for the light tree
+    std::vector<InstanceXformCPU> ltXforms;
+    ltXforms.reserve(m_instances.size());
+    for (size_t i = 0; i < m_instances.size(); ++i)
+        ltXforms.push_back(ToInstanceXform(m_instances[i].second));
+
+    // Use the overload that takes transforms
+    m_lightTree.Build(m_emissiveTriangles, ltXforms, cfg);
+    m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());
+
     // Create buffer for emissive triangles
     CreateEmissiveTrianglesBuffer();
+    CreateTriToLightIdBuffer();
 
     // Build & upload alias table ---------------------------------------------
     BuildAliasTableSoA(m_emissiveTriangles);
@@ -1051,6 +1131,9 @@ void Renderer::CreateAccelerationStructures() {
 
   m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
   WaitForSingleObject(m_fenceEvent, INFINITE);
+
+    m_lightTree.ReleaseStaging();
+
 
   // Once the command list is finished executing, reset it to be reused for
   // rendering
@@ -1090,7 +1173,17 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
                     {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
-                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */}
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
+                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 }, // gLT_TLAS
+                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 }, // gLT_BLAS
+                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 }, // gLT_Range
+                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 }, // gLT_LeafTriIndex
+                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 }, // gLT_LeafAliasProb
+                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 }, // gLT_LeafAliasIdx
+                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
+                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
+                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
+                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
             }
     );
     rsc.AddRootParameter(
@@ -1127,7 +1220,17 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
                     {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
-                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */}
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
+                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 },
+                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 },
+                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 },
+                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 },
+                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 },
+                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 },
+                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
+                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
+                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
+                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
             }
     );
 
@@ -1403,7 +1506,7 @@ void Renderer::CreateRaytracingPipeline()
     // -------------------------------------------------------------------------
     // 5)  Payload / attribute / recursion depth (we dont use recursion)
     // -------------------------------------------------------------------------
-    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 2*sizeof(UINT) + sizeof(BOOL) );
+    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 3*sizeof(UINT) );
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
@@ -1493,13 +1596,14 @@ void Renderer::CreateRaytracingOutputBuffer() {
 //
 void Renderer::CreateShaderResourceHeap() {
   // #DXR Extra: Perspective Camera
+  // #DXR Extra: Perspective Camera
   // Create a SRV/UAV/CBV descriptor heap. We need 3 entries - 1 SRV for the
   // TLAS, 1 UAV for the raytracing output and 1 CBV for the camera matrices
 // Create a SRV/UAV/CBV descriptor heap. We need 4 entries - 1 SRV for the TLAS, 1 UAV for the
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 23, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 64, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1964,6 +2068,33 @@ void Renderer::CreateShaderResourceHeap() {
             m_vertexGlobal.Get(), &vbSrv, srvHandle);      //  slot 19
         srvHandle.ptr += inc;                              //  ready for next item
     }
+
+    // ---- LightTree SRVs (TLASNodes, BLASNodes, BLASRanges, LeafTriIndex) ----
+    // They will be placed at heap slots 20, 21, 22, 23 respectively.
+    m_lightTree.WriteSrvs(m_device.Get(), srvHandle);
+
+    // advance handle
+    srvHandle.ptr += inc * 4;
+    m_lightTree.WriteAliasSrvs(m_device.Get(), srvHandle);
+    srvHandle.ptr += inc * 2;
+    std::wcout << L"LightTree SRVs written at heap slots 20..23" << std::endl;
+
+    // srvHandle currently points to slot 26
+    D3D12_SHADER_RESOURCE_VIEW_DESC triMapSrv = {};
+    triMapSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    triMapSrv.Format                  = DXGI_FORMAT_R32_UINT;     // typed uint
+    triMapSrv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+    triMapSrv.Buffer.FirstElement     = 0;
+    triMapSrv.Buffer.NumElements      = static_cast<UINT>(m_triToLightId.size());
+    triMapSrv.Buffer.StructureByteStride = 0;
+    triMapSrv.Buffer.Flags            = D3D12_BUFFER_SRV_FLAG_NONE;
+
+    m_device->CreateShaderResourceView(m_triToLightIdBuffer.Get(), &triMapSrv, srvHandle);
+    srvHandle.ptr += inc;  // advance if you add more later
+
+    // NEW: write LightTree lookup SRVs  (slots 26..28)
+    m_lightTree.WriteLookupSrvs(m_device.Get(), srvHandle);
+    srvHandle.ptr += inc * 3;
 
 
 
@@ -2516,7 +2647,7 @@ void Renderer::UpdateInstancePropertiesBuffer()
         dst->indexBase    = go.indexBase;     // first index of this mesh
         dst->vertexBase   = go.vertexBase;    // first vertex of this mesh
         dst->materialBase = go.materialBase;  // first mat‑ID of this mesh
-        dst->_pad_        = 0;                // keep 16‑byte alignment
+        dst->triToLightBase = m_instTriOffset[inst];
     }
     m_instanceProperties->Unmap(0,nullptr);
 }
@@ -2524,80 +2655,92 @@ void Renderer::UpdateInstancePropertiesBuffer()
 void Renderer::CollectEmissiveTriangles() {
     m_emissiveTriangles.clear();
 
+    // NEW: allocate tri->light map for all instances
+    m_instTriOffset.resize(m_instances.size());
+    size_t totalTris = 0;
+    for (size_t inst = 0; inst < m_instances.size(); ++inst) {
+        UINT modelIndex = m_instanceModelIndices[inst];
+        totalTris += m_IndexCount[modelIndex] / 3;
+    }
+    m_triToLightId.assign(totalTris, 0xFFFFFFFFu);  // sentinel = not emissive
+
+    // NEW: compute per-instance base offsets
+    uint32_t runningBase = 0;
+    for (size_t inst = 0; inst < m_instances.size(); ++inst) {
+        m_instTriOffset[inst] = runningBase;
+        UINT modelIndex = m_instanceModelIndices[inst];
+        runningBase += m_IndexCount[modelIndex] / 3;
+    }
+
     for (size_t instanceIndex = 0; instanceIndex < m_instances.size(); ++instanceIndex) {
         UINT modelIndex = m_instanceModelIndices[instanceIndex];
-
         UINT e_materialIDOffset = m_materialIDOffsets[modelIndex];
         UINT triangleCount = m_IndexCount[modelIndex] / 3;
 
-        // Map the vertex and index buffers for the model
         Vertex* vertices = nullptr;
         UINT* indices = nullptr;
         CD3DX12_RANGE readRange(0, 0);
 
-        // Map the vertex buffer
         ThrowIfFailed(m_VB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&vertices)));
-
-        // Map the index buffer
         ThrowIfFailed(m_IB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&indices)));
 
+        const uint32_t triBase = m_instTriOffset[instanceIndex]; // NEW
+
         for (UINT t = 0; t < triangleCount; ++t) {
-            UINT idx0 = indices[t * 3 + 0];
-            UINT idx1 = indices[t * 3 + 1];
-            UINT idx2 = indices[t * 3 + 2];
+            UINT idx0 = indices[3 * t + 0];
+            UINT idx1 = indices[3 * t + 1];
+            UINT idx2 = indices[3 * t + 2];
 
-            // Get the material IDs for the triangle's vertices
-            UINT materialID0 = m_materialIDs[e_materialIDOffset + t * 3 + 0];
-            UINT materialID1 = m_materialIDs[e_materialIDOffset + t * 3 + 1];
-            UINT materialID2 = m_materialIDs[e_materialIDOffset + t * 3 + 2];
+            // material id per tri (your convention: one per-vertex, identical on all 3)
+            UINT mid0 = m_materialIDs[e_materialIDOffset + 3 * t + 0];
+            UINT mid1 = m_materialIDs[e_materialIDOffset + 3 * t + 1];
+            UINT mid2 = m_materialIDs[e_materialIDOffset + 3 * t + 2];
+            if (mid0 != mid1 || mid0 != mid2) continue; // mixed tri - skip or handle
 
-            // Ensure all vertices of the triangle have the same material ID
-            if (materialID0 != materialID1 || materialID0 != materialID2) {
-                std::wcout << "Warning: Triangle vertices have different material IDs!" << std::endl;
-                continue; // Skip this triangle or handle as needed
-            }
+            const Material& mat = m_materials[mid0];
+            const float emissive = mat.Ke.x + mat.Ke.y + mat.Ke.z;
 
-            UINT materialID = materialID0; // Use the consistent material ID
-            const Material& material = m_materials[materialID];
-
-            // Check if the material is emissive
-            if (material.Ke.x + material.Ke.y + material.Ke.z > 0.0f) {
-                // Get the positions of the vertices
+            if (emissive > 0.0f) {
+                // Push light triangle
                 const Vertex& v0 = vertices[idx0];
                 const Vertex& v1 = vertices[idx1];
                 const Vertex& v2 = vertices[idx2];
 
                 LightTriangle lt{};
-                lt.x = v0.position;
-                lt.y = v1.position;
-                lt.z = v2.position;
+                lt.x = v0.position; lt.y = v1.position; lt.z = v2.position;
                 lt.instanceID = static_cast<UINT>(instanceIndex);
-                lt.weight = ComputeTriangleWeight(v0.position, v1.position, v2.position, material.Ke);
-                lt.emission = material.Ke;
+                const XMMATRIX& M = m_instances[instanceIndex].second;
+                lt.weight     = ComputeTriangleWeight(v0.position, v1.position, v2.position, mat.Ke, M);
+                lt.emission   = mat.Ke;
+                // (optional) store primID if you want:
+                // lt.primID     = t;
 
+                const uint32_t lightIdx = static_cast<uint32_t>(m_emissiveTriangles.size());
                 m_emissiveTriangles.push_back(lt);
+
+                // NEW: fill tri -> light map
+                m_triToLightId[triBase + t] = lightIdx;
             }
         }
 
-        // Unmap the vertex and index buffers
         m_VB[modelIndex]->Unmap(0, nullptr);
         m_IB[modelIndex]->Unmap(0, nullptr);
     }
 
     // Sort the emissive triangles based on weight in descending order
-    std::sort(m_emissiveTriangles.begin(), m_emissiveTriangles.end(),
+    /*std::sort(m_emissiveTriangles.begin(), m_emissiveTriangles.end(),
               [](const LightTriangle& a, const LightTriangle& b) {
                   return a.weight > b.weight;
-              });
+              });*/
 
     // Calculate the total weight
-    float totalWeight = 0.0f;
+    /*float totalWeight = 0.0f;
     for (const auto& triangle : m_emissiveTriangles) {
         totalWeight += triangle.weight;
-    }
+    }*/
 
     // Calculate relative weights and cumulative distribution function (CDF)
-    float cumulativeWeight = 0.0f;
+    /*float cumulativeWeight = 0.0f;
     for (auto& triangle : m_emissiveTriangles) {
         triangle.weight /= totalWeight; // Normalize weight
         cumulativeWeight += triangle.weight;
@@ -2608,14 +2751,14 @@ void Renderer::CollectEmissiveTriangles() {
     // Ensure the last CDF value is exactly 1.0f
     if (!m_emissiveTriangles.empty()) {
         m_emissiveTriangles.back().cdf = 1.0f;
-    }
+    }*/
 
     std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
 }
 
 
 
-float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
+/*float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
     // Compute the area of the triangle
     XMVECTOR p0 = XMLoadFloat3(&v0);
     XMVECTOR p1 = XMLoadFloat3(&v1);
@@ -2624,14 +2767,38 @@ float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, co
     XMVECTOR edge1 = XMVectorSubtract(p1, p0);
     XMVECTOR edge2 = XMVectorSubtract(p2, p0);
     XMVECTOR crossProduct = XMVector3Cross(edge1, edge2);
-    float area = 0.5f * XMVectorGetX(XMVector3Length(crossProduct));
+    float area = (std::fmax)(0.5f * XMVectorGetX(XMVector3Length(crossProduct)),0.001f);
 
     // Compute the average emissive intensity
     float emissiveIntensity = (emissiveColor.x + emissiveColor.y + emissiveColor.z) / 3.0f;
 
     // The weight is proportional to area and emissive intensity
     return area * emissiveIntensity;
+}*/
+
+static inline float Luminance(const XMFLOAT3& c) {
+    return 0.2126f*c.x + 0.7152f*c.y + 0.0722f*c.z;
 }
+
+float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0,
+                                           const XMFLOAT3& v1,
+                                           const XMFLOAT3& v2,
+                                           const XMFLOAT3& emissiveColor,
+                                           const XMMATRIX& M)
+{
+    // transform verts to WORLD
+    XMVECTOR p0 = XMVector3TransformCoord(XMLoadFloat3(&v0), M);
+    XMVECTOR p1 = XMVector3TransformCoord(XMLoadFloat3(&v1), M);
+    XMVECTOR p2 = XMVector3TransformCoord(XMLoadFloat3(&v2), M);
+
+    // world-space geometric area
+    XMVECTOR e1 = p1 - p0, e2 = p2 - p0;
+    float area = 0.5f * XMVectorGetX( XMVector3Length( XMVector3Cross(e1,e2) ) );
+
+    float lum = Luminance(emissiveColor);
+    return std::max(area, 1e-8f) * lum;
+}
+
 
 
 

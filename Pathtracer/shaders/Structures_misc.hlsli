@@ -24,7 +24,7 @@ struct InstanceProperties
     uint  indexBase;
     uint  vertexBase;
     uint  materialBase;
-    uint  _pad_;
+    uint triToLightBase;
 };
 
 struct LightTriangle {
@@ -61,6 +61,8 @@ struct [[raypayload]] HitInfo {
                          : write(anyhit,closesthit,miss);
     uint objID: read(caller)
                          : write(anyhit,closesthit,miss);
+    uint lightID: read(caller)
+                         : write(anyhit,closesthit,miss);
 };
 
 struct [[raypayload]] ShadowHitInfo {
@@ -79,11 +81,38 @@ struct SampleReturn
     float pdf_nee;
 };
 
-//--------------------------------------------------------------------
-//  A single pixel + its weight for bilinear reprojection
-//--------------------------------------------------------------------
 struct WeightedPixel
 {
-    int2  pix;       // integer pixel coordinate   (kInvalidPixel if unused)
-    float w;         // normalised weight in [0,1] (0 ⇢ ignore)
+    int2  pix;
+    float w;
 };
+
+
+struct LightTLASNodeGpu {
+    float3 bmin;     float power;
+    float3 bmax;     float theta_o;
+    float3 axis;     float theta_e;
+    uint   left;     uint  right;
+    uint   blasIndex;uint  primCount;
+    float  sumPower; float sumPowerSq;
+    uint itemFirst; uint itemCount;
+};
+
+struct LightBLASNodeGpu {
+    float3 bmin;     float power;
+    float3 bmax;     float theta_o;
+    float3 axis;     float theta_e;
+    uint   left;     uint  right;
+    uint   triFirst; uint  triCount;
+    uint   primCount; uint _pad0;
+    float  sumPower; float sumPowerSq;
+};
+
+struct BlasRangeGpu {
+    uint nodeOffset;
+    uint nodeCount;
+    uint triIndexOffset;
+    uint triIndexCount;
+};
+
+struct LT_Sample { uint id; float pdf; };

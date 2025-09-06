@@ -142,7 +142,7 @@ inline float D_GGX(float NdotH, float roughness) {
     float alpha2 = alpha * alpha;
     float NdotH2 = NdotH * NdotH;
     float denom = (NdotH2 * (alpha2 - 1.0f) + 1.0f);
-    denom = std::max(denom, 1e-7f);
+    denom = (std::fmax)(denom, 1e-7f);
     return alpha2 / (PI * denom * denom);
 }
 
@@ -151,7 +151,7 @@ inline float G1_SmithGGX(float NdotV, float alpha) {
     float alpha2 = alpha*alpha;
     float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
 
-    return 2.0f * NdotV / std::max(denomC, 1e-7f); // Avoid division by zero
+    return 2.0f * NdotV / (std::fmax)(denomC, 1e-7f); // Avoid division by zero
 }
 
 // Smith Geometry Function G2
@@ -227,7 +227,7 @@ void SampleGGX(
     float y = r * sinf(phi);
 
     // Compute normal in stretched hemisphere
-    float z = sqrtf(std::max(0.0f, 1.0f - x * x - y * y));
+    float z = sqrtf((std::fmax)(0.0f, 1.0f - x * x - y * y));
     XMFLOAT3 Nh_stretched = normalize(XMFLOAT3(
             x * T1h.x + y * T2h.x + z * Vh_stretched.x,
             x * T1h.y + y * T2h.y + z * Vh_stretched.y,
@@ -235,7 +235,7 @@ void SampleGGX(
     ));
 
     // Unstretch the normal
-    XMFLOAT3 Nh = normalize(XMFLOAT3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, std::max(0.0f, Nh_stretched.z)));
+    XMFLOAT3 Nh = normalize(XMFLOAT3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, (std::fmax)(0.0f, Nh_stretched.z)));
 
     // Transform back to world space
     XMFLOAT3 H = normalize(XMFLOAT3(
@@ -255,16 +255,16 @@ void SampleGGX(
 // Evaluate GGX BRDF
 XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3& F0, float roughness) {
     XMFLOAT3 H = normalize(V + L);
-    float NdotV = std::max(dot(N, V), 0.0f);
-    float NdotL = std::max(dot(N, L), 0.0f);
-    float NdotH = std::max(dot(N, H), 0.0f);
-    float VdotH = std::max(dot(V, H), 0.0f);
+    float NdotV = (std::fmax)(dot(N, V), 0.0f);
+    float NdotL = (std::fmax)(dot(N, L), 0.0f);
+    float NdotH = (std::fmax)(dot(N, H), 0.0f);
+    float VdotH = (std::fmax)(dot(V, H), 0.0f);
 
     XMFLOAT3 F = XMFLOAT3(1.0f,1.0f,1.0f);
     float D = D_GGX(NdotH, roughness);
     float G = G2_SmithGGX(NdotV, NdotL, roughness*roughness);
 
-    return F * G / std::max(4.0f * NdotV * NdotL, 1e-7f);
+    return F * G / (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
 }
 
 // Calculate the PDF for a given sample direction using GGX
@@ -274,14 +274,14 @@ inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const X
     XMFLOAT3 L = normalize(incoming * -1.0f); // Light direction
     XMFLOAT3 H = normalize(V + L);
 
-    float NdotH = std::max(dot(N, H), 0.0f);
-    float VdotH = std::max(dot(V, H), 0.0f);
-    float NdotV = std::max(dot(N, V), 0.0f);
+    float NdotH = (std::fmax)(dot(N, H), 0.0f);
+    float VdotH = (std::fmax)(dot(V, H), 0.0f);
+    float NdotV = (std::fmax)(dot(N, V), 0.0f);
 
     float alpha = roughness * roughness; // Roughness squared
     float G1 = G1_SmithGGX(NdotV, alpha);
 
-    float denom = std::max(NdotV * 4.0f, 1e-7f); // Avoid division by zero
+    float denom = (std::fmax)(NdotV * 4.0f, 1e-7f); // Avoid division by zero
     return G1 / denom;
 
     /*float denom = 4.0f * VdotH;
@@ -316,7 +316,7 @@ float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, XMFLOAT3
 
         // Calculate the PDF
         float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
-        pdf = std::max(pdf, 1e-7f); // Avoid division by zero
+        pdf = (std::fmax)(pdf, 1e-7f); // Avoid division by zero
 
         // Safeguard against zero or invalid BRDF values
         float luminance = (brdf.x + brdf.y + brdf.z) / 3.0f;
@@ -360,7 +360,7 @@ void GenerateEssLUT(Material& mat) {
         float cosTheta = EPSILON + static_cast<float>(thetaIdx) / (LUT_SIZE_THETA - 1) * (1.0f - EPSILON);
 
         // Ensure sinTheta is calculated safely
-        float sinTheta = sqrt(std::max(EPSILON, 1.0f - cosTheta * cosTheta));
+        float sinTheta = sqrt((std::fmax)(EPSILON, 1.0f - cosTheta * cosTheta));
 
         // Compute normal and view direction
         XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Fixed normal

@@ -1,14 +1,17 @@
 #define EPSILON 0.000003
+#define SBIAS 0.0008
 #define PI 3.1415926535
 #define LUT_SIZE 16
 
 // ___ DI initial sampling ___
-#define NEE_SAMPLES_DI 4
+#define NEE_SAMPLES_DI 1
 #define BSDF_SAMPLES_DI 1
 
 // ___ GI initial sampling ___
-#define NEE_SAMPLES_GI 4
+#define NEE_SAMPLES_GI 1
 #define BSDF_SAMPLES_GI 2
+
+#define GI_ADDITIONAL_PATH_COUNT 0
 
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30

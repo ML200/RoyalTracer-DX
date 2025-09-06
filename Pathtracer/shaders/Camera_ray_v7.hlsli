@@ -27,6 +27,10 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
 
     float3 ke = materials[payload.materialID].Ke;
+    if(dot(payload.hitNormal,ray.Direction) > 0.0f){
+        ke = 0.0f;
+        payload.hitNormal = -payload.hitNormal;
+    }
 
     SampleData sdata = (SampleData)0;
     sdata.x1 = payload.hitPosition;
@@ -42,16 +46,10 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     return sdata;
 }
 
-//---------------------------------------------------------------
-//  Common helpers / sentinels
-//---------------------------------------------------------------
-static const float2  kInvalidUV     = float2(-2.0f, -2.0f);    // <- outside [0,1]² by design
+static const float2  kInvalidUV     = float2(-2.0f, -2.0f);
 static const int2    kInvalidPixel  = int2(-1, -1);
 
-//---------------------------------------------------------------
-//  Global or CB‑level tweakable
-//---------------------------------------------------------------
-static const float kReprojectionProbExponent = 1.0f;   // γ  (1 = current behaviour)
+static const float kReprojectionProbExponent = 1.0f;
 
 inline float2 GetLastFramePixelCoordinates_Float(
     float3 worldPos,
@@ -60,32 +58,16 @@ inline float2 GetLastFramePixelCoordinates_Float(
     float2 resolution,
     uint objID)
 {
-    // 1. Convert current world-space position back into the local space of this object:
     float4 localPos = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
-
-    // 2. Transform that local position by the *previous* frame's object-to-world matrix:
     float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
-
-    // 3. Project it into clip space using the previous frame’s view and projection:
     float4 clipPos = mul(prevProjection, mul(prevView, prevWorldPos));
-
-    // If the clip-space w is not positive, it means the position was behind the camera last frame:
     if (clipPos.w <= 0.0f)
     {
-        // Return some sentinel value that indicates it's off-screen or invalid:
         return float2(-1.0f, -1.0f);
     }
-
-    // 4. Convert clip space to normalized device coordinates:
     float2 ndc = clipPos.xy / clipPos.w;
-
-    // 5. Transform NDC (-1..1) to screen UV (0..1):
     float2 screenUV = ndc * 0.5f + 0.5f;
-
-    // 6. Flip Y if needed (common in many rendering APIs):
     screenUV.y = 1.0f - screenUV.y;
-
-    // 7. Finally convert to actual pixel coordinates:
     return screenUV * resolution;
 }
 
@@ -113,8 +95,6 @@ inline void GetBestReprojectedPixel_d_Advanced(
     out float outDist[4])
 {
     float2 subPixelCoord = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
-
-    // Early out if invalid reprojection
     if (subPixelCoord.x < 0.0f || subPixelCoord.y < 0.0f ||
         subPixelCoord.x >= resolution.x || subPixelCoord.y >= resolution.y)
     {
@@ -126,58 +106,44 @@ inline void GetBestReprojectedPixel_d_Advanced(
         }
         return;
     }
-
-    // Rounded integer pixel (nearest)
     int2 basePixel = int2(round(subPixelCoord));
     float2 pixelCenter = float2(basePixel) + 0.5f;
-
-    // Compute the subpixel offset from pixel center
     float2 offset = subPixelCoord - pixelCenter;
-
-    // Decide the quadrant of the subpixel
     bool right = offset.x > 0.0f;
     bool top = offset.y > 0.0f;
-
-    // Determine pixel patch based on quadrant
-    // Always include base pixel
     outPixels[0] = basePixel;
 
     if (right && top)
     {
-        // Top-right quadrant → include base, right, top, top-right
-        outPixels[1] = basePixel + int2(1, 0);  // right
-        outPixels[2] = basePixel + int2(0, 1);  // top
-        outPixels[3] = basePixel + int2(1, 1);  // top-right
+        outPixels[1] = basePixel + int2(1, 0);
+        outPixels[2] = basePixel + int2(0, 1);
+        outPixels[3] = basePixel + int2(1, 1);
     }
     else if (!right && top)
     {
-        // Top-left quadrant → include base, left, top, top-left
-        outPixels[1] = basePixel + int2(-1, 0); // left
-        outPixels[2] = basePixel + int2(0, 1);  // top
-        outPixels[3] = basePixel + int2(-1, 1); // top-left
+        outPixels[1] = basePixel + int2(-1, 0);
+        outPixels[2] = basePixel + int2(0, 1);
+        outPixels[3] = basePixel + int2(-1, 1);
     }
     else if (right && !top)
     {
-        // Bottom-right quadrant → include base, right, bottom, bottom-right
-        outPixels[1] = basePixel + int2(1, 0);  // right
-        outPixels[2] = basePixel + int2(0, -1); // bottom
-        outPixels[3] = basePixel + int2(1, -1); // bottom-right
+        outPixels[1] = basePixel + int2(1, 0);
+        outPixels[2] = basePixel + int2(0, -1);
+        outPixels[3] = basePixel + int2(1, -1);
     }
     else
     {
-        // Bottom-left quadrant → include base, left, bottom, bottom-left
-        outPixels[1] = basePixel + int2(-1, 0); // left
-        outPixels[2] = basePixel + int2(0, -1); // bottom
-        outPixels[3] = basePixel + int2(-1, -1); // bottom-left
+        outPixels[1] = basePixel + int2(-1, 0);
+        outPixels[2] = basePixel + int2(0, -1);
+        outPixels[3] = basePixel + int2(-1, -1);
     }
 
-    // Compute squared distances to pixel centers (to avoid sqrt unless you really need it)
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
         float2 center = float2(outPixels[i]) + 0.5f;
         float2 diff = center - subPixelCoord;
-        outDist[i] = dot(diff, diff); // squared distance
+        outDist[i] = dot(diff, diff);
     }
 }
 

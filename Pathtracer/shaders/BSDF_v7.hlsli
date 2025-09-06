@@ -54,7 +54,7 @@ inline float2 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
     float3 fresnel = SchlickFresnel(materials[mID].Ks, cosTheta);
 
     // Calculate the specular probability (strategy 1)
-    float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
 
     // Calculate the diffuse probability (strategy 0)
     float p_d = 1.0f - p_s;
