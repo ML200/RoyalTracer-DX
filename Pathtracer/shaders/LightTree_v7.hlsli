@@ -19,56 +19,6 @@ inline float  LT_SafeAsin(float x){ return asin(clamp(x, -1.0, 1.0)); }
 
 
 // ============================================================================
-// LAMBERT GATE
-// ============================================================================
-inline float LT_VisFrac_Hemisphere(float cnd, float r)
-{
-    if (r <= 1e-6f) return cnd > 0.0f ? 1.0f : 0.0f;
-    float t = 0.5f + 0.5f * (cnd / r);
-// smoothstep
-    t = saturate(t);
-    t = t * t * (3.0f - 2.0f * t);
-    return t;
-}
-
-inline float LT_MaxNdotL_OverCap(float cnd, float r)
-{
-    float cos_tu = sqrt(saturate(1.0f - r*r));
-    float sin_tn = sqrt(saturate(1.0f - cnd*cnd));
-    if (cnd >= cos_tu) return 1.0f;
-    return saturate(cnd * cos_tu + sin_tn * r);
-}
-
-inline float LT_LambertGate_Fast(float3 x, float3 n_s,
-                                 float3 bmin, float3 bmax,
-                                 bool   allowHardCull /* one-sided */, float eps)
-{
-    float3 c   = 0.5 * (bmin + bmax);
-    float3 v   = c - x;
-    float  d2  = max(dot(v,v), eps*eps);
-    float  d   = sqrt(d2);
-    float  R   = length(0.5 * (bmax - bmin));
-
-    // Inside the sphere -> omnidirectional: fully visible, best Lambert = 1
-    if (d <= R + eps) return 1.0f;
-
-    float3 wc  = v / d;
-    float  r   = saturate(R / d);
-    float  cnd = clamp(dot(n_s, wc), -1.0f, 1.0f);
-    // Optionally hard-cull for one-sided shading
-    if (allowHardCull && cnd <= -r) return 0.0f;
-    float vis  = LT_VisFrac_Hemisphere(cnd, r);
-    float ndmx = LT_MaxNdotL_OverCap(cnd, r);
-    // Product is a cheap proxy for the hemispherical Lambert integral over the cap
-    float gate = vis * ndmx;
-    // Tiny floor ensures non-culled nodes remain sampleable
-    return max(gate, 1e-3f);
-}
-
-
-
-
-// ============================================================================
 // CONTY–KULLA NODE IMPORTANCE
 // ============================================================================
 inline float LT_NodeImportance_Common(float3 x, float3 n,
@@ -81,7 +31,7 @@ inline float LT_NodeImportance_Common(float3 x, float3 n,
     float3 dir_to_point = normalize(v);
 
     float  R  = length(0.5 * (bmax - bmin));
-    float  d  = max(length(v), R * offset_threshold);
+    float  d  = max(length(v), R);
     float  theta_u = LT_SafeAsin(saturate(R / d));
 
     float cosAxis = dot(axis, dir_to_point);
@@ -91,7 +41,7 @@ inline float LT_NodeImportance_Common(float3 x, float3 n,
     float theta_prime = theta - theta_o - theta_u;
     if (theta_prime >= theta_e) return 0.0;
 
-    float gate = LT_LambertGate_Fast(x, n, bmin, bmax, true, EPSILON);
+    float gate = 1.0f;
 
     float ang   = max(0.0f, cos(max(theta_prime, 0.0f)));
     float invd2 = isGlobalLight ? 1.0f : (1.0f / (d * d));
@@ -101,11 +51,11 @@ inline float LT_NodeImportance_Common(float3 x, float3 n,
 
 inline float LT_NodeImportance_TLAS(LightTLASNodeGpu n, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, /*isGlobal*/false, 1.0f);
+    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, /*isGlobal*/false, 0.0001f);
 }
 inline float LT_NodeImportance_BLAS(LightBLASNodeGpu n, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, false, 0.00001f);
+    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, false, 0.0001f);
 }
 
 inline float LT_BranchProb(float wL, float wR, float PL, float PR)

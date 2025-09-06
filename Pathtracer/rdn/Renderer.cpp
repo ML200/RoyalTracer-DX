@@ -310,7 +310,6 @@ void Renderer::LoadPipeline() {
   }
   if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
     {
-        // Handle error, check the logs
     }
     // Using helpers from sl_dlss.h
     sl::DLSSOptimalSettings dlssSettings;
@@ -395,7 +394,7 @@ void Renderer::LoadPipeline() {
 }
 
 void Renderer::LoadAssets() {
-  {
+  /*{
     CD3DX12_ROOT_PARAMETER constantParameter;
     CD3DX12_DESCRIPTOR_RANGE range;
     range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
@@ -403,12 +402,12 @@ void Renderer::LoadAssets() {
                                             D3D12_SHADER_VISIBILITY_ALL);
     CD3DX12_ROOT_PARAMETER matricesParameter;
     CD3DX12_DESCRIPTOR_RANGE matricesRange;
-    matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /* desc count*/,
-                       0 /*register*/, 0 /*space*/, 1 /*heap slot*/);
+    matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 ,
+                       0 , 0 , 1 );
     matricesParameter.InitAsDescriptorTable(1, &matricesRange,
                                             D3D12_SHADER_VISIBILITY_ALL);
     CD3DX12_ROOT_PARAMETER indexParameter;
-    indexParameter.InitAsConstants(1 /*value count*/, 1 /*register*/);
+    indexParameter.InitAsConstants(1 , 1);
 
     std::vector<CD3DX12_ROOT_PARAMETER> params = {
         constantParameter, matricesParameter, indexParameter};
@@ -425,9 +424,9 @@ void Renderer::LoadAssets() {
     ThrowIfFailed(m_device->CreateRootSignature(
         0, signature->GetBufferPointer(), signature->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
-  }
+  }*/
 
-  {
+  /*{
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
@@ -471,14 +470,14 @@ void Renderer::LoadAssets() {
 
     ThrowIfFailed(m_device->CreateGraphicsPipelineState(
         &psoDesc, IID_PPV_ARGS(&m_pipelineState)));
-  }
+  }*/
 
   ThrowIfFailed(m_device->CreateCommandList(
       0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
-      m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
+      nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"city_v2.obj", "smoothMonke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"city_v3.obj", "smoothMonke.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -539,15 +538,15 @@ void Renderer::LoadAssets() {
 }
 
 void Renderer::OnInitTransform() {
-    XMMATRIX scale        = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 200.f, -100.0f); // centre.y = 1
+    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 2.f, -100.0f); // centre.y = 1
 
     m_instances[2].second = scale * selfRotation * translate;
 
     XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 2.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 4.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
@@ -1101,7 +1100,7 @@ void Renderer::CreateAccelerationStructures() {
 
     // Build & upload light tree
     lt::LightTreeBuilder::Settings cfg;
-    cfg.maxLeafTris = 4;
+    cfg.maxLeafTris = 16;
     cfg.useTwoLevel = true;
 
     // Build per‑instance object→world matrices for the light tree
