@@ -160,7 +160,7 @@ inline void SampleBRDF_GGX(
     sample = reflect(-V, H);
 
     if(dot(sample, normal) < 0.0f)
-        sample = - sample;
+        sample = float3(0,0,0);
 }
 
 

@@ -5,6 +5,8 @@ cbuffer Push : register(b1)
 
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
+#define IMG_W        (gImageSize.x)
+#define IMG_H        (gImageSize.y)
 
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
 
@@ -39,7 +41,16 @@ StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
 StructuredBuffer<float>               g_AliasProb       : register(t7);
 StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
+// Light tree
+StructuredBuffer<LightTLASNodeGpu> gLT_TLAS        : register(t9);
+StructuredBuffer<LightBLASNodeGpu> gLT_BLAS        : register(t10);
+StructuredBuffer<BlasRangeGpu>     gLT_Range       : register(t11);
+Buffer<uint>                       gLT_LeafTriIndex: register(t12);
+Buffer<float>                      gLT_LeafAliasProb : register(t13);
+Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
+
 // Needs access to all structured/random buffers
+#include "LightTree_v7.hlsli"
 #include "Sample_data.hlsli"
 #include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
@@ -62,6 +73,7 @@ cbuffer CameraParams : register(b0)
 #include "Reservoir_GI_v7.hlsli"
 #include "Inline_RT.hlsli"
 #include "Motion_vectors_v7.hlsli"
+#include "HashGrid_v7.hlsli"
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
@@ -90,7 +102,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 prevAvg     = prev.rgb;
     float  prevSamples = prev.a;
 
-    // --- online running average --------------------------------------------------
     float3 newAvg;
     float  newSamples;
     if (cameraChanged)
@@ -101,7 +112,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
     else
     {
-        newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);   // clamp N
+        newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);
         float invN  = 1.0h / newSamples;
         newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
@@ -111,8 +122,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);
-    //gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
+    gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
 
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
+
+    // ── grid debug slice along the primary ray (compile-time toggled) ────────
+    /*uint2  launchIndex   = DTid.xy;
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, launchIndex);
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    float3 col = sdata.n1;
+    gOutput[uint3(DTid.xy, 0)] = float4(col, 1);
+    return;*/
 }

@@ -1,3 +1,6 @@
+StructuredBuffer<uint> gTriToLightId : register(t15);
+
+
 #ifndef ENABLE_RAY_QUERY_INLINE
 // The remaining functions remain unchanged.
 float VisibilityCheck(
@@ -31,10 +34,10 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     float  len = length(L - P);
 
     RayDesc ray;
-    ray.Origin    = P + normalize(N) * EPSILON;            // ← offset *along ray*
+    ray.Origin    = P + normalize(N) * SBIAS * 0.5f;            // ← offset *along ray*
     ray.Direction = dir;
     ray.TMin      = EPSILON;
-    ray.TMax      = max(len - EPSILON*10.0f, 2.0f*EPSILON);
+    ray.TMax      = max(len - SBIAS * 4.0f - EPSILON * 10.0f, 2.0f * EPSILON);
 
     RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
               //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES
@@ -114,29 +117,21 @@ inline void EvalSurface(
 }
 
 
-// Works in any shader stage that supports RayQuery (cs_6_6 / cs_6_7)
 inline bool TraceRayInline_HitInfo(
     RaytracingAccelerationStructure SceneBVH,
-    RayDesc                      ray,
-    out HitInfo                  hit,
-    uint                         rayFlags      = RAY_FLAG_NONE,
-    uint                         instanceMask  = 0xFF)
+    RayDesc ray,
+    out HitInfo hit,
+    uint rayFlags = RAY_FLAG_NONE,
+    uint instanceMask = 0xFF)
 {
-    RayQuery< RAY_FLAG_NONE /* query template flags   */
-             /* add SKIP_PROCEDURAL, CULL_NON_OPAQUE … here if desired */ > rq;
-
+    RayQuery<RAY_FLAG_NONE> rq;
     rq.TraceRayInline(SceneBVH, rayFlags, instanceMask, ray);
-
-    // Drive the query to completion
     while (rq.Proceed());
 
     if (rq.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
-        return false;                         // → miss; payload undefined
+        return false;
 
-    // -------------------------------------------------------------------
-    // Re‑create the CHS payload
-    // -------------------------------------------------------------------
-    float2 bc2    = rq.CommittedTriangleBarycentrics();  // (u,v)
+    float2 bc2    = rq.CommittedTriangleBarycentrics();
     uint   primID = rq.CommittedPrimitiveIndex();
     uint   instID = rq.CommittedInstanceID();
     float  t      = rq.CommittedRayT();
@@ -144,20 +139,22 @@ inline bool TraceRayInline_HitInfo(
     float3 surfPos, surfNormal;
     float  surfArea;
     uint   matID;
-    EvalSurface(instID, primID, bc2,
-                surfPos, surfNormal, surfArea, matID);
+    EvalSurface(instID, primID, bc2, surfPos, surfNormal, surfArea, matID);
 
-    float3 incoming = -ray.Direction;         // vector *towards* the camera
-    if (dot(incoming, surfNormal) < 0.0f)     // < 0 → back‑face
-        surfNormal = -surfNormal;
+    float3 incoming = -ray.Direction;
+    //if (dot(incoming, surfNormal) < 0.0f) surfNormal = -surfNormal;
 
-
-    hit.hitPosition = ray.Origin + t * ray.Direction;    // identical to CHS
+    hit.hitPosition = ray.Origin + t * ray.Direction;
     hit.hitNormal   = surfNormal;
     hit.area        = surfArea;
     hit.materialID  = matID;
     hit.objID       = instID;
 
-    return true;     // hit filled
+    // NEW: (instID, primID) -> global light index, or 0xFFFFFFFF if not emissive
+    uint base   = instanceProps[instID].triToLightBase;
+    uint light  = gTriToLightId[base + primID];
+    hit.lightID = light;
+
+    return true;
 }
 #endif

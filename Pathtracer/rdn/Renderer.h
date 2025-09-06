@@ -26,7 +26,31 @@
 #include <sl_consts.h>     // the sl::kFeature… enum values
 #include <sl_helpers.h>
 #include <sl_dlss.h>       // DLSS Super Resolution API
+
+#include "LightTree.h"
 #include "sl_dlss_d.h"
+
+#include <unordered_map>
+#include <iostream>
+
+// Toggle logs at compile time (define LT_ENABLE_LOGS=0 to silence)
+#ifndef LT_ENABLE_LOGS
+#define LT_ENABLE_LOGS 1
+#endif
+
+// Extra-verbose per-leaf/per-node logs (off by default)
+#ifndef LT_LOG_BUILD_SPAM
+#define LT_LOG_BUILD_SPAM 0
+#endif
+
+#if LT_ENABLE_LOGS
+  #define LT_LOG(expr)  do { std::wcout << L"[LightTree] "      << expr << std::endl; } while(0)
+  #define LT_WARN(expr) do { std::wcout << L"[LightTree][WARN] " << expr << std::endl; } while(0)
+#else
+  #define LT_LOG(expr)  do {} while(0)
+  #define LT_WARN(expr) do {} while(0)
+#endif
+
 
 
 #include "../lib/imgui/imgui.h"
@@ -45,6 +69,8 @@ using Microsoft::WRL::ComPtr;
 class Renderer : public DXSample {
 public:
     void BuildGlobalMeshBuffers();
+
+    void CreateTriToLightIdBuffer();
 
   Renderer(UINT width, UINT height, std::wstring name);
 
@@ -191,7 +217,10 @@ UINT                   m_totalIndexCount  = 0;
 
   void LoadPipeline();
   void LoadAssets();
-  void PopulateCommandList();
+
+    void OnInitTransform();
+
+    void PopulateCommandList();
   void WaitForPreviousFrame();
 
   void CheckRaytracingSupport();
@@ -218,20 +247,6 @@ UINT                   m_totalIndexCount  = 0;
     std::vector<UINT> m_instanceModelIndices;
     std::vector<UINT> m_materialIDOffsets;
 
-    // Structure to hold emissive triangle data
-    struct LightTriangle {
-        XMFLOAT3 x;
-        float    cdf;       // 16 bytes
-        XMFLOAT3 y;
-        UINT     instanceID; // 16 bytes
-        XMFLOAT3 z;
-        float    weight;       // 16 bytes
-        XMFLOAT3 emission;
-        UINT     triCount;   // 16 bytes
-        float    totalWeight;       // 16 bytes
-        XMFLOAT3 pad0;
-    };
-
     // ── ALIAS TABLE (SoA) ───────────────────────────────\n
     std::vector<float> m_aliasProb;
     // probability array (R32_FLOAT)\n
@@ -241,6 +256,8 @@ UINT                   m_totalIndexCount  = 0;
     // default‑heap GPU copies\n
     ComPtr<ID3D12Resource> m_aliasIdxBuffer;
     ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
+
+    lt::LightTreeBuilder m_lightTree;
 
     struct Reservoir_DI
     {
@@ -266,6 +283,11 @@ UINT                   m_totalIndexCount  = 0;
 // Buffer to store emissive triangles
     std::vector<LightTriangle> m_emissiveTriangles;
     ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
+
+    // Per-instance base into the tri->light map and the map itself
+    std::vector<uint32_t>           m_instTriOffset;    // size = #instances
+    std::vector<uint32_t>           m_triToLightId;     // size = sum over instances of tri-count
+    ComPtr<ID3D12Resource>          m_triToLightIdBuffer;
 
 
     /// Create the acceleration structure of an instance
@@ -415,7 +437,7 @@ UINT                   m_totalIndexCount  = 0;
       UINT  indexBase;
       UINT  vertexBase;
       UINT  materialBase;
-      UINT  _pad_;
+      UINT  triToLightBase;
   };
 
     //Frametime
@@ -453,5 +475,5 @@ UINT                   m_totalIndexCount  = 0;
   void CreateAliasBuffers();
 
   float
-    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor);
+    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
 };

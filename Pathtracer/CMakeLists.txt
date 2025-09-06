@@ -51,9 +51,11 @@ add_executable(Pathtracer WIN32
         rdn/manipulator.h
         rdn/stdafx.h
         rdn/Win32Application.h
+        rdn/LightTree.h
         src/Components/Vertex.h
         src/Util/ObjLoader.h
         rdn/Diagnostics.h
+        rdn/LightTree.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────

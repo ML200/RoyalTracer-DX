@@ -40,7 +40,16 @@ StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
 StructuredBuffer<float>               g_AliasProb       : register(t7);
 StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
+// Light tree
+StructuredBuffer<LightTLASNodeGpu> gLT_TLAS        : register(t9);
+StructuredBuffer<LightBLASNodeGpu> gLT_BLAS        : register(t10);
+StructuredBuffer<BlasRangeGpu>     gLT_Range       : register(t11);
+Buffer<uint>                       gLT_LeafTriIndex: register(t12);
+Buffer<float>                      gLT_LeafAliasProb : register(t13);
+Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
+
 // Needs access to all structured/random buffers
+#include "LightTree_v7.hlsli"
 #include "Sample_data.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
