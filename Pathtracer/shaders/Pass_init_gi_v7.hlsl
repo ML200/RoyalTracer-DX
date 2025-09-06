@@ -135,7 +135,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
                     float p_hat = GetPHat(c * tp_full * result.L2);
                     float pdf = result.pdf_nee * pdf_full;
-                    float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;// * VisibilityCheckCP(position, result.x2, normal);
+                    float w_mis = /*MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) */ p_hat / pdf;// * VisibilityCheckCP(position, result.x2, normal);
                     if(isnan(w_mis))
                         w_mis = 0.0f;
 
@@ -182,10 +182,10 @@ void main(uint3 tid : SV_DispatchThreadID)
                         L2 *= G_term(normal, V2_norm);
                     }
                     // Update reservoir with the sub path
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0,0, seed)){
+                    /*if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0,0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
-                    }
+                    }*/
                     break;
                 }
                 else{

@@ -189,7 +189,7 @@ bool valid =
                 rdi.W_gi = 0.0f;
 
             // Store the merged reservoir
-            storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+            //storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
             //}
         }
     }
