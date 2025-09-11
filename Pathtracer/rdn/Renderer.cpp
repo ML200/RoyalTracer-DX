@@ -8,9 +8,10 @@
 // PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
 //
 //*********************************************************
+#define ENABLE_D3D12_DIAGNOSTICS        1
 #include <chrono>
 #include "stdafx.h"
-#include <unordered_map>          // NEW
+#include <unordered_map>
 #include "Renderer.h"
 
 #include "DXRHelper.h"
@@ -23,13 +24,163 @@
 #include "glm/gtc/type_ptr.hpp"
 #include "manipulator.h"
 #include "../src/Util/ObjLoader.h"
+#include "Diagnostics.h"
 
-// This is a static/global to store the last time we actually rendered a frame.
+void DumpD3D12Messages(ID3D12Device* device)
+{
+    ComPtr<ID3D12InfoQueue> info;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&info)))) {
+        std::wcout << L"No debug layer." << std::endl;
+        return;
+    }
+
+    const UINT64 n = info->GetNumStoredMessages();
+    for (UINT64 i = 0; i < n; ++i)
+    {
+        SIZE_T size = 0;
+        info->GetMessage(i, nullptr, &size);      // get required size
+        std::vector<char> bytes(size);
+        auto* msg = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+        info->GetMessage(i, msg, &size);          // get the message
+
+        std::wcout << L"[D3D12] " << msg->pDescription << std::endl;
+    }
+    info->ClearStoredMessages();
+}
+
 static std::chrono::steady_clock::time_point g_lastRenderTime
     = std::chrono::steady_clock::now();
-
-// Our desired interval: 1 frame every 5 seconds => 0.2 FPS
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
+
+extern "C" {
+    __declspec(dllexport) extern const UINT  D3D12SDKVersion = 717;
+    __declspec(dllexport) extern const char* D3D12SDKPath    = ".\\";
+}
+
+void Renderer::BuildGlobalMeshBuffers()
+{
+    m_geoOffsets.clear();
+    std::vector<BTriVertex>    flatVerts;
+    std::vector<uint32_t>      flatIdx;
+
+    for (size_t m = 0; m < m_VB.size(); ++m)
+    {
+        GeometryOffsets go{};
+        go.vertexBase = static_cast<UINT>(flatVerts.size()); // before we push verts
+        go.indexBase  = static_cast<UINT>(flatIdx .size());  // before we push indices
+        go.materialBase = m_materialIDOffsets[m];
+        // ----- 1) copy vertices ------------------------------------------------
+        Vertex* srcVerts = nullptr;
+        {   CD3DX12_RANGE r(0,0);
+            m_VB[m]->Map(0,&r, reinterpret_cast<void**>(&srcVerts));
+            for (UINT i=0;i<m_VertexCount[m];++i)
+            {
+                BTriVertex out{};
+                out.vertex = srcVerts[i].position;
+                out.normal.x = srcVerts[i].normal_material.x;           // .w already = matID
+                out.normal.y = srcVerts[i].normal_material.y;           // .w already = matID
+                out.normal.z = srcVerts[i].normal_material.z;           // .w already = matID
+                flatVerts.push_back(out);
+            }
+            m_VB[m]->Unmap(0,nullptr);
+        }
+
+        // ----- 2) copy & re‑base indices --------------------------------------
+        uint32_t firstVert = static_cast<uint32_t>(flatVerts.size())
+                             - m_VertexCount[m];
+        uint32_t* srcIdx = nullptr;
+        {   CD3DX12_RANGE r(0,0);
+            m_IB[m]->Map(0,&r, reinterpret_cast<void**>(&srcIdx));
+            for (UINT i=0;i<m_IndexCount[m]; ++i)
+                flatIdx.push_back(srcIdx[i] + firstVert);  // re‑base
+            m_IB[m]->Unmap(0,nullptr);
+        }
+        m_geoOffsets.push_back(go);
+    }
+
+    m_totalVertexCount = static_cast<UINT>(flatVerts.size());
+    m_totalIndexCount  = static_cast<UINT>(flatIdx .size());
+
+    // ---- create default‑heap buffers and upload once -------------------------
+    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst)
+    {
+        dst = nv_helpers_dx12::CreateBuffer(
+              m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+              D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+    };
+
+    const UINT vbBytes = m_totalVertexCount*sizeof(BTriVertex);
+    const UINT ibBytes = m_totalIndexCount *sizeof(uint32_t);
+
+    makeDefault(vbBytes, m_vertexGlobal);
+    makeDefault(ibBytes, m_indexGlobal);
+
+    // single staging upload buffer for both
+    ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), vbBytes+ibBytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    // copy data into the upload heap
+    {
+        uint8_t* p;  CD3DX12_RANGE r(0,0);
+        upload->Map(0,&r,reinterpret_cast<void**>(&p));
+        memcpy(p,                         flatVerts.data(), vbBytes);
+        memcpy(p + vbBytes,               flatIdx .data(), ibBytes);
+        upload->Unmap(0,nullptr);
+    }
+
+    // record copy commands
+    m_commandList->CopyBufferRegion(m_vertexGlobal.Get(),0, upload.Get(),0,         vbBytes);
+    m_commandList->CopyBufferRegion(m_indexGlobal .Get(),0, upload.Get(),vbBytes,   ibBytes);
+
+    CD3DX12_RESOURCE_BARRIER br[] =
+    {
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ),
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_indexGlobal.Get(),  D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_GENERIC_READ)
+    };
+    m_commandList->ResourceBarrier(_countof(br), br);
+}
+
+static inline InstanceXformCPU ToInstanceXform(const DirectX::XMMATRIX& M)
+{
+    InstanceXformCPU x{};
+    XMStoreFloat4x4(&x.objectToWorld, M);   // no transpose needed
+    return x;
+}
+
+void Renderer::CreateTriToLightIdBuffer()
+{
+    if (m_triToLightId.empty()) return;
+
+    const UINT bytes = static_cast<UINT>(m_triToLightId.size() * sizeof(uint32_t));
+
+    // Upload
+    ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+
+    {   void* p = nullptr; CD3DX12_RANGE r(0,0);
+        ThrowIfFailed(upload->Map(0, &r, &p));
+        memcpy(p, m_triToLightId.data(), bytes);
+        upload->Unmap(0, nullptr);
+    }
+
+    // Default
+    m_triToLightIdBuffer = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+        D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+
+    m_commandList->CopyBufferRegion(m_triToLightIdBuffer.Get(), 0, upload.Get(), 0, bytes);
+
+    CD3DX12_RESOURCE_BARRIER br = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+    m_commandList->ResourceBarrier(1, &br);
+}
+
 
 
 Renderer::Renderer(UINT width, UINT height,
@@ -42,156 +193,100 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Pass_init_di_v7.hlsl|rg",
+        L"Pass_init_di_v7.hlsl|cs:16x8",
         L"barrier",
-        L"Pass_init_gi_v7.hlsl|rg",
+        L"Pass_init_gi_v7.hlsl|cs:16x8",
         L"barrier",
-        L"Pass_temp_di_v7.hlsl|cs:8x4",
+        L"Pass_temp_di_v7.hlsl|cs:16x8",
+        L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
+        L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_shading_v7.hlsl|cs:8x4",
+        L"Pass_shading_v7.hlsl|cs:16x16",
+        /*L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl|cs:16x16",
+        L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
+        L"barrier",*/
+        //L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
+        //L"barrier",
+        //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
     /*m_passSequence = {
-        L"RayGen_v6_pass1.hlsl",
+        L"RayGen_v6_pass1.hlsl|rg",
         L"barrier",
-        L"RayGen_v6_pass2.hlsl",
+        L"RayGen_v6_pass2.hlsl|rg",
         L"barrier",
-        L"RayGen_v6_pass3.hlsl"
+        L"RayGen_v6_pass3.hlsl|rg"
     };*/
 
     for (auto& s : m_passSequence)
         m_passes.push_back(ParsePass(s));
 }
 
-
 void Renderer::OnInit() {
 
   nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
   nv_helpers_dx12::CameraManip.setLookat(
       glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
+    nv_helpers_dx12::CameraManip.setMode(
+    nv_helpers_dx12::Manipulator::Fly);   // <- **FPS mode**
+    nv_helpers_dx12::CameraManip.setSpeed(0.0f);
 
   LoadPipeline();
   LoadAssets();
-
-  // Check the raytracing capabilities of the device
   CheckRaytracingSupport();
 
-  // Setup the acceleration structures (AS) for raytracing. When setting up
-  // geometry, each bottom-level AS has its own transform matrix.
   CreateAccelerationStructures();
+    BuildGlobalMeshBuffers();
+    ThrowIfFailed(m_commandList->Close());
 
-  // Command lists are created in the recording state, but there is
-  // nothing to record yet. The main loop expects it to be closed, so
-  // close it now.
-  ThrowIfFailed(m_commandList->Close());
-
-  // Create the raytracing pipeline, associating the shader code to symbol names
-  // and to their root signatures, and defining the amount of memory carried by
-  // rays (ray payload)
-  CreateRaytracingPipeline(); // #DXR
-
-  // #DXR Extra: Per-Instance Data
+    // **NEW**: execute and wait for the upload to finish
+    ID3D12CommandList* initLists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(_countof(initLists), initLists);
+    WaitForPreviousFrame();
+  CreateRaytracingPipeline();
   CreatePerInstanceConstantBuffers();
-
-  // #DXR Extra: Per-Instance Data
-  // Create a constant buffers, with a color for each vertex of the triangle,
-  // for each triangle instance
   CreateGlobalConstantBuffer();
-
-  // Allocate the buffer storing the raytracing output, with the same dimensions
-  // as the target image
-  CreateRaytracingOutputBuffer(); // #DXR
-
-  // #DXR Extra - Refitting
+  CreateRaytracingOutputBuffer();
   CreateInstancePropertiesBuffer();
-
-  // #DXR Extra: Perspective Camera
-  // Create a buffer to store the modelview and perspective camera matrices
   CreateCameraBuffer();
-
-  // Create the buffer containing the raytracing result (always output in a
-  // UAV), and create the heap referencing the resources used by the raytracing,
-  // such as the acceleration structure
-  CreateShaderResourceHeap(); // #DXR
-
-  // Create the shader binding table and indicating which shaders
-  // are invoked for each instance in the  AS
+  CreateShaderResourceHeap();
   CreateShaderBindingTable();
-
     slGetNewFrameToken(m_frameToken, nullptr);   // token is valid forever, SL recycles it internally
-
-
-
-
 }
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
-    // 3.1 Build the preferences
+    #if ENABLE_D3D12_DIAGNOSTICS
+        dxdiag::EnableDebugLayerAndDred();
+    #endif
+
     sl::Preferences pref{};
     pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
               sl::PreferenceFlags::eLoadDownloadedPlugins;
     static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
     pref.featuresToLoad    = featList;
     pref.numFeaturesToLoad = _countof(featList);
-
-    // 3.2 Initialize Streamline and give it our D3D12 device
-    slInit(pref, sl::kSDKVersion);                             // :contentReference[oaicite:0]{index=0}
+    slInit(pref, sl::kSDKVersion);
 
   UINT dxgiFactoryFlags = 0;
-    // These are the exports from SL library
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory1)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunDXGIGetDebugInterface1)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown* , D3D_FEATURE_LEVEL, REFIID , void**);
-
-/*#if defined(_DEBUG)
-    // ── CPU-side debug layer (what you already had) ──────────────────────────
-    {
-        ComPtr<ID3D12Debug> debug;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
-            debug->EnableDebugLayer();
-    }
-
-    // ── GPU-based validation (catches “bad descriptor ↔ shader access” bugs) ─
-    {
-        ComPtr<ID3D12Debug1> debug1;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug1))))
-        {
-            // Full validation on every queue-submit
-            debug1->SetEnableGPUBasedValidation(TRUE);
-
-            // Optional but handy: forces an immediate GPU sync when an error
-            // is detected so the call-stack in the debugger matches the error
-            debug1->SetEnableSynchronizedCommandQueueValidation(TRUE);
-        }
-    }
-
-    // This flag only affects the *factory* creation – keep it if you already
-    // had it for live object reporting, otherwise you may drop it.
-    dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-#endif*/
-
-
-    // Map functions from SL and use them instead of standard DXGI/D3D12 API
     auto slCreateDXGIFactory = reinterpret_cast<PFunCreateDXGIFactory>(GetProcAddress(m_mod, "CreateDXGIFactory"));
     auto slCreateDXGIFactory1 = reinterpret_cast<PFunCreateDXGIFactory1>(GetProcAddress(m_mod, "CreateDXGIFactory1"));
     auto slCreateDXGIFactory2 = reinterpret_cast<PFunCreateDXGIFactory2>(GetProcAddress(m_mod, "CreateDXGIFactory2"));
     auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
-
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -209,25 +304,22 @@ void Renderer::LoadPipeline() {
     ThrowIfFailed(slD3D12CreateDevice(hardwareAdapter.Get(),
                                     D3D_FEATURE_LEVEL_12_1,
                                     IID_PPV_ARGS(&m_device)));
+    #if ENABLE_D3D12_DIAGNOSTICS
+          dxdiag::HookDevice(m_device.Get());
+    #endif
   }
   if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
-{
-    // Handle error, check the logs
-}
-
-
+    {
+    }
     // Using helpers from sl_dlss.h
     sl::DLSSOptimalSettings dlssSettings;
     sl::DLSSOptions dlssOptions;
     dlssOptions.mode = sl::DLSSMode::eDLAA;
-    dlssOptions.outputWidth = 1920;
-    dlssOptions.outputHeight = 1080;
+    dlssOptions.outputWidth = m_width;
+    dlssOptions.outputHeight = m_height;
     slDLSSGetOptimalSettings(dlssOptions, dlssSettings);
     std::wcout << L"DLSS settings: " << dlssSettings.renderHeightMax << std::endl;
 
-
-
-  // Describe and create the command queue.
   D3D12_COMMAND_QUEUE_DESC queueDesc = {};
   queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
   queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -247,17 +339,21 @@ void Renderer::LoadPipeline() {
 
   ComPtr<IDXGISwapChain1> swapChain;
   ThrowIfFailed(factory->CreateSwapChainForHwnd(
-      m_commandQueue.Get(), // Swap chain needs the queue so that it can force a
-                            // flush on it.
+      m_commandQueue.Get(),
       Win32Application::GetHwnd(), &swapChainDesc, nullptr, nullptr,
       &swapChain));
-
-  // This sample does not support fullscreen transitions.
   ThrowIfFailed(factory->MakeWindowAssociation(Win32Application::GetHwnd(),
                                                DXGI_MWA_NO_ALT_ENTER));
 
   ThrowIfFailed(swapChain.As(&m_swapChain));
   m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+    if(!m_viewportHandle)
+    {
+        slAllocateResources(
+            /*cmdList*/  nullptr,
+            /*feature*/  sl::kFeatureDLSS,
+            /*out*/      m_viewportHandle);
+    }
 
   // Create descriptor heaps.
   {
@@ -288,46 +384,31 @@ void Renderer::LoadPipeline() {
     }
   }
 
-  ThrowIfFailed(m_device->CreateCommandAllocator(
-      D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
-
-  // #DXR Extra: Depth Buffering
-  // The original sample does not support depth buffering, so we need to
-  // allocate a depth buffer, and later bind it before rasterization
+    for (UINT n = 0; n < FrameCount; ++n)
+    {
+        ThrowIfFailed(m_device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(&m_commandAllocators[n])));
+    }
   CreateDepthBuffer();
 }
 
-// Load the sample assets.
 void Renderer::LoadAssets() {
-  // Create an empty root signature.
-  {
-    // #DXR Extra: Perspective Camera
-    // The root signature describes which data is accessed by the shader. The
-    // camera matrices are held in a constant buffer, itself referenced the
-    // heap. To do this we reference a range in the heap, and use that range as
-    // the sole parameter of the shader. The camera buffer is associated in the
-    // index 0, making it accessible in the shader in the b0 register.
+  /*{
     CD3DX12_ROOT_PARAMETER constantParameter;
     CD3DX12_DESCRIPTOR_RANGE range;
     range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
     constantParameter.InitAsDescriptorTable(1, &range,
                                             D3D12_SHADER_VISIBILITY_ALL);
-
-    // #DXR Extra - Refitting
-    // Per-instance properties buffer
     CD3DX12_ROOT_PARAMETER matricesParameter;
     CD3DX12_DESCRIPTOR_RANGE matricesRange;
-    matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /* desc count*/,
-                       0 /*register*/, 0 /*space*/, 1 /*heap slot*/);
+    matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 ,
+                       0 , 0 , 1 );
     matricesParameter.InitAsDescriptorTable(1, &matricesRange,
                                             D3D12_SHADER_VISIBILITY_ALL);
-
-    // #DXR Extra - Refitting
-    // Per-instance properties index for the current geometry
     CD3DX12_ROOT_PARAMETER indexParameter;
-    indexParameter.InitAsConstants(1 /*value count*/, 1 /*register*/);
+    indexParameter.InitAsConstants(1 , 1);
 
-    // #DXR Extra - Refitting
     std::vector<CD3DX12_ROOT_PARAMETER> params = {
         constantParameter, matricesParameter, indexParameter};
 
@@ -343,15 +424,13 @@ void Renderer::LoadAssets() {
     ThrowIfFailed(m_device->CreateRootSignature(
         0, signature->GetBufferPointer(), signature->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
-  }
+  }*/
 
-  // Create the pipeline state, which includes compiling and loading shaders.
-  {
+  /*{
     ComPtr<ID3DBlob> vertexShader;
     ComPtr<ID3DBlob> pixelShader;
 
 #if defined(_DEBUG)
-    // Enable better shader debugging with the graphics debugging tools.
     UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
 #else
     UINT compileFlags = 0;
@@ -364,14 +443,12 @@ void Renderer::LoadAssets() {
                                      nullptr, nullptr, "PSMain", "ps_5_0",
                                      compileFlags, 0, &pixelShader, nullptr));
 
-    // Define the vertex input layout.
     D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
         {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
 
-    // Describe and create the graphics pipeline state object (PSO).
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.InputLayout = {inputElementDescs, _countof(inputElementDescs)};
     psoDesc.pRootSignature = m_rootSignature.Get();
@@ -386,29 +463,22 @@ void Renderer::LoadAssets() {
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
     psoDesc.SampleDesc.Count = 1;
-    // #DXR Extra: Depth Buffering
-    // Add support for depth testing, using a 32-bit floating-point depth buffer
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-    // #DXR Extra - Refitting
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
     ThrowIfFailed(m_device->CreateGraphicsPipelineState(
         &psoDesc, IID_PPV_ARGS(&m_pipelineState)));
-  }
+  }*/
 
-  // Create the command list.
   ThrowIfFailed(m_device->CreateCommandList(
-      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(),
-      m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
+      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
+      nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"garage.obj", "monke.obj"};
-
-
-
-    //Iterate through the models in the scene (currently one hardcoded, later provided by list)
+    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
+    //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
     }
@@ -463,16 +533,66 @@ void Renderer::LoadAssets() {
     if (m_fenceEvent == nullptr) {
       ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
     }
-
-    // Wait for the command list to execute; we are reusing the same command
-    // list in our main loop but for now, we just want to wait for setup to
-    // complete before continuing.
     WaitForPreviousFrame();
   }
 }
 
+void Renderer::OnInitTransform() {
+    XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 2.f, -4.0f); // centre.y = 1
+
+    m_instances[2].second = scale * selfRotation * translate;
+
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 0.f);
+
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+
+    XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
+
+    m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;
+}
+
 // Update frame-based values.
 void Renderer::OnUpdate() {
+    using clock   = std::chrono::high_resolution_clock;
+    static auto tPrev = clock::now();
+
+    auto  tCurr = clock::now();
+    float dt    =
+        std::chrono::duration<float>(tCurr - tPrev).count(); // seconds
+    tPrev = tCurr;
+
+    //----------------------------------------------------------
+    //  WASD + Ctrl/Space translation
+    //----------------------------------------------------------
+    glm::vec3 eye, center, up;
+    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+
+    glm::vec3 fwd   = glm::normalize(center - eye);
+    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+
+    glm::vec3 move(0.0f);
+    float     speed = 50.0f;                // metres/second
+
+    if (g_keys['W'])          move +=  fwd;
+    if (g_keys['S'])          move -=  fwd;
+    if (g_keys['D'])          move +=  right;
+    if (g_keys['A'])          move -=  right;
+    if (g_keys[VK_SPACE])     move +=  up;
+    if (g_keys[VK_CONTROL])   move -=  up;
+
+    if (glm::length(move) > 0.0f)
+    {
+        move = glm::normalize(move) * (speed * dt);
+        eye    += move;
+        center += move;
+        nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
+    }
   // #DXR Extra: Perspective Camera
   UpdateCameraBuffer();
 
@@ -485,30 +605,33 @@ void Renderer::OnUpdate() {
       XMMatrixRotationAxis({0.f, 1.f, 0.f},*/
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
-    float oscillation = sinf(static_cast<float>(m_time) * 0.001f) * 2.0f; // amplitude = 2.0 units
 
-    XMMATRIX scaleMatrix = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix = XMMatrixTranslation(1.f, 1.f, 0.f);
+    /*float angle = static_cast<float>(m_time) * 0.00f;
+    float r     = 4.0f;
 
-    m_instances[1].second = scaleMatrix * rotationMatrix * translationMatrix;
+    float x = 4.0f;//cosf(angle) * r + 1.0f;   // + centre.x
+    float z = 4.0f;//sinf(angle) * r + 0.0f;   // + centre.z
+
+    XMMATRIX scale        = XMMatrixScaling(0.5f, 0.5f, 0.5f);
+    XMMATRIX selfRotation = XMMatrixRotationY(angle);
+    XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
+
+    m_instances[2].second = scale * selfRotation * translate;
+
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 1.f);
+
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+
+    XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
+
+    m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;*/
   // #DXR Extra - Refitting
   UpdateInstancePropertiesBuffer();
 }
-
-/*void Renderer::OnRender() {
-    // Record all the commands we need to render the scene into the command list.
-    PopulateCommandList();
-
-    // Execute the command list.
-    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-    // Present the frame
-    ThrowIfFailed(m_swapChain->Present(1, 0));
-
-    // Wait for the frame to finish
-    WaitForPreviousFrame();
-}*/
 
 void Renderer::OnRender()
 {
@@ -548,43 +671,10 @@ void Renderer::OnRender()
         s_frameCount = 0;
         s_lastTime = currentTime;
     }
+    #if ENABLE_D3D12_DIAGNOSTICS
+        dxdiag::DumpNewMessages();             // prints any warnings/errors this frame
+    #endif
 }
-
-/*void Renderer::OnRender()
-{
-    using namespace std::chrono;
-
-    // 1) Check how long it's been since we last rendered.
-    auto now = steady_clock::now();
-    float elapsedSec = duration<float>(now - g_lastRenderTime).count();
-
-    // 2) If < 5 seconds have passed, skip GPU work entirely -> GPU stays idle.
-    if (elapsedSec < 0.001f)
-    {
-        // Optional: You can still process input messages or do CPU tasks,
-        // but skip issuing any GPU commands or calls to Present().
-        return;
-    }
-
-    // 3) Otherwise, it's time for a new frame -> do the normal render steps.
-
-    // Record the time we last rendered
-    g_lastRenderTime = now;
-
-    // [A] Record GPU commands
-    PopulateCommandList();
-
-    // [B] Execute them
-    ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
-    // [C] Present the frame (1, 0)
-    ThrowIfFailed(m_swapChain->Present(1, 0));
-
-    // [D] Wait for GPU to finish (or use your existing fence logic)
-    WaitForPreviousFrame();
-}*/
-
 
 void Renderer::OnDestroy() {
   // Ensure that the GPU is no longer referencing resources that are about to be
@@ -601,13 +691,17 @@ void Renderer::OnDestroy() {
 void Renderer::PopulateCommandList()
 {
     // 1) Reset allocator & list
-    ThrowIfFailed(m_commandAllocator->Reset());
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    auto* allocator = m_commandAllocators[m_frameIndex].Get();
+    ThrowIfFailed(allocator->Reset());
+    ThrowIfFailed(m_commandList->Reset(
+            allocator, m_pipelineState.Get()));
 
     // 2) Graphics setup: signature, viewports, RTV/DSV
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->RSSetViewports(1, &m_viewport);
     m_commandList->RSSetScissorRects(1, &m_scissorRect);
+
+
 
     // Transition backbuffer PRESENT->RENDER_TARGET
     {
@@ -632,6 +726,7 @@ void Renderer::PopulateCommandList()
         ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
         m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
     }
+
 
     // 5) Prepare raytracing descriptors
     D3D12_DISPATCH_RAYS_DESC raysDesc{};
@@ -701,17 +796,38 @@ void Renderer::PopulateCommandList()
 
         case Stage::Compute:
             {
+                if (p.isWorkGraph)
+                {   // -------- Work-Graph path ------------------------------------
+                    const uint32_t wgIndex = p.wgIdx;
+                    const auto& rt = m_wgRuntime[wgIndex];   // which graph you want to run
+
+                    D3D12_SET_PROGRAM_DESC setProg{};
+                    setProg.Type                        = D3D12_PROGRAM_TYPE_WORK_GRAPH;
+                    setProg.WorkGraph.ProgramIdentifier = rt.id;
+                    setProg.WorkGraph.BackingMemory     = rt.backing;
+
+                    // Initialise the graph only the **first** time you bind it this frame
+                    setProg.WorkGraph.Flags = D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
+                    m_commandList->SetProgram(&setProg);
+
+                    // 6-b) dispatch – single “record” into entrypoint 0
+                    D3D12_DISPATCH_GRAPH_DESC dg{};
+                    dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
+                    dg.NodeCPUInput.EntrypointIndex      = 0;
+                    dg.NodeCPUInput.NumRecords           = 1;
+                    dg.NodeCPUInput.pRecords             = nullptr;
+                    dg.NodeCPUInput.RecordStrideInBytes  = 0;   // replicate the one record
+                    m_commandList->DispatchGraph(&dg);
+
+                    break;
+                }
                 // switch to CS PSO + bind its root signature
                 m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 m_commandList->SetComputeRootSignature(m_computeSignature.Get());
-
-                // descriptor‐table + two constants for compute
-                m_commandList->SetComputeRootDescriptorTable(
-                   0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+                m_commandList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
                 UINT imSize[2] = { GetWidth(), GetHeight() };
                 m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
 
-                // dispatch
                 uint32_t gx = (GetWidth()  + p.groupX - 1) / p.groupX;
                 uint32_t gy = (GetHeight() + p.groupY - 1) / p.groupY;
                 m_commandList->Dispatch(gx, gy, 1);
@@ -719,6 +835,8 @@ void Renderer::PopulateCommandList()
             break;
         }
     }
+
+
 
     // 8) Copy ray-output -> backbuffer and barrier back to RT/PRESENT
     {
@@ -779,6 +897,9 @@ void Renderer::WaitForPreviousFrame() {
   }
 
   m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+#if ENABLE_D3D12_DIAGNOSTICS
+    dxdiag::CheckDeviceRemoved(m_device.Get());   // dumps reason + breadcrumbs
+#endif
 }
 
 void Renderer::CheckRaytracingSupport() {
@@ -787,12 +908,19 @@ void Renderer::CheckRaytracingSupport() {
                                               &options5, sizeof(options5)));
   if (options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
     throw std::runtime_error("Raytracing not supported on device");
+
 }
 
 //-----------------------------------------------------------------------------
 //
 //
+// Renderer.cpp
+void Renderer::OnKeyDown(UINT8 key)
+{
+    g_keys[key] = true;
+}
 void Renderer::OnKeyUp(UINT8 key) {
+    g_keys[key] = false;
     // Check if a specific key (e.g., 'C' for cycle) is pressed
     if (key == 'C') {
         m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
@@ -965,12 +1093,29 @@ void Renderer::CreateAccelerationStructures() {
         m_instances.emplace_back(buffers.pResult, XMMatrixIdentity());
         m_instanceModelIndices.push_back(static_cast<UINT>(i));
     }
+    OnInitTransform();
   CreateTopLevelAS(m_instances);
     // Collect emissive triangles
     CollectEmissiveTriangles();
 
+    // Build & upload light tree
+    lt::LightTreeBuilder::Settings cfg;
+    cfg.maxLeafTris = 4;
+    cfg.useTwoLevel = true;
+
+    // Build per‑instance object→world matrices for the light tree
+    std::vector<InstanceXformCPU> ltXforms;
+    ltXforms.reserve(m_instances.size());
+    for (size_t i = 0; i < m_instances.size(); ++i)
+        ltXforms.push_back(ToInstanceXform(m_instances[i].second));
+
+    // Use the overload that takes transforms
+    m_lightTree.Build(m_emissiveTriangles, ltXforms, cfg);
+    m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());
+
     // Create buffer for emissive triangles
     CreateEmissiveTrianglesBuffer();
+    CreateTriToLightIdBuffer();
 
     // Build & upload alias table ---------------------------------------------
     BuildAliasTableSoA(m_emissiveTriangles);
@@ -986,12 +1131,16 @@ void Renderer::CreateAccelerationStructures() {
   m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
   WaitForSingleObject(m_fenceEvent, INFINITE);
 
+    m_lightTree.ReleaseStaging();
+
+
   // Once the command list is finished executing, reset it to be reused for
   // rendering
-  ThrowIfFailed(
-      m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
+    ThrowIfFailed(
+            m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(),
+                                 m_pipelineState.Get()));
 
-  // Store the AS buffers. The rest of the buffers will be released once we exit
+    // Store the AS buffers. The rest of the buffers will be released once we exit
   // the function
   //m_bottomLevelAS = bottomLevelBuffers.pResult;
 }
@@ -1022,9 +1171,25 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
                     {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
+                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 }, // gLT_TLAS
+                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 }, // gLT_BLAS
+                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 }, // gLT_Range
+                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 }, // gLT_LeafTriIndex
+                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 }, // gLT_LeafAliasProb
+                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 }, // gLT_LeafAliasIdx
+                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
+                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
+                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
+                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
             }
     );
+    rsc.AddRootParameter(
+        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        /* shaderRegister = */ 1,   //  b1
+        /* registerSpace  = */ 0,
+        /* numConstants   = */ 2);  //  uint2
 
     return rsc.Generate(m_device.Get(), true);
 }
@@ -1038,6 +1203,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
                     {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
                     {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
                     {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
+                    {1 /*t1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18},   // <‑ indices[]
+                    {2 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 19},   // <‑ BTriVertex[]
                     {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
                     {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
                     {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
@@ -1051,7 +1218,18 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
                     {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
                     {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
                     {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ }
+                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
+                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
+                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 },
+                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 },
+                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 },
+                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 },
+                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 },
+                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 },
+                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
+                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
+                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
+                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
             }
     );
 
@@ -1145,11 +1323,106 @@ void Renderer::CreateRaytracingPipeline()
     {
         if (p.stage == Stage::Barrier) continue;
 
-        if (p.stage == Stage::Compute)
+        if (p.isWorkGraph)
+        {
+            // ── compile WG DXIL ─────────────────────────────────────────────
+            ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileWG(p.file.c_str());
+
+            // export every public symbol found in the library
+            static const D3D12_EXPORT_DESC kExports[] =
+            {
+                { L"main",  nullptr, D3D12_EXPORT_FLAG_NONE }   // must match the HLSL attribute
+            };
+
+            D3D12_DXIL_LIBRARY_DESC dxilDesc{};
+            dxilDesc.DXILLibrary = { lib->GetBufferPointer(), lib->GetBufferSize() };
+            dxilDesc.NumExports  = 0;//_countof(kExports);
+            dxilDesc.pExports    = nullptr;//kExports;
+
+            D3D12_STATE_SUBOBJECT subobjects[3]{};
+            subobjects[0].Type  = D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY;
+            subobjects[0].pDesc = &dxilDesc;
+
+            subobjects[1].Type  = D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE;
+            subobjects[1].pDesc = m_computeSignature.GetAddressOf();
+
+            static const LPCWSTR kWorkGraphName = L"main";
+
+            D3D12_WORK_GRAPH_DESC wgDesc = {};
+            wgDesc.ProgramName               = kWorkGraphName;
+            wgDesc.Flags                     = D3D12_WORK_GRAPH_FLAG_INCLUDE_ALL_AVAILABLE_NODES;
+            wgDesc.NumEntrypoints            = 0;            // no explicit entrypoints
+            wgDesc.pEntrypoints              = nullptr;
+            wgDesc.NumExplicitlyDefinedNodes = 0;            // no overrides
+            wgDesc.pExplicitlyDefinedNodes   = nullptr;
+
+            // plug into your subobject array:
+            subobjects[2].Type  = D3D12_STATE_SUBOBJECT_TYPE_WORK_GRAPH;
+            subobjects[2].pDesc = &wgDesc;
+
+            D3D12_STATE_OBJECT_DESC soDesc{};
+            soDesc.Type          = D3D12_STATE_OBJECT_TYPE_EXECUTABLE;
+            soDesc.NumSubobjects = _countof(subobjects);
+            soDesc.pSubobjects   = subobjects;
+
+            D3D12_FEATURE_DATA_D3D12_OPTIONS21 opts = {};
+            HRESULT hr = m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS21, &opts, sizeof(opts));
+            if (FAILED(hr) || opts.WorkGraphsTier == D3D12_WORK_GRAPHS_TIER_NOT_SUPPORTED) {
+                // Print a fatal error and bail out
+                MessageBoxA(nullptr, "Work Graphs not supported on this device/driver/OS", "Error", MB_OK);
+                abort();
+            }
+
+            ComPtr<ID3D12StateObject> so;
+            HRESULT hr2 = m_device->CreateStateObject(&soDesc, IID_PPV_ARGS(&so));
+            DumpD3D12Messages(m_device.Get());           // <- prints full explanation
+            ThrowIfFailed(hr2);
+
+            // ── runtime information ────────────────────────────────────────
+            ComPtr<ID3D12StateObjectProperties1> soProps1;
+            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&soProps1)));
+
+            ComPtr<ID3D12WorkGraphProperties> wgProps;
+            ThrowIfFailed(so->QueryInterface(IID_PPV_ARGS(&wgProps)));
+
+            WgRuntimeData rt{};
+
+            D3D12_PROGRAM_IDENTIFIER pid = soProps1->GetProgramIdentifier(L"main");
+            rt.id = pid;
+
+            D3D12_WORK_GRAPH_MEMORY_REQUIREMENTS mem{};
+            wgProps->GetWorkGraphMemoryRequirements(0, &mem);            // index 0
+
+            UINT64 backingSize = mem.MaxSizeInBytes;
+            if (backingSize)
+            {
+                CD3DX12_HEAP_PROPERTIES hp(D3D12_HEAP_TYPE_DEFAULT);
+                CD3DX12_RESOURCE_DESC   buf =
+                    CD3DX12_RESOURCE_DESC::Buffer(backingSize,
+                                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+                ThrowIfFailed(m_device->CreateCommittedResource(
+                    &hp, D3D12_HEAP_FLAG_NONE, &buf,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                    IID_PPV_ARGS(&rt.backingRes)));
+
+                rt.backing.StartAddress = rt.backingRes->GetGPUVirtualAddress();
+                rt.backing.SizeInBytes  = backingSize;
+            }
+
+            p.wgIdx = static_cast<uint32_t>(m_wgStateObjects.size());
+            m_wgStateObjects.push_back(so);
+            m_wgProps      .push_back(wgProps);
+            m_wgRuntime    .push_back(std::move(rt));
+            continue;
+        }
+
+
+        if (p.stage == Stage::Compute && !p.isWorkGraph)
         {
             // --- compile CS & make a PSO ------------------------------------
             ComPtr<IDxcBlob> cs =
-                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");  // cs_6_6
+                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
             D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
             desc.pRootSignature = m_computeSignature.Get();            // reuse RS
@@ -1177,9 +1450,10 @@ void Renderer::CreateRaytracingPipeline()
         m_passIndex[p.file] = rgSlot++;     // SBT slot for this RG shader
     }
 
+
     for (PassDesc& p : m_passes)
     {
-        if (p.stage != Stage::Compute) continue;
+        if (p.stage != Stage::Compute || p.isWorkGraph) continue;
         ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
@@ -1231,7 +1505,7 @@ void Renderer::CreateRaytracingPipeline()
     // -------------------------------------------------------------------------
     // 5)  Payload / attribute / recursion depth (we dont use recursion)
     // -------------------------------------------------------------------------
-    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 2*sizeof(UINT) + sizeof(BOOL) );
+    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 3*sizeof(UINT) );
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
@@ -1292,16 +1566,17 @@ void Renderer::CreateRaytracingOutputBuffer() {
             nullptr,
             IID_PPV_ARGS(&m_permanentDataTexture)));
 
+    // ──  REPLACE the old 'desc' block used for m_scratchPing  ─────────────
     D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    desc.Width              = GetWidth();
-    desc.Height             = GetHeight();
-    desc.DepthOrArraySize   = 1;
-    desc.MipLevels          = 1;
-    desc.Format             = DXGI_FORMAT_R32G32B32A32_FLOAT;   // 48-bit colour is enough
-    desc.SampleDesc.Count   = 1;
-    desc.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    desc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = GetWidth();
+    desc.Height           = GetHeight();
+    desc.DepthOrArraySize = 16;                       // ← # slices you need
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;  // HDR, 64-bit total
+    desc.SampleDesc.Count = 1;
+    desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     ThrowIfFailed(m_device->CreateCommittedResource(
         &nv_helpers_dx12::kDefaultHeapProps,
@@ -1309,7 +1584,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
         &desc,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         nullptr,
-        IID_PPV_ARGS(&m_scratchPing)));
+        IID_PPV_ARGS(&m_scratchPing)));       // same variable, bigger now
 
 }
 
@@ -1320,13 +1595,14 @@ void Renderer::CreateRaytracingOutputBuffer() {
 //
 void Renderer::CreateShaderResourceHeap() {
   // #DXR Extra: Perspective Camera
+  // #DXR Extra: Perspective Camera
   // Create a SRV/UAV/CBV descriptor heap. We need 3 entries - 1 SRV for the
   // TLAS, 1 UAV for the raytracing output and 1 CBV for the camera matrices
 // Create a SRV/UAV/CBV descriptor heap. We need 4 entries - 1 SRV for the TLAS, 1 UAV for the
 // raytracing output, 1 CBV for the camera matrices, 1 SRV for the
 // per-instance data (# DXR Extra - Simple Lighting)
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 22, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+            m_device.Get(), 64, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
   // Get a handle to the heap memory on the CPU side, to be able to write the
   // descriptors directly
@@ -1377,6 +1653,8 @@ void Renderer::CreateShaderResourceHeap() {
 // Debug output: Confirm that the CreateConstantBufferView call was made
     std::wcout << L"Constant buffer view created for the camera." << std::endl;
 
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(
+                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     //# DXR Extra - Simple Lighting
     srvHandle.ptr +=
@@ -1710,13 +1988,113 @@ void Renderer::CreateShaderResourceHeap() {
                      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
-    scratchDesc.ViewDimension          = D3D12_UAV_DIMENSION_TEXTURE2D;
-    scratchDesc.Format                 = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    scratchDesc.Texture2D.MipSlice     = 0;
-    scratchDesc.Texture2D.PlaneSlice   = 0;
+    scratchDesc.ViewDimension            = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    scratchDesc.Format                   = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    scratchDesc.Texture2DArray.MipSlice  = 0;
+    scratchDesc.Texture2DArray.FirstArraySlice = 0;
+    scratchDesc.Texture2DArray.ArraySize = 16;       // same as DepthOrArraySize
 
     m_device->CreateUnorderedAccessView(
             m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);
+
+    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    UINT initialRayCount       = width * height;              // one ray / pixel
+    UINT initialRayBufferSize  = initialRayCount * sizeof(InitialBSDFRay);
+
+    D3D12_RESOURCE_DESC initialRayDesc = {};
+    initialRayDesc.Dimension           = D3D12_RESOURCE_DIMENSION_BUFFER;
+    initialRayDesc.Width               = initialRayBufferSize;
+    initialRayDesc.Height              = 1;
+    initialRayDesc.DepthOrArraySize    = 1;
+    initialRayDesc.MipLevels           = 1;
+    initialRayDesc.Format              = DXGI_FORMAT_UNKNOWN;
+    initialRayDesc.SampleDesc.Count    = 1;
+    initialRayDesc.Layout              = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    initialRayDesc.Flags               = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+            &initialRayDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr, IID_PPV_ARGS(&m_initialBSDFRayBuffer)));
+
+    D3D12_UNORDERED_ACCESS_VIEW_DESC initialRayUavDesc = {};
+    initialRayUavDesc.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
+    initialRayUavDesc.Format                     = DXGI_FORMAT_R32_TYPELESS; // RAW
+    initialRayUavDesc.Buffer.FirstElement        = 0;
+    initialRayUavDesc.Buffer.NumElements         = initialRayBufferSize / 4;
+    initialRayUavDesc.Buffer.StructureByteStride = 0;
+    initialRayUavDesc.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
+
+    m_device->CreateUnorderedAccessView(
+            m_initialBSDFRayBuffer.Get(), nullptr,
+            &initialRayUavDesc, srvHandle);
+
+    // -----------------------------------------------------------------------------
+    // slots 18 & 19  –  indices[t1]  and  BTriVertex[t2]   for inline queries
+    // -----------------------------------------------------------------------------
+    srvHandle.ptr += inc;    // ← move to slot 18  (after initialBSDFRayBuffer)
+
+    // -- indices[]  ---------------------------------------------------------------
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC idxSrv = {};
+        idxSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        idxSrv.Format                     = DXGI_FORMAT_UNKNOWN;          // typed
+        idxSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+        idxSrv.Buffer.FirstElement        = 0;
+        idxSrv.Buffer.NumElements         = m_totalIndexCount;             // global
+        idxSrv.Buffer.StructureByteStride = sizeof(uint32_t);
+        idxSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
+
+        m_device->CreateShaderResourceView(
+            m_indexGlobal.Get(), &idxSrv, srvHandle);      //  slot 18
+        srvHandle.ptr += inc;                              //  advance to slot 19
+    }
+
+    // -- BTriVertex[]  ------------------------------------------------------------
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = {};
+        vbSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        vbSrv.Format                     = DXGI_FORMAT_UNKNOWN;             // structured
+        vbSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+        vbSrv.Buffer.FirstElement        = 0;
+        vbSrv.Buffer.NumElements         = m_totalVertexCount;
+        vbSrv.Buffer.StructureByteStride = sizeof(BTriVertex);
+        vbSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
+
+        m_device->CreateShaderResourceView(
+            m_vertexGlobal.Get(), &vbSrv, srvHandle);      //  slot 19
+        srvHandle.ptr += inc;                              //  ready for next item
+    }
+
+    // ---- LightTree SRVs (TLASNodes, BLASNodes, BLASRanges, LeafTriIndex) ----
+    // They will be placed at heap slots 20, 21, 22, 23 respectively.
+    m_lightTree.WriteSrvs(m_device.Get(), srvHandle);
+
+    // advance handle
+    srvHandle.ptr += inc * 4;
+    m_lightTree.WriteAliasSrvs(m_device.Get(), srvHandle);
+    srvHandle.ptr += inc * 2;
+    std::wcout << L"LightTree SRVs written at heap slots 20..23" << std::endl;
+
+    // srvHandle currently points to slot 26
+    D3D12_SHADER_RESOURCE_VIEW_DESC triMapSrv = {};
+    triMapSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    triMapSrv.Format                  = DXGI_FORMAT_R32_UINT;     // typed uint
+    triMapSrv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
+    triMapSrv.Buffer.FirstElement     = 0;
+    triMapSrv.Buffer.NumElements      = static_cast<UINT>(m_triToLightId.size());
+    triMapSrv.Buffer.StructureByteStride = 0;
+    triMapSrv.Buffer.Flags            = D3D12_BUFFER_SRV_FLAG_NONE;
+
+    m_device->CreateShaderResourceView(m_triToLightIdBuffer.Get(), &triMapSrv, srvHandle);
+    srvHandle.ptr += inc;  // advance if you add more later
+
+    // NEW: write LightTree lookup SRVs  (slots 26..28)
+    m_lightTree.WriteLookupSrvs(m_device.Get(), srvHandle);
+    srvHandle.ptr += inc * 3;
+
 
 
     std::wcout << L"SRVs created!" << std::endl;
@@ -1742,6 +2120,7 @@ void Renderer::CreateShaderBindingTable() {
     {
         if (entry == L"barrier") continue;
         if (entry.find(L"|cs:") != std::wstring::npos) continue; // ← add this
+        if (entry.find(L"|wg:") != std::wstring::npos) continue; // ← add this
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
@@ -2206,6 +2585,7 @@ void Renderer::CreateVB(std::string name) {
     m_IndexCount.push_back(l_IndexCount);
     m_material.push_back(l_material);
     m_materialID.push_back(l_materialID);
+
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2222,118 +2602,144 @@ void Renderer::CreateInstancePropertiesBuffer() {
       D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 }
 
-//--------------------------------------------------------------------------------------------------
-// Copy the per-instance data into the buffer
-// #DXR Extra - Refitting
-void Renderer::UpdateInstancePropertiesBuffer() {
-  InstanceProperties *current = nullptr;
-  CD3DX12_RANGE readRange(
-      0, 0); // We do not intend to read from this resource on the CPU.
-  ThrowIfFailed(m_instanceProperties->Map(0, &readRange,
-                                          reinterpret_cast<void **>(&current)));
-    for (const auto &inst : m_instances)
-    {
-        XMVECTOR det_filler;
-        current->prevObjectToWorld = current->objectToWorld;
-        current->prevObjectToWorldInverse = XMMatrixInverse(&det_filler,current->objectToWorld);
-        current->objectToWorld = inst.second;
-        current->objectToWorldInverse = XMMatrixInverse(&det_filler,inst.second);
+//---------------------------------------------------------------------------
+// Copy the per‑instance data into the buffer
+// (called once per frame)
+//---------------------------------------------------------------------------
+void Renderer::UpdateInstancePropertiesBuffer()
+{
+    InstanceProperties* dst = nullptr;
+    CD3DX12_RANGE  r(0,0);                         // we never read from CPU
+    ThrowIfFailed(
+        m_instanceProperties->Map(0,&r,
+                                  reinterpret_cast<void**>(&dst)));
 
-        //# DXR Extra - Simple Lighting
-        XMMATRIX upper3x3 = inst.second;
-        // Remove the translation and lower vector of the matrix
-        upper3x3.r[0].m128_f32[3] = 0.f;
-        upper3x3.r[1].m128_f32[3] = 0.f;
-        upper3x3.r[2].m128_f32[3] = 0.f;
-        upper3x3.r[3].m128_f32[0] = 0.f;
-        upper3x3.r[3].m128_f32[1] = 0.f;
-        upper3x3.r[3].m128_f32[2] = 0.f;
-        upper3x3.r[3].m128_f32[3] = 1.f;
+    //-----------------------------------------------------------
+    //  one loop iteration  ==  one instance in the TLAS
+    //-----------------------------------------------------------
+    for (size_t inst = 0; inst < m_instances.size(); ++inst, ++dst)
+    {
+        // ───────────────────── existing matrix bookkeeping ───
+        const XMMATRIX& M = m_instances[inst].second;
         XMVECTOR det;
-        current->prevObjectToWorldNormal = current->objectToWorldNormal;
-        current->objectToWorldNormal = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
-        current++;
+
+        dst->prevObjectToWorld        = dst->objectToWorld;
+        dst->prevObjectToWorldInverse = XMMatrixInverse(&det, dst->objectToWorld);
+
+        dst->objectToWorld            = M;
+        dst->objectToWorldInverse     = XMMatrixInverse(&det, M);
+
+        XMMATRIX upper3x3             = M;
+        upper3x3.r[0].m128_f32[3] = upper3x3.r[1].m128_f32[3] =
+        upper3x3.r[2].m128_f32[3] = upper3x3.r[3].m128_f32[0] =
+        upper3x3.r[3].m128_f32[1] = upper3x3.r[3].m128_f32[2] = 0.f;
+        upper3x3.r[3].m128_f32[3] = 1.f;
+
+        dst->prevObjectToWorldNormal  = dst->objectToWorldNormal;
+        dst->objectToWorldNormal      = XMMatrixTranspose(
+                                            XMMatrixInverse(&det, upper3x3));
+
+        // ───────────────────── NEW: per‑geometry offsets ──────
+        UINT   modelIdx = m_instanceModelIndices[inst];   // which mesh?
+        const GeometryOffsets& go = m_geoOffsets[modelIdx];
+
+        dst->indexBase    = go.indexBase;     // first index of this mesh
+        dst->vertexBase   = go.vertexBase;    // first vertex of this mesh
+        dst->materialBase = go.materialBase;  // first mat‑ID of this mesh
+        dst->triToLightBase = m_instTriOffset[inst];
     }
-  m_instanceProperties->Unmap(0, nullptr);
+    m_instanceProperties->Unmap(0,nullptr);
 }
 
 void Renderer::CollectEmissiveTriangles() {
     m_emissiveTriangles.clear();
 
+    // NEW: allocate tri->light map for all instances
+    m_instTriOffset.resize(m_instances.size());
+    size_t totalTris = 0;
+    for (size_t inst = 0; inst < m_instances.size(); ++inst) {
+        UINT modelIndex = m_instanceModelIndices[inst];
+        totalTris += m_IndexCount[modelIndex] / 3;
+    }
+    m_triToLightId.assign(totalTris, 0xFFFFFFFFu);  // sentinel = not emissive
+
+    // NEW: compute per-instance base offsets
+    uint32_t runningBase = 0;
+    for (size_t inst = 0; inst < m_instances.size(); ++inst) {
+        m_instTriOffset[inst] = runningBase;
+        UINT modelIndex = m_instanceModelIndices[inst];
+        runningBase += m_IndexCount[modelIndex] / 3;
+    }
+
     for (size_t instanceIndex = 0; instanceIndex < m_instances.size(); ++instanceIndex) {
         UINT modelIndex = m_instanceModelIndices[instanceIndex];
-
         UINT e_materialIDOffset = m_materialIDOffsets[modelIndex];
         UINT triangleCount = m_IndexCount[modelIndex] / 3;
 
-        // Map the vertex and index buffers for the model
         Vertex* vertices = nullptr;
         UINT* indices = nullptr;
         CD3DX12_RANGE readRange(0, 0);
 
-        // Map the vertex buffer
         ThrowIfFailed(m_VB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&vertices)));
-
-        // Map the index buffer
         ThrowIfFailed(m_IB[modelIndex]->Map(0, &readRange, reinterpret_cast<void**>(&indices)));
 
+        const uint32_t triBase = m_instTriOffset[instanceIndex]; // NEW
+
         for (UINT t = 0; t < triangleCount; ++t) {
-            UINT idx0 = indices[t * 3 + 0];
-            UINT idx1 = indices[t * 3 + 1];
-            UINT idx2 = indices[t * 3 + 2];
+            UINT idx0 = indices[3 * t + 0];
+            UINT idx1 = indices[3 * t + 1];
+            UINT idx2 = indices[3 * t + 2];
 
-            // Get the material IDs for the triangle's vertices
-            UINT materialID0 = m_materialIDs[e_materialIDOffset + t * 3 + 0];
-            UINT materialID1 = m_materialIDs[e_materialIDOffset + t * 3 + 1];
-            UINT materialID2 = m_materialIDs[e_materialIDOffset + t * 3 + 2];
+            // material id per tri (your convention: one per-vertex, identical on all 3)
+            UINT mid0 = m_materialIDs[e_materialIDOffset + 3 * t + 0];
+            UINT mid1 = m_materialIDs[e_materialIDOffset + 3 * t + 1];
+            UINT mid2 = m_materialIDs[e_materialIDOffset + 3 * t + 2];
+            if (mid0 != mid1 || mid0 != mid2) continue; // mixed tri - skip or handle
 
-            // Ensure all vertices of the triangle have the same material ID
-            if (materialID0 != materialID1 || materialID0 != materialID2) {
-                std::wcout << "Warning: Triangle vertices have different material IDs!" << std::endl;
-                continue; // Skip this triangle or handle as needed
-            }
+            const Material& mat = m_materials[mid0];
+            const float emissive = mat.Ke.x + mat.Ke.y + mat.Ke.z;
 
-            UINT materialID = materialID0; // Use the consistent material ID
-            const Material& material = m_materials[materialID];
-
-            // Check if the material is emissive
-            if (material.Ke.x + material.Ke.y + material.Ke.z > 0.0f) {
-                // Get the positions of the vertices
+            if (emissive > 0.0f) {
+                // Push light triangle
                 const Vertex& v0 = vertices[idx0];
                 const Vertex& v1 = vertices[idx1];
                 const Vertex& v2 = vertices[idx2];
 
                 LightTriangle lt{};
-                lt.x = v0.position;
-                lt.y = v1.position;
-                lt.z = v2.position;
+                lt.x = v0.position; lt.y = v1.position; lt.z = v2.position;
                 lt.instanceID = static_cast<UINT>(instanceIndex);
-                lt.weight = ComputeTriangleWeight(v0.position, v1.position, v2.position, material.Ke);
-                lt.emission = material.Ke;
+                const XMMATRIX& M = m_instances[instanceIndex].second;
+                lt.weight     = ComputeTriangleWeight(v0.position, v1.position, v2.position, mat.Ke, M);
+                lt.emission   = mat.Ke;
+                // (optional) store primID if you want:
+                // lt.primID     = t;
 
+                const uint32_t lightIdx = static_cast<uint32_t>(m_emissiveTriangles.size());
                 m_emissiveTriangles.push_back(lt);
+
+                // NEW: fill tri -> light map
+                m_triToLightId[triBase + t] = lightIdx;
             }
         }
 
-        // Unmap the vertex and index buffers
         m_VB[modelIndex]->Unmap(0, nullptr);
         m_IB[modelIndex]->Unmap(0, nullptr);
     }
 
     // Sort the emissive triangles based on weight in descending order
-    std::sort(m_emissiveTriangles.begin(), m_emissiveTriangles.end(),
+    /*std::sort(m_emissiveTriangles.begin(), m_emissiveTriangles.end(),
               [](const LightTriangle& a, const LightTriangle& b) {
                   return a.weight > b.weight;
-              });
+              });*/
 
     // Calculate the total weight
-    float totalWeight = 0.0f;
+    /*float totalWeight = 0.0f;
     for (const auto& triangle : m_emissiveTriangles) {
         totalWeight += triangle.weight;
-    }
+    }*/
 
     // Calculate relative weights and cumulative distribution function (CDF)
-    float cumulativeWeight = 0.0f;
+    /*float cumulativeWeight = 0.0f;
     for (auto& triangle : m_emissiveTriangles) {
         triangle.weight /= totalWeight; // Normalize weight
         cumulativeWeight += triangle.weight;
@@ -2344,14 +2750,14 @@ void Renderer::CollectEmissiveTriangles() {
     // Ensure the last CDF value is exactly 1.0f
     if (!m_emissiveTriangles.empty()) {
         m_emissiveTriangles.back().cdf = 1.0f;
-    }
+    }*/
 
     std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
 }
 
 
 
-float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
+/*float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, const XMFLOAT3& v2, const XMFLOAT3& emissiveColor) {
     // Compute the area of the triangle
     XMVECTOR p0 = XMLoadFloat3(&v0);
     XMVECTOR p1 = XMLoadFloat3(&v1);
@@ -2360,14 +2766,38 @@ float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0, const XMFLOAT3& v1, co
     XMVECTOR edge1 = XMVectorSubtract(p1, p0);
     XMVECTOR edge2 = XMVectorSubtract(p2, p0);
     XMVECTOR crossProduct = XMVector3Cross(edge1, edge2);
-    float area = 0.5f * XMVectorGetX(XMVector3Length(crossProduct));
+    float area = (std::fmax)(0.5f * XMVectorGetX(XMVector3Length(crossProduct)),0.001f);
 
     // Compute the average emissive intensity
     float emissiveIntensity = (emissiveColor.x + emissiveColor.y + emissiveColor.z) / 3.0f;
 
     // The weight is proportional to area and emissive intensity
     return area * emissiveIntensity;
+}*/
+
+static inline float Luminance(const XMFLOAT3& c) {
+    return 0.2126f*c.x + 0.7152f*c.y + 0.0722f*c.z;
 }
+
+float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0,
+                                           const XMFLOAT3& v1,
+                                           const XMFLOAT3& v2,
+                                           const XMFLOAT3& emissiveColor,
+                                           const XMMATRIX& M)
+{
+    // transform verts to WORLD
+    XMVECTOR p0 = XMVector3TransformCoord(XMLoadFloat3(&v0), M);
+    XMVECTOR p1 = XMVector3TransformCoord(XMLoadFloat3(&v1), M);
+    XMVECTOR p2 = XMVector3TransformCoord(XMLoadFloat3(&v2), M);
+
+    // world-space geometric area
+    XMVECTOR e1 = p1 - p0, e2 = p2 - p0;
+    float area = 0.5f * XMVectorGetX( XMVector3Length( XMVector3Cross(e1,e2) ) );
+
+    float lum = Luminance(emissiveColor);
+    return std::max(area, 1e-8f) * lum;
+}
+
 
 
 
@@ -2408,12 +2838,24 @@ void Renderer::CreateEmissiveTrianglesBuffer() {
             D3D12_RESOURCE_STATE_GENERIC_READ);
     m_commandList->ResourceBarrier(1, &barrier);
 
-    // Execute and flush the command list
+    // ─────────────────────────────────────────────────────────────────────────────
+// Execute everything we just recorded and wait for it to finish
+// ─────────────────────────────────────────────────────────────────────────────
     ThrowIfFailed(m_commandList->Close());
+
     ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
+    m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
+// Fence-sync; this also updates m_frameIndex to the back buffer that will be
+// rendered next, i.e. the allocator that the GPU is now finished with.
     WaitForPreviousFrame();
-    ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), nullptr));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reset the allocator *for this frame* and then the command list
+// ─────────────────────────────────────────────────────────────────────────────
+    auto* allocator = m_commandAllocators[m_frameIndex].Get();   // pick the right one
+    ThrowIfFailed(allocator->Reset());                           // 1️⃣ allocator first
+    ThrowIfFailed(m_commandList->Reset(allocator, nullptr));     // 2️⃣ command list
 }
 
 //──────────────────────────────────────────────────────────────────────────────

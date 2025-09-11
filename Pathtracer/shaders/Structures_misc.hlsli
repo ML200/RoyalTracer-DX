@@ -21,6 +21,10 @@ struct InstanceProperties
     float4x4 prevObjectToWorldInverse;
     float4x4 objectToWorldNormal;
     float4x4 prevObjectToWorldNormal;
+    uint  indexBase;
+    uint  vertexBase;
+    uint  materialBase;
+    uint triToLightBase;
 };
 
 struct LightTriangle {
@@ -57,6 +61,8 @@ struct [[raypayload]] HitInfo {
                          : write(anyhit,closesthit,miss);
     uint objID: read(caller)
                          : write(anyhit,closesthit,miss);
+    uint lightID: read(caller)
+                         : write(anyhit,closesthit,miss);
 };
 
 struct [[raypayload]] ShadowHitInfo {
@@ -74,3 +80,39 @@ struct SampleReturn
     float pdf_bsdf;
     float pdf_nee;
 };
+
+struct WeightedPixel
+{
+    int2  pix;
+    float w;
+};
+
+
+struct LightTLASNodeGpu {
+    float3 bmin;     float power;
+    float3 bmax;     float theta_o;
+    float3 axis;     float theta_e;
+    uint   left;     uint  right;
+    uint   blasIndex;uint  primCount;
+    float  sumPower; float sumPowerSq;
+    uint itemFirst; uint itemCount;
+};
+
+struct LightBLASNodeGpu {
+    float3 bmin;     float power;
+    float3 bmax;     float theta_o;
+    float3 axis;     float theta_e;
+    uint   left;     uint  right;
+    uint   triFirst; uint  triCount;
+    uint   primCount; uint _pad0;
+    float  sumPower; float sumPowerSq;
+};
+
+struct BlasRangeGpu {
+    uint nodeOffset;
+    uint nodeCount;
+    uint triIndexOffset;
+    uint triIndexCount;
+};
+
+struct LT_Sample { uint id; float pdf; };
