@@ -170,7 +170,7 @@ void RayGen_v6_pass1() {
             //p_hat = GetP_Hat(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt, true);
 
         // Perform path sampling (simpliefied for now)
-        /*sdata.debug = SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
+        sdata.debug = SamplePathSimple(reservoir_GI, payload.hitPosition, payload.hitNormal, -direction, matOpt, seed);
         sdata.debug += ReconnectDI(sdata.x1, sdata.n1, reservoir.x2, reservoir.n2, reservoir.L2, sdata.o, matOpt) * reservoir.W;
 
         float3 f_c = LinearizeVector(GetP_Hat_GI(sdata.x1, sdata.n1,
@@ -178,13 +178,13 @@ void RayGen_v6_pass1() {
                                      reservoir_GI.E3,
                                      sdata.o, matOpt, false));
         reservoir_GI.W = GetW_GI(reservoir_GI, f_c);
-        reservoir_GI.M = 1.0f;*/
-        //sdata.debug = reservoir_GI.w_sum > 0.0f? 1.0f: 0.0f;
-        /*if(!IsValidReservoir_GI(reservoir_GI))
-            sdata.debug = float3(1,0,0);*/
+        reservoir_GI.M = 1.0f;
+        sdata.debug = reservoir_GI.w_sum > 0.0f? 1.0f: 0.0f;
+        if(!IsValidReservoir_GI(reservoir_GI))
+            sdata.debug = float3(1,0,0);
 
     }
 	g_Reservoirs_current[pixelIdx] = reservoir;
-    //g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
+    g_Reservoirs_current_gi[pixelIdx] = reservoir_GI;
     g_sample_current[pixelIdx] = sdata;
 }

@@ -5,6 +5,8 @@ cbuffer Push : register(b1)
 
 #define gImageWidth   (gImageSize.x)
 #define gImageHeight  (gImageSize.y)
+#define IMG_W        (gImageSize.x)
+#define IMG_H        (gImageSize.y)
 
 #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
 
@@ -17,8 +19,9 @@ static uint3 gDispatchIdx;
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput             : register(u0);
+RWTexture2DArray<half4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
+RWTexture2DArray<half4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
@@ -26,6 +29,7 @@ RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
 RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
 StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
 StructuredBuffer<int>                 indices           : register(t1);
@@ -37,8 +41,18 @@ StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
 StructuredBuffer<float>               g_AliasProb       : register(t7);
 StructuredBuffer<uint>                g_AliasIdx        : register(t8);
 
+// Light tree
+StructuredBuffer<LightTLASNodeGpu> gLT_TLAS        : register(t9);
+StructuredBuffer<LightBLASNodeGpu> gLT_BLAS        : register(t10);
+StructuredBuffer<BlasRangeGpu>     gLT_Range       : register(t11);
+Buffer<uint>                       gLT_LeafTriIndex: register(t12);
+Buffer<float>                      gLT_LeafAliasProb : register(t13);
+Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
+
 // Needs access to all structured/random buffers
+#include "LightTree_v7.hlsli"
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -54,58 +68,71 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Camera_ray_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
 #include "Motion_vectors_v7.hlsli"
+#include "HashGrid_v7.hlsli"
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
 // ─────────────────────────────────────────────────────────────────────────────
-[numthreads(8, 4, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gDispatchIdx = DTid;
 
-    uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint   pixelIdx   = MapPixelID(dims, launchIndex);
+    // Load the DI pipeline output
+    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
+    // Load the GI pipeline output
+    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
-    // Load only L1 first
-    float3 L1 = load_L1(g_sample_current, pixelIdx);
-    float3 accumulation = 0;
+    float3 accumulation = output_DI + output_GI;
 
-    if (all(L1 < EPSILON))
+    // ───────────────────────── Accumulation (capped) ───────────────────────────
+    bool cameraChanged = false;
+    [unroll]
+    for (uint i = 0; i < 4; ++i) {
+        if (any(view[i] != prevView[i])) cameraChanged = true;
+    }
+    static const float MAX_SAMPLES     = 10000.0h;  // tune to taste
+
+    float4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
+    float3 prevAvg     = prev.rgb;
+    float  prevSamples = prev.a;
+
+    float3 newAvg;
+    float  newSamples;
+    if (cameraChanged)
     {
-        float3 x1 = load_x1(g_sample_current, pixelIdx);
-        float3 n1 = load_n1(g_sample_current, pixelIdx);
-        float3 o = load_o(g_sample_current, pixelIdx);
-        uint matID = load_matID(g_sample_current, pixelIdx);
-
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-        float3 contrib = ReconnectDI(
-                             x1, n1, o, matID,
-                             rdi.x2_di, rdi.n2_di, rdi.L2_di) * rdi.W_di;
-
-        accumulation = contrib;
-
-        store_x2_di(rdi.x2_di, g_Reservoirs_last_di, pixelIdx);
-        store_n2_di(rdi.n2_di, g_Reservoirs_last_di, pixelIdx);
-        store_L2_di(rdi.L2_di, g_Reservoirs_last_di, pixelIdx);
-        store_W_di (rdi.W_di , g_Reservoirs_last_di, pixelIdx);
-        store_M_di (rdi.M_di , g_Reservoirs_last_di, pixelIdx);
+        // Camera moved: reset running average and sample count
+        newAvg     = accumulation;
+        newSamples = 1.0h;
     }
     else
     {
-        accumulation = L1;
+        newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);
+        float invN  = 1.0h / newSamples;
+        newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
 
+    // --- store back to the permanent UAV ----------------------------------------
+    gPermanentData[DTid.xy] = float4(newAvg, newSamples);
+
+    // --- display/debug -----------------------------------------------------------
+    float3 fColor = sRGBGammaCorrection(newAvg);
+    gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
+
     float3 finalColor = sRGBGammaCorrection(accumulation);
+    //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 
-    // Debug
-    //if (any(isnan(finalColor))) finalColor = float3(1,0,1); // magenta
-    //if (any(isinf(finalColor))) finalColor = float3(0,1,1); // cyan
-
-    gOutput[uint3(launchIndex, 1)] = float4(finalColor, 1);
+    // ── grid debug slice along the primary ray (compile-time toggled) ────────
+    /*uint2  launchIndex   = DTid.xy;
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, launchIndex);
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    float3 col = sdata.n1;
+    gOutput[uint3(DTid.xy, 0)] = float4(col, 1);
+    return;*/
 }

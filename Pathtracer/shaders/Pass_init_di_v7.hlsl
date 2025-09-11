@@ -1,31 +1,59 @@
+cbuffer Push : register(b1)
+{
+    uint2 gImageSize;
+}
+#define ENABLE_RAY_QUERY_INLINE // Activate support for inline ray tracing
+
+#define gImageWidth  (gImageSize.x)
+#define gImageHeight (gImageSize.y)
+#define IMG_W        (gImageSize.x)
+#define IMG_H        (gImageSize.y)
+
+#define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
+
+static uint3 gDispatchIdx;
+#define DispatchRaysIndex()      gDispatchIdx
+
 #include "Constants_v7.hlsli"
 #include "Common_v7.hlsli"
 #include "Structures_misc.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
 
-RWTexture2DArray<float4> gOutput : register(u0);
-RWTexture2D<float4> gPermanentData : register(u1);
+RWTexture2DArray<float4> gOutput             : register(u0);
+RWTexture2D<float4>      gPermanentData      : register(u1);
 
-RWByteAddressBuffer g_sample_current : register(u6);
-RWByteAddressBuffer g_sample_last : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi : register(u5);
+RWByteAddressBuffer g_sample_current         : register(u6);
+RWByteAddressBuffer g_sample_last            : register(u7);
+RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
+RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
+RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
+RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
+RWByteAddressBuffer g_InitialBSDFRays : register(u9);
 
-StructuredBuffer<STriVertex> BTriVertex : register(t2);
-StructuredBuffer<int> indices : register(t1);
-RaytracingAccelerationStructure SceneBVH : register(t0);
-StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint> materialIDs : register(t4);
-StructuredBuffer<Material> materials : register(t5);
-StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
-StructuredBuffer<float> g_AliasProb  : register(t7);
-StructuredBuffer<uint>  g_AliasIdx   : register(t8);
+StructuredBuffer<STriVertex>          BTriVertex        : register(t2);
+StructuredBuffer<int>                 indices           : register(t1);
+RaytracingAccelerationStructure       SceneBVH          : register(t0);
+StructuredBuffer<InstanceProperties>  instanceProps     : register(t3);
+StructuredBuffer<uint>                materialIDs       : register(t4);
+StructuredBuffer<Material>            materials         : register(t5);
+StructuredBuffer<LightTriangle>       g_EmissiveTriangles : register(t6);
+StructuredBuffer<float>               g_AliasProb       : register(t7);
+StructuredBuffer<uint>                g_AliasIdx        : register(t8);
+
+// Light tree
+StructuredBuffer<LightTLASNodeGpu> gLT_TLAS        : register(t9);
+StructuredBuffer<LightBLASNodeGpu> gLT_BLAS        : register(t10);
+StructuredBuffer<BlasRangeGpu>     gLT_Range       : register(t11);
+Buffer<uint>                       gLT_LeafTriIndex: register(t12);
+Buffer<float>                      gLT_LeafAliasProb : register(t13);
+Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
+
 
 // Needs access to all structured/random buffers
+#include "LightTree_v7.hlsli"
 #include "Sample_data.hlsli"
+#include "Initial_bsdf.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
 #include "BSDF_v7.hlsli"
@@ -41,40 +69,57 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Camera_ray_v7.hlsli"
 #include "Reservoir_DI_v7.hlsli"
+#include "Reservoir_GI_v7.hlsli"
+#include "Inline_RT.hlsli"
+#include "Camera_ray_v7.hlsli"
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 
-[shader("raygeneration")]
-void Pass_init_di_v7() {
-    uint2 launchIndex = DispatchRaysIndex().xy;
-    float2 dims       = float2(DispatchRaysDimensions().xy);
-    uint pixelIdx     = MapPixelID(dims, launchIndex);
+//─────────────────────────────────────────────────────────────────────────────
+//  Initial Sampling DI
+//─────────────────────────────────────────────────────────────────────────────
+[numthreads(16, 8, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= IMG_W || tid.y >= IMG_H) return;
+    gDispatchIdx = tid;
 
-    SampleData sdata = SampleCameraRay(pixelIdx);
-    if(sdata.matID != 4294967294){
+    uint2  launchIndex   = tid.xy;
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, launchIndex);
+
+    //SampleData sdata = SampleCameraRay(pixelIdx);
+    SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);
+    //gOutput[uint3(tid.xy, 0)] = float4(abs(sdata.n1),1);
+    //gOutput[uint3(tid.xy, 0)] = float4(sdata.L1,1);
+
+    if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
         uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
 
         Reservoir_DI reservoir = (Reservoir_DI)0;
-
+        float phat_final = 0.0f;
+        uint n_nee_eff = NEE_SAMPLES_DI;
         // NEE sample(s)
-        for(int i = 0; i<NEE_SAMPLES_DI; i++){
+        for (int i = 0; i < NEE_SAMPLES_DI; i++) {
             // Get the sample result
             SampleReturn result = SampleNEE(sdata, waveSeed, seed);
-            // Calculate contribution and p_hat.
-            float3 c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, result.x2, result.n2, result.L2);
-            float p_hat = GetPHat(c);
-            float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_nee;
-            if(isnan(w_mis))
-                w_mis = 0.0f;
-            // Update reservoir
-            UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed);
+            if (any(result.L2 > 0.0f)) {
+                // Calculate contribution and p_hat.
+                float3 c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, result.x2, result.n2, result.L2);
+                float p_hat = GetPHat(c);
+                float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_nee;
+                if (isnan(w_mis)) w_mis = 0.0f;
+                // Update reservoir
+                if (UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed))
+                    phat_final = p_hat;
+            }
         }
+
         bool requires_shadow_ray = true;
         // BSDF sample(s)
         for(int j = 0; j<BSDF_SAMPLES_DI; j++){
@@ -88,8 +133,22 @@ void Pass_init_di_v7() {
                 if(isnan(w_mis) || isinf(w_mis))
                     w_mis = 0.0f;
                 // Update reservoir
-                if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, seed)){
+                if( UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed)){
                     requires_shadow_ray = false;
+                    phat_final = p_hat;
+                }
+                store_n2_init(float3(0,0,0), g_InitialBSDFRays, pixelIdx);
+            }
+            else{
+                if(length(result.n2) > 0.0f){
+                    // Store the sample for the GI pass!
+                    store_dir_init(normalize(result.x2-sdata.x1), g_InitialBSDFRays, pixelIdx);
+                    store_x2_init(result.x2, g_InitialBSDFRays, pixelIdx);
+                    store_n2_init(result.n2, g_InitialBSDFRays, pixelIdx);
+                    store_objID_init(result.objID, g_InitialBSDFRays, pixelIdx);
+                    store_matID_init(result.matID, g_InitialBSDFRays, pixelIdx);
+                    store_pdfB_init(result.pdf_bsdf, g_InitialBSDFRays, pixelIdx);
+                    store_pdfN_init(result.pdf_nee, g_InitialBSDFRays, pixelIdx);
                 }
             }
         }
@@ -97,26 +156,28 @@ void Pass_init_di_v7() {
         // Visbility check for the stored sample, if fail, set W to 0
         float V = 1.0f;
         if(requires_shadow_ray){
-            V = VisibilityCheck(sdata.x1, reservoir.x2_di, sdata.n1);
+            V = VisibilityCheckCP(sdata.x1, reservoir.x2_di, sdata.n1);
         }
         // Calculate W
-        float p_hat = GetPHat(ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_di, reservoir.n2_di, reservoir.L2_di));
-        float W = 0.0f;
-        if (p_hat > EPSILON) {
-            W = V * reservoir.w_sum_di / p_hat;
+        reservoir.W_di = 0.0f;
+        reservoir.L2_di *= V;
+        reservoir.M_di = 1u;
+        if (phat_final > EPSILON) {
+            reservoir.W_di = V * reservoir.w_sum_di / phat_final;
             // Protect against NaN/Inf
-            if (isnan(W) || isinf(W)) {
-                W = 0.0f;
+            if (isnan(reservoir.W_di) || isinf(reservoir.W_di)) {
+                reservoir.W_di = 0.0f;
+                reservoir.L2_di = 0.0f;
             }
         }
-        reservoir.W_di = W;
-
 
         // Save the resulting reservoir to memory
-        store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx);
-        store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx);
+        storeReservoirDI(g_Reservoirs_current_di, pixelIdx, reservoir);
+        /*store_x2_di(reservoir.x2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
+        store_n2_di(reservoir.n2_di, g_Reservoirs_current_di, pixelIdx, reservoir.objID_di);
         store_L2_di(reservoir.L2_di, g_Reservoirs_current_di, pixelIdx);
         store_W_di(reservoir.W_di, g_Reservoirs_current_di, pixelIdx);
-        store_M_di(1, g_Reservoirs_current_di, pixelIdx);
+        store_objID_di(reservoir.objID_di, g_Reservoirs_current_di, pixelIdx);
+        store_M_di(1, g_Reservoirs_current_di, pixelIdx);*/
     }
 }

@@ -6,7 +6,7 @@ inline uint MapPixelID(uint2 dims, int2 lIndex)
     if (lIndex.x < 0 || lIndex.y < 0 ||
         lIndex.x >= int(dims.x) || lIndex.y >= int(dims.y))
     {
-        return uint(-1);          // invalid
+        return 0xFFFFFFFF;          // invalid
     }
 
     // ---------- 2. original mapping ----------
@@ -54,8 +54,8 @@ float SafeMultiplyScalar(float scalar, float vec)
 }
 
 // Conversion to scalar value used for phat
-float GetPHat(float3 v){
-    return length(v);
+inline float GetPHat(float3 v){
+    return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
 }
 
 float3 sRGBGammaCorrection(float3 color)

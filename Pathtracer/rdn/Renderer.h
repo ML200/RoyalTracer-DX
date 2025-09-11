@@ -24,8 +24,33 @@
 
 #include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
 #include <sl_consts.h>     // the sl::kFeature… enum values
+#include <sl_helpers.h>
 #include <sl_dlss.h>       // DLSS Super Resolution API
-#include <sl_dlss_d.h>     // DLSS Ray‑Reconstruction (DLSS‑RR) API
+
+#include "LightTree.h"
+#include "sl_dlss_d.h"
+
+#include <unordered_map>
+#include <iostream>
+
+// Toggle logs at compile time (define LT_ENABLE_LOGS=0 to silence)
+#ifndef LT_ENABLE_LOGS
+#define LT_ENABLE_LOGS 1
+#endif
+
+// Extra-verbose per-leaf/per-node logs (off by default)
+#ifndef LT_LOG_BUILD_SPAM
+#define LT_LOG_BUILD_SPAM 0
+#endif
+
+#if LT_ENABLE_LOGS
+  #define LT_LOG(expr)  do { std::wcout << L"[LightTree] "      << expr << std::endl; } while(0)
+  #define LT_WARN(expr) do { std::wcout << L"[LightTree][WARN] " << expr << std::endl; } while(0)
+#else
+  #define LT_LOG(expr)  do {} while(0)
+  #define LT_WARN(expr) do {} while(0)
+#endif
+
 
 
 #include "../lib/imgui/imgui.h"
@@ -43,6 +68,10 @@ using Microsoft::WRL::ComPtr;
 
 class Renderer : public DXSample {
 public:
+    void BuildGlobalMeshBuffers();
+
+    void CreateTriToLightIdBuffer();
+
   Renderer(UINT width, UINT height, std::wstring name);
 
   void DLSSRR_Init();
@@ -58,16 +87,17 @@ private:
 
     struct PassDesc
     {
-        std::wstring file;          // *.hlsl ( no “|” suffix )
-        Stage        stage   = Stage::RayGen;
-        uint32_t     groupX  = 0;   // for compute
-        uint32_t     groupY  = 0;
-        uint32_t     psoIdx  = UINT32_MAX;   // <── NEW: index in m_csPSOs
+        std::wstring  file;               // *.hlsl
+        Stage         stage   = Stage::RayGen;
+        uint32_t      groupX  = 0, groupY = 0;   // legacy CS
+        uint32_t      psoIdx  = UINT32_MAX;      // legacy CS
+        bool          isWorkGraph = false;       // NEW
+        uint32_t      wgIdx  = UINT32_MAX;       // NEW – index into state-object array
     };
 
 
 
-    Renderer::PassDesc ParsePass(const std::wstring& token)
+    PassDesc ParsePass(const std::wstring& token)
     {
         PassDesc p{};
 
@@ -92,7 +122,16 @@ private:
         if (tail == L"rg" || tail == L"raygen")
             return p;                               // still Stage::RayGen
 
-        // compute shader tag  “cs:WxH”
+        // --- work graph pass “wg:WxH” ---
+        if (tail.rfind(L"wg:",0)==0)                // “|wg:16x16”
+        {
+            p.stage        = Stage::Compute;        // will be scheduled like CS
+            p.isWorkGraph  = true;
+            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY); // only used for sanity
+            return p;
+        }
+
+        // classic compute shader tag  “cs:WxH”
         if (tail.rfind(L"cs:", 0) == 0)
         {
             p.stage = Stage::Compute;
@@ -105,43 +144,71 @@ private:
         throw std::runtime_error("Unknown stage spec in pass string");
     }
 
-
     // --- NEW: dynamic pass control ------------------------------------------------
     std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
     std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
     std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;    // compiled DXIL blobs
     // -----------------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------------
+//  Global arrays used by EvalSurface() in the inline‑ray‑query path
+// -----------------------------------------------------------------------------
+struct BTriVertex          // same layout as in HLSL
+{
+    DirectX::XMFLOAT3 vertex;
+    DirectX::XMFLOAT4 normal;      // xyz = normal,  w = optional matID
+};
+
+ComPtr<ID3D12Resource> m_vertexGlobal;   // new
+ComPtr<ID3D12Resource> m_indexGlobal;    // new
+UINT                   m_totalVertexCount = 0;
+UINT                   m_totalIndexCount  = 0;
+// -----------------------------------------------------------------------------
+
+
   static const UINT FrameCount = 2;
 
     // Streamline frame & viewport tracking
     sl::FrameToken*     m_frameToken     = nullptr;
     sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
+    // ──────────────────────────────────────────────────────────────
+    sl::DLSSDOptions     m_dlssdOptions   {};   // user-driven
+    sl::Constants        m_slConstants    {};   // per-frame
+    // ──────────────────────────────────────────────────────────────
 
     std::vector<PassDesc>                           m_passes;      // parsed list
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
+    std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
+
+    struct WgRuntimeData
+    {
+        D3D12_PROGRAM_IDENTIFIER        id;
+        D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing;
+        ComPtr<ID3D12Resource>          backingRes;
+    };
+    std::vector<WgRuntimeData> m_wgRuntime;
 
 
   // Pipeline objects.
   CD3DX12_VIEWPORT m_viewport;
   CD3DX12_RECT m_scissorRect;
   ComPtr<IDXGISwapChain3> m_swapChain;
-  ComPtr<ID3D12Device5> m_device;
+  ComPtr<ID3D12Device10> m_device;
   ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
-  ComPtr<ID3D12CommandAllocator> m_commandAllocator;
+    ComPtr<ID3D12CommandAllocator> m_commandAllocators[FrameCount];
   ComPtr<ID3D12CommandQueue> m_commandQueue;
   ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12RootSignature>   m_computeSignature;
   ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
   ComPtr<ID3D12PipelineState> m_pipelineState;
-  ComPtr<ID3D12GraphicsCommandList4> m_commandList;
+  ComPtr<ID3D12GraphicsCommandList10> m_commandList;
   UINT m_rtvDescriptorSize;
 
   // App resources.
   ComPtr<ID3D12Resource> m_vertexBuffer;
   D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
 
-
+    bool g_keys[256] = {};
   // Synchronization objects.
   UINT m_frameIndex;
   HANDLE m_fenceEvent;
@@ -150,12 +217,17 @@ private:
 
   void LoadPipeline();
   void LoadAssets();
-  void PopulateCommandList();
+
+    void OnInitTransform();
+
+    void PopulateCommandList();
   void WaitForPreviousFrame();
 
   void CheckRaytracingSupport();
 
-  virtual void OnKeyUp(UINT8 key);
+    void OnKeyDown(UINT8 key);
+
+    virtual void OnKeyUp(UINT8 key);
   bool m_raster = true;
 
   // #DXR
@@ -175,20 +247,6 @@ private:
     std::vector<UINT> m_instanceModelIndices;
     std::vector<UINT> m_materialIDOffsets;
 
-    // Structure to hold emissive triangle data
-    struct LightTriangle {
-        XMFLOAT3 x;
-        float    cdf;       // 16 bytes
-        XMFLOAT3 y;
-        UINT     instanceID; // 16 bytes
-        XMFLOAT3 z;
-        float    weight;       // 16 bytes
-        XMFLOAT3 emission;
-        UINT     triCount;   // 16 bytes
-        float    totalWeight;       // 16 bytes
-        XMFLOAT3 pad0;
-    };
-
     // ── ALIAS TABLE (SoA) ───────────────────────────────\n
     std::vector<float> m_aliasProb;
     // probability array (R32_FLOAT)\n
@@ -197,26 +255,39 @@ private:
     ComPtr<ID3D12Resource> m_aliasProbBuffer;
     // default‑heap GPU copies\n
     ComPtr<ID3D12Resource> m_aliasIdxBuffer;
+    ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
+
+    lt::LightTreeBuilder m_lightTree;
 
     struct Reservoir_DI
     {
-        uint8_t  pad[40]; // 48 bytes
+        uint8_t  pad[100];
     };
 
     struct Reservoir_GI
     {
-        uint8_t  pad[40]; // 56 bytes :(
+        uint8_t  pad[100];
     };
 
     struct SampleData
     {
-        uint8_t  pad[60]; // 48 bytes
+        uint8_t  pad[100];
+    };
+
+    struct InitialBSDFRay
+    {
+        uint8_t  pad[100];
     };
 
 
 // Buffer to store emissive triangles
     std::vector<LightTriangle> m_emissiveTriangles;
     ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
+
+    // Per-instance base into the tri->light map and the map itself
+    std::vector<uint32_t>           m_instTriOffset;    // size = #instances
+    std::vector<uint32_t>           m_triToLightId;     // size = sum over instances of tri-count
+    ComPtr<ID3D12Resource>          m_triToLightIdBuffer;
 
 
     /// Create the acceleration structure of an instance
@@ -267,10 +338,14 @@ private:
   // to use in the Shader Binding Table
   ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
 
+    std::vector< ComPtr<ID3D12StateObject>          > m_wgStateObjects;
+    std::vector< ComPtr<ID3D12WorkGraphProperties>  > m_wgProps;
+
   // #DXR
   void CreateRaytracingOutputBuffer();
   void CreateShaderResourceHeap();
   ComPtr<ID3D12Resource> m_outputResource;
+    ComPtr<ID3D12Resource> m_dlssOutputBuffer;
     ComPtr<ID3D12Resource> m_permanentDataTexture;
     ComPtr<ID3D12Resource> m_scratchPing;
     ComPtr<ID3D12Resource> m_svgfConstBuffer;
@@ -359,6 +434,10 @@ private:
     XMMATRIX prevObjectToWorldInverse;
     XMMATRIX objectToWorldNormal;
     XMMATRIX prevObjectToWorldNormal;
+      UINT  indexBase;
+      UINT  vertexBase;
+      UINT  materialBase;
+      UINT  triToLightBase;
   };
 
     //Frametime
@@ -369,6 +448,13 @@ private:
 
   ComPtr<ID3D12Resource> m_instanceProperties;
   ComPtr<ID3D12Resource> m_instancePropertiesPrevious;
+    struct GeometryOffsets
+    {
+        UINT vertexBase;
+        UINT indexBase;
+        UINT materialBase;
+    };
+    std::vector<GeometryOffsets> m_geoOffsets;
   void CreateInstancePropertiesBuffer();
   void UpdateInstancePropertiesBuffer();
 
@@ -389,5 +475,5 @@ private:
   void CreateAliasBuffers();
 
   float
-    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor);
+    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
 };
