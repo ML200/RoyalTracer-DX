@@ -126,34 +126,36 @@ void main(uint3 tid : SV_DispatchThreadID)
         float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx) * dist2 /dot(normalize(-ldir), normal); // Convert to solid angle space
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
-            // NEE samples
-            for(int j = 0; j<NEE_SAMPLES_GI; j++){
-                // Get the sample result
-                SampleReturn result = SampleNEE_gen(position, normal, matID, outgoing, waveSeed, seed);
-                if(any(result.L2 > 0.0f)){
-                    // Calculate contribution and p_hat.
-                    float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
-                    float p_hat = GetPHat(c * tp_full * result.L2);
-                    float pdf = result.pdf_nee * pdf_full;
-                    float w_mis = /*MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) */ p_hat / pdf;// * VisibilityCheckCP(position, result.x2, normal);
-                    if(isnan(w_mis))
-                        w_mis = 0.0f;
+            {
+                // NEE samples
+                for(int j = 0; j<NEE_SAMPLES_GI; j++){
+                    // Get the sample result
+                    SampleReturn result = SampleNEE_gen(position, normal, matID, outgoing, waveSeed, seed);
+                    if(any(result.L2 > 0.0f)){
+                        // Calculate contribution and p_hat.
+                        float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, float3(1,1,1));
+                        float p_hat = GetPHat(c * tp_full * result.L2);
+                        float pdf = result.pdf_nee * pdf_full;
+                        float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat / pdf;// * VisibilityCheckCP(position, result.x2, normal);
+                        if(isnan(w_mis))
+                            w_mis = 0.0f;
 
-                    float3 L2 = result.L2;
-                    float3 V2_temp = V2;
-                    if(i != 0)
-                        L2 *= c * tp_partial;
-                    else {
-                        V2_temp = position - result.x2;
-                        float3 V2_norm = normalize(V2_temp);
-                        L2 *= G_term(normal, V2_norm);
-                    }
-                    // Update reservoir
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, seed)){
-                        p_hat_final = p_hat;
-                        s_x1 = position;
-                        s_x2 = result.x2;
-                        s_n1 = normal;
+                        float3 L2 = result.L2;
+                        float3 V2_temp = V2;
+                        if(i != 0)
+                            L2 *= c * tp_partial;
+                        else {
+                            V2_temp = position - result.x2;
+                            float3 V2_norm = normalize(V2_temp);
+                            L2 *= G_term(normal, V2_norm);
+                        }
+                        // Update reservoir
+                        if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, seed)){
+                            p_hat_final = p_hat;
+                            s_x1 = position;
+                            s_x2 = result.x2;
+                            s_n1 = normal;
+                        }
                     }
                 }
             }

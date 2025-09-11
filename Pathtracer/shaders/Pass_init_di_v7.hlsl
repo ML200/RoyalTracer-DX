@@ -103,22 +103,23 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         Reservoir_DI reservoir = (Reservoir_DI)0;
         float phat_final = 0.0f;
+        uint n_nee_eff = NEE_SAMPLES_DI;
         // NEE sample(s)
-        for(int i = 0; i<NEE_SAMPLES_DI; i++){
+        for (int i = 0; i < NEE_SAMPLES_DI; i++) {
             // Get the sample result
             SampleReturn result = SampleNEE(sdata, waveSeed, seed);
-            if(any(result.L2 > 0.0f)){
+            if (any(result.L2 > 0.0f)) {
                 // Calculate contribution and p_hat.
                 float3 c = ReconnectDI(sdata.x1, sdata.n1, sdata.o, sdata.matID, result.x2, result.n2, result.L2);
                 float p_hat = GetPHat(c);
                 float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_DI, BSDF_SAMPLES_DI) * p_hat / result.pdf_nee;
-                if(isnan(w_mis))
-                    w_mis = 0.0f;
+                if (isnan(w_mis)) w_mis = 0.0f;
                 // Update reservoir
-                if(UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed))
+                if (UpdateReservoirDI(reservoir, w_mis, 0, result.x2, result.n2, result.L2, result.objID, seed))
                     phat_final = p_hat;
             }
         }
+
         bool requires_shadow_ray = true;
         // BSDF sample(s)
         for(int j = 0; j<BSDF_SAMPLES_DI; j++){
