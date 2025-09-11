@@ -95,10 +95,10 @@ inline void EvalSurface(
     float3 vn1 = BTriVertex[idx1].normal.xyz;
     float3 vn2 = BTriVertex[idx2].normal.xyz;
 
-    float3 smoothN =flatN;
-    //(all(vn0 != 0.0f) ? vn0 : flatN) * bary.x +
-    //(all(vn1 != 0.0f) ? vn1 : flatN) * bary.y +
-    //(all(vn2 != 0.0f) ? vn2 : flatN) * bary.z;
+    float3 smoothN = flatN;
+    /*(length(vn0) != 0.0f ? vn0 : flatN) * bary.x +
+    (length(vn1) != 0.0f ? vn1 : flatN) * bary.y +
+    (length(vn2) != 0.0f ? vn2 : flatN) * bary.z;*/
 
     float3 n = normalize(smoothN);
 

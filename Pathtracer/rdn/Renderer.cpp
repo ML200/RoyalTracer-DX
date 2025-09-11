@@ -477,7 +477,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"city_v3.obj", "smoothMonke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -540,13 +540,13 @@ void Renderer::LoadAssets() {
 void Renderer::OnInitTransform() {
     XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 2.f, -100.0f); // centre.y = 1
+    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 2.f, -4.0f); // centre.y = 1
 
     m_instances[2].second = scale * selfRotation * translate;
 
     XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 4.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
@@ -1100,7 +1100,7 @@ void Renderer::CreateAccelerationStructures() {
 
     // Build & upload light tree
     lt::LightTreeBuilder::Settings cfg;
-    cfg.maxLeafTris = 16;
+    cfg.maxLeafTris = 4;
     cfg.useTwoLevel = true;
 
     // Build per‑instance object→world matrices for the light tree
