@@ -9,7 +9,7 @@
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 1
-#define BSDF_SAMPLES_GI 10
+#define BSDF_SAMPLES_GI 2
 
 #define GI_ADDITIONAL_PATH_COUNT 0
 

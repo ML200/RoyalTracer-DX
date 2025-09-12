@@ -577,7 +577,7 @@ void Renderer::OnUpdate() {
     glm::vec3 right = glm::normalize(glm::cross(fwd, up));
 
     glm::vec3 move(0.0f);
-    float     speed = 50.0f;                // metres/second
+    float     speed = 5.0f;                // metres/second
 
     if (g_keys['W'])          move +=  fwd;
     if (g_keys['S'])          move -=  fwd;
