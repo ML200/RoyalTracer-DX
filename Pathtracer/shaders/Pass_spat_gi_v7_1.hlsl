@@ -133,7 +133,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.5f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
                         !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
-                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.1f) &&
+                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.5f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -205,7 +205,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float w_n = mis_n * p_hat_from * rdi_r.W_gi;
 
                 // Update the reservoir
-                if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_GI ,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, seed)){
+                if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_GI ,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, 0, 0, 0, seed)){
                     contrib_final = contrib_n;
                 }
 

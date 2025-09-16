@@ -477,7 +477,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "iowa.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);

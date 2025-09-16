@@ -72,7 +72,7 @@ inline float LT_BranchProb(float IL, float IR)
 {
     float sum = IL + IR;
     float prob = (sum > 0.0f) ? (IL / sum) : 0.5f;
-    return clamp(prob, 0.1f, 0.9f);
+    return clamp(prob, 0.01f, 0.99f);
 }
 
 // ============================================================================
