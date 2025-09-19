@@ -255,6 +255,38 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
     return accum;  // fully normalised, no extra division needed
 }
 
+// Returns UV in [0,1]^2 with a TOP-LEFT origin (y flipped), or (-1,-1) on failure.
+// Use this if you later convert to pixel coords the same way your other code does.
+inline float2 GetLastFrameUV(
+    float3   worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,   // include previous frame's jitter
+    uint     objID)
+{
+    // current world -> local (using provided inverse)
+    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    // local -> previous world (using previous instance transform)
+    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
+
+    // previous world -> previous clip
+    float4 clipPos = mul(prevProjection, mul(prevView, prevWorldPos));
+    if (clipPos.w <= 0.0f)
+        return float2(-1.0f, -1.0f);
+
+    // clip -> NDC -> UV
+    float2 ndc = clipPos.xy / clipPos.w;          // [-1,1]
+    float2 uv  = ndc * 0.5f + 0.5f;               // [0,1], bottom-left origin
+    uv.y       = 1.0f - uv.y;                     // flip to top-left origin
+
+    // bounds check
+    if (any(uv < 0.0f) || any(uv > 1.0f))
+        return float2(-1.0f, -1.0f);
+
+    return uv;
+}
+
+
+
 
 //--------------------------------------------------------------------
 //  Bilinear reprojection with inverse-distance weighting

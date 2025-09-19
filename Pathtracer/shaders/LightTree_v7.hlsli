@@ -1,5 +1,5 @@
 #ifndef LT_HAVE_LEAF_ALIAS
-#define LT_HAVE_LEAF_ALIAS 0
+#define LT_HAVE_LEAF_ALIAS 1
 #endif
 
 // ---------------------------------------------------------------------------
