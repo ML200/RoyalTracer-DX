@@ -9,7 +9,7 @@
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 1
-#define BSDF_SAMPLES_GI 10
+#define BSDF_SAMPLES_GI 3
 
 #define GI_ADDITIONAL_PATH_COUNT 0
 
@@ -21,29 +21,29 @@
 #define SPAT_RAD_MAX 32
 #define SPAT_RAD_MIN 24
 
-#define SPAT_COUNT_MAX_DI 4
-#define SPAT_COUNT_MIN_DI 2
-#define SPAT_TRIS_DI 1
+#define SPAT_COUNT_MAX_DI 2
+#define SPAT_COUNT_MIN_DI 1
+#define SPAT_TRIS_DI 2
 
 
 // ___ GI Reuse ___
 #define TEMP_MCAP_GI 30
 
 #define SPAT_MCAP_GI 120
-#define SPAT_EXP_GI 0.9f
+#define SPAT_EXP_GI 1.3f
 #define SPAT_RAD_MAX_GI 32
-#define SPAT_RAD_MIN_GI 32
+#define SPAT_RAD_MIN_GI 24
 
 #define SPAT_COUNT_MAX_GI 4
 #define SPAT_COUNT_MIN_GI 2
-#define SPAT_TRIS_GI 1
+#define SPAT_TRIS_GI 9
 
 #define SPAT_MIN_M_GI 5
 #define SPAT_BETA_GI 1.0f
 
 
 // Denoiser settings spatial
-/*#define PLANE_DISTANCE_THRESHOLD 0.02f
+#define PLANE_DISTANCE_THRESHOLD 0.02f
 #define NORMAL_POWER 16.0f
 #define ALBEDO_SIGMA 0.2f
 #define SIGMA_SMOOTH   1.0f
@@ -53,4 +53,4 @@
 #define COLOR_RANGE_REL  .07f
 
 // Denoiser settings temporal
-#define ROUGHNESS_DECAY 0.05f*/
+#define ROUGHNESS_DECAY 0.05f

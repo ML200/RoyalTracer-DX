@@ -14,13 +14,19 @@ inline bool RejectNormal_DI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
     return (similarity < threshold);
 }
-inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float threshold)
+/*inline bool RejectDistance_DI(float3 x1, float3 x2, float3 camPos, float threshold)
 {
     float d1 = length(x1 - camPos);
     float d2 = length(x2 - camPos);
 
     float relativeDifference = abs(d1 - d2) / max(d1, d2);
     return relativeDifference > threshold;
+}*/
+
+inline bool RejectDistance_DI(float3 x1, float3 x2, float3 normal, float threshold)
+{
+    float dist = abs(dot(x2 - x1, normal));
+    return dist > threshold;
 }
 
 inline bool IsValidReservoir_DI(Reservoir_DI r){

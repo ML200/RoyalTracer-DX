@@ -99,15 +99,19 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi_r;
         //uint tempPixelIdx = 0xFFFFFFFF;
 
-uint tempPixelIdx = MapPixelID(dims, GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID));
-sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
-bool valid =
-    (all(sdata_r.L1 < EPSILON) &&
-    IsValidReservoir_DI(rdi_r) &&
-    !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
-    (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
-    (sdata_r.matID == sdata.matID));
+        int2 tempPixelCoordinate = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+        if(tempPixelCoordinate.x == -1 && tempPixelCoordinate.y == -1)
+            tempPixelCoordinate = launchIndex;
+
+        uint tempPixelIdx = MapPixelID(dims, tempPixelCoordinate);
+        sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+        rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
+        bool valid =
+                (all(sdata_r.L1 < EPSILON) &&
+                IsValidReservoir_DI(rdi_r) &&
+                !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
+                (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
+                (sdata_r.matID == sdata.matID));
 
         // Set the pixel id to the best option in the bilinear patch. Select the one with the most similar normal AND position
         /*int2 outPixels[4];

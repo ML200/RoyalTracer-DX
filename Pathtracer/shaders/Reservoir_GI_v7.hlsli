@@ -10,6 +10,9 @@ struct Reservoir_GI
     uint M_gi;
     uint objID_gi;
     uint matID_gi;
+    uint rSeed_gi; // Random seed
+    float J_gi; // Jacobian (pdf product)
+    uint rIndex_gi; // Index of the reconnection vertex
 };
 
 float JacobianDeterminant( float3 x1_c,
@@ -154,6 +157,9 @@ bool UpdateReservoirGI(
     in float3 V2,
     in uint matID,
     in uint objID,
+    uint rSeed, // Seed used for replaying
+    float J, // Jacobian of the path (basically just the sequential pdf of replayed path)
+    uint rIndex, // Index of the reconnection vertex
     inout uint2 seed
     )
 {
@@ -169,6 +175,9 @@ bool UpdateReservoirGI(
         reservoir.V2_gi = V2;
         reservoir.objID_gi = objID;
         reservoir.matID_gi = matID;
+        reservoir.rSeed_gi = rSeed;
+        reservoir.J_gi = J;
+        reservoir.rIndex_gi = rIndex;
         return true;
     }
     return false;
@@ -325,8 +334,9 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
         0–15   pack1  : { x2.xyz , n2_enc }                     float4
        16–31   pack2  : { L2_enc , V2_enc , objID , matID|M }   float4
+       32–47   pack3  : { W_gi   , rSeed_gi , rIndex_gi , J_gi } float4
 ─────────────────────────────────────────────────────────────────────────────*/
-static const uint BYTES_GI    = 36u;
+static const uint BYTES_GI    = 48u;
 
 static const uint O_GI_PACK1  = 0u;     // float4
 static const uint O_GI_PACK2  = 16u;    // float4
@@ -344,27 +354,26 @@ void  UnpackMatID_M(uint v, out uint matID, out uint M)
 /*─────────────────────────────────────────────────────────────────────────────
    FAST WHOLE-RESERVOIR STORE / LOAD
 ─────────────────────────────────────────────────────────────────────────────*/
-void storeReservoirGI(RWByteAddressBuffer buf,
-                      uint                pixelIdx,
-                      const Reservoir_GI  r)
+void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
     uint base = pixelBaseAddrGI(pixelIdx);
 
     // pack1 : x2.xyz | n2_enc
     float3 xO = WorldToObjectPos (r.objID_gi, r.x2_gi);
     float3 nO = WorldToObjectNrm(r.objID_gi, r.n2_gi);
-    buf.Store4(base + O_GI_PACK1,
-               uint4(asuint(xO), PackNormal(nO)));
+    buf.Store4(base + O_GI_PACK1, uint4(asuint(xO), PackNormal(nO)));
 
     // pack2 : L2_enc | V2_enc | objID | matID‖M
-    buf.Store4(base + O_GI_PACK2,
-               uint4(PackRGB9E5(r.L2_gi),
-                     PackNormal (r.V2_gi),
-                     r.objID_gi,
-                     PackMatID_M(r.matID_gi, r.M_gi)));
+    buf.Store4(base + O_GI_PACK2, uint4(PackRGB9E5(r.L2_gi),
+                                        PackNormal (r.V2_gi),
+                                        r.objID_gi,
+                                        PackMatID_M(r.matID_gi, r.M_gi)));
 
-    // pack3 : W_gi
-    buf.Store(base + O_GI_PACK3, asuint(r.W_gi));
+    // pack3 : W_gi | rSeed_gi | rIndex_gi | J_gi
+    buf.Store4(base + O_GI_PACK3, uint4(asuint(r.W_gi),
+                                        r.rSeed_gi,
+                                        r.rIndex_gi,
+                                        asuint(r.J_gi)));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -373,19 +382,22 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     uint4 p1 = buf.Load4(base + O_GI_PACK1);
     uint4 p2 = buf.Load4(base + O_GI_PACK2);
-    uint  wU = buf.Load (base + O_GI_PACK3);
+    uint4 p3 = buf.Load4(base + O_GI_PACK3);
 
     Reservoir_GI r;
     r.objID_gi = p2.z;
     UnpackMatID_M(p2.w, r.matID_gi, r.M_gi);
 
-    r.x2_gi  = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
-    r.n2_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
-    r.L2_gi  = UnpackRGB9E5(p2.x);
-    r.V2_gi  = UnpackNormal (p2.y);
-    r.W_gi   = asfloat(wU);
+    r.x2_gi     = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
+    r.n2_gi     = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
+    r.L2_gi     = UnpackRGB9E5(p2.x);
+    r.V2_gi     = UnpackNormal (p2.y);
+    r.W_gi      = asfloat(p3.x);
+    r.rSeed_gi  = p3.y;
+    r.rIndex_gi = p3.z;
+    r.J_gi      = asfloat(p3.w);
 
-    r.w_sum_gi = 0.0f;
+    r.w_sum_gi = 0.0f; // transient
     return r;
 }
 
@@ -414,8 +426,17 @@ uint   load_matID_gi(RWByteAddressBuffer b, uint id)
 uint   load_M_gi(RWByteAddressBuffer b, uint id)
 { return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).w >> 16; }
 
-float load_W_gi(RWByteAddressBuffer b, uint idx)
-{ return asfloat(b.Load(pixelBaseAddrGI(idx) + O_GI_PACK3)); }
+float load_W_gi (RWByteAddressBuffer b, uint id)
+{ return asfloat(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK3).x); }
+
+uint  load_rSeed_gi (RWByteAddressBuffer b, uint id)
+{ return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK3).y; }
+
+uint  load_rIndex_gi (RWByteAddressBuffer b, uint id)
+{ return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK3).z; }
+
+float load_J_gi (RWByteAddressBuffer b, uint id)
+{ return asfloat( b.Load4(pixelBaseAddrGI(id)+O_GI_PACK3).w); }
 
 /*─────────────────────────────────────────────────────────────────────────────
    FAST GROUP LOADERS  (one read when you need both values)
