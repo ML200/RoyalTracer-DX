@@ -97,7 +97,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint2 seed = GetSeed(pixelIdx, time, 1);
     uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
 
-    if(any(load_n2_init(g_InitialBSDFRays, pixelIdx) != 0.0f)){
+    // Load sample data
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    // We need position, normal, outgoing, matID
+    // Get a sample
+    SampleReturn result_init = SampleBSDF_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
+
+
+    if(length(result_init.n2) > 0.0f){
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
         float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
         // Postponed shadow ray
@@ -110,20 +117,20 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Store path variables
         // Variables to cache path data
-        float3 position = load_x2_init(g_InitialBSDFRays, pixelIdx);
-        float3 normal = normalize(load_n2_init(g_InitialBSDFRays, pixelIdx));
-        float3 outgoing = normalize(load_x1(g_sample_current, pixelIdx) - position);
-        uint matID = load_matID_init(g_InitialBSDFRays, pixelIdx);
+        float3 position = result_init.x2/*load_x2_init(g_InitialBSDFRays, pixelIdx)*/;
+        float3 normal = result_init.n2/*normalize(load_n2_init(g_InitialBSDFRays, pixelIdx))*/;
+        float3 outgoing = normalize(sdata.x1 - position);
+        uint matID = result_init.matID/*load_matID_init(g_InitialBSDFRays, pixelIdx)*/;
         // full path throughput
-        float3 tp_full = ReconnectGISingle(load_x1(g_sample_current, pixelIdx), load_n1(g_sample_current, pixelIdx), load_o(g_sample_current, pixelIdx), load_matID(g_sample_current, pixelIdx), position, normal, float3(1,1,1)); // reconnect without L
+        float3 tp_full = ReconnectGISingle(sdata.x1/*load_x1(g_sample_current, pixelIdx)*/, sdata.n1/*load_n1(g_sample_current, pixelIdx)*/, sdata.o/*load_o(g_sample_current, pixelIdx)*/, sdata.matID/*load_matID(g_sample_current, pixelIdx)*/, position, normal, float3(1,1,1)); // reconnect without L
 
         // partial path throughput (from x3 onward, used to set L2 in the reservoir)
         float3 tp_partial = float3(1,1,1);
 
         // Full path pdf of a given subpath
-        float3 ldir = position - load_x1(g_sample_current, pixelIdx);
+        float3 ldir = position - sdata.x1/*load_x1(g_sample_current, pixelIdx)*/;
         float dist2 = length(ldir) * length(ldir);
-        float pdf_full = load_pdfB_init(g_InitialBSDFRays, pixelIdx) * dist2 /dot(normalize(-ldir), normal); // Convert to solid angle space
+        float pdf_full = result_init.pdf_bsdf;///*load_pdfB_init(g_InitialBSDFRays, pixelIdx)*/ * dist2 /dot(normalize(-ldir), normal); // Convert to solid angle space
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             {
@@ -150,7 +157,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                             L2 *= G_term(normal, V2_norm);
                         }
                         // Update reservoir
-                        if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, seed)){
+                        if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, seed)){
                             p_hat_final = p_hat;
                             s_x1 = position;
                             s_x2 = result.x2;
@@ -184,10 +191,10 @@ void main(uint3 tid : SV_DispatchThreadID)
                         L2 *= G_term(normal, V2_norm);
                     }
                     // Update reservoir with the sub path
-                    /*if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0,0, seed)){
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
-                    }*/
+                    }
                     break;
                 }
                 else{
@@ -228,10 +235,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
         reservoir.W_gi = W / (GI_ADDITIONAL_PATH_COUNT + 1.0f);
 
-        reservoir.objID_gi = load_objID_init(g_InitialBSDFRays, pixelIdx);
-        reservoir.matID_gi = load_matID_init(g_InitialBSDFRays, pixelIdx);
-        reservoir.x2_gi = load_x2_init(g_InitialBSDFRays, pixelIdx);
-        reservoir.n2_gi = load_n2_init(g_InitialBSDFRays, pixelIdx);
+        reservoir.objID_gi = result_init.objID/*load_objID_init(g_InitialBSDFRays, pixelIdx)*/;
+        reservoir.matID_gi = result_init.matID/*load_matID_init(g_InitialBSDFRays, pixelIdx)*/;
+        reservoir.x2_gi = result_init.x2/*load_x2_init(g_InitialBSDFRays, pixelIdx)*/;
+        reservoir.n2_gi = result_init.n2/*load_n2_init(g_InitialBSDFRays, pixelIdx)*/;
         reservoir.M_gi = 1;
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);

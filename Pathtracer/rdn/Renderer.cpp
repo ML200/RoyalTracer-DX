@@ -204,17 +204,18 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:16x16",
-        /*L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
         L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
         L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
-        L"barrier",*/
-        //L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
+        L"barrier",
+        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
         //L"barrier",
         //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
@@ -477,7 +478,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "smoothMonke.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "iowa.obj", "monke_2.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -577,7 +578,7 @@ void Renderer::OnUpdate() {
     glm::vec3 right = glm::normalize(glm::cross(fwd, up));
 
     glm::vec3 move(0.0f);
-    float     speed = 50.0f;                // metres/second
+    float     speed = 0.5f;                // metres/second
 
     if (g_keys['W'])          move +=  fwd;
     if (g_keys['S'])          move -=  fwd;
@@ -606,19 +607,19 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    /*float angle = static_cast<float>(m_time) * 0.00f;
+    /*float angle = static_cast<float>(m_time) * 0.01f;
     float r     = 4.0f;
 
-    float x = 4.0f;//cosf(angle) * r + 1.0f;   // + centre.x
-    float z = 4.0f;//sinf(angle) * r + 0.0f;   // + centre.z
+    float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
+    float z = 0.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
-    XMMATRIX scale        = XMMatrixScaling(0.5f, 0.5f, 0.5f);
-    XMMATRIX selfRotation = XMMatrixRotationY(angle);
-    XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z); // centre.y = 1
+    XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX selfRotation = XMMatrixRotationX(angle);
+    XMMATRIX translate    = XMMatrixTranslation(x, 4.f, z);
 
-    m_instances[2].second = scale * selfRotation * translate;
+    m_instances[1].second = scale * selfRotation * translate;*/
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 1.f);
 
@@ -1471,7 +1472,7 @@ void Renderer::CreateRaytracingPipeline()
     // ─────────────────────────────────────────────────────────────────────────
     // 2)  Libraries:  miss / hit / shadow
     // ─────────────────────────────────────────────────────────────────────────
-    m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v6.hlsl");
+    m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v7.hlsl");
     m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v7.hlsl");
     m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
 
@@ -1566,14 +1567,14 @@ void Renderer::CreateRaytracingOutputBuffer() {
             nullptr,
             IID_PPV_ARGS(&m_permanentDataTexture)));
 
-    // ──  REPLACE the old 'desc' block used for m_scratchPing  ─────────────
+    // ──  m_scratchPing  ─────────────
     D3D12_RESOURCE_DESC desc = {};
     desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     desc.Width            = GetWidth();
     desc.Height           = GetHeight();
-    desc.DepthOrArraySize = 16;                       // ← # slices you need
+    desc.DepthOrArraySize = 16;                       // ← slices
     desc.MipLevels        = 1;
-    desc.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;  // HDR, 64-bit total
+    desc.Format           = DXGI_FORMAT_R32G32B32A32_FLOAT;  // HDR, 64-bit total
     desc.SampleDesc.Count = 1;
     desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -1584,7 +1585,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
         &desc,
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         nullptr,
-        IID_PPV_ARGS(&m_scratchPing)));       // same variable, bigger now
+        IID_PPV_ARGS(&m_scratchPing)));
 
 }
 
@@ -1989,7 +1990,7 @@ void Renderer::CreateShaderResourceHeap() {
 
     D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
     scratchDesc.ViewDimension            = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-    scratchDesc.Format                   = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    scratchDesc.Format                   = DXGI_FORMAT_R32G32B32A32_FLOAT;
     scratchDesc.Texture2DArray.MipSlice  = 0;
     scratchDesc.Texture2DArray.FirstArraySlice = 0;
     scratchDesc.Texture2DArray.ArraySize = 16;       // same as DepthOrArraySize

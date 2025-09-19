@@ -48,7 +48,7 @@ void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flat
 float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
     // For Lambertian reflection, the BRDF is constant
     // BRDF = Kd / PI
-    return materials[mID].Ks.xyz / PI;
+    return materials[mID].Kd.xyz / PI;
 }
 
 // Calculate the PDF for a given sample direction
