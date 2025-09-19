@@ -94,7 +94,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load the sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     // Store SampleData temporally
-    storeSampleData(g_sample_last, pixelIdx, sdata);
+    //storeSampleData(g_sample_last, pixelIdx, sdata);
 
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
@@ -131,7 +131,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         IsValidReservoir_DI_opt(rdi_r.n2_di, rdi_r.M_di) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
                         !RejectNormal_DI(sdata.n1, load_n1(g_sample_current, iID), 0.9f) &&
-                        !RejectDistance_DI(sdata.x1, load_x1(g_sample_current, iID), mul(viewI, float4(0, 0, 0, 1)).xyz, 0.1f) &&
+                        !RejectDistance_DI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.05f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedDI){
                         nIds[i] = iID;

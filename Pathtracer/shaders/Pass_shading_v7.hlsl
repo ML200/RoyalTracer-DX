@@ -21,7 +21,7 @@ static uint3 gDispatchIdx;
 
 RWTexture2DArray<half4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
-RWTexture2DArray<half4> gScratchPing         : register(u8);
+RWTexture2DArray<float4> gScratchPing         : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
@@ -96,7 +96,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     for (uint i = 0; i < 4; ++i) {
         if (any(view[i] != prevView[i])) cameraChanged = true;
     }
-    static const float MAX_SAMPLES     = 10000.0h;  // tune to taste
+    static const float MAX_SAMPLES     = 100000.0h;  // tune to taste
 
     float4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
     float3 prevAvg     = prev.rgb;
@@ -118,7 +118,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     // --- store back to the permanent UAV ----------------------------------------
-    gPermanentData[DTid.xy] = float4(newAvg, newSamples);
+    //gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);
@@ -127,12 +127,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 finalColor = sRGBGammaCorrection(accumulation);
     gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 
-    // ── grid debug slice along the primary ray (compile-time toggled) ────────
-    /*uint2  launchIndex   = DTid.xy;
+    // Denoiser buffers etc.
+    uint2  launchIndex   = DTid.xy;
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, launchIndex);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    float3 col = sdata.n1;
-    gOutput[uint3(DTid.xy, 0)] = float4(col, 1);
-    return;*/
+    SampleData sdata_l = loadSampleData(g_sample_last, pixelIdx);
+
+    gScratchPing[uint3(DTid.xy, 2)] = length(materials[sdata.matID].Ke) > 0.0f ? float4(materials[sdata.matID].Ke, 0) : materials[sdata.matID].Kd;
+    gScratchPing[uint3(DTid.xy, 3)] = float4(length(materials[sdata.matID].Ke) > 0.0f ? 1 : 0, materials[sdata.matID].Pr_Pm_Ps_Pc.x, sdata.objID, 0);
+    gScratchPing[uint3(DTid.xy, 4)] = float4(sdata.n1,0);
+
+    Reservoir_GI rgi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, rgi.M_gi);
+    gScratchPing[uint3(DTid.xy, 6)] = float4(sdata_l.x1,0);
+
+    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 0);
 }
