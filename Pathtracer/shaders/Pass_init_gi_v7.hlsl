@@ -233,7 +233,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 reservoir.n2_gi = 0; // Dont pick this sample, its nan!
             }
         }
-        reservoir.W_gi = W / (GI_ADDITIONAL_PATH_COUNT + 1.0f);
+        reservoir.W_gi = W;
 
         reservoir.objID_gi = result_init.objID/*load_objID_init(g_InitialBSDFRays, pixelIdx)*/;
         reservoir.matID_gi = result_init.matID/*load_matID_init(g_InitialBSDFRays, pixelIdx)*/;

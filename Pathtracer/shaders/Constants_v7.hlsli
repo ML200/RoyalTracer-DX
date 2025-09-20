@@ -9,9 +9,7 @@
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 1
-#define BSDF_SAMPLES_GI 3
-
-#define GI_ADDITIONAL_PATH_COUNT 0
+#define BSDF_SAMPLES_GI 2
 
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30
@@ -36,7 +34,7 @@
 
 #define SPAT_COUNT_MAX_GI 4
 #define SPAT_COUNT_MIN_GI 2
-#define SPAT_TRIS_GI 9
+#define SPAT_TRIS_GI 6
 
 #define SPAT_MIN_M_GI 5
 #define SPAT_BETA_GI 1.0f

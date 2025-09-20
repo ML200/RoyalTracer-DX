@@ -143,7 +143,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         float3 nPrev = gScratchPing[uint3(pix, 9)].xyz;
         float3 aprev = gScratchPing[uint3(pix, 7)].rgb;
 
-        if (dot(n1Cur, nPrev) <= 0.999 ||
+        if (dot(n1Cur, nPrev) <= 0.95 ||
             DDistanceWeight(x1Cur, xPrev, n1Cur) <= 0.05 ||
             (aprev.x != acurr.x || aprev.y != acurr.y || aprev.z != acurr.z))
             continue;
