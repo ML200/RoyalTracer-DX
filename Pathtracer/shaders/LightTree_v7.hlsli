@@ -18,6 +18,7 @@ inline float3 LT_AabbCenter(float3 mn, float3 mx) { return 0.5*(mn+mx); }
 inline float  LT_AabbRadius(float3 mn, float3 mx) { float3 e = 0.5*(mx-mn); return length(e); }
 inline float  LT_SafeAcos(float x){ return acos(clamp(x, -1.0, 1.0)); }
 inline float  LT_SafeAsin(float x){ return asin(clamp(x, -1.0, 1.0)); }
+
 // Categorical pick (for 4-ary tree)
 inline uint LT_CategoricalPick(in float w[4], uint n, float u, out float pChosen)
 {
