@@ -88,38 +88,36 @@ struct WeightedPixel
 };
 
 
-// 4-ary TLAS node: children are contiguous starting at firstChild
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float theta_o;
     float3 axis;     float theta_e;
 
-    uint   firstChild;    // index of first child in TLAS array
-    uint   childCount;    // 0 = leaf
-    uint   blasIndex;     // valid only for leaf; otherwise 0xFFFFFFFF (LT_SENTINEL)
+    uint   firstChild;
+    uint   childCount;
+    uint   blasIndex;
     uint   primCount;
 
     float  sumPower;
     float  sumPowerSq;
 
-    uint   itemFirst;     // TLAS item range covered by this node
+    uint   itemFirst;
     uint   itemCount;
 };
 
-// 4-ary BLAS node: children are contiguous starting at firstChild
 struct LightBLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float theta_o;
     float3 axis;     float theta_e;
 
-    uint   firstChild;    // index of first child within this BLAS's node array
-    uint   childCount;    // 0 = leaf
-    uint   triFirst;      // leaf payload
-    uint   triCount;      // leaf payload
+    uint   firstChild;
+    uint   childCount;
+    uint   triFirst;
+    uint   triCount;
 
-    uint   primCount;     uint _pad0; // keep alignment consistent
+    uint   primCount;     uint _pad0;
     float  sumPower;      float sumPowerSq;
 };
 
