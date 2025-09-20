@@ -48,6 +48,19 @@ void DumpD3D12Messages(ID3D12Device* device)
     info->ClearStoredMessages();
 }
 
+struct ScopedTimer {
+    const char* name;
+    std::chrono::high_resolution_clock::time_point t0;
+    ScopedTimer(const char* n) : name(n), t0(std::chrono::high_resolution_clock::now()) {}
+    ~ScopedTimer(){
+        using namespace std::chrono;
+        auto ms = duration_cast<milliseconds>(high_resolution_clock::now() - t0).count();
+        std::wcout << L"[CPU] " << name << L" took " << ms << L" ms" << std::endl;
+    }
+};
+#define SCOPE_TIMER(label) ScopedTimer _scopedTimer_##__LINE__(label)
+
+
 static std::chrono::steady_clock::time_point g_lastRenderTime
     = std::chrono::steady_clock::now();
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
@@ -59,88 +72,84 @@ extern "C" {
 
 void Renderer::BuildGlobalMeshBuffers()
 {
+    SCOPE_TIMER("BuildGlobalMeshBuffers");
+    // 1) Precompute totals & per-mesh offsets
     m_geoOffsets.clear();
-    std::vector<BTriVertex>    flatVerts;
-    std::vector<uint32_t>      flatIdx;
-
-    for (size_t m = 0; m < m_VB.size(); ++m)
-    {
-        GeometryOffsets go{};
-        go.vertexBase = static_cast<UINT>(flatVerts.size()); // before we push verts
-        go.indexBase  = static_cast<UINT>(flatIdx .size());  // before we push indices
-        go.materialBase = m_materialIDOffsets[m];
-        // ----- 1) copy vertices ------------------------------------------------
-        Vertex* srcVerts = nullptr;
-        {   CD3DX12_RANGE r(0,0);
-            m_VB[m]->Map(0,&r, reinterpret_cast<void**>(&srcVerts));
-            for (UINT i=0;i<m_VertexCount[m];++i)
-            {
-                BTriVertex out{};
-                out.vertex = srcVerts[i].position;
-                out.normal.x = srcVerts[i].normal_material.x;           // .w already = matID
-                out.normal.y = srcVerts[i].normal_material.y;           // .w already = matID
-                out.normal.z = srcVerts[i].normal_material.z;           // .w already = matID
-                flatVerts.push_back(out);
-            }
-            m_VB[m]->Unmap(0,nullptr);
-        }
-
-        // ----- 2) copy & re‑base indices --------------------------------------
-        uint32_t firstVert = static_cast<uint32_t>(flatVerts.size())
-                             - m_VertexCount[m];
-        uint32_t* srcIdx = nullptr;
-        {   CD3DX12_RANGE r(0,0);
-            m_IB[m]->Map(0,&r, reinterpret_cast<void**>(&srcIdx));
-            for (UINT i=0;i<m_IndexCount[m]; ++i)
-                flatIdx.push_back(srcIdx[i] + firstVert);  // re‑base
-            m_IB[m]->Unmap(0,nullptr);
-        }
-        m_geoOffsets.push_back(go);
+    size_t totalVerts = 0, totalIdx = 0;
+    m_geoOffsets.resize(m_VB.size());
+    for (size_t m=0; m<m_VB.size(); ++m) {
+        m_geoOffsets[m].vertexBase   = (UINT)totalVerts;
+        m_geoOffsets[m].indexBase    = (UINT)totalIdx;
+        m_geoOffsets[m].materialBase = m_materialIDOffsets[m];
+        totalVerts += m_VertexCount[m];
+        totalIdx   += m_IndexCount[m];
     }
-
-    m_totalVertexCount = static_cast<UINT>(flatVerts.size());
-    m_totalIndexCount  = static_cast<UINT>(flatIdx .size());
-
-    // ---- create default‑heap buffers and upload once -------------------------
-    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst)
-    {
-        dst = nv_helpers_dx12::CreateBuffer(
-              m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
-              D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
-    };
+    m_totalVertexCount = (UINT)totalVerts;
+    m_totalIndexCount  = (UINT)totalIdx;
 
     const UINT vbBytes = m_totalVertexCount*sizeof(BTriVertex);
     const UINT ibBytes = m_totalIndexCount *sizeof(uint32_t);
 
+    // 2) Create default targets
+    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst)
+    {
+        dst = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+    };
     makeDefault(vbBytes, m_vertexGlobal);
     makeDefault(ibBytes, m_indexGlobal);
 
-    // single staging upload buffer for both
+    // 3) One big UPLOAD buffer; map once
     ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
         m_device.Get(), vbBytes+ibBytes, D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 
-    // copy data into the upload heap
+    uint8_t* pUpload = nullptr; { CD3DX12_RANGE r(0,0); upload->Map(0,&r,(void**)&pUpload); }
+    auto* dstVerts = reinterpret_cast<BTriVertex*>(pUpload + 0);
+    auto* dstIdx   = reinterpret_cast<uint32_t*>(pUpload + vbBytes);
+
+    // 4) Fill upload buffer directly (no temp vectors)
+    //    Parallelize per mesh if you want; each writes a disjoint slice.
+    for (size_t m=0; m<m_VB.size(); ++m)
     {
-        uint8_t* p;  CD3DX12_RANGE r(0,0);
-        upload->Map(0,&r,reinterpret_cast<void**>(&p));
-        memcpy(p,                         flatVerts.data(), vbBytes);
-        memcpy(p + vbBytes,               flatIdx .data(), ibBytes);
-        upload->Unmap(0,nullptr);
+        // Map source once
+        Vertex* srcV = nullptr;  UINT* srcI = nullptr;
+        { CD3DX12_RANGE r(0,0); m_VB[m]->Map(0,&r,(void**)&srcV); }
+        { CD3DX12_RANGE r(0,0); m_IB[m]->Map(0,&r,(void**)&srcI); }
+
+        const UINT vCount = m_VertexCount[m];
+        const UINT iCount = m_IndexCount[m];
+        const UINT vBase  = m_geoOffsets[m].vertexBase;
+        const UINT iBase  = m_geoOffsets[m].indexBase;
+
+        // 4a) Convert Vertex -> BTriVertex in place
+        BTriVertex* outV = dstVerts + vBase;
+        for (UINT i=0;i<vCount;++i) {
+            // Tight copy; avoid extra normalization/work
+            outV[i].vertex    = srcV[i].position;
+            outV[i].normal.x  = srcV[i].normal_material.x;
+            outV[i].normal.y  = srcV[i].normal_material.y;
+            outV[i].normal.z  = srcV[i].normal_material.z;
+        }
+
+        // 4b) Rebase indices directly into the upload slice
+        uint32_t* outI = dstIdx + iBase;
+        for (UINT i=0;i<iCount;++i) outI[i] = srcI[i] + vBase;
+
+        m_VB[m]->Unmap(0,nullptr);
+        m_IB[m]->Unmap(0,nullptr);
     }
 
-    // record copy commands
+    upload->Unmap(0,nullptr);
+
+    // 5) Copy once to defaults
     m_commandList->CopyBufferRegion(m_vertexGlobal.Get(),0, upload.Get(),0,         vbBytes);
     m_commandList->CopyBufferRegion(m_indexGlobal .Get(),0, upload.Get(),vbBytes,   ibBytes);
 
-    CD3DX12_RESOURCE_BARRIER br[] =
-    {
-        CD3DX12_RESOURCE_BARRIER::Transition(
-            m_vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_GENERIC_READ),
-        CD3DX12_RESOURCE_BARRIER::Transition(
-            m_indexGlobal.Get(),  D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_GENERIC_READ)
+    CD3DX12_RESOURCE_BARRIER br[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_indexGlobal .Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
     };
     m_commandList->ResourceBarrier(_countof(br), br);
 }
@@ -205,7 +214,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v7.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
+        /*L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
         L"barrier",
@@ -215,7 +224,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"
+        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"*/
         //L"barrier",
         //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
@@ -478,7 +487,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "iowa.obj", "monke_2.obj"};
+    std::vector<std::string> models = {"sponza_simple.obj", "buddha.obj", "screwLight.obj"};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -541,13 +550,13 @@ void Renderer::LoadAssets() {
 void Renderer::OnInitTransform() {
     XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(-4.0f, 2.f, -4.0f); // centre.y = 1
+    XMMATRIX translate    = XMMatrixTranslation(-0.0f, 0.f, -0.0f); // centre.y = 1
 
     m_instances[2].second = scale * selfRotation * translate;
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 1.f, 0.f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
@@ -578,7 +587,7 @@ void Renderer::OnUpdate() {
     glm::vec3 right = glm::normalize(glm::cross(fwd, up));
 
     glm::vec3 move(0.0f);
-    float     speed = 0.5f;                // metres/second
+    float     speed = 5.0f;                // metres/second
 
     if (g_keys['W'])          move +=  fwd;
     if (g_keys['S'])          move -=  fwd;
@@ -607,17 +616,17 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    /*float angle = static_cast<float>(m_time) * 0.01f;
+    float angle = static_cast<float>(m_time) * 0.005f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
     float z = 0.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
-    XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX selfRotation = XMMatrixRotationX(angle);
-    XMMATRIX translate    = XMMatrixTranslation(x, 4.f, z);
+    XMMATRIX scale        = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX selfRotation = XMMatrixRotationY(angle);
+    XMMATRIX translate    = XMMatrixTranslation(x, 0.f, z);
 
-    m_instances[1].second = scale * selfRotation * translate;*/
+    m_instances[1].second = scale * selfRotation * translate;
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
@@ -1112,25 +1121,28 @@ void Renderer::CreateAccelerationStructures() {
 
     // Use the overload that takes transforms
     m_lightTree.Build(m_emissiveTriangles, ltXforms, cfg);
-    m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());
+    {SCOPE_TIMER("LightTree.UploadAll");m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());}
 
     // Create buffer for emissive triangles
-    CreateEmissiveTrianglesBuffer();
-    CreateTriToLightIdBuffer();
+    {SCOPE_TIMER("CreateEmissiveTrianglesBuffer");CreateEmissiveTrianglesBuffer();}
+    {SCOPE_TIMER("CreateTriToLightIdBuffer");CreateTriToLightIdBuffer();}
 
     // Build & upload alias table ---------------------------------------------
-    BuildAliasTableSoA(m_emissiveTriangles);
-    CreateAliasBuffers();
+    {SCOPE_TIMER("BuildAliasTableSoA");BuildAliasTableSoA(m_emissiveTriangles);}
+    {SCOPE_TIMER("CreateAliasBuffers");CreateAliasBuffers();}
 
-  // Flush the command list and wait for it to finish
-  m_commandList->Close();
-  ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
-  m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
-  m_fenceValue++;
-  m_commandQueue->Signal(m_fence.Get(), m_fenceValue);
+      // Flush the command list and wait for it to finish
+    {
+        SCOPE_TIMER("Execute+Fence (post-LightTree/Uploads)");
+        m_commandList->Close();
+        ID3D12CommandList *ppCommandLists[] = {m_commandList.Get()};
+        m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
+        m_fenceValue++;
+        m_commandQueue->Signal(m_fence.Get(), m_fenceValue);
 
-  m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
-  WaitForSingleObject(m_fenceEvent, INFINITE);
+        m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
+        WaitForSingleObject(m_fenceEvent, INFINITE);
+    }
 
     m_lightTree.ReleaseStaging();
 
