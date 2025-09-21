@@ -158,7 +158,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         }
                         // Update reservoir
                         if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, 0, 0, 0, seed)){
-                            p_hat_final = p_hat / pdf; //PSS
+                            p_hat_final = p_hat; //PSS
                             s_x1 = position;
                             s_x2 = result.x2;
                             s_n1 = normal;
@@ -191,9 +191,9 @@ void main(uint3 tid : SV_DispatchThreadID)
                         L2 *= G_term(normal, V2_norm);
                     }
                     // Update reservoir with the sub path
-                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, seed)){
+                    if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, 0, 0, 0, seed)){
                         requires_shadow_ray = false;
-                        p_hat_final = p_hat/pdf; //PSS
+                        p_hat_final = p_hat; //PSS
                     }
                     break;
                 }
