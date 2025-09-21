@@ -32,8 +32,8 @@
 #define SPAT_RAD_MAX_GI 32
 #define SPAT_RAD_MIN_GI 24
 
-#define SPAT_COUNT_MAX_GI 4
-#define SPAT_COUNT_MIN_GI 2
+#define SPAT_COUNT_MAX_GI 0
+#define SPAT_COUNT_MIN_GI 0
 #define SPAT_TRIS_GI 6
 
 #define SPAT_MIN_M_GI 5
