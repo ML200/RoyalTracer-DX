@@ -8,7 +8,7 @@
 #define BSDF_SAMPLES_DI 1
 
 // ___ GI initial sampling ___
-#define NEE_SAMPLES_GI 1
+#define NEE_SAMPLES_GI 0
 #define BSDF_SAMPLES_GI 2
 
 // ___ DI Reuse ___
