@@ -205,7 +205,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float w_n = mis_n * p_hat_from * rdi_r.W_gi;
 
                 // Update the reservoir
-                if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_GI ,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, 0, 0, 0, seed)){
+                if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_GI ,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, 0, 0, 0, 0, 0, 0, seed)){
                     contrib_final = contrib_n;
                 }
 

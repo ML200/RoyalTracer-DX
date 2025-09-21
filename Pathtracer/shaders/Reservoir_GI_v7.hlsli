@@ -86,9 +86,7 @@ inline float3 ReconnectGI(
     in float3  x2,
     in float3  n2,
     in float3  L2,
-    in float3  V2,
-    in float pdfk,
-    in float pdfk1) // Pdfs of path vertex k and k+1. In case of only reconnection shift, these are the pdfs given by x1 and x2 direction sampling
+    in float3  V2)
 {
     if (all(L2 < EPSILON))
         return 0;
