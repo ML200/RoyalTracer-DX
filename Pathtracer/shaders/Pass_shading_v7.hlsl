@@ -125,7 +125,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
 
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 
     // Denoiser buffers etc.
     /*uint2  launchIndex   = DTid.xy;
