@@ -616,7 +616,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.005f;
+    float angle = static_cast<float>(m_time) * 0.00f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
