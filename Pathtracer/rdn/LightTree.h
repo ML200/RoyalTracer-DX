@@ -581,7 +581,7 @@ private:
                 float nlen = length3(nW);
 
                 Cone lc;
-                if (nlen < 1e-12f){ // degenerate → isotropic emitter
+                if (nlen < 1e-12f){ // degenerate -> isotropic emitter
                     lc.axis = {0,0,1}; lc.theta_o = LT_PI; lc.theta_e = LT_HALF_PI;
                 } else {
                     lc.axis = normalize3(nW); lc.theta_o = 0.f; lc.theta_e = LT_HALF_PI;
@@ -625,11 +625,11 @@ private:
             N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
             N.triCount = count;
             for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
-            N.firstChild = 0xFFFFFFFF; N.childCount = 0; // leaf
+            N.firstChild = 0xFFFFFFFF; N.childCount = 0; //leaf
             return nodeIdx;
         }
 
-        // helper find a binary SAOH split on [b0,e0)
+        //helper find a binary SAOH split on [b0,e0)
         auto findBinarySplit = [&](uint32_t b0, uint32_t e0,
                                    int& axisOut, float& splitPosOut, uint32_t& midOut)->bool
         {
@@ -708,7 +708,7 @@ private:
         int ax; float pos; uint32_t mid;
         bool ok = findBinarySplit(begin, end, ax, pos, mid);
         if (!ok) {
-            // Fallback to leaf if something degenerate happens
+            //Fallback to leaf if something degenerate happens
             N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
             N.triCount = count;
             for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
