@@ -54,6 +54,6 @@ float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 
 // Calculate the PDF for a given sample direction
 float BRDF_PDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
     // For cosine-weighted hemisphere sampling over a Lambertian surface
-    return max(dot(normal, -incoming), 1e-15) / PI;
+    return max(dot(normalize(normal), normalize(-incoming)), EPSILON) / PI;
 }
 

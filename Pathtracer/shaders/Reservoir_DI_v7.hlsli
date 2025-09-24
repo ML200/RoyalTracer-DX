@@ -61,6 +61,20 @@ float3 BSDF_term(
            SafeMultiply(p.y, f1);
 }
 
+float PDF_term(
+    uint   mID,
+    float3 n1,
+    float3 ndirN,
+    float3 o)
+{
+    float2  p      = CalculateStrategyProbabilities(mID, o, n1);
+    float3  pdf0     = BRDF_PDF(0, mID, n1, ndirN, o);
+    float3  pdf1     = BRDF_PDF(1, mID, n1, ndirN, o);
+
+    return SafeMultiply(p.x, pdf0) +
+           SafeMultiply(p.y, pdf1);
+}
+
 float G_term(float3 n1, float3 ndirN)
 {
     return max(1e-15, dot(n1, -ndirN));

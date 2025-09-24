@@ -86,7 +86,8 @@ inline float3 ReconnectGI(
     in float3  x2,
     in float3  n2,
     in float3  L2,
-    in float3  V2)
+    in float3  V2,
+    in float pdfx2)
 {
     if (all(L2 < EPSILON))
         return 0;
@@ -97,16 +98,23 @@ inline float3 ReconnectGI(
     float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
     // Terms
-    float3 F2 = BSDF_term(mID2, n2, V2, ndirN);
-
     float3 F1 = BSDF_term(mID1, n1, ndirN, o);
-    float   G = G_term(n1, ndirN);
+    float3 F2 = BSDF_term(mID2, n2, V2, ndirN);
+    float   G = G_term(n1, ndirN); // Second G term is baked in
+
+    // Missing pdfs (Both at x1 and x2, the pdf needs to be recalculated, as L2 only includes the pdf from x3 onwards
+    float PDF1 = PDF_term(mID1, n1, ndirN, o);
+    float PDF2 = pdfx2;
+    if(pdfx2 == 0.0f) // if pdfx2 is not 0, we know that this is a NEE ray. We reuse the pdf because its expensive and doesnt depend on o
+        PDF2 = PDF_term(mID2, n2, V2, ndirN);
 
     // Throughput
-    float3 r = F1 * F2 * L2 * G;
+    if(PDF1 <=0.0f || PDF2 <= 0.0f)
+        return 0.0f;
+    float3 r = F1/PDF1 * F2/PDF2 * L2 * G;
 
     if (any(isnan(r)) || all(r < EPSILON))
-        r = (float3)EPSILON;
+        r = (float3)0.0f;
 
     return r;
 }
@@ -119,11 +127,8 @@ inline float3 ReconnectGISingle(
     in uint   mID,
     in float3 x2,
     in float3 n2,
-    in float3 L)
+    in float pdf)
 {
-    if (all(L < EPSILON))
-        return 0;
-
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
@@ -134,10 +139,12 @@ inline float3 ReconnectGISingle(
     float   G = G_term(n1, ndirN);
 
     // Throughput
-    float3 r = F * L * G;
+    if(pdf <= 0)
+        return 0.0f;
+    float3 r = F * G / pdf;
 
     if (any(isnan(r)))
-        r = 0;
+        r = 0.0f;
 
     return r;
 }

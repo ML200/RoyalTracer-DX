@@ -187,7 +187,8 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float3 n2_c,
     in float3 L2_c,
     in float3 V2_c,
-    in uint matID_c
+    in uint matID_c,
+    in float pdfx2_c
     )
 {
     float m_c = M_c / M_sum;
@@ -198,7 +199,7 @@ float PairwiseMIS_Canonical_Spat_GI(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 0.0f)
@@ -224,12 +225,13 @@ float PairwiseMIS_Neighbor_Spat_GI(
     in float3 n2_n,
     in float3 L2_n,
     in float3 V2_n,
-    in uint matID_n
+    in uint matID_n,
+    in float pdfx2_n
     )
 {
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n));
+    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -263,6 +265,7 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     in float3 L2_c,
     in float3 V2_c,
     in uint matID_c,
+    in float pdfx2_c,
     in float beta
     )
 {
@@ -277,7 +280,7 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c)/JacobianDeterminant(x1_c, x2_c, x1, n2_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
 
             float D = SymRatio(p_c, p_hat_from, beta);
@@ -304,6 +307,7 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
     in float3 L2_n,
     in float3 V2_n,
     in uint matID_n,
+    in uint pdfx2_n,
     in float beta
     )
 {
@@ -311,7 +315,7 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
 
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n));
+    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float D = SymRatio(p_n, p_hat_from, beta);
     return D / (1.0f + m_no_r * D);
