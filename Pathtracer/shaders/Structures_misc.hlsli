@@ -88,24 +88,37 @@ struct WeightedPixel
 };
 
 
-struct LightTLASNodeGpu {
+struct LightTLASNodeGpu
+{
     float3 bmin;     float power;
     float3 bmax;     float theta_o;
     float3 axis;     float theta_e;
-    uint   left;     uint  right;
-    uint   blasIndex;uint  primCount;
-    float  sumPower; float sumPowerSq;
-    uint itemFirst; uint itemCount;
+
+    uint   firstChild;
+    uint   childCount;
+    uint   blasIndex;
+    uint   primCount;
+
+    float  sumPower;
+    float  sumPowerSq;
+
+    uint   itemFirst;
+    uint   itemCount;
 };
 
-struct LightBLASNodeGpu {
+struct LightBLASNodeGpu
+{
     float3 bmin;     float power;
     float3 bmax;     float theta_o;
     float3 axis;     float theta_e;
-    uint   left;     uint  right;
-    uint   triFirst; uint  triCount;
-    uint   primCount; uint _pad0;
-    float  sumPower; float sumPowerSq;
+
+    uint   firstChild;
+    uint   childCount;
+    uint   triFirst;
+    uint   triCount;
+
+    uint   primCount;     uint _pad0;
+    float  sumPower;      float sumPowerSq;
 };
 
 struct BlasRangeGpu {
@@ -114,5 +127,6 @@ struct BlasRangeGpu {
     uint triIndexOffset;
     uint triIndexCount;
 };
+
 
 struct LT_Sample { uint id; float pdf; };

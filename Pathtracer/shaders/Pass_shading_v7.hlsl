@@ -84,7 +84,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     // Load the DI pipeline output
-    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
     float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
@@ -118,7 +118,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     // --- store back to the permanent UAV ----------------------------------------
-    //gPermanentData[DTid.xy] = float4(newAvg, newSamples);
+    gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
     // --- display/debug -----------------------------------------------------------
     float3 fColor = sRGBGammaCorrection(newAvg);
@@ -128,7 +128,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 
     // Denoiser buffers etc.
-    uint2  launchIndex   = DTid.xy;
+    /*uint2  launchIndex   = DTid.xy;
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, launchIndex);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
@@ -142,5 +142,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, rgi.M_gi);
     gScratchPing[uint3(DTid.xy, 6)] = float4(sdata_l.x1,0);
 
-    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 0);
+    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 0);*/
 }

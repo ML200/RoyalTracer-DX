@@ -94,7 +94,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load the sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     // Store SampleData temporally
-    //storeSampleData(g_sample_last, pixelIdx, sdata);
+    storeSampleData(g_sample_last, pixelIdx, sdata);
 
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir

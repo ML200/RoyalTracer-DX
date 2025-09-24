@@ -125,11 +125,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         if(tempPixelIdx != 0xFFFFFFFF && valid){
             // Calculate the canonical target function
             float visReuse_c = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
-            float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)) * visReuse_c;
-            float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi)/JacobianDeterminant(sdata.x1, rdi.x2_gi, sdata_r.x1, rdi.n2_gi));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
-            float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)/JacobianDeterminant(sdata_r.x1, rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
+            float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x)) * visReuse_c;
+            float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x)/JacobianDeterminant(sdata.x1, rdi.x2_gi, sdata_r.x1, rdi.n2_gi));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
+            float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x)/JacobianDeterminant(sdata_r.x1, rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
             float visReuse = rdi_r.W_gi > 0.0f ? 1.0f : 0.0f;
-            float n_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi)) * visReuse;
+            float n_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x)) * visReuse;
             float M_c = min(TEMP_MCAP_GI,rdi.M_gi);
             float M_n = min(TEMP_MCAP_GI,rdi_r.M_gi);
             float M_sum = M_c + M_n;
@@ -146,7 +146,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
             // Update the reservoir
             float p_hat_final = p_c;
-            if(UpdateReservoirGI(rdi, w_n, rdi_r.M_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, 0, 0, 0, seed)){
+            if(UpdateReservoirGI(rdi, w_n, rdi_r.M_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.rSeed_gi, rdi_r.J_gi, rdi_r.rIndex_gi, rdi_r.F_gi, rdi_r.lobe0_gi, rdi_r.lobe1_gi, seed)){
                 p_hat_final = n_c;
             }
 

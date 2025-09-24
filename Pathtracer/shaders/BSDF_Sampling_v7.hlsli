@@ -94,8 +94,8 @@ SampleReturn SampleBSDF_gen(
         float2 probs = CalculateStrategyProbabilities(matID, o, n1);
         float pdf0 = BRDF_PDF(0, matID, n1, -sample, o);
         float pdf1 = BRDF_PDF(1, matID, n1, -sample, o);
-        float P1 = probs.x * pdf0;
-        float P2 = probs.y * pdf1;
+        float P1 = SafeMultiply(probs.x, pdf0);
+        float P2 = SafeMultiply(probs.y, pdf1);
 
         float3 L =  x1 - samplePayload.hitPosition;
         float cos_light = dot(samplePayload.hitNormal, normalize(L));
