@@ -146,7 +146,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
             // Update the reservoir
             float p_hat_final = p_c;
-            if(UpdateReservoirGI(rdi, w_n, rdi_r.M_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, 0, 0, 0, 0, 0, 0, seed)){
+            if(UpdateReservoirGI(rdi, w_n, rdi_r.M_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.rSeed_gi, rdi_r.J_gi, rdi_r.rIndex_gi, rdi_r.F_gi, rdi_r.lobe0_gi, rdi_r.lobe1_gi, seed)){
                 p_hat_final = n_c;
             }
 
@@ -164,7 +164,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 rdi.W_gi = 0.0f;
 
             // Store the merged reservoir
-            //storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+            storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
             //}
         }
     }

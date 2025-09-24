@@ -28,12 +28,12 @@ float JacobianDeterminant( float3 x1_c,
                            float3 n2_c )
 {
     float3  v_c   = x1_c - x2_c;
-    float   distc = dot(v_c, v_c);          // ‖v_c‖²
-    float   cosc  = abs(dot(normalize(v_c), n2_c));   // |cos φ2r|
+    float   distc = dot(v_c, v_c);
+    float   cosc  = abs(dot(normalize(v_c), n2_c));
 
     float3  v_n   = x1_n - x2_c;
-    float   distn = dot(v_n, v_n);          // ‖v_n‖²
-    float   cosn  = abs(dot(normalize(v_n), n2_c));   // |cos φ2q|
+    float   distn = dot(v_n, v_n);
+    float   cosn  = abs(dot(normalize(v_n), n2_c));
 
     float J = (cosc / cosn) * (distn / distc);
 
