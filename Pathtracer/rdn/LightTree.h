@@ -72,31 +72,45 @@ struct InstanceXformCPU {
 namespace lt
 {
 #pragma pack(push, 1)
-struct LightTLASNodeGpu {
-    XMFLOAT3 bmin; float power;
-    XMFLOAT3 bmax; float theta_o;
-    XMFLOAT3 axis; float theta_e;
-    uint32_t left; uint32_t right; uint32_t blasIndex; uint32_t primCount;
-    float sumPower; float sumPowerSq;
-    uint32_t itemFirst;
-    uint32_t itemCount;
-};
+    struct LightTLASNodeGpu {
+        XMFLOAT3 bmin; float power;
+        XMFLOAT3 bmax; float theta_o;
+        XMFLOAT3 axis; float theta_e;
 
-struct LightBLASNodeGpu {
-    XMFLOAT3 bmin; float power;
-    XMFLOAT3 bmax; float theta_o;
-    XMFLOAT3 axis; float theta_e;
-    uint32_t left; uint32_t right; uint32_t triFirst; uint32_t triCount;
-    uint32_t primCount; uint32_t _pad0; float sumPower; float sumPowerSq;
-};
+        uint32_t firstChild;
+        uint32_t childCount;
+        uint32_t blasIndex;
 
-struct BlasRangeGpu {
-    uint32_t nodeOffset;
-    uint32_t nodeCount;
-    uint32_t triIndexOffset;
-    uint32_t triIndexCount;
-};
+        uint32_t primCount;
+        float    sumPower;
+        float    sumPowerSq;
+
+        uint32_t itemFirst;
+        uint32_t itemCount;
+    };
+
+    struct LightBLASNodeGpu {
+        XMFLOAT3 bmin; float power;
+        XMFLOAT3 bmax; float theta_o;
+        XMFLOAT3 axis; float theta_e;
+
+        uint32_t firstChild;
+        uint32_t childCount;
+        uint32_t triFirst;
+        uint32_t triCount;
+
+        uint32_t primCount;    uint32_t _pad0;
+        float    sumPower;     float    sumPowerSq;
+    };
+
+    struct BlasRangeGpu {
+        uint32_t nodeOffset;
+        uint32_t nodeCount;
+        uint32_t triIndexOffset;
+        uint32_t triIndexCount;
+    };
 #pragma pack(pop)
+
 
 static constexpr float LT_PI = 3.14159265358979323846f;
 static constexpr float LT_HALF_PI = 1.57079632679489661923f;
@@ -162,16 +176,6 @@ static Cone coneUnion(const Cone& A, const Cone& B){
     out.theta_o = theta_o;
     return out;
 }
-    // No two sided emitters currently supported
-/*static void alignAxisSign(XMFLOAT3& a, XMFLOAT3& b) {
-    if (dot3(a, b) < 0.f) { b = mul3(b, -1.f); }
-}
-static Cone coneUnionTwoSided(Cone A, Cone B) {
-    alignAxisSign(A.axis, B.axis);
-    Cone C = coneUnion(A, B);
-    C.theta_o = (std::fmin)(C.theta_o, LT_HALF_PI);
-    return C;
-}*/
 
 // Orientation measure M_omega (Eq. 1): scalar from cone (axis unused)
 static float orientationMeasure(const Cone& c){
@@ -244,17 +248,16 @@ static Aabb triAabbWorld(const ::LightTriangle& t, const XMFLOAT4X4& world)
 }
 
 // --------------------------- CPU Node ----------------------------------------
-struct BLASNode {
-    Aabb aabb{}; float power = 0.f;          // sum of weights
-    Cone cone{};                             // axis, theta_o, theta_e
-    uint32_t left = 0xFFFFFFFF, right = 0xFFFFFFFF;
-    // stats for splitting
-    uint32_t primCount = 0;                  // emitters under this node
-    float sumPower = 0.f;                    // == power
-    float sumPowerSq = 0.f;                  // sum of w^2
-    // leaf payload
-    uint32_t triFirst = 0, triCount = 0;     // indices into per-BLAS temp vector
-    bool isLeaf() const { return left==0xFFFFFFFF && right==0xFFFFFFFF; }
+    struct BLASNode {
+    Aabb aabb{}; float power = 0.f;
+    Cone cone{};
+    uint32_t firstChild = 0xFFFFFFFF; // index of first child (contiguous)
+    uint32_t childCount = 0;          // 0 => leaf
+    uint32_t primCount = 0;
+    float    sumPower = 0.f;
+    float    sumPowerSq = 0.f;
+    uint32_t triFirst = 0, triCount = 0;
+    bool isLeaf() const { return childCount == 0; }
 };
 
 struct BLASBuild {
@@ -578,7 +581,7 @@ private:
                 float nlen = length3(nW);
 
                 Cone lc;
-                if (nlen < 1e-12f){ // degenerate → isotropic emitter
+                if (nlen < 1e-12f){ // degenerate -> isotropic emitter
                     lc.axis = {0,0,1}; lc.theta_o = LT_PI; lc.theta_e = LT_HALF_PI;
                 } else {
                     lc.axis = normalize3(nW); lc.theta_o = 0.f; lc.theta_e = LT_HALF_PI;
@@ -603,57 +606,164 @@ private:
 
     static void aggMerge(Agg& A, const Agg& B){ if (!B.valid) return; if (!A.valid){ A=B; return; } A.a = unionAabb(A.a, B.a); A.E+=B.E; A.cone=coneUnion(A.cone,B.cone); A.N+=B.N; A.sumP+=B.sumP; A.sumP2+=B.sumP2; }
 
-    uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out, uint32_t begin, uint32_t end){
-        uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size()); out.nodes.emplace_back(); BLASNode& N = out.nodes.back();
-        Agg parent{}; for (uint32_t i=begin;i<end;++i) aggAdd(parent, tmp[i]);
-        N.aabb = parent.a; N.power = parent.E; N.cone = parent.cone; N.primCount = parent.N; N.sumPower = parent.sumP; N.sumPowerSq = parent.sumP2;
-        uint32_t count = end-begin; if (count <= m_cfg.maxLeafTris){ // Leaf
-            N.triFirst = static_cast<uint32_t>(out.leafTriList.size()); N.triCount = count;
-            for (uint32_t i=begin;i<end;++i) out.leafTriList.push_back(tmp[i].triIndex);
-#if LT_ENABLE_LOGS && LT_LOG_BUILD_SPAM
-            LT_LOG(L"      leaf: triFirst=" << N.triFirst << L", triCount=" << N.triCount);
-#endif
+    uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out,
+                                     uint32_t begin, uint32_t end)
+    {
+        const uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size());
+        out.nodes.emplace_back();
+        BLASNode& N = out.nodes.back();
+
+        // Aggregate parent
+        Agg parent{};
+        for (uint32_t i = begin; i < end; ++i) aggAdd(parent, tmp[i]);
+
+        N.aabb = parent.a; N.power = parent.E; N.cone = parent.cone;
+        N.primCount = parent.N; N.sumPower = parent.sumP; N.sumPowerSq = parent.sumP2;
+
+        const uint32_t count = end - begin;
+        if (count <= m_cfg.maxLeafTris) {
+            N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
+            N.triCount = count;
+            for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
+            N.firstChild = 0xFFFFFFFF; N.childCount = 0; //leaf
             return nodeIdx;
         }
-        // SAOH: choose best split among axes with spatial binning
-        const XMFLOAT3 ext = aabbExtent(parent.a);
-        const float lenX = ext.x, lenY = ext.y, lenZ = ext.z; float lenMax = (std::fmax)(lenX, (std::fmax)(lenY, lenZ));
-        const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(parent.a));
-        const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parent.cone));
-        struct Best { float cost=std::numeric_limits<float>::infinity(); int axis=-1; uint32_t splitBin=0; float splitPos=0; } best;
-        const uint32_t B = (std::fmax)(4u, (std::fmin)(64u, m_cfg.buildBins));
-        for (int axis=0; axis<3; ++axis){ float span, cmin, cmax; {
-                float mn = (&tmp[begin].centroid.x)[axis], mx = mn;
-                for (uint32_t i=begin;i<end;++i){ float v = (&tmp[i].centroid.x)[axis]; mn = (std::fmin)(mn, v); mx = (std::fmax)(mx, v); }
-                cmin = mn; cmax = mx; span = mx - mn; if (span <= 1e-20f) continue; }
-            std::vector<Agg> bins(B); float invSpan = 1.0f / span; for (uint32_t i=begin;i<end;++i){ float v = (&tmp[i].centroid.x)[axis];
-                uint32_t bi = (std::fmin)(B-1u, (uint32_t)std::floor((v - cmin) * invSpan * B)); aggAdd(bins[bi], tmp[i]); }
-            std::vector<Agg> pref(B), suff(B); for (uint32_t i=0;i<B;++i){ if (i==0) pref[i]=bins[i]; else { pref[i]=pref[i-1]; aggMerge(pref[i], bins[i]); } }
-            for (int i=(int)B-1;i>=0;--i){ if ((uint32_t)i==B-1) suff[i]=bins[i]; else { suff[i]=suff[i+1]; aggMerge(suff[i], bins[i]); } }
-            float length_i = (axis==0?lenX:(axis==1?lenY:lenZ)); float Kr = (length_i>1e-20f) ? (lenMax/length_i) : 1e6f;
-            for (uint32_t s=1; s<B; ++s){ const Agg& L = pref[s-1]; const Agg& R = suff[s]; if (!L.valid || !R.valid) continue;
-                float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a); float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
-                float cost = Kr * ( L.E * ML * MoL + R.E * MR * MoR ) / ( parentMA * parentMO );
-                if (cost < best.cost){ best.cost = cost; best.axis = axis; best.splitBin = s; best.splitPos = cmin + (span * (float)s / (float)B); }
+
+        //helper find a binary SAOH split on [b0,e0)
+        auto findBinarySplit = [&](uint32_t b0, uint32_t e0,
+                                   int& axisOut, float& splitPosOut, uint32_t& midOut)->bool
+        {
+            Agg parentL{}; for (uint32_t i=b0;i<e0;++i) aggAdd(parentL, tmp[i]);
+            const Aabb   aabb = parentL.a;
+            const XMFLOAT3 ext = aabbExtent(aabb);
+            const float lenX = ext.x, lenY = ext.y, lenZ = ext.z, lenMax = (std::fmax)(lenX,(std::fmax)(lenY,lenZ));
+            const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
+            const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parentL.cone));
+
+            struct Best { float cost = std::numeric_limits<float>::infinity(); int axis = -1; float splitPos = 0; } best;
+            const uint32_t B = (std::fmax)(4u, (std::fmin)(64u, m_cfg.buildBins));
+
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                float mn = (&tmp[b0].centroid.x)[axis], mx = mn;
+                for (uint32_t i = b0; i < e0; ++i) {
+                    float v = (&tmp[i].centroid.x)[axis];
+                    mn = (std::fmin)(mn, v); mx = (std::fmax)(mx, v);
+                }
+                float span = mx - mn;
+                if (span <= 1e-20f) continue;
+
+                std::vector<Agg> bins(B);
+                float invSpan = 1.0f / span;
+                for (uint32_t i = b0; i < e0; ++i) {
+                    float v = (&tmp[i].centroid.x)[axis];
+                    uint32_t bi = (std::fmin)(B - 1u, (uint32_t)std::floor((v - mn) * invSpan * B));
+                    aggAdd(bins[bi], tmp[i]);
+                }
+
+                std::vector<Agg> pref(B), suff(B);
+                for (uint32_t i = 0; i < B; ++i) {
+                    if (i == 0) pref[i] = bins[i]; else { pref[i] = pref[i - 1]; aggMerge(pref[i], bins[i]); }
+                }
+                for (int i = (int)B - 1; i >= 0; --i) {
+                    if ((uint32_t)i == B - 1) suff[i] = bins[i]; else { suff[i] = suff[i + 1]; aggMerge(suff[i], bins[i]); }
+                }
+
+                float length_i = (axis == 0 ? lenX : (axis == 1 ? lenY : lenZ));
+                float Kr = (length_i > 1e-20f) ? (lenMax / length_i) : 1e6f;
+
+                for (uint32_t s = 1; s < B; ++s) {
+                    const Agg& L = pref[s - 1];
+                    const Agg& R = suff[s];
+                    if (!L.valid || !R.valid) continue;
+
+                    float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a);
+                    float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
+                    float cost = Kr * (L.E * ML * MoL + R.E * MR * MoR) / (parentMA * parentMO);
+                    if (cost < best.cost) {
+                        best.cost = cost; best.axis = axis;
+                        best.splitPos = mn + (span * (float)s / (float)B);
+                    }
+                }
             }
+
+            if (best.axis < 0 || !std::isfinite(best.cost)) return false;
+
+            auto itMid = std::partition(tmp.begin() + b0, tmp.begin() + e0,
+                [&](const TmpTri& t) { return (&t.centroid.x)[best.axis] < best.splitPos; });
+
+            uint32_t mid = static_cast<uint32_t>(itMid - (tmp.begin() + b0)) + b0;
+            if (mid == b0 || mid == e0) {
+                mid = (b0 + e0) / 2;
+                std::nth_element(tmp.begin() + b0, tmp.begin() + mid, tmp.begin() + e0,
+                    [&](const TmpTri& A, const TmpTri& B) {
+                        return (&A.centroid.x)[best.axis] < (&B.centroid.x)[best.axis];
+                    });
+            }
+
+            axisOut = best.axis; splitPosOut = best.splitPos; midOut = mid; return true;
+        };
+
+        // split entire set into two buckets
+        int ax; float pos; uint32_t mid;
+        bool ok = findBinarySplit(begin, end, ax, pos, mid);
+        if (!ok) {
+            //Fallback to leaf if something degenerate happens
+            N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
+            N.triCount = count;
+            for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
+            N.firstChild = 0xFFFFFFFF; N.childCount = 0;
+            return nodeIdx;
         }
-        const float leafCost = parent.E;
-        if (best.axis < 0 || best.cost >= leafCost){
-            N.triFirst = static_cast<uint32_t>(out.leafTriList.size()); N.triCount = count; for (uint32_t i=begin;i<end;++i) out.leafTriList.push_back(tmp[i].triIndex); return nodeIdx; }
-        auto midIter = std::partition(tmp.begin()+begin, tmp.begin()+end, [&](const TmpTri& t){ return (&t.centroid.x)[best.axis] < best.splitPos; });
-        uint32_t mid = static_cast<uint32_t>(midIter - (tmp.begin()+begin)) + begin; if (mid==begin || mid==end){ // fallback: median
-            mid = (begin+end)/2; std::nth_element(tmp.begin()+begin, tmp.begin()+mid, tmp.begin()+end,
-                [&](const TmpTri& A, const TmpTri& B){ return (&A.centroid.x)[best.axis] < (&B.centroid.x)[best.axis]; }); }
-        uint32_t L = buildBLASRecursive_SAOH(tmp, out, begin, mid); uint32_t R = buildBLASRecursive_SAOH(tmp, out, mid, end);
-        out.nodes[nodeIdx].left = L; out.nodes[nodeIdx].right = R;
-        const BLASNode& nL = out.nodes[L]; const BLASNode& nR = out.nodes[R];
-        N.triFirst = nL.triFirst;
-        N.triCount = nL.triCount + nR.triCount;
-        N.aabb = unionAabb(nL.aabb, nR.aabb);
-        N.power = nL.power + nR.power; N.cone = coneUnion(nL.cone, nR.cone); N.primCount = nL.primCount + nR.primCount;
-        N.sumPower = nL.sumPower + nR.sumPower; N.sumPowerSq = nL.sumPowerSq + nR.sumPowerSq;
+
+        struct Range { uint32_t b, e; };
+        Range buckets[4]; uint32_t bucketCount = 0;
+
+        auto pushOrSplitOnce = [&](uint32_t b, uint32_t e){
+            if (e <= b) return;
+            const uint32_t c = e - b;
+            if (c <= m_cfg.maxLeafTris) { buckets[bucketCount++] = {b,e}; return; }
+            int ax2; float pos2; uint32_t mid2;
+            if (findBinarySplit(b, e, ax2, pos2, mid2) && mid2>b && mid2<e) {
+                buckets[bucketCount++] = {b, mid2};
+                buckets[bucketCount++] = {mid2, e};
+            } else {
+                buckets[bucketCount++] = {b, e};
+            }
+        };
+
+        pushOrSplitOnce(begin, mid);
+        pushOrSplitOnce(mid,   end);
+
+        // If we somehow ended up with >4 groups, merge smallest pairs until 4.
+        while (bucketCount > 4) {
+            uint32_t iMin=0, jMin=1; uint32_t best = UINT32_MAX;
+            for (uint32_t i=0;i<bucketCount;i++)
+                for (uint32_t j=i+1;j<bucketCount;j++){
+                    uint32_t s = (buckets[i].e - buckets[i].b) + (buckets[j].e - buckets[j].b);
+                    if (s < best){ best = s; iMin = i; jMin = j; }
+                }
+            buckets[iMin].b = (std::fmin)(buckets[iMin].b, buckets[jMin].b);
+            buckets[iMin].e = (std::fmax)(buckets[iMin].e, buckets[jMin].e);
+            for (uint32_t k=jMin+1;k<bucketCount;k++) buckets[k-1] = buckets[k];
+            --bucketCount;
+        }
+
+        // Allocate children as a contiguous block
+        N.firstChild = static_cast<uint32_t>(out.nodes.size());
+        N.childCount = bucketCount;
+        for (uint32_t i=0;i<bucketCount;i++) out.nodes.emplace_back();
+
+        // Build each child into its slot
+        for (uint32_t c = 0; c < bucketCount; ++c) {
+            uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e);
+            uint32_t desired = N.firstChild + c;
+            if (built != desired) std::swap(out.nodes[built], out.nodes[desired]);
+        }
+
         return nodeIdx;
     }
+
 
     // -------------------------- Build: TLAS (SAOH) ----------------------------
     void buildTLAS_SAOH(){
@@ -665,7 +775,6 @@ private:
         }
         m_tlas.clear(); if (items.empty()){ LT_WARN(L"buildTLAS: no items"); return; }
         buildTLASRecursive_SAOH(items, 0, static_cast<uint32_t>(items.size()));
-        // NEW: BLAS -> TLAS item index lookup (final 'items' order after partitioning)
         m_blasToItem.clear();
         m_blasToItem.resize(m_blas.size(), 0);
         for (uint32_t i = 0; i < items.size(); ++i) {
@@ -681,91 +790,143 @@ private:
 
     uint32_t buildTLASRecursive_SAOH(std::vector<TItem>& it, uint32_t begin, uint32_t end)
     {
-        uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
+        const uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
         m_tlas.push_back({});
         LightTLASNodeGpu& N = m_tlas.back();
 
         // Aggregate
         AggT parent{}; for (uint32_t i=begin;i<end;++i) aggTAdd(parent, it[i]);
-        N.bmin=parent.a.mn; N.bmax=parent.a.mx; N.power=parent.E;
-        N.axis=parent.cone.axis; N.theta_o=parent.cone.theta_o; N.theta_e=parent.cone.theta_e;
-        N.left=0xFFFFFFFF; N.right=0xFFFFFFFF; N.blasIndex=UINT32_MAX;
-        N.primCount=parent.N; N.sumPower=parent.sumP; N.sumPowerSq=parent.sumP2;
-        N.itemFirst = begin;
-        N.itemCount = end - begin;
+
+        N.bmin = parent.a.mn; N.bmax = parent.a.mx; N.power = parent.E;
+        N.axis = parent.cone.axis; N.theta_o = parent.cone.theta_o; N.theta_e = parent.cone.theta_e;
+        N.primCount = parent.N; N.sumPower = parent.sumP; N.sumPowerSq = parent.sumP2;
+        N.itemFirst = begin; N.itemCount = end - begin;
+        N.firstChild = 0xFFFFFFFF; N.childCount = 0;
+        N.blasIndex = UINT32_MAX;
 
         const uint32_t count = end - begin;
         if (count == 1) {
             N.blasIndex = it[begin].idx;
             return nodeIdx;
         }
-        const XMFLOAT3 cext = aabbExtent(parent.a);
-        const float lenX = cext.x, lenY = cext.y, lenZ = cext.z;
-        const float lenMax = (std::fmax)(lenX, (std::fmax)(lenY, lenZ));
-        const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(parent.a));
-        const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parent.cone));
-        struct Best { float cost=std::numeric_limits<float>::infinity(); int axis=-1; uint32_t splitBin=0; float splitPos=0; } best;
-        const uint32_t B = (std::fmax)(4u, (std::fmin)(64u, m_cfg.buildBins));
-        for (int axis=0; axis<3; ++axis) {
-            float span, cmin, cmax;
-            { float mn = (&it[begin].c.x)[axis], mx = mn;
-              for (uint32_t i=begin;i<end;++i){ float v = (&it[i].c.x)[axis]; mn=(std::fmin)(mn,v); mx=(std::fmax)(mx,v); }
-              cmin=mn; cmax=mx; span=mx-mn; if (span<=1e-20f) continue; }
-            std::vector<AggT> bins(B);
-            float invSpan = 1.0f / span;
-            for (uint32_t i=begin;i<end;++i){
-                float v = (&it[i].c.x)[axis];
-                uint32_t bi = (std::fmin)(B-1u, (uint32_t)std::floor((v-cmin)*invSpan*B));
-                aggTAdd(bins[bi], it[i]);
-            }
-            std::vector<AggT> pref(B), suff(B);
-            for (uint32_t i=0;i<B;++i){ if (i==0) pref[i]=bins[i]; else { pref[i]=pref[i-1]; aggTMerge(pref[i], bins[i]); } }
-            for (int i=(int)B-1;i>=0;--i){ if ((uint32_t)i==B-1) suff[i]=bins[i]; else { suff[i]=suff[i+1]; aggTMerge(suff[i], bins[i]); } }
-            float length_i = (axis==0?lenX:(axis==1?lenY:lenZ));
-            float Kr = (length_i>1e-20f) ? (lenMax/length_i) : 1e6f;
-            for (uint32_t s=1; s<B; ++s){
-                const AggT& L = pref[s-1]; const AggT& R = suff[s]; if (!L.valid || !R.valid) continue;
-                float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a);
-                float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
-                float cost = Kr * ( L.E * ML * MoL + R.E * MR * MoR ) / ( parentMA * parentMO );
-                if (cost < best.cost){
-                    best.cost = cost; best.axis = axis;
-                    best.splitBin = s; best.splitPos = cmin + (span * (float)s / (float)B);
+
+        // --- helper: binary split on [b0,e0)
+        auto findBinarySplit = [&](uint32_t b0, uint32_t e0,
+                                   int& axisOut, float& splitPosOut, uint32_t& midOut)->bool
+        {
+            AggT parentL{}; for (uint32_t i=b0;i<e0;++i) aggTAdd(parentL, it[i]);
+
+            const Aabb aabb = parentL.a;
+            const XMFLOAT3 ext = aabbExtent(aabb);
+            const float lenX=ext.x, lenY=ext.y, lenZ=ext.z, lenMax=(std::fmax)(lenX,(std::fmax)(lenY,lenZ));
+            const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
+            const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parentL.cone));
+
+            struct Best { float cost=std::numeric_limits<float>::infinity(); int axis=-1; float pos=0; } best;
+            const uint32_t B = (std::fmax)(4u, (std::fmin)(64u, m_cfg.buildBins));
+
+            for (int axis=0; axis<3; ++axis)
+            {
+                float mn = (&it[b0].c.x)[axis], mx = mn;
+                for (uint32_t i=b0;i<e0;++i){ float v = (&it[i].c.x)[axis]; mn=(std::fmin)(mn,v); mx=(std::fmax)(mx,v); }
+                float span = mx - mn; if (span <= 1e-20f) continue;
+
+                std::vector<AggT> bins(B);
+                float invSpan = 1.f/span;
+                for (uint32_t i=b0;i<e0;++i){
+                    float v = (&it[i].c.x)[axis];
+                    uint32_t bi = (std::fmin)(B-1u, (uint32_t)std::floor((v - mn)*invSpan*B));
+                    aggTAdd(bins[bi], it[i]);
+                }
+
+                std::vector<AggT> pref(B), suff(B);
+                for (uint32_t i=0;i<B;++i){ if (i==0) pref[i]=bins[i]; else { pref[i]=pref[i-1]; aggTMerge(pref[i], bins[i]); } }
+                for (int i=(int)B-1;i>=0;--i){ if ((uint32_t)i==B-1) suff[i]=bins[i]; else { suff[i]=suff[i+1]; aggTMerge(suff[i], bins[i]); } }
+
+                float length_i = (axis==0?lenX:(axis==1?lenY:lenZ));
+                float Kr = (length_i>1e-20f) ? (lenMax/length_i) : 1e6f;
+
+                for (uint32_t s=1; s<B; ++s){
+                    const AggT& L = pref[s-1]; const AggT& R = suff[s]; if (!L.valid || !R.valid) continue;
+                    float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a);
+                    float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
+                    float cost = Kr * ( L.E * ML * MoL + R.E * MR * MoR ) / ( parentMA * parentMO );
+                    if (cost < best.cost){ best.cost = cost; best.axis = axis; best.pos = mn + (span * (float)s / (float)B); }
                 }
             }
-        }
 
-        // We must split because count>1. If SAOH didn’t find a good split, fall back to median on widest axis.
-        int axisToUse = best.axis;
-        float splitPos = best.splitPos;
-        uint32_t mid;
+            if (best.axis < 0 || !std::isfinite(best.cost)) return false;
 
-        if (axisToUse >= 0 && std::isfinite(best.cost)) {
-            auto midIter = std::partition(it.begin()+begin, it.begin()+end,
-                [&](const TItem& t){ return (&t.c.x)[axisToUse] < splitPos; });
-            mid = static_cast<uint32_t>(midIter - (it.begin()+begin)) + begin;
-            if (mid==begin || mid==end) { // degenerate binning → median on same axis
-                mid = (begin+end)/2;
-                std::nth_element(it.begin()+begin, it.begin()+mid, it.begin()+end,
-                                 [&](const TItem& A, const TItem& B){ return (&A.c.x)[axisToUse] < (&B.c.x)[axisToUse]; });
+            auto midIter = std::partition(it.begin()+b0, it.begin()+e0,
+                [&](const TItem& t){ return (&t.c.x)[best.axis] < best.pos; });
+
+            uint32_t mid = static_cast<uint32_t>(midIter - (it.begin()+b0)) + b0;
+            if (mid==b0 || mid==e0){
+                mid = (b0+e0)/2;
+                std::nth_element(it.begin()+b0, it.begin()+mid, it.begin()+e0,
+                    [&](const TItem& A, const TItem& B){ return (&A.c.x)[best.axis] < (&B.c.x)[best.axis]; });
             }
-        } else {
-            // widest axis median
+
+            axisOut = best.axis; splitPosOut = best.pos; midOut = mid; return true;
+        };
+
+        int ax; float pos; uint32_t mid;
+        bool ok = findBinarySplit(begin, end, ax, pos, mid);
+        if (!ok) {
+            // fallback
             int widest = 0;
-            if (cext.y > cext.x && cext.y >= cext.z) widest = 1;
-            else if (cext.z > cext.x && cext.z >= cext.y) widest = 2;
-            axisToUse = widest;
-            mid = (begin+end)/2;
+            XMFLOAT3 e = aabbExtent(parent.a);
+            if (e.y > e.x && e.y >= e.z) widest = 1;
+            else if (e.z > e.x && e.z >= e.y) widest = 2;
+            mid = (begin + end) / 2;
             std::nth_element(it.begin()+begin, it.begin()+mid, it.begin()+end,
-                             [&](const TItem& A, const TItem& B){ return (&A.c.x)[axisToUse] < (&B.c.x)[axisToUse]; });
+                             [&](const TItem& A, const TItem& B){ return (&A.c.x)[widest] < (&B.c.x)[widest]; });
         }
 
-        uint32_t L = buildTLASRecursive_SAOH(it, begin, mid);
-        uint32_t R = buildTLASRecursive_SAOH(it, mid,   end);
-        m_tlas[nodeIdx].left = L;
-        m_tlas[nodeIdx].right = R;
+        struct Range { uint32_t b, e; };
+        Range buckets[4]; uint32_t bucketCount = 0;
+
+        auto pushOrSplitOnce = [&](uint32_t b, uint32_t e){
+            if (e <= b) return;
+            const uint32_t c = e - b;
+            if (c == 1) { buckets[bucketCount++] = {b,e}; return; }
+            int ax2; float pos2; uint32_t mid2;
+            if (findBinarySplit(b, e, ax2, pos2, mid2) && mid2>b && mid2<e) {
+                buckets[bucketCount++] = {b, mid2};
+                buckets[bucketCount++] = {mid2, e};
+            } else {
+                buckets[bucketCount++] = {b, e};
+            }
+        };
+
+        pushOrSplitOnce(begin, mid);
+        pushOrSplitOnce(mid,   end);
+
+        while (bucketCount > 4) {
+            uint32_t iMin=0, jMin=1; uint32_t best = UINT32_MAX;
+            for (uint32_t i=0;i<bucketCount;i++)
+                for (uint32_t j=i+1;j<bucketCount;j++){
+                    uint32_t s = (buckets[i].e-buckets[i].b) + (buckets[j].e-buckets[j].b);
+                    if (s < best){ best = s; iMin=i; jMin=j; }
+                }
+            buckets[iMin].b = (std::fmin)(buckets[iMin].b, buckets[jMin].b);
+            buckets[iMin].e = (std::fmax)(buckets[iMin].e, buckets[jMin].e);
+            for (uint32_t k=jMin+1;k<bucketCount;k++) buckets[k-1] = buckets[k];
+            --bucketCount;
+        }
+
+        N.firstChild = static_cast<uint32_t>(m_tlas.size());
+        N.childCount = bucketCount;
+        for (uint32_t i=0;i<bucketCount;i++) m_tlas.push_back({});
+        for (uint32_t c=0;c<bucketCount;c++){
+            uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e);
+            uint32_t desired = N.firstChild + c;
+            if (built != desired) std::swap(m_tlas[built], m_tlas[desired]);
+        }
+
         return nodeIdx;
     }
+
 
     // -------------------------- Upload helpers --------------------------------
     template<typename T>
@@ -792,8 +953,23 @@ private:
     uint32_t totalBLASNodeCount() const { uint32_t n=0; for (auto& b: m_blas) n += static_cast<uint32_t>(b.nodes.size()); return n; }
     uint32_t totalLeafIndexCount() const { uint32_t n=0; for (auto& b: m_blas) n += static_cast<uint32_t>(b.leafTriList.size()); return n; }
 
-    static LightBLASNodeGpu toGpu(const BLASNode& n){ LightBLASNodeGpu g{}; g.bmin=n.aabb.mn; g.bmax=n.aabb.mx; g.power=n.power; g.axis=n.cone.axis; g.theta_o=n.cone.theta_o; g.theta_e=n.cone.theta_e;
-        g.left=n.left; g.right=n.right; g.triFirst=n.triFirst; g.triCount=n.triCount; g.primCount=n.primCount; g._pad0=0; g.sumPower=n.sumPower; g.sumPowerSq=n.sumPowerSq; return g; }
+    static LightBLASNodeGpu toGpu(const BLASNode& n)
+    {
+        LightBLASNodeGpu g{};
+        g.bmin = n.aabb.mn; g.bmax = n.aabb.mx; g.power = n.power;
+        g.axis = n.cone.axis; g.theta_o = n.cone.theta_o; g.theta_e = n.cone.theta_e;
+
+        g.firstChild = n.firstChild;
+        g.childCount = n.childCount;
+
+        g.triFirst = n.triFirst;
+        g.triCount = n.triCount;
+
+        g.primCount = n.primCount; g._pad0 = 0;
+        g.sumPower = n.sumPower; g.sumPowerSq = n.sumPowerSq;
+        return g;
+    }
+
 };
 
 } // namespace lt

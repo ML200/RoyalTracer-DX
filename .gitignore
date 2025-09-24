@@ -31,3 +31,6 @@
 /Pathtracer/cmake-build-debug-visual-studio
 /Pathtracer/cmake-build-release-visual-studio
 *.idea
+
+sponza_big.mtl
+sponza_big.obj
