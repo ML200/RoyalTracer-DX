@@ -7,15 +7,6 @@ float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
     return pdf_bsdf / (M1 * pdf_bsdf + M2 * pdf_nee);
 }
 
-// Initial sampling
-/*float MIS_Initial_NEE(float pdf_nee, float pdf_bsdf, float M1, float M2){
-    return 1.0f / (M1 * 1.0f + M2 * 1.0f);
-}
-
-float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
-    return 1.0f / (M1 * 1.0f + M2 * 1.0f);
-}*/
-
 // defensive pair-wise MIS, canonical sample
 inline float PairwiseMIS_Canonical_Temp(
     float M_c,      // multiplicity / confidence of canonical
