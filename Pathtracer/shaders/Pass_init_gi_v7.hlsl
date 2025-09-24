@@ -158,11 +158,13 @@ void main(uint3 tid : SV_DispatchThreadID)
                         // Update reservoir
                         if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, 0, 0, 0, seed)){
                             p_hat_final = p_hat;
-                            // Store the NEE pdf in the reservoir as well in Jx -> its not dependant on the outgoing direction
-                            reservoir.J_gi.x = result.pdf_nee;
                             s_x1 = position;
                             s_x2 = result.x2;
                             s_n1 = normal;
+
+                            // Store the NEE pdf in the reservoir as well in Jx -> its not dependant on the outgoing direction
+                            if(i == 0)
+                                reservoir.J_gi.x = result.pdf_nee; // Only if i == 0, we perform a reconnection with nee pdf, otherwise theres another ray inbetween and we use bsdf
                         }
                     }
                 }
