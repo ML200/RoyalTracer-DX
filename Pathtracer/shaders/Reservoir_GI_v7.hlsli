@@ -29,13 +29,34 @@ float JacobianDeterminant( float3 x1_c,
 {
     float3  v_c   = x1_c - x2_c;
     float   distc = dot(v_c, v_c);
-    float   cosc  = abs(dot(normalize(v_c), n2_c));
+    float   cosc  = dot(normalize(v_c), n2_c);
 
     float3  v_n   = x1_n - x2_c;
     float   distn = dot(v_n, v_n);
-    float   cosn  = abs(dot(normalize(v_n), n2_c));
+    float   cosn  = dot(normalize(v_n), n2_c);
 
     float J = (cosc / cosn) * (distn / distc);
+
+    return !isnan(J)?J:1e10;
+}
+
+float JacobianDeterminantPSS( float3 x2_c,
+                              float3 x1_n,
+                              float3 n2_c,
+                              float J_c )
+{
+    // For restir PT in PSS, the jacobion is simply J / (pk-1 * Gk * pk) where J is the canonical path part
+    float3  v_n   = x1_n - x2_c;
+    float   distn = dot(v_n, v_n);
+    float   cosn  = dot(normalize(v_n), n2_c);
+
+    float G = cosn / distn; // G term for the shifted path
+
+    // path pdfs for the shifted path (same as for reconnection)
+    float PDF1 = PDF_term(mID1, n1, ndirN, o);
+    float PDF2 = pdfx2;
+    if(pdfx2 == 0.0f)
+        PDF2 = PDF_term(mID2, n2, V2, ndirN);
 
     return !isnan(J)?J:1e10;
 }

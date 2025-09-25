@@ -22,8 +22,8 @@ inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, ino
     float3 fresnel = SchlickFresnel(materials[mID].Ks, cosTheta);
 
     // Sampling probabilities
-    float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
-    float p_d = 1.0f;//(1.0f - p_s); // Sample the diffuse part of the lobe
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
+    float p_d = (1.0f - p_s); // Sample the diffuse part of the lobe
 
     //Select the strategy based on the probabilities (CDF)
     //Specular
@@ -54,10 +54,10 @@ inline float2 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
     float3 fresnel = SchlickFresnel(materials[mID].Ks, cosTheta);
 
     // Calculate the specular probability (strategy 1)
-    float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
+    float p_s = min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
 
     // Calculate the diffuse probability (strategy 0)
-    float p_d = 1.0f;//1.0f - p_s;
+    float p_d = 1.0f - p_s;
 
     // Return the probabilities:
     // - x component: diffuse (strategy 0)
