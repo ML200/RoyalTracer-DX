@@ -40,7 +40,7 @@ float JacobianDeterminant( float3 x1_c,
     return !isnan(J)?J:1e10;
 }
 
-float JacobianDeterminantPSS( float3 x2_c,
+/*float JacobianDeterminantPSS( float3 x2_c,
                               float3 x1_n,
                               float3 n2_c,
                               float J_c )
@@ -59,7 +59,7 @@ float JacobianDeterminantPSS( float3 x2_c,
         PDF2 = PDF_term(mID2, n2, V2, ndirN);
 
     return !isnan(J)?J:1e10;
-}
+}*/
 
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);

@@ -9,105 +9,65 @@ float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
 
 // defensive pair-wise MIS, canonical sample
 inline float PairwiseMIS_Canonical_Temp(
-    float M_c,      // multiplicity / confidence of canonical
-    float M_n,      // multiplicity / confidence of neighbour
-    float p_c,      // p̂_c(y_c)
-    float p_n,      // p̂←n(y_c)  **was called n_c before**
-    float M_sum)    // = M_c + M_n
+    float M_c,
+    float M_n,
+    float p_c,
+    float p_n,
+    float M_sum)
 {
-    float num   = M_c * p_c;                  // M_c p_c
-    float denom = num + M_n * p_n;            // M_c p_c + M_n p_n
+    float num   = M_c * p_c;
+    float denom = num + M_n * p_n;
 
-    float m_c = M_c / M_sum;                  // 1st term of Eq. (7.6)
+    float m_c = M_c / M_sum;
     if (denom > 0.0f)
-        m_c += (M_n / M_sum) * (num / denom); // 2nd term
+        m_c += (M_n / M_sum) * (num / denom);
 
-    return m_c;                               // m_c ∈ [0,1]
+    return m_c;
 }
 
 // defensive pair-wise MIS, neighbour sample
 inline float PairwiseMIS_Neighbour_Temp(
     float M_c,
     float M_n,
-    float p_c,      // p̂_c(y_c)
-    float n_n,      // p̂_n(y_n)  **new variable**
+    float p_c,
+    float n_n,
     float M_sum)
 {
-    float num   = M_n * n_n;                  // M_n n_n
-    float denom = num + M_c * p_c;            // M_n n_n + M_c p_c
+    float num   = M_n * n_n;
+    float denom = num + M_c * p_c;
 
     return (denom > 0.0f)
            ? (M_n / M_sum) * (num / denom)
            : 0.0f;
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Non-defensive pair-wise MIS   –   canonical sample  (y_c)
-// m_c = (M_c · p_c) / (M_c · p_c + M_n · p_n)
-// ──────────────────────────────────────────────────────────────────────
+// Non-defensive pair-wise MIS
 float PairwiseMIS_Canonical_Temp_NonDef(
-    float M_c,      // multiplicity / confidence of canonical
-    float M_n,      // multiplicity / confidence of neighbour
-    float p_c,      // p̂_c (y_c)
+    float M_c,
+    float M_n,
+    float p_c,
     float p_n,
-    float M_sum)      // p̂←n (y_c)
+    float M_sum)
 {
     float num   = M_c * p_c;
     float denom = num + M_n * p_n;
 
-    return (denom > 0.0f) ? (num / denom) : 0.0f;   // 0 ≤ m_c ≤ 1
+    return (denom > 0.0f) ? (num / denom) : 0.0f;
 }
 
 
-// ──────────────────────────────────────────────────────────────────────
-// Non-defensive pair-wise MIS   –   neighbour sample  (y_n)
-// m_n = (M_n · n_n) / (M_n · n_n + M_c · n_c)
-// ──────────────────────────────────────────────────────────────────────
+// Non-defensive pair-wise MIS
 float PairwiseMIS_Neighbour_Temp_NonDef(
     float M_c,
     float M_n,
-    float n_c,      // p̂_c (y_n)   ← canonical PDF at neighbour point
+    float n_c,
     float n_n,
-    float M_sum)      // p̂_n (y_n)   ← neighbour’s own PDF
+    float M_sum)
 {
     float num   = M_n * n_n;
     float denom = num + M_c * n_c;
 
-    return (denom > 0.0f) ? (num / denom) : 0.0f;   // 0 ≤ m_n ≤ 1
-}
-
-// Symmetric pair-wise MIS, canonical pixel
-float PairwiseMIS_Sym_Canonical(
-    float Mc,   // multiplicity of canonical reservoir
-    float Mn,   // multiplicity of neighbour reservoir
-    float pc,   // pdf of canonical sample at canonical point
-    float pn,   // pdf of neighbour sample re-evaluated at canonical point
-    float beta) // soft-clamp exponent in [0,1]
-{
-    // Prevent div/0 *once*; everything else folds out naturally
-    if (Mc == 0.0f) return 0.0f;
-
-    // Symmetric pdf ratio, raised to beta
-    float D = (pc == 0.0f || pn == 0.0f) ? 0.0f
-              : pow( min(pc / pn, pn / pc), beta );
-
-    //    m_c = 1 / (1 + (M_n/M_c)*D)
-    return 1.0f / (1.0f + (Mn / Mc) * D);
-}
-
-// Symmetric pair-wise MIS, neighbour pixel
-float PairwiseMIS_Sym_Neighbour(
-    float Mc, float Mn,
-    float pc, float pn,
-    float beta)
-{
-    if (Mn == 0.0f) return 0.0f;
-
-    float D = (pc == 0.0f || pn == 0.0f) ? 0.0f
-              : pow( min(pc / pn, pn / pc), beta );
-
-    //    m_n = 1 / (1 + (M_c/M_n)*D)
-    return 1.0f / (1.0f + (Mc / Mn) * D);
+    return (denom > 0.0f) ? (num / denom) : 0.0f;
 }
 
 
