@@ -547,7 +547,7 @@ void Renderer::LoadAssets() {
 void Renderer::OnInitTransform() {
     XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(-0.0f, 0.f, -0.0f); // centre.y = 1
+    XMMATRIX translate    = XMMatrixTranslation(0.0f, 0.f, 0.0f);
 
     m_instances[2].second = scale * selfRotation * translate;
 
@@ -608,7 +608,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.00f;
+    /*float angle = static_cast<float>(m_time) * 0.00f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
@@ -618,7 +618,7 @@ void Renderer::OnUpdate() {
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 0.f, z);
 
-    m_instances[1].second = scale * selfRotation * translate;
+    m_instances[1].second = scale * selfRotation * translate;*/
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);

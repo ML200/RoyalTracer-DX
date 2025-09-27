@@ -1,3 +1,21 @@
+// IoR stuff
+inline float Avg3(float3 v) { return (v.x + v.y + v.z) * (1.0/3.0); }
+inline float IORtoF0(float ior) {
+    float a = (ior - 1.0f) / (ior + 1.0f);
+    return a * a;
+}
+
+inline float3 ComputeBaseF0(uint mID) {
+    float  metallic  = materials[mID].Pr_Pm_Ps_Pc.y;
+    float3 baseColor = materials[mID].Kd.xyz;
+    float  ior      = 2.5f; // Hardcoded IoR for now!
+
+    float  F0_diel  = IORtoF0(ior);                     // achromatic dielectric F0
+    float3 F0_metal = baseColor;                        // colored F0 for metals
+    return saturate(lerp(F0_diel.xxx, F0_metal, metallic)); // Blend baby
+}
+
+
 inline float ESS_LUT(uint mID, float NdotV)
 {
     NdotV = saturate(NdotV);
@@ -32,7 +50,7 @@ inline float D_GGX(float NdotH, float alpha)
 }
 
 // Smith Geometry functions for GGX
-inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
+/*inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
 {
     float alpha2 = alpha * alpha;
 
@@ -40,7 +58,7 @@ inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
     float denomB = NdotL * sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV);
 
     return 2.0f * NdotL * NdotV / (denomA + denomB);
-}
+}*/
 
 inline float G1_SmithGGX(float NdotV, float alpha)
 {
@@ -50,6 +68,10 @@ inline float G1_SmithGGX(float NdotV, float alpha)
       return 2.0f * NdotV / denomC;
 }
 
+inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
+{
+    return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
+}
 
 // Coordinate system for transforming vectors
 inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
@@ -127,7 +149,7 @@ inline void SampleBRDF_GGX(
 
     sample = reflect(-V, H);
 
-    if(dot(sample, normal) < 0.0f)
+    if(dot(sample, normal) <= 0.0f)
         sample = float3(0,0,0);
 }
 
@@ -137,52 +159,54 @@ inline void SampleBRDF_GGX(
 inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
 {
     float3 N = normalize(normal);
-    float3 V = normalize(outgoing);   // View direction
-    float3 L = normalize(-incoming);  // Light direction
-    float3 H = normalize(V + L);
-    float NdotV = dot(N, V);
-    float NdotL = dot(N, L);
-    float NdotH = dot(N, H);
-    float VdotH = dot(V, H);
+    float3 V = normalize(outgoing);
+    float3 L = normalize(-incoming);
 
-    float3 F = SchlickFresnel(materials[mID].Ks, VdotH);
-    float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
+    float NdotV = max(0.0f, dot(N, V));
+    float NdotL = max(0.0f, dot(N, L));
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0.xxx;
+
+    float3 H = normalize(V + L);
+    float NdotH = max(0.0f, dot(N, H));
+    float VdotH = max(0.0f, dot(V, H));
+
+    float3 F0 = ComputeBaseF0(mID);
+    float3 F  = SchlickFresnel(F0, VdotH);
+
+    float alpha = materials[mID].Pr_Pm_Ps_Pc.x;
+    alpha *= alpha; // alpha = roughness^2
+
     float D = D_GGX(NdotH, alpha);
     float G = G2_SmithGGX(NdotV, NdotL, alpha);
 
-    // Specular BRDF
-    float denominator = 4.0f * NdotV * NdotL;
-    if(denominator < EPSILON)
-        return float3(0,0,0);
+    float denom = max(4.0f * NdotV * NdotL, EPSILON);
+    float3 specular = (F * D * G) / denom;
 
-    float3 specular = (F * D * G) / denominator;
+    // Multiscatter compensation
+    float Ess  = ESS_LUT(mID, NdotV);
+    float kms  = (1.0f - Ess) / max(Ess, EPSILON);
+    float3 specular_ess = specular * (1.0f + Avg3(F0) * kms);
 
-    //Multiscatter GGX
-    float Ess = ESS_LUT(mID, NdotV);
-    float kms = (1.0f - Ess) / Ess;
-
-    float3 specular_ess = specular * (1.0f + materials[mID].Ks * kms);
-
-    if(any(isnan(specular_ess)) || any(isinf(specular_ess)))
-        return float3(0,0,0);
-
-    return specular_ess;
+    return (any(isnan(specular_ess)) || any(isinf(specular_ess))) ? 0.0.xxx : specular_ess;
 }
+
 
 // Calculate the PDF for a given sample direction using GGX
-inline float BRDF_PDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
+inline float BRDF_PDF_GGX(uint mID, float3 N, float3 wi, float3 wo)
 {
-    float3 N = normalize(normal);
-    float3 V = normalize(outgoing);   // View direction
-    float3 L = normalize(-incoming);  // Light direction
+    float3 V = normalize(wo);
+    float3 L = normalize(-wi);
+    float  NdotV = max(0.0f, dot(N, V));
+    float  NdotL = max(0.0f, dot(N, L));
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0f;
+
     float3 H = normalize(V + L);
-    float NdotH = dot(N, H);
-    float NdotV = dot(N, V);
-    //float VdotH = dot(H, V);
 
-    float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
-    float G1 = G1_SmithGGX(NdotV, alpha);
-    float D = D_GGX(NdotH, alpha);
+    float  r = materials[mID].Pr_Pm_Ps_Pc.x;
+    float  alpha = max(EPSILON, r*r);
+    float  D  = D_GGX(max(0.0f, dot(N, H)), alpha);
+    float  G1 = G1_SmithGGX(NdotV, alpha);
 
-    return G1 * D / max(NdotV * 4.0f, EPSILON);
+    return (D * G1) / max(4.0f * NdotV, EPSILON);
 }
+

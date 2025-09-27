@@ -154,10 +154,7 @@ inline float G1_SmithGGX(float NdotV, float alpha) {
 
 // Smith Geometry Function G2
 inline float G2_SmithGGX(float NdotV, float NdotL, float alpha) {
-    float alpha2 = alpha*alpha;
-    float denomA = NdotV * sqrt(alpha2 + (1.0f - alpha2) * NdotL * NdotL);
-    float denomB = NdotL * sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV);
-    return 2.0f * NdotL * NdotV / (denomA + denomB);
+    return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
 }
 
 // Constructs an orthonormal basis (T1, T2) given a normal vector N
@@ -172,161 +169,159 @@ void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
 
 // SampleGGX Function
 void SampleGGX(
-        const Material& mat,
-        const XMFLOAT3& outgoing, // View direction (V)
-        const XMFLOAT3& normal, // Surface normal (N)
-        XMFLOAT3& sample,
-        float e0,
-        float e1// Output sample direction (L)
-)
+    const Material& mat,
+    const XMFLOAT3& outgoing,  // V
+    const XMFLOAT3& normal,    // N
+    XMFLOAT3& sample,          // L (output)
+    float e0, float e1)
 {
-    // Extract and compute alpha (roughness squared)
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
 
-    // Normalize input vectors
     XMFLOAT3 N = normalize(normal);
     XMFLOAT3 V = normalize(outgoing);
 
-
-    // Construct orthonormal basis (T1, T2, N)
+    // Build world-to-local basis
     XMFLOAT3 T1, T2;
     CoordinateSystem(N, T1, T2);
 
-    // Transform view vector V into the tangent space
-    float VdotT1 = dot(T1, V);
-    float VdotT2 = dot(T2, V);
-    float VdotN = dot(N, V);
-    XMFLOAT3 Vh = normalize(XMFLOAT3(VdotT1, VdotT2, VdotN));
+    // Local view
+    float vx = dot(T1, V);
+    float vy = dot(T2, V);
+    float vz = dot(N,  V);
 
-    // Stretch the view vector by alpha
-    float alpha_x = alpha;
-    float alpha_y = alpha;
-    XMFLOAT3 Vh_stretched = normalize(XMFLOAT3(alpha_x * Vh.x, alpha_y * Vh.y, Vh.z));
+    // Stretch V
+    XMFLOAT3 Ve = normalize(XMFLOAT3(alpha * vx, alpha * vy, vz));
 
-    // Build an orthonormal basis for the stretched space
-    float lensq = Vh_stretched.x * Vh_stretched.x + Vh_stretched.y * Vh_stretched.y;
-    XMFLOAT3 T1h, T2h;
-    if (lensq > 0.0f)
-    {
-        float invSqrtLensq = 1.0f / sqrtf(lensq);
-        T1h = normalize(XMFLOAT3(-Vh_stretched.y * invSqrtLensq, Vh_stretched.x * invSqrtLensq, 0.0f));
-        T2h = cross(Vh_stretched, T1h);
-    }
-    else
-    {
-        T1h = normalize(XMFLOAT3(1.0f, 0.0f, 0.0f));
-        T2h = normalize(XMFLOAT3(0.0f, 1.0f, 0.0f));
-    }
+    // Orthonormal basis around Ve
+    float lensq = Ve.x*Ve.x + Ve.y*Ve.y;
+    XMFLOAT3 T1h = (lensq > 0.0f) ? normalize(XMFLOAT3(-Ve.y, Ve.x, 0.0f))
+                                  : XMFLOAT3(1.0f, 0.0f, 0.0f);
+    XMFLOAT3 T2h = cross(Ve, T1h);
 
-    // Sample point on unit disk using polar coordinates
-    float r = sqrtf(e0);
-    float phi = 2.0f * static_cast<float>(XM_PI) * e1;
-    float x = r * cosf(phi);
-    float y = r * sinf(phi);
+    // Disk sample
+    float r   = sqrtf(e0);
+    float phi = 2.0f * PI * e1;
+    float t1  = r * cosf(phi);
+    float t2  = r * sinf(phi);
 
-    // Compute normal in stretched hemisphere
-    float z = sqrtf((std::fmax)(0.0f, 1.0f - x * x - y * y));
-    XMFLOAT3 Nh_stretched = normalize(XMFLOAT3(
-            x * T1h.x + y * T2h.x + z * Vh_stretched.x,
-            x * T1h.y + y * T2h.y + z * Vh_stretched.y,
-            x * T1h.z + y * T2h.z + z * Vh_stretched.z
-    ));
+    // *** Heitz s-remap (missing before) ***
+    float s = 0.5f * (1.0f + Ve.z);
+    t2 = (1.0f - s) * sqrtf(fmaxf(0.0f, 1.0f - t1*t1)) + s * t2;
 
-    // Unstretch the normal
-    XMFLOAT3 Nh = normalize(XMFLOAT3(alpha_x * Nh_stretched.x, alpha_y * Nh_stretched.y, (std::fmax)(0.0f, Nh_stretched.z)));
+    // Reprojection
+    float t3 = sqrtf(fmaxf(0.0f, 1.0f - t1*t1 - t2*t2));
+    XMFLOAT3 Nh = XMFLOAT3(
+        t1*T1h.x + t2*T2h.x + t3*Ve.x,
+        t1*T1h.y + t2*T2h.y + t3*Ve.y,
+        t1*T1h.z + t2*T2h.z + t3*Ve.z
+    );
 
-    // Transform back to world space
+    // Un-stretch and clamp to upper hemisphere
+    XMFLOAT3 Ne = normalize(XMFLOAT3(alpha * Nh.x, alpha * Nh.y, fmaxf(0.0f, Nh.z)));
+
+    // Back to world half-vector
     XMFLOAT3 H = normalize(XMFLOAT3(
-            Nh.x * T1.x + Nh.y * T2.x + Nh.z * N.x,
-            Nh.x * T1.y + Nh.y * T2.y + Nh.z * N.y,
-            Nh.x * T1.z + Nh.y * T2.z + Nh.z * N.z
+        Ne.x * T1.x + Ne.y * T2.x + Ne.z * N.x,
+        Ne.x * T1.y + Ne.y * T2.y + Ne.z * N.y,
+        Ne.x * T1.z + Ne.y * T2.z + Ne.z * N.z
     ));
 
-    // Reflect view vector V about H to get sample direction L
-    XMFLOAT3 negV = V * (-1.0f);
-    XMFLOAT3 L = reflect(negV, H);
-    sample = normalize(L);
-
+    // Reflect
+    sample = normalize(reflect(V * -1.0f, H));
+    if (dot(N, sample) <= 0.0f) sample = XMFLOAT3(0,0,0);
 }
 
 
 // Evaluate GGX BRDF
-XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3& F0, float roughness) {
-    XMFLOAT3 H = normalize(V + L);
+inline XMFLOAT3 EvaluateBRDF_GGX(
+    const XMFLOAT3& V,
+    const XMFLOAT3& L,
+    const XMFLOAT3& N,
+    const XMFLOAT3& /*F0_unused*/,
+    float roughness)
+{
+    XMFLOAT3 H  = normalize(V + L);
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
     float NdotL = (std::fmax)(dot(N, L), 0.0f);
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return XMFLOAT3(0,0,0);
+
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float VdotH = (std::fmax)(dot(V, H), 0.0f);
 
-    XMFLOAT3 F = XMFLOAT3(1.0f,1.0f,1.0f);
-    float D = D_GGX(NdotH, roughness);
-    float G = G2_SmithGGX(NdotV, NdotL, roughness*roughness);
+    float D     = D_GGX(NdotH, roughness);             // D expects 'roughness' in your impl
+    float alpha = (std::fmax)(1e-4f, roughness * roughness);
+    float G2    = G2_SmithGGX(NdotV, NdotL, alpha);
 
-    return F * G / (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
+    float denom = (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
+    float brdf  = (D * G2) / denom;                    // F = 1 for ESS LUT
+
+    return XMFLOAT3(brdf, brdf, brdf);
 }
 
 // Calculate the PDF for a given sample direction using GGX
-inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const XMFLOAT3& incoming, const XMFLOAT3& outgoing) {
+inline float BRDF_PDF_GGX(const float roughness,
+                          const XMFLOAT3& normal,
+                          const XMFLOAT3& incoming,
+                          const XMFLOAT3& outgoing)
+{
     XMFLOAT3 N = normalize(normal);
-    XMFLOAT3 V = normalize(outgoing);  // View direction
-    XMFLOAT3 L = normalize(incoming * -1.0f); // Light direction
-    XMFLOAT3 H = normalize(V + L);
+    XMFLOAT3 V = normalize(outgoing);
+    XMFLOAT3 L = normalize(incoming * -1.0f);
 
-    //float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    //float VdotH = (std::fmax)(dot(V, H), 0.0f);
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
+    float NdotL = (std::fmax)(dot(N, L), 0.0f);
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0f;
 
-    float alpha = roughness * roughness; // Roughness squared
-    float G1 = G1_SmithGGX(NdotV, alpha);
+    XMFLOAT3 H = normalize(V + L);
+    float NdotH = (std::fmax)(dot(N, H), 0.0f);
 
-    float denom = (std::fmax)(NdotV * 4.0f, 1e-7f); // Avoid division by zero
-    return G1 / denom;
+    // Your D_GGX takes 'roughness' (it squares internally to α, then again to α²)
+    float D     = D_GGX(NdotH, roughness);
+    float alpha = (std::fmax)(1e-4f, roughness * roughness);
+    float G1    = G1_SmithGGX(NdotV, alpha);
 
-    /*float denom = 4.0f * VdotH;
-    return NdotH  / denom;*/
+    return (D * G1) / (4.0f * (std::fmax)(NdotV, 1e-7f));
 }
 
 
-
 // Compute E_ss with Monte Carlo Integration
-float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, XMFLOAT3 Ks, int numSamples, Material& mat) {
+float ComputeEss(const XMFLOAT3& N,
+                 const XMFLOAT3& V,
+                 float roughness,
+                 XMFLOAT3 /*Ks*/,
+                 int numSamples,
+                 Material& mat)
+{
     float Ess = 0.0f;
 
-    // Random number generator
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-
 
     for (int i = 0; i < numSamples; ++i) {
         float u1 = dist(gen);
         float u2 = dist(gen);
 
-        // Sample GGX
+        // VNDF sample
         XMFLOAT3 L;
-        SampleGGX(mat,V,N,L,u1,u2);
+        SampleGGX(mat, V, N, L, u1, u2);
 
-        // Ensure L is valid
-        if (dot(N, L) <= 0.0f) continue;
+        // Keep to the shading hemisphere
+        float NdotL = dot(N, L);
+        if (NdotL <= 0.0f) continue;
 
-        float NdotL = std::abs(dot(normalize(N), normalize(L)));
-        XMFLOAT3 brdf = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), Ks, roughness);
+        // BRDF with F=1 (scalar replicated across RGB)
+        XMFLOAT3 brdf3 = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), XMFLOAT3(1,1,1), roughness);
+        float brdf = brdf3.x;
 
-        // Calculate the PDF
+        // VNDF direction pdf
         float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
-        pdf = (std::fmax)(pdf, 1e-7f); // Avoid division by zero
+        pdf = (std::fmax)(pdf, 1e-7f);
 
-        // Safeguard against zero or invalid BRDF values
-        float luminance = (brdf.x + brdf.y + brdf.z) / 3.0f;
-        if (luminance > 0.0f) {
-            Ess += (NdotL * luminance) / pdf;
-        }
+        Ess += (NdotL * brdf) / pdf;
     }
 
-    // Avoid division by zero
-    return numSamples > 0 ? Ess / numSamples : 0.0f;
+    return (numSamples > 0) ? (Ess / numSamples) : 0.0f;
 }
-
 
 
 
