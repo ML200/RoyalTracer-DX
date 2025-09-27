@@ -9,7 +9,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     // Load the DI pipeline output
-    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
     float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 

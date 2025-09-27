@@ -119,7 +119,7 @@ inline float LT_BranchProb(float IL, float IR)
 {
     float sum = IL + IR;
     float prob = (sum > 0.0f) ? (IL / sum) : 0.5f;
-    return clamp(prob, 0.01f, 0.99f);
+    return clamp(prob, 0.0001f, 0.9999f);
 }
 
 // STOCHASTIC DESCENT
@@ -147,7 +147,7 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
 
         float p, xi_next;
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
-        pdfTLAS *= max(p, 1e-20);
+        pdfTLAS *= p;
         node = N.firstChild + idx;
         xi   = xi_next; // rescaled for the next level
     }

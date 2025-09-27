@@ -1,69 +1,61 @@
+// Principled sampling probabilities
+inline float2 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal)
+{
+    float  roughness = materials[mID].Pr_Pm_Ps_Pc.x;
+    float  metallic  = materials[mID].Pr_Pm_Ps_Pc.y;
+
+    float3 N = normalize(normal);
+    float3 V = normalize(outgoing);
+    float  NdotV = saturate(dot(N, V));
+
+    float3 F0_rgb = ComputeBaseF0(mID);
+    float  F0     = saturate(Avg3(F0_rgb));
+
+    // Fresnel at this view angle (achromatic for weights)
+    float  Fv     = saturate(Avg3(SchlickFresnel(F0_rgb, NdotV)));
+
+    // Angle-aware energy split
+    float w_diff = (1.0 - metallic) * (1.0 - Fv);
+    float w_spec = lerp(Fv, 1.0, metallic);
+
+    // Small variance tilt toward spec on very smooth surfaces
+    float glossBias = 1.0 - saturate(roughness);
+    w_spec *= lerp(1.0, 1.25, glossBias * 0.5);
+
+    float sum = max(1e-6, w_diff + w_spec);
+    return float2(w_diff / sum, w_spec / sum); // (p_diff, p_spec)
+}
+
 // Select a sampling strategy for the given material:
 // 0 - Lambertian
 // 1 - Specular (GGX)
 // 2 - Perfect reflection
 // 3 - Refraction
 // Probability is the likelihood to select the given sampling strategy, used for weighting the contributions
-inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout uint2 seed){
-    //Get random value
+inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout uint2 seed)
+{
     float r = RandomFloatSingle(seed.x);
 
-    // Evaluate the material properties
-    float roughness = materials[mID].Pr_Pm_Ps_Pc.x;
-    float metallic = materials[mID].Pr_Pm_Ps_Pc.y;
-    float clearcoat = materials[mID].Pr_Pm_Ps_Pc.w;
-    float alpha = materials[mID].Kd.w;
+    // Get principled (diffuse, specular) probabilities
+    float2 ps = CalculateStrategyProbabilities(mID, outgoing, normal);
+    float p_diff = saturate(ps.x);
+    float p_spec = saturate(ps.y);
 
+    // Ensure they form a valid distribution
+    float sum = max(1e-6f, p_diff + p_spec);
+    p_diff /= sum;
+    p_spec /= sum;
 
-    // Check if the ray will enter the material
-    // First the Fresnel term has to be evaluated: Get the wavelength specific one and calculate the average
-    //cos
-    float cosTheta = dot(normal, outgoing);
-    float3 fresnel = SchlickFresnel(materials[mID].Ks, cosTheta);
-
-    // Sampling probabilities
-    float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z)/3.0f + metallic); // Sample the specular part: grazing angles/ clearcoat for additive reflection (roughness) / metallic (will introduce colored reflections)
-    float p_d = 1.0f;//(1.0f - p_s); // Sample the diffuse part of the lobe
-
-    //Select the strategy based on the probabilities (CDF)
-    //Specular
-    if(r <= p_s){
-        if(roughness < 0.04f){ // adjust threshold (later 2)
-            return 0;
-        }
-        return 1;
+    // CDF selection
+    if (r < p_spec)
+    {
+        return 1; // Specular GGX
     }
-    //Diffuse
-    else if(r <= p_s + p_d){
-        return 0;
-    }
-    else{
-        // Refraction, currently replaced by diffuse (later 3)
-        return 0;
-    }
+
+    return 0; // Lambertian
 }
 
-inline float2 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal){
-    // Evaluate the material properties
-    float roughness = materials[mID].Pr_Pm_Ps_Pc.x;
-    float metallic  = materials[mID].Pr_Pm_Ps_Pc.y;
-    // Note: clearcoat and alpha are not used in this calculation
 
-    // Evaluate Fresnel term using Schlick's approximation
-    float cosTheta = dot(normal, outgoing);
-    float3 fresnel = SchlickFresnel(materials[mID].Ks, cosTheta);
-
-    // Calculate the specular probability (strategy 1)
-    float p_s = 0.0f;//min(1.0f, (fresnel.x + fresnel.y + fresnel.z) / 3.0f + metallic);
-
-    // Calculate the diffuse probability (strategy 0)
-    float p_d = 1.0f;//1.0f - p_s;
-
-    // Return the probabilities:
-    // - x component: diffuse (strategy 0)
-    // - y component: specular (strategy 1)
-    return float2(p_d, p_s);
-}
 
 
 // Sample the BRDF of the given strategy
