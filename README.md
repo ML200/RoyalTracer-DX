@@ -7,11 +7,19 @@ What started as a port of the [RoyalTracer university project](https://github.co
 ## Features
 <details>
   <summary><strong>Materials</strong></summary>
-
-- ReSTIR
-- Pipeline
-- Light Tree
-- Denoiser
+</details>
+<details>
+  <summary><strong>Light Sampling</strong></summary>
+</details>
+<details>
+  <summary><strong>ReSTIR</strong></summary>
+</details>
+<details>
+  <summary><strong>Pipeline</strong></summary>
+</details>
+<details>
+  <summary><strong>Denoiser</strong></summary>
+</details>
 
 ## Planned
 
