@@ -2,7 +2,6 @@ StructuredBuffer<uint> gTriToLightId : register(t15);
 
 
 #ifndef ENABLE_RAY_QUERY_INLINE
-// The remaining functions remain unchanged.
 float VisibilityCheck(
     float3 x1,
     float3 x2,
@@ -34,7 +33,7 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     float  len = length(L - P);
 
     RayDesc ray;
-    ray.Origin    = P + normalize(N) * SBIAS * 0.5f;            // ← offset *along ray*
+    ray.Origin    = P + normalize(N) * SBIAS * 0.5f;
     ray.Direction = dir;
     ray.TMin      = EPSILON;
     ray.TMax      = max(len - SBIAS * 4.0f - EPSILON * 10.0f, 2.0f * EPSILON);
@@ -48,18 +47,16 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
                       0xFF,            // mask
                       ray);
 
-    rq.Proceed();            // ← DRIVE TO COMPLETION
+    rq.Proceed();
 
     return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
 }
 
-//------------------------------------------------------------------------------
-//  fetch all per-triangle data and fill the four OUT parameters
-//------------------------------------------------------------------------------
+// Inline version of closest hit shader
 inline void EvalSurface(
     uint   instID,
     uint   primID,
-    float2 bc2,                      // (u,v) from RayQuery
+    float2 bc2,
     out float3 outPosW,
     out float3 outNormW,
     out float  outArea,
@@ -69,7 +66,7 @@ inline void EvalSurface(
     uint  baseV = instanceProps[instID].vertexBase;
     uint  baseM = instanceProps[instID].materialBase;
 
-    // -- 1. vertex & index fetch -------------------------------------------
+    // vertex data
     uint idx0 = indices[baseI + 3u*primID + 0];
     uint idx1 = indices[baseI + 3u*primID + 1];
     uint idx2 = indices[baseI + 3u*primID + 2];
@@ -81,16 +78,16 @@ inline void EvalSurface(
     // barycentrics = (1-u-v, u, v)
     float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
 
-    // -- 2. hit position in object space ------------------------------------
+    // position
     float3 posObj = p0*bary.x + p1*bary.y + p2*bary.z;
 
-    // -- 3. flat geometric normal + area ------------------------------------
+    // area + norm
     float3 e1 = p1 - p0;
     float3 e2 = p2 - p0;
     float3 flatN  = normalize(cross(e1, e2));
     float  area_l = 0.5f * length(cross(e1, e2));
 
-    // -- 4. smooth-shaded normal (with flat fallback) -----------------------
+    // TODO: smooth normal is borked, fix needed
     float3 vn0 = BTriVertex[idx0].normal.xyz;
     float3 vn1 = BTriVertex[idx1].normal.xyz;
     float3 vn2 = BTriVertex[idx2].normal.xyz;
@@ -102,7 +99,7 @@ inline void EvalSurface(
 
     float3 n = normalize(smoothN);
 
-    // -- 5. object → world transforms ---------------------------------------
+    // object to world
     outPosW  = mul(instanceProps[instID].objectToWorld,
                    float4(posObj,1)).xyz;
 
@@ -111,12 +108,12 @@ inline void EvalSurface(
     outNormW = normalize(n);
     outArea  = area_l;
 
-    // -- 6. material ID (same “normal.w” convention) ------------------------
-    uint matOffset = asuint( BTriVertex[idx0].normal.w );   // stored in w
+    // material id
+    uint matOffset = asuint( BTriVertex[idx0].normal.w );
     outMatID       = materialIDs[baseM + 3u*primID + matOffset];
 }
 
-
+// INLINE BSDF ray, dont use for shadow ray because unoptimized
 inline bool TraceRayInline_HitInfo(
     RaytracingAccelerationStructure SceneBVH,
     RayDesc ray,
@@ -150,7 +147,6 @@ inline bool TraceRayInline_HitInfo(
     hit.materialID  = matID;
     hit.objID       = instID;
 
-    // NEW: (instID, primID) -> global light index, or 0xFFFFFFFF if not emissive
     uint base   = instanceProps[instID].triToLightBase;
     uint light  = gTriToLightId[base + primID];
     hit.lightID = light;

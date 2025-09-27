@@ -8,17 +8,16 @@ struct Reservoir_GI
     float3 L2_gi;
     float3 V2_gi;
 
-    // NEW
-    float3 F_gi;          // contribution cached -> faster
-    float4 J_gi;          // Jacobian (.x xk pdf, .y xk+1, .z NEE pdf if NEE, .w geometry term for k>1)
-    uint   lobe0_gi;      // Lobes for k and k+1 to ensure bijectivity of shifts
+    float3 F_gi;
+    float4 J_gi;
+    uint   lobe0_gi;
     uint   lobe1_gi;
 
     uint   M_gi;
     uint   objID_gi;
     uint   matID_gi;
-    uint   rSeed_gi;      // Random seed
-    uint   rIndex_gi;     // Index of the reconnection vertex
+    uint   rSeed_gi;
+    uint   rIndex_gi;
 };
 
 
@@ -29,13 +28,42 @@ float JacobianDeterminant( float3 x1_c,
 {
     float3  v_c   = x1_c - x2_c;
     float   distc = dot(v_c, v_c);
-    float   cosc  = abs(dot(normalize(v_c), n2_c));
+    float   cosc  = dot(normalize(v_c), n2_c);
 
     float3  v_n   = x1_n - x2_c;
     float   distn = dot(v_n, v_n);
-    float   cosn  = abs(dot(normalize(v_n), n2_c));
+    float   cosn  = dot(normalize(v_n), n2_c);
 
     float J = (cosc / cosn) * (distn / distc);
+
+    return !isnan(J)?J:1e10;
+}
+
+float JacobianDeterminantPSS( float3 x1_n,
+                              float3 n1_n,
+                              float3 o1_n,
+                              uint mID1_n,
+                              float3 x2_c,
+                              float3 n2_c,
+                              float3 V2_c,
+                              uint mID2_c,
+                              float J_c,
+                              float pdfx2)
+{
+    // For restir PT in PSS, the jacobion is simply J / (pk-1 * Gk * pk) where J is the canonical path part
+    float3  v_n   = x1_n - x2_c;
+    float   distn = dot(v_n, v_n);
+    float   cosn  = dot(normalize(v_n), n2_c);
+
+    float G = cosn / distn; // G term for the shifted path
+
+    // path pdfs for the shifted path (same as for reconnection)
+    float PDF1 = PDF_term(mID1_n, n1_n, normalize(v_n), o1_n);
+    float PDF2 = pdfx2;
+    if(pdfx2 == 0.0f)
+        PDF2 = PDF_term(mID2_c, n2_c, V2_c, normalize(v_n));
+
+    float J = J_c / (PDF1 * PDF2 * G);
 
     return !isnan(J)?J:1e10;
 }
@@ -95,7 +123,7 @@ inline float3 ReconnectGI(
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
+    float3 ndirN = normalize(-dir);     // direction from x1 to x2
 
     // Terms
     float3 F1 = BSDF_term(mID1, n1, ndirN, o);
@@ -132,7 +160,7 @@ inline float3 ReconnectGISingle(
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
+    float3 ndirN = normalize(-dir);
 
     // Terms
     float3 F = BSDF_term(mID, n1, ndirN, o);
@@ -150,7 +178,7 @@ inline float3 ReconnectGISingle(
 }
 
 
-// Update DI reservoir
+// Update GI reservoir
 bool UpdateReservoirGI(
     inout Reservoir_GI reservoir,
     in float wi,
@@ -194,22 +222,13 @@ bool UpdateReservoirGI(
     return false;
 }
 
-/*─────────────────────────────────────────────────────────────────────────────
-   64-BYTE LAYOUT (per-pixel · GI reservoir, 4x Load4/Store4)
-
-        0–15   pack1 : { x2.xyz , n2_enc }                     float4  (unchanged)
-       16–31   pack2 : { L2_enc , V2_enc , objID , matID|M }   float4  (unchanged)
-       32–47   pack3 : { J.x    , J.y    , J.z    , J.w }      float4  (NEW)
-       48–63   pack4 : { W      , rSeed  , rIndex|lobes16 , F_enc }   (NEW)
-                  - pack4.z low 16 bits : rIndex
-                  - pack4.z high16 bits : PackLobes16(lobe0,lobe1)
-─────────────────────────────────────────────────────────────────────────────*/
+// Data management
 static const uint BYTES_GI    = 64u;
 
 static const uint O_GI_PACK1  =  0u;   // float4
 static const uint O_GI_PACK2  = 16u;   // float4
-static const uint O_GI_PACK3  = 32u;   // float4  (J_gi)
-static const uint O_GI_PACK4  = 48u;   // float4  (W, rSeed, rIndex|lobes, F_enc)
+static const uint O_GI_PACK3  = 32u;   // float4
+static const uint O_GI_PACK4  = 48u;   // float4
 
 uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * BYTES_GI; }
 
@@ -224,32 +243,20 @@ void UnpackLobes16(uint v16, out uint a, out uint b)
     b = (v16 >> 8) & 0xFFu;
 }
 
-/*─────────────────────────────────────────────────────────────────────────────
-   FAST WHOLE-RESERVOIR STORE / LOAD
-─────────────────────────────────────────────────────────────────────────────*/
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
     uint base = pixelBaseAddrGI(pixelIdx);
-
-    // pack1 : x2.xyz | n2_enc
     float3 xO = WorldToObjectPos (r.objID_gi, r.x2_gi);
     float3 nO = WorldToObjectNrm(r.objID_gi, r.n2_gi);
     buf.Store4(base + O_GI_PACK1, uint4(asuint(xO), PackNormal(nO)));
-
-    // pack2 : L2_enc | V2_enc | objID | matID‖M
     buf.Store4(base + O_GI_PACK2, uint4(PackRGB9E5(r.L2_gi),
                                         PackNormal (r.V2_gi),
                                         r.objID_gi,
                                         PackMatID_M(r.matID_gi, r.M_gi)));
-
-    // pack3 : J.x | J.y | J.z | J.w
     buf.Store4(base + O_GI_PACK3, asuint(r.J_gi));
-
-    // pack4 : W | rSeed | (rIndex_low16 | lobes16<<16) | F_enc
     uint lobes16 = PackLobes16(r.lobe0_gi, r.lobe1_gi);
     uint rIndex16 = r.rIndex_gi & 0xFFFFu;
     uint rIndexAndLobes = rIndex16 | (lobes16 << 16);
-
     buf.Store4(base + O_GI_PACK4, uint4(asuint(r.W_gi),
                                         r.rSeed_gi,
                                         rIndexAndLobes,
@@ -286,14 +293,12 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.F_gi      = UnpackRGB9E5(p4.w);
 
-    r.w_sum_gi = 0.0f; // transient; not stored
+    r.w_sum_gi = 0.0f; // not stored in memory
     return r;
 }
 
 
-/*─────────────────────────────────────────────────────────────────────────────
-   FINE-GRAINED LOAD HELPers  (one read each)
-─────────────────────────────────────────────────────────────────────────────*/
+// fast loaders
 float3 load_x2_gi(RWByteAddressBuffer b, uint id, uint obj)
 { return ObjectToWorldPos(obj, asfloat(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK1).xyz)); }
 
@@ -321,9 +326,6 @@ float4 load_J_gi (RWByteAddressBuffer b, uint id)
 float load_W_gi(RWByteAddressBuffer b, uint id)
 {return asfloat(b.Load4(pixelBaseAddrGI(id) + O_GI_PACK4).x); }
 
-/*─────────────────────────────────────────────────────────────────────────────
-   FAST GROUP LOADERS  (one read when you need both values)
-─────────────────────────────────────────────────────────────────────────────*/
 inline void load_x2_n2_fast_gi(RWByteAddressBuffer b, uint id, uint obj,
                                out float3 x2, out float3 n2)
 {

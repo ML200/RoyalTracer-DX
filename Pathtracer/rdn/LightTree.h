@@ -278,7 +278,7 @@ public:
     struct Settings {
         uint32_t maxLeafTris = 4;       // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
-        uint32_t buildBins   = 16;       // spatial bin count for SAOH
+        uint32_t buildBins   = 32;       // spatial bin count for SAOH
     };
 
     struct GpuBuffers {

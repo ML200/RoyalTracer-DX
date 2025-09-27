@@ -96,29 +96,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     uint2 launch = DTid.xy;
 
-    // Feed forward emitters
     if (gScratchPing[uint3(launch, 3)].x == 1) {
         gScratchPing[uint3(launch, 1)] = gScratchPing[uint3(launch, 2)];
         return;
     }
 
-    // Scale threshold with sample quality (w)
     float w        = gScratchPing[uint3(launch, 5)].w;
-    float threshold = lerp(1.0f, uThreshold, saturate(w / 5.0f)); // keeps your behavior
+    float threshold = lerp(1.0f, uThreshold, saturate(w / 5.0f));
 
-    // Center signals
     float3 centerRGB  = gScratchPing[uint3(launch, 0)].rgb;
     float3 centerN    = normalize(gScratchPing[uint3(launch, 4)].xyz);
     float3 centerPos  = gScratchPing[uint3(launch, 5)].xyz;
     float  rough      = gScratchPing[uint3(launch, 3)].y;
-    uint   centerObj  = asuint(gScratchPing[uint3(launch, 3)].z); // objID packed in .z
+    uint   centerObj  = asuint(gScratchPing[uint3(launch, 3)].z);
 
-    // Geometry-aware gates (tweak if needed)
-    // Slightly relax normal gate on rough surfaces
-    float cosThresh   = lerp(0.92f, 0.85f, saturate(rough));   // smooth → stricter, rough → looser
-    float distThresh  = 0.05f;                                 // world-space planar distance (same as your GI reuse)
+    float cosThresh   = lerp(0.92f, 0.85f, saturate(rough));
+    float distThresh  = 0.05f;
 
-    // Accumulate only geometry-consistent neighbors
     float3 neighbourSum = 0.0;
     uint   neighbourCnt = 0;
 
@@ -134,13 +128,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (n.x < 0 || n.y < 0 || n.x >= int(gImageWidth) || n.y >= int(gImageHeight))
                 continue;
 
-            // Neighbor geometry
             float3 nRGB   = gScratchPing[uint3(n, 0)].rgb;
             float3 nN     = normalize(gScratchPing[uint3(n, 4)].xyz);
             float3 nPos   = gScratchPing[uint3(n, 5)].xyz;
             uint   nObj   = asuint(gScratchPing[uint3(n, 3)].z);
 
-            // Geometry consistency checks
+            // geometry checks
             bool sameObj     = (nObj == centerObj);
             bool normalOK    = !RejectNormal_GI(centerN, nN, cosThresh);
             bool distanceOK  = !RejectDistance_GI(centerPos, nPos, centerN, distThresh);
@@ -153,19 +146,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
     }
 
-    // If no valid neighbors, do nothing (prevents bleeding across edges/thin features)
+    // Reject filter on no good neighbors
     if (neighbourCnt > 0)
     {
         float3 neighbourAvg = neighbourSum / float(neighbourCnt);
 
-        // Luma-based clamp against *geometry-consistent* neighborhood
         float centerLum    = Luma(centerRGB);
         float neighbourLum = Luma(neighbourAvg);
 
         if (centerLum > neighbourLum * (1.0 + threshold))
         {
-            // clamp down to the neighborhood mean; optionally lerp instead of hard replace:
-            // centerRGB = lerp(centerRGB, neighbourAvg, 0.75);
             centerRGB = neighbourAvg;
         }
     }

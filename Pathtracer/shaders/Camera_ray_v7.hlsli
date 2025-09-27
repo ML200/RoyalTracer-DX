@@ -93,7 +93,6 @@ inline int2 GetBestReprojectedPixel_d(
 
     int2 p = int2(round(subPixel));
 
-    // final guard in integer space (handles 0.5-rounding to 'resolution')
     int2 resi = int2(resolution);
     if (any(p < int2(0,0)) || any(p >= resi)) return int2(-1, -1);
 
