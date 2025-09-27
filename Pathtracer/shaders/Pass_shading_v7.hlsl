@@ -90,7 +90,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 accumulation = output_DI + output_GI;
 
-    // ───────────────────────── Accumulation (capped) ───────────────────────────
     bool cameraChanged = false;
     [unroll]
     for (uint i = 0; i < 4; ++i) {
@@ -117,13 +116,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
         newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
 
-    // --- store back to the permanent UAV ----------------------------------------
+    // store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
-    // --- display/debug -----------------------------------------------------------
+    // show accumulated image
     float3 fColor = sRGBGammaCorrection(newAvg);
     gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
-
+    //override if target is real time undenoised
     float3 finalColor = sRGBGammaCorrection(accumulation);
     //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 

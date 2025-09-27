@@ -2,7 +2,7 @@
 Random Number generation functions.
 */
 
-// c is a constant
+// c is a constant, eg time
 uint2 GetSeed(uint2 idx, uint t, uint c)
 {
     return
@@ -35,8 +35,6 @@ float RandomFloat(inout uint2 s)
              ^ (s.x + sum)
              ^ ((s.x >> 5u) + 0x7E95761Eu);
     }
-
-    // reinterpret s.x’s low 23 bits as mantissa → [1,2), subtract 1 → [0,1)
     return asfloat((s.x & 0x007FFFFFu) | 0x3F800000u) - 1.0;
 }
 

@@ -83,9 +83,6 @@ cbuffer CameraParams : register(b0)
 static const float3 kLUMA = half3(0.2126h, 0.7152h, 0.0722h);
 static const float kMaxMsum = 10000.0;
 
-//------------------------------------------------------------------------------
-//  Main kernel
-//------------------------------------------------------------------------------
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
@@ -95,9 +92,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     const float2 dimsH = float2(gImageWidth, gImageHeight);
 
-    //----------------------------------------------------------------------
-    //  G-buffer
-    //----------------------------------------------------------------------
+    // "G-buffer"
     float4 misc3     = gScratchPing[uint3(launch, 3)];
     float  roughness = misc3.y;
     uint   objIdCur  = (uint)misc3.z;
@@ -111,18 +106,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 x1Cur     = gScratchPing[uint3(launch, 5)].xyz;  // world-space pos
     float3 n1Cur     = gScratchPing[uint3(launch, 4)].xyz;  // world-space normal
 
-    //----------------------------------------------------------------------
-    //  1. Bilinear reprojection (4 taps)
-    //----------------------------------------------------------------------
+    // bilinear reprojection (4 taps)
     WeightedPixel taps[4];
     GetBilinearReprojectedPixels_d(
         x1Cur, prevView, prevProjection,
         float2(dimsH), objIdCur,
         taps);
 
-    //----------------------------------------------------------------------
-    //  2. Validate taps
-    //----------------------------------------------------------------------
+    //  Valid bilin pixels
     float3 histNum   = 0.0;
     float  MprevSum  = 0.0;
     bool   anyOK     = false;
@@ -160,9 +151,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         anyOK     = true;
     }
 
-    //----------------------------------------------------------------------
-    //  3. Choose history
-    //----------------------------------------------------------------------
+    // Choose history
     float3 histCol   = Ccur;
     float  Mprev     = 0.0;
     bool   histValid = false;
@@ -174,18 +163,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         histValid = true;
     }
 
-    //----------------------------------------------------------------------
-    //  4. Temporal accumulation
-    //----------------------------------------------------------------------
+    // Temporal accumulation
     float  Mcur = max(0.0, gScratchPing[uint3(launch, 5)].w);
     float  Mnew = min(Mprev + Mcur, kMaxMsum);
 
     float  alpha = (Mnew > 0.0) ? (Mcur / Mnew) : 1.0;
     float3 Cacc  = histValid ? lerp(histCol, Ccur, alpha) : Ccur;
 
-    //----------------------------------------------------------------------
-    //  5. Store results
-    //----------------------------------------------------------------------
+    // Store results
     gScratchPing[uint3(launch, 12)] = float4(Cacc, Mnew);
     gScratchPing[uint3(launch,  0)] = float4(Cacc, 0.0);
 }

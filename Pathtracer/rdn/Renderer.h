@@ -89,10 +89,10 @@ private:
     {
         std::wstring  file;               // *.hlsl
         Stage         stage   = Stage::RayGen;
-        uint32_t      groupX  = 0, groupY = 0;   // legacy CS
-        uint32_t      psoIdx  = UINT32_MAX;      // legacy CS
-        bool          isWorkGraph = false;       // NEW
-        uint32_t      wgIdx  = UINT32_MAX;       // NEW – index into state-object array
+        uint32_t      groupX  = 0, groupY = 0;   // CS
+        uint32_t      psoIdx  = UINT32_MAX;      // CS
+        bool          isWorkGraph = false;
+        uint32_t      wgIdx  = UINT32_MAX;       // index into state-object array
     };
 
 
@@ -122,16 +122,16 @@ private:
         if (tail == L"rg" || tail == L"raygen")
             return p;                               // still Stage::RayGen
 
-        // --- work graph pass “wg:WxH” ---
-        if (tail.rfind(L"wg:",0)==0)                // “|wg:16x16”
+        // work graph pass “wg:WxH”
+        if (tail.rfind(L"wg:",0)==0)
         {
             p.stage        = Stage::Compute;        // will be scheduled like CS
             p.isWorkGraph  = true;
-            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY); // only used for sanity
+            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY);
             return p;
         }
 
-        // classic compute shader tag  “cs:WxH”
+        // compute shader tag  “cs:WxH”
         if (tail.rfind(L"cs:", 0) == 0)
         {
             p.stage = Stage::Compute;
@@ -143,40 +143,32 @@ private:
 
         throw std::runtime_error("Unknown stage spec in pass string");
     }
+    std::vector<std::wstring>                    m_passSequence;
+    std::unordered_map<std::wstring, uint32_t>   m_passIndex;
+    std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;
 
-    // --- NEW: dynamic pass control ------------------------------------------------
-    std::vector<std::wstring>                    m_passSequence;   // “RayGen”, “barrier”, …
-    std::unordered_map<std::wstring, uint32_t>   m_passIndex;      // shader name ➜ slot in SBT
-    std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;    // compiled DXIL blobs
-    // -----------------------------------------------------------------------------
+    //  Global arrays used by EvalSurface() in the inline‑ray‑query path
+    struct BTriVertex          // same layout as in HLSL
+    {
+        DirectX::XMFLOAT3 vertex;
+        DirectX::XMFLOAT4 normal;      // xyz = normal,  w = optional matID
+    };
 
-    // -----------------------------------------------------------------------------
-//  Global arrays used by EvalSurface() in the inline‑ray‑query path
-// -----------------------------------------------------------------------------
-struct BTriVertex          // same layout as in HLSL
-{
-    DirectX::XMFLOAT3 vertex;
-    DirectX::XMFLOAT4 normal;      // xyz = normal,  w = optional matID
-};
-
-ComPtr<ID3D12Resource> m_vertexGlobal;   // new
-ComPtr<ID3D12Resource> m_indexGlobal;    // new
-UINT                   m_totalVertexCount = 0;
-UINT                   m_totalIndexCount  = 0;
-// -----------------------------------------------------------------------------
+    ComPtr<ID3D12Resource> m_vertexGlobal;
+    ComPtr<ID3D12Resource> m_indexGlobal;
+    UINT                   m_totalVertexCount = 0;
+    UINT                   m_totalIndexCount  = 0;
 
 
   static const UINT FrameCount = 2;
 
-    // Streamline frame & viewport tracking
+    // Streamline frame and viewport tracking
     sl::FrameToken*     m_frameToken     = nullptr;
     sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
-    // ──────────────────────────────────────────────────────────────
-    sl::DLSSDOptions     m_dlssdOptions   {};   // user-driven
-    sl::Constants        m_slConstants    {};   // per-frame
-    // ──────────────────────────────────────────────────────────────
+    sl::DLSSDOptions     m_dlssdOptions   {};
+    sl::Constants        m_slConstants    {};
 
-    std::vector<PassDesc>                           m_passes;      // parsed list
+    std::vector<PassDesc> m_passes;
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
     std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
 
@@ -247,13 +239,13 @@ UINT                   m_totalIndexCount  = 0;
     std::vector<UINT> m_instanceModelIndices;
     std::vector<UINT> m_materialIDOffsets;
 
-    // ── ALIAS TABLE (SoA) ───────────────────────────────\n
+    // alias table
     std::vector<float> m_aliasProb;
-    // probability array (R32_FLOAT)\n
+    // probability array
     std::vector<uint32_t> m_aliasIdx;
-    // alias‑index array (R32_UINT)\n
+    // alias‑index array
     ComPtr<ID3D12Resource> m_aliasProbBuffer;
-    // default‑heap GPU copies\n
+    // default‑heap GPU copies
     ComPtr<ID3D12Resource> m_aliasIdxBuffer;
     ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
 
@@ -406,7 +398,6 @@ UINT                   m_totalIndexCount  = 0;
   UINT materialVertexOffset = 0;
 
   //Support for several objects (instanced optionally)
-  //____________________________________________________________________________________________________________________
   std::vector<ComPtr<ID3D12Resource>> m_VB;
   std::vector<ComPtr<ID3D12Resource>> m_IB;
   std::vector<D3D12_VERTEX_BUFFER_VIEW> m_VBView;
@@ -415,7 +406,6 @@ UINT                   m_totalIndexCount  = 0;
   std::vector<ComPtr<ID3D12Resource>> m_materialID;
   std::vector<UINT> m_IndexCount;
   std::vector<UINT> m_VertexCount;
-  //____________________________________________________________________________________________________________________
 
 
   // #DXR Extra - Another ray type

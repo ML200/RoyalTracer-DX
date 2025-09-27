@@ -202,7 +202,7 @@ float PairwiseMIS_Neighbor_Spat_GI(
 #endif // ENABLE_RAY_QUERY_INLINE
 
 
-inline float SymRatio(float pA, float pB, float beta)          // D^β  (Eq. 13, raised to β)
+inline float SymRatio(float pA, float pB, float beta)
 {
     if(pA == 0.0f || pB == 0.0f)
         return 0.0f;

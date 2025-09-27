@@ -59,7 +59,7 @@ SampleReturn SampleBSDF(
 }
 
 #ifdef ENABLE_RAY_QUERY_INLINE
-// Sample a NEE sample
+// Sample a BSDF sample (generalized for solid angle)
 SampleReturn SampleBSDF_gen(
     in float3 x1,
     in float3 n1,
