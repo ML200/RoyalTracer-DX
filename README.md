@@ -5,10 +5,8 @@ A real-time path tracer written in HLSL using the DirectX 12 API.
 What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real-time capabilities. Since then, the focus has shifted to implementing and evaluating state-of-the-art algorithms for improving unbiased sampling efficiency. For that reason, the renderer is still missing some core backend features such as texture maps, GLTF loading, or correct instancing.
 
 ## Features
-- Materials
-- <!-- One expandable "feature card" (drop multiple of these under your Features section) -->
 <details>
-  <summary><strong><!-- Feature Title --></strong> — <!-- short tagline (one line) --></summary>
+  <summary><strong>Materials</strong></summary>
 
   <table>
     <tr>
