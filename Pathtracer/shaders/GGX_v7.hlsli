@@ -1,23 +1,16 @@
 inline float ESS_LUT(uint mID, float NdotV)
 {
-    // Normalize inputs to [0, 1]
     NdotV = saturate(NdotV);
-
-    // Compute fractional index for the angle (NdotV)
     float thetaIdxF = NdotV * (LUT_SIZE - 1);
 
-    // Compute integer indices for interpolation
     int thetaIdx0 = (int)floor(thetaIdxF);
     int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE - 1);
 
-    // Compute interpolation weight
+    // Interpolate between lut entries
     float wTheta = thetaIdxF - thetaIdx0;
 
-    // Fetch LUT values at the two angle indices
     float v0 = materials[mID].LUT[thetaIdx0];
     float v1 = materials[mID].LUT[thetaIdx1];
-
-    // Perform linear interpolation
     return lerp(v0, v1, wTheta);
     //return v0;
 }
@@ -38,10 +31,9 @@ inline float D_GGX(float NdotH, float alpha)
     return alpha2 / (PI * denom * denom);
 }
 
-// Smith's Geometry function for GGX
+// Smith Geometry functions for GGX
 inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
 {
-    // Calculate the Smith masking term for the view direction
     float alpha2 = alpha * alpha;
 
     float denomA = NdotV * sqrt(alpha2 + (1.0f - alpha2) * NdotL * NdotL);
@@ -50,7 +42,6 @@ inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
     return 2.0f * NdotL * NdotV / (denomA + denomB);
 }
 
-// Smith's Geometry function 2 for GGX
 inline float G1_SmithGGX(float NdotV, float alpha)
 {
       float alpha2 = alpha * alpha;
@@ -74,21 +65,8 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
     B = cross(N, T);
 }
 
-// ------------------------------------------------------------------------------
-// SampleBRDF_GGX: samples a microfacet normal (half-vector) from Heitz’s VNDF
-// and returns the *reflected* direction in `sample`. Uses alpha_x=alpha_y for
-// isotropic GGX.  Adapts Heitz’s sampleGGXVNDF from the paper.
-//
-// Inputs:
-//    mat.Pr_Pm_Ps_Pc.x = roughness parameter "alpha"
-//    outgoing          = view (or outgoing) direction, in world space
-//    normal            = macroscopic surface normal, in world space
-//    flatNormal        = normal used for small bias offset
-//    seed              = RNG state for random floats
-// Outputs:
-//    sample            = the *reflected* direction in world space
-//    origin            = slightly bumped shading origin (optional)
-// ------------------------------------------------------------------------------
+// VNDF sampling GGX
+// TODO: verify that this is correct
 inline void SampleBRDF_GGX(
     uint mID,
     float3  outgoing,
@@ -98,21 +76,17 @@ inline void SampleBRDF_GGX(
     float3  worldOrigin,
     inout uint2 seed)
 {
-    // 1) Compute alpha^2 if your material encodes roughness that way
     float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;
 
-    // 2) Set up world->local transform where "normal" is the local Z
+    // world to local transform
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
     float3 T1, T2;
     CoordinateSystem(N, T1, T2);
 
-    // 3) Section 3.2: Transform view dir V -> Ve in "hemisphere config"
-    //    Ve = normalize( (alpha_x * V.x), (alpha_y * V.y), V.z ) in local coords
+    // hemisphere config
     float alpha_x = alpha;
     float alpha_y = alpha;
-
-    // Local coords of V relative to N,T1,T2:
     float vx = dot(T1, V);
     float vy = dot(T2, V);
     float vz = dot(N,  V);
@@ -121,14 +95,14 @@ inline void SampleBRDF_GGX(
                                  alpha_y * vy,
                                  vz));
 
-    // 4) Section 4.1: Build orthonormal basis around Ve
+    // build orthonormal basis
     float lensq = Ve.x*Ve.x + Ve.y*Ve.y;
     float3 T1h = (lensq > 0.0f)
                ? float3(-Ve.y, Ve.x, 0.0f) * rsqrt(lensq)
                : float3(1.0f, 0.0f, 0.0f);
     float3 T2h = cross(Ve, T1h);
 
-    // 5) Section 4.2: sample disk & warp
+    // sample disk and warp
     float U1  = RandomFloat(seed);
     float U2  = RandomFloat(seed);
     float r   = sqrt(U1);
@@ -136,27 +110,21 @@ inline void SampleBRDF_GGX(
     float t1  = r * cos(phi);
     float t2  = r * sin(phi);
 
-    // "warp" step
     float s   = 0.5f * (1.0f + Ve.z);
     t2 = (1.0f - s) * sqrt(saturate(1.0f - t1*t1)) + s * t2;
 
-    // 6) Section 4.3: reproject onto hemisphere
+    // reprojection step
     float3 Nh = t1*T1h + t2*T2h
               + sqrt(saturate(1.0f - t1*t1 - t2*t2)) * Ve;
 
-    // 7) Section 3.4: transform normal back to "ellipsoid" -> final half‐vector
     float3 Ne = float3(alpha_x * Nh.x,
                        alpha_y * Nh.y,
                        max(0.0f, Nh.z));
     Ne = normalize(Ne);
 
-    // 8) Convert half‐vector from local coords to world space
-    //    (unrotate by the same transform that took N->(0,0,1))
+    // convert to world space
     float3 H = Ne.x * T1 + Ne.y * T2 + Ne.z * N;
 
-    // 9) Reflect view about H to get the *sampled* direction
-    //    The built‐in function reflect(I,N) = I - 2 (N·I) N
-    //    We want L so that V + L is “2H * (some factor)”
     sample = reflect(-V, H);
 
     if(dot(sample, normal) < 0.0f)

@@ -113,36 +113,6 @@ void main(uint3 tid : SV_DispatchThreadID)
                 (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
                 (sdata_r.matID == sdata.matID));
 
-        // Set the pixel id to the best option in the bilinear patch. Select the one with the most similar normal AND position
-        /*int2 outPixels[4];
-        float outDist[4];
-        bool valid_history = GetLastFramePixels4(sdata.x1, prevView, prevProjection, sdata.objID, dims, outPixels, outDist);
-        float max_weight = 0.0f;
-        // Loop over all candidates and select the optimal one.
-        for(int i = 0; i<4; i++){
-            uint tempIdx = MapPixelID(dims, outPixels[i]);
-            if(tempIdx != 0xFFFFFFFF){
-                // Get the reprojected sample data
-                SampleData sdata_r_temp = loadSampleData(g_sample_last, tempIdx);
-                // Get the reprojected reservoir
-                Reservoir_DI rdi_r_temp = loadReservoirDI(g_Reservoirs_last_di, tempIdx);
-
-                // Weight the current sample - is it valid? And select the one closest in world space
-                bool valid =
-                    (all(sdata_r_temp.L1 < EPSILON) &&
-                    IsValidReservoir_DI(rdi_r_temp) &&
-                    !RejectNormal_DI(sdata.n1, sdata_r_temp.n1, 0.5f) &&
-                    (!RejectDistance_DI(sdata.x1, sdata_r_temp.x1, sdata.n1, 0.05f))  &&
-                    (sdata_r_temp.matID == sdata.matID));
-                float weight = 1.0f/(1.0f + outDist[i]) * (valid?1.0f:0.0f);
-                if(weight > max_weight){
-                    sdata_r = sdata_r_temp;
-                    rdi_r = rdi_r_temp;
-                    max_weight = weight;
-                    tempPixelIdx = tempIdx;
-                }
-            }
-        }*/
         if(tempPixelIdx != 0xFFFFFFFF /*&& valid_history*/ && valid){
             // Calculate the canonical target function
             float visReuse_c = rdi.W_di > 0.0f ? 1.0f : 0.0f;

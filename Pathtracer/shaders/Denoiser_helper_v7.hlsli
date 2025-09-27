@@ -43,21 +43,17 @@ inline float DRoughnessWeight(float  distancePx,
                               float  roughC,
                               float  roughN)
 {
-    if (distancePx <= 0.0f)        // also catches very first neighbour = 0
+    if (distancePx <= 0.0f)
         return 1.0f;
-
-    // 1.  Distance-dependent attenuation (shinier ⇒ sharper)
     float  roughAvg   = 0.5f * (roughC + roughN);
     float  sigma      = lerp(SIGMA_SMOOTH, SIGMA_ROUGH, roughAvg);
     float  inv2Sigma2 = 1.0f / (2.0f * sigma * sigma);
     float  w_dist     = exp(-distancePx * distancePx * inv2Sigma2);
 
-    // 2.  Roughness-mismatch attenuation
     float  dR         = abs(roughC - roughN);
     float  inv2SigR2  = 1.0f / (2.0f * ROUGH_DIFF_SIGMA * ROUGH_DIFF_SIGMA);
     float  w_mismatch = exp(-dR * dR * inv2SigR2);
 
-    // 3.  Combined weight
     return w_dist * w_mismatch;
 }
 
@@ -66,58 +62,37 @@ inline float DObjIDWeight(uint objID0, uint objID1){
     return objID0!=objID1? 0.0f:1.0f;
 }
 
-// Everything with a different object id should have 0 weight
+// how converged is the restir pixel?
 inline float DMWeight(float M)
 {
     return saturate(M / (2.0f * TEMP_MCAP_DI));
 }
 
-//--------------------------------------------------------------------
-// Luminance-guided bilateral weight with
-//  • inverse scaling by ReSTIR weight M   (low-M  ⇒   weight→1)
-//  • gentler behaviour in very dark tones
-//--------------------------------------------------------------------
-#define LUMA_REL_SIGMA   0.2f    // bilateral fall-off (unchanged)
-#define LUMA_KNEE        0.1f    // compression knee    (unchanged)
+#define LUMA_REL_SIGMA   0.2f    // bilateral fall-off
+#define LUMA_KNEE        0.1f    // compression knee
 #define LUMA_EPS         1e-2f    // protects deep-shadow division
-#define M_REF            (2.0f * TEMP_MCAP_DI)   // same normalisation you use elsewhere
+#define M_REF            (2.0f * TEMP_MCAP_DI)
 
 inline float DLumaWeight(float3 colC,
                          float3 colN,
-                         float   M)      // ← NEW PARAM
+                         float   M)
 {
-    //----------------------------------------------------------------
-    // 1. Luminance in *linear* space (Rec.-709 coeffs are fine here)
-    //----------------------------------------------------------------
     float lumC = dot(colC, float3(0.2126, 0.7152, 0.0722));
     float lumN = dot(colN, float3(0.2126, 0.7152, 0.0722));
 
-    //----------------------------------------------------------------
-    // 2. Relative difference – robust in deep shadows
-    //----------------------------------------------------------------
-    float relMax   = max(max(lumC, lumN), LUMA_EPS);     // avoid blow-up
-    float d        = abs(lumC - lumN) / relMax;          //   ∈ [0,∞)
+    float relMax   = max(max(lumC, lumN), LUMA_EPS);
+    float d        = abs(lumC - lumN) / relMax;
 
-    //----------------------------------------------------------------
-    // 3. Classic bilateral ⇒ compressed (same as before)
-    //----------------------------------------------------------------
-    float wLum     = exp(-d / LUMA_REL_SIGMA);           // bilateral core
-    wLum           = wLum / (wLum + LUMA_KNEE);          // knee compression
+    float wLum     = exp(-d / LUMA_REL_SIGMA);
+    wLum           = wLum / (wLum + LUMA_KNEE);
 
-    //----------------------------------------------------------------
-    // 4. Inverse scaling by ReSTIR weight M
-    //    • normalise M to [0,1]   (≈ confidence in the *current* sample)
-    //    • blend towards 1 as confidence drops
-    //----------------------------------------------------------------
-    float invM     = 1.0f - saturate(M / M_REF);         // low-M ⇒ invM→1
-    float wMerged  = lerp(wLum, 1.0f, invM);             // low-M relaxes test
+    float invM     = 1.0f - saturate(M / M_REF);
+    float wMerged  = lerp(wLum, 1.0f, invM);
 
     return wMerged;
 }
 
 
-
-// Pre-computed B-spline kernel, Σ = 16  (centre=4, cross=2, corners=1)
 static const float KERNEL[9] = {
     4.0f,  // center
     2.0f,  // left
@@ -130,7 +105,7 @@ static const float KERNEL[9] = {
     1.0f   // lower-right
 };
 
-// Pixel offsets (matches KERNEL order)
+// Pixel offsets
 static const int2  OFF[9] = {
     int2( 0,  0),
     int2(-1,  0), int2( 1,  0),
@@ -171,7 +146,7 @@ inline void LoadGBuffer(
 
 float3 AtrousKernel(int2 pixelPos, int step, uint slice)
 {
-    /* ── 1. Centre sample ─────────────────────────────────────────── */
+    // center pixel
     float3 albC, norC, posC;
     float  emiC, roughC, motC;
     uint   idC;
@@ -181,11 +156,11 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
 
     float3 colC = gScratchPing[uint3(pixelPos, slice)].xyz;
 
-    // Keep emissive surfaces untouched
+    // Keep emissive surfaces untouched!
     if (emiC != 0.0f)
         return colC;
 
-    /* ── 2. First pass: compute weights only ─────────────────────── */
+    // weights
     float   w[9];          // per-tap weights
     float   wSum = 0.0f;   // total (for normalisation)
 
@@ -194,7 +169,6 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
     {
         const int2 uv = pixelPos + OFF[i] * step;
 
-        /* Neighbour attributes ------------------------------------ */
         float3 albN, norN, posN;
         float  emiN, roughN, motN;
         uint   idN;
@@ -202,17 +176,15 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
                     albN, emiN, roughN,
                     idN , norN, posN, motN);
 
-        /* Early-out: skip emissive neighbours – they never contribute */
+        // ignore emissives completely
         if (emiN != 0.0f)
         {
             w[i] = 0.0f;
             continue;
         }
 
-        /* Pixel-space distance for roughness falloff */
         const float distPx = length(float2(OFF[i])) * step;
 
-        /* Feature-guided bilateral term (∈ [0,1]) */
         float3 colN = gScratchPing[uint3(uv, slice)].xyz;
         const float guide =
               DDistanceWeight (posC, posN, norC)       *
@@ -223,49 +195,46 @@ float3 AtrousKernel(int2 pixelPos, int step, uint slice)
               DObjIDWeight    (idC,  idN)              *
               DLumaWeight     (colC, colN, motN);
 
-        /* Spatial kernel (e.g. Gaussian) --------------------------- */
         w[i] = KERNEL[i] * guide;
 
         wSum += w[i];
     }
 
-    /* Robust fallback: if all weights vanished, keep centre sample */
+    // Bad neigbors? fallback to base
     if (wSum == 0.0f)
         return colC;
 
-    /* ── 3. Second pass: accumulate with **normalised** weights ─── */
+    // accumulate
     float3 accum = 0.0f;
 
     [unroll]
     for (uint i = 0; i < 9; ++i)
     {
-        if (w[i] == 0.0f)          // cheap branch; avoid useless reads
+        if (w[i] == 0.0f)
             continue;
 
         const int2 uv = pixelPos + OFF[i] * step;
         float3 colN = gScratchPing[uint3(uv, slice)].xyz;
 
-        /* Bias-free lerp toward C as in original */
-        float3 sample = lerp(colC, colN,           // if guide==0 → centre
-                             w[i] / KERNEL[i]);    // undo spatial kernel part
+        float3 sample = lerp(colC, colN,
+                             w[i] / KERNEL[i]);
 
-        accum += (w[i] / wSum) * sample;           // **normalised** weight
+        accum += (w[i] / wSum) * sample;
     }
 
-    return accum;  // fully normalised, no extra division needed
+    return accum;
 }
 
-// Returns UV in [0,1]^2 with a TOP-LEFT origin (y flipped), or (-1,-1) on failure.
-// Use this if you later convert to pixel coords the same way your other code does.
+// Reprojection
 inline float2 GetLastFrameUV(
     float3   worldPos,
     float4x4 prevView,
-    float4x4 prevProjection,   // include previous frame's jitter
+    float4x4 prevProjection,
     uint     objID)
 {
-    // current world -> local (using provided inverse)
+    // current world -> local
     float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
-    // local -> previous world (using previous instance transform)
+    // local -> previous world
     float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
 
     // previous world -> previous clip
@@ -274,9 +243,9 @@ inline float2 GetLastFrameUV(
         return float2(-1.0f, -1.0f);
 
     // clip -> NDC -> UV
-    float2 ndc = clipPos.xy / clipPos.w;          // [-1,1]
-    float2 uv  = ndc * 0.5f + 0.5f;               // [0,1], bottom-left origin
-    uv.y       = 1.0f - uv.y;                     // flip to top-left origin
+    float2 ndc = clipPos.xy / clipPos.w;
+    float2 uv  = ndc * 0.5f + 0.5f;
+    uv.y       = 1.0f - uv.y;
 
     // bounds check
     if (any(uv < 0.0f) || any(uv > 1.0f))
@@ -286,25 +255,17 @@ inline float2 GetLastFrameUV(
 }
 
 
-
-
-//--------------------------------------------------------------------
 //  Bilinear reprojection with inverse-distance weighting
-//  • returns four neighbours + weight, already normalised so Σw = 1
-//  • if GetLastFrameUV() fails → all weights are 0 and pix = kInvalidPixel
-//--------------------------------------------------------------------
 inline void GetBilinearReprojectedPixels_d(
     float3      worldPos,
     float4x4    prevView,
-    float4x4    prevProjection,     // must already contain last frame’s jitter
-    float2      resolution,         // (width, height)
+    float4x4    prevProjection,
+    float2      resolution,
     uint        objID,
-    out WeightedPixel outPx[4]      // order: (0,0) (1,0) (0,1) (1,1)
+    out WeightedPixel outPx[4]
 )
 {
-    //----------------------------------------------------------------
-    // 1. Reproject to previous-frame UV ------------------------------
-    //----------------------------------------------------------------
+    // Reproject
     float2 uv = GetLastFrameUV(worldPos, prevView, prevProjection, objID);
 
     // Early out on failure
@@ -318,47 +279,26 @@ inline void GetBilinearReprojectedPixels_d(
         return;
     }
 
-    //----------------------------------------------------------------
-    // 2. Continuous pixel position & fractional part -----------------
-    //----------------------------------------------------------------
-    //   Our earlier helper rounded with “+0.5” → pixel centres live
-    //   at integer coordinates.  Undo that so that (0,0) sits at the
-    //       centre of the **first** pixel and we can do bilinear maths.
-    //----------------------------------------------------------------
     float2 posF   = uv * resolution;   // continuous pixel position
     int2   pix00  = int2(floor(posF));        // top-left integer pixel
-    float2 frac   = posF - pix00;             // (= uv in [0,1) inside cell)
+    float2 frac   = posF - pix00;
 
-    //----------------------------------------------------------------
-    // 3. Prepare the 4 neighbours ------------------------------------
-    //----------------------------------------------------------------
+    // all possible neighbors
     const int2 offs[4] = { int2(0,0), int2(1,0), int2(0,1), int2(1,1) };
-    float      basis[4] =               // pure bilinear kernel
+    float      basis[4] =
     {
-        (1.0f - frac.x) * (1.0f - frac.y),   // w00
-        frac.x          * (1.0f - frac.y),   // w10
-        (1.0f - frac.x) * frac.y,            // w01
-        frac.x          * frac.y             // w11
+        (1.0f - frac.x) * (1.0f - frac.y),
+        frac.x          * (1.0f - frac.y),
+        (1.0f - frac.x) * frac.y,
+        frac.x          * frac.y
     };
 
-    //----------------------------------------------------------------
-    // 4. Combine bilinear kernel with inverse-distance fall-off ------
-    //----------------------------------------------------------------
-    //   gScratchPing stores previous-frame *world* positions in layer 10
-    //   (same layout you hinted at).  We weight each neighbour by
-    //
-    //        w = bilinearKernel / (ε + ‖Δworld‖)
-    //
-    //   so that:
-    //   • far-away re-projected pixels contribute less
-    //   • all four weights are renormalised to Σw = 1
-    //----------------------------------------------------------------
     float  sumW = 0.0f;
     [unroll] for (int i = 0; i < 4; ++i)
     {
         int2 p = pix00 + offs[i];
 
-        // Cull neighbours that ended up off-screen (can happen at borders)
+        // Cull neighbours that ended up off-screen
         if (any(p < 0) || any(p >= int2(resolution)))
         {
             outPx[i].pix = kInvalidPixel;
@@ -367,17 +307,15 @@ inline void GetBilinearReprojectedPixels_d(
         }
 
         float3 prevWorld = gScratchPing[uint3(p, 10)].xyz;
-        float  dist      = length(prevWorld - worldPos);     // metres (or whatever unit)
-        float  w         = basis[i] / (dist + 1e-4f);        // ε avoids div-by-zero
+        float  dist      = length(prevWorld - worldPos);
+        float  w         = basis[i] / (dist + 1e-4f);
 
         outPx[i].pix = p;
         outPx[i].w   = w;
         sumW        += w;
     }
 
-    //----------------------------------------------------------------
-    // 5. Normalise so that Σw = 1 ------------------------------------
-    //----------------------------------------------------------------
+    // normalize
     if (sumW > 0.0f)
     {
         float invSum = rcp(sumW);        // ← keep using the intrinsic

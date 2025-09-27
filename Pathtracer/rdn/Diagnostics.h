@@ -1,6 +1,3 @@
-// ──────────────────────────────────────────────────────────────────────────────
-// Diagnostics.h     – drop this in your project
-// ──────────────────────────────────────────────────────────────────────────────
 #pragma once
 #include <d3d12.h>
 #include <dxgi1_6.h>
@@ -17,13 +14,9 @@ namespace dxdiag
 #if ENABLE_D3D12_DIAGNOSTICS
     using Microsoft::WRL::ComPtr;
 
-    // keep these alive for the program lifetime
     inline ComPtr<ID3D12InfoQueue>                g_infoQ;
     inline ComPtr<ID3D12DeviceRemovedExtendedData> g_dred;
 
-    //---------------------------------------------------------------------
-    // call ONCE *before* you create the D3D12 device
-    //---------------------------------------------------------------------
     inline void EnableDebugLayerAndDred()
     {
         ComPtr<ID3D12Debug> dbg;
@@ -42,9 +35,6 @@ namespace dxdiag
         }
     }
 
-    //---------------------------------------------------------------------
-    // call ONCE right after you created the device
-    //---------------------------------------------------------------------
     inline void HookDevice( ID3D12Device* device )
     {
         device->QueryInterface(IID_PPV_ARGS(&g_infoQ));
@@ -59,9 +49,6 @@ namespace dxdiag
         }
     }
 
-    //---------------------------------------------------------------------
-    // flush & print new messages (call once per frame, e.g. end of OnRender)
-    //---------------------------------------------------------------------
     inline void DumpNewMessages()
     {
         if (!g_infoQ) return;
@@ -70,25 +57,22 @@ namespace dxdiag
         for (UINT64 i = 0; i < nMsg; ++i)
         {
             SIZE_T sz = 0;
-            g_infoQ->GetMessage(i, nullptr, &sz);            // get size
+            g_infoQ->GetMessage(i, nullptr, &sz);
             std::unique_ptr<uint8_t[]> blob(new uint8_t[sz]);
             D3D12_MESSAGE* msg = reinterpret_cast<D3D12_MESSAGE*>(blob.get());
             g_infoQ->GetMessage(i, msg, &sz);
 
             std::wcout << L"[DX] "
-                       << msg->pDescription              // already UTF-8/ASCII
+                       << msg->pDescription
                        << std::endl;
         }
         g_infoQ->ClearStoredMessages();
     }
 
-    //---------------------------------------------------------------------
-    // use when Present / ExecuteCommandLists fails OR periodically
-    //---------------------------------------------------------------------
     inline void CheckDeviceRemoved( ID3D12Device* device )
     {
         HRESULT hr = device->GetDeviceRemovedReason();
-        if (SUCCEEDED(hr)) return;          // all good
+        if (SUCCEEDED(hr)) return;
 
         std::wcerr << L"\n*** DEVICE LOST: 0x"
                    << std::hex << hr << std::dec << L" ***\n";
@@ -114,7 +98,7 @@ namespace dxdiag
                            << std::hex << pf.PageFaultVA << std::dec << L"\n";
             }
         }
-        std::terminate();   // force Windows to write a crash-dump + stop run-away
+        std::terminate();
     }
 #else
     inline void EnableDebugLayerAndDred()  {}

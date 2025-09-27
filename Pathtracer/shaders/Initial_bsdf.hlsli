@@ -1,10 +1,4 @@
-/*---------------------------------------------------------------------------
-GPU-only Initial-BSDF-Ray buffer helper
-The buffer is laid out in SOA fashion, one big array per field:
-dir0 … dirN-1 , x20 … x2N-1 , n20 … n2N-1 , objID0 … , matID0 … , pdfB0 … , pdfN0 …
----------------------------------------------------------------------------*/
-
-// ── size (bytes) of each per-pixel field ──────────────────────────────────
+// NOT USED RIGHT NOW
 static const uint B_dir_init    = 12;   // float3
 static const uint B_x2_init     = 12;   // float3
 static const uint B_n2_init     = 12;   // float3
@@ -13,7 +7,6 @@ static const uint B_mat_init    =  4;   // uint
 static const uint B_pdfB_init   =  4;   // float  (pdf_bsdf)
 static const uint B_pdfN_init   =  4;   // float  (pdf_nee)
 
-// ── offsets (in “bytes-per-pixel” units) of each field block ──────────────
 static const uint P_dir_init    = 0;
 static const uint P_x2_init     = P_dir_init  + B_dir_init;
 static const uint P_n2_init     = P_x2_init   + B_x2_init;
@@ -22,10 +15,8 @@ static const uint P_mat_init    = P_obj_init  + B_obj_init;
 static const uint P_pdfB_init   = P_mat_init  + B_mat_init;
 static const uint P_pdfN_init   = P_pdfB_init + B_pdfB_init;
 
-// ── helper macro ──────────────────────────────────────────────────────────
 #define PIXEL_COUNT (DispatchRaysDimensions().x * DispatchRaysDimensions().y)
 
-// ── per-pixel struct for convenient caching inside a pass ─────────────────
 struct InitialBSDFRay {
     float3 direction;
     float3 x2;
@@ -36,7 +27,7 @@ struct InitialBSDFRay {
     float  pdf_nee;
 };
 
-// ───────────────────────── direction ──────────────────────────────────────
+// direction
 float3 load_dir_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_dir_init * PIXEL_COUNT + pixelIdx * B_dir_init;
@@ -48,7 +39,7 @@ void store_dir_init(float3 v, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store3(addr, asuint(v));
 }
 
-// ───────────────────────── x2 ─────────────────────────────────────────────
+// x2
 float3 load_x2_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_x2_init * PIXEL_COUNT + pixelIdx * B_x2_init;
@@ -60,7 +51,7 @@ void store_x2_init(float3 v, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store3(addr, asuint(v));
 }
 
-// ───────────────────────── n2 ─────────────────────────────────────────────
+// n2
 float3 load_n2_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_n2_init * PIXEL_COUNT + pixelIdx * B_n2_init;
@@ -72,7 +63,7 @@ void store_n2_init(float3 v, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store3(addr, asuint(v));
 }
 
-// ───────────────────────── objID ──────────────────────────────────────────
+// objID
 uint load_objID_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_obj_init * PIXEL_COUNT + pixelIdx * B_obj_init;
@@ -84,7 +75,7 @@ void store_objID_init(uint id, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store(addr, id);
 }
 
-// ───────────────────────── matID ──────────────────────────────────────────
+// matID
 uint load_matID_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_mat_init * PIXEL_COUNT + pixelIdx * B_mat_init;
@@ -96,7 +87,7 @@ void store_matID_init(uint id, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store(addr, id);
 }
 
-// ──────────────────────── pdf_bsdf ────────────────────────────────────────
+// pdfs
 float load_pdfB_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_pdfB_init * PIXEL_COUNT + pixelIdx * B_pdfB_init;
@@ -107,8 +98,6 @@ void store_pdfB_init(float pdf, RWByteAddressBuffer buffer, uint pixelIdx)
     uint addr = P_pdfB_init * PIXEL_COUNT + pixelIdx * B_pdfB_init;
     buffer.Store(addr, asuint(pdf));
 }
-
-// ──────────────────────── pdf_nee ─────────────────────────────────────────
 float load_pdfN_init(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     uint addr = P_pdfN_init * PIXEL_COUNT + pixelIdx * B_pdfN_init;
@@ -120,7 +109,7 @@ void store_pdfN_init(float pdf, RWByteAddressBuffer buffer, uint pixelIdx)
     buffer.Store(addr, asuint(pdf));
 }
 
-// ─────────────────────── load whole struct ────────────────────────────────
+// complete load
 InitialBSDFRay loadInitialBSDFRay(RWByteAddressBuffer buffer, uint pixelIdx)
 {
     InitialBSDFRay r;

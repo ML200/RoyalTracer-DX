@@ -2,15 +2,11 @@
 #define LT_LEAF_SAMPLER_MODE 0
 #endif
 
-// ---------------------------------------------------------------------------
-
 Buffer<uint> gLT_TriToBLAS       : register(t16);
 Buffer<uint> gLT_TriToLeafOffset : register(t17);
 Buffer<uint> gLT_BLASToItem      : register(t18);
 
-// ============================================================================
 // CONSTANTS / HELPERS
-// ============================================================================
 static const uint  LT_SENTINEL = 0xFFFFFFFFu;
 static const float LT_PI = 3.14159265358979323846;
 
@@ -74,9 +70,7 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// ============================================================================
 // CONTY–KULLA NODE IMPORTANCE
-// ============================================================================
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
@@ -128,9 +122,7 @@ inline float LT_BranchProb(float IL, float IR)
     return clamp(prob, 0.01f, 0.99f);
 }
 
-// ============================================================================
 // STOCHASTIC DESCENT
-// ============================================================================
 uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS)
 {
     pdfTLAS = 1.0;
@@ -193,9 +185,7 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     }
 }
 
-// ============================================================================
 // LEAF TRIANGLE SAMPLING
-// ============================================================================
 uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
                                       uint blasIndex, LTLeaf leaf,
                                       inout float xi, out float pdfLeaf)
@@ -205,7 +195,7 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     uint count       = max(leaf.triCount, 1u);
 
 #if LT_LEAF_SAMPLER_MODE == 1
-    // -------------------- UNIFORM --------------------
+    // Uniform
     uint  k        = min((uint)floor(xi * count), count - 1u);
     uint  triIndex = gLT_LeafTriIndex[base + k];
 
@@ -218,7 +208,7 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     return triIndex;
 
 #else
-    // --------------------- ALIAS ---------------------
+    // Alias
     LightBLASNodeGpu node = gLT_BLAS[R.nodeOffset + leaf.nodeIndex];
     float sumW = max(node.power, 1e-20);
 
@@ -245,9 +235,7 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
 #endif
 }
 
-// ============================================================================
 // TOP-LEVEL SAMPLER
-// ============================================================================
 LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 {
     // Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
@@ -263,9 +251,7 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
     return s;
 }
 
-// ============================================================================
 // PDF
-// ============================================================================
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {
     uint blas = gLT_TriToBLAS[triIndex];
@@ -273,7 +259,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
     uint item = gLT_BLASToItem[blas];
 
-    // ----- TLAS path probability
+    // TLAS path probability
     float pdfTLAS = 1.0f;
     uint  tnode   = 0;
 
@@ -306,7 +292,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         tnode = N.firstChild + (uint)childHit;
     }
 
-    // ----- BLAS path probability
+    // BLAS path probability
     BlasRangeGpu Rng = gLT_Range[blas];
     float pdfBLAS = 1.0f;
     uint  bnode   = 0;

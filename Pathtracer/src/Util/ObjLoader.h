@@ -4,8 +4,7 @@
 
 #ifndef PATHTRACER_OBJLOADER_H
 #define PATHTRACER_OBJLOADER_H
-#define TINYOBJLOADER_IMPLEMENTATION // define this in only *one* .cc
-// Optional. define TINYOBJLOADER_USE_MAPBOX_EARCUT gives robust trinagulation. Requires C++11
+#define TINYOBJLOADER_IMPLEMENTATION
 //#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
 #include <iostream>
@@ -27,6 +26,8 @@ constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
 #include <DirectXPackedVector.h>
 using namespace DirectX;
 
+
+// HELPERS
 // Add two XMFLOAT3
 inline XMFLOAT3 operator+(const XMFLOAT3& a, const XMFLOAT3& b) {
     XMVECTOR va = XMLoadFloat3(&a);
@@ -50,7 +51,7 @@ inline XMFLOAT3 operator-(const XMFLOAT3& a, const XMFLOAT3& b) {
 // Add a scalar to an XMFLOAT3
 inline XMFLOAT3 operator+(const XMFLOAT3& a, const float& b) {
     XMVECTOR va = XMLoadFloat3(&a);
-    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR vb = XMVectorReplicate(b);
     XMVECTOR result = XMVectorAdd(va, vb);
     XMFLOAT3 sum;
     XMStoreFloat3(&sum, result);
@@ -60,7 +61,7 @@ inline XMFLOAT3 operator+(const XMFLOAT3& a, const float& b) {
 // Subtract a scalar from an XMFLOAT3
 inline XMFLOAT3 operator-(const XMFLOAT3& a, const float& b) {
     XMVECTOR va = XMLoadFloat3(&a);
-    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR vb = XMVectorReplicate(b);
     XMVECTOR result = XMVectorSubtract(va, vb);
     XMFLOAT3 diff;
     XMStoreFloat3(&diff, result);
@@ -70,7 +71,7 @@ inline XMFLOAT3 operator-(const XMFLOAT3& a, const float& b) {
 // Subtract a scalar from an XMFLOAT3
 inline XMFLOAT3 operator-(const float& b, const XMFLOAT3& a) {
     XMVECTOR va = XMLoadFloat3(&a);
-    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR vb = XMVectorReplicate(b);
     XMVECTOR result = XMVectorSubtract(vb, va);
     XMFLOAT3 diff;
     XMStoreFloat3(&diff, result);
@@ -80,7 +81,7 @@ inline XMFLOAT3 operator-(const float& b, const XMFLOAT3& a) {
 // Multiply an XMFLOAT3 by a scalar
 inline XMFLOAT3 operator*(const XMFLOAT3& a, const float& b) {
     XMVECTOR va = XMLoadFloat3(&a);
-    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR vb = XMVectorReplicate(b);
     XMVECTOR result = XMVectorMultiply(va, vb);
     XMFLOAT3 product;
     XMStoreFloat3(&product, result);
@@ -90,15 +91,12 @@ inline XMFLOAT3 operator*(const XMFLOAT3& a, const float& b) {
 // Divide an XMFLOAT3 by a scalar
 inline XMFLOAT3 operator/(const XMFLOAT3& a, const float& b) {
     XMVECTOR va = XMLoadFloat3(&a);
-    XMVECTOR vb = XMVectorReplicate(b); // Replicate scalar to all components
+    XMVECTOR vb = XMVectorReplicate(b);
     XMVECTOR result = XMVectorDivide(va, vb);
     XMFLOAT3 quotient;
     XMStoreFloat3(&quotient, result);
     return quotient;
 }
-
-
-
 
 // Cross product
 inline XMFLOAT3 cross(const XMFLOAT3& a, const XMFLOAT3& b) {
@@ -146,7 +144,7 @@ inline float D_GGX(float NdotH, float roughness) {
     return alpha2 / (PI * denom * denom);
 }
 
-// Smith's Geometry function 1 for GGX
+// Smith Geometry function 1 for GGX
 inline float G1_SmithGGX(float NdotV, float alpha) {
     float alpha2 = alpha*alpha;
     float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
@@ -175,8 +173,8 @@ void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
 // SampleGGX Function
 void SampleGGX(
         const Material& mat,
-        const XMFLOAT3& outgoing,      // View direction (V)
-        const XMFLOAT3& normal,        // Surface normal (N)
+        const XMFLOAT3& outgoing, // View direction (V)
+        const XMFLOAT3& normal, // Surface normal (N)
         XMFLOAT3& sample,
         float e0,
         float e1// Output sample direction (L)
@@ -274,8 +272,8 @@ inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const X
     XMFLOAT3 L = normalize(incoming * -1.0f); // Light direction
     XMFLOAT3 H = normalize(V + L);
 
-    float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float VdotH = (std::fmax)(dot(V, H), 0.0f);
+    //float NdotH = (std::fmax)(dot(N, H), 0.0f);
+    //float VdotH = (std::fmax)(dot(V, H), 0.0f);
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
 
     float alpha = roughness * roughness; // Roughness squared
@@ -337,7 +335,7 @@ void PrintLUTAsVector(const Material& mat) {
 
     // Print column headers for cosTheta values
     for (int idx = 0; idx < LUT_SIZE_THETA; ++idx) {
-        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1); // Normalize index to [0, 1]
+        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1); // Normalize index
 
         // Print cosTheta value as label
         std::wcout << L"cosTheta = " << std::fixed << std::setprecision(2) << cosTheta << L": ";
@@ -418,7 +416,7 @@ public:
 
         // Process materials
         for (const auto& mat : materials) {
-            // Convert the material name to a wide string (assuming mat.name is a std::string)
+            // Convert the material name to a wide string
             std::wstring wideName(mat.name.begin(), mat.name.end());
 
             // Print the material name and dissolve value (alpha)

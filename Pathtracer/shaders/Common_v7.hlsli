@@ -1,15 +1,11 @@
-// Safe 2-D→1-D swizzle; returns 0xFFFFFFFF on invalid input
+// Swizzle for thread group
 inline uint MapPixelID(uint2 dims, int2 lIndex)
 {
-    // ---------- 1. validate input ----------
-    // negatives or out-of-range ──► sentinel
     if (lIndex.x < 0 || lIndex.y < 0 ||
         lIndex.x >= int(dims.x) || lIndex.y >= int(dims.y))
     {
-        return 0xFFFFFFFF;          // invalid
+        return 0xFFFFFFFF;
     }
-
-    // ---------- 2. original mapping ----------
     const uint tileWidth  = 4;
     const uint tileHeight = 8;
 
@@ -33,7 +29,6 @@ inline uint MapPixelID(uint2 dims, int2 lIndex)
 float3 SafeMultiply(float scalar, float3 vec)
 {
     float3 result = scalar * vec;
-    // Check if any component is NaN or infinity
     if (any(isnan(result)) || any(isinf(result)))
     {
         return float3(0.0, 0.0, 0.0);
@@ -45,7 +40,6 @@ float3 SafeMultiply(float scalar, float3 vec)
 float SafeMultiplyScalar(float scalar, float vec)
 {
     float result = scalar * vec;
-    // Check if any component is NaN or infinity
     if (isnan(result) || isinf(result))
     {
         return 0.0f;
@@ -53,7 +47,7 @@ float SafeMultiplyScalar(float scalar, float vec)
     return result;
 }
 
-// Conversion to scalar value used for phat
+// Conversion to scalar value used for phat (luminance)
 inline float GetPHat(float3 v){
     return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
 }
