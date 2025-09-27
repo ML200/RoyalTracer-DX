@@ -1,12 +1,4 @@
-#include "Common_v6.hlsl"
-
-StructuredBuffer<STriVertex> BTriVertex : register(t2);
-StructuredBuffer<int> indices : register(t1);
-RaytracingAccelerationStructure SceneBVH : register(t0);
-StructuredBuffer<InstanceProperties> instanceProps : register(t3);
-StructuredBuffer<uint> materialIDs : register(t4);
-StructuredBuffer<Material> materials : register(t5);
-StructuredBuffer<LightTriangle> g_EmissiveTriangles : register(t6);
+#include "Includes_v7.hlsli"
 
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload, Attributes attrib) {
