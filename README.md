@@ -9,14 +9,16 @@ What started as a port of the [RoyalTracer university project](https://github.co
 <details>
   <summary><strong>Materials</strong></summary>
   
-  ![Spheres](./media/balls.png)
-  - Simple two-lobe PBR material model
+  - Simple principled two-lobe PBR material model
     - Lambertian Diffuse lobe
     - Energy-conserving GGX specular lobe
+  ![Spheres](./media/balls.png)
   - VNDF importance sampling
+  - MIS between NEE and BSDF sampling
+  ![MIS](./media/MIS.png)
 </details>
 <details>
-  <summary><strong>Light Sampling</strong></summary>
+  <summary><strong>Light Tree</strong></summary>
 </details>
 <details>
   <summary><strong>ReSTIR</strong></summary>
