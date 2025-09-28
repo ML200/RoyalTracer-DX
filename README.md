@@ -8,6 +8,7 @@ What started as a port of the [RoyalTracer university project](https://github.co
 ## Features
 <details>
   <summary><strong>Materials</strong></summary>
+  
   ![Spheres](./media/balls.png)
   - Simple two-lobe PBR material model
     - Lambertian Diffuse lobe
