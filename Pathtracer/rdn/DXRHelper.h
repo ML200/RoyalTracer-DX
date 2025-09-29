@@ -24,16 +24,6 @@ namespace nv_helpers_dx12
                                         D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
                                         const D3D12_HEAP_PROPERTIES& heapProps)
     {
-        // Debug output: Print buffer size and resource flags
-        //std::wcout << L"Creating buffer of size: " << size << L" bytes" << std::endl;
-        //std::wcout << L"Resource flags: " << flags << std::endl;
-        //std::wcout << L"Initial state: " << initState << std::endl;
-
-        // Debug output: Print heap properties
-        //std::wcout << L"Heap Type: " << heapProps.Type << std::endl;
-        //std::wcout << L"CPU Page Property: " << heapProps.CPUPageProperty << std::endl;
-        //std::wcout << L"Memory Pool Preference: " << heapProps.MemoryPoolPreference << std::endl;
-
         D3D12_RESOURCE_DESC bufDesc = {};
         bufDesc.Alignment = 0;
         bufDesc.DepthOrArraySize = 1;
@@ -116,20 +106,17 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
   ThrowIfFailed(pLibrary->CreateBlobWithEncodingFromPinned(
       (LPBYTE)sShader.c_str(), (uint32_t)sShader.size(), 0, &pTextBlob));
 
-  // Setup the compiler arguments:
-  // Use "-Zi" for full debug info (line table, etc.)
-  // Or use "-Zs" for minimal debug info (useful for dynamic shader editing)
   const wchar_t* arguments[] = {
-    L"-Zi",                        // full debug info
-    L"-O3",                        // highest optimisation
-    L"-enable-16bit-types",        // keep fp16 alive
-    L"-D",  L"MAX_REGS=96",        // <‑‑ 96‑register cap
-    L"-HV", L"2021"                // enable SM 6.7+ attributes
+    L"-Zi",
+    L"-O3",
+    L"-enable-16bit-types",
+    L"-D",  L"MAX_REGS=96",
+    L"-HV", L"2021"
   };
 
   // Compile
   IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_8", arguments, _countof(arguments), nullptr, 0,
+  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_6", arguments, _countof(arguments), nullptr, 0,
                                    dxcIncludeHandler, &pResult));
 
   // Verify the result
@@ -343,10 +330,7 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
   }
 }
 
-  //------------------------------------------------------------------------------
 // Compile a HLSL file as a *compute* shader  (profile: cs_6_6)
-// Re-uses the same DXC boiler-plate as CompileShaderLibrary().
-//------------------------------------------------------------------------------
 inline Microsoft::WRL::ComPtr<IDxcBlob>
 CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
@@ -363,7 +347,6 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
         ThrowIfFailed(s_library->CreateIncludeHandler(&s_includeHandler));
     }
 
-    /* 1) load the file ------------------------------------------------------*/
     std::ifstream shaderFile(fileName);
     if (!shaderFile.good())
         throw std::logic_error("Cannot find shader file");
@@ -375,7 +358,6 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     ThrowIfFailed(s_library->CreateBlobWithEncodingFromPinned(
             (LPBYTE)src.data(), (uint32_t)src.size(), 0, &textBlob));
 
-    /* 2) compile ------------------------------------------------------------*/
     const wchar_t* args[] =
     {
         L"-Zi",                    // debug info
@@ -387,8 +369,8 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     Microsoft::WRL::ComPtr<IDxcOperationResult> result;
     ThrowIfFailed(s_compiler->Compile(
         textBlob.Get(), fileName,
-        entryPoint,                      // e.g.  "main"
-        L"cs_6_8",                       // <── compute profile
+        entryPoint,
+        L"cs_6_6",
         args, _countof(args),
         nullptr, 0,
         s_includeHandler,
@@ -412,10 +394,7 @@ CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     return blob;
 }
 
-  //------------------------------------------------------------------------------
 // Compile a HLSL file as a *Work Graph* library (profile: lib_6_8)
-// Usage: CompileWG(L"MyWG.hlsl", L"MyGraphEntry")
-//------------------------------------------------------------------------------
 inline Microsoft::WRL::ComPtr<IDxcBlob>
 CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
@@ -451,14 +430,14 @@ CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
         L"-O3",                    // optimization
         L"-enable-16bit-types",
         L"-HV", L"2021",
-        L"-D", L"MAX_REGS=96",     // (optional macro, as in your code)
+        L"-D", L"MAX_REGS=96",
     };
 
     Microsoft::WRL::ComPtr<IDxcOperationResult> result;
     ThrowIfFailed(s_compiler->Compile(
         textBlob.Get(), fileName,
-        entryPoint,                      // e.g. "MainGraph"
-        L"lib_6_8",                      // <── Work Graph library profile!
+        entryPoint,
+        L"lib_6_6",
         args, _countof(args),
         nullptr, 0,
         s_includeHandler,

@@ -54,6 +54,9 @@ void main(uint3 tid : SV_DispatchThreadID)
         float dist2 = length(ldir) * length(ldir);
         float pdf_full = result_init.pdf_bsdf;
 
+        // For reconnection shift, this is easy
+        float J_prefix = result_init.pdf_bsdf * dot(-ldir, result_init.n2) / dist2;
+
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             {
                 // NEE samples
@@ -83,6 +86,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                             s_x1 = position;
                             s_x2 = result.x2;
                             s_n1 = normal;
+
+                            // Also store the Jacobian part for this canonical sample, which is pdfxk * pdfxk+1 * cosx2 / dist^2
 
                             // Store the NEE pdf in the reservoir as well in Jx -> its not dependant on the outgoing direction
                             if(i == 0)

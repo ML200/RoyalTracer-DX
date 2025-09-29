@@ -39,16 +39,16 @@ float JacobianDeterminant( float3 x1_c,
     return !isnan(J)?J:1e10;
 }
 
-float JacobianDeterminantPSS( float3 x1_n,
-                              float3 n1_n,
-                              float3 o1_n,
-                              uint mID1_n,
-                              float3 x2_c,
+/*float JacobianDeterminantPSS( float3 x2_c,
                               float3 n2_c,
                               float3 V2_c,
                               uint mID2_c,
                               float J_c,
-                              float pdfx2)
+                              float pdfx2,
+                              float3 x1_n,
+                              float3 n1_n,
+                              float3 o1_n,
+                              uint mID1_n)
 {
     // For restir PT in PSS, the jacobion is simply J / (pk-1 * Gk * pk) where J is the canonical path part
     float3  v_n   = x1_n - x2_c;
@@ -66,7 +66,7 @@ float JacobianDeterminantPSS( float3 x1_n,
     float J = J_c / (PDF1 * PDF2 * G);
 
     return !isnan(J)?J:1e10;
-}
+}*/
 
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
@@ -115,7 +115,9 @@ inline float3 ReconnectGI(
     in float3  n2,
     in float3  L2,
     in float3  V2,
-    in float pdfx2)
+    in float pdfx2,
+    in float Jc, // part of the jacoabian term of the canonical path
+    in bool applyJ)
 {
     if (all(L2 < EPSILON))
         return 0;
@@ -140,6 +142,14 @@ inline float3 ReconnectGI(
     if(PDF1 <=0.0f || PDF2 <= 0.0f)
         return 0.0f;
     float3 r = F1/PDF1 * F2/PDF2 * L2 * G;
+
+    // Reconnection jacobian
+    if(applyJ){
+        // Apply the reconnection jacobian
+        float Gj = dot(-ndirN, n2) / (dist * dist);
+        float J = (PDF1 * PDF2 * G) / Jc;
+        r *=J;
+    }
 
     if (any(isnan(r)) || all(r < EPSILON))
         r = (float3)0.0f;
