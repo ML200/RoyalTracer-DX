@@ -117,7 +117,8 @@ inline float3 ReconnectGI(
     in float3  V2,
     in float pdfx2,
     in float Jc, // part of the jacoabian term of the canonical path
-    in bool applyJ)
+    in bool applyJ,
+    inout float Jn)
 {
     if (all(L2 < EPSILON))
         return 0;
@@ -144,10 +145,12 @@ inline float3 ReconnectGI(
     float3 r = F1/PDF1 * F2/PDF2 * L2 * G;
 
     // Reconnection jacobian
+    Jn = Jc;
     if(applyJ){
         // Apply the reconnection jacobian
-        float Gj = dot(-ndirN, n2) / (dist * dist);
-        float J = (PDF1 * PDF2 * G) / Jc;
+        float Gj = dot(ndirN, n2) / (dist * dist);
+        Jn = (PDF1 * PDF2 * Gj);
+        float J = Jn / Jc;
         r *=J;
     }
 

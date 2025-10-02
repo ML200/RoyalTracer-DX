@@ -55,7 +55,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         float pdf_full = result_init.pdf_bsdf;
 
         // For reconnection shift, this is easy
-        float J_prefix = result_init.pdf_bsdf * dot(-ldir, result_init.n2) / dist2;
+        float J_prefix = result_init.pdf_bsdf * dot(normalize(-ldir), normalize(result_init.n2)) / dist2;
 
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             {
@@ -88,6 +88,9 @@ void main(uint3 tid : SV_DispatchThreadID)
                             s_n1 = normal;
 
                             // Also store the Jacobian part for this canonical sample, which is pdfxk * pdfxk+1 * cosx2 / dist^2
+                            reservoir.J_gi.y = J_prefix;
+                            if(i==0)
+                                reservoir.J_gi.y *= result.pdf_nee;
 
                             // Store the NEE pdf in the reservoir as well in Jx -> its not dependant on the outgoing direction
                             if(i == 0)
@@ -123,6 +126,10 @@ void main(uint3 tid : SV_DispatchThreadID)
                     if(UpdateReservoirGI(reservoir, w_mis, 0, 0, 0, L2, normalize(V2_temp), 0, 0, 0, 0, 0, 0, 0, 0, seed)){
                         requires_shadow_ray = false;
                         p_hat_final = p_hat;
+                        // Also store the Jacobian part for this canonical sample
+                        reservoir.J_gi.y = J_prefix;
+                        if(i==0)
+                            reservoir.J_gi.y *= result.pdf_bsdf;
                     }
                     break;
                 }
@@ -131,6 +138,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         if(i == 0){
                             V2 = normalize(position - result.x2);
                             tp_partial *= G_term(normal, normalize(V2));
+                            J_prefix *= result.pdf_bsdf;
                         }
                         else
                             tp_partial *= c;

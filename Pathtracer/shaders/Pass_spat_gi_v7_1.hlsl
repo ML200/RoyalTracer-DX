@@ -91,17 +91,18 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate canonical pixel p_hat before loading the expensive data
         float visReuse = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
-        float3 contrib_c = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, 1.0f, false) * visReuse;
+        float Jnc = 0.0f;
+        float3 contrib_c = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, 1.0f, false, Jnc) * visReuse;
         float p_c = GetPHat(contrib_c);
         float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
         float mis_c = 0.0f;
-        if(rdi.M_gi <= SPAT_MIN_M_GI){
+        /*if(rdi.M_gi <= SPAT_MIN_M_GI){
             mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x, rdi.J_gi.y, SPAT_BETA_GI);
         }
-        else{
+        else{*/
             mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, sdata.x1, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x, rdi.J_gi.y);
-        }
+        //}
         //debug += mis_c;
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
@@ -113,14 +114,15 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nIds[i]);
-                float3 contrib_n = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, rdi.J_gi.y, true);
+                float Jn = 0.0f;
+                float3 contrib_n = ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn);
                 contrib_n *= VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
-                float p_hat_from = GetPHat(contrib_n/JacobianDeterminant(load_x1(g_sample_current, nIds[i]), rdi_r.x2_gi, sdata.x1, rdi_r.n2_gi));
+                float p_hat_from = GetPHat(contrib_n);
                 // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
                 float mis_n = 0.0f;
-                if(rdi.M_gi <= SPAT_MIN_M_GI)
+                /*if(rdi.M_gi <= SPAT_MIN_M_GI)
                     mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.J_gi.x, SPAT_BETA_GI);
-                else
+                else*/
                     mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.J_gi.x);
                 //debug += mis_n;
                 // Calculate the sample weight
@@ -129,6 +131,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Update the reservoir
                 if(UpdateReservoirGI(rdi, w_n, min(SPAT_MCAP_GI ,rdi_r.M_gi), rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.rSeed_gi, rdi_r.J_gi, rdi_r.rIndex_gi, rdi_r.F_gi, rdi_r.lobe0_gi, rdi_r.lobe1_gi, seed)){
                     contrib_final = contrib_n;
+                    rdi.J_gi.y = Jn;
                 }
 
             }
