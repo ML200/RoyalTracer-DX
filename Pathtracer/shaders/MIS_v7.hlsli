@@ -142,7 +142,6 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x1_c,
     in float3 x2_c,
     in float3 n2_c,
     in float3 L2_c,
@@ -161,8 +160,9 @@ float PairwiseMIS_Canonical_Spat_GI(
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
             float Jn = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
+            float J = 0.0f;
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1) * J; // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 0.0f)
                 m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, nIds[i]))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
@@ -194,7 +194,8 @@ float PairwiseMIS_Neighbor_Spat_GI(
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
     float Jn = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn));
+    float J = 0.0f;
+    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn, J));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -222,7 +223,6 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x1_c,
     in float3 x2_c,
     in float3 n2_c,
     in float3 L2_c,
@@ -245,8 +245,9 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1(g_sample_current, nIds[i]);
             float Jn = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
+            float J = 0.0f;
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1) * J; // visibility check
 
             float D = SymRatio(p_c, p_hat_from, beta);
             sum += 1.0f/(1.0f + m_no_r * D);
@@ -281,7 +282,8 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
     float Jn = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn));
+    float J = 0.0f;
+    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn, J));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float D = SymRatio(p_n, p_hat_from, beta);
     return D / (1.0f + m_no_r * D);

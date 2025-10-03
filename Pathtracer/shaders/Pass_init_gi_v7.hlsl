@@ -179,6 +179,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         reservoir.x2_gi = result_init.x2;
         reservoir.n2_gi = result_init.n2;
         reservoir.M_gi = 1;
+
+        SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+        //reservoir.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_gi, reservoir.n2_gi, reservoir.V2_gi, reservoir.matID_gi, reservoir.J_gi.x);
+
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
 }

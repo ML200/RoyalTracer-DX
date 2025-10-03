@@ -118,7 +118,8 @@ inline float3 ReconnectGI(
     in float pdfx2,
     in float Jc, // part of the jacoabian term of the canonical path
     in bool applyJ,
-    inout float Jn)
+    out float Jn,
+    out float J)
 {
     if (all(L2 < EPSILON))
         return 0;
@@ -146,18 +147,47 @@ inline float3 ReconnectGI(
 
     // Reconnection jacobian
     Jn = Jc;
+    J = 1.0f;
     if(applyJ){
         // Apply the reconnection jacobian
         float Gj = dot(ndirN, n2) / (dist * dist);
         Jn = (PDF1 * PDF2 * Gj);
-        float J = Jn / Jc;
-        r *=J;
+        J = Jn / Jc;
+        //r *=J;
     }
 
     if (any(isnan(r)) || all(r < EPSILON))
         r = (float3)0.0f;
 
     return r;
+}
+
+inline float PSSJacobian(
+    in float3 x1,
+    in float3 n1,
+    in float3 o,
+    in uint   mID1,
+    in float3 x2,
+    in float3 n2,
+    in float3 V2,
+    in uint   mID2,
+    in float  pdfx2)
+{
+    float3 dir   = x2 - x1;
+    float  dist2 = dot(dir, dir);
+    float3 ndirN = normalize(-dir);             // your convention (x1 -> x2)
+
+    // PDFs in the same measure as your BSDF_term/PDF_term (PSS)
+    float PDF1 = PDF_term(mID1, n1, ndirN, o);
+    if (PDF1 <= 0.0f) return 0.0f;
+
+    float PDF2 = (pdfx2 > 0.0f) ? pdfx2 : PDF_term(mID2, n2, V2, ndirN);
+    if (PDF2 <= 0.0f) return 0.0f;
+
+    // Pure geometric factor used in your reconnection Jacobian
+    float Gj =dot(ndirN, n2) / dist2;
+
+    return PDF1 * PDF2 * Gj;
 }
 
 // Calculate reconnection

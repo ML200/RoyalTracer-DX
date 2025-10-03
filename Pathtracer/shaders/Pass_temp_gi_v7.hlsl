@@ -50,21 +50,24 @@ void main(uint3 tid : SV_DispatchThreadID)
             float visReuse_c = rdi.W_gi > 0.0f ? 1.0f : 0.0f;
             float Jnc = 0.0f;
             float Jn = 0.0f;
-            float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, rdi.J_gi.y, false, Jnc)) * visReuse_c;
-            float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, rdi.J_gi.y, true, Jnc));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
-            float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
+            float J1 = 1.0f;
+            float J2 = 1.0f;
+            float J = 1.0f;
+            float p_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, 1.0f, false, Jnc, J)) * visReuse_c;
+            float p_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi.matID_gi, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1));// * VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1); // would require last frame AS and we dont store it, can be ommited for minimal added bias
+            float n_c = GetPHat(ReconnectGI(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1);
             float visReuse = rdi_r.W_gi > 0.0f ? 1.0f : 0.0f;
-            float n_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, false, Jnc)) * visReuse;
+            float n_n = GetPHat(ReconnectGI(sdata_r.x1, sdata_r.n1, sdata_r.o, sdata_r.matID, rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.x, 1.0f, false, Jnc, J)) * visReuse;
             float M_c = min(TEMP_MCAP_GI,rdi.M_gi);
             float M_n = min(TEMP_MCAP_GI,rdi_r.M_gi);
             float M_sum = M_c + M_n;
             // Calculate the MIS weights
-            float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
-            float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
+            float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n * J1, M_sum);
+            float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c * J2, n_n, M_sum);
 
             // Calculate the reservoirs weights
             float w_c = mis_c * p_c * rdi.W_gi;
-            float w_n = mis_n * n_c * rdi_r.W_gi;
+            float w_n = mis_n * n_c * J2 * rdi_r.W_gi;
 
             // Adjust wsum of the existing reservoir
             rdi.w_sum_gi = w_c;
@@ -88,6 +91,9 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
             else
                 rdi.W_gi = 0.0f;
+
+            // Recompute and update the jacobian for the now-canonical stored sample
+            rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_gi, rdi.n2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x);
 
             // Store the merged reservoir
             storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
