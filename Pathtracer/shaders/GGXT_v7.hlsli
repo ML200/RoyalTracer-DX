@@ -6,7 +6,6 @@ inline float IORtoF0_TRANS(float ior)
     return a * a;
 }
 
-// If you already have a per-material IoR, replace this.
 inline float3 ComputeBaseF0_TRANS(uint mID)
 {
     float  metallic  = materials[mID].Pr_Pm_Ps_Pc.y;
@@ -52,7 +51,6 @@ inline float G2_SmithGGX_TRANS(float NdotV, float NdotL, float alpha)
     return G1_SmithGGX_TRANS(NdotV, alpha) * G1_SmithGGX_TRANS(NdotL, alpha);
 }
 
-// ---------- Basis / helpers ----------
 inline void CoordinateSystem_TRANS(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f) T = normalize(cross(float3(0,0,1), N));
@@ -76,9 +74,9 @@ inline void SampleBTDF_GGX_TRANS(
     uint    mID,
     float3  outgoing,
     float3  normal,
-    float3  flatNormal,   // kept for parity; not used here
-    inout float3 sample,  // returned direction (toward the other medium)
-    float3  worldOrigin,  // parity; not used
+    float3  flatNormal,
+    inout float3 sample,
+    float3  worldOrigin,
     inout uint2 seed)
 {
     // GGX roughness
@@ -127,7 +125,7 @@ inline void SampleBTDF_GGX_TRANS(
     if (dot(V, H) < 0.0f) H = -H;
 
     // IORs for refraction (air <-> material)
-    float ior   = 2.5f; // keep in sync with your material if you expose one
+    float ior   = 2.5f;
     float NdotV = dot(N, V);
     bool  entering = (NdotV > 0.0f);
     float etaI = entering ? 1.0f : ior;
@@ -143,7 +141,7 @@ inline void SampleBTDF_GGX_TRANS(
         return;
     }
 
-    // Must lie on the *other* hemisphere w.r.t. N
+    // Must lie on the other hemisphere
     if (dot(N, L) * NdotV >= 0.0f)
     {
         sample = 0.0.xxx;
@@ -175,7 +173,7 @@ inline float3 EvaluateBTDF_GGX_TRANS(uint mID, float3 normal, float3 incoming, f
     float etaI = entering ? 1.0f : ior;
     float etaT = entering ? ior : 1.0f;
 
-    // Half vector for transmission (Walter et al. 2007)
+    // Half vector for transmission (Walter 2007)
     float3 H = normalize(etaI * V + etaT * L);
     if (dot(N, H) < 0.0f) H = -H;
 

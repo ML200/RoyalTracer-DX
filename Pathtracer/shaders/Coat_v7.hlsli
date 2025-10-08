@@ -1,3 +1,5 @@
+// The coat code mostly copies the GGX lobe except it doesnt use the energy compensation
+
 // Orthonormal basis
 inline void COAT_CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
@@ -89,7 +91,6 @@ inline void SampleBRDF_COAT(
         sample = float3(0, 0, 0);
 }
 
-// BRDF evaluation (scaled by coat weight; directional symmetric transmittance)
 inline float3 EvaluateBRDF_COAT(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)
 {
     float3 N = normalize(normal);
@@ -115,13 +116,10 @@ inline float3 EvaluateBRDF_COAT(uint mID, float3 normal, float3 incoming, float3
     float  G = COAT_G2_SmithGGX(NdotV, NdotL, alpha);
     float denom = max(4.0f * NdotV * NdotL, EPSILON);
 
-    // Coat weight (ensure correct channel)
     float pc = saturate(materials[mID].Pr_Pm_Ps_Pc.w);
 
-    // Final coat BRDF (scaled by weight)
     float3 spec = pc * (F * D * G) / denom;
 
-    // If you prefer a constant hemisphere-average gate like your base GGX, replace the 4 lines above with:
     float F0_diel = 0.04f;
     float Favg    = F0_diel + (1.0f - F0_diel) * (1.0f/21.0f);
     transmittance = saturate(1.0f - pc * Favg);
@@ -129,7 +127,6 @@ inline float3 EvaluateBRDF_COAT(uint mID, float3 normal, float3 incoming, float3
     return (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
 }
 
-// PDF for the sampled direction (VNDF reflection)
 inline float BRDF_PDF_COAT(uint mID, float3 N, float3 wi, float3 wo)
 {
     float3 V = normalize(wo);
@@ -146,6 +143,5 @@ inline float BRDF_PDF_COAT(uint mID, float3 N, float3 wi, float3 wo)
     float  D     = COAT_D_GGX(max(0.0f, dot(N, H)), alpha);
     float  G1    = COAT_G1_SmithGGX(NdotV, alpha);
 
-    // VNDF GGX direction pdf: (D * G1(V)) / (4 * N·V)
     return (D * G1) / max(4.0f * NdotV, EPSILON);
 }

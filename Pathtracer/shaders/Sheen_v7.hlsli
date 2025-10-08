@@ -22,7 +22,7 @@ inline float SheenAlpha_FromLUT(uint mID, float NdotV)
 
     float a0 = materials[mID].SheenLUT[i0];
     float a1 = materials[mID].SheenLUT[i1];
-    return lerp(a0, a1, w); // a_sheen(N·V) in [0..1]
+    return lerp(a0, a1, w);
 }
 
 
@@ -56,7 +56,7 @@ inline float SHEEN_LambdaFit_params(out float a, out float b, out float c, out f
     d = w0*d0 + w1*d1;
     e = w0*e0 + w1*e1;
 
-    return r; // not used, just to allow inline float signature
+    return r;
 }
 
 inline float SHEEN_L_eval(float x, float a, float b, float c, float d, float e)
@@ -66,7 +66,7 @@ inline float SHEEN_L_eval(float x, float a, float b, float c, float d, float e)
 
 inline float SHEEN_Lambda_Charlie(float cosTheta)
 {
-    // piecewise A(θ) using L(x) = a/(1 + b x^c) + d x + e
+    // piecewise A using L(x) = a/(1 + b x^c) + d x + e
     float a, b, c, d, e;
     (void)SHEEN_LambdaFit_params(a, b, c, d, e);
 
@@ -120,7 +120,7 @@ inline void SampleBRDF_SHEEN(
     float3  outgoing,       // wo
     float3  normal,
     float3  flatNormal,     // unused
-    inout float3 sample,    // returns wi (direction *from* surface)
+    inout float3 sample,
     float3  worldOrigin,    // unused
     inout uint2 seed)
 {
@@ -154,25 +154,19 @@ inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float
     float NdotL = max(0.0f, dot(N, L));
     if (NdotV <= 0.0f || NdotL <= 0.0f) { transmittance = 1.0f; return 0.0.xxx; }
 
-    // --- Directional albedo ("alpha") from the LUT ---
     float aV = SheenAlpha_FromLUT(mID, NdotV); // reflectance seen along V
     float aL = SheenAlpha_FromLUT(mID, NdotL); // reflectance seen along L
 
-    // Optional: account for tinted sheen increasing energy (keeps things conservative)
+    // Sheen tint
     float tintLum = saturate(Luminance(SHEEN_COLOR));
     aV *= tintLum;
     aL *= tintLum;
 
-    // Fraction of energy that *gets through* the sheen layer.
-    // For a single pass (view-only), you can use: T_view = 1 - w * aV.
-    // For shading with both in & out, make it symmetric:
+    // Fraction of energy that gets through the sheen layer
     float T_in  = saturate(1.0f - w * aL);
     float T_out = saturate(1.0f - w * aV);
 
-    // Geometric mean is stable and symmetric; good default:
     transmittance = sqrt(T_in * T_out);
-
-    // --- Sheen BRDF proper (reflection off the sheen lobe) ---
     float3 H    = normalize(V + L);
     float NdotH = max(0.0f, dot(N, H));
 
@@ -184,7 +178,6 @@ inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float
     return w * SHEEN_COLOR * (F * (G * D / denom));
 }
 
-// Matching PDF when sampling via half-vector:
 inline float BRDF_PDF_SHEEN(uint /*mID*/, float3 N, float3 wi, float3 wo)
 {
     float3 V = normalize(wo);
