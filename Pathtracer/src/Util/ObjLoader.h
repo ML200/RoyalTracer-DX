@@ -21,6 +21,9 @@
 constexpr float PI = 3.14159265359f;
 constexpr int LUT_SIZE_THETA = 16; // Number of samples for cos(theta)
 constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
+//Sheen
+constexpr float SHEEN_R_BAKE = 0.10f; // constant for now
+constexpr int   NUM_SAMPLES_SHEEN = 4096;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -134,7 +137,7 @@ inline XMFLOAT3 reflect(const XMFLOAT3& I, const XMFLOAT3& N) {
     return reflectedVec;
 }
 
-// GGX Distribution Function (D)
+// GGX Distribution Function
 inline float D_GGX(float NdotH, float roughness) {
     float alpha = roughness * roughness;
     float alpha2 = alpha * alpha;
@@ -204,7 +207,6 @@ void SampleGGX(
     float t1  = r * cosf(phi);
     float t2  = r * sinf(phi);
 
-    // *** Heitz s-remap (missing before) ***
     float s = 0.5f * (1.0f + Ve.z);
     t2 = (1.0f - s) * sqrtf(fmaxf(0.0f, 1.0f - t1*t1)) + s * t2;
 
@@ -247,12 +249,12 @@ inline XMFLOAT3 EvaluateBRDF_GGX(
 
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
 
-    float D     = D_GGX(NdotH, roughness);             // D expects 'roughness' in your impl
+    float D     = D_GGX(NdotH, roughness);
     float alpha = (std::fmax)(1e-4f, roughness * roughness);
     float G2    = G2_SmithGGX(NdotV, NdotL, alpha);
 
     float denom = (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
-    float brdf  = (D * G2) / denom;                    // F = 1 for ESS LUT
+    float brdf  = (D * G2) / denom;
 
     return XMFLOAT3(brdf, brdf, brdf);
 }
@@ -274,7 +276,6 @@ inline float BRDF_PDF_GGX(const float roughness,
     XMFLOAT3 H = normalize(V + L);
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
 
-    // Your D_GGX takes 'roughness' (it squares internally to α, then again to α²)
     float D     = D_GGX(NdotH, roughness);
     float alpha = (std::fmax)(1e-4f, roughness * roughness);
     float G1    = G1_SmithGGX(NdotV, alpha);
@@ -309,7 +310,7 @@ float ComputeEss(const XMFLOAT3& N,
         float NdotL = dot(N, L);
         if (NdotL <= 0.0f) continue;
 
-        // BRDF with F=1 (scalar replicated across RGB)
+        // BRDF with F=1 (scalar replicated across RGB using Schlick)
         XMFLOAT3 brdf3 = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), XMFLOAT3(1,1,1), roughness);
         float brdf = brdf3.x;
 
@@ -321,6 +322,113 @@ float ComputeEss(const XMFLOAT3& N,
     }
 
     return (numSamples > 0) ? (Ess / numSamples) : 0.0f;
+}
+
+
+// Sheen
+inline float D_Charlie(float NdotH, float r)
+{
+    r = (std::fmax)(1e-4f, r);
+    float invr   = 1.0f / r;
+    float sin2Th = (std::fmax)(0.0f, 1.0f - NdotH * NdotH);
+    float sinTh  = sqrtf(sin2Th);
+    return (2.0f + invr) * powf((std::fmax)(1e-8f, sinTh), invr) * (0.5f / PI);
+}
+
+// A fit
+inline void Sheen_LambdaFitParams(float r, float& a, float& b, float& c, float& d, float& e)
+{
+    r = (std::fmin)(1.0f, (std::fmax)(0.0f, r));
+    float w0 = (1.0f - r); w0 *= w0;
+    float w1 = 1.0f - w0;
+
+    const float a0=25.3245f, b0=3.32435f, c0=0.16801f, d0=-1.27393f, e0=-4.85967f;
+    const float a1=21.5473f, b1=3.82987f, c1=0.19823f, d1=-1.97760f, e1=-4.32054f;
+
+    a = w0*a0 + w1*a1;
+    b = w0*b0 + w1*b1;
+    c = w0*c0 + w1*c1;
+    d = w0*d0 + w1*d1;
+    e = w0*e0 + w1*e1;
+}
+
+inline float Sheen_L_eval(float x, float a, float b, float c, float d, float e)
+{
+    return a / (1.0f + b * powf((std::fmax)(1e-4f, x), c)) + d * x + e;
+}
+
+inline float Lambda_Charlie(float cosTheta, float r)
+{
+    float a,b,c,d,e; Sheen_LambdaFitParams(r, a,b,c,d,e);
+    float x = (std::fmin)(1.0f, (std::fmax)(0.0f, cosTheta));
+    float Lx    = Sheen_L_eval(x,        a,b,c,d,e);
+    float Lhalf = Sheen_L_eval(0.5f,     a,b,c,d,e);
+    float L1mx  = Sheen_L_eval(1.0f - x, a,b,c,d,e);
+    return (x < 0.5f) ? expf(Lx) : expf(2.0f * Lhalf - L1mx);
+}
+
+inline float G_Charlie(float NdotV, float NdotL, float r)
+{
+    float lambdaV = Lambda_Charlie(NdotV, r);
+    float lambdaL = Lambda_Charlie(NdotL, r);
+    return 1.0f / (1.0f + lambdaV + lambdaL);
+}
+
+// Sheen BRDF with F=1
+inline float EvaluateBRDF_SHEEN_scalar(const XMFLOAT3& V,
+                                       const XMFLOAT3& L,
+                                       const XMFLOAT3& N,
+                                       float r)
+{
+    float NdotV = (std::fmax)(dot(N, V), 0.0f);
+    float NdotL = (std::fmax)(dot(N, L), 0.0f);
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0f;
+
+    XMFLOAT3 H = normalize(XMFLOAT3(V.x + L.x, V.y + L.y, V.z + L.z));
+    float NdotH = (std::fmax)(dot(N, H), 0.0f);
+
+    float D = D_Charlie(NdotH, r);
+    float G = G_Charlie(NdotV, NdotL, r);
+    float denom = (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
+    return (D * G) / denom; // F=1 here
+}
+
+// Cosine hemisphere sample
+inline XMFLOAT3 CosineHemisphereSample(float u1, float u2)
+{
+    float r = sqrtf(u1);
+    float phi = 2.0f * PI * u2;
+    float x = r * cosf(phi);
+    float y = r * sinf(phi);
+    float z = sqrtf((std::fmax)(0.0f, 1.0f - x*x - y*y));
+    return XMFLOAT3(x,y,z);
+}
+
+inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N,
+                                           const XMFLOAT3& V,
+                                           float sheenR,
+                                           int numSamples)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+    XMFLOAT3 T1, T2; CoordinateSystem(N, T1, T2);
+
+    float sum_f = 0.0f;
+    for (int i = 0; i < numSamples; ++i) {
+        float u1 = dist(gen), u2 = dist(gen);
+        XMFLOAT3 Llocal = CosineHemisphereSample(u1, u2);
+        //local -> world
+        XMFLOAT3 L = normalize(XMFLOAT3(
+            Llocal.x * T1.x + Llocal.y * T2.x + Llocal.z * N.x,
+            Llocal.x * T1.y + Llocal.y * T2.y + Llocal.z * N.y,
+            Llocal.x * T1.z + Llocal.y * T2.z + Llocal.z * N.z
+        ));
+        sum_f += EvaluateBRDF_SHEEN_scalar(V, L, N, sheenR);
+    }
+    float mean_f = (numSamples > 0) ? (sum_f / numSamples) : 0.0f;
+    return mean_f * PI;
 }
 
 
@@ -337,6 +445,15 @@ void PrintLUTAsVector(const Material& mat) {
 
         // Print LUT value at this index
         std::wcout << std::fixed << std::setprecision(3) << 1.0f + (1.0f -mat.LUT[idx]) / mat.LUT[idx] << L"\n";
+    }
+}
+
+void PrintSheenLUT(const Material& mat) {
+    std::wcout << L"Sheen 1D LUT (by cosTheta):\n\n";
+    for (int idx = 0; idx < LUT_SIZE_THETA; ++idx) {
+        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1);
+        std::wcout << L"cosTheta = " << std::fixed << std::setprecision(2) << cosTheta << L": "
+                   << std::fixed << std::setprecision(4) << mat.SheenLUT[idx] << L"\n";
     }
 }
 
@@ -379,6 +496,29 @@ void GenerateEssLUT(Material& mat) {
                << duration.count() / 1000.0 << L" seconds)\n";
 }
 
+void GenerateSheenLUT(Material& mat)
+{
+    constexpr float EPSILON = 0.04f;
+    XMFLOAT3 N = {0.0f, 0.0f, 1.0f};
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    for (int thetaIdx = 0; thetaIdx < LUT_SIZE_THETA; ++thetaIdx) {
+        float cosTheta = EPSILON + static_cast<float>(thetaIdx) / (LUT_SIZE_THETA - 1) * (1.0f - EPSILON);
+        float sinTheta = sqrtf((std::fmax)(EPSILON, 1.0f - cosTheta * cosTheta));
+
+        XMFLOAT3 V = { sinTheta, 0.0f, cosTheta };
+
+        mat.SheenLUT[thetaIdx] = ComputeSheenDirectionalAlbedo(N, normalize(V), SHEEN_R_BAKE, NUM_SAMPLES_SHEEN);
+    }
+
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    std::wcout << L"GenerateSheenLUT (1D x " << LUT_SIZE_THETA << L") in " << ms << L" ms\n";
+}
+
+
+
 
 
 class ObjLoader {
@@ -405,7 +545,7 @@ public:
         auto& materials = reader.GetMaterials();
 
         // Create a default material if a face has no material assigned
-        Material defaultMaterial(XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f), XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f)); // Example default material
+        Material defaultMaterial;
         mats->push_back(defaultMaterial);
         (*materialOffset)++;
 
@@ -419,18 +559,22 @@ public:
 
             // Set up material properties
             XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve);
-
             XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness);
-            Material t_mat(diffuse, Pr_Pm_Ps_Pc);
+            XMFLOAT3 Pcr_aniso_anisor(mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation);
 
-            // Set emission
+            Material t_mat;
+            t_mat.Kd = diffuse;
             t_mat.Ke = XMFLOAT3(mat.emission);
-            t_mat.Ks = XMFLOAT3(mat.specular);
+            t_mat.Ni = static_cast<float>(mat.ior);
+            t_mat.Pr_Pm_Ps_Pc = Pr_Pm_Ps_Pc;
+            t_mat.Pcr_aniso_anisor = Pcr_aniso_anisor;
 
             //Calculate LUT
             GenerateEssLUT(t_mat);
             PrintLUTAsVector(t_mat);
-            //TestKMOffsetGGX(200,t_mat);
+
+            GenerateSheenLUT(t_mat);
+            PrintSheenLUT(t_mat);
 
             // Add the material to the list
             mats->push_back(t_mat);

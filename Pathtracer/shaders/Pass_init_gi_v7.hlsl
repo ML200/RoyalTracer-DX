@@ -68,6 +68,9 @@ void main(uint3 tid : SV_DispatchThreadID)
                         float3 c = ReconnectGISingle(position, normal, outgoing, matID, result.x2, result.n2, result.pdf_nee);
                         float p_hat = GetPHat(c * tp_full * result.L2);
                         float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat;
+
+                        //length(result.x2 - position) < 1.0f ? w_mis = 0.0f : w_mis = w_mis;
+
                         if(isnan(w_mis))
                             w_mis = 0.0f;
 
@@ -112,6 +115,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                     float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat;
                     if(isnan(w_mis) || isinf(w_mis))
                         w_mis = 0.0f;
+
+                    //length(result.x2 - position) < 1.0f ? w_mis = 0.0f : w_mis = w_mis;
 
                     float3 L2 = result.L2;
                     float3 V2_temp = V2;
@@ -181,7 +186,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         reservoir.M_gi = 1;
 
         SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-        //reservoir.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_gi, reservoir.n2_gi, reservoir.V2_gi, reservoir.matID_gi, reservoir.J_gi.x);
+        reservoir.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_gi, reservoir.n2_gi, reservoir.V2_gi, reservoir.matID_gi, reservoir.J_gi.x);
 
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);

@@ -57,6 +57,9 @@ Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
 #include "Initial_bsdf_v7.hlsli"
 #include "GGX_v7.hlsli"
 #include "Lambertian_v7.hlsli"
+#include "Coat_v7.hlsli"
+#include "Sheen_v7.hlsli"
+#include "GGXT_v7.hlsli"
 #include "BSDF_v7.hlsli"
 
 cbuffer CameraParams : register(b0)

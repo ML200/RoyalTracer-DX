@@ -80,7 +80,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 rdi.W_di = 0.0f;
 
             // Store the merged reservoir
-            storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
+            //storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
         }
     }
 }

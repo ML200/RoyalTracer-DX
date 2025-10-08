@@ -96,7 +96,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, rdi.x2_gi, rdi.n2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x);
 
             // Store the merged reservoir
-            storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+            //storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
             //}
         }
     }

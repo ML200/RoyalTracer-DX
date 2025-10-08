@@ -37,7 +37,8 @@ void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flat
 }
 
 // Evaluate the BRDF for the given material
-float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
+float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance) {
+    transmittance = 1.0f - materials[mID].Kd.w;
     // For Lambertian reflection, the BRDF is constant
     // BRDF = Kd / PI
     return materials[mID].Kd.xyz / PI;

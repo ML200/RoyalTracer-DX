@@ -157,25 +157,38 @@ struct Cone {
 // Merge two cones per Algorithm 1 in the paper
 static Cone coneUnion(const Cone& A, const Cone& B){
     Cone a=A, b=B; if (b.theta_o > a.theta_o) std::swap(a,b);
-    float theta_d = safe_acosf(dot3(a.axis, b.axis));
+
+    const float d = clampf(dot3(a.axis, b.axis), -1.f, 1.f);
+    const float theta_d = safe_acosf(d);
+
     Cone out; out.theta_e = (std::fmax)(a.theta_e, b.theta_e);
-    if ((std::fmin)(theta_d + b.theta_o, LT_PI) <= a.theta_o){
+
+    // b fully inside a?
+    if ((std::fmin)(theta_d + b.theta_o, LT_PI) <= a.theta_o) {
         out.axis = a.axis; out.theta_o = a.theta_o; return out;
     }
+
+    // target half-angle (Algorithm 1)
     float theta_o = (a.theta_o + theta_d + b.theta_o) * 0.5f;
-    if (theta_o >= LT_PI){ out.axis = a.axis; out.theta_o = LT_PI; return out; }
-    XMFLOAT3 cr = cross3(a.axis, b.axis);
-    if (length3(cr) < 1e-10f) {
+    theta_o = (std::fmin)(theta_o, LT_PI);
+
+    if (theta_d < 1e-7f) {
+        // nearly parallel
         out.axis = a.axis;
-        out.theta_o = (std::fmax)(a.theta_o, b.theta_o);
-        return out;
+    } else if (LT_PI - theta_d < 1e-7f) {
+        // nearly anti-parallel: choose any perpendicular axis
+        XMFLOAT3 t = (std::fabs(a.axis.x) < 0.9f) ? XMFLOAT3{1,0,0} : XMFLOAT3{0,1,0};
+        out.axis = normalize3(cross3(a.axis, t));
+    } else {
+        // regular case
+        float t = clampf((theta_o - a.theta_o) / theta_d, 0.f, 1.f);
+        out.axis = slerpUnit(a.axis, b.axis, t);
     }
-    float theta_r = theta_o - a.theta_o;
-    float t = (theta_d < 1e-7f) ? 0.f : clampf(theta_r / theta_d, 0.f, 1.f);
-    out.axis = slerpUnit(a.axis, b.axis, t);
+
     out.theta_o = theta_o;
     return out;
 }
+
 
 // Orientation measure M_omega (Eq. 1): scalar from cone (axis unused)
 static float orientationMeasure(const Cone& c){
@@ -276,9 +289,9 @@ private:
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 4;       // triangles per BLAS leaf
+        uint32_t maxLeafTris = 16;       // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
-        uint32_t buildBins   = 32;       // spatial bin count for SAOH
+        uint32_t buildBins   = 64;       // spatial bin count for SAOH
     };
 
     struct GpuBuffers {
@@ -759,6 +772,15 @@ private:
             uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e);
             uint32_t desired = N.firstChild + c;
             if (built != desired) std::swap(out.nodes[built], out.nodes[desired]);
+        }
+
+        // Fill the triangle data
+        N.triFirst = (std::numeric_limits<uint32_t>::max)();
+        N.triCount = 0;
+        for (uint32_t c = 0; c < N.childCount; ++c) {
+            const BLASNode& C = out.nodes[N.firstChild + c];
+            N.triFirst = (std::min)(N.triFirst, C.triFirst);
+            N.triCount += C.triCount;
         }
 
         return nodeIdx;

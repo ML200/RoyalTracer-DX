@@ -8,7 +8,7 @@ inline float IORtoF0(float ior) {
 inline float3 ComputeBaseF0(uint mID) {
     float  metallic  = materials[mID].Pr_Pm_Ps_Pc.y;
     float3 baseColor = materials[mID].Kd.xyz;
-    float  ior      = 2.5f; // Hardcoded IoR for now!
+    float  ior      =  materials[mID].Ni;
 
     float  F0_diel  = IORtoF0(ior);                     // achromatic dielectric F0
     float3 F0_metal = baseColor;                        // colored F0 for metals
@@ -88,7 +88,6 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 }
 
 // VNDF sampling GGX
-// TODO: verify that this is correct
 inline void SampleBRDF_GGX(
     uint mID,
     float3  outgoing,
@@ -156,7 +155,7 @@ inline void SampleBRDF_GGX(
 
 
 // Evaluate the GGX BRDF for the given material
-inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing)
+inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
@@ -186,6 +185,11 @@ inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 
     float Ess  = ESS_LUT(mID, NdotV);
     float kms  = (1.0f - Ess) / max(Ess, EPSILON);
     float3 specular_ess = specular * (1.0f + Avg3(F0) * kms);
+
+    // dielectric F0 (scalar) -> hemisphere average
+    float  F0_diel = IORtoF0(materials[mID].Ni);
+    float  Favg    = F0_diel + (1.0f - F0_diel) * (1.0f/21.0f);
+    transmittance = (1.0f - materials[mID].Pr_Pm_Ps_Pc.y) * (1.0f - Favg);
 
     return (any(isnan(specular_ess)) || any(isinf(specular_ess))) ? 0.0.xxx : specular_ess;
 }

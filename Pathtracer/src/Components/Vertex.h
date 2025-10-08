@@ -12,14 +12,12 @@
 using namespace DirectX;
 
 struct Material{
- XMFLOAT4 Kd = {1,1,1,1};
- XMFLOAT3 Ks = {1,1,1};  float Ni = 1;
- XMFLOAT3 Ke = {0,0,0};  float pad0 = 0;
- XMFLOAT4 Pr_Pm_Ps_Pc = {0,0,0,0};
- float LUT[16] = {0};
-
- //ADD MAP IDs LATER
- Material(XMFLOAT4 kd, XMFLOAT4 pr_pm_ps_pc):Kd(kd), Pr_Pm_Ps_Pc(pr_pm_ps_pc){}
+ XMFLOAT4 Kd = {0.8f,0.8f,0.8f,1}; // .w is transmission weight; 32 bytes
+ XMFLOAT3 Ke = {0,0,0};float Ni = 1.5f; // 32 bytes
+ XMFLOAT4 Pr_Pm_Ps_Pc = {1.0f,0,0,0}; // 32 bytes
+ XMFLOAT3 Pcr_aniso_anisor = {0,0,0}; // 24 bytes
+ float LUT[16] = {0}; // :(
+ float SheenLUT[16];
 };
 
 struct Vertex {

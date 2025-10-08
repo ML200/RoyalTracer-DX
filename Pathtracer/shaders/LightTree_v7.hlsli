@@ -1,5 +1,5 @@
 #ifndef LT_LEAF_SAMPLER_MODE
-#define LT_LEAF_SAMPLER_MODE 0
+#define LT_LEAF_SAMPLER_MODE 1
 #endif
 
 Buffer<uint> gLT_TriToBLAS       : register(t16);
@@ -70,12 +70,61 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
+// Custom angle importance factor based on angle between normal and corner direction
+// Idea:
+// - the more corners are behind the surface, the less volume is relevant -> downweight based on number
+// - angle between normal and corner direction can be interpreted as cheap lambertian approx of the node -> downweight if all corners and the center have a small angle
+inline float LT_AabbVertexVisibilityWeight(float3 x, float3 n, float3 bmin, float3 bmax)
+{
+    float3 lo = min(bmin, bmax);
+    float3 hi = max(bmin, bmax);
+    float3 c  = 0.5 * (lo + hi);
+
+    float3 P[9] = {
+        float3(lo.x,lo.y,lo.z), float3(hi.x,lo.y,lo.z),
+        float3(lo.x,hi.y,lo.z), float3(hi.x,hi.y,lo.z),
+        float3(lo.x,lo.y,hi.z), float3(hi.x,lo.y,hi.z),
+        float3(lo.x,hi.y,hi.z), float3(hi.x,hi.y,hi.z),
+        c
+    };
+    const float angleFloorMin = 0.1;
+
+    float maxFrontCos = 0.0;   // best visible corner
+    uint  behindCount = 0u;
+
+    [unroll] for (uint i = 0; i < 9; ++i)
+    {
+        float3 v   = P[i] - x;
+        float  l2  = max(dot(v, v), EPSILON);
+        float3 dir = v * rsqrt(l2);
+
+        float cosT = dot(n, dir);
+        if (cosT > 0.0) {
+            maxFrontCos = max(maxFrontCos, cosT);
+        } else {
+            behindCount++;
+        }
+    }
+
+    // no front-facing samples?
+    if (maxFrontCos <= 0.0) return 0.0;
+
+    float angleFactor = max(maxFrontCos, angleFloorMin);
+
+    // behind penalty
+    float denom   = (behindCount > 0u) ? float(behindCount) : 1.0;
+    float penalty = 1.0 / denom;
+
+    return angleFactor * penalty;
+}
+
+
 // CONTY–KULLA NODE IMPORTANCE
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
     float3 axis, float theta_o, float theta_e,
-    float power, bool isGlobalLight, float /*offset_threshold*/)
+    float power, bool isGlobalLight, float)
 {
     const float3 c = 0.5 * (bmin + bmax);
     const float3 e = 0.5 * (bmax - bmin);
@@ -85,25 +134,22 @@ inline float LT_NodeImportance_Common(
     float  d0 = length(v);
     float3 dir_to_point = (d0 > 0.0) ? (v / d0) : float3(0,0,1);
 
-    float theta_u = LT_SafeAsin(saturate(R / max(d0, 1e-3)));
-
-    float theta   = LT_SafeAcos(dot(axis, dir_to_point));
-    float theta_p = max(theta - theta_o - theta_u, 0.0);
-    if (theta_p >= theta_e) return 0.0;
-    float orientTerm = cos(theta_p);
+    float theta     = LT_SafeAcos(dot(axis, dir_to_point));
+    float theta_u   = LT_SafeAsin(saturate(R / max(d0, 1e-6)));
+    float theta_p   = max(theta - theta_o - theta_u, 0.0);
+    if (theta_p >= theta_e) return 0.0;         // outside emission lobe
+    float orientTerm = cos(theta_p);            // conservative emitter cosine
 
     float ci    = dot(-dir_to_point, n);
     float sin_u = sin(theta_u);
     if (ci <= -sin_u) return 0.0;
 
-    float theta_i_p = max(LT_SafeAcos(ci) - theta_u, 0.0);
-    float incidTerm = max(cos(theta_i_p), 0.0);
+    float d2   = isGlobalLight ? 1.0 : (d0*d0 + R*R); // conservative near field clamp
+    float geom = isGlobalLight ? 1.0 : rcp(d2);
 
-    float d    = max(d0, 0.5 * R);
-    float invd = isGlobalLight ? 1.0 : rcp(d);
-    float geom = isGlobalLight ? 1.0 : (invd * invd);
+    float visCorners = LT_AabbVertexVisibilityWeight(x, n, bmin, bmax);
 
-    return power * orientTerm * incidTerm * geom;
+    return power * geom * orientTerm * visCorners;
 }
 
 inline float LT_NodeImportance_TLAS(LightTLASNodeGpu n, float3 x, float3 norm)

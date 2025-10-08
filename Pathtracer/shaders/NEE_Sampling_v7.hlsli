@@ -49,10 +49,10 @@ SampleReturn SampleNEE(
 
     float pdf_nee_area  = pick.pdf / max(A, EPSILON);
 
-    float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
+    /*float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
     float pdf0   = BRDF_PDF(0, sdata.matID, sdata.n1, -Ldir, sdata.o);
-    float pdf1   = BRDF_PDF(1, sdata.matID, sdata.n1, -Ldir, sdata.o);
-    float pdf_bsdf_area = (probs.x * pdf0 + probs.y * pdf1)
+    float pdf1   = BRDF_PDF(1, sdata.matID, sdata.n1, -Ldir, sdata.o);*/
+    float pdf_bsdf_area = BRDF_PDF_COMBINED(sdata.matID, sdata.n1, -Ldir, sdata.o)
                         * max(dot(nL, -Ldir), 0.0f) / max(d2, EPSILON);
 
     // Pack
@@ -119,10 +119,10 @@ SampleReturn SampleNEE_gen(
     float pdf_l = pick.pdf / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);//g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);
 
     // Compute BSDF PDF (fro MIS)
-    float2 probs = CalculateStrategyProbabilities(matID1, o, n1);
+    /*float2 probs = CalculateStrategyProbabilities(matID1, o, n1);
     float pdf0 = BRDF_PDF(0, matID1, n1, -L_norm, o);
-    float pdf1 = BRDF_PDF(1, matID1, n1, -L_norm, o);
-    float pdf_b = (probs.x * pdf0 + probs.y * pdf1);
+    float pdf1 = BRDF_PDF(1, matID1, n1, -L_norm, o);*/
+    float pdf_b = BRDF_PDF_COMBINED(matID1, n1, -L_norm, o);//(probs.x * pdf0 + probs.y * pdf1);
 
     SampleReturn sreturn;
     sreturn.x2 = x2;

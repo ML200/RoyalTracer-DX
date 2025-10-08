@@ -1093,8 +1093,6 @@ void Renderer::CreateAccelerationStructures() {
 
     // Build & upload light tree
     lt::LightTreeBuilder::Settings cfg;
-    cfg.maxLeafTris = 4;
-    cfg.useTwoLevel = true;
 
     // Build per‑instance object→world matrices for the light tree
     std::vector<InstanceXformCPU> ltXforms;

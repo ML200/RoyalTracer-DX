@@ -42,11 +42,12 @@ struct LightTriangle {
 
 struct Material
 {
-    float4 Kd;
-    float3 Ks; float Ni;
-    float3 Ke; float pad0;
+    float4 Kd; // +d
+    float3 Ke; float Ni;
     float4 Pr_Pm_Ps_Pc;
+    float3 Pcr_aniso_anisor;
     float LUT[16];
+    float SheenLUT[16];
 };
 
 // Ray payloads for closest hit and shadow ray

@@ -121,7 +121,7 @@ inline float3 ReconnectGI(
     out float Jn,
     out float J)
 {
-    if (all(L2 < EPSILON))
+    if (length(L2) < EPSILON)
         return 0;
 
     // Geometric prep

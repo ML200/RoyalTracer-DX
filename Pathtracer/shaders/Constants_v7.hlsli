@@ -1,6 +1,7 @@
 #define EPSILON 0.000003
 #define SBIAS 0.0008
 #define PI 3.1415926535
+#define INV_PI 0.3183098861
 #define LUT_SIZE 16
 
 // ___ DI initial sampling ___
@@ -9,7 +10,7 @@
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 1
-#define BSDF_SAMPLES_GI 2
+#define BSDF_SAMPLES_GI 3
 
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30
@@ -19,9 +20,9 @@
 #define SPAT_RAD_MAX 32
 #define SPAT_RAD_MIN 24
 
-#define SPAT_COUNT_MAX_DI 2
+#define SPAT_COUNT_MAX_DI 1
 #define SPAT_COUNT_MIN_DI 1
-#define SPAT_TRIS_DI 2
+#define SPAT_TRIS_DI 4
 
 
 // ___ GI Reuse ___

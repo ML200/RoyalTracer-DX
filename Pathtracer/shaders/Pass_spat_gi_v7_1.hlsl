@@ -52,10 +52,10 @@ void main(uint3 tid : SV_DispatchThreadID)
                     bool candidateAcceptedGI =
                         IsValidReservoir_GI_opt(rdi_r.n2_gi, rdi_r.M_gi) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
-                        !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.5f) &&
+                        !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.9f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
-                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
-                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.1f) &&
+                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.3f) &&
+                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.3f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -157,11 +157,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         gScratchPing[uint3(tid.xy, 2)] = float4(contrib_final * rdi.W_gi, 0);
 
         // DEBUG
-        float3 heat;
+        /*float3 heat;
         heat.r = step(debug, 0.9);          // red when <1
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
-        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);
+        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
 
     }
     else
