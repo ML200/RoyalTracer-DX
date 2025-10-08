@@ -1,7 +1,5 @@
 # Royal Tracer DX
 A real-time path tracer written in HLSL using the DirectX 12 API.
-![Monk Sponza Scene](./media/monk.png)
-
 
 https://github.com/user-attachments/assets/b9356007-c2ea-4cd2-919c-3017e565f874
 
