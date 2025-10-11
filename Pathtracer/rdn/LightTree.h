@@ -289,9 +289,11 @@ private:
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 16;       // triangles per BLAS leaf
+        uint32_t maxLeafTris = 2;       // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
         uint32_t buildBins   = 64;       // spatial bin count for SAOH
+        enum class Heuristic { SAOH, SAH }; // What heuristic should we use?
+        Heuristic heuristic = Heuristic::SAOH;
     };
 
     struct GpuBuffers {
@@ -690,9 +692,19 @@ private:
                     const Agg& R = suff[s];
                     if (!L.valid || !R.valid) continue;
 
-                    float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a);
-                    float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
-                    float cost = Kr * (L.E * ML * MoL + R.E * MR * MoR) / (parentMA * parentMO);
+                    float ML  = aabbSurfaceArea(L.a),  MR  = aabbSurfaceArea(R.a);
+
+                    // SAOH bits (already computed above)
+                    float MoL = orientationMeasure(L.cone);
+                    float MoR = orientationMeasure(R.cone);
+
+                    // Choose heuristic
+                    float cost;
+                    if (m_cfg.heuristic == Settings::Heuristic::SAH) {
+                        cost = L.N * ML + R.N * MR;
+                    } else {
+                        cost = Kr * (L.E * ML * MoL + R.E * MR * MoR) / (parentMA * parentMO);
+                    }
                     if (cost < best.cost) {
                         best.cost = cost; best.axis = axis;
                         best.splitPos = mn + (span * (float)s / (float)B);
@@ -870,9 +882,16 @@ private:
 
                 for (uint32_t s=1; s<B; ++s){
                     const AggT& L = pref[s-1]; const AggT& R = suff[s]; if (!L.valid || !R.valid) continue;
-                    float ML = aabbSurfaceArea(L.a), MR = aabbSurfaceArea(R.a);
-                    float MoL = orientationMeasure(L.cone), MoR = orientationMeasure(R.cone);
-                    float cost = Kr * ( L.E * ML * MoL + R.E * MR * MoR ) / ( parentMA * parentMO );
+                    float ML  = aabbSurfaceArea(L.a),  MR  = aabbSurfaceArea(R.a);
+                    float MoL = orientationMeasure(L.cone);
+                    float MoR = orientationMeasure(R.cone);
+
+                    float cost;
+                    if (m_cfg.heuristic == Settings::Heuristic::SAH) {
+                        cost = L.N * ML + R.N * MR;
+                    } else {
+                        cost = Kr * (L.E * ML * MoL + R.E * MR * MoR) / (parentMA * parentMO);
+                    }
                     if (cost < best.cost){ best.cost = cost; best.axis = axis; best.pos = mn + (span * (float)s / (float)B); }
                 }
             }

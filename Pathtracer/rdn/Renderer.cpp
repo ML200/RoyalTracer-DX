@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "buddha.obj", "screwLight.obj"};
+    std::vector<std::string> models = {"the-white-room-lights.obj", "sky.obj"/*, "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -545,7 +545,7 @@ void Renderer::LoadAssets() {
 }
 
 void Renderer::OnInitTransform() {
-    XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    /*XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
     XMMATRIX translate    = XMMatrixTranslation(0.0f, 0.f, 0.0f);
 
@@ -555,7 +555,7 @@ void Renderer::OnInitTransform() {
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
@@ -2752,7 +2752,7 @@ float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0,
     float area = 0.5f * XMVectorGetX( XMVector3Length( XMVector3Cross(e1,e2) ) );
 
     float lum = Luminance(emissiveColor);
-    return std::max(area, 1e-8f) * lum;
+    return std::max(area, 1e-10f) * lum;
 }
 
 

@@ -47,7 +47,7 @@ SampleReturn SampleNEE(
 
     if (dot(nL, -Ldir) < 0.0f) return (SampleReturn)0;
 
-    float pdf_nee_area  = pick.pdf / max(A, EPSILON);
+    float pdf_nee_area  = pick.pdf / max(A, 1e-10f);
 
     /*float2 probs = CalculateStrategyProbabilities(sdata.matID, sdata.o, sdata.n1);
     float pdf0   = BRDF_PDF(0, sdata.matID, sdata.n1, -Ldir, sdata.o);
@@ -116,7 +116,7 @@ SampleReturn SampleNEE_gen(
     }
 
     // Compute NEE PDF (solid angle!)
-    float pdf_l = pick.pdf / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);//g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);
+    float pdf_l = pick.pdf / max(area, 1e-10f) * dist2 / max(dot(normal_l, -L_norm), 0.0f);//g_EmissiveTriangles[lightIdx].weight / max(area, EPSILON) * dist2 / max(dot(normal_l, -L_norm), 0.0f);
 
     // Compute BSDF PDF (fro MIS)
     /*float2 probs = CalculateStrategyProbabilities(matID1, o, n1);
