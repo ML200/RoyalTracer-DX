@@ -1,10 +1,6 @@
 #include "Includes_v7.hlsli"
 
 static const float3 kLUMA = float3(0.2126, 0.7152, 0.0722);
-inline float Luma(float3 rgb)
-{
-    return dot(rgb, float3(0.2126, 0.7152, 0.0722));
-}
 
 #define uThreshold 0.5f
 

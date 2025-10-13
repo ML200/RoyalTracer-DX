@@ -34,7 +34,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         bool valid =
                 (all(sdata_r.L1 < EPSILON) &&
                 IsValidReservoir_DI(rdi_r) &&
-                !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.9f) &&
+                !RejectNormal_DI(sdata.n1, sdata_r.n1, 0.36f) &&
                 (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1, 0.05f))  &&
                 (sdata_r.matID == sdata.matID));
 
@@ -80,7 +80,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 rdi.W_di = 0.0f;
 
             // Store the merged reservoir
-            //storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
+            storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
         }
     }
 }

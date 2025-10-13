@@ -34,7 +34,4 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     finalColor = sRGBGammaCorrection(finalColor);
     gOutput[uint3(DTid.xy, 0)] = float4(finalColor, 1);
-
-
-    //gOutput[uint3(DTid.xy, 0)] = gScratchPing[uint3(DTid.xy, 11)];//gPermanentData[DTid.xy];
 }
