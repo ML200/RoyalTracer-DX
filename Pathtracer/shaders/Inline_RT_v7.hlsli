@@ -11,6 +11,10 @@ float VisibilityCheck(
     float V = 0.0f;
     float3 dir = x2-x1;
     float dist = length(dir);
+    // Adjust normal offset based on ray direction (transmission reconnection requires negative offset)
+    if(dot(dir, n1) < 0.0f)
+        n1 = -n1;
+
     RayDesc ray;
     ray.Origin = x1 + normalize(n1) * EPSILON;
     ray.Direction = normalize(dir);
@@ -32,11 +36,14 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     float3 dir = normalize(L - P);
     float  len = length(L - P);
 
+    if(dot(dir, N) < 0.0f)
+            N = -N;
+
     RayDesc ray;
     ray.Origin    = P + normalize(N) * SBIAS * 0.5f;
     ray.Direction = dir;
     ray.TMin      = EPSILON;
-    ray.TMax      = max(len - SBIAS * 4.0f - EPSILON * 10.0f, 2.0f * EPSILON);
+    ray.TMax      = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
 
     RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
               //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES

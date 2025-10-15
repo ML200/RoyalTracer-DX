@@ -157,6 +157,8 @@ inline void SampleBRDF_GGX(
 // Evaluate the GGX BRDF for the given material
 inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)
 {
+    if(dot(normal, -incoming) < 0.0f)
+        return (float3).0f;
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
     float3 L = normalize(-incoming);
@@ -198,6 +200,8 @@ inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 
 // Calculate the PDF for a given sample direction using GGX
 inline float BRDF_PDF_GGX(uint mID, float3 N, float3 wi, float3 wo)
 {
+    if(dot(N, -wi) < 0.0f)
+        return (float3).0f;
     float3 V = normalize(wo);
     float3 L = normalize(-wi);
     float  NdotV = max(0.0f, dot(N, V));

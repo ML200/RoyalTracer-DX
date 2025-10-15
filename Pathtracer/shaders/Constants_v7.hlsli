@@ -13,7 +13,7 @@
 #define BSDF_SAMPLES_GI 3
 
 // ___ DI Reuse ___
-#define TEMP_MCAP_DI 30
+#define TEMP_MCAP_DI 20
 
 #define SPAT_MCAP_DI 500
 #define SPAT_EXP_DI 1.0f
@@ -26,16 +26,16 @@
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 30
+#define TEMP_MCAP_GI 20
 
 #define SPAT_MCAP_GI 120
-#define SPAT_EXP_GI 1.3f
-#define SPAT_RAD_MAX_GI 32
-#define SPAT_RAD_MIN_GI 24
+#define SPAT_EXP_GI 1.0f
+#define SPAT_RAD_MAX_GI 16
+#define SPAT_RAD_MIN_GI 16
 
 #define SPAT_COUNT_MAX_GI 2
 #define SPAT_COUNT_MIN_GI 2
-#define SPAT_TRIS_GI 6
+#define SPAT_TRIS_GI 1
 
 #define SPAT_MIN_M_GI 5
 #define SPAT_BETA_GI 1.0f

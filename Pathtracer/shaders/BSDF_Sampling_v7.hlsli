@@ -17,7 +17,7 @@ SampleReturn SampleBSDF(
     ray.Origin = sdata.x1;
     ray.Direction = sample;
     ray.TMin = 0.001f;
-    ray.TMax = 10000;
+    ray.TMax = 10000.0f;
     HitInfo samplePayload;
     TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
 

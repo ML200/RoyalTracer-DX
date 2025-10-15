@@ -8,7 +8,7 @@ struct Reservoir_GI
     float3 L2_gi;
     float3 V2_gi;
 
-    float3 F_gi;
+    float F_gi;
     float4 J_gi;
     uint   lobe0_gi;
     uint   lobe1_gi;
@@ -236,7 +236,7 @@ bool UpdateReservoirGI(
     uint rSeed, // Seed used for replaying
     float4 J, // Jacobian of the path (basically just the sequential pdf of replayed path)
     uint rIndex, // Index of the reconnection vertex
-    in float3 F,         // cached contribution for the selected sample
+    in float F,         // cached contribution for the selected sample
     in uint   lobe0,     // lobe id for k
     in uint   lobe1,     // lobe id for k+1
     inout uint2 seed
@@ -303,7 +303,7 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store4(base + O_GI_PACK4, uint4(asuint(r.W_gi),
                                         r.rSeed_gi,
                                         rIndexAndLobes,
-                                        PackRGB9E5(r.F_gi)));
+                                        r.F_gi));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -334,7 +334,7 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     r.rIndex_gi  =  rIndexAndLobes        & 0x0000FFFFu;
     UnpackLobes16(lobes16, r.lobe0_gi, r.lobe1_gi);
 
-    r.F_gi      = UnpackRGB9E5(p4.w);
+    r.F_gi      = p4.w;
 
     r.w_sum_gi = 0.0f; // not stored in memory
     return r;
@@ -368,6 +368,12 @@ float4 load_J_gi (RWByteAddressBuffer b, uint id)
 
 float load_W_gi(RWByteAddressBuffer b, uint id)
 {return asfloat(b.Load4(pixelBaseAddrGI(id) + O_GI_PACK4).x); }
+
+inline float3 load_F_gi(RWByteAddressBuffer b, uint id)
+{
+    uint4 p4 = b.Load4(pixelBaseAddrGI(id) + O_GI_PACK4);
+    return p4.w;
+}
 
 inline void load_x2_n2_fast_gi(RWByteAddressBuffer b, uint id, uint obj,
                                out float3 x2, out float3 n2)
@@ -404,6 +410,6 @@ void   load_WSeedIndexLobes_F(RWByteAddressBuffer b, uint id,
     rIndex = v & 0xFFFFu;
     uint lobes16 = (v >> 16) & 0xFFFFu;
     UnpackLobes16(lobes16, l0, l1);
-    F = UnpackRGB9E5(p4.w);
+    F = p4.w;
 }
 

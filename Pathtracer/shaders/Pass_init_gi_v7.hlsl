@@ -187,7 +187,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
         reservoir.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_gi, reservoir.n2_gi, reservoir.V2_gi, reservoir.matID_gi, reservoir.J_gi.x);
-
+        reservoir.F_gi = p_hat_final;
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
 }

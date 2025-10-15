@@ -19,7 +19,7 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     RayDesc ray;
     ray.Origin = InitOrigin();
     ray.Direction = InitDirection(pixel, imgSize);
-    ray.TMin = 0.0001;
+    ray.TMin = 0.00001;
     ray.TMax = 10000;
 
     // Trace the camera ray

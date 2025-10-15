@@ -38,6 +38,8 @@ void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flat
 
 // Evaluate the BRDF for the given material
 float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance) {
+    if(dot(normal, -incoming) < 0.0f)
+        return (float3).0f;
     transmittance = 1.0f - materials[mID].Kd.w;
     // For Lambertian reflection, the BRDF is constant
     // BRDF = Kd / PI
@@ -46,6 +48,8 @@ float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 
 
 // Calculate the PDF for a given sample direction
 float BRDF_PDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
+    if(dot(normal, -incoming) < 0.0f)
+        return (float3).0f;
     // For cosine-weighted hemisphere sampling over a Lambertian surface
     return max(dot(normalize(normal), normalize(-incoming)), 0.0f) / PI;
 }

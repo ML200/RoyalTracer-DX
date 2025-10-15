@@ -5,16 +5,15 @@ newmtl Apple
 Kd 1.000000 0.100000 0.100000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
-d 1.000000
+d 1.00000
 illum 2
-Pr 1.000000
+Pr 0.100000
 Pm 0.000000
 Ps 0.000000
-Pc 0.400000
+Pc 0.000000
 Pcr 0.100000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/apple.jpg
 
 newmtl Black-Raught-Iron
 Kd 0.800000 0.800000 0.800000

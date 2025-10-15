@@ -143,6 +143,8 @@ inline void SampleBRDF_SHEEN(
 // BRDF eval: f = w * color * F * G * D / (4 N·V N·L); For sheen we take F~1
 inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)
 {
+    if(dot(normal, -incoming) < 0.0f)
+        return (float3).0f;
     float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z); // sheen weight
     if (w <= 0.0f) { transmittance = 1.0f; return 0.0.xxx; }
 
@@ -180,6 +182,8 @@ inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float
 
 inline float BRDF_PDF_SHEEN(uint /*mID*/, float3 N, float3 wi, float3 wo)
 {
+    if(dot(N, -wi) < 0.0f)
+        return (float3).0f;
     float3 V = normalize(wo);
     float3 L = normalize(-wi);
     float NdotL = max(0.0f, dot(N, L));

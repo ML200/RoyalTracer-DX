@@ -125,7 +125,7 @@ inline void SampleBTDF_GGX_TRANS(
     if (dot(V, H) < 0.0f) H = -H;
 
     // IORs for refraction (air <-> material)
-    float ior   = 2.5f;
+    float ior   = materials[mID].Ni;
     float NdotV = dot(N, V);
     bool  entering = (NdotV > 0.0f);
     float etaI = entering ? 1.0f : ior;
@@ -218,7 +218,7 @@ inline float BTDF_PDF_GGX_TRANS(uint mID, float3 N, float3 wi, float3 wo)
     float r     = materials[mID].Pr_Pm_Ps_Pc.x;
     float alpha = max(EPSILON, r * r);
 
-    float ior     = 2.5f;
+    float ior     = materials[mID].Ni;
     bool  entering = (NdotV > 0.0f);
     float etaI = entering ? 1.0f : ior;
     float etaT = entering ? ior : 1.0f;
