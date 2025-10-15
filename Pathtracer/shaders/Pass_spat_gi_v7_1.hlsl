@@ -54,8 +54,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
                         !RejectNormal_GI(sdata.n1, load_n1(g_sample_current, iID), 0.9f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1, 0.02f) &&
-                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.3f) &&
-                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.3f) &&
+                        !RejectLength_GI(rdi.x2_gi, rdi.n2_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
+                        !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_gi, load_x1(g_sample_current, iID), sdata.x1, 0.5f) &&
                         (load_matID(g_sample_current, iID) == sdata.matID));
                     if(candidateAcceptedGI){
                         nIds[i] = iID;
@@ -98,12 +98,12 @@ void main(uint3 tid : SV_DispatchThreadID)
         float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
         float mis_c = 0.0f;
-        /*if(rdi.M_gi <= SPAT_MIN_M_GI){
+        if(rdi.M_gi <= SPAT_MIN_M_GI){
             mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(M_sum_sym, p_c, M_c, nIds, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x, rdi.J_gi.y, SPAT_BETA_GI);
         }
-        else{*/
+        else{
             mis_c = PairwiseMIS_Canonical_Spat_GI(M_sum, p_c, M_c, nIds, rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi, rdi.J_gi.x, rdi.J_gi.y);
-        //}
+        }
         debug += mis_c;
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
@@ -122,9 +122,9 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float p_hat_from = GetPHat(contrib_n) * Jnn;
                 // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
                 float mis_n = 0.0f;
-                /*if(rdi.M_gi <= SPAT_MIN_M_GI)
+                if(rdi.M_gi <= SPAT_MIN_M_GI)
                     mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.J_gi.x, SPAT_BETA_GI);
-                else*/
+                else
                     mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.J_gi.x);
                 debug += mis_n;
                 // Calculate the sample weight
@@ -162,6 +162,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
         gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
+        gOutput[uint3(tid.xy, 0)] = float4(rdi.W_gi * 0.1f, rdi.W_gi* 0.1f, rdi.W_gi* 0.1f, 1.0f);
 
     }
     else
