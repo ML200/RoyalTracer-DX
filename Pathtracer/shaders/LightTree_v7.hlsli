@@ -297,6 +297,21 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
     return s;
 }
 
+// Path Guiding sampler
+LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout uint rng)
+{
+    // Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
+    float xi = RandomFloatSingle(rng);
+
+    float pdfT, pdfB, ...;
+
+    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
+    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
+
+    LT_Path_Sample s; s.dir = tri; s.pdf = pdfT * pdfB * ...;
+    return s;
+}
+
 // PDF
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {

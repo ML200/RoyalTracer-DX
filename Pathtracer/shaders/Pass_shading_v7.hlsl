@@ -9,7 +9,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     // Load the DI pipeline output
-    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
     float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
@@ -46,10 +46,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // show accumulated image
     float3 fColor = sRGBGammaCorrection(newAvg);
-    //gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
+    gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
     //override if target is real time undenoised
     float3 finalColor = sRGBGammaCorrection(accumulation);
-    gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
+    //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
 
     // Denoiser buffers etc.
     /*uint2  launchIndex   = DTid.xy;

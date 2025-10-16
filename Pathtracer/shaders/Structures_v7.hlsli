@@ -131,3 +131,4 @@ struct BlasRangeGpu {
 
 
 struct LT_Sample { uint id; float pdf; };
+struct LT_Path_Sample { float3 dir; float pdf; };
