@@ -129,3 +129,61 @@ SampleReturn SampleBSDF_gen(
     return sreturn;
 }
 #endif
+
+
+#ifdef ENABLE_RAY_QUERY_INLINE
+// Cone-guided alternative to BSDF sampling.
+// - Picks a direction from the projected cone (solid-angle pdf).
+// - Traces it.
+// - If it hits an emissive, returns zero (skip contribution).
+// - Otherwise fills SampleReturn with pdf_bsdf = cone pdf (ω), pdf_nee = 0.
+SampleReturn SampleBSDF_Cone_gen(
+    in float3 x1,
+    in float3 n1,
+    in uint   matID,     // unused here, but keep signature symmetric
+    in float3 o,         // outgoing at x1 (unused)
+    inout uint  waveSeed,
+    inout uint2 threadSeed)
+{
+    SampleReturn sreturn = (SampleReturn)0;
+
+    // 1) sample a direction from the LT projected cone
+    LT_Path_Sample g = LT_SampleGuidedPath(x1, n1, threadSeed.y);
+    float3 wi = g.dir;
+    if (all(wi == 0.0f)) return (SampleReturn)0;
+
+    // 2) trace it
+    RayDesc ray;
+    ray.Origin    = x1;
+    ray.Direction = wi;
+    ray.TMin      = 0.001f;
+    ray.TMax      = 10000.0f;
+
+    HitInfo hit;
+    TraceRayInline_HitInfo(SceneBVH, ray, hit, RAY_FLAG_NONE, 0xFF);
+
+    float3 Ke = materials[hit.materialID].Ke;
+
+    // 3) if we hit a light, discard sample entirely (no difficult pdfs)
+    if (any(Ke > 0.0f)) {
+        return (SampleReturn)0;
+    }
+
+    // 4) orient the hit normal toward the incoming light (for your J_prefix usage)
+    float3 LVec = x1 - hit.hitPosition;
+    float  dist = length(LVec);
+    float3 Ldir = (dist > 0.0f) ? (LVec / dist) : n1;
+    float  cosL = dot(hit.hitNormal, Ldir);
+    if (cosL < 0.0f) hit.hitNormal = -hit.hitNormal;
+
+    // 5) fill result
+    sreturn.x2       = hit.hitPosition;
+    sreturn.n2       = hit.hitNormal;
+    sreturn.L2       = Ke;                // will be zero (we already early-returned on emissive)
+    sreturn.objID    = hit.objID;
+    sreturn.matID    = hit.materialID;
+    sreturn.pdf_bsdf = g.pdf;             // treat cone pdf as the “BSDF leg” for MIS (solid angle)
+    sreturn.pdf_nee  = 0.0f;              // we never use NEE pdf on this path
+    return sreturn;
+}
+#endif

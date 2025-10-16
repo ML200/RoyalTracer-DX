@@ -10,7 +10,7 @@
 
 // ___ GI initial sampling ___
 #define NEE_SAMPLES_GI 1
-#define BSDF_SAMPLES_GI 3
+#define BSDF_SAMPLES_GI 1
 
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 30

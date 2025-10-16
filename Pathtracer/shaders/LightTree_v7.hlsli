@@ -297,20 +297,117 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
     return s;
 }
 
-// Path Guiding sampler
+//_____________________________________TEST________________________________________
+// ------------------------------------------------------------
+// Simple spherical-projection uniform sampler for a picked tri
+// Uses FULL bounding-sphere projection (θ = asin(r/d)), no hemisphere clipping.
+// ------------------------------------------------------------
+
+#ifndef LT_GUIDE_CLIP_HEMISPHERES
+#define LT_GUIDE_CLIP_HEMISPHERES 0   // keep 0 for this test
+#endif
+
+inline void LT_Onb(in float3 n, out float3 T, out float3 B)
+{
+    // robust ONB
+    float s = (n.z >= 0.0f) ? 1.0f : -1.0f;
+    float a = -1.0f / (s + n.z);
+    float b = n.x * n.y * a;
+    T = float3(1.0f + s*n.x*n.x*a, s*b, -s*n.x);
+    B = float3(b, s + n.y*n.y*a, -n.y);
+}
+
+struct DirPdf { float3 dir; float pdf; };
+
+inline DirPdf LT_SampleConeUniform(float3 axis, float cosThetaMax, float2 u)
+{
+    // uniform in solid angle over a cone with half-angle acos(cosThetaMax)
+    float z   = lerp(1.0f, cosThetaMax, u.x);   // uniform in cosθ
+    float s   = sqrt(max(0.0, 1.0 - z*z));
+    float phi = 2.0f * LT_PI * u.y;
+
+    float3 T,B; LT_Onb(axis, T, B);
+
+    DirPdf r;
+    r.dir = s*cos(phi)*T + s*sin(phi)*B + z*axis;
+    r.pdf = rcp(2.0f * LT_PI * (1.0f - cosThetaMax)); // 1 / Ω_cap  (sr^-1)
+    return r;
+}
+
+// World-space triangle props (center/normal/radius of bounding sphere)
+inline void LT_TriangleWorldProps(uint tri, uint objID,
+                                  out float3 cL, out float3 nL, out float rL)
+{
+    float3 v0 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].x, 1)).xyz;
+    float3 v1 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].y, 1)).xyz;
+    float3 v2 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].z, 1)).xyz;
+
+    cL = (v0 + v1 + v2) * (1.0/3.0);
+    nL = normalize(cross(v1 - v0, v2 - v0));
+    rL = max(max(length(v0 - cL), length(v1 - cL)), length(v2 - cL));
+}
+
+// Uniform-on-cap (from bounding sphere). Returns dir + solid-angle pdf.
+inline DirPdf LT_SampleTriangleProjectedCap(float3 x, float3 /*n_x*/,
+                                            float3 cL, float3 /*nL*/, float rL,
+                                            inout uint rng)
+{
+    float3 d    = cL - x;
+    float  dist = max(length(d), 1e-8);
+    float3 axis = d / dist;
+
+    // geometric angular radius from bounding sphere
+    float theta_geo = LT_SafeAsin(saturate(rL / dist));
+    float cosTheta  = cos(theta_geo);
+
+#if LT_GUIDE_CLIP_HEMISPHERES
+    // (disabled in this test)
+    float alphaShade = acos(saturate(dot(n_x, axis)));
+    float theta_ok   = max(0.0, (LT_PI*0.5) - alphaShade);
+    cosTheta = cos(min(theta_geo, theta_ok));
+#endif
+
+    if (cosTheta >= 1.0f - 1e-7f) {
+        DirPdf r; r.dir = 0.0.xxx; r.pdf = 0.0f; return r;
+    }
+
+    float2 u = float2(RandomFloatSingle(rng), RandomFloatSingle(rng));
+    return LT_SampleConeUniform(axis, cosTheta, u);
+}
+
+// ------------------------------------------------------------------
+// Light-tree guided sampler (full bounding-sphere projection).
+// Returns direction and SOLID-ANGLE pdf:
+//   s.pdf = p_select(tri | x,n) * p_cap_ω(dir | tri,x)
+// ------------------------------------------------------------------
 LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout uint rng)
 {
-    // Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
+    // 1) pick a triangle via TLAS/BLAS descent (stratified reuse of xi)
     float xi = RandomFloatSingle(rng);
-
-    float pdfT, pdfB, ...;
+    float pdfT, pdfB, pdfLeaf; // not used directly here
 
     uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
     LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
+    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfLeaf);
 
-    LT_Path_Sample s; s.dir = tri; s.pdf = pdfT * pdfB * ...;
+    // 2) selection MASS (dimensionless). Do NOT use area-measure here.
+    float p_select = pdfT*pdfB*pdfLeaf;
+
+    // 3) build bounding-sphere cone and sample
+    uint   objID = gLT_BLASToItem[blas];
+    float3 cL, nL; float rL;
+    LT_TriangleWorldProps(tri, objID, cL, nL, rL);
+
+    DirPdf cap = LT_SampleTriangleProjectedCap(worldPos, worldNormal, cL, nL, rL, rng);
+
+    // 4) output in solid angle
+    LT_Path_Sample s;
+    s.dir = cap.dir;
+    s.pdf = (cap.pdf > 0.0f) ? (p_select * cap.pdf) : 0.0f; // sr^-1
     return s;
 }
+//_____________________________________TEST________________________________________
+
 
 // PDF
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
