@@ -1,7 +1,3 @@
-#ifndef LT_LEAF_SAMPLER_MODE
-#define LT_LEAF_SAMPLER_MODE 1
-#endif
-
 Buffer<uint> gLT_TriToBLAS       : register(t16);
 Buffer<uint> gLT_TriToLeafOffset : register(t17);
 Buffer<uint> gLT_BLASToItem      : register(t18);
@@ -240,7 +236,6 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     uint base        = R.triIndexOffset + leaf.triFirst;
     uint count       = max(leaf.triCount, 1u);
 
-#if LT_LEAF_SAMPLER_MODE == 1
     // Uniform
     uint  k        = min((uint)floor(xi * count), count - 1u);
     uint  triIndex = gLT_LeafTriIndex[base + k];
@@ -252,33 +247,6 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     float width = 1.0 / (float)count;
     xi = saturate((xi - start) / width);
     return triIndex;
-
-#else
-    // Alias
-    LightBLASNodeGpu node = gLT_BLAS[R.nodeOffset + leaf.nodeIndex];
-    float sumW = max(node.power, 1e-20);
-
-    float scaled = xi * count;
-    uint  i0     = min((uint)floor(scaled), count - 1u);
-    float r      = frac(scaled);
-
-    uint  idx = base + i0;
-    float q   = gLT_LeafAliasProb[idx];
-    uint  a   = gLT_LeafAliasIdx [idx];
-
-    const bool takePrimary = (r < q);
-    uint  local    = takePrimary ? i0 : a;
-    uint  triIndex = gLT_LeafTriIndex[base + local];
-
-    float w = max(g_EmissiveTriangles[triIndex].weight, 0.0f);
-    pdfLeaf = (sumW > 0.0f) ? (w / sumW) : 0.0f;
-
-    // rescale xi within chosen branch
-    xi = takePrimary ? (r / max(q, 1e-20f))
-                     : ((r - q) / max(1.0f - q, 1e-20f));
-    xi = saturate(xi);
-    return triIndex;
-#endif
 }
 
 // TOP-LEVEL SAMPLER
@@ -298,112 +266,115 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 }
 
 //_____________________________________TEST________________________________________
-// ------------------------------------------------------------
-// Simple spherical-projection uniform sampler for a picked tri
-// Uses FULL bounding-sphere projection (θ = asin(r/d)), no hemisphere clipping.
-// ------------------------------------------------------------
 
-#ifndef LT_GUIDE_CLIP_HEMISPHERES
-#define LT_GUIDE_CLIP_HEMISPHERES 0   // keep 0 for this test
-#endif
-
-inline void LT_Onb(in float3 n, out float3 T, out float3 B)
+LT_Path_Sample LT_SampleExpBallSolidAngle(
+    float3 center,          // sphere center (triangle center)
+    float3 shadingPos,      // shading point
+    float  power,           // emissive power scalar
+    float  baseRadius,      // base sphere radius
+    float  beta,            // exponential falloff (>= 0)
+    inout uint rng)
 {
-    // robust ONB
-    float s = (n.z >= 0.0f) ? 1.0f : -1.0f;
-    float a = -1.0f / (s + n.z);
-    float b = n.x * n.y * a;
-    T = float3(1.0f + s*n.x*n.x*a, s*b, -s*n.x);
-    B = float3(b, s + n.y*n.y*a, -n.y);
-}
 
-struct DirPdf { float3 dir; float pdf; };
+    LT_Path_Sample s;
+    s.dir = float3(0,0,1);
+    s.pdf = 0.0f;
 
-inline DirPdf LT_SampleConeUniform(float3 axis, float cosThetaMax, float2 u)
-{
-    // uniform in solid angle over a cone with half-angle acos(cosThetaMax)
-    float z   = lerp(1.0f, cosThetaMax, u.x);   // uniform in cosθ
-    float s   = sqrt(max(0.0, 1.0 - z*z));
-    float phi = 2.0f * LT_PI * u.y;
+    // 1) Construct the sampling sphere: scale base radius by emissive power
+    float safePower = max(power, 1e-12f);
+    // Use cbrt so sphere V ∝ power (more stable than linear if power varies a lot)
+    float R = baseRadius * pow(safePower, 1.0f/3.0f);
+    if (R <= 0.0f) return s;
 
-    float3 T,B; LT_Onb(axis, T, B);
+    // --- Uniform direction on S^2 (for the ball centered at 'center') ---
+    float u1 = RandomFloatSingle(rng);
+    float u2 = RandomFloatSingle(rng);
+    float z  = 1.0f - 2.0f * u1;
+    float phi= 2.0f * PI * u2;
+    float rxy= sqrt(max(0.0f, 1.0f - z*z));
+    float3 dirC = float3(rxy * cos(phi), rxy * sin(phi), z);
 
-    DirPdf r;
-    r.dir = s*cos(phi)*T + s*sin(phi)*B + z*axis;
-    r.pdf = rcp(2.0f * LT_PI * (1.0f - cosThetaMax)); // 1 / Ω_cap  (sr^-1)
-    return r;
-}
+    // 2) Sample a radius inside the sphere with exponential scaling by beta
+    //    Target volume density q(x) ∝ exp(-beta * rho), where rho = ||x - center||, truncated to [0, R].
+    float rho = 0.0f;
+    float pV  = 0.0f; // volume pdf at the sampled point
 
-// World-space triangle props (center/normal/radius of bounding sphere)
-inline void LT_TriangleWorldProps(uint tri, uint objID,
-                                  out float3 cL, out float3 nL, out float rL)
-{
-    float3 v0 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].x, 1)).xyz;
-    float3 v1 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].y, 1)).xyz;
-    float3 v2 = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].z, 1)).xyz;
+    float b = max(beta, 0.0f);
+    if (b < 1e-6f)
+    {
+        // ~uniform volume (beta ≈ 0)
+        float u3 = RandomFloatSingle(rng);
+        rho = R * pow(u3, 1.0f/3.0f);
 
-    cL = (v0 + v1 + v2) * (1.0/3.0);
-    nL = normalize(cross(v1 - v0, v2 - v0));
-    rL = max(max(length(v0 - cL), length(v1 - cL)), length(v2 - cL));
-}
+        float V = (4.0f/3.0f) * PI * R*R*R;
+        pV = 1.0f / V;
+    }
+    else
+    {
+        // Truncated Gamma(α=3, rate=b): radial CDF in t=b*rho is
+        // F(t) = 1 - exp(-t) * (1 + t + 0.5 t^2), t ∈ [0, bR]
+        float tR = b * R;
+        float FR = 1.0f - exp(-tR) * (1.0f + tR + 0.5f * tR * tR);
 
-// Uniform-on-cap (from bounding sphere). Returns dir + solid-angle pdf.
-inline DirPdf LT_SampleTriangleProjectedCap(float3 x, float3 /*n_x*/,
-                                            float3 cL, float3 /*nL*/, float rL,
-                                            inout uint rng)
-{
-    float3 d    = cL - x;
-    float  dist = max(length(d), 1e-8);
-    float3 axis = d / dist;
+        // Invert y = F(t) via bisection (robust & branchless enough for shader use)
+        float u3 = RandomFloatSingle(rng);
+        float y  = u3 * FR;
 
-    // geometric angular radius from bounding sphere
-    float theta_geo = LT_SafeAsin(saturate(rL / dist));
-    float cosTheta  = cos(theta_geo);
+        float lo = 0.0f, hi = tR;
+        [unroll] for (int i = 0; i < 20; ++i)
+        {
+            float mid = 0.5f * (lo + hi);
+            float Fm  = 1.0f - exp(-mid) * (1.0f + mid + 0.5f * mid * mid);
+            bool goHi = (Fm < y);
+            lo = goHi ? mid : lo;
+            hi = goHi ? hi  : mid;
+        }
+        float t = 0.5f * (lo + hi);
+        rho = t / b;
 
-#if LT_GUIDE_CLIP_HEMISPHERES
-    // (disabled in this test)
-    float alphaShade = acos(saturate(dot(n_x, axis)));
-    float theta_ok   = max(0.0, (LT_PI*0.5) - alphaShade);
-    cosTheta = cos(min(theta_geo, theta_ok));
-#endif
-
-    if (cosTheta >= 1.0f - 1e-7f) {
-        DirPdf r; r.dir = 0.0.xxx; r.pdf = 0.0f; return r;
+        // Normalization constant for q(x) over the ball:
+        // Z = ∫_B exp(-b*rho) dV = 8π/b^3 * FR
+        float Z = (8.0f * PI / (b*b*b)) * max(FR, 1e-30f);
+        pV = exp(-t) / Z; // volume pdf at the sampled point
     }
 
-    float2 u = float2(RandomFloatSingle(rng), RandomFloatSingle(rng));
-    return LT_SampleConeUniform(axis, cosTheta, u);
+    // Sampled point in the ball
+    float3 x = center + rho * dirC;
+
+    // 3) Convert the volume pdf to solid-angle at the shading point by scaling with distance^2
+    float3 w   = x - shadingPos;
+    float  d2  = dot(w, w);
+    if (d2 <= 0.0f) return s;
+
+    float invLen = rsqrt(d2);
+    s.dir = w * invLen;
+
+    s.pdf = pV * d2;
+
+    return s;
 }
 
-// ------------------------------------------------------------------
-// Light-tree guided sampler (full bounding-sphere projection).
-// Returns direction and SOLID-ANGLE pdf:
-//   s.pdf = p_select(tri | x,n) * p_cap_ω(dir | tri,x)
-// ------------------------------------------------------------------
+float Lum_LT(float3 rgb){return dot(rgb, float3(0.2126, 0.7152, 0.0722));}
+float BoundingRadiusAtCenter(float3 center, float3 A, float3 B, float3 C){return max(max(distance(center, A), distance(center, B)), distance(center, C));}
+
 LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout uint rng)
 {
-    // 1) pick a triangle via TLAS/BLAS descent (stratified reuse of xi)
     float xi = RandomFloatSingle(rng);
-    float pdfT, pdfB, pdfLeaf; // not used directly here
+    float pdfT, pdfB, pdfLeaf;
 
     uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
     LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
     uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfLeaf);
-
-    // 2) selection MASS (dimensionless). Do NOT use area-measure here.
     float p_select = pdfT*pdfB*pdfLeaf;
 
-    // 3) build bounding-sphere cone and sample
-    uint   objID = gLT_BLASToItem[blas];
-    float3 cL, nL; float rL;
-    LT_TriangleWorldProps(tri, objID, cL, nL, rL);
+    float3 center = (g_EmissiveTriangles[tri].x + g_EmissiveTriangles[tri].y + g_EmissiveTriangles[tri].z) / 3.0f;
+    float3 power = Lum_LT(g_EmissiveTriangles[tri].emission);
+    float baseRad = BoundingRadiusAtCenter(center, g_EmissiveTriangles[tri].x, g_EmissiveTriangles[tri].y, g_EmissiveTriangles[tri].z);
 
-    DirPdf cap = LT_SampleTriangleProjectedCap(worldPos, worldNormal, cL, nL, rL, rng);
-
-    // 4) output in solid angle
-    LT_Path_Sample s;
-    s.dir = cap.dir;
-    s.pdf = (cap.pdf > 0.0f) ? (p_select * cap.pdf) : 0.0f; // sr^-1
+    // Here we sample the sphere around the given triangle uniformly
+    LT_Path_Sample s = LT_SampleExpBallSolidAngle(center, worldPos, power, baseRad, 2.0f, rng);
+    s.pdf *= p_select;
+    s.tri = tri;
     return s;
 }
 //_____________________________________TEST________________________________________
@@ -463,18 +434,9 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
         if (N.childCount == 0)
         {
-#if LT_LEAF_SAMPLER_MODE == 1
-            // UNIFORM pdf
             uint  count   = max(N.triCount, 1u);
             float pdfLeaf = 1.0f / (float)count;
             return pdfTLAS * pdfBLAS * pdfLeaf;
-#else
-            // ALIAS pdf
-            float sumW    = max(N.power, 1e-20f);
-            float wTri    = max(g_EmissiveTriangles[triIndex].weight, 0.0f);
-            float pdfLeaf = (sumW > 0.0f) ? (wTri / sumW) : 0.0f;
-            return pdfTLAS * pdfBLAS * pdfLeaf;
-#endif
         }
 
         // Find which child contains localIdx
@@ -512,6 +474,13 @@ inline float LT_TriangleArea(uint tri, uint objID)
 }
 
 inline float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
+{
+    float p_select = LT_PdfSelectTriangle(x, n, tri);
+    float area     = max(1e-10, LT_TriangleArea(tri, objID));
+    return p_select / area;
+}
+
+inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objID)
 {
     float p_select = LT_PdfSelectTriangle(x, n, tri);
     float area     = max(1e-10, LT_TriangleArea(tri, objID));

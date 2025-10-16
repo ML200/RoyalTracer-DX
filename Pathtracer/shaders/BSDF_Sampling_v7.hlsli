@@ -130,8 +130,6 @@ SampleReturn SampleBSDF_gen(
 }
 #endif
 
-
-#ifdef ENABLE_RAY_QUERY_INLINE
 // Cone-guided alternative to BSDF sampling.
 // - Picks a direction from the projected cone (solid-angle pdf).
 // - Traces it.
@@ -169,13 +167,6 @@ SampleReturn SampleBSDF_Cone_gen(
         return (SampleReturn)0;
     }
 
-    // 4) orient the hit normal toward the incoming light (for your J_prefix usage)
-    float3 LVec = x1 - hit.hitPosition;
-    float  dist = length(LVec);
-    float3 Ldir = (dist > 0.0f) ? (LVec / dist) : n1;
-    float  cosL = dot(hit.hitNormal, Ldir);
-    if (cosL < 0.0f) hit.hitNormal = -hit.hitNormal;
-
     // 5) fill result
     sreturn.x2       = hit.hitPosition;
     sreturn.n2       = hit.hitNormal;
@@ -183,7 +174,6 @@ SampleReturn SampleBSDF_Cone_gen(
     sreturn.objID    = hit.objID;
     sreturn.matID    = hit.materialID;
     sreturn.pdf_bsdf = g.pdf;             // treat cone pdf as the “BSDF leg” for MIS (solid angle)
-    sreturn.pdf_nee  = 0.0f;              // we never use NEE pdf on this path
+    sreturn.pdf_nee  = g.tri;              // we never use NEE pdf on this path
     return sreturn;
 }
-#endif

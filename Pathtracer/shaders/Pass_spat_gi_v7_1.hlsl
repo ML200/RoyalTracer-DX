@@ -154,7 +154,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.W_gi = 0.0f;
 
         // Store the final output
-        gScratchPing[uint3(tid.xy, 2)] = float4(contrib_final * rdi.W_gi, 0);
+        //gScratchPing[uint3(tid.xy, 2)] = float4(contrib_final * rdi.W_gi, 0);
 
         // DEBUG
         /*float3 heat;

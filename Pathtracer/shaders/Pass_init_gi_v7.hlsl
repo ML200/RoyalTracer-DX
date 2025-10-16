@@ -56,7 +56,6 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // For reconnection shift, this is easy
         float J_prefix = result_init.pdf_bsdf * dot(normalize(-ldir), normalize(result_init.n2)) / dist2;
-
         for(int i = 0; i < BSDF_SAMPLES_GI; i++){
             {
                 // NEE samples
@@ -186,6 +185,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
         reservoir.J_gi.y = PSSJacobian(sdata.x1, sdata.n1, sdata.o, sdata.matID, reservoir.x2_gi, reservoir.n2_gi, reservoir.V2_gi, reservoir.matID_gi, reservoir.J_gi.x);
         reservoir.F_gi = p_hat_final;
+        reservoir.J_gi.z = result_init.pdf_nee;
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
 }
