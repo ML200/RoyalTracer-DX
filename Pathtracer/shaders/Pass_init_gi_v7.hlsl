@@ -25,6 +25,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Get a sample
     SampleReturn result_init = SampleBSDF_Cone_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
 
+float3 debug = 0.0f;
 
     if(length(result_init.n2) > 0.0f && length(result_init.L2) == 0.0f){
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
@@ -69,6 +70,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                         float w_mis = MIS_Initial_NEE(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat;
 
                         //length(result.x2 - position) < 1.0f ? w_mis = 0.0f : w_mis = w_mis;
+debug += c * tp_full * result.L2 * VisibilityCheckCP(position, result.x2, normal);
 
                         if(isnan(w_mis))
                             w_mis = 0.0f;
@@ -111,6 +113,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 if(any(result.L2 > 0.0f)){
                     tp_full *= c;
                     float p_hat = GetPHat(tp_full * result.L2);
+debug += tp_full * result.L2;
                     float w_mis = MIS_Initial_BSDF(result.pdf_nee, result.pdf_bsdf, NEE_SAMPLES_GI, 1) * p_hat;
                     if(isnan(w_mis) || isinf(w_mis))
                         w_mis = 0.0f;
@@ -188,4 +191,5 @@ void main(uint3 tid : SV_DispatchThreadID)
         reservoir.J_gi.z = result_init.pdf_nee;
     }
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
+gScratchPing[uint3(tid.xy, 2)] = float4(debug, 0.0f);
 }

@@ -265,120 +265,6 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
     return s;
 }
 
-//_____________________________________TEST________________________________________
-
-LT_Path_Sample LT_SampleExpBallSolidAngle(
-    float3 center,          // sphere center (triangle center)
-    float3 shadingPos,      // shading point
-    float  power,           // emissive power scalar
-    float  baseRadius,      // base sphere radius
-    float  beta,            // exponential falloff (>= 0)
-    inout uint rng)
-{
-
-    LT_Path_Sample s;
-    s.dir = float3(0,0,1);
-    s.pdf = 0.0f;
-
-    // 1) Construct the sampling sphere: scale base radius by emissive power
-    float safePower = max(power, 1e-12f);
-    // Use cbrt so sphere V ∝ power (more stable than linear if power varies a lot)
-    float R = baseRadius * pow(safePower, 1.0f/3.0f);
-    if (R <= 0.0f) return s;
-
-    // --- Uniform direction on S^2 (for the ball centered at 'center') ---
-    float u1 = RandomFloatSingle(rng);
-    float u2 = RandomFloatSingle(rng);
-    float z  = 1.0f - 2.0f * u1;
-    float phi= 2.0f * PI * u2;
-    float rxy= sqrt(max(0.0f, 1.0f - z*z));
-    float3 dirC = float3(rxy * cos(phi), rxy * sin(phi), z);
-
-    // 2) Sample a radius inside the sphere with exponential scaling by beta
-    //    Target volume density q(x) ∝ exp(-beta * rho), where rho = ||x - center||, truncated to [0, R].
-    float rho = 0.0f;
-    float pV  = 0.0f; // volume pdf at the sampled point
-
-    float b = max(beta, 0.0f);
-    if (b < 1e-6f)
-    {
-        // ~uniform volume (beta ≈ 0)
-        float u3 = RandomFloatSingle(rng);
-        rho = R * pow(u3, 1.0f/3.0f);
-
-        float V = (4.0f/3.0f) * PI * R*R*R;
-        pV = 1.0f / V;
-    }
-    else
-    {
-        // Truncated Gamma(α=3, rate=b): radial CDF in t=b*rho is
-        // F(t) = 1 - exp(-t) * (1 + t + 0.5 t^2), t ∈ [0, bR]
-        float tR = b * R;
-        float FR = 1.0f - exp(-tR) * (1.0f + tR + 0.5f * tR * tR);
-
-        // Invert y = F(t) via bisection (robust & branchless enough for shader use)
-        float u3 = RandomFloatSingle(rng);
-        float y  = u3 * FR;
-
-        float lo = 0.0f, hi = tR;
-        [unroll] for (int i = 0; i < 20; ++i)
-        {
-            float mid = 0.5f * (lo + hi);
-            float Fm  = 1.0f - exp(-mid) * (1.0f + mid + 0.5f * mid * mid);
-            bool goHi = (Fm < y);
-            lo = goHi ? mid : lo;
-            hi = goHi ? hi  : mid;
-        }
-        float t = 0.5f * (lo + hi);
-        rho = t / b;
-
-        // Normalization constant for q(x) over the ball:
-        // Z = ∫_B exp(-b*rho) dV = 8π/b^3 * FR
-        float Z = (8.0f * PI / (b*b*b)) * max(FR, 1e-30f);
-        pV = exp(-t) / Z; // volume pdf at the sampled point
-    }
-
-    // Sampled point in the ball
-    float3 x = center + rho * dirC;
-
-    // 3) Convert the volume pdf to solid-angle at the shading point by scaling with distance^2
-    float3 w   = x - shadingPos;
-    float  d2  = dot(w, w);
-    if (d2 <= 0.0f) return s;
-
-    float invLen = rsqrt(d2);
-    s.dir = w * invLen;
-
-    s.pdf = pV * d2;
-
-    return s;
-}
-
-float Lum_LT(float3 rgb){return dot(rgb, float3(0.2126, 0.7152, 0.0722));}
-float BoundingRadiusAtCenter(float3 center, float3 A, float3 B, float3 C){return max(max(distance(center, A), distance(center, B)), distance(center, C));}
-
-LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout uint rng)
-{
-    float xi = RandomFloatSingle(rng);
-    float pdfT, pdfB, pdfLeaf;
-
-    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
-    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
-    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfLeaf);
-    float p_select = pdfT*pdfB*pdfLeaf;
-
-    float3 center = (g_EmissiveTriangles[tri].x + g_EmissiveTriangles[tri].y + g_EmissiveTriangles[tri].z) / 3.0f;
-    float3 power = Lum_LT(g_EmissiveTriangles[tri].emission);
-    float baseRad = BoundingRadiusAtCenter(center, g_EmissiveTriangles[tri].x, g_EmissiveTriangles[tri].y, g_EmissiveTriangles[tri].z);
-
-    // Here we sample the sphere around the given triangle uniformly
-    LT_Path_Sample s = LT_SampleExpBallSolidAngle(center, worldPos, power, baseRad, 2.0f, rng);
-    s.pdf *= p_select;
-    s.tri = tri;
-    return s;
-}
-//_____________________________________TEST________________________________________
-
 
 // PDF
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
@@ -486,3 +372,91 @@ inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objI
     float area     = max(1e-10, LT_TriangleArea(tri, objID));
     return p_select / area;
 }
+
+//_____________________________________TEST________________________________________
+float Lum_LT(float3 rgb){ return dot(rgb, float3(0.2126, 0.7152, 0.0722)); }
+float BoundingRadiusAtCenter(float3 center, float3 A, float3 B, float3 C)
+{
+    return max(max(distance(center, A), distance(center, B)), distance(center, C));
+}
+
+void MakeONB(in float3 n, out float3 t, out float3 b){
+    float s = n.z >= 0.0f ? 1.0f : -1.0f;
+    float a = -1.0f / (s + n.z);
+    float bxy = n.x * n.y * a;
+    t = float3(1.0f + s * n.x * n.x * a, s * bxy, -s * n.x);
+    b = float3(bxy, s + n.y * n.y * a, -n.y);
+}
+
+float3 SampleConeUniform(float3 axis, float cosThetaMax, float u1, float u2, out float pdf)
+{
+    axis = normalize(axis);
+    float oneMinus = 1.0f - clamp(cosThetaMax, -1.0f, 1.0f);
+    float cosTheta = 1.0f - u1 * oneMinus;
+    float sinTheta = sqrt(saturate(1.0f - cosTheta*cosTheta));
+    float phi = 2.0f * PI * u2;
+
+    float3 T, B; MakeONB(axis, T, B);
+    float3 w = sinTheta*cos(phi)*T + sinTheta*sin(phi)*B + cosTheta*axis;
+
+    float omega = 2.0f * PI * oneMinus;   // solid angle of the cap
+    pdf = (omega > 0.0f) ? (1.0f / omega) : 0.0f;
+    return normalize(w);
+}
+
+LT_Path_Sample LT_SampleConeToTriCenter(
+    float3 center, float3 shadingPos, float power, float baseRadius, inout uint rng)
+{
+    LT_Path_Sample s; s.dir = 0; s.pdf = 0.0f; s.tri = 0;
+
+    float safePower = max(power, 1e-12f);
+    float R = baseRadius * pow(safePower, 1.0f/3.0f);
+    if (R <= 0.0f) return s;
+
+    float3 axis = center - shadingPos;
+    float  L2   = dot(axis, axis); if (L2 <= 0.0f) return s;
+    float  L    = sqrt(L2);
+
+    float u1 = RandomFloatSingle(rng);
+    float u2 = RandomFloatSingle(rng);
+
+    if (L <= R) {
+        // full sphere
+        float z = 1.0f - 2.0f * u1;
+        float r = sqrt(max(0.0f, 1.0f - z*z));
+        float phi = 2.0f * PI * u2;
+        s.dir = float3(r*cos(phi), r*sin(phi), z);
+        s.pdf = 1.0f / (4.0f*PI);
+    } else {
+        float sinThetaMax = saturate(R / L);
+        float cosThetaMax = sqrt(saturate(1.0f - sinThetaMax*sinThetaMax));
+        s.dir = SampleConeUniform(axis, cosThetaMax, u1, u2, s.pdf);
+    }
+    return s;
+}
+
+LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout uint rng)
+{
+    float xi = RandomFloatSingle(rng);
+    float pdfT, pdfB, pdfLeaf;
+
+    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
+    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
+    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfLeaf);
+    float  p_select = pdfT * pdfB * pdfLeaf;
+
+    float3 center  = (g_EmissiveTriangles[tri].x + g_EmissiveTriangles[tri].y + g_EmissiveTriangles[tri].z) / 3.0f;
+    float  power   = Lum_LT(g_EmissiveTriangles[tri].emission);
+    float  baseRad = BoundingRadiusAtCenter(center,
+                         g_EmissiveTriangles[tri].x,
+                         g_EmissiveTriangles[tri].y,
+                         g_EmissiveTriangles[tri].z);
+
+    LT_Path_Sample s = LT_SampleConeToTriCenter(center, worldPos, power, baseRad, rng);
+
+    // Final solid-angle pdf of this technique (conditioned on chosen tri):
+    s.pdf *= p_select * 16.0f;
+    s.tri  = tri;
+    return s;
+}
+//_____________________________________TEST________________________________________
