@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"bistro.obj", "sky.obj"/*, "screwLight.obj"*/};
+    std::vector<std::string> models = {"pgTest2.obj", "sky.obj"/*, "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);

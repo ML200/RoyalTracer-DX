@@ -446,7 +446,7 @@ LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout ui
     float  p_select = pdfT * pdfB * pdfLeaf;
 
     float3 center  = (g_EmissiveTriangles[tri].x + g_EmissiveTriangles[tri].y + g_EmissiveTriangles[tri].z) / 3.0f;
-    float  power   = Lum_LT(g_EmissiveTriangles[tri].emission);
+    float  power   = Lum_LT(g_EmissiveTriangles[tri].emission)*10.0f;
     float  baseRad = BoundingRadiusAtCenter(center,
                          g_EmissiveTriangles[tri].x,
                          g_EmissiveTriangles[tri].y,
@@ -455,7 +455,7 @@ LT_Path_Sample LT_SampleGuidedPath(float3 worldPos, float3 worldNormal, inout ui
     LT_Path_Sample s = LT_SampleConeToTriCenter(center, worldPos, power, baseRad, rng);
 
     // Final solid-angle pdf of this technique (conditioned on chosen tri):
-    s.pdf *= p_select * 16.0f;
+    s.pdf *= p_select;
     s.tri  = tri;
     return s;
 }
