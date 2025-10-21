@@ -289,7 +289,7 @@ private:
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 16;       // triangles per BLAS leaf
+        uint32_t maxLeafTris = 1;       // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
         uint32_t buildBins   = 64;       // spatial bin count for SAOH
         enum class Heuristic { SAOH, SAH }; // What heuristic should we use?
@@ -346,63 +346,42 @@ public:
 
     void UploadAll(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList){
         LT_TIME_SCOPE(L"UploadAll()");
-        std::vector<LightBLASNodeGpu> gpuBlasNodes; gpuBlasNodes.reserve(totalBLASNodeCount());
+        std::vector<LightBLASNodeGpu> gpuBlasNodes;    gpuBlasNodes.reserve(totalBLASNodeCount());
         std::vector<uint32_t>         gpuLeafTriIndex; gpuLeafTriIndex.reserve(totalLeafIndexCount());
-        std::vector<BlasRangeGpu>     gpuRanges; gpuRanges.reserve(m_blas.size());
-        std::vector<float>            gpuLeafAliasProb; gpuLeafAliasProb.reserve(totalLeafIndexCount());
-        std::vector<uint32_t>         gpuLeafAliasIdx;  gpuLeafAliasIdx.reserve(totalLeafIndexCount());
+        std::vector<BlasRangeGpu>     gpuRanges;       gpuRanges.reserve(m_blas.size());
 
-        auto buildLeafAliasForBLAS = [&](const BLASBuild& b,
-                                         std::vector<float>& outProb,
-                                         std::vector<uint32_t>& outIdx){
-            outProb.clear(); outIdx.clear(); outProb.resize(b.leafTriList.size()); outIdx.resize(b.leafTriList.size());
-            for (const auto& n : b.nodes){ if (!n.isLeaf()) continue; const uint32_t first = n.triFirst, count = n.triCount; if (count==0) continue;
-                float sum = 0.f; for (uint32_t i=0;i<count;++i) sum += (*m_tris)[ b.leafTriList[first+i] ].weight;
-                if (sum <= 0.f){ for (uint32_t i=0;i<count;++i){ outProb[first+i] = 1.f; outIdx[first+i] = i; } continue; }
-                std::vector<float> scaled(count); for (uint32_t i=0;i<count;++i){ float p = (*m_tris)[ b.leafTriList[first+i] ].weight / sum; scaled[i] = p * count; }
-                std::vector<uint32_t> smallL, largeL; smallL.reserve(count); largeL.reserve(count);
-                for (uint32_t k=0;k<count;++k) (scaled[k] < 1.f ? smallL : largeL).push_back(k);
-                while(!smallL.empty() && !largeL.empty()){
-                    uint32_t s = smallL.back(); smallL.pop_back(); uint32_t l = largeL.back(); largeL.pop_back();
-                    outProb[first+s] = scaled[s]; outIdx[first+s] = l; scaled[l] = (scaled[l] + scaled[s]) - 1.f;
-                    (scaled[l] < 1.f ? smallL : largeL).push_back(l);
-                }
-                for (uint32_t k: largeL){ outProb[first+k] = 1.f; outIdx[first+k] = k; }
-                for (uint32_t k: smallL){ outProb[first+k] = 1.f; outIdx[first+k] = k; }
-            }
-        };
-
+        // Gather BLAS data (nodes, leaf tri indices, per-BLAS ranges)
         for (const auto& b : m_blas){
-            BlasRangeGpu r{}; r.nodeOffset = static_cast<uint32_t>(gpuBlasNodes.size());
-            r.nodeCount  = static_cast<uint32_t>(b.nodes.size());
-            r.triIndexOffset = static_cast<uint32_t>(gpuLeafTriIndex.size());
-            r.triIndexCount  = static_cast<uint32_t>(b.leafTriList.size());
-            for (const auto& n : b.nodes) gpuBlasNodes.push_back(toGpu(n));
+            BlasRangeGpu r{};
+            r.nodeOffset    = static_cast<uint32_t>(gpuBlasNodes.size());
+            r.nodeCount     = static_cast<uint32_t>(b.nodes.size());
+            r.triIndexOffset= static_cast<uint32_t>(gpuLeafTriIndex.size());
+            r.triIndexCount = static_cast<uint32_t>(b.leafTriList.size());
+
+            for (const auto& n : b.nodes)
+                gpuBlasNodes.push_back(toGpu(n));
+
             gpuLeafTriIndex.insert(gpuLeafTriIndex.end(), b.leafTriList.begin(), b.leafTriList.end());
-            std::vector<float> localProb; std::vector<uint32_t> localIdx; buildLeafAliasForBLAS(b, localProb, localIdx);
-            gpuLeafAliasProb.insert(gpuLeafAliasProb.end(), localProb.begin(), localProb.end());
-            gpuLeafAliasIdx .insert(gpuLeafAliasIdx .end(), localIdx .begin(),  localIdx .end());
             gpuRanges.push_back(r);
         }
 
         // TLAS
         std::vector<LightTLASNodeGpu> gpuTlasNodes(m_tlas.size());
-        for (size_t i=0;i<m_tlas.size();++i) gpuTlasNodes[i] = m_tlas[i];
+        for (size_t i = 0; i < m_tlas.size(); ++i)
+            gpuTlasNodes[i] = m_tlas[i];
 
-        // Stats
+        // Stats (no alias tables anymore)
         LT_LOG(L"UploadAll: BLASNodes=" << gpuBlasNodes.size()
               << L", LeafTriIndex=" << gpuLeafTriIndex.size()
-              << L", LeafAliasProb/Idx=" << gpuLeafAliasProb.size()
               << L", BLASRanges=" << gpuRanges.size()
               << L", TLASNodes=" << gpuTlasNodes.size());
         const auto KiB = [](uint64_t b){ return b/1024.0; };
         LT_LOG(L"  sizes: TLAS="   << KiB(gpuTlasNodes.size()*sizeof(LightTLASNodeGpu))  << L" KiB"
               << L", BLAS="        << KiB(gpuBlasNodes.size()*sizeof(LightBLASNodeGpu))  << L" KiB"
               << L", Ranges="      << KiB(gpuRanges.size()*sizeof(BlasRangeGpu))         << L" KiB"
-              << L", LeafIdx="     << KiB(gpuLeafTriIndex.size()*sizeof(uint32_t))       << L" KiB"
-              << L", LeafAliasP="  << KiB(gpuLeafAliasProb.size()*sizeof(float))         << L" KiB"
-              << L", LeafAliasI="  << KiB(gpuLeafAliasIdx.size()*sizeof(uint32_t))       << L" KiB");
+              << L", LeafIdx="     << KiB(gpuLeafTriIndex.size()*sizeof(uint32_t))       << L" KiB");
 
+        // Lookup tables
         std::vector<uint32_t> triToBLAS(m_tris ? m_tris->size() : 0, 0xFFFFFFFFu);
         std::vector<uint32_t> triToLeafOff(m_tris ? m_tris->size() : 0, 0);
 
@@ -415,13 +394,12 @@ public:
             }
         }
 
+        // Upload everything (alias buffers removed)
         m_gpu = {};
-        m_gpu.BLASNodes     = uploadVector(device, cmdList, gpuBlasNodes);
-        m_gpu.LeafTriIndex  = uploadVector(device, cmdList, gpuLeafTriIndex);
-        m_gpu.BLASRanges    = uploadVector(device, cmdList, gpuRanges);
-        m_gpu.TLASNodes     = uploadVector(device, cmdList, gpuTlasNodes);
-        if (!gpuLeafAliasProb.empty()) m_gpu.LeafAliasProb = uploadVector(device, cmdList, gpuLeafAliasProb);
-        if (!gpuLeafAliasIdx .empty()) m_gpu.LeafAliasIdx  = uploadVector(device, cmdList, gpuLeafAliasIdx);
+        m_gpu.BLASNodes       = uploadVector(device, cmdList, gpuBlasNodes);
+        m_gpu.LeafTriIndex    = uploadVector(device, cmdList, gpuLeafTriIndex);
+        m_gpu.BLASRanges      = uploadVector(device, cmdList, gpuRanges);
+        m_gpu.TLASNodes       = uploadVector(device, cmdList, gpuTlasNodes);
         m_gpu.TriToBLAS       = uploadVector(device, cmdList, triToBLAS);
         m_gpu.TriToLeafOffset = uploadVector(device, cmdList, triToLeafOff);
         m_gpu.BLASToItem      = uploadVector(device, cmdList, m_blasToItem);
@@ -430,34 +408,62 @@ public:
     void WriteSrvs(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const {
         LT_TIME_SCOPE(L"WriteSrvs()");
         const UINT inc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
         auto makeBufSrv = [&](ID3D12Resource* res, UINT numElems, UINT stride, DXGI_FORMAT fmt, D3D12_CPU_DESCRIPTOR_HANDLE h){
             D3D12_SHADER_RESOURCE_VIEW_DESC d{}; d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            if (stride==0){ d.Format = fmt; d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                d.Buffer.FirstElement = 0; d.Buffer.NumElements = numElems; d.Buffer.StructureByteStride = 0; d.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; }
-            else { d.Format = DXGI_FORMAT_UNKNOWN; d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-                d.Buffer.FirstElement = 0; d.Buffer.NumElements = numElems; d.Buffer.StructureByteStride = stride; d.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE; }
+            if (stride==0){
+                d.Format = fmt; d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                d.Buffer.FirstElement = 0; d.Buffer.NumElements = numElems; d.Buffer.StructureByteStride = 0; d.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+            } else {
+                d.Format = DXGI_FORMAT_UNKNOWN; d.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+                d.Buffer.FirstElement = 0; d.Buffer.NumElements = numElems; d.Buffer.StructureByteStride = stride; d.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+            }
             device->CreateShaderResourceView(res, &d, h);
         };
-        {
-            D3D12_RESOURCE_DESC rd = m_gpu.TLASNodes->GetDesc(); const UINT n = static_cast<UINT>(rd.Width / sizeof(LightTLASNodeGpu));
-            LT_LOG(L"WriteSrvs: TLASNodes count=" << n); makeBufSrv(m_gpu.TLASNodes.Get(), n, sizeof(LightTLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+
+        // Only write descriptors for resources that exist.
+        if (m_gpu.TLASNodes) {
+            D3D12_RESOURCE_DESC rd = m_gpu.TLASNodes->GetDesc();
+            const UINT n = static_cast<UINT>(rd.Width / sizeof(LightTLASNodeGpu));
+            LT_LOG(L"WriteSrvs: TLASNodes count=" << n);
+            makeBufSrv(m_gpu.TLASNodes.Get(), n, sizeof(LightTLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+            dst.ptr += inc;
+        } else {
+            LT_WARN(L"WriteSrvs: TLASNodes is null, skipping SRV.");
         }
-        dst.ptr += inc;
-        {
-            D3D12_RESOURCE_DESC rd = m_gpu.BLASNodes->GetDesc(); const UINT n = static_cast<UINT>(rd.Width / sizeof(LightBLASNodeGpu));
-            LT_LOG(L"WriteSrvs: BLASNodes count=" << n); makeBufSrv(m_gpu.BLASNodes.Get(), n, sizeof(LightBLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+
+        if (m_gpu.BLASNodes) {
+            D3D12_RESOURCE_DESC rd = m_gpu.BLASNodes->GetDesc();
+            const UINT n = static_cast<UINT>(rd.Width / sizeof(LightBLASNodeGpu));
+            LT_LOG(L"WriteSrvs: BLASNodes count=" << n);
+            makeBufSrv(m_gpu.BLASNodes.Get(), n, sizeof(LightBLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+            dst.ptr += inc;
+        } else {
+            LT_WARN(L"WriteSrvs: BLASNodes is null, skipping SRV.");
         }
-        dst.ptr += inc;
-        {
-            D3D12_RESOURCE_DESC rd = m_gpu.BLASRanges->GetDesc(); const UINT n = static_cast<UINT>(rd.Width / sizeof(BlasRangeGpu));
-            LT_LOG(L"WriteSrvs: BLASRanges count=" << n); makeBufSrv(m_gpu.BLASRanges.Get(), n, sizeof(BlasRangeGpu), DXGI_FORMAT_UNKNOWN, dst);
+
+        if (m_gpu.BLASRanges) {
+            D3D12_RESOURCE_DESC rd = m_gpu.BLASRanges->GetDesc();
+            const UINT n = static_cast<UINT>(rd.Width / sizeof(BlasRangeGpu));
+            LT_LOG(L"WriteSrvs: BLASRanges count=" << n);
+            makeBufSrv(m_gpu.BLASRanges.Get(), n, sizeof(BlasRangeGpu), DXGI_FORMAT_UNKNOWN, dst);
+            dst.ptr += inc;
+        } else {
+            LT_WARN(L"WriteSrvs: BLASRanges is null, skipping SRV.");
         }
-        dst.ptr += inc;
-        {
-            D3D12_RESOURCE_DESC rd = m_gpu.LeafTriIndex->GetDesc(); const UINT n = static_cast<UINT>(rd.Width / 4);
-            LT_LOG(L"WriteSrvs: LeafTriIndex count=" << n); makeBufSrv(m_gpu.LeafTriIndex.Get(), n, 0, DXGI_FORMAT_R32_UINT, dst);
+
+        if (m_gpu.LeafTriIndex) {
+            D3D12_RESOURCE_DESC rd = m_gpu.LeafTriIndex->GetDesc();
+            const UINT n = static_cast<UINT>(rd.Width / 4);
+            LT_LOG(L"WriteSrvs: LeafTriIndex count=" << n);
+            makeBufSrv(m_gpu.LeafTriIndex.Get(), n, 0, DXGI_FORMAT_R32_UINT, dst);
+            dst.ptr += inc;
+        } else {
+            LT_WARN(L"WriteSrvs: LeafTriIndex is null, skipping SRV.");
         }
     }
+
+
 
     void WriteAliasSrvs(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const {
         LT_TIME_SCOPE(L"WriteAliasSrvs()");
@@ -570,7 +576,10 @@ private:
         LT_LOG(L"buildBLASes: groups=" << groups.size());
         m_blas.clear(); m_blas.reserve(groups.size());
         for (auto& kv : groups){ const auto& idxs = kv.second; LT_LOG(L"  BLAS[" << kv.first << L"] tris=" << idxs.size());
-            BLASBuild b; b.triIndices = idxs; b.nodes.reserve(idxs.size()*2);
+            BLASBuild b;
+            b.triIndices = idxs;
+            // Slightly generous reserve to reduce chance of reallocation during recursion.
+            b.nodes.reserve(static_cast<size_t>(idxs.size()) * 2u + 32u);
             std::vector<TmpTri> tmp; tmp.reserve(idxs.size());
 
             for (uint32_t j=0;j<idxs.size();++j){
@@ -608,11 +617,14 @@ private:
             // SAOH build
             buildBLASRecursive_SAOH(tmp, b, 0, static_cast<uint32_t>(tmp.size()));
             // stats
-            uint32_t leafs = 0, inner = 0; for (const auto& n : b.nodes) (n.isLeaf() ? leafs : inner)++; LT_LOG(L"    nodes=" << b.nodes.size() << L" (inner=" << inner << L", leaf=" << leafs << L")"
+            uint32_t leafs = 0, inner = 0;
+            for (const auto& n : b.nodes) (n.isLeaf() ? leafs : inner)++;
+            LT_LOG(L"    nodes=" << b.nodes.size() << L" (inner=" << inner << L", leaf=" << leafs << L")"
                 << L", leafTriIndexCount=" << b.leafTriList.size());
             m_blas.push_back(std::move(b));
         }
     }
+
 
     struct Agg { bool valid=false; Aabb a; float E=0; Cone cone{}; uint32_t N=0; float sumP=0.f; float sumP2=0.f; };
 
@@ -622,29 +634,37 @@ private:
     static void aggMerge(Agg& A, const Agg& B){ if (!B.valid) return; if (!A.valid){ A=B; return; } A.a = unionAabb(A.a, B.a); A.E+=B.E; A.cone=coneUnion(A.cone,B.cone); A.N+=B.N; A.sumP+=B.sumP; A.sumP2+=B.sumP2; }
 
     uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out,
-                                     uint32_t begin, uint32_t end)
+                                 uint32_t begin, uint32_t end)
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size());
         out.nodes.emplace_back();
-        BLASNode& N = out.nodes.back();
+
+        auto nodeAt = [&](uint32_t i) -> BLASNode& { return out.nodes[i]; };
+        BLASNode& N0 = nodeAt(nodeIdx);
 
         // Aggregate parent
         Agg parent{};
         for (uint32_t i = begin; i < end; ++i) aggAdd(parent, tmp[i]);
 
-        N.aabb = parent.a; N.power = parent.E; N.cone = parent.cone;
-        N.primCount = parent.N; N.sumPower = parent.sumP; N.sumPowerSq = parent.sumP2;
+        // Write aggregate to the freshly created node
+        N0.aabb = parent.a;
+        N0.power = parent.E;
+        N0.cone = parent.cone;
+        N0.primCount = parent.N;
+        N0.sumPower = parent.sumP;
+        N0.sumPowerSq = parent.sumP2;
 
         const uint32_t count = end - begin;
         if (count <= m_cfg.maxLeafTris) {
-            N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
-            N.triCount = count;
+            N0.triFirst = static_cast<uint32_t>(out.leafTriList.size());
+            N0.triCount = count;
             for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
-            N.firstChild = 0xFFFFFFFF; N.childCount = 0; //leaf
+            N0.firstChild = 0xFFFFFFFF;
+            N0.childCount = 0; // leaf
             return nodeIdx;
         }
 
-        //helper find a binary SAOH split on [b0,e0)
+        // helper: find a binary SAOH split on [b0,e0)
         auto findBinarySplit = [&](uint32_t b0, uint32_t e0,
                                    int& axisOut, float& splitPosOut, uint32_t& midOut)->bool
         {
@@ -693,12 +713,9 @@ private:
                     if (!L.valid || !R.valid) continue;
 
                     float ML  = aabbSurfaceArea(L.a),  MR  = aabbSurfaceArea(R.a);
-
-                    // SAOH bits (already computed above)
                     float MoL = orientationMeasure(L.cone);
                     float MoR = orientationMeasure(R.cone);
 
-                    // Choose heuristic
                     float cost;
                     if (m_cfg.heuristic == Settings::Heuristic::SAH) {
                         cost = L.N * ML + R.N * MR;
@@ -733,7 +750,8 @@ private:
         int ax; float pos; uint32_t mid;
         bool ok = findBinarySplit(begin, end, ax, pos, mid);
         if (!ok) {
-            //Fallback to leaf if something degenerate happens
+            // Fallback to leaf if something degenerate happens
+            BLASNode& N = nodeAt(nodeIdx);
             N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
             N.triCount = count;
             for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
@@ -775,18 +793,19 @@ private:
         }
 
         // Allocate children as a contiguous block
-        N.firstChild = static_cast<uint32_t>(out.nodes.size());
-        N.childCount = bucketCount;
+        nodeAt(nodeIdx).firstChild = static_cast<uint32_t>(out.nodes.size());
+        nodeAt(nodeIdx).childCount = bucketCount;
         for (uint32_t i=0;i<bucketCount;i++) out.nodes.emplace_back();
 
         // Build each child into its slot
         for (uint32_t c = 0; c < bucketCount; ++c) {
             uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e);
-            uint32_t desired = N.firstChild + c;
+            uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(out.nodes[built], out.nodes[desired]);
         }
 
-        // Fill the triangle data
+        // Re-fetch parent after recursion and fill the triangle data
+        BLASNode& N = nodeAt(nodeIdx);
         N.triFirst = (std::numeric_limits<uint32_t>::max)();
         N.triCount = 0;
         for (uint32_t c = 0; c < N.childCount; ++c) {
@@ -799,6 +818,7 @@ private:
     }
 
 
+
     // -------------------------- Build: TLAS (SAOH) ----------------------------
     void buildTLAS_SAOH(){
         LT_TIME_SCOPE(L"buildTLAS_SAOH()");
@@ -807,7 +827,11 @@ private:
         for (uint32_t i=0;i<m_blas.size();++i){ const auto& b = m_blas[i]; const auto& r = b.nodes[0];
             TItem it; it.idx=i; it.a=r.aabb; it.c=aabbCenter(r.aabb); it.p=r.power; it.cone=r.cone; it.primCount=r.primCount; it.sumP=r.sumPower; it.sumP2=r.sumPowerSq; items.push_back(it);
         }
-        m_tlas.clear(); if (items.empty()){ LT_WARN(L"buildTLAS: no items"); return; }
+        m_tlas.clear();
+        if (items.empty()){ LT_WARN(L"buildTLAS: no items"); return; }
+        // Reserve to minimize reallocations during recursive build
+        m_tlas.reserve(items.size() * 2u + 32u);
+
         buildTLASRecursive_SAOH(items, 0, static_cast<uint32_t>(items.size()));
         m_blasToItem.clear();
         m_blasToItem.resize(m_blas.size(), 0);
@@ -826,21 +850,23 @@ private:
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
         m_tlas.push_back({});
-        LightTLASNodeGpu& N = m_tlas.back();
+
+        auto nodeAt = [&](uint32_t i) -> LightTLASNodeGpu& { return m_tlas[i]; };
+        LightTLASNodeGpu& N0 = nodeAt(nodeIdx);
 
         // Aggregate
         AggT parent{}; for (uint32_t i=begin;i<end;++i) aggTAdd(parent, it[i]);
 
-        N.bmin = parent.a.mn; N.bmax = parent.a.mx; N.power = parent.E;
-        N.axis = parent.cone.axis; N.theta_o = parent.cone.theta_o; N.theta_e = parent.cone.theta_e;
-        N.primCount = parent.N; N.sumPower = parent.sumP; N.sumPowerSq = parent.sumP2;
-        N.itemFirst = begin; N.itemCount = end - begin;
-        N.firstChild = 0xFFFFFFFF; N.childCount = 0;
-        N.blasIndex = UINT32_MAX;
+        N0.bmin = parent.a.mn; N0.bmax = parent.a.mx; N0.power = parent.E;
+        N0.axis = parent.cone.axis; N0.theta_o = parent.cone.theta_o; N0.theta_e = parent.cone.theta_e;
+        N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
+        N0.itemFirst = begin; N0.itemCount = end - begin;
+        N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
+        N0.blasIndex = UINT32_MAX;
 
         const uint32_t count = end - begin;
         if (count == 1) {
-            N.blasIndex = it[begin].idx;
+            N0.blasIndex = it[begin].idx;
             return nodeIdx;
         }
 
@@ -956,17 +982,19 @@ private:
             --bucketCount;
         }
 
-        N.firstChild = static_cast<uint32_t>(m_tlas.size());
-        N.childCount = bucketCount;
+        nodeAt(nodeIdx).firstChild = static_cast<uint32_t>(m_tlas.size());
+        nodeAt(nodeIdx).childCount = bucketCount;
         for (uint32_t i=0;i<bucketCount;i++) m_tlas.push_back({});
+
         for (uint32_t c=0;c<bucketCount;c++){
             uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e);
-            uint32_t desired = N.firstChild + c;
+            uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(m_tlas[built], m_tlas[desired]);
         }
 
         return nodeIdx;
     }
+
 
 
     // -------------------------- Upload helpers --------------------------------

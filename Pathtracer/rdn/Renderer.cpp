@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"pgTest2.obj", "sky.obj"/*, "screwLight.obj"*/};
+    std::vector<std::string> models = {"bistro.obj", "sky.obj"/*, "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -1091,9 +1091,6 @@ void Renderer::CreateAccelerationStructures() {
     // Collect emissive triangles
     CollectEmissiveTriangles();
 
-    // Build & upload light tree
-    lt::LightTreeBuilder::Settings cfg;
-
     // Build per‑instance object→world matrices for the light tree
     std::vector<InstanceXformCPU> ltXforms;
     ltXforms.reserve(m_instances.size());
@@ -1101,7 +1098,7 @@ void Renderer::CreateAccelerationStructures() {
         ltXforms.push_back(ToInstanceXform(m_instances[i].second));
 
     // Use the overload that takes transforms
-    m_lightTree.Build(m_emissiveTriangles, ltXforms, cfg);
+    m_lightTree.Build(m_emissiveTriangles, ltXforms);
     {SCOPE_TIMER("LightTree.UploadAll");m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());}
 
     // Create buffer for emissive triangles
@@ -2042,7 +2039,7 @@ void Renderer::CreateShaderResourceHeap() {
 
     // advance handle
     srvHandle.ptr += inc * 4;
-    m_lightTree.WriteAliasSrvs(m_device.Get(), srvHandle);
+    //m_lightTree.WriteAliasSrvs(m_device.Get(), srvHandle);
     srvHandle.ptr += inc * 2;
     std::wcout << L"LightTree SRVs written at heap slots 20..23" << std::endl;
 

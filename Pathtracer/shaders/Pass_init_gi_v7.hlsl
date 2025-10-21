@@ -23,7 +23,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     // We need position, normal, outgoing, matID
     // Get a sample
-    SampleReturn result_init = SampleBSDF_Cone_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
+    SampleReturn result_init = SampleBSDF_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
 
 float3 debug = 0.0f;
 
