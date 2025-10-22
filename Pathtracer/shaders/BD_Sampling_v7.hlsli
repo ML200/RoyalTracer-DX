@@ -1,6 +1,6 @@
 #ifdef ENABLE_RAY_QUERY_INLINE
-// Sample a BSDF sample (generalized for solid angle)
-BDReturn SampleBD_gen(
+// Sample a Bidirectional sample
+BDReturn SampleBD(
     in float3 x1,
     in float3 n1,
     in uint matID,
@@ -20,7 +20,7 @@ BDReturn SampleBD_gen(
     float u = RandomFloatSingle(threadSeed.x);
     float v = RandomFloatSingle(threadSeed.x);
     if (u + v > 1.0f) { u = 1.0f - u; v = 1.0f - v; }
-    float3 x2 = (1.0f - u - v) * X + u * Y + v * Z;
+    float3 xl = (1.0f - u - v) * X + u * Y + v * Z;
 
     float3 e1 = Y - X, e2 = Z - X;
     float3 n  = cross(e1, e2);
@@ -30,9 +30,9 @@ BDReturn SampleBD_gen(
     // Sample a direction in the cosine hemisphere (1 ray)
     float3 dir = RandomUnitVectorInHemisphere(n, threadSeed);
 
-    // Trace the direction to get x2
+    // Trace the direction to get xl
     RayDesc ray;
-    ray.Origin = x1;
+    ray.Origin = xl;
     ray.Direction = dir;
     ray.TMin = 0.001f;
     ray.TMax = 10000.0f;
@@ -41,10 +41,11 @@ BDReturn SampleBD_gen(
     if(any(materials[samplePayload.materialID].Ke > 0.0f)) return (BDReturn)0.0f; // Early out because of termination on light
 
     // Reconnect x2 to x1 (Check that its not occluded and also in front of the surface); (1 ray)
-    float V = VisibilityCheckCP(x1, x2, n1);
+    float V = VisibilityCheckCP(x1, samplePayload.hitPosition, n1);
     if(V == 0.0f) return (BDReturn)0.0f;
 
     // Compute the joined pdf
+    float pdf = pick.pdf / max(area, 1e-10f) * dist2 / max(dot(normal_l, -L_norm), 0.0f) * max(dot(normalize(n), normalize(dir)), 0.0f) / PI;
 
     //return the sample. We evaluate it using the extended reconnection
     BDReturn sreturn = (BDReturn)0;
@@ -54,7 +55,7 @@ BDReturn SampleBD_gen(
     sreturn.objID = samplePayload.objID;
     sreturn.matID = samplePayload.materialID;
 
-    sreturn.pdf = pdf_b;
+    sreturn.pdf = pdf;
 
     return sreturn;
 }
