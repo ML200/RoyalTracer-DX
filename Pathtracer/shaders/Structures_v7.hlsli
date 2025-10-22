@@ -82,6 +82,21 @@ struct SampleReturn
     float pdf_nee;
 };
 
+// Extended sample return for bdpt
+struct BDReturn
+{
+    float3 x2;
+    float3 n2;
+    float3 L2;
+    uint objID; // Of the light/x2 hit
+    uint matID; // Of the light/x2 hit
+    float pdf;
+
+    float3 x3;
+    float3 n3;
+};
+
+
 struct WeightedPixel
 {
     int2  pix;

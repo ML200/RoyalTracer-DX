@@ -372,8 +372,3 @@ inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objI
     float area     = max(1e-10, LT_TriangleArea(tri, objID));
     return p_select / area;
 }
-
-//_____________________________________TEST________________________________________
-
-//_____________________________________TEST________________________________________
-
