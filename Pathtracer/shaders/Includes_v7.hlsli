@@ -80,5 +80,7 @@ cbuffer CameraParams : register(b0)
 #include "MIS_v7.hlsli"
 #include "NEE_Sampling_v7.hlsli"
 #include "BSDF_Sampling_v7.hlsli"
+#include "BD_Sampling_v7.hlsli"
+#include "BD_Reconnection_v7.hlsli"
 #include "Motion_vectors_v7.hlsli"
 #include "Denoiser_helper_v7.hlsli"

@@ -23,11 +23,12 @@ void main(uint3 tid : SV_DispatchThreadID)
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     // We need position, normal, outgoing, matID
     // Get a sample
-    SampleReturn result_init = SampleBSDF_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
+    //SampleReturn result_init = SampleBSDF_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
+    BDReturn result_init = SampleBD(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
 
 float3 debug = 0.0f;
 
-    if(length(result_init.n2) > 0.0f && length(result_init.L2) == 0.0f){
+    /*if(length(result_init.n2) > 0.0f && length(result_init.L2) == 0.0f){
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end
         float p_hat_final = 0.0f; // P hat cache from the iteration -> no recompute required.
         // Postponed shadow ray
@@ -190,6 +191,6 @@ debug += tp_full * result.L2;
         reservoir.F_gi = p_hat_final;
         reservoir.J_gi.z = result_init.pdf_nee;
     }
-    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);
+    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, reservoir);*/
 gScratchPing[uint3(tid.xy, 2)] = float4(debug, 0.0f);
 }

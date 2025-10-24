@@ -9,7 +9,7 @@ BDReturn SampleBD(
     inout uint2 threadSeed
 ){
     // Sample a light based on x1 and n1 using the light tree
-    LT_Sample pick = LT_SampleLight(sdata.x1, sdata.n1, threadSeed.x);
+    LT_Sample pick = LT_SampleLight(x1, n1, threadSeed.x);
     // Sample a point on the light x3
     uint triID = pick.id;
     uint   inst = g_EmissiveTriangles[triID].instanceID;
@@ -45,7 +45,9 @@ BDReturn SampleBD(
     if(V == 0.0f) return (BDReturn)0.0f;
 
     // Compute the joined pdf
-    float pdf = pick.pdf / max(area, 1e-10f) * dist2 / max(dot(normal_l, -L_norm), 0.0f) * max(dot(normalize(n), normalize(dir)), 0.0f) / PI;
+    float3 lDir = samplePayload.hitPosition - xl;
+    float dist2 = dot(lDir, lDir);
+    float pdf = pick.pdf / max(a, 1e-10f) * dist2 / max(dot(samplePayload.hitNormal, -lDir), 0.0f) * max(dot(normalize(n), normalize(dir)), 0.0f) / PI;
 
     //return the sample. We evaluate it using the extended reconnection
     BDReturn sreturn = (BDReturn)0;
