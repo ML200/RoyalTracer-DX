@@ -372,3 +372,227 @@ inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objI
     float area     = max(1e-10, LT_TriangleArea(tri, objID));
     return p_select / area;
 }
+
+// ============================================================================
+// INDIRECT LIGHT-TREE TRAVERSAL (distance + power only)
+// Mirrors the existing orientation-aware traversal with:
+//   - Indirect importance (no normal/orientation/visibility)
+//   - TLAS+BLAS stratified descents
+//   - Top-level sampler
+//   - PDF (triangle select) + area/halo wrappers
+// ============================================================================
+
+// ---------- IMPORTANCE (indirect) ------------------------------------------------
+
+inline float LT_NodeImportance_Common_Indirect(
+    float3 x,
+    float3 bmin, float3 bmax,
+    float  power,
+    bool   isGlobalLight)
+{
+    // Ignore orientation/visibility for indirect.
+    const float3 c = 0.5 * (bmin + bmax);
+    const float3 e = 0.5 * (bmax - bmin);
+    const float  R = length(e);
+
+    float  d0   = length(x - c);
+    float  d2   = isGlobalLight ? 1.0 : (d0*d0 + R*R); // conservative near-field clamp
+    float  geom = isGlobalLight ? 1.0 : rcp(d2);
+
+    return power * geom;
+}
+
+inline float LT_NodeImportance_TLAS_Indirect(LightTLASNodeGpu n, float3 x)
+{
+    return LT_NodeImportance_Common_Indirect(x, n.bmin, n.bmax, n.power, /*isGlobalLight=*/false);
+}
+
+inline float LT_NodeImportance_BLAS_Indirect(LightBLASNodeGpu n, float3 x)
+{
+    return LT_NodeImportance_Common_Indirect(x, n.bmin, n.bmax, n.power, /*isGlobalLight=*/false);
+}
+
+// ---------- STOCHASTIC DESCENT (indirect, stratified single-ξ) -------------------
+
+uint LT_DescendTLAS_Stratified_Indirect(float3 x, inout float xi, out float pdfTLAS)
+{
+    pdfTLAS = 1.0;
+    uint node = 0;
+
+    [loop] for (;;)
+    {
+        LightTLASNodeGpu N = gLT_TLAS[node];
+        if (N.childCount == 0) {
+            return N.blasIndex; // leaf
+        }
+
+        float w[4];
+        [unroll] for (uint i=0;i<4;i++){
+            if (i < N.childCount) {
+                LightTLASNodeGpu C = gLT_TLAS[N.firstChild + i];
+                w[i] = max(LT_NodeImportance_TLAS_Indirect(C, x), 0.0);
+            } else {
+                w[i] = 0.0;
+            }
+        }
+
+        float p, xi_next;
+        uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
+        pdfTLAS *= max(p, 1e-20);
+        node = N.firstChild + idx;
+        xi   = xi_next; // rescaled for the next level
+    }
+}
+
+LTLeaf LT_DescendBLAS_Stratified_Indirect(float3 x, uint blasIndex, inout float xi, out float pdfBLAS)
+{
+    pdfBLAS = 1.0;
+    BlasRangeGpu R = gLT_Range[blasIndex];
+    uint node = 0;
+
+    [loop] for (;;)
+    {
+        LightBLASNodeGpu N = gLT_BLAS[R.nodeOffset + node];
+        if (N.childCount == 0) {
+            LTLeaf L; L.triFirst = N.triFirst; L.triCount = N.triCount; L.nodeIndex = node;
+            return L;
+        }
+
+        float w[4];
+        [unroll] for (uint i=0;i<4;i++){
+            if (i < N.childCount) {
+                LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (N.firstChild + i)];
+                w[i] = max(LT_NodeImportance_BLAS_Indirect(C, x), 0.0);
+            } else {
+                w[i] = 0.0;
+            }
+        }
+
+        float p, xi_next;
+        uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
+        pdfBLAS *= max(p, 1e-20);
+        node = N.firstChild + idx;
+        xi   = xi_next;
+    }
+}
+
+// ---------- TOP-LEVEL SAMPLER (indirect) -----------------------------------------
+
+LT_Sample LT_SampleLight_Indirect(float3 worldPos, float3 /*worldNormal*/, inout uint rng)
+{
+    // Single random number reused/rescaled down the tree, same as your direct path.
+    float xi = RandomFloatSingle(rng);
+
+    float pdfT, pdfB, pdfL;
+
+    uint   blas = LT_DescendTLAS_Stratified_Indirect(worldPos, xi, pdfT);
+    LTLeaf leaf = LT_DescendBLAS_Stratified_Indirect(worldPos, blas, xi, pdfB);
+
+    // Leaf sampling stays the same (uniform over leaf tris, with xi rescaled)
+    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, /*n unused*/ float3(0,0,0), blas, leaf, xi, pdfL);
+
+    LT_Sample s; s.id = tri; s.pdf = pdfT * pdfB * pdfL;
+    return s;
+}
+
+// ---------- PDF (triangle selection) for indirect --------------------------------
+
+float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
+{
+    uint blas = gLT_TriToBLAS[triIndex];
+    if (blas == LT_SENTINEL) return 0.0f;
+
+    uint item = gLT_BLASToItem[blas];
+
+    // TLAS path probability (indirect weights)
+    float pdfTLAS = 1.0f;
+    uint  tnode   = 0;
+
+    [loop] for (;;)
+    {
+        LightTLASNodeGpu N = gLT_TLAS[tnode];
+        if (N.childCount == 0) break;
+
+        float w[4]; float sum=0.0;
+        int childHit = -1;
+
+        [unroll] for (uint i=0;i<4;i++){
+            if (i >= N.childCount) break;
+            LightTLASNodeGpu C = gLT_TLAS[N.firstChild + i];
+            w[i] = max(LT_NodeImportance_TLAS_Indirect(C, x), 0.0);
+            sum += w[i];
+            bool inChild = (item >= C.itemFirst) && (item < (C.itemFirst + C.itemCount));
+            if (inChild) childHit = (int)i;
+        }
+
+        if (childHit < 0) {
+            // Uniform fallback if the mapping isn't found
+            pdfTLAS *= 1.0 / float(N.childCount);
+            tnode = N.firstChild; // deterministic fallback path
+            continue;
+        }
+
+        float p = (sum > 0.0) ? (w[childHit] / sum) : (1.0 / float(N.childCount));
+        pdfTLAS *= p;
+        tnode = N.firstChild + (uint)childHit;
+    }
+
+    // BLAS path probability (indirect weights)
+    BlasRangeGpu Rng = gLT_Range[blas];
+    float pdfBLAS = 1.0f;
+    uint  bnode   = 0;
+
+    uint localIdx = gLT_TriToLeafOffset[triIndex];
+
+    [loop] for (;;)
+    {
+        LightBLASNodeGpu N = gLT_BLAS[Rng.nodeOffset + bnode];
+
+        if (N.childCount == 0)
+        {
+            uint  count   = max(N.triCount, 1u);
+            float pdfLeaf = 1.0f / (float)count;
+            return pdfTLAS * pdfBLAS * pdfLeaf;
+        }
+
+        float w[4]; float sum = 0.0;
+        int childHit = -1;
+
+        [unroll] for (uint i=0;i<4;i++){
+            if (i >= N.childCount) break;
+            LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (N.firstChild + i)];
+            w[i] = max(LT_NodeImportance_BLAS_Indirect(C, x), 0.0);
+            sum += w[i];
+            bool inChild = (localIdx >= C.triFirst) && (localIdx < (C.triFirst + C.triCount));
+            if (inChild) childHit = (int)i;
+        }
+
+        if (childHit < 0) {
+            // Uniform fallback if not found
+            pdfBLAS *= 1.0 / float(N.childCount);
+            bnode = N.firstChild;
+            continue;
+        }
+
+        float p = (sum > 0.0) ? (w[childHit] / sum) : (1.0 / float(N.childCount));
+        pdfBLAS *= p;
+        bnode = N.firstChild + (uint)childHit;
+    }
+}
+
+// ---------- Area/HaloSphere wrappers (indirect) ----------------------------------
+
+inline float LT_Pdf_LightTree_Area_Indirect(float3 x, /*n unused*/ float3, uint tri, uint objID)
+{
+    float p_select = LT_PdfSelectTriangle_Indirect(x, tri);
+    float area     = max(1e-10, LT_TriangleArea(tri, objID));
+    return p_select / area;
+}
+
+inline float LT_Pdf_LightTree_HaloSphere_Indirect(float3 x, /*n unused*/ float3, uint tri, uint objID)
+{
+    // Matches your current Area version (identical math here, separate name for clarity).
+    float p_select = LT_PdfSelectTriangle_Indirect(x, tri);
+    float area     = max(1e-10, LT_TriangleArea(tri, objID));
+    return p_select / area;
+}

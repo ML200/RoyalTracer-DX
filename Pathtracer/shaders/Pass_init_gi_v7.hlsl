@@ -24,9 +24,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     // We need position, normal, outgoing, matID
     // Get a sample
     //SampleReturn result_init = SampleBSDF_gen(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
-    BDReturn result_init = SampleBD(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
+    BDReturn result_init = SampleForward(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
 
-float3 debug = 0.0f;
+//float3 debug = 0.0f;
+float3 debug = ReconnectGIBD_Simple(sdata.x1, sdata.n1, sdata.o, sdata.matID, result_init.x2, result_init.n2, result_init.matID, result_init.x3, result_init.n3,result_init.L2, result_init.pdf);
 
     /*if(length(result_init.n2) > 0.0f && length(result_init.L2) == 0.0f){
         bool requires_shadow_ray = true; // Set to false whenever a bsdf ray wins beeing added to the reservoir in the end

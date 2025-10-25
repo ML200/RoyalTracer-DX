@@ -1,6 +1,6 @@
 #ifdef ENABLE_RAY_QUERY_INLINE
 // Sample a Bidirectional sample
-BDReturn SampleBD(
+BDReturn SampleForward(
     in float3 x1,
     in float3 n1,
     in uint matID,
@@ -9,7 +9,7 @@ BDReturn SampleBD(
     inout uint2 threadSeed
 ){
     // Sample a light based on x1 and n1 using the light tree
-    LT_Sample pick = LT_SampleLight(x1, n1, threadSeed.x);
+    LT_Sample pick = LT_SampleLight_Indirect(x1, n1, threadSeed.x);
     // Sample a point on the light x3
     uint triID = pick.id;
     uint   inst = g_EmissiveTriangles[triID].instanceID;
@@ -28,7 +28,7 @@ BDReturn SampleBD(
     float3 nL = n / max(2.0f*A, EPSILON);
 
     // Sample a direction in the cosine hemisphere (1 ray)
-    float3 dir = RandomUnitVectorInHemisphere(n, threadSeed);
+    float3 dir = normalize(RandomUnitVectorInHemisphere(nL, threadSeed));
 
     // Trace the direction to get xl
     RayDesc ray;
@@ -45,9 +45,23 @@ BDReturn SampleBD(
     if(V == 0.0f) return (BDReturn)0.0f;
 
     // Compute the joined pdf
-    float3 lDir = samplePayload.hitPosition - xl;
-    float dist2 = dot(lDir, lDir);
-    float pdf = pick.pdf / max(a, 1e-10f) * dist2 / max(dot(samplePayload.hitNormal, -lDir), 0.0f) * max(dot(normalize(n), normalize(dir)), 0.0f) / PI;
+    float3 d32   = samplePayload.hitPosition - xl;
+    float  r32_2 = max(dot(d32, d32), 1e-20f);
+    float3 w32   = normalize(d32);
+    float  cosL  = max(dot(nL, dir), 0.0f);
+    float  cos2_32 = max(dot(samplePayload.hitNormal, -w32), 0.0f);
+
+    float pdf_area_x2 = pick.pdf
+                      * (1.0f / max(A, 1e-20f))
+                      * (cosL / PI);
+
+    // convert AREA@x2 -> SOLID-ANGLE@x1
+    float3 d12   = samplePayload.hitPosition - x1;
+    float  r12_2 = max(dot(d12, d12), 1e-20f);
+    float3 w12   = normalize(d12);
+    float  cos2_12 = max(dot(samplePayload.hitNormal, -w12), 0.0f);
+
+    float pdf_omega_x1 = pdf_area_x2 * (r12_2 / max(cos2_12, 1e-20f));
 
     //return the sample. We evaluate it using the extended reconnection
     BDReturn sreturn = (BDReturn)0;
@@ -56,8 +70,63 @@ BDReturn SampleBD(
     sreturn.L2 = g_EmissiveTriangles[triID].emission;
     sreturn.objID = samplePayload.objID;
     sreturn.matID = samplePayload.materialID;
+    sreturn.x3 = xl;
+    sreturn.n3 = nL;
 
-    sreturn.pdf = pdf;
+    sreturn.pdf = pdf_omega_x1;
+
+    return sreturn;
+}
+#endif
+
+
+#ifdef ENABLE_RAY_QUERY_INLINE
+// Sample a Bidirectional sample
+BDReturn SampleBackwardNEE(
+    in float3 x1,
+    in float3 n1,
+    in uint matID,
+    in float3 o,
+    inout uint waveSeed,
+    inout uint2 threadSeed
+){
+    //Sample a bsdf ray and eval its pdf
+    float3 sampleBSDF;
+    uint strategy = SelectSamplingStrategy(matID, o, n1, threadSeed);
+    SampleBRDF(strategy, matID, o, n1, n1, sampleBSDF, x1, threadSeed);
+    if(all(sampleBSDF == 0.0f)) return (BDReturn)0;
+
+    RayDesc ray;
+    ray.Origin = x1;
+    ray.Direction = sampleBSDF;
+    ray.TMin = 0.001f;
+    ray.TMax = 10000.0f;
+    HitInfo samplePayload;
+    TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
+    if(any(materials[samplePayload.materialID].Ke > 0.0f)) return (BDReturn)0;
+    pdfBSDF = BRDF_PDF_COMBINED(matID, n1, -sampleBSDF, o);
+
+    // Some intermediate variables:
+    float3 x2 = samplePayload.hitPosition;
+    float3 n2 = samplePayload.hitNormal;
+    uint matID2 = samplePayload.materialID;
+    float3 o2 = x1 - x2;
+
+
+    // Sample an NEE ray and eval its pdf
+
+
+    //return the sample. We evaluate it using the extended reconnection
+    BDReturn sreturn = (BDReturn)0;
+    sreturn.x2 = samplePayload.hitPosition;
+    sreturn.n2 = samplePayload.hitNormal;
+    sreturn.L2 = g_EmissiveTriangles[triID].emission;
+    sreturn.objID = samplePayload.objID;
+    sreturn.matID = samplePayload.materialID;
+    sreturn.x3 = xl;
+    sreturn.n3 = nL;
+
+    sreturn.pdf = pdf_omega_x1;
 
     return sreturn;
 }
