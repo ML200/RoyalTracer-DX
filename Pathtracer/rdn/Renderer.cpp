@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"the-white-room.obj", "sky.obj"/*, "screwLight.obj"*/};
+    std::vector<std::string> models = {"sponza_simple.obj", "sky.obj"/*, "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -1099,6 +1099,7 @@ void Renderer::CreateAccelerationStructures() {
 
     // Use the overload that takes transforms
     m_lightTree.Build(m_emissiveTriangles, ltXforms);
+    m_lightTree.PrintMetrics();
     {SCOPE_TIMER("LightTree.UploadAll");m_lightTree.UploadAll(m_device.Get(), m_commandList.Get());}
 
     // Create buffer for emissive triangles

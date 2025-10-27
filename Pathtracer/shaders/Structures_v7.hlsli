@@ -91,9 +91,11 @@ struct BDReturn
     uint objID; // Of the light/x2 hit
     uint matID; // Of the light/x2 hit
     float pdf;
+    float pdf_seg;
 
     float3 x3;
     float3 n3;
+    uint triID;
 };
 
 

@@ -52,11 +52,11 @@ inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
     // normalize
     float sum = max(1e-6, w_diff_u + w_spec_u + w_clear_u + w_sheen_u + w_trans_u);
 
-    float p_diff  = 1.0f;//w_diff_u  / sum;
-    float p_spec  = 0.0f;//w_spec_u  / sum;
-    float p_clear = 0.0f;//w_clear_u / sum;
-    float p_sheen = 0.0f;//w_sheen_u / sum;
-    p_trans       = 0.0f;//w_trans_u / sum;
+    float p_diff  = w_diff_u  / sum;
+    float p_spec  = w_spec_u  / sum;
+    float p_clear = w_clear_u / sum;
+    float p_sheen = w_sheen_u / sum;
+    p_trans       = w_trans_u / sum;
 
     return float4(p_diff, p_spec, p_clear, p_sheen);
 }
@@ -142,7 +142,7 @@ inline float3 EvaluateBRDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
     float3 f_btdf = EvaluateBTDF_GGX_TRANS(mID, N, wi, wo, T);
     f += gate * f_btdf;
 
-    return f_diff;//f;
+    return f;
 }
 
 inline float BRDF_PDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)

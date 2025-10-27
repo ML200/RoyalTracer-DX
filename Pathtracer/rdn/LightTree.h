@@ -530,6 +530,107 @@ public:
     uint32_t TLASNodeCount() const { return static_cast<uint32_t>(m_tlas.size()); }
     uint32_t BLASCount()     const { return static_cast<uint32_t>(m_blas.size()); }
 
+    // metrics
+    void PrintMetrics() const
+    {
+        LT_TIME_SCOPE(L"PrintMetrics()");
+        struct ND { uint32_t i; uint32_t d; };
+
+        // ---- TLAS ----
+        if (m_tlas.empty()){
+            LT_WARN(L"TLAS is empty.");
+        } else {
+            uint64_t nodeCount=0, inner=0, leaf=0, leafDepthSum=0, childrenSum=0;
+            uint32_t maxDepth=0, maxChildren=0;
+
+            std::vector<ND> st; st.reserve(m_tlas.size());
+            st.push_back({0,0});
+            while (!st.empty()){
+                ND cur = st.back(); st.pop_back();
+                const auto& n = m_tlas[cur.i];
+                nodeCount++; maxDepth = (std::max)(maxDepth, cur.d);
+                if (n.childCount == 0){
+                    leaf++; leafDepthSum += cur.d;
+                } else {
+                    inner++; childrenSum += n.childCount; maxChildren = (std::max)(maxChildren, n.childCount);
+                    for (uint32_t c=0; c<n.childCount; ++c) st.push_back({ n.firstChild + c, cur.d + 1 });
+                }
+            }
+
+            const double avgLeafDepth  = leaf  ? double(leafDepthSum) / double(leaf)  : 0.0;
+            const double avgChildren   = inner ? double(childrenSum) / double(inner) : 0.0;
+
+            LT_LOG(L"TLAS: nodes=" << nodeCount
+                  << L" (inner=" << inner << L", leaf=" << leaf << L")"
+                  << L", maxDepth=" << maxDepth
+                  << L", avgLeafDepth=" << avgLeafDepth
+                  << L", avgChildren=" << avgChildren
+                  << L", maxChildren=" << maxChildren);
+        }
+
+        // ---- BLAS (per instance + aggregate) ----
+        uint64_t allNodes=0, allInner=0, allLeaf=0, allLeafDepthSum=0, allLeafTriSum=0;
+        uint32_t allMaxDepth=0, globalMinLeafTri=UINT32_MAX, globalMaxLeafTri=0;
+
+        for (uint32_t b=0; b < m_blas.size(); ++b){
+            const auto& B = m_blas[b];
+            if (B.nodes.empty()){
+                LT_WARN(L"BLAS[" << b << L"] is empty.");
+                continue;
+            }
+
+            uint64_t nodes=0, inner=0, leaf=0, leafDepthSum=0, leafTriSum=0;
+            uint32_t maxDepth=0, minLeafTri=UINT32_MAX, maxLeafTri=0;
+
+            std::vector<ND> st; st.reserve(B.nodes.size());
+            st.push_back({0,0});
+            while (!st.empty()){
+                ND cur = st.back(); st.pop_back();
+                const auto& n = B.nodes[cur.i];
+                nodes++; maxDepth = (std::max)(maxDepth, cur.d);
+                if (n.childCount == 0){
+                    leaf++; leafDepthSum += cur.d;
+                    minLeafTri = (std::min)(minLeafTri, n.triCount);
+                    maxLeafTri = (std::max)(maxLeafTri, n.triCount);
+                    leafTriSum += n.triCount;
+                } else {
+                    inner++;
+                    for (uint32_t c=0; c<n.childCount; ++c) st.push_back({ n.firstChild + c, cur.d + 1 });
+                }
+            }
+
+            const double avgLeafDepth = leaf ? double(leafDepthSum) / double(leaf) : 0.0;
+            const double avgLeafTris  = leaf ? double(leafTriSum)  / double(leaf) : 0.0;
+
+            LT_LOG(L"BLAS[" << b << L"]: nodes=" << nodes
+                  << L" (inner=" << inner << L", leaf=" << leaf << L")"
+                  << L", maxDepth=" << maxDepth
+                  << L", avgLeafDepth=" << avgLeafDepth
+                  << L", leafTris(min/avg/max)="
+                  << (minLeafTri==UINT32_MAX?0:minLeafTri) << L"/" << avgLeafTris << L"/" << maxLeafTri);
+
+            // accumulate globals
+            allNodes += nodes; allInner += inner; allLeaf += leaf;
+            allLeafDepthSum += leafDepthSum; allLeafTriSum += leafTriSum;
+            allMaxDepth = (std::max)(allMaxDepth, maxDepth);
+            globalMinLeafTri = (std::min)(globalMinLeafTri, minLeafTri);
+            globalMaxLeafTri = (std::max)(globalMaxLeafTri, maxLeafTri);
+        }
+
+        if (!m_blas.empty()){
+            const double avgLeafDepthAll = allLeaf ? double(allLeafDepthSum) / double(allLeaf) : 0.0;
+            const double avgLeafTrisAll  = allLeaf ? double(allLeafTriSum)  / double(allLeaf) : 0.0;
+
+            LT_LOG(L"BLAS (all): nodes=" << allNodes
+                  << L" (inner=" << allInner << L", leaf=" << allLeaf << L")"
+                  << L", maxDepth=" << allMaxDepth
+                  << L", avgLeafDepth=" << avgLeafDepthAll
+                  << L", leafTris(min/avg/max)="
+                  << (globalMinLeafTri==UINT32_MAX?0:globalMinLeafTri)
+                  << L"/" << avgLeafTrisAll << L"/" << globalMaxLeafTri);
+        }
+    }
+
 private:
     const std::vector<::LightTriangle>* m_tris = nullptr; Settings m_cfg{};
     const std::vector<InstanceXformCPU>* m_xforms = nullptr;
@@ -1038,7 +1139,6 @@ private:
         g.sumPower = n.sumPower; g.sumPowerSq = n.sumPowerSq;
         return g;
     }
-
 };
 
 } // namespace lt

@@ -374,15 +374,10 @@ inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objI
 }
 
 // ============================================================================
-// INDIRECT LIGHT-TREE TRAVERSAL (distance + power only)
-// Mirrors the existing orientation-aware traversal with:
-//   - Indirect importance (no normal/orientation/visibility)
-//   - TLAS+BLAS stratified descents
-//   - Top-level sampler
-//   - PDF (triangle select) + area/halo wrappers
+// INDIRECT LIGHT-TREE TRAVERSAL
 // ============================================================================
 
-// ---------- IMPORTANCE (indirect) ------------------------------------------------
+//IMPORTANCE
 
 inline float LT_NodeImportance_Common_Indirect(
     float3 x,
@@ -412,7 +407,7 @@ inline float LT_NodeImportance_BLAS_Indirect(LightBLASNodeGpu n, float3 x)
     return LT_NodeImportance_Common_Indirect(x, n.bmin, n.bmax, n.power, /*isGlobalLight=*/false);
 }
 
-// ---------- STOCHASTIC DESCENT (indirect, stratified single-ξ) -------------------
+// ---------- STOCHASTIC DESCENT -------------------
 
 uint LT_DescendTLAS_Stratified_Indirect(float3 x, inout float xi, out float pdfTLAS)
 {
@@ -476,11 +471,10 @@ LTLeaf LT_DescendBLAS_Stratified_Indirect(float3 x, uint blasIndex, inout float 
     }
 }
 
-// ---------- TOP-LEVEL SAMPLER (indirect) -----------------------------------------
+// ---------- TOP-LEVEL SAMPLER -----------------------------------------
 
 LT_Sample LT_SampleLight_Indirect(float3 worldPos, float3 /*worldNormal*/, inout uint rng)
 {
-    // Single random number reused/rescaled down the tree, same as your direct path.
     float xi = RandomFloatSingle(rng);
 
     float pdfT, pdfB, pdfL;
@@ -495,7 +489,7 @@ LT_Sample LT_SampleLight_Indirect(float3 worldPos, float3 /*worldNormal*/, inout
     return s;
 }
 
-// ---------- PDF (triangle selection) for indirect --------------------------------
+// ---------- PDF for indirect --------------------------------
 
 float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
 {
@@ -526,7 +520,7 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         }
 
         if (childHit < 0) {
-            // Uniform fallback if the mapping isn't found
+            // Uniform fallback if the mapping isnt found
             pdfTLAS *= 1.0 / float(N.childCount);
             tnode = N.firstChild; // deterministic fallback path
             continue;
@@ -580,18 +574,8 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
     }
 }
 
-// ---------- Area/HaloSphere wrappers (indirect) ----------------------------------
-
 inline float LT_Pdf_LightTree_Area_Indirect(float3 x, /*n unused*/ float3, uint tri, uint objID)
 {
-    float p_select = LT_PdfSelectTriangle_Indirect(x, tri);
-    float area     = max(1e-10, LT_TriangleArea(tri, objID));
-    return p_select / area;
-}
-
-inline float LT_Pdf_LightTree_HaloSphere_Indirect(float3 x, /*n unused*/ float3, uint tri, uint objID)
-{
-    // Matches your current Area version (identical math here, separate name for clarity).
     float p_select = LT_PdfSelectTriangle_Indirect(x, tri);
     float area     = max(1e-10, LT_TriangleArea(tri, objID));
     return p_select / area;
