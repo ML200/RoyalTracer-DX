@@ -33,7 +33,9 @@ float VisibilityCheck(
 #ifdef ENABLE_RAY_QUERY_INLINE
 float VisibilityCheckCP(float3 P, float3 L, float3 N)
 {
-    float3 dir = normalize(L - P);
+    float3 dir = L - P;
+    if(length(dir)<EPSILON) return 0.0f;
+    dir = normalize(dir);
     float  len = length(L - P);
 
     if(dot(dir, N) < 0.0f)
@@ -128,6 +130,7 @@ inline bool TraceRayInline_HitInfo(
     uint rayFlags = RAY_FLAG_NONE,
     uint instanceMask = 0xFF)
 {
+    if(length(ray.Direction) < EPSILON) return false;
     RayQuery<RAY_FLAG_NONE> rq;
     rq.TraceRayInline(SceneBVH, rayFlags, instanceMask, ray);
     while (rq.Proceed());

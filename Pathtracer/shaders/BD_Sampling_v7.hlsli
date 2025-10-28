@@ -274,14 +274,14 @@ BDReturn SampleBackwardBSDF(
     ray.TMax = 10000.0f;
     HitInfo samplePayload;
     TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
-    if(any(materials[samplePayload.materialID].Ke > 0.0f)) return sreturn;
+    if(length(materials[samplePayload.materialID].Ke) > 0.0f) return sreturn;
     float pdfBSDF1 = BRDF_PDF_COMBINED(matID, n1, -sampleBSDF, o);
 
     // Some intermediate variables:
     float3 x2 = samplePayload.hitPosition;
     float3 n2 = samplePayload.hitNormal;
     uint matID2 = samplePayload.materialID;
-    float3 o2 = x1 - x2;
+    float3 o2 = normalize(x1 - x2);
 
     sreturn.x2 = x2;
     sreturn.n2 = n2;
@@ -302,6 +302,7 @@ BDReturn SampleBackwardBSDF(
     HitInfo samplePayload2;
     TraceRayInline_HitInfo(SceneBVH, ray2, samplePayload2, RAY_FLAG_NONE, 0xFF);
     if(length(materials[samplePayload2.materialID].Ke) < EPSILON) return sreturn; // no light hit -> bad sample
+    if(dot(samplePayload2.hitNormal, sampleBSDF2) >= 0.0f) return sreturn;
     float pdfBSDF2 = BRDF_PDF_COMBINED(matID2, n2, -sampleBSDF2, o2);
 
     //return the sample. We evaluate it using the extended reconnection
@@ -326,21 +327,14 @@ inline float PdfFromBackwardBSDF(
     BDReturn bd
 ){
     //segment x1 -> x2
-    float3 d12   = bd.x2 - x1;
-    float  r12_2 = max(dot(d12, d12), EPSILON);
-    float3 w12   = d12 * rsqrt(r12_2);                 // dir x1->x2
+    float3 w12   = normalize(bd.x2 - x1);
 
     float pdf1 = BRDF_PDF_COMBINED(matID1, n1, -w12, o1);
     if (pdf1 <= 0.0) return 0.0;
 
     //segment x2 -> x3
-    float3 d23   = bd.x3 - bd.x2;
-    float  r23_2 = max(dot(d23, d23), EPSILON);
-    float3 w23   = d23 * rsqrt(r23_2);                 // dir x2->x3
-
-    float3 o2dir = x1 - bd.x2;
-    float  r21_2 = max(dot(o2dir, o2dir), EPSILON);
-    float3 o2    = o2dir * rsqrt(r21_2);               // dir x2->x1
+    float3 w23   = normalize(bd.x3 - bd.x2);
+    float3 o2    = normalize(x1 - bd.x2);
 
     float pdf2 = BRDF_PDF_COMBINED(bd.matID, bd.n2, -w23, o2);
     if (pdf2 <= 0.0) return 0.0;
@@ -351,6 +345,7 @@ inline float PdfFromBackwardBSDF(
 
 
 // HELPERS
+// ----------------------------------------------------------------------
 // Test function to sample one bsdf path segment to gain an unbiased path advancement method
 #ifdef ENABLE_RAY_QUERY_INLINE
 BDReturn SampleSingleBSDF(

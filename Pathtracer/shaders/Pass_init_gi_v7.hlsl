@@ -22,10 +22,6 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
 
-    // Path variables
-    float3 throughput = 1.0f;
-    float pdf = 1.0f;
-
     // Probs:
     float3 sProbs1 = BD_MethodProbsFromRoughness(1.0f);
     uint pickID1 = BD_PickMethod(sProbs1, seed);
@@ -34,18 +30,18 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Get the combined pdf
     float bdpdf1 = BD_OneSamplePDF(bdreturn1.pdf, pickID1, sdata, bdreturn1, sProbs1);
 
-    float3 segment_throughput;
+    float3 segment_throughput = 0.0f;
     float3 debug = ReconnectGIBD_Simple(sdata.x1, sdata.n1, sdata.o, sdata.matID, bdreturn1.x2, bdreturn1.n2, bdreturn1.matID, bdreturn1.x3, bdreturn1.n3,bdreturn1.L2, bdpdf1, segment_throughput);
 
-if(bdreturn1.pdf_seg > 0.0f && length(bdreturn1.n2)>0.0f){
+if(bdreturn1.pdf_seg > EPSILON && pickID1!=1u && length(bdreturn1.n2) > EPSILON){
     // More path variables
     float3 position_cache = bdreturn1.x2;
     float3 normal_cache = normalize(bdreturn1.n2);
     float3 outgoing_cache = normalize(sdata.x1 - bdreturn1.x2);
     uint matID_cache = bdreturn1.matID;
 
-    throughput *= segment_throughput;
-    pdf *= bdreturn1.pdf_seg;
+    float3 throughput_2 = segment_throughput;
+    float pdf_2 = bdreturn1.pdf_seg;
 
     // Probs:
     float3 sProbs2 = BD_MethodProbsFromRoughness(1.0f);
@@ -62,7 +58,7 @@ if(bdreturn1.pdf_seg > 0.0f && length(bdreturn1.n2)>0.0f){
     float bdpdf2 = BD_OneSamplePDF(bdreturn2.pdf, pickID2, sdata2, bdreturn2, sProbs2);
 
     float3 segment_throughput2;
-    debug += throughput * ReconnectGIBD_Simple(position_cache, normal_cache, outgoing_cache, matID_cache, bdreturn2.x2, bdreturn2.n2, bdreturn2.matID, bdreturn2.x3, bdreturn2.n3, bdreturn2.L2, bdpdf2, segment_throughput2) / pdf;
+    debug += throughput_2/pdf_2 * ReconnectGIBD_Simple(position_cache, normal_cache, outgoing_cache, matID_cache, bdreturn2.x2, bdreturn2.n2, bdreturn2.matID, bdreturn2.x3, bdreturn2.n3, bdreturn2.L2, bdpdf2, segment_throughput2);
 }
 
     // Get a sample

@@ -4,8 +4,18 @@ inline float3 ReconnectGIBD_Simple(
     in float3 x2, in float3 n2, in uint mID2,
     in float3 x3, in float3 n3, in float3 L3,
     in float pdf, // pdf in SOLID ANGLE at x1 toward x2
-    out float3 first_segment // The x1 x2 segment throughput (without pdf) for path advancement
+    inout float3 first_segment // The x1 x2 segment throughput (without pdf) for path advancement
 ) {
+    // Check if the provided subpath is valid
+    if(
+    !(length(n1)>0.0f) ||
+    !(length(n2)>0.0f) ||
+    !(length(n3)>0.0f) ||
+    !(length(x1-x2)>0.0f) ||
+    !(length(x2-x3)>0.0f)
+    )
+    {first_segment = 0.0f; return float3(0,0,0);}
+
     // Directions
     float3 w12 = normalize(x2 - x1);
     float3 w21 = -w12;
