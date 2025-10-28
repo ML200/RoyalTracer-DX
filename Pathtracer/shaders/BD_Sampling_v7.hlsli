@@ -40,6 +40,9 @@ BDReturn SampleForward(
     TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
     if(any(materials[samplePayload.materialID].Ke > 0.0f)) return (BDReturn)0.0f; // Early out because of termination on light
 
+    // Check that the reconnetion is even possible (not behind surface, not on the same surface etc)
+    if(dot(n1, normalize(samplePayload.hitPosition - x1)) < EPSILON) return (BDReturn)0.0f;
+
     // Reconnect x2 to x1 (Check that its not occluded and also in front of the surface); (1 ray)
     float V = VisibilityCheckCP(x1, samplePayload.hitPosition, n1);
     if(V == 0.0f) return (BDReturn)0.0f;
@@ -128,11 +131,13 @@ BDReturn SampleBackwardNEE(
     inout uint waveSeed,
     inout uint2 threadSeed
 ){
+    BDReturn sreturn = (BDReturn)0; // return data. We fill the possible reconnections early and return on failure.
+
     //Sample a bsdf ray and eval its pdf
     float3 sampleBSDF;
     uint strategy = SelectSamplingStrategy(matID, o, n1, threadSeed);
     SampleBRDF(strategy, matID, o, n1, n1, sampleBSDF, x1, threadSeed);
-    if(all(sampleBSDF == 0.0f)) return (BDReturn)0;
+    if(all(sampleBSDF == 0.0f)) return sreturn;
 
     RayDesc ray;
     ray.Origin = x1;
@@ -141,7 +146,7 @@ BDReturn SampleBackwardNEE(
     ray.TMax = 10000.0f;
     HitInfo samplePayload;
     TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
-    if(any(materials[samplePayload.materialID].Ke > 0.0f)) return (BDReturn)0;
+    if(any(materials[samplePayload.materialID].Ke > 0.0f) || all(samplePayload.hitNormal< EPSILON)) return sreturn;
     float pdfBSDF = BRDF_PDF_COMBINED(matID, n1, -sampleBSDF, o);
 
     // Some intermediate variables:
@@ -149,6 +154,12 @@ BDReturn SampleBackwardNEE(
     float3 n2 = samplePayload.hitNormal;
     uint matID2 = samplePayload.materialID;
     float3 o2 = x1 - x2;
+
+    // relevant data to reuse this segment to advance the path
+    sreturn.x2 = x2;
+    sreturn.n2 = n2;
+    sreturn.matID = matID2;
+    sreturn.pdf_seg = pdfBSDF;
 
 
     // Sample an NEE ray and eval its pdf
@@ -170,7 +181,7 @@ BDReturn SampleBackwardNEE(
     float3 x3 = uu * x + vv * y + ww * z;
 
     float V = VisibilityCheckCP(x2, x3, n2);
-    if(V == 0.0f) return (BDReturn)0.0f;
+    if(V == 0.0f) return sreturn;
 
     // Compute sample direction and normalized vector
     float3 L = x3 - x2;
@@ -186,7 +197,7 @@ BDReturn SampleBackwardNEE(
     float3 n3 = normalL / (2.0f * area_L + EPSILON);
 
     if (dot(n3, -L_norm) < EPSILON) {
-        return (BDReturn)0;
+        return sreturn;
     }
 
     // Compute NEE PDF (solid angle!)
@@ -194,27 +205,154 @@ BDReturn SampleBackwardNEE(
 
 
     //return the sample. We evaluate it using the extended reconnection
-    BDReturn sreturn = (BDReturn)0;
-    sreturn.x2 = x2;
-    sreturn.n2 = n2;
     sreturn.L2 = g_EmissiveTriangles[lightIdx].emission;
     sreturn.objID = samplePayload.objID;
-    sreturn.matID = matID2;
     sreturn.x3 = x3;
     sreturn.n3 = n3;
     sreturn.triID = lightIdx;
 
     sreturn.pdf = pdfBSDF * pdfNEE;
-    sreturn.pdf_seg = pdfBSDF;
 
     return sreturn;
 }
 #endif
 
 
+inline float PdfFromBackwardNEE(
+    float3 x1,
+    float3 n1,
+    uint   matID1,
+    float3 o1,
+    BDReturn bd
+){
+    //1) BSDF pdf at x1 in solid angle (toward x2)
+    const float3 d12   = bd.x2 - x1;
+    const float  r12_2 = max(dot(d12, d12), EPSILON);
+    const float3 w12   = d12 * rsqrt(r12_2);
+    const float  pdf_bsdf = BRDF_PDF_COMBINED(matID1, n1, -w12, o1);
+    if (pdf_bsdf <= 0.0f) return 0.0f;
+
+    // 2) NEE pdf from x2 to the chosen point x3
+    const uint  lightObjID = g_EmissiveTriangles[bd.triID].instanceID;
+    const float pA_x3      = LT_Pdf_LightTree_Area(bd.x2, bd.n2, bd.triID, lightObjID);
+    if (pA_x3 <= 0.0f) return 0.0f;
+
+    // Convert area -> solid angle
+    const float3 d23   = bd.x3 - bd.x2;
+    const float  r23_2 = max(dot(d23, d23), EPSILON);
+    const float3 w23   = d23 * rsqrt(r23_2);
+    const float  cos3  = max(dot(bd.n3, -w23), 0.0f);   // emitter facing x2
+    if (cos3 <= 0.0f) return 0.0f;
+
+    const float pdf_nee = pA_x3 * (r23_2 / cos3);
+    return pdf_bsdf * pdf_nee;
+}
+
 
 #ifdef ENABLE_RAY_QUERY_INLINE
-// Sample a BSDF + NEE sample
+// Sample a BSDF + BSDF sample
+BDReturn SampleBackwardBSDF(
+    in float3 x1,
+    in float3 n1,
+    in uint matID,
+    in float3 o,
+    inout uint waveSeed,
+    inout uint2 threadSeed
+){
+    BDReturn sreturn = (BDReturn)0;
+
+    //Sample a bsdf ray and eval its pdf
+    float3 sampleBSDF;
+    uint strategy = SelectSamplingStrategy(matID, o, n1, threadSeed);
+    SampleBRDF(strategy, matID, o, n1, n1, sampleBSDF, x1, threadSeed);
+    if(all(sampleBSDF == 0.0f)) return sreturn;
+
+    RayDesc ray;
+    ray.Origin = x1;
+    ray.Direction = sampleBSDF;
+    ray.TMin = 0.001f;
+    ray.TMax = 10000.0f;
+    HitInfo samplePayload;
+    TraceRayInline_HitInfo(SceneBVH, ray, samplePayload, RAY_FLAG_NONE, 0xFF);
+    if(any(materials[samplePayload.materialID].Ke > 0.0f)) return sreturn;
+    float pdfBSDF1 = BRDF_PDF_COMBINED(matID, n1, -sampleBSDF, o);
+
+    // Some intermediate variables:
+    float3 x2 = samplePayload.hitPosition;
+    float3 n2 = samplePayload.hitNormal;
+    uint matID2 = samplePayload.materialID;
+    float3 o2 = x1 - x2;
+
+    sreturn.x2 = x2;
+    sreturn.n2 = n2;
+    sreturn.matID = matID2;
+    sreturn.pdf_seg = pdfBSDF1;
+
+    // Sample an second BSDF ray and eval its pdf
+    float3 sampleBSDF2;
+    uint strategy2 = SelectSamplingStrategy(matID2, o2, n2, threadSeed);
+    SampleBRDF(strategy2, matID2, o2, n2, n2, sampleBSDF2, x2, threadSeed);
+    if(all(sampleBSDF2 == 0.0f)) return sreturn; // Invalid sample
+
+    RayDesc ray2;
+    ray2.Origin = x2;
+    ray2.Direction = sampleBSDF2;
+    ray2.TMin = 0.001f;
+    ray2.TMax = 10000.0f;
+    HitInfo samplePayload2;
+    TraceRayInline_HitInfo(SceneBVH, ray2, samplePayload2, RAY_FLAG_NONE, 0xFF);
+    if(length(materials[samplePayload2.materialID].Ke) < EPSILON) return sreturn; // no light hit -> bad sample
+    float pdfBSDF2 = BRDF_PDF_COMBINED(matID2, n2, -sampleBSDF2, o2);
+
+    //return the sample. We evaluate it using the extended reconnection
+    sreturn.L2 = materials[samplePayload2.materialID].Ke;
+    sreturn.objID = samplePayload.objID;
+    sreturn.x3 = samplePayload2.hitPosition;
+    sreturn.n3 = samplePayload2.hitNormal;
+    sreturn.triID = samplePayload2.lightID;
+
+    sreturn.pdf = pdfBSDF1 * pdfBSDF2;
+
+    return sreturn;
+}
+#endif
+
+
+inline float PdfFromBackwardBSDF(
+    float3 x1,
+    float3 n1,
+    uint   matID1,
+    float3 o1,
+    BDReturn bd
+){
+    //segment x1 -> x2
+    float3 d12   = bd.x2 - x1;
+    float  r12_2 = max(dot(d12, d12), EPSILON);
+    float3 w12   = d12 * rsqrt(r12_2);                 // dir x1->x2
+
+    float pdf1 = BRDF_PDF_COMBINED(matID1, n1, -w12, o1);
+    if (pdf1 <= 0.0) return 0.0;
+
+    //segment x2 -> x3
+    float3 d23   = bd.x3 - bd.x2;
+    float  r23_2 = max(dot(d23, d23), EPSILON);
+    float3 w23   = d23 * rsqrt(r23_2);                 // dir x2->x3
+
+    float3 o2dir = x1 - bd.x2;
+    float  r21_2 = max(dot(o2dir, o2dir), EPSILON);
+    float3 o2    = o2dir * rsqrt(r21_2);               // dir x2->x1
+
+    float pdf2 = BRDF_PDF_COMBINED(bd.matID, bd.n2, -w23, o2);
+    if (pdf2 <= 0.0) return 0.0;
+
+    return pdf1 * pdf2;
+}
+
+
+
+// HELPERS
+// Test function to sample one bsdf path segment to gain an unbiased path advancement method
+#ifdef ENABLE_RAY_QUERY_INLINE
 BDReturn SampleSingleBSDF(
     in float3 x1,
     in float3 n1,
@@ -255,51 +393,36 @@ BDReturn SampleSingleBSDF(
 }
 #endif
 
-inline float PdfFromBackwardNEE(
-    float3 x1,
-    float3 n1,
-    uint   matID1,
-    float3 o1,
-    BDReturn bd
-){
-    //1) BSDF pdf at x1 in solid angle (toward x2)
-    const float3 d12   = bd.x2 - x1;
-    const float  r12_2 = max(dot(d12, d12), EPSILON);
-    const float3 w12   = d12 * rsqrt(r12_2);
-    const float  pdf_bsdf = BRDF_PDF_COMBINED(matID1, n1, -w12, o1);
-    if (pdf_bsdf <= 0.0f) return 0.0f;
-
-    // 2) NEE pdf from x2 to the chosen point x3
-    const uint  lightObjID = g_EmissiveTriangles[bd.triID].instanceID;
-    const float pA_x3      = LT_Pdf_LightTree_Area(bd.x2, bd.n2, bd.triID, lightObjID);
-    if (pA_x3 <= 0.0f) return 0.0f;
-
-    // Convert area -> solid angle
-    const float3 d23   = bd.x3 - bd.x2;
-    const float  r23_2 = max(dot(d23, d23), EPSILON);
-    const float3 w23   = d23 * rsqrt(r23_2);
-    const float  cos3  = max(dot(bd.n3, -w23), 0.0f);   // emitter facing x2
-    if (cos3 <= 0.0f) return 0.0f;
-
-    const float pdf_nee = pA_x3 * (r23_2 / cos3);
-    return pdf_bsdf * pdf_nee;
-}
-
-// HELPERS
 //-----------------------------------------------------------------------------------------------
-inline float2 BD_MethodProbsFromRoughness(float roughness)
+inline float3 BD_MethodProbsFromRoughness(float roughness)
 {
-    float r = saturate(roughness);
+    /*float r = saturate(roughness);
     float t = saturate((r - 0.5f) * 2.0f);   // 0 at 0.5, 1 at 1.0
-    float p_bsdf = 1.0f - 0.5f * t;          // 1.0 -> 0.5
-    float p_fwd  = 1.0f - p_bsdf;            // 0.0 -> 0.5
-    return float2(p_bsdf, p_fwd);
+
+    // total mass for non-forward methods
+    float p_bsdf_bucket = 1.0f - 0.5f * t;   // 1.0 -> 0.5
+    float p_fwd         = 1.0f - p_bsdf_bucket;
+
+    // 65/35 split inside the bsdf bucket
+    const float nee_share = 0.65f;
+    float p_bsdfnee  = p_bsdf_bucket * nee_share;
+    float p_bsdfbsdf = p_bsdf_bucket * (1.0f - nee_share);
+
+    // Sum should be 1, but keep a defensive normalize
+    float sum = p_bsdfnee + p_fwd + p_bsdfbsdf;
+    if (sum <= 0.0f) return float3(1.0f, 0.0f, 0.0f);
+
+    return float3(p_bsdfnee, p_fwd, p_bsdfbsdf) / sum;*/
+    return float3(0.4f, 0.4f, 0.2f);
 }
 
-inline uint BD_PickMethod(float2 probs, inout uint2 threadSeed)
+inline uint BD_PickMethod(float3 probs, inout uint2 threadSeed)
 {
     float xi = RandomFloatSingle(threadSeed.x);
-    return (xi < probs.x) ? 0u : 1u;
+    if (xi < probs.x) return 0u;               // BSDF+NEE
+    xi -= probs.x;
+    if (xi < probs.y) return 1u;               // Forward
+    return 2u;                                  // BSDF+BSDF
 }
 
 // Wrapper for sampling the selected technique
@@ -312,26 +435,46 @@ inline BDReturn BD_SamplePicked(
     inout uint2 threadSeed,
     uint pickID)
 {
-    if(pickID == 1u)
-        return SampleForward(x1, n1, matID, o, waveSeed, threadSeed);
-    return SampleBackwardNEE(x1, n1, matID, o, waveSeed, threadSeed); // backward sampler is fallback
+    if (pickID == 1u)
+        return SampleForward(x1, n1, matID, o, waveSeed, threadSeed);     // Forward
+    else if (pickID == 2u)
+        return SampleBackwardBSDF(x1, n1, matID, o, waveSeed, threadSeed); // BSDF+BSDF
+    else
+        return SampleBackwardNEE(x1, n1, matID, o, waveSeed, threadSeed);  // BSDF+NEE
 }
 
-inline float BD_OneSamplePDF(float pdf_c, uint pickID, SampleData sdata, BDReturn bdreturn, float2 sprobs)
+inline float BD_OneSamplePDF(
+    float pdf_c,               // pdf of the technique that actually generated the sample
+    uint pickID,               // 0=BSDF+NEE, 1=Forward, 2=BSDF+BSDF
+    SampleData sdata,
+    BDReturn bdreturn,
+    float3 sprobs)             // probs.x=BSDF+NEE, probs.y=Forward, probs.z=BSDF+BSDF
 {
-    if(pdf_c == 0.0f) return 0.0f;
-    // Compute only the missing pdf
-    float pdf_other = 0.0f;
+    if (pdf_c == 0.0f) return 0.0f;
 
-    if (pickID == 1u) {
-        // Current = Forward, Other = BSDF+NEE
-        pdf_other = max(0.0f, PdfFromBackwardNEE(sdata.x1, sdata.n1, sdata.matID, sdata.o, bdreturn));
-        // mixture: q_fwd * p_fwd (pdf_c) + q_bsdf * p_bsdf
-        return max(0.0f, sprobs.y * pdf_c + sprobs.x * pdf_other);
-    } else { // pickID == 0u
-        // Current = BSDF+NEE, Other = Forward
-        pdf_other = max(0.0f, PdfFromForward(sdata.x1, bdreturn));
-        // mixture: q_bsdf * p_bsdf (pdf_c) + q_fwd * p_fwd
-        return max(0.0f, sprobs.x * pdf_c + sprobs.y * pdf_other);
+    float p_bsdfnee  = 0.0f;
+    float p_forward  = 0.0f;
+    float p_bsdfbsdf = 0.0f;
+
+    // Reuse the current technique pdf and compute the others
+    if (pickID == 0u) {
+        p_bsdfnee  = pdf_c;
+        p_forward  = max(0.0f, PdfFromForward(sdata.x1, bdreturn));
+        p_bsdfbsdf = max(0.0f, PdfFromBackwardBSDF(sdata.x1, sdata.n1, sdata.matID, sdata.o, bdreturn));
+    } else if (pickID == 1u) {
+        p_forward  = pdf_c;
+        p_bsdfnee  = max(0.0f, PdfFromBackwardNEE(sdata.x1, sdata.n1, sdata.matID, sdata.o, bdreturn));
+        p_bsdfbsdf = max(0.0f, PdfFromBackwardBSDF(sdata.x1, sdata.n1, sdata.matID, sdata.o, bdreturn));
+    } else { // pickID == 2u
+        p_bsdfbsdf = pdf_c;
+        p_bsdfnee  = max(0.0f, PdfFromBackwardNEE(sdata.x1, sdata.n1, sdata.matID, sdata.o, bdreturn));
+        p_forward  = max(0.0f, PdfFromForward(sdata.x1, bdreturn));
     }
+
+    // Mixture pdf: sum over techniques
+    float pdf_mix = sprobs.x * p_bsdfnee
+                  + sprobs.y * p_forward
+                  + sprobs.z * p_bsdfbsdf;
+
+    return max(0.0f, pdf_mix);
 }

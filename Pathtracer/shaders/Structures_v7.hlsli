@@ -93,7 +93,7 @@ struct BDReturn
     float pdf;
     float pdf_seg;
 
-    float3 x3;
+    float3 x3; // third vertex reconnection data
     float3 n3;
     uint triID;
 };

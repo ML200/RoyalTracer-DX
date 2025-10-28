@@ -27,7 +27,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     float pdf = 1.0f;
 
     // Probs:
-    float2 sProbs1 = BD_MethodProbsFromRoughness(1.0f); // 1 roughness hardcoded for now
+    float3 sProbs1 = BD_MethodProbsFromRoughness(1.0f);
     uint pickID1 = BD_PickMethod(sProbs1, seed);
     // Sample the selected method:
     BDReturn bdreturn1 = BD_SamplePicked(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed, pickID1);
@@ -35,21 +35,20 @@ void main(uint3 tid : SV_DispatchThreadID)
     float bdpdf1 = BD_OneSamplePDF(bdreturn1.pdf, pickID1, sdata, bdreturn1, sProbs1);
 
     float3 segment_throughput;
-    float3 debug = 0.0f;//ReconnectGIBD_Simple(sdata.x1, sdata.n1, sdata.o, sdata.matID, bdreturn1.x2, bdreturn1.n2, bdreturn1.matID, bdreturn1.x3, bdreturn1.n3,bdreturn1.L2, bdpdf1, segment_throughput);
+    float3 debug = ReconnectGIBD_Simple(sdata.x1, sdata.n1, sdata.o, sdata.matID, bdreturn1.x2, bdreturn1.n2, bdreturn1.matID, bdreturn1.x3, bdreturn1.n3,bdreturn1.L2, bdpdf1, segment_throughput);
 
-BDReturn debug_sample_1 = SampleSingleBSDF(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed);
-if(debug_sample_1.pdf > 0.0f && length(debug_sample_1.n2)>0.0f){
+if(bdreturn1.pdf_seg > 0.0f && length(bdreturn1.n2)>0.0f){
     // More path variables
-    float3 position_cache = debug_sample_1.x2;
-    float3 normal_cache = normalize(debug_sample_1.n2);
-    float3 outgoing_cache = normalize(sdata.x1 - debug_sample_1.x2);
-    uint matID_cache = debug_sample_1.matID;
+    float3 position_cache = bdreturn1.x2;
+    float3 normal_cache = normalize(bdreturn1.n2);
+    float3 outgoing_cache = normalize(sdata.x1 - bdreturn1.x2);
+    uint matID_cache = bdreturn1.matID;
 
-    throughput *= debug_sample_1.L2;
-    pdf *= debug_sample_1.pdf_seg;
+    throughput *= segment_throughput;
+    pdf *= bdreturn1.pdf_seg;
 
     // Probs:
-    float2 sProbs2 = BD_MethodProbsFromRoughness(1.0f); // 1 roughness hardcoded for now
+    float3 sProbs2 = BD_MethodProbsFromRoughness(1.0f);
     uint pickID2 = BD_PickMethod(sProbs2, seed);
     // Sample the selected method:
     BDReturn bdreturn2 = BD_SamplePicked(position_cache, normal_cache, matID_cache, outgoing_cache, waveSeed, seed, pickID2);
