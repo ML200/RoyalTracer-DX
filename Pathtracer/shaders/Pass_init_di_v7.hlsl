@@ -3,7 +3,7 @@
 //─────────────────────────────────────────────────────────────────────────────
 //  Initial Sampling DI
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(16, 8, 1)]
+[numthreads(8, 8, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
@@ -21,7 +21,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     if(sdata.matID != 4294967294 && all(sdata.L1 < EPSILON)){
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 1);
-        uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
+        uint waveSeed = GetWaveSeed(pixelIdx, uint2(8,8), time, 1);
 
         Reservoir_DI reservoir = (Reservoir_DI)0;
         float phat_final = 0.0f;

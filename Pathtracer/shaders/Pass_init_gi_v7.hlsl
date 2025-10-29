@@ -3,7 +3,7 @@
 //─────────────────────────────────────────────────────────────────────────────
 //  Initial Sampling GI
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(16, 8, 1)]
+[numthreads(8, 8, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
@@ -17,14 +17,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     Reservoir_GI reservoir = (Reservoir_GI)0;
     // Get a random seed
     uint2 seed = GetSeed(pixelIdx, time, 1);
-    uint waveSeed = GetWaveSeed(pixelIdx, time, 1);
+    uint waveSeed = GetWaveSeed(pixelIdx, uint2(8,8), time, 1);
 
     // Load sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
 
     // Probs:
     float3 sProbs1 = BD_MethodProbsFromRoughness(1.0f);
-    uint pickID1 = BD_PickMethod(sProbs1, seed);
+    uint pickID1 = BD_PickMethod(sProbs1, waveSeed);
     // Sample the selected method:
     BDReturn bdreturn1 = BD_SamplePicked(sdata.x1, sdata.n1, sdata.matID, sdata.o, waveSeed, seed, pickID1);
     // Get the combined pdf
@@ -45,7 +45,7 @@ if(bdreturn1.pdf_seg > EPSILON && pickID1!=1u && length(bdreturn1.n2) > EPSILON)
 
     // Probs:
     float3 sProbs2 = BD_MethodProbsFromRoughness(1.0f);
-    uint pickID2 = BD_PickMethod(sProbs2, seed);
+    uint pickID2 = BD_PickMethod(sProbs2, waveSeed);
     // Sample the selected method:
     BDReturn bdreturn2 = BD_SamplePicked(position_cache, normal_cache, matID_cache, outgoing_cache, waveSeed, seed, pickID2);
 

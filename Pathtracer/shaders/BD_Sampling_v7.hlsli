@@ -411,9 +411,9 @@ inline float3 BD_MethodProbsFromRoughness(float roughness)
     return float3(0.4f, 0.4f, 0.2f);
 }
 
-inline uint BD_PickMethod(float3 probs, inout uint2 threadSeed)
+inline uint BD_PickMethod(float3 probs, inout uint waveSeed)
 {
-    float xi = RandomFloatSingle(threadSeed.x);
+    float xi = RandomFloatSingle(waveSeed);
     if (xi < probs.x) return 0u;               // BSDF+NEE
     xi -= probs.x;
     if (xi < probs.y) return 1u;               // Forward

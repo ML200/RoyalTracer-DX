@@ -12,12 +12,19 @@ uint2 GetSeed(uint2 idx, uint t, uint c)
       ^ uint2(293803u,    423977u)   * t;
 }
 
+
+// 32-bit mix
+inline uint Hash32(uint v) {
+    v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; v ^= v >> 16;
+    return v;
+}
 // Generate a seed that is exactly the same in every lane - used for example to reduce cache pressure when sampling NEE samples
-uint GetWaveSeed(uint2 idx, uint t, uint c)
+uint GetWaveSeed(uint2 idx, uint2 tileSize, uint t, uint c)
 {
-    uint2 seed2 = GetSeed(idx, t, c);
-    uint laneSeed = seed2.x;
-    return WaveReadLaneFirst(laneSeed);
+    uint2 tile = idx / tileSize;
+    uint tileKey = (tile.y << 16) | tile.x;
+    uint waveTileKey = WaveActiveMin(tileKey);
+    return Hash32(waveTileKey ^ 0xB5297A4Du * t ^ 0x68E31DA4u * c);
 }
 
 
