@@ -199,16 +199,16 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Pass_init_di_v7.hlsl|cs:8x8",
+        L"Pass_init_di_v8.hlsl|cs:8x8",
         L"barrier",
-        L"Pass_init_gi_v7.hlsl|cs:8x8",
+        L"Pass_init_gi_v8.hlsl|cs:8x8",
         L"barrier",
-        L"Pass_temp_di_v7.hlsl|cs:16x8",
+        /*L"Pass_temp_di_v7.hlsl|cs:16x8",
         L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
         L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
-        L"barrier",
+        L"barrier",*/
         L"Pass_shading_v7.hlsl|cs:16x16",
         L"barrier",
         /*L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"city_v3.obj", "sky.obj"/*, "screwLight.obj"*/};
+    std::vector<std::string> models = {"sponza_simple.obj", "translucentTest.obj"/*, "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);

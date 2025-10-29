@@ -289,7 +289,7 @@ private:
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 1;       // triangles per BLAS leaf
+        uint32_t maxLeafTris = 16;       // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
         uint32_t buildBins   = 64;       // spatial bin count for SAOH
         enum class Heuristic { SAOH, SAH }; // What heuristic should we use?

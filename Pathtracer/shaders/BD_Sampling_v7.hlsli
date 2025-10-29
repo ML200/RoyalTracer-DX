@@ -408,7 +408,7 @@ inline float3 BD_MethodProbsFromRoughness(float roughness)
     if (sum <= 0.0f) return float3(1.0f, 0.0f, 0.0f);
 
     return float3(p_bsdfnee, p_fwd, p_bsdfbsdf) / sum;*/
-    return float3(0.4f, 0.4f, 0.2f);
+    return float3(0.4f, 0.5f, 0.1f);
 }
 
 inline uint BD_PickMethod(float3 probs, inout uint waveSeed)
