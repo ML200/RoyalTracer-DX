@@ -62,69 +62,80 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
 }
 
 inline void EvalSurface(
-    uint   instID,
-    uint   primID,
-    float2 bc2,
-    float3 rayDir,
-    out float3 outPosW,
-    out float3 outNormW,
-    out float3 outGNormW,
-    out float  outArea,
-    out uint   outMatID)
+    uint      instID,
+    uint      primID,
+    float2    bc2,
+    float     t,
+    in RayDesc ray,
+    out HitInfo hit)
 {
     const uint baseI = instanceProps[instID].indexBase;
     const uint baseM = instanceProps[instID].materialBase;
 
-    // indices
+    // --- Object-space calculations ---
+
+    // Indices
     const uint i0 = indices[baseI + 3u*primID + 0];
     const uint i1 = indices[baseI + 3u*primID + 1];
     const uint i2 = indices[baseI + 3u*primID + 2];
 
-    // vertices
+    // Vertices
     const float3 p0 = BTriVertex[i0].vertex;
     const float3 p1 = BTriVertex[i1].vertex;
     const float3 p2 = BTriVertex[i2].vertex;
 
-    const float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
-
-    // position
-    const float3 posObj = p0*bary.x + p1*bary.y + p2*bary.z;
-
-    // geometric normal + area
+    // Geometric normal + area in object space
     const float3 e1 = p1 - p0;
     const float3 e2 = p2 - p0;
     const float3 faceN_un = cross(e1, e2);
-    const float  area_l   = 0.5f * length(faceN_un);
-    const float3 flatN    = (area_l > 0.0f) ? normalize(faceN_un) : float3(0,0,1);
+    const float  area_obj = 0.5f * length(faceN_un);
+    const float3 flatN_obj = (area_obj > 0.0f) ? normalize(faceN_un) : float3(0,0,1);
 
-    // per-vertex normals from buffer
+    // Barycentrics
+    const float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
+
+    // Per-vertex shading normals
     float3 n0 = BTriVertex[i0].normal.xyz;
     float3 n1 = BTriVertex[i1].normal.xyz;
     float3 n2 = BTriVertex[i2].normal.xyz;
 
-    // decide: all-zero => flat; otherwise interpolate
-    const float eps = 1e-10;
-    const bool allZero = (dot(n0,n0) < eps) && (dot(n1,n1) < eps) && (dot(n2,n2) < eps);
+    // Interpolated shading normal in object space
+    const bool allZero = (dot(n0,n0) < EPSILON) && (dot(n1,n1) < EPSILON) && (dot(n2,n2) < EPSILON);
 
-    float3 N = flatN;
+    float3 N_obj = flatN_obj;
     if (!allZero) {
-        // normalize inputs to be safe (exporters may give near-unit)
-        if (dot(n0,n0) >= eps) n0 = normalize(n0); else n0 = flatN;
-        if (dot(n1,n1) >= eps) n1 = normalize(n1); else n1 = flatN;
-        if (dot(n2,n2) >= eps) n2 = normalize(n2); else n2 = flatN;
+        // Normalize inputs to be safe
+        if (dot(n0,n0) >= EPSILON) n0 = normalize(n0); else n0 = flatN_obj;
+        if (dot(n1,n1) >= EPSILON) n1 = normalize(n1); else n1 = flatN_obj;
+        if (dot(n2,n2) >= EPSILON) n2 = normalize(n2); else n2 = flatN_obj;
 
-        N = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
+        N_obj = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
 
-        // keep same hemisphere as the face normal to avoid flips
-        if (dot(N, flatN) < 0.0f) N = flatN;
+        // Ensure shading normal is in the same hemisphere as the geometric normal
+        if (dot(N_obj, flatN_obj) < 0.0f) N_obj = flatN_obj;
     }
 
-    // object -> world
-    outPosW  = mul(instanceProps[instID].objectToWorld, float4(posObj,1)).xyz;
-    float3 nW = mul(instanceProps[instID].objectToWorldNormal, float4(N,0)).xyz;
-    outNormW  = normalize(nW);
-    outArea   = area_l;
-    outMatID = materialIDs[baseM + primID];
+    // --- World-space transformations and HitInfo assignment ---
+
+    float4x4 normalMatrix = instanceProps[instID].objectToWorldNormal;
+
+    // Transform geometric normal to world space for backface check
+    float3 gNormW = mul(normalMatrix, float4(flatN_obj, 0)).xyz;
+
+    // Transform shading normal to world space
+    float3 nW = mul(normalMatrix, float4(N_obj, 0)).xyz;
+
+    // Fill the HitInfo payload
+    hit.hitPosition = ray.Origin + t * ray.Direction;
+    hit.area        = area_obj; // Area is in object-space units
+    hit.materialID  = materialIDs[baseM + primID];
+    hit.objID       = instID;
+    hit.hitBackface = dot(ray.Direction, gNormW) > 0.0f;
+    hit.hitNormal   = hit.hitBackface ? normalize(-nW) : normalize(nW);
+
+    // Light ID lookup
+    const uint baseL = instanceProps[instID].triToLightBase;
+    hit.lightID = gTriToLightId[baseL + primID];
 }
 
 inline void EvalMissHit(in RayDesc ray, out HitInfo hit)
@@ -162,26 +173,14 @@ inline bool TraceRayInline_HitInfo(
         return false;
     }
 
-    float2 bc2    = rq.CommittedTriangleBarycentrics();
-    uint   primID = rq.CommittedPrimitiveIndex();
-    uint   instID = rq.CommittedInstanceID();
-    float  t      = rq.CommittedRayT();
+    // Get hit details from the ray query
+    const float2 bc2    = rq.CommittedTriangleBarycentrics();
+    const uint   primID = rq.CommittedPrimitiveIndex();
+    const uint   instID = rq.CommittedInstanceID();
+    const float  t      = rq.CommittedRayT();
 
-    float3 surfPos, surfNormal, surfGNormal;
-    float  surfArea;
-    uint   matID;
-    EvalSurface(instID, primID, bc2, ray.Direction, surfPos, surfNormal, surfGNormal, surfArea, matID);
-
-    hit.hitBackface = dot(ray.Direction, surfGNormal) > 0.0f;
-    hit.hitPosition = ray.Origin + t * ray.Direction;
-    hit.hitNormal   = surfNormal;
-    hit.area        = surfArea;
-    hit.materialID  = matID;
-    hit.objID       = instID;
-
-    uint base   = instanceProps[instID].triToLightBase;
-    uint light  = gTriToLightId[base + primID];
-    hit.lightID = light;
+    // Evaluate the surface hit and write directly to the hit info struct
+    EvalSurface(instID, primID, bc2, t, ray, hit);
 
     return true;
 }

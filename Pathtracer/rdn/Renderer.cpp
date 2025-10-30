@@ -212,7 +212,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_spat_di_v7_1.hlsl|cs:16x16",
         L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
         L"barrier",*/
-        L"Pass_shading_v7.hlsl|cs:16x16",
+        L"Pass_shading_v8.hlsl|cs:16x16",
         L"barrier",
         /*L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
         L"barrier",

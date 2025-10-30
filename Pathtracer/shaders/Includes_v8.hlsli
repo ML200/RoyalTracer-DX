@@ -14,8 +14,8 @@ cbuffer Push : register(b1)
 static uint3 gDispatchIdx;
 #define DispatchRaysIndex()      gDispatchIdx
 
-#include "Constants_v7.hlsli"
-#include "Common_v7.hlsli"
+#include "Constants_v8.hlsli"
+#include "Common_v8.hlsli"
 #include "Structures_v7.hlsli"
 #include "Random_v7.hlsli"
 #include "Compression_v7.hlsli"
@@ -82,5 +82,6 @@ cbuffer CameraParams : register(b0)
 #include "BSDF_Sampling_v7.hlsli"
 #include "BD_Sampling_v7.hlsli"
 #include "BD_Reconnection_v7.hlsli"
+#include "Path_Sampler_v8.hlsli"
 #include "Motion_vectors_v7.hlsli"
 #include "Denoiser_helper_v7.hlsli"
