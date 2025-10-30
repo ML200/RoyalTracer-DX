@@ -32,6 +32,7 @@
 /Pathtracer/cmake-build-release-visual-studio
 /Pathtracer/out
 /Pathtracer/.vs
+/Pathtracer/car
 *.idea
 
 sponza_big.mtl
