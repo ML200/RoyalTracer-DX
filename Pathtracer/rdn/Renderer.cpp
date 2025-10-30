@@ -201,8 +201,8 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_init_di_v8.hlsl|cs:8x8",
         L"barrier",
-        L"Pass_init_gi_v8.hlsl|cs:8x8",
-        L"barrier",
+        /*L"Pass_init_gi_v8.hlsl|cs:8x8",
+        L"barrier",*/
         /*L"Pass_temp_di_v7.hlsl|cs:16x8",
         L"Pass_temp_gi_v7.hlsl|cs:16x8",
         L"barrier",
@@ -484,7 +484,7 @@ void Renderer::LoadAssets() {
       nullptr, IID_PPV_ARGS(&m_commandList)));
 
   {
-    std::vector<std::string> models = {"sponza_simple.obj", "translucentTest.obj"/*, "screwLight.obj"*/};
+    std::vector<std::string> models = {"testScene_2.obj"/*, "translucentTest.obj", "screwLight.obj"*/};
     //Iterate through the models in the scene
     for(int i=0; i<models.size(); i++){
         CreateVB(models[i]);
@@ -1478,7 +1478,7 @@ void Renderer::CreateRaytracingPipeline()
     pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
     // Payload / attribute / recursion depth (we dont use recursion)
-    pipeline.SetMaxPayloadSize( 7*sizeof(float) + 3*sizeof(UINT) );
+    pipeline.SetMaxPayloadSize( 11*sizeof(float) + 3*sizeof(UINT));
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
@@ -2649,12 +2649,8 @@ void Renderer::CollectEmissiveTriangles() {
             UINT idx2 = indices[3 * t + 2];
 
             // material id per tri
-            UINT mid0 = m_materialIDs[e_materialIDOffset + 3 * t + 0];
-            UINT mid1 = m_materialIDs[e_materialIDOffset + 3 * t + 1];
-            UINT mid2 = m_materialIDs[e_materialIDOffset + 3 * t + 2];
-            if (mid0 != mid1 || mid0 != mid2) continue;
-
-            const Material& mat = m_materials[mid0];
+            UINT mid = m_materialIDs[e_materialIDOffset + t];
+            const Material& mat = m_materials[mid];
             const float emissive = mat.Ke.x + mat.Ke.y + mat.Ke.z;
 
             if (emissive > 0.0f) {

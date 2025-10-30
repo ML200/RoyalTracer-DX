@@ -58,11 +58,15 @@ struct [[raypayload]] HitInfo {
                          : write(anyhit,closesthit,miss);
     float3 hitNormal : read(caller)
                          : write(anyhit,closesthit,miss);
+    float3 hitGNormal : read(caller)
+                         : write(anyhit,closesthit,miss);
     float area: read(caller)
                          : write(anyhit,closesthit,miss);
     uint objID: read(caller)
                          : write(anyhit,closesthit,miss);
     uint lightID: read(caller)
+                         : write(anyhit,closesthit,miss);
+    bool hitBackface: read(caller)
                          : write(anyhit,closesthit,miss);
 };
 

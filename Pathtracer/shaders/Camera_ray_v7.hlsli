@@ -27,10 +27,6 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
 
     float3 ke = materials[payload.materialID].Ke;
-    if(dot(payload.hitNormal,ray.Direction) > 0.0f){
-        ke = 0.0f;
-        payload.hitNormal = -payload.hitNormal;
-    }
 
     SampleData sdata = (SampleData)0;
     sdata.x1 = payload.hitPosition;

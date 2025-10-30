@@ -61,65 +61,87 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
     return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
 }
 
-// Inline version of closest hit shader
 inline void EvalSurface(
     uint   instID,
     uint   primID,
     float2 bc2,
+    float3 rayDir,
     out float3 outPosW,
     out float3 outNormW,
+    out float3 outGNormW,
     out float  outArea,
     out uint   outMatID)
 {
-    uint  baseI = instanceProps[instID].indexBase;
-    uint  baseV = instanceProps[instID].vertexBase;
-    uint  baseM = instanceProps[instID].materialBase;
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint baseM = instanceProps[instID].materialBase;
 
-    // vertex data
-    uint idx0 = indices[baseI + 3u*primID + 0];
-    uint idx1 = indices[baseI + 3u*primID + 1];
-    uint idx2 = indices[baseI + 3u*primID + 2];
+    // indices
+    const uint i0 = indices[baseI + 3u*primID + 0];
+    const uint i1 = indices[baseI + 3u*primID + 1];
+    const uint i2 = indices[baseI + 3u*primID + 2];
 
-    float3 p0 = BTriVertex[idx0].vertex;
-    float3 p1 = BTriVertex[idx1].vertex;
-    float3 p2 = BTriVertex[idx2].vertex;
+    // vertices
+    const float3 p0 = BTriVertex[i0].vertex;
+    const float3 p1 = BTriVertex[i1].vertex;
+    const float3 p2 = BTriVertex[i2].vertex;
 
-    // barycentrics = (1-u-v, u, v)
-    float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
+    const float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
 
     // position
-    float3 posObj = p0*bary.x + p1*bary.y + p2*bary.z;
+    const float3 posObj = p0*bary.x + p1*bary.y + p2*bary.z;
 
-    // area + norm
-    float3 e1 = p1 - p0;
-    float3 e2 = p2 - p0;
-    float3 flatN  = normalize(cross(e1, e2));
-    float  area_l = 0.5f * length(cross(e1, e2));
+    // geometric normal + area
+    const float3 e1 = p1 - p0;
+    const float3 e2 = p2 - p0;
+    const float3 faceN_un = cross(e1, e2);
+    const float  area_l   = 0.5f * length(faceN_un);
+    const float3 flatN    = (area_l > 0.0f) ? normalize(faceN_un) : float3(0,0,1);
 
-    // TODO: smooth normal is borked, fix needed
-    float3 vn0 = BTriVertex[idx0].normal.xyz;
-    float3 vn1 = BTriVertex[idx1].normal.xyz;
-    float3 vn2 = BTriVertex[idx2].normal.xyz;
+    // per-vertex normals from buffer
+    float3 n0 = BTriVertex[i0].normal.xyz;
+    float3 n1 = BTriVertex[i1].normal.xyz;
+    float3 n2 = BTriVertex[i2].normal.xyz;
 
-    float3 smoothN = flatN;
-    /*(length(vn0) != 0.0f ? vn0 : flatN) * bary.x +
-    (length(vn1) != 0.0f ? vn1 : flatN) * bary.y +
-    (length(vn2) != 0.0f ? vn2 : flatN) * bary.z;*/
+    // decide: all-zero => flat; otherwise interpolate
+    const float eps = 1e-10;
+    const bool allZero = (dot(n0,n0) < eps) && (dot(n1,n1) < eps) && (dot(n2,n2) < eps);
 
-    float3 n = normalize(smoothN);
+    float3 N = flatN;
+    if (!allZero) {
+        // normalize inputs to be safe (exporters may give near-unit)
+        if (dot(n0,n0) >= eps) n0 = normalize(n0); else n0 = flatN;
+        if (dot(n1,n1) >= eps) n1 = normalize(n1); else n1 = flatN;
+        if (dot(n2,n2) >= eps) n2 = normalize(n2); else n2 = flatN;
 
-    // object to world
-    outPosW  = mul(instanceProps[instID].objectToWorld,
-                   float4(posObj,1)).xyz;
+        N = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
 
-    n        = mul(instanceProps[instID].objectToWorldNormal,
-                   float4(n,0)).xyz;
-    outNormW = normalize(n);
-    outArea  = area_l;
+        // keep same hemisphere as the face normal to avoid flips
+        if (dot(N, flatN) < 0.0f) N = flatN;
+    }
 
-    // material id
-    uint matOffset = asuint( BTriVertex[idx0].normal.w );
-    outMatID       = materialIDs[baseM + 3u*primID + matOffset];
+    // object -> world
+    outPosW  = mul(instanceProps[instID].objectToWorld, float4(posObj,1)).xyz;
+    float3 nW = mul(instanceProps[instID].objectToWorldNormal, float4(N,0)).xyz;
+    outNormW  = normalize(nW);
+    outArea   = area_l;
+    outMatID = materialIDs[baseM + primID];
+}
+
+inline void EvalMissHit(in RayDesc ray, out HitInfo hit)
+{
+    // Miss shader mirror
+    hit.hitPosition = float3(0.4f, 0.4f, 0.5f); // for now blueish color
+    hit.materialID  = 0xFFFFFFFFu; // material id is the env map
+
+    float3 nd = (dot(ray.Direction, ray.Direction) > 1e-12f)
+              ? normalize(ray.Direction)
+              : float3(0.0f, 0.0f, 1.0f);
+
+    hit.hitNormal   = -nd;              // face toward the camera
+    hit.hitBackface = false;            // not applicable for env
+    hit.area        = 0.0f;             // infinite/none
+    hit.objID       = 0xFFFFFFFFu;      // no instance
+    hit.lightID     = 0xFFFFFFFFu;      // not a light
 }
 
 // INLINE BSDF ray, dont use for shadow ray because unoptimized
@@ -135,22 +157,22 @@ inline bool TraceRayInline_HitInfo(
     rq.TraceRayInline(SceneBVH, rayFlags, instanceMask, ray);
     while (rq.Proceed());
 
-    if (rq.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+    if (rq.CommittedStatus() != COMMITTED_TRIANGLE_HIT){
+        EvalMissHit(ray, hit);
         return false;
+    }
 
     float2 bc2    = rq.CommittedTriangleBarycentrics();
     uint   primID = rq.CommittedPrimitiveIndex();
     uint   instID = rq.CommittedInstanceID();
     float  t      = rq.CommittedRayT();
 
-    float3 surfPos, surfNormal;
+    float3 surfPos, surfNormal, surfGNormal;
     float  surfArea;
     uint   matID;
-    EvalSurface(instID, primID, bc2, surfPos, surfNormal, surfArea, matID);
+    EvalSurface(instID, primID, bc2, ray.Direction, surfPos, surfNormal, surfGNormal, surfArea, matID);
 
-    float3 incoming = -ray.Direction;
-    //if (dot(incoming, surfNormal) < 0.0f) surfNormal = -surfNormal;
-
+    hit.hitBackface = dot(ray.Direction, surfGNormal) > 0.0f;
     hit.hitPosition = ray.Origin + t * ray.Direction;
     hit.hitNormal   = surfNormal;
     hit.area        = surfArea;
