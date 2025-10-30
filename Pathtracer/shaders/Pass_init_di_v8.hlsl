@@ -17,7 +17,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);
 
     //Debug
-    //gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1+1.0f)/2.0f, 0.0f); // Norm
+    gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1+1.0f)/2.0f, 0.0f); // Norm
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.x1, 0.0f); // Pos
     //gScratchPing[uint3(tid.xy, 1)] = float4(materials[sdata.matID].Kd.xyz, 0.0f); // Material
 
