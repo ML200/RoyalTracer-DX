@@ -1,6 +1,7 @@
 struct STriVertex {
     float3 vertex;
     float4 normal;
+    float2 texCoord;
 };
 
 cbuffer Colors : register(b0) {
@@ -42,12 +43,18 @@ struct LightTriangle {
 
 struct Material
 {
-    float4 Kd; // +d
-    float3 Ke; float Ni;
+    float4 Kd;
+    float3 Ke;
+    float Ni;
     float4 Pr_Pm_Ps_Pc;
     float3 Pcr_aniso_anisor;
+    float pcr_pad;
     float LUT[16];
     float SheenLUT[16];
+    int albedoTexID;
+    int normalTexID;
+    int rmaTexID;
+    int pad;
 };
 
 // Ray payloads for closest hit and shadow ray

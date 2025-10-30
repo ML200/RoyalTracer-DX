@@ -18,6 +18,13 @@
 #include <chrono>
 #include <iomanip>
 
+#include <string>
+#include <map>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+struct TextureData;
 constexpr float PI = 3.14159265359f;
 constexpr int LUT_SIZE_THETA = 16; // Number of samples for cos(theta)
 constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
@@ -517,15 +524,24 @@ void GenerateSheenLUT(Material& mat)
     std::wcout << L"GenerateSheenLUT (1D x " << LUT_SIZE_THETA << L") in " << ms << L" ms\n";
 }
 
-
-
-
-
 class ObjLoader {
 public:
-    static void loadObjFile(const std::string& inputfile, std::vector<Vertex> *vertices, std::vector<UINT> *indices, std::vector<Material> *mats, std::vector<UINT> *materialIDs, UINT *materialOffset, UINT *materialVertexOffset, const std::string& material_search_path = "./") {
+    static void loadObjFile(
+        const std::string& inputfile,
+        std::vector<Vertex>* vertices,
+        std::vector<UINT>* indices,
+        std::vector<Material>* mats,
+        std::vector<UINT>* materialIDs,
+        UINT* materialOffset,
+        UINT* materialVertexOffset,
+        std::map<std::string, uint32_t>& textureMap,
+        std::vector<TextureData>& albedoTextures,
+        std::vector<TextureData>& normalTextures,
+        std::vector<TextureData>& rmaTextures,
+        const std::string& material_search_path = "./")
+    {
         tinyobj::ObjReaderConfig reader_config;
-        reader_config.mtl_search_path = material_search_path; // Path to material files
+        reader_config.mtl_search_path = material_search_path;
         reader_config.triangulate = true;
 
         tinyobj::ObjReader reader;
@@ -545,166 +561,118 @@ public:
         const auto& shapes = reader.GetShapes();
         auto& materials = reader.GetMaterials();
 
-        // Create a default material if a face has no material assigned
+        // Helper lambda to load a texture or return existing ID
+        auto loadTexture = [&](
+            const std::string& filename,
+            const std::string& materialPath,
+            std::vector<TextureData>& textureList) -> int
+        {
+            if (filename.empty()) {
+                return -1;
+            }
+
+            std::string fullPath = materialPath + filename;
+
+            if (textureMap.count(fullPath)) {
+                return textureMap[fullPath];
+            }
+
+            TextureData texData;
+            int req_comp = 4; // Always load as RGBA
+            unsigned char* data = stbi_load(fullPath.c_str(), &texData.width, &texData.height, &texData.channels, req_comp);
+
+            if (!data) {
+                std::cerr << "Failed to load texture: " << fullPath << std::endl;
+                return -1;
+            }
+
+            texData.pixels.assign(data, data + (size_t)texData.width * texData.height * 4);
+            stbi_image_free(data);
+
+            uint32_t textureID = static_cast<uint32_t>(textureList.size());
+            textureList.push_back(std::move(texData));
+            textureMap[fullPath] = textureID;
+
+            std::cout << "Loaded texture " << fullPath << " with ID " << textureID << std::endl;
+
+            return textureID;
+        };
+
         Material defaultMaterial;
         mats->push_back(defaultMaterial);
         (*materialOffset)++;
 
-        // Process materials
         for (const auto& mat : materials) {
-            // Convert the material name to a wide string
-            std::wstring wideName(mat.name.begin(), mat.name.end());
-
-            // Print the material name and dissolve value (alpha)
-            std::wcout << L"Loading Material: " << wideName << L", Dissolve: " << mat.dissolve << std::endl;
-
-            // Set up material properties
-            XMFLOAT4 diffuse(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve);
-            XMFLOAT4 Pr_Pm_Ps_Pc(mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness);
-            XMFLOAT3 Pcr_aniso_anisor(mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation);
-
             Material t_mat;
-            t_mat.Kd = diffuse;
-            t_mat.Ke = XMFLOAT3(mat.emission);
-            t_mat.Ni = static_cast<float>(mat.ior);
-            t_mat.Pr_Pm_Ps_Pc = Pr_Pm_Ps_Pc;
-            t_mat.Pcr_aniso_anisor = Pcr_aniso_anisor;
+            t_mat.Kd = { mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve };
+            t_mat.Ke = { mat.emission[0], mat.emission[1], mat.emission[2] };
+            t_mat.Ni = mat.ior;
+            t_mat.Pr_Pm_Ps_Pc = { mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness };
+            t_mat.Pcr_aniso_anisor = { mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation };
 
-            //Calculate LUT
-            GenerateEssLUT(t_mat);
-            PrintLUTAsVector(t_mat);
+            t_mat.albedoTexID = loadTexture(mat.diffuse_texname, material_search_path, albedoTextures);
+            std::string normalTexName = !mat.normal_texname.empty() ? mat.normal_texname : mat.bump_texname;
+            t_mat.normalTexID = loadTexture(normalTexName, material_search_path, normalTextures);
+            if (mat.unknown_parameter.count("map_rma")) {
+                t_mat.rmaTexID = loadTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures);
+            }
 
-            GenerateSheenLUT(t_mat);
-            PrintSheenLUT(t_mat);
-
-            // Add the material to the list
+            //GenerateEssLUT(t_mat);
+            //GenerateSheenLUT(t_mat);
             mats->push_back(t_mat);
         }
 
-
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
-        const float EPS_LEN   = 1e-12f;
-        const float COS_TOL   = 0.9998f;
+        const float EPS_LEN = 1e-12f;
+        const float COS_TOL = 0.9998f;
 
         for (const auto& shape : shapes) {
-        size_t index_offset = 0;
+            size_t index_offset = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
+                int fv = shape.mesh.num_face_vertices[f];
+                if (fv != 3) { index_offset += fv; continue; }
 
-        for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
-            int fv = shape.mesh.num_face_vertices[f];
-            // If triangulate=true, fv should be 3. If not, you can continue or handle ngons.
-            if (fv != 3) { index_offset += fv; continue; }
+                tinyobj::index_t i0 = shape.mesh.indices[index_offset + 0];
+                tinyobj::index_t i1 = shape.mesh.indices[index_offset + 1];
+                tinyobj::index_t i2 = shape.mesh.indices[index_offset + 2];
 
-            // ---- Gather indices
-            tinyobj::index_t i0 = shape.mesh.indices[index_offset + 0];
-            tinyobj::index_t i1 = shape.mesh.indices[index_offset + 1];
-            tinyobj::index_t i2 = shape.mesh.indices[index_offset + 2];
+                auto getPos = [&](const tinyobj::index_t& idx) { return XMFLOAT3(attrib.vertices[3 * idx.vertex_index + 0], attrib.vertices[3 * idx.vertex_index + 1], attrib.vertices[3 * idx.vertex_index + 2]); };
+                XMFLOAT3 p0 = getPos(i0); XMFLOAT3 p1 = getPos(i1); XMFLOAT3 p2 = getPos(i2);
 
-            // ---- Positions
-            auto getPos = [&](const tinyobj::index_t& idx) {
-                return XMFLOAT3(
-                    attrib.vertices[3 * idx.vertex_index + 0],
-                    attrib.vertices[3 * idx.vertex_index + 1],
-                    attrib.vertices[3 * idx.vertex_index + 2]);
-            };
-            XMFLOAT3 p0 = getPos(i0);
-            XMFLOAT3 p1 = getPos(i1);
-            XMFLOAT3 p2 = getPos(i2);
+                auto getUV = [&](const tinyobj::index_t& idx) { if (idx.texcoord_index >= 0) { return XMFLOAT2(attrib.texcoords[2 * idx.texcoord_index + 0], 1.0f - attrib.texcoords[2 * idx.texcoord_index + 1]); } return XMFLOAT2(0.0f, 0.0f); };
+                XMFLOAT2 uv0 = getUV(i0); XMFLOAT2 uv1 = getUV(i1); XMFLOAT2 uv2 = getUV(i2);
 
-            // ---- Compute face normal (flat)
-            XMVECTOR P0 = XMLoadFloat3(&p0);
-            XMVECTOR P1 = XMLoadFloat3(&p1);
-            XMVECTOR P2 = XMLoadFloat3(&p2);
-            XMVECTOR e1 = XMVectorSubtract(P1, P0);
-            XMVECTOR e2 = XMVectorSubtract(P2, P0);
-            XMVECTOR faceN_un = XMVector3Cross(e1, e2);
+                XMVECTOR P0 = XMLoadFloat3(&p0); XMVECTOR P1 = XMLoadFloat3(&p1); XMVECTOR P2 = XMLoadFloat3(&p2);
+                XMVECTOR faceN_un = XMVector3Cross(P1 - P0, P2 - P0);
+                float faceN_len; XMStoreFloat(&faceN_len, XMVector3Length(faceN_un));
+                XMFLOAT3 faceN_f(0, 0, 1); if (faceN_len > EPS_LEN) { XMStoreFloat3(&faceN_f, XMVector3Normalize(faceN_un)); }
 
-            float faceN_len;
-            XMStoreFloat(&faceN_len, XMVector3Length(faceN_un));
-            XMFLOAT3 faceN_f(0,0,1);
-            if (faceN_len > EPS_LEN) {
-                XMVECTOR faceN = XMVector3Normalize(faceN_un);
-                XMStoreFloat3(&faceN_f, faceN);
+                auto getObjN = [&](const tinyobj::index_t& idx) -> XMFLOAT3 { if (idx.normal_index >= 0) { return XMFLOAT3(attrib.normals[3 * idx.normal_index + 0], attrib.normals[3 * idx.normal_index + 1], attrib.normals[3 * idx.normal_index + 2]); } return XMFLOAT3(0, 0, 0); };
+                XMFLOAT3 n0_src = getObjN(i0); XMFLOAT3 n1_src = getObjN(i1); XMFLOAT3 n2_src = getObjN(i2);
+
+                auto lenSq = [](const XMFLOAT3& v) { return v.x * v.x + v.y * v.y + v.z * v.z; };
+                auto aligned = [&](const XMFLOAT3& n) { if (lenSq(n) <= EPS_LEN) return false; float dot; XMStoreFloat(&dot, XMVector3Dot(XMVector3Normalize(XMLoadFloat3(&n)), XMLoadFloat3(&faceN_f))); return dot > COS_TOL; };
+                bool all_match_face = aligned(n0_src) && aligned(n1_src) && aligned(n2_src);
+
+                int materialID = (f < shape.mesh.material_ids.size()) ? shape.mesh.material_ids[f] : -1;
+                uint32_t matID = (materialID >= 0) ? uint32_t(materialID + *materialOffset) : 0u;
+                materialIDs->push_back(matID);
+
+                auto makeNormal = [&](const XMFLOAT3& src) { return all_match_face ? XMFLOAT4(0.0f, 0.0f, 0.0f, *materialVertexOffset) : XMFLOAT4(src.x, src.y, src.z, *materialVertexOffset); };
+
+                Vertex v0(p0, makeNormal(n0_src), uv0);
+                Vertex v1(p1, makeNormal(n1_src), uv1);
+                Vertex v2(p2, makeNormal(n2_src), uv2);
+
+                auto pushUnique = [&](const Vertex& v) -> uint32_t { auto it = uniqueVertices.find(v); if (it == uniqueVertices.end()) { uint32_t newIndex = static_cast<uint32_t>(vertices->size()); uniqueVertices[v] = newIndex; vertices->push_back(v); return newIndex; } return it->second; };
+                indices->push_back(pushUnique(v0));
+                indices->push_back(pushUnique(v1));
+                indices->push_back(pushUnique(v2));
+
+                index_offset += fv;
             }
-
-            // ---- Source vertex normals (if present)
-            auto getObjN = [&](const tinyobj::index_t& idx) -> XMFLOAT3 {
-                if (idx.normal_index >= 0) {
-                    return XMFLOAT3(
-                        attrib.normals[3 * idx.normal_index + 0],
-                        attrib.normals[3 * idx.normal_index + 1],
-                        attrib.normals[3 * idx.normal_index + 2]);
-                }
-                return XMFLOAT3(0,0,0);
-            };
-            XMFLOAT3 n0_src = getObjN(i0);
-            XMFLOAT3 n1_src = getObjN(i1);
-            XMFLOAT3 n2_src = getObjN(i2);
-
-            auto lenSq = [](const XMFLOAT3& v) {
-                return v.x*v.x + v.y*v.y + v.z*v.z;
-            };
-
-            // ---- Test if all three vertex normals are aligned with face normal
-            auto aligned = [&](const XMFLOAT3& n) {
-                float L2 = lenSq(n);
-                if (L2 <= EPS_LEN) return false; // missing
-                XMVECTOR N  = XMVector3Normalize(XMLoadFloat3(&n));
-                XMVECTOR F  = XMLoadFloat3(&faceN_f);
-                float dot;
-                XMStoreFloat(&dot, XMVector3Dot(N, F));
-                // Require same orientation (dot close to +1). If you want to accept opposite, use fabs(dot).
-                return dot > COS_TOL;
-            };
-
-            bool n0_al = aligned(n0_src);
-            bool n1_al = aligned(n1_src);
-            bool n2_al = aligned(n2_src);
-
-            bool all_match_face = n0_al && n1_al && n2_al;
-
-            // ---- Material per-triangle (recommended)
-            int materialID = (f < shape.mesh.material_ids.size()) ? shape.mesh.material_ids[f] : -1;
-            uint32_t matID = (materialID >= 0) ? uint32_t(materialID + *materialOffset) : 0u;
-
-            // If you keep per-vertex packing, push 3 times in triangle order:
-            materialIDs->push_back(matID);
-
-            // ---- Emit vertices/indices with zeroed normals if this face is flat
-            auto makeNormal = [&](const XMFLOAT3& src) {
-                if (all_match_face) return XMFLOAT4(0.0f, 0.0f, 0.0f, *materialVertexOffset);
-                // keep provided normal (may be zero if missing)
-                return XMFLOAT4(src.x, src.y, src.z, *materialVertexOffset);
-            };
-
-            Vertex v0(XMFLOAT3(p0.x, p0.y, p0.z), makeNormal(n0_src));
-            Vertex v1(XMFLOAT3(p1.x, p1.y, p1.z), makeNormal(n1_src));
-            Vertex v2(XMFLOAT3(p2.x, p2.y, p2.z), makeNormal(n2_src));
-
-            // De-dup (IMPORTANT: equality/hash must include normal if you want hard edges preserved)
-            auto pushUnique = [&](const Vertex& v) -> uint32_t {
-                auto it = uniqueVertices.find(v);
-                if (it == uniqueVertices.end()) {
-                    uint32_t newIndex = static_cast<uint32_t>(vertices->size());
-                    uniqueVertices[v] = newIndex;
-                    vertices->push_back(v);
-                    return newIndex;
-                }
-                return it->second;
-            };
-
-            uint32_t id0 = pushUnique(v0);
-            uint32_t id1 = pushUnique(v1);
-            uint32_t id2 = pushUnique(v2);
-
-            indices->push_back(id0);
-            indices->push_back(id1);
-            indices->push_back(id2);
-
-            index_offset += fv;
         }
-    }
-
-    *materialOffset += materials.size();
+        *materialOffset += materials.size();
     }
 };
 

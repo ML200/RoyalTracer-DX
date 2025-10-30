@@ -77,76 +77,79 @@ void Renderer::BuildGlobalMeshBuffers()
     m_geoOffsets.clear();
     size_t totalVerts = 0, totalIdx = 0;
     m_geoOffsets.resize(m_VB.size());
-    for (size_t m=0; m<m_VB.size(); ++m) {
-        m_geoOffsets[m].vertexBase   = (UINT)totalVerts;
-        m_geoOffsets[m].indexBase    = (UINT)totalIdx;
+    for (size_t m = 0; m < m_VB.size(); ++m) {
+        m_geoOffsets[m].vertexBase = (UINT)totalVerts;
+        m_geoOffsets[m].indexBase = (UINT)totalIdx;
         m_geoOffsets[m].materialBase = m_materialIDOffsets[m];
         totalVerts += m_VertexCount[m];
-        totalIdx   += m_IndexCount[m];
+        totalIdx += m_IndexCount[m];
     }
     m_totalVertexCount = (UINT)totalVerts;
-    m_totalIndexCount  = (UINT)totalIdx;
+    m_totalIndexCount = (UINT)totalIdx;
 
-    const UINT vbBytes = m_totalVertexCount*sizeof(BTriVertex);
-    const UINT ibBytes = m_totalIndexCount *sizeof(uint32_t);
+    const UINT vbBytes = m_totalVertexCount * sizeof(BTriVertex);
+    const UINT ibBytes = m_totalIndexCount * sizeof(uint32_t);
 
     // Create default targets
-    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst)
+    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst, const wchar_t* name)
     {
         dst = nv_helpers_dx12::CreateBuffer(
             m_device.Get(), bytes, D3D12_RESOURCE_FLAG_NONE,
             D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+        dst->SetName(name);
     };
-    makeDefault(vbBytes, m_vertexGlobal);
-    makeDefault(ibBytes, m_indexGlobal);
+    makeDefault(vbBytes, m_vertexGlobal, L"GlobalVertexBuffer");
+    makeDefault(ibBytes, m_indexGlobal, L"GlobalIndexBuffer");
 
     // One big UPLOAD buffer; map once
     ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
-        m_device.Get(), vbBytes+ibBytes, D3D12_RESOURCE_FLAG_NONE,
+        m_device.Get(), vbBytes + ibBytes, D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+    upload->SetName(L"GlobalMeshUploadBuffer");
 
-    uint8_t* pUpload = nullptr; { CD3DX12_RANGE r(0,0); upload->Map(0,&r,(void**)&pUpload); }
+    uint8_t* pUpload = nullptr; { CD3DX12_RANGE r(0, 0); upload->Map(0, &r, (void**)&pUpload); }
     auto* dstVerts = reinterpret_cast<BTriVertex*>(pUpload + 0);
-    auto* dstIdx   = reinterpret_cast<uint32_t*>(pUpload + vbBytes);
+    auto* dstIdx = reinterpret_cast<uint32_t*>(pUpload + vbBytes);
 
     // Fill upload buffer directly
-    for (size_t m=0; m<m_VB.size(); ++m)
+    for (size_t m = 0; m < m_VB.size(); ++m)
     {
         // Map source once
         Vertex* srcV = nullptr;  UINT* srcI = nullptr;
-        { CD3DX12_RANGE r(0,0); m_VB[m]->Map(0,&r,(void**)&srcV); }
-        { CD3DX12_RANGE r(0,0); m_IB[m]->Map(0,&r,(void**)&srcI); }
+        { CD3DX12_RANGE r(0, 0); m_VB[m]->Map(0, &r, (void**)&srcV); }
+        { CD3DX12_RANGE r(0, 0); m_IB[m]->Map(0, &r, (void**)&srcI); }
 
         const UINT vCount = m_VertexCount[m];
         const UINT iCount = m_IndexCount[m];
-        const UINT vBase  = m_geoOffsets[m].vertexBase;
-        const UINT iBase  = m_geoOffsets[m].indexBase;
+        const UINT vBase = m_geoOffsets[m].vertexBase;
+        const UINT iBase = m_geoOffsets[m].indexBase;
 
-        // Convert Vertex
         BTriVertex* outV = dstVerts + vBase;
-        for (UINT i=0;i<vCount;++i) {
-            outV[i].vertex    = srcV[i].position;
-            outV[i].normal.x  = srcV[i].normal_material.x;
-            outV[i].normal.y  = srcV[i].normal_material.y;
-            outV[i].normal.z  = srcV[i].normal_material.z;
+        for (UINT i = 0; i < vCount; ++i) {
+            outV[i].vertex = srcV[i].position;
+            outV[i].normal.x = srcV[i].normal_material.x;
+            outV[i].normal.y = srcV[i].normal_material.y;
+            outV[i].normal.z = srcV[i].normal_material.z;
+            outV[i].normal.w = srcV[i].normal_material.w;
+            outV[i].texCoord = srcV[i].texCoord;
         }
 
         uint32_t* outI = dstIdx + iBase;
-        for (UINT i=0;i<iCount;++i) outI[i] = srcI[i] + vBase;
+        for (UINT i = 0; i < iCount; ++i) outI[i] = srcI[i] + vBase;
 
-        m_VB[m]->Unmap(0,nullptr);
-        m_IB[m]->Unmap(0,nullptr);
+        m_VB[m]->Unmap(0, nullptr);
+        m_IB[m]->Unmap(0, nullptr);
     }
 
-    upload->Unmap(0,nullptr);
+    upload->Unmap(0, nullptr);
 
     // Copy once to defaults
-    m_commandList->CopyBufferRegion(m_vertexGlobal.Get(),0, upload.Get(),0,         vbBytes);
-    m_commandList->CopyBufferRegion(m_indexGlobal .Get(),0, upload.Get(),vbBytes,   ibBytes);
+    m_commandList->CopyBufferRegion(m_vertexGlobal.Get(), 0, upload.Get(), 0, vbBytes);
+    m_commandList->CopyBufferRegion(m_indexGlobal.Get(), 0, upload.Get(), vbBytes, ibBytes);
 
     CD3DX12_RESOURCE_BARRIER br[] = {
         CD3DX12_RESOURCE_BARRIER::Transition(m_vertexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_indexGlobal .Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_indexGlobal.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
     };
     m_commandList->ResourceBarrier(_countof(br), br);
 }
@@ -401,147 +404,107 @@ void Renderer::LoadPipeline() {
 }
 
 void Renderer::LoadAssets() {
-  /*{
-    CD3DX12_ROOT_PARAMETER constantParameter;
-    CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-    constantParameter.InitAsDescriptorTable(1, &range,
-                                            D3D12_SHADER_VISIBILITY_ALL);
-    CD3DX12_ROOT_PARAMETER matricesParameter;
-    CD3DX12_DESCRIPTOR_RANGE matricesRange;
-    matricesRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 ,
-                       0 , 0 , 1 );
-    matricesParameter.InitAsDescriptorTable(1, &matricesRange,
-                                            D3D12_SHADER_VISIBILITY_ALL);
-    CD3DX12_ROOT_PARAMETER indexParameter;
-    indexParameter.InitAsConstants(1 , 1);
+    ThrowIfFailed(m_device->CreateCommandList(
+        0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
+        nullptr, IID_PPV_ARGS(&m_commandList)));
 
-    std::vector<CD3DX12_ROOT_PARAMETER> params = {
-        constantParameter, matricesParameter, indexParameter};
+    // --- Master lists for all textures loaded from all models ---
+    std::map<std::string, uint32_t> textureMap;
+    std::vector<TextureData> albedoTextures;
+    std::vector<TextureData> normalTextures;
+    std::vector<TextureData> rmaTextures;
 
-    CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init(
-        static_cast<UINT>(params.size()), params.data(), 0, nullptr,
-        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    // --- Model loading logic ---
+    {
+        std::vector<std::string> models = { "testScene_2.obj"};
+        for (const auto& modelName : models) {
+            std::vector<Vertex> vertices;
+            std::vector<UINT> indices;
+            // Use a temporary vector for materials from just this model
+            std::vector<Material> modelScopedMaterials;
+            std::vector<UINT> modelMaterialIDs;
 
-    ComPtr<ID3DBlob> signature;
-    ComPtr<ID3DBlob> error;
-    ThrowIfFailed(D3D12SerializeRootSignature(
-        &rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error));
-    ThrowIfFailed(m_device->CreateRootSignature(
-        0, signature->GetBufferPointer(), signature->GetBufferSize(),
-        IID_PPV_ARGS(&m_rootSignature)));
-  }*/
+            ObjLoader::loadObjFile(
+                modelName, &vertices, &indices, &modelScopedMaterials, &modelMaterialIDs,
+                &materialIDOffset, &materialVertexOffset,
+                textureMap, albedoTextures, normalTextures, rmaTextures, "./"
+            );
 
-  /*{
-    ComPtr<ID3DBlob> vertexShader;
-    ComPtr<ID3DBlob> pixelShader;
+            m_materialIDOffsets.push_back(static_cast<UINT>(m_materialIDs.size()));
+            m_materialIDs.insert(m_materialIDs.end(), modelMaterialIDs.begin(), modelMaterialIDs.end());
+            m_materials.insert(m_materials.end(), modelScopedMaterials.begin(), modelScopedMaterials.end());
 
-#if defined(_DEBUG)
-    UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    UINT compileFlags = 0;
-#endif
+            // Create Vertex Buffer for this model
+            const UINT vbSize = static_cast<UINT>(vertices.size()) * sizeof(Vertex);
+            ComPtr<ID3D12Resource> vb;
+            CD3DX12_RESOURCE_DESC vbDesc = CD3DX12_RESOURCE_DESC::Buffer(vbSize); // CORRECTED
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &vbDesc, // CORRECTED
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vb)));
+            UINT8* pVertexDataBegin;
+            vb->Map(0, nullptr, reinterpret_cast<void**>(&pVertexDataBegin));
+            memcpy(pVertexDataBegin, vertices.data(), vbSize);
+            vb->Unmap(0, nullptr);
+            m_VB.push_back(vb);
+            m_VBView.push_back({ vb->GetGPUVirtualAddress(), vbSize, sizeof(Vertex) });
+            m_VertexCount.push_back(static_cast<UINT>(vertices.size()));
 
-    ThrowIfFailed(D3DCompileFromFile(L"shaders.hlsl",
-                                     nullptr, nullptr, "VSMain", "vs_5_0",
-                                     compileFlags, 0, &vertexShader, nullptr));
-    ThrowIfFailed(D3DCompileFromFile(L"shaders.hlsl",
-                                     nullptr, nullptr, "PSMain", "ps_5_0",
-                                     compileFlags, 0, &pixelShader, nullptr));
-
-    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
-        {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
-         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12,
-         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
-
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.InputLayout = {inputElementDescs, _countof(inputElementDescs)};
-    psoDesc.pRootSignature = m_rootSignature.Get();
-    psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShader.Get());
-    psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShader.Get());
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState.DepthEnable = FALSE;
-    psoDesc.DepthStencilState.StencilEnable = FALSE;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.SampleDesc.Count = 1;
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-
-    ThrowIfFailed(m_device->CreateGraphicsPipelineState(
-        &psoDesc, IID_PPV_ARGS(&m_pipelineState)));
-  }*/
-
-  ThrowIfFailed(m_device->CreateCommandList(
-      0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
-      nullptr, IID_PPV_ARGS(&m_commandList)));
-
-  {
-    std::vector<std::string> models = {"testScene_2.obj"/*, "translucentTest.obj", "screwLight.obj"*/};
-    //Iterate through the models in the scene
-    for(int i=0; i<models.size(); i++){
-        CreateVB(models[i]);
+            // Create Index Buffer for this model
+            const UINT ibSize = static_cast<UINT>(indices.size()) * sizeof(UINT);
+            ComPtr<ID3D12Resource> ib;
+            CD3DX12_RESOURCE_DESC ibDesc = CD3DX12_RESOURCE_DESC::Buffer(ibSize); // CORRECTED
+            ThrowIfFailed(m_device->CreateCommittedResource(
+                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &ibDesc, // CORRECTED
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ib)));
+            UINT8* pIndexDataBegin;
+            ib->Map(0, nullptr, reinterpret_cast<void**>(&pIndexDataBegin));
+            memcpy(pIndexDataBegin, indices.data(), ibSize);
+            ib->Unmap(0, nullptr);
+            m_IB.push_back(ib);
+            m_IBView.push_back({ ib->GetGPUVirtualAddress(), ibSize, DXGI_FORMAT_R32_UINT });
+            m_IndexCount.push_back(static_cast<UINT>(indices.size()));
+        }
     }
 
-    //Upload the models
-      //Material:
-      {
-          const UINT materialBufferSize = static_cast<UINT>(m_materials.size()) * sizeof(Material);
-
-          CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-          CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
-          ThrowIfFailed(m_device->CreateCommittedResource(
-                  &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
-                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
-
-          // Copy material data to the buffer.
-          UINT8* pMaterialDataBegin;
-          CD3DX12_RANGE readRange(0, 0);
-          ThrowIfFailed(m_materialBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialDataBegin)));
-          memcpy(pMaterialDataBegin, m_materials.data(), materialBufferSize);
-          m_materialBuffer->Unmap(0, nullptr);
-      }
-
-      //Material Indices
-      {
-          const UINT materialIndexBufferSize = static_cast<UINT>(m_materialIDs.size()) * sizeof(UINT);
-
-          CD3DX12_HEAP_PROPERTIES heapProp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-          CD3DX12_RESOURCE_DESC bufferRes = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize);
-          ThrowIfFailed(m_device->CreateCommittedResource(
-                  &heapProp, D3D12_HEAP_FLAG_NONE, &bufferRes, //
-                  D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
-
-          // Copy material index data to the buffer.
-          UINT8* pMaterialIndexDataBegin;
-          CD3DX12_RANGE readRange(0, 0);
-          ThrowIfFailed(m_materialIndexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMaterialIndexDataBegin)));
-          memcpy(pMaterialIndexDataBegin, m_materialIDs.data(), materialIndexBufferSize);
-          m_materialIndexBuffer->Unmap(0, nullptr);
-      }
-  }
-
-  // Create synchronization objects and wait until assets have been uploaded to
-  // the GPU.
-  {
-    ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                        IID_PPV_ARGS(&m_fence)));
-    m_fenceValue = 1;
-
-    // Create an event handle to use for frame synchronization.
-    m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-    if (m_fenceEvent == nullptr) {
-      ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+    // --- Upload material data (now includes texture IDs) ---
+    {
+        const UINT materialBufferSize = static_cast<UINT>(m_materials.size()) * sizeof(Material);
+        CD3DX12_RESOURCE_DESC materialBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize); // CORRECTED
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialBufferDesc, // CORRECTED
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
+        UINT8* pMaterialDataBegin;
+        m_materialBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pMaterialDataBegin));
+        memcpy(pMaterialDataBegin, m_materials.data(), materialBufferSize);
+        m_materialBuffer->Unmap(0, nullptr);
     }
-    WaitForPreviousFrame();
-  }
+    {
+        const UINT materialIndexBufferSize = static_cast<UINT>(m_materialIDs.size()) * sizeof(UINT);
+        CD3DX12_RESOURCE_DESC materialIndexBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize); // CORRECTED
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialIndexBufferDesc, // CORRECTED
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
+        UINT8* pMaterialIndexDataBegin;
+        m_materialIndexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pMaterialIndexDataBegin));
+        memcpy(pMaterialIndexDataBegin, m_materialIDs.data(), materialIndexBufferSize);
+        m_materialIndexBuffer->Unmap(0, nullptr);
+    }
+
+    // --- Create and upload GPU texture arrays ---
+    CreateTextureArrays(albedoTextures, normalTextures, rmaTextures);
+
+    // --- Synchronization ---
+    {
+        ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
+        m_fenceValue = 1;
+        m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        if (m_fenceEvent == nullptr) {
+            ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+        }
+        // This wait is important. It ensures the command list that contains texture uploads
+        // is finished before we try to use those textures. We'll execute it right after this function.
+        WaitForPreviousFrame(); // This should be called after ExecuteCommandLists
+    }
 }
 
 void Renderer::OnInitTransform() {
@@ -1182,52 +1145,72 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     return rsc.Generate(m_device.Get(), true);
 }
 
-ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature() {
-    nv_helpers_dx12::RootSignatureGenerator rsc;
+ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
+{
+    CD3DX12_ROOT_PARAMETER1 rootParameters[2];
+    std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
+    ranges.reserve(31); // The total number of ranges is now 33 - 2 = 31
 
-    rsc.AddHeapRangesParameter(
-            {
-                    {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
-                    {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
-                    {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
-                    {1 /*t1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 18},   // <‑ indices[]
-                    {2 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 19},   // <‑ BTriVertex[]
-                    {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
-                    {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
-                    {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
-                    {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
-                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6},
-                    {2 /*u2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,8},
-                    {3 /*u3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,9},
-                    {4 /*u4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,10},
-                    {5 /*u5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,11},
-                    {6 /*u6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,12},
-                    {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
-                    {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
-                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
-                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
-                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 },
-                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 },
-                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 },
-                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 },
-                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 },
-                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 },
-                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
-                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
-                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
-                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
-            }
-    );
-    rsc.AddRootParameter(
-        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-        /* shaderRegister = */ 1,
-        /* registerSpace  = */ 0,
-        /* numConstants   = */ 2
-    );
+    // Ranges 0-23 are unchanged
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 7);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 1);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 18);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 19);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 2);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, 3);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 4);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 5);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 6);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 8);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 9);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 4, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 10);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 5, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 11);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 12);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 7, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 13);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 14);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 15);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 8, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 16);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 9, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 17);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 20);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 10, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 21);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 22);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 23);
 
-    // note: allowInputAssembler=false for compute
-    return rsc.Generate(m_device.Get(), /*allowInputAssembler=*/false);
+    // --- ALIAS TABLE RANGES (t13, t14 at offsets 24, 25) ARE NOW REMOVED ---
+
+    // --- SUBSEQUENT RANGES ARE SHIFTED UP BY 2 SLOTS ---
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 24); // Was 26
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 16, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 25); // Was 27
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 17, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 26); // Was 28
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 18, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 27); // Was 29
+    // Texture arrays
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 30, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 28); // Was 30
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 31, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 29); // Was 31
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 32, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 30); // Was 32
+
+    rootParameters[0].InitAsDescriptorTable(static_cast<UINT>(ranges.size()), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
+    rootParameters[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+    CD3DX12_STATIC_SAMPLER_DESC staticSampler(
+        0, D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+    staticSampler.MaxAnisotropy = 16;
+    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, 1, &staticSampler, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+    ComPtr<ID3DBlob> signature;
+    ComPtr<ID3DBlob> error;
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
+    if (FAILED(hr)) {
+        if (error) { OutputDebugStringA(static_cast<char*>(error->GetBufferPointer())); }
+        ThrowIfFailed(hr);
+    }
+
+    ComPtr<ID3D12RootSignature> pRootSignature;
+    ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&pRootSignature)));
+    return pRootSignature;
 }
 
 
@@ -1563,505 +1546,251 @@ void Renderer::CreateRaytracingOutputBuffer() {
 // Create the main heap used by the shaders, which will give access to the
 // raytracing output and the top-level acceleration structure
 //
+// REPLACE THE ENTIRE CONTENTS OF THIS FUNCTION
+
 void Renderer::CreateShaderResourceHeap() {
-  // #DXR Extra: Perspective Camera
-  // #DXR Extra: Perspective Camera
-  // Create a SRV/UAV/CBV descriptor heap. We need 3 entries - 1 SRV for the
-  // TLAS, 1 UAV for the raytracing output and 1 CBV for the camera matrices
-// Create a SRV/UAV/CBV descriptor heap. We need 4 entries - 1 SRV for the TLAS, 1 UAV for the
-// raytracing output, 1 CBV for the camera matrices, 1 SRV for the
-// per-instance data (# DXR Extra - Simple Lighting)
+    // We need a heap large enough for all our resources. Let's ensure it's big enough.
+    // Current count is 31, so 64 is a safe size.
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-            m_device.Get(), 64, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+        m_device.Get(), 64, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
-  // Get a handle to the heap memory on the CPU side, to be able to write the
-  // descriptors directly
-  D3D12_CPU_DESCRIPTOR_HANDLE srvHandle =
-      m_srvUavHeap->GetCPUDescriptorHandleForHeapStart();
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart());
+    const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-  // Create the UAV. Based on the root signature we created it is the first
-  // entry. The Create*View methods write the view information directly into
-  // srvHandle
-  D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-    uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-    uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; // Ensure this matches your resource format
-    uavDesc.Texture2DArray.MipSlice = 0; // Assuming you're using the first MIP level
-    uavDesc.Texture2DArray.FirstArraySlice = 0; // Starting at the first layer of the array
-    uavDesc.Texture2DArray.ArraySize = 60; // The number of layers in the array
-  m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc,
-                                      srvHandle);
+    // Helper to create a "null" SRV for a buffer, used when a resource is optional.
+    auto createNullBufferSrv = [&](D3D12_SHADER_RESOURCE_VIEW_DESC& srvDesc) {
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Buffer.NumElements = 1;
+        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        m_device->CreateShaderResourceView(nullptr, &srvDesc, handle);
+    };
 
-  // Add the Top Level AS SRV right after the raytracing output buffer
-  srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-  D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
-  srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-  srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-  srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  srvDesc.RaytracingAccelerationStructure.Location =
-      m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
-  // Write the acceleration structure view in the heap
-  m_device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
-
-  // #DXR Extra: Perspective Camera
-  // Add the constant buffer for the camera after the TLAS
-  srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-// Describe and create a constant buffer view for the camera
-    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-    cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
-    cbvDesc.SizeInBytes = m_cameraBufferSize;
-
-// Debug output: Check the buffer location and size
-    std::wcout << L"Camera buffer GPU virtual address: " << cbvDesc.BufferLocation << std::endl;
-    std::wcout << L"Camera buffer size (in bytes): " << cbvDesc.SizeInBytes << std::endl;
-
-    m_device->CreateConstantBufferView(&cbvDesc, srvHandle);
-
-// Debug output: Confirm that the CreateConstantBufferView call was made
-    std::wcout << L"Constant buffer view created for the camera." << std::endl;
-
-    const UINT inc = m_device->GetDescriptorHandleIncrementSize(
-                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    //# DXR Extra - Simple Lighting
-    srvHandle.ptr +=
-            m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc1;
-    srvDesc1.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc1.Format = DXGI_FORMAT_UNKNOWN;
-    srvDesc1.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srvDesc1.Buffer.FirstElement = 0;
-    srvDesc1.Buffer.NumElements = static_cast<UINT>(m_instances.size());
-    srvDesc1.Buffer.StructureByteStride = sizeof(InstanceProperties);
-    srvDesc1.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-// Write the per-instance properties buffer view in the heap
-    m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc1, srvHandle);
-
-    // Move to the next descriptor slot
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Create SRV for the Material IDs buffer
-    D3D12_SHADER_RESOURCE_VIEW_DESC materialIdSrvDesc = {};
-    materialIdSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    materialIdSrvDesc.Format = DXGI_FORMAT_R32_UINT; // Assuming material IDs are 32-bit unsigned integers
-    materialIdSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    materialIdSrvDesc.Buffer.FirstElement = 0;
-    materialIdSrvDesc.Buffer.NumElements = static_cast<UINT>(m_materialIDs.size()); // Assuming materialIDs is a std::vector<UINT>
-    materialIdSrvDesc.Buffer.StructureByteStride = 0; // Not a structured buffer
-    materialIdSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    m_device->CreateShaderResourceView(m_materialIndexBuffer.Get(), &materialIdSrvDesc, srvHandle);
-
-    // Move to the next descriptor slot
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Create SRV for the Materials buffer
-    D3D12_SHADER_RESOURCE_VIEW_DESC materialsSrvDesc = {};
-    materialsSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    materialsSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // Use DXGI_FORMAT_UNKNOWN for structured buffers
-    materialsSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    materialsSrvDesc.Buffer.FirstElement = 0;
-    materialsSrvDesc.Buffer.NumElements = static_cast<UINT>(m_materials.size()); // Assuming materials is a std::vector<Material>
-    materialsSrvDesc.Buffer.StructureByteStride = sizeof(Material); // Assuming Material is your material struct
-    materialsSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    m_device->CreateShaderResourceView(m_materialBuffer.Get(), &materialsSrvDesc, srvHandle);
-
-// After existing descriptors
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-// Create SRV for the Emissive Triangles buffer
-    D3D12_SHADER_RESOURCE_VIEW_DESC emissiveTrianglesSrvDesc = {};
-    emissiveTrianglesSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    emissiveTrianglesSrvDesc.Format = DXGI_FORMAT_UNKNOWN; // Structured buffer
-    emissiveTrianglesSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    emissiveTrianglesSrvDesc.Buffer.FirstElement = 0;
-    emissiveTrianglesSrvDesc.Buffer.NumElements = static_cast<UINT>(m_emissiveTriangles.size());
-    emissiveTrianglesSrvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
-    emissiveTrianglesSrvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-    m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &emissiveTrianglesSrvDesc, srvHandle);
-
-    // Move to the next descriptor slot after the last SRV
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Create UAV for the permanent data texture
-    D3D12_UNORDERED_ACCESS_VIEW_DESC permanentDataUavDesc = {};
-    permanentDataUavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-    permanentDataUavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; // Ensure this matches your resource format
-    permanentDataUavDesc.Texture2D.MipSlice = 0;
-    permanentDataUavDesc.Texture2D.PlaneSlice = 0;
-
-    // Create the UAV in the heap at the current descriptor slot (heap slot 7)
-    m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &permanentDataUavDesc, srvHandle);
-
-
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // Assuming you know the number of elements and structure size
-    UINT width = GetWidth();
-    UINT height = GetHeight();
-    UINT reservoirCount = width * height;
-    UINT reservoirElementSize_di = sizeof(Reservoir_DI);
-    UINT reservoirElementSize_gi = sizeof(Reservoir_GI);
-    UINT reservoirElementSize_sample = sizeof(SampleData);
-    UINT reservoirBufferSize_di = reservoirCount * reservoirElementSize_di;
-    UINT reservoirBufferSize_gi = reservoirCount * reservoirElementSize_gi;
-    UINT reservoirBufferSize_sample = reservoirCount * reservoirElementSize_sample;
-
-// Create default-heap buffer with UAV for random read/write
-    D3D12_RESOURCE_DESC reservoirDesc = {};
-    reservoirDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc.Alignment = 0;
-    reservoirDesc.Width = reservoirBufferSize_di;
-    reservoirDesc.Height = 1;
-    reservoirDesc.DepthOrArraySize = 1;
-    reservoirDesc.MipLevels = 1;
-    reservoirDesc.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc.SampleDesc.Count = 1;
-    reservoirDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_reservoirBuffer)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_1 = {};
-    reservoirUavDesc_1.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_1.Format                     = DXGI_FORMAT_R32_TYPELESS;   // RAW view
-    reservoirUavDesc_1.Buffer.FirstElement        = 0;
-    reservoirUavDesc_1.Buffer.NumElements         = reservoirBufferSize_di / 4;             // 4-byte elems
-    reservoirUavDesc_1.Buffer.StructureByteStride = 0;                          // RAW
-    reservoirUavDesc_1.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_reservoirBuffer.Get(),
-        nullptr, &reservoirUavDesc_1, srvHandle);
-
-    //_________________________________
-
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-// Create default-heap buffer with UAV for random read/write
-    D3D12_RESOURCE_DESC reservoirDesc_2 = {};
-    reservoirDesc_2.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc_2.Alignment = 0;
-    reservoirDesc_2.Width = reservoirBufferSize_di;
-    reservoirDesc_2.Height = 1;
-    reservoirDesc_2.DepthOrArraySize = 1;
-    reservoirDesc_2.MipLevels = 1;
-    reservoirDesc_2.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc_2.SampleDesc.Count = 1;
-    reservoirDesc_2.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc_2.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc_2,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_reservoirBuffer_2)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_2 = {};
-    reservoirUavDesc_2.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_2.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    reservoirUavDesc_2.Buffer.FirstElement        = 0;
-    reservoirUavDesc_2.Buffer.NumElements         = reservoirBufferSize_di / 4;
-    reservoirUavDesc_2.Buffer.StructureByteStride = 0;
-    reservoirUavDesc_2.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_reservoirBuffer_2.Get(),
-        nullptr, &reservoirUavDesc_2, srvHandle);
-    //_________________________________
-
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    // Create default-heap buffer with UAV for random read/write
-    D3D12_RESOURCE_DESC reservoirDesc_3 = {};
-    reservoirDesc_3.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc_3.Alignment = 0;
-    reservoirDesc_3.Width = reservoirBufferSize_gi;
-    reservoirDesc_3.Height = 1;
-    reservoirDesc_3.DepthOrArraySize = 1;
-    reservoirDesc_3.MipLevels = 1;
-    reservoirDesc_3.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc_3.SampleDesc.Count = 1;
-    reservoirDesc_3.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc_3.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc_3,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_reservoirBuffer_3)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_3 = {};
-    reservoirUavDesc_3.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_3.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    reservoirUavDesc_3.Buffer.FirstElement        = 0;
-    reservoirUavDesc_3.Buffer.NumElements         = reservoirBufferSize_gi / 4;
-    reservoirUavDesc_3.Buffer.StructureByteStride = 0;
-    reservoirUavDesc_3.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_reservoirBuffer_3.Get(),
-        nullptr, &reservoirUavDesc_3, srvHandle);
-    //_________________________________
-
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_RESOURCE_DESC reservoirDesc_4 = {};
-    reservoirDesc_4.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc_4.Alignment = 0;
-    reservoirDesc_4.Width = reservoirBufferSize_gi;
-    reservoirDesc_4.Height = 1;
-    reservoirDesc_4.DepthOrArraySize = 1;
-    reservoirDesc_4.MipLevels = 1;
-    reservoirDesc_4.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc_4.SampleDesc.Count = 1;
-    reservoirDesc_4.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc_4.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc_4,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_reservoirBuffer_4)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_4 = {};
-    reservoirUavDesc_4.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_4.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    reservoirUavDesc_4.Buffer.FirstElement        = 0;
-    reservoirUavDesc_4.Buffer.NumElements         = reservoirBufferSize_gi / 4;
-    reservoirUavDesc_4.Buffer.StructureByteStride = 0;
-    reservoirUavDesc_4.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_reservoirBuffer_4.Get(),       // or m_reservoirBuffer_2 …
-        nullptr, &reservoirUavDesc_4, srvHandle);
-    //_________________________________
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    // Create default-heap buffer with UAV for random read/write
-    D3D12_RESOURCE_DESC reservoirDesc_5 = {};
-    reservoirDesc_5.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc_5.Alignment = 0;
-    reservoirDesc_5.Width = reservoirBufferSize_sample;
-    reservoirDesc_5.Height = 1;
-    reservoirDesc_5.DepthOrArraySize = 1;
-    reservoirDesc_5.MipLevels = 1;
-    reservoirDesc_5.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc_5.SampleDesc.Count = 1;
-    reservoirDesc_5.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc_5.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc_5,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_sampleBuffer_current)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_5 = {};
-    reservoirUavDesc_5.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_5.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    reservoirUavDesc_5.Buffer.FirstElement        = 0;
-    reservoirUavDesc_5.Buffer.NumElements         = reservoirBufferSize_sample / 4;
-    reservoirUavDesc_5.Buffer.StructureByteStride = 0;
-    reservoirUavDesc_5.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_sampleBuffer_current.Get(),
-        nullptr, &reservoirUavDesc_5, srvHandle);
-    //_________________________________
-
-    //_________________________________
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    // Create default-heap buffer with UAV for random read/write
-    D3D12_RESOURCE_DESC reservoirDesc_6 = {};
-    reservoirDesc_6.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    reservoirDesc_6.Alignment = 0;
-    reservoirDesc_6.Width = reservoirBufferSize_sample;
-    reservoirDesc_6.Height = 1;
-    reservoirDesc_6.DepthOrArraySize = 1;
-    reservoirDesc_6.MipLevels = 1;
-    reservoirDesc_6.Format = DXGI_FORMAT_UNKNOWN;
-    reservoirDesc_6.SampleDesc.Count = 1;
-    reservoirDesc_6.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    reservoirDesc_6.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps,
-            D3D12_HEAP_FLAG_NONE,
-            &reservoirDesc_6,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr,
-            IID_PPV_ARGS(&m_sampleBuffer_last)
-    ));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC reservoirUavDesc_6 = {};
-    reservoirUavDesc_6.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    reservoirUavDesc_6.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    reservoirUavDesc_6.Buffer.FirstElement        = 0;
-    reservoirUavDesc_6.Buffer.NumElements         = reservoirBufferSize_sample / 4;
-    reservoirUavDesc_6.Buffer.StructureByteStride = 0;
-    reservoirUavDesc_6.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-    m_device->CreateUnorderedAccessView(
-        m_sampleBuffer_last.Get(),
-        nullptr, &reservoirUavDesc_6, srvHandle);
-    //_________________________________
-
-    // alias PROB array
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_SHADER_RESOURCE_VIEW_DESC probDesc = {};
-    probDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    probDesc.Format            = DXGI_FORMAT_R32_FLOAT;
-    probDesc.ViewDimension     = D3D12_SRV_DIMENSION_BUFFER;
-    probDesc.Buffer.FirstElement = 0;
-    probDesc.Buffer.NumElements  =
-            static_cast<UINT>(m_aliasProb.size());
-    probDesc.Buffer.StructureByteStride = 0;
-    m_device->CreateShaderResourceView(
-            m_aliasProbBuffer.Get(), &probDesc, srvHandle);
-
-    // alias IDX array
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    D3D12_SHADER_RESOURCE_VIEW_DESC idxDesc = {};
-    idxDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    idxDesc.Format            = DXGI_FORMAT_R32_UINT;
-    idxDesc.ViewDimension     = DXGI_FORMAT_UNKNOWN ?
-                                 D3D12_SRV_DIMENSION_BUFFER :
-                                 D3D12_SRV_DIMENSION_BUFFER;
-    idxDesc.Buffer.FirstElement = 0;
-    idxDesc.Buffer.NumElements  =
-            static_cast<UINT>(m_aliasIdx.size());
-    idxDesc.Buffer.StructureByteStride = 0;
-    m_device->CreateShaderResourceView(
-            m_aliasIdxBuffer.Get(), &idxDesc, srvHandle);
-
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-                     D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC scratchDesc = {};
-    scratchDesc.ViewDimension            = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-    scratchDesc.Format                   = DXGI_FORMAT_R32G32B32A32_FLOAT;
-    scratchDesc.Texture2DArray.MipSlice  = 0;
-    scratchDesc.Texture2DArray.FirstArraySlice = 0;
-    scratchDesc.Texture2DArray.ArraySize = 16;       // same as DepthOrArraySize
-
-    m_device->CreateUnorderedAccessView(
-            m_scratchPing.Get(), nullptr, &scratchDesc, srvHandle);
-
-    srvHandle.ptr += m_device->GetDescriptorHandleIncrementSize(
-        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    UINT initialRayCount       = width * height;              // one ray / pixel
-    UINT initialRayBufferSize  = initialRayCount * sizeof(InitialBSDFRay);
-
-    D3D12_RESOURCE_DESC initialRayDesc = {};
-    initialRayDesc.Dimension           = D3D12_RESOURCE_DIMENSION_BUFFER;
-    initialRayDesc.Width               = initialRayBufferSize;
-    initialRayDesc.Height              = 1;
-    initialRayDesc.DepthOrArraySize    = 1;
-    initialRayDesc.MipLevels           = 1;
-    initialRayDesc.Format              = DXGI_FORMAT_UNKNOWN;
-    initialRayDesc.SampleDesc.Count    = 1;
-    initialRayDesc.Layout              = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    initialRayDesc.Flags               = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-            &initialRayDesc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            nullptr, IID_PPV_ARGS(&m_initialBSDFRayBuffer)));
-
-    D3D12_UNORDERED_ACCESS_VIEW_DESC initialRayUavDesc = {};
-    initialRayUavDesc.ViewDimension              = D3D12_UAV_DIMENSION_BUFFER;
-    initialRayUavDesc.Format                     = DXGI_FORMAT_R32_TYPELESS;
-    initialRayUavDesc.Buffer.FirstElement        = 0;
-    initialRayUavDesc.Buffer.NumElements         = initialRayBufferSize / 4;
-    initialRayUavDesc.Buffer.StructureByteStride = 0;
-    initialRayUavDesc.Buffer.Flags               = D3D12_BUFFER_UAV_FLAG_RAW;
-
-    m_device->CreateUnorderedAccessView(
-            m_initialBSDFRayBuffer.Get(), nullptr,
-            &initialRayUavDesc, srvHandle);
-
-    // slots 18 & 19  –  indices[t1]  and  BTriVertex[t2]   for inline queries
-    srvHandle.ptr += inc;
-
-    //indices
+    // Slot 0: Output Buffer UAV (u0)
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC idxSrv = {};
-        idxSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        idxSrv.Format                     = DXGI_FORMAT_UNKNOWN;
-        idxSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
-        idxSrv.Buffer.FirstElement        = 0;
-        idxSrv.Buffer.NumElements         = m_totalIndexCount;
-        idxSrv.Buffer.StructureByteStride = sizeof(uint32_t);
-        idxSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
-
-        m_device->CreateShaderResourceView(
-            m_indexGlobal.Get(), &idxSrv, srvHandle);
-        srvHandle.ptr += inc;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        uavDesc.Texture2DArray.ArraySize = m_outputResource->GetDesc().DepthOrArraySize;
+        m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc, handle);
     }
+    handle.Offset(1, inc); // Move to slot 1
 
-    // BTriVertex
+    // Slot 1: Top-Level Acceleration Structure SRV (t0)
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC vbSrv = {};
-        vbSrv.Shader4ComponentMapping    = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        vbSrv.Format                     = DXGI_FORMAT_UNKNOWN;
-        vbSrv.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
-        vbSrv.Buffer.FirstElement        = 0;
-        vbSrv.Buffer.NumElements         = m_totalVertexCount;
-        vbSrv.Buffer.StructureByteStride = sizeof(BTriVertex);
-        vbSrv.Buffer.Flags               = D3D12_BUFFER_SRV_FLAG_NONE;
-
-        m_device->CreateShaderResourceView(
-            m_vertexGlobal.Get(), &vbSrv, srvHandle);
-        srvHandle.ptr += inc;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.RaytracingAccelerationStructure.Location = m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
+        m_device->CreateShaderResourceView(nullptr, &srvDesc, handle);
     }
+    handle.Offset(1, inc); // Move to slot 2
 
-    //LightTree SRVs (TLASNodes, BLASNodes, BLASRanges, LeafTriIndex)
-    m_lightTree.WriteSrvs(m_device.Get(), srvHandle);
+    // Slot 2: Camera CBV (b0)
+    {
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+        cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+        cbvDesc.SizeInBytes = m_cameraBufferSize;
+        m_device->CreateConstantBufferView(&cbvDesc, handle);
+    }
+    handle.Offset(1, inc); // Move to slot 3
 
-    // advance handle
-    srvHandle.ptr += inc * 4;
-    //m_lightTree.WriteAliasSrvs(m_device.Get(), srvHandle);
-    srvHandle.ptr += inc * 2;
-    std::wcout << L"LightTree SRVs written at heap slots 20..23" << std::endl;
+    // Slot 3: Instance Properties SRV (t3)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_instances.size());
+        srvDesc.Buffer.StructureByteStride = sizeof(InstanceProperties);
+        m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc, handle);
+    }
+    handle.Offset(1, inc); // Move to slot 4
 
-    // srvHandle currently points to slot 26
-    D3D12_SHADER_RESOURCE_VIEW_DESC triMapSrv = {};
-    triMapSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    triMapSrv.Format                  = DXGI_FORMAT_R32_UINT;
-    triMapSrv.ViewDimension           = D3D12_SRV_DIMENSION_BUFFER;
-    triMapSrv.Buffer.FirstElement     = 0;
-    triMapSrv.Buffer.NumElements      = static_cast<UINT>(m_triToLightId.size());
-    triMapSrv.Buffer.StructureByteStride = 0;
-    triMapSrv.Buffer.Flags            = D3D12_BUFFER_SRV_FLAG_NONE;
+    // Slot 4: Material IDs SRV (t4)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R32_UINT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materialIDs.size());
+        m_device->CreateShaderResourceView(m_materialIndexBuffer.Get(), &srvDesc, handle);
+    }
+    handle.Offset(1, inc); // Move to slot 5
 
-    m_device->CreateShaderResourceView(m_triToLightIdBuffer.Get(), &triMapSrv, srvHandle);
-    srvHandle.ptr += inc;
+    // Slot 5: Materials SRV (t5)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materials.size());
+        srvDesc.Buffer.StructureByteStride = sizeof(Material);
+        m_device->CreateShaderResourceView(m_materialBuffer.Get(), &srvDesc, handle);
+    }
+    handle.Offset(1, inc); // Move to slot 6
 
-    // LightTree lookup SRVs
-    m_lightTree.WriteLookupSrvs(m_device.Get(), srvHandle);
-    srvHandle.ptr += inc * 3;
+    // Slot 6: Emissive Triangles SRV (t6)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (m_emissiveTrianglesBuffer) {
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_emissiveTriangles.size());
+            srvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
+            m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &srvDesc, handle);
+        } else { createNullBufferSrv(srvDesc); }
+    }
+    handle.Offset(1, inc); // Move to slot 7
 
-    std::wcout << L"SRVs created!" << std::endl;
+    // Slot 7: Permanent Data UAV (u1)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &uavDesc, handle);
+    }
+    handle.Offset(1, inc); // Move to slot 8
+
+    // Helper for creating RAW buffer UAVs
+    auto createRawBufferUAV = [&](ComPtr<ID3D12Resource>& res, UINT size, const wchar_t* name) {
+        D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+        ThrowIfFailed(m_device->CreateCommittedResource(&nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res)));
+        res->SetName(name);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.NumElements = size / 4;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        m_device->CreateUnorderedAccessView(res.Get(), nullptr, &uavDesc, handle);
+        handle.Offset(1, inc);
+    };
+
+    UINT reservoirBufferSize_di = GetWidth() * GetHeight() * sizeof(Reservoir_DI);
+    UINT reservoirBufferSize_gi = GetWidth() * GetHeight() * sizeof(Reservoir_GI);
+    UINT sampleBufferSize = GetWidth() * GetHeight() * sizeof(SampleData);
+
+    // Slots 8-13: Reservoirs and Sample Buffers (u2-u7)
+    createRawBufferUAV(m_reservoirBuffer, reservoirBufferSize_di, L"ReservoirBuffer_1");       // Slot 8
+    createRawBufferUAV(m_reservoirBuffer_2, reservoirBufferSize_di, L"ReservoirBuffer_2");     // Slot 9
+    createRawBufferUAV(m_reservoirBuffer_3, reservoirBufferSize_gi, L"ReservoirBuffer_3");     // Slot 10
+    createRawBufferUAV(m_reservoirBuffer_4, reservoirBufferSize_gi, L"ReservoirBuffer_4");     // Slot 11
+    createRawBufferUAV(m_sampleBuffer_current, sampleBufferSize, L"SampleBuffer_Current");     // Slot 12
+    createRawBufferUAV(m_sampleBuffer_last, sampleBufferSize, L"SampleBuffer_Last");          // Slot 13
+
+    // Slots 14-15: Alias Table SRVs (t7, t8)
+    { // Slot 14
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (m_aliasProbBuffer) {
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasProb.size());
+            m_device->CreateShaderResourceView(m_aliasProbBuffer.Get(), &srvDesc, handle);
+        } else { createNullBufferSrv(srvDesc); }
+    }
+    handle.Offset(1, inc);
+    { // Slot 15
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (m_aliasIdxBuffer) {
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R32_UINT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasIdx.size());
+            m_device->CreateShaderResourceView(m_aliasIdxBuffer.Get(), &srvDesc, handle);
+        } else { createNullBufferSrv(srvDesc); }
+    }
+    handle.Offset(1, inc);
+
+    // Slot 16: Scratch Ping UAV (u8)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        uavDesc.Texture2DArray.ArraySize = 16;
+        m_device->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &uavDesc, handle);
+    }
+    handle.Offset(1, inc);
+
+    // Slot 17: Initial BSDF Ray UAV (u9)
+    UINT initialRayBufferSize = GetWidth() * GetHeight() * sizeof(InitialBSDFRay);
+    createRawBufferUAV(m_initialBSDFRayBuffer, initialRayBufferSize, L"InitialBSDFRayBuffer"); // Slot 17, handle advanced inside
+
+    // Slot 18: Global Index Buffer SRV (t1)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R32_UINT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = m_totalIndexCount;
+        m_device->CreateShaderResourceView(m_indexGlobal.Get(), &srvDesc, handle);
+    }
+    handle.Offset(1, inc);
+
+    // Slot 19: Global Vertex Buffer SRV (t2)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = m_totalVertexCount;
+        srvDesc.Buffer.StructureByteStride = sizeof(BTriVertex);
+        m_device->CreateShaderResourceView(m_vertexGlobal.Get(), &srvDesc, handle);
+    }
+    handle.Offset(1, inc); // Handle is now at slot 20
+
+    // Slots 20-23: LightTree SRVs (t9-t12)
+    m_lightTree.WriteSrvs(m_device.Get(), handle);
+    handle.Offset(4, inc); // Handle is now at slot 24
+
+    // --- NO ALIAS SRVS for slots 24, 25 ---
+
+    // Slot 24: TriToLightId SRV (t15)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        if (m_triToLightIdBuffer) {
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R32_UINT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_triToLightId.size());
+            m_device->CreateShaderResourceView(m_triToLightIdBuffer.Get(), &srvDesc, handle);
+        } else { createNullBufferSrv(srvDesc); }
+    }
+    handle.Offset(1, inc); // Handle is now at slot 25
+
+    // Slots 25-27: LightTree Lookup SRVs (t16-t18)
+    m_lightTree.WriteLookupSrvs(m_device.Get(), handle);
+    handle.Offset(3, inc); // Handle is now at slot 28
+
+    // Helper for Texture Array SRVs
+    auto createTexArraySrv = [&](ComPtr<ID3D12Resource>& resource, DXGI_FORMAT format) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+        desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        if (!resource) {
+            desc.Format = format;
+            desc.Texture2DArray.MipLevels = 1;
+            desc.Texture2DArray.ArraySize = 1;
+            m_device->CreateShaderResourceView(nullptr, &desc, handle);
+        } else {
+            const auto& resDesc = resource->GetDesc();
+            desc.Format = resDesc.Format;
+            desc.Texture2DArray.MipLevels = resDesc.MipLevels;
+            desc.Texture2DArray.ArraySize = resDesc.DepthOrArraySize;
+            m_device->CreateShaderResourceView(resource.Get(), &desc, handle);
+        }
+        handle.Offset(1, inc);
+    };
+
+    // Slots 28-30: Texture Arrays (t30-t32)
+    createTexArraySrv(m_albedoTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB); // Slot 28
+    createTexArraySrv(m_normalTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM);   // Slot 29
+    createTexArraySrv(m_rmaTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM);      // Slot 30
+
+    std::wcout << L"All SRVs created successfully up to slot 30." << std::endl;
 }
 
 //-----------------------------------------------------------------------------
@@ -2450,7 +2179,7 @@ void Renderer::CreateDepthBuffer() {
 }
 
 // #DXR Extra: Indexed Geometry
-void Renderer::CreateVB(std::string name) {
+/*void Renderer::CreateVB(std::string name) {
   std::vector<Vertex> vertices;
   std::vector<UINT> indices;
   std::vector<Material> materials;
@@ -2550,6 +2279,91 @@ void Renderer::CreateVB(std::string name) {
     m_material.push_back(l_material);
     m_materialID.push_back(l_materialID);
 
+}*/
+
+void Renderer::CreateTextureArrays(
+    const std::vector<TextureData>& albedoTextures,
+    const std::vector<TextureData>& normalTextures,
+    const std::vector<TextureData>& rmaTextures)
+{
+    // Helper lambda to create one texture array
+    auto createArray = [&](
+        const std::vector<TextureData>& textures,
+        ComPtr<ID3D12Resource>& textureArrayResource,
+        DXGI_FORMAT format,
+        const std::wstring& resourceName)
+    {
+        if (textures.empty()) return;
+
+        UINT width = textures[0].width;
+        UINT height = textures[0].height;
+        UINT arraySize = static_cast<UINT>(textures.size());
+
+        for (const auto& tex : textures) {
+            if (tex.width != width || tex.height != height) {
+                // This is a simple implementation. A more robust engine would handle
+                // different texture sizes, perhaps by grouping them or using a texture atlas.
+                std::string errorMsg = "All textures in an array must have the same dimensions. Failed for array: " + std::string(resourceName.begin(), resourceName.end());
+                throw std::runtime_error(errorMsg);
+            }
+        }
+
+        D3D12_RESOURCE_DESC texDesc = {};
+        texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Alignment = 0;
+        texDesc.Width = width;
+        texDesc.Height = height;
+        texDesc.DepthOrArraySize = arraySize;
+        texDesc.MipLevels = 1;
+        texDesc.Format = format;
+        texDesc.SampleDesc.Count = 1;
+        texDesc.SampleDesc.Quality = 0;
+        texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        texDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&textureArrayResource)));
+        textureArrayResource->SetName(resourceName.c_str());
+
+        UINT64 uploadBufferSize;
+        m_device->GetCopyableFootprints(&texDesc, 0, arraySize, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+
+        ComPtr<ID3D12Resource> textureUploadHeap;
+        CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize); // CORRECTED
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kUploadHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &uploadBufferDesc, // CORRECTED
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&textureUploadHeap)));
+        textureUploadHeap->SetName((resourceName + L" Upload Heap").c_str());
+
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources(arraySize);
+        for (UINT i = 0; i < arraySize; ++i)
+        {
+            subresources[i].pData = textures[i].pixels.data();
+            subresources[i].RowPitch = static_cast<LONG_PTR>(textures[i].width) * 4;
+            subresources[i].SlicePitch = subresources[i].RowPitch * textures[i].height;
+        }
+
+        UpdateSubresources(m_commandList.Get(), textureArrayResource.Get(), textureUploadHeap.Get(), 0, 0, arraySize, subresources.data());
+
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            textureArrayResource.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->ResourceBarrier(1, &barrier);
+    };
+
+    createArray(albedoTextures, m_albedoTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, L"AlbedoTextureArray");
+    createArray(normalTextures, m_normalTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM, L"NormalTextureArray");
+    createArray(rmaTextures, m_rmaTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM, L"RmaTextureArray");
 }
 
 //--------------------------------------------------------------------------------------------------
