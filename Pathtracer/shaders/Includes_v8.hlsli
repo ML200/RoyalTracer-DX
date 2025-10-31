@@ -55,11 +55,11 @@ Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
 // Needs access to all structured/random buffers
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
-#include "GGX_v8.hlsli"
-#include "Lambertian_v8.hlsli"
-#include "Coat_v8.hlsli"
-#include "Sheen_v8.hlsli"
-#include "GGXT_v8.hlsli"
+#include "Material_GGX_v8.hlsli"
+#include "Material_Lambertian_v8.hlsli"
+#include "Material_Coat_v8.hlsli"
+#include "Material_Sheen_v8.hlsli"
+#include "Material_GGXT_v8.hlsli"
 #include "BXDF_v8.hlsli"
 
 cbuffer CameraParams : register(b0)

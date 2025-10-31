@@ -12,6 +12,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint2  launchIndex   = tid.xy;
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, launchIndex);
+    // Seeding
+    RandomData rdata = initRandomData(launchIndex, uint2(8,8), time, 1u);
 
     // Trace the initial camera rays and store the sdata.
     SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);

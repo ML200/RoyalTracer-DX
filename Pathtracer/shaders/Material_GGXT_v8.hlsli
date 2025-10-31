@@ -76,7 +76,6 @@ inline void SampleBTDF_GGX_TRANS(
     float3  normal,
     float3  flatNormal,
     inout float3 sample,
-    float3  worldOrigin,
     inout uint2 seed)
 {
     // GGX roughness

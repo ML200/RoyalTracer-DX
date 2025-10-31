@@ -67,4 +67,16 @@ float RandomFloatSingle(inout uint s)
     return asfloat(0x3F800000u | (x >> 9u)) - 1.0;
 }
 
+// Seed data object
+struct RandomData{
+    uint2 seed;
+    uint wSeed;
+};
 
+// idx is pixel coordinate, t is time constant, c is additional constant
+RandomData initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
+    RandomData rdata;
+    rdata.seed = GetSeed(idx, t, c);
+    rdata.wSeed = GetWaveSeed(idx, tileSize, t, c);
+    return rdata;
+}

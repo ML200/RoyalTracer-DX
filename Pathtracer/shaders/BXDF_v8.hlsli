@@ -2,8 +2,15 @@
 Manager for the bxdf evaluation
 */
 
+struct SamplingP{
+    float Psheen;
+    float Pcoat;
+    float Pspec;
+    float Pdiff;
+    float Ptrans;
+};
 
-inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, out float p_trans)
+inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal)
 {
     const float rough    = materials[mID].Pr_Pm_Ps_Pc.x;
     const float metallic = materials[mID].Pr_Pm_Ps_Pc.y;
@@ -56,9 +63,15 @@ inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
     float p_spec  = w_spec_u  / sum;
     float p_clear = w_clear_u / sum;
     float p_sheen = w_sheen_u / sum;
-    p_trans       = w_trans_u / sum;
+    float p_trans = w_trans_u / sum;
 
-    return float4(p_diff, p_spec, p_clear, p_sheen);
+    SamplingP sp;
+    sp.Psheen = p_sheen;
+    sp.Pcoat = p_clear;
+    sp.Pspec = p_spec;
+    sp.Pdiff = p_diff;
+    sp.Ptrans = p_trans;
+    return sp;
 }
 
 
@@ -68,45 +81,49 @@ inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
 // 2 - Clearcoat
 // 3 - Sheen
 // 4 - Transmission
-inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout uint2 seed)
+inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout RandomData rdata)
 {
-    float p_trans;
-    float4 p = CalculateStrategyProbabilities(mID, outgoing, normal, p_trans);
+    SamplingP p = CalculateStrategyProbabilities(mID, outgoing, normal);
 
     // Draw
-    float r = RandomFloatSingle(seed.x);
+    float r = RandomFloatSingle(rdata.seed.x);
     // Defensive
     r = min(r, 1.0f - EPSILON);
 
     // CDF
-    float c = p.y;                 if (r < c) return 1;  // spec
-    c += p.z;                      if (r < c) return 2;  // clearcoat
-    c += p.w;                      if (r < c) return 3;  // sheen
-    c += p_trans;                  if (r < c) return 4;  // transmission
+    float c = p.Pspec;                 if (r < c) return 1;  // spec
+    c += p.Pcoat;                      if (r < c) return 2;  // clearcoat
+    c += p.Psheen;                      if (r < c) return 3;  // sheen
+    c += p.Ptrans;                  if (r < c) return 4;  // transmission
     return 0; // diffuse
 }
 
 
 // Sample the BRDF of the given strategy
-inline void SampleBRDF(uint strategy, uint mID, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, float3 worldOrigin, inout uint2 seed) {
+inline void SampleBRDF(uint mID, float3 outgoing, float3 normal, float3 flatNormal, inout float3 sample, inout RandomData rdata) {
+    // Probabilities
+    SamplingP p = CalculateStrategyProbabilities(mID, outgoing, normal);
+    // Select one method
+    uint strategy = SelectSamplingStrategy(mID, outgoing, normal, rdata);
+
     //Sample from the selected strategy
     if(strategy == 0){ // diffuse
-        SampleBRDF_Lambertian(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBRDF_Lambertian(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
     else if(strategy == 1){ // specular
-        SampleBRDF_GGX(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBRDF_GGX(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
     else if(strategy == 2){ // coat
-        SampleBRDF_COAT(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBRDF_COAT(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
     else if(strategy == 3){ //sheen
-        SampleBRDF_SHEEN(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBRDF_SHEEN(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
     else if(strategy == 4){ // transmisson
-        SampleBTDF_GGX_TRANS(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBTDF_GGX_TRANS(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
     else{ // fallback
-        SampleBRDF_Lambertian(mID, incoming, normal, flatNormal, sample, worldOrigin, seed);
+        SampleBRDF_Lambertian(mID, outgoing, normal, flatNormal, sample, rdata.seed);
     }
 }
 
@@ -147,8 +164,7 @@ inline float3 EvaluateBRDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
 
 inline float BRDF_PDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
 {
-    float p_trn;
-    float4 p = CalculateStrategyProbabilities(mID, wo, N, p_trn);
+    SamplingP p = CalculateStrategyProbabilities(mID, wo, N);
 
     float pd = BRDF_PDF_Lambertian(mID, N, wi, wo);
     float ps = BRDF_PDF_GGX(mID, N, wi, wo);
@@ -156,5 +172,5 @@ inline float BRDF_PDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
     float ph = BRDF_PDF_SHEEN(mID, N, wi, wo);
     float pt = BTDF_PDF_GGX_TRANS(mID, N, wi, wo);
 
-    return p.x * pd + p.y * ps + p.z * pc + p.w * ph + p_trn * pt;
+    return p.Pdiff * pd + p.Pspec * ps + p.Pcoat * pc + p.Psheen * ph + p.Ptrans * pt;
 }

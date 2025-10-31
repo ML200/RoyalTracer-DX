@@ -41,9 +41,8 @@ inline void SampleBRDF_COAT(
     uint    mID,
     float3  outgoing,
     float3  normal,
-    float3  flatNormal,   // unused
+    float3  flatNormal,
     inout float3 sample,
-    float3  worldOrigin,  // unused
     inout uint2 seed)
 {
     float rough = saturate(materials[mID].Pcr_aniso_anisor.x); // coat roughness

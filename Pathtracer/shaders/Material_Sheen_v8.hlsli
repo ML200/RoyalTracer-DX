@@ -119,9 +119,8 @@ inline void SampleBRDF_SHEEN(
     uint    mID,
     float3  outgoing,       // wo
     float3  normal,
-    float3  flatNormal,     // unused
+    float3  flatNormal,
     inout float3 sample,
-    float3  worldOrigin,    // unused
     inout uint2 seed)
 {
     float3 N = normalize(normal);

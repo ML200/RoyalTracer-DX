@@ -83,7 +83,6 @@ inline void SampleBRDF_GGX(
     float3  normal,
     float3  flatNormal,
     inout float3 sample,
-    float3  worldOrigin,
     inout uint2 seed)
 {
     float alpha = materials[mID].Pr_Pm_Ps_Pc.x * materials[mID].Pr_Pm_Ps_Pc.x;

@@ -31,7 +31,7 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
 
 
 // Sample the BRDF of the given material
-void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, float3 worldOrigin, inout uint2 seed) {
+void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout uint2 seed) {
     // Sample a random direction in the hemisphere oriented around the flatNormal
     sample = RandomUnitVectorInHemisphere(normal, seed);
 }
