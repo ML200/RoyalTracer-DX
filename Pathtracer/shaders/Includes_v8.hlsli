@@ -16,9 +16,10 @@ static uint3 gDispatchIdx;
 
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
-#include "Structures_v7.hlsli"
-#include "Random_v7.hlsli"
-#include "Compression_v7.hlsli"
+#include "Data_v8.hlsli"
+#include "Random_v8.hlsli"
+#include "Compression_v8.hlsli"
+#include "Fresnel_v8.hlsli"
 
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
@@ -52,15 +53,14 @@ Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
 
 
 // Needs access to all structured/random buffers
-#include "LightTree_v7.hlsli"
-#include "Sample_data_v7.hlsli"
-#include "Initial_bsdf_v7.hlsli"
-#include "GGX_v7.hlsli"
-#include "Lambertian_v7.hlsli"
-#include "Coat_v7.hlsli"
-#include "Sheen_v7.hlsli"
-#include "GGXT_v7.hlsli"
-#include "BSDF_v7.hlsli"
+#include "LightTree_v8.hlsli"
+#include "Sample_Data_v8.hlsli"
+#include "GGX_v8.hlsli"
+#include "Lambertian_v8.hlsli"
+#include "Coat_v8.hlsli"
+#include "Sheen_v8.hlsli"
+#include "GGXT_v8.hlsli"
+#include "BXDF_v8.hlsli"
 
 cbuffer CameraParams : register(b0)
 {
@@ -73,15 +73,8 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Reservoir_DI_v7.hlsli"
-#include "Reservoir_GI_v7.hlsli"
-#include "Inline_RT_v7.hlsli"
-#include "Camera_ray_v7.hlsli"
-#include "MIS_v7.hlsli"
-#include "NEE_Sampling_v7.hlsli"
-#include "BSDF_Sampling_v7.hlsli"
-#include "BD_Sampling_v7.hlsli"
-#include "BD_Reconnection_v7.hlsli"
+#include "Reservoir_DI_v8.hlsli"
+#include "Reservoir_GI_v8.hlsli"
+#include "Inline_RT_v8.hlsli"
+#include "Camera_ray_v8.hlsli"
 #include "Path_Sampler_v8.hlsli"
-#include "Motion_vectors_v7.hlsli"
-#include "Denoiser_helper_v7.hlsli"

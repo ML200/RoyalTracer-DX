@@ -49,17 +49,6 @@ inline float D_GGX(float NdotH, float alpha)
     return alpha2 / (PI * denom * denom);
 }
 
-// Smith Geometry functions for GGX
-/*inline float G2_SmithGGX(float NdotV, float NdotL, float alpha)
-{
-    float alpha2 = alpha * alpha;
-
-    float denomA = NdotV * sqrt(alpha2 + (1.0f - alpha2) * NdotL * NdotL);
-    float denomB = NdotL * sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV);
-
-    return 2.0f * NdotL * NdotV / (denomA + denomB);
-}*/
-
 inline float G1_SmithGGX(float NdotV, float alpha)
 {
       float alpha2 = alpha * alpha;
@@ -151,8 +140,6 @@ inline void SampleBRDF_GGX(
     if(dot(sample, normal) <= 0.0f)
         sample = float3(0,0,0);
 }
-
-
 
 // Evaluate the GGX BRDF for the given material
 inline float3 EvaluateBRDF_GGX(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)

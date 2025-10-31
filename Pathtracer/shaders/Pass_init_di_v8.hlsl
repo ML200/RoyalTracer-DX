@@ -16,12 +16,13 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Trace the initial camera rays and store the sdata.
     SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);
 
-    // Create the path state object from the sdata information
-    initPathState(sdata.x1, sdata.n1, sdata.o, sdata.objID, sdata.matID);
+    // Create the path state +  throughput state object from the sdata information
+    PathState pstate = initPathState(sdata.x1, sdata.n1, sdata.o, sdata.objID, sdata.matID);
+    ThroughputState tstate = initThroughputState();
 
 
     //Debug
-    //gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1+1.0f)/2.0f, 0.0f); // Norm
+    gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1+1.0f)/2.0f, 0.0f); // Norm
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.x1, 0.0f); // Pos
     //gScratchPing[uint3(tid.xy, 1)] = float4(materials[sdata.matID].Kd.xyz, 0.0f); // Material
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0.0f); // Emission

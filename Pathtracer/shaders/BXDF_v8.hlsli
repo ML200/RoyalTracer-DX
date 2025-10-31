@@ -1,7 +1,7 @@
-// More helpers
-// TODO: join helpers, optimize the sampler, currently not optimal (adjust to match the eval)
-inline float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
-inline float Pow5(float x){ float x2 = x*x; return x2*x2*x; }
+/*
+Manager for the bxdf evaluation
+*/
+
 
 inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, out float p_trans)
 {
@@ -23,7 +23,7 @@ inline float4 CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 n
 
     // clearcoat (fixed IOR)
     const float F0_coat = 0.04;
-    float Fv_coat = Pow5(1.0 - NoV) * (1.0 - F0_coat) + F0_coat;
+    float Fv_coat = pow(1.0 - NoV, 5.0f) * (1.0 - F0_coat) + F0_coat;
 
     // Everything under the coat is reduced by the coats Fresnel
     float coat_gate = 1.0 - clear_w * Fv_coat;
