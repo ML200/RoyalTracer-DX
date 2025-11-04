@@ -132,6 +132,7 @@ inline void EvalSurface(
     hit.objID       = instID;
     hit.hitBackface = dot(ray.Direction, gNormW) > 0.0f;
     hit.hitNormal   = hit.hitBackface ? normalize(-nW) : normalize(nW);
+    hit.hitGNormal   = hit.hitBackface ? normalize(-gNormW) : normalize(gNormW);
 
     // Light ID lookup
     const uint baseL = instanceProps[instID].triToLightBase;
@@ -149,6 +150,7 @@ inline void EvalMissHit(in RayDesc ray, out HitInfo hit)
               : float3(0.0f, 0.0f, 1.0f);
 
     hit.hitNormal   = -nd;              // face toward the camera
+    hit.hitGNormal   = -nd;              // face toward the camera
     hit.hitBackface = false;            // not applicable for env
     hit.area        = 0.0f;             // infinite/none
     hit.objID       = 0xFFFFFFFFu;      // no instance

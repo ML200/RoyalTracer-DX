@@ -4,6 +4,8 @@ V8 common functions
 
 // Estimated luminance
 inline float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+// Average
+inline float Avg3(float3 c) { return dot(c, float3(0.33333f, 0.33333f, 0.33333f)); }
 
 // Swizzle for thread group
 inline uint MapPixelID(uint2 dims, int2 lIndex)

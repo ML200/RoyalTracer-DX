@@ -5,7 +5,8 @@ Class for sampling path segements
 // Define a path state object
 struct PathState{
     float3 x; // current ray shading point
-    float3 n; // Current ray normal; switch in case we transmit
+    float3 n_g; // geometric normal
+    float3 n_s; // shading normal
     float3 o; // current outgoing direction
     uint objID; // object id of the mesh the shading point lies on
     uint matID; // material id of the mesh the shading point lies on
@@ -14,10 +15,11 @@ struct PathState{
     float priority_stack[4]; // stack priority of objects we currently traverse
 };
 
-PathState initPathState(float3 x, float3 n, float3 o, uint objID, uint matID){
+PathState InitPathState(float3 x, float3 n_g, float3 n_s, float3 o, uint objID, uint matID){
     PathState pstate;
     pstate.x = x;
-    pstate.n = n;
+    pstate.n_g = n_g;
+    pstate.n_s = n_s;
     pstate.o = o;
     pstate.objID = objID;
     pstate.matID = matID;
@@ -34,7 +36,7 @@ struct ThroughputState{
     float pdf;
 };
 
-ThroughputState initThroughputState(){
+ThroughputState InitThroughputState(){
     ThroughputState tstate;
     tstate.t = float3(1.0f, 1.0f, 1.0f);
     tstate.pdf = 1.0f;
@@ -46,15 +48,61 @@ ThroughputState initThroughputState(){
 struct SampleState{
     float3 x;
     float3 s; // The sample direction
-    float3 n;
+    float3 n_g; // Geometric vs shading normal of the hit surface
+    float3 n_s;
     float3 o;
+    float3 L; // Theoretical emission
     uint matID;
     uint objID;
+    uint lightID; // Did we hit an emitter? If not the id is 0xFFFFFFFF
     bool b; // Did we hit a backface?
-    bool l; // Did we hit an emitter?
 };
 
-// Sample a single backward bsdf ray based on the material properties
-/*SampleState BSDF_BW_S(PathState pstate){
+// Update the path state with a sample
+void AdvancePathState(SampleState sstate, inout PathState pstate){
+    pstate.x = sstate.x;
+    pstate.n_g = sstate.n_g;
+    pstate.n_s = sstate.n_s;
+    pstate.o = sstate.o;
+    pstate.objID = sstate.objID;
+    pstate.matID = sstate.matID;
+}
 
-}*/
+// Helper to check if we have a termination condition
+float3 Get_Emissive(HitInfo h){
+    if(h.materialID == 0xFFFFFFFF) // we hit the sky
+        return h.hitPosition;
+    if(h.hitBackface)
+        return float3(0,0,0);
+    return materials[h.materialID].Ke.xyz;
+}
+
+// Sample a single backward bsdf ray based on the material properties
+SampleState Sample_BSDF_BW_S(PathState pstate, inout RandomData rdata){
+    // Sample a BSDF direction
+    float3 s = SampleBRDF(pstate.matID, pstate.o, pstate.n_g, pstate.n_s, rdata);
+    if(all(s == 0.0f))
+        return (SampleState)0; // Invalid sample: geometric normal is 0
+
+    // Trace the ray
+    RayDesc ray;
+    ray.Origin = pstate.x;
+    ray.Direction = s;
+    ray.TMin = 0.001f;
+    ray.TMax = 10000.0f;
+    HitInfo payload;
+    TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
+
+    SampleState sstate;
+    sstate.x = payload.hitPosition;
+    sstate.s = s;
+    sstate.n_g = payload.hitGNormal;
+    sstate.n_s = payload.hitNormal;
+    sstate.o = normalize(pstate.x - payload.hitPosition);
+    sstate.L = Get_Emissive(payload);
+    sstate.matID = payload.materialID;
+    sstate.objID = payload.objID;
+    sstate.b = payload.hitBackface;
+    sstate.lightID = sstate.b ? 0xFFFFFFFF : payload.lightID; // If we hit a backface, it doesnt count as light
+    return sstate;
+}

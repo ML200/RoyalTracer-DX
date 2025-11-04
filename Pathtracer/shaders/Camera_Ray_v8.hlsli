@@ -26,7 +26,7 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
     HitInfo payload;
     TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
 
-    // If we hit a backface, the surface doesnt emitt light per definition
+    // If we hit a backface, the surface doesnt emit light per definition
     float3 ke = payload.hitBackface ? 0.0f : materials[payload.materialID].Ke;
 
     //if we miss, ke is the position instead.
@@ -35,7 +35,8 @@ SampleData SampleCameraRay(uint idx, uint2 pixel, uint2 imgSize){
 
     SampleData sdata = (SampleData)0;
     sdata.x1 = payload.hitPosition;
-    sdata.n1 = payload.hitNormal;
+    sdata.n1_s = payload.hitNormal;
+    sdata.n1_g = payload.hitGNormal;
     sdata.L1 = ke;
     sdata.o = -ray.Direction;
     sdata.objID = payload.objID;

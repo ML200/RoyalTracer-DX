@@ -43,7 +43,7 @@ inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, ino
 
 
 // Sample the BRDF of the given strategy
-inline float3 SampleBRDF(uint mID, float3 outgoing, float3 normal, float3 flatNormal, inout RandomData rdata) {
+inline float3 SampleBRDF(uint mID, float3 outgoing, float3 flatNormal, float3 normal, inout RandomData rdata) {
     // Select one method
     uint strategy = SelectSamplingStrategy(mID, outgoing, normal, rdata);
 
@@ -59,6 +59,8 @@ inline float3 SampleBRDF(uint mID, float3 outgoing, float3 normal, float3 flatNo
     return SampleBRDF_Lambertian(mID, outgoing, normal, flatNormal, rdata.seed);
 }
 
+
+// Evaluation and pdf for the complete material model
 inline float3 EvaluateBRDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
 {
     float gate = 1.0f;
@@ -67,9 +69,9 @@ inline float3 EvaluateBRDF_COMBINED(uint mID, float3 N, float3 wi, float3 wo)
     float3 f = 0.0.xxx;
 
     // Base SPECULAR
-    float3 f_spec = EvaluateBRDF_GGX(mID, N, wi, wo, 1.0f, 1.0f);    // spec
+    /*float3 f_spec = EvaluateBRDF_GGX_Dielectric(mID, N, wi, wo, 1.0f, 1.0f);    // spec
     f += gate * f_spec;
-    gate *= Transmittance_GGX(mID, N, wi, wo, 1.0f, 1.0f);
+    gate *= Transmittance_GGX_Dielectric(mID, N, wi, wo, 1.0f, 1.0f);*/
 
     // Base DIFFUSE
     float3 f_diff = EvaluateBRDF_Lambertian(mID, N, wi, wo, 1.0f, 1.0f); // diff

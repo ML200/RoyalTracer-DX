@@ -202,7 +202,7 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Pass_init_di_v8.hlsl|cs:8x8",
+        L"Pass_init_di_v8.hlsl|cs:8x4",
         L"barrier",
         /*L"Pass_init_gi_v8.hlsl|cs:8x8",
         L"barrier",*/

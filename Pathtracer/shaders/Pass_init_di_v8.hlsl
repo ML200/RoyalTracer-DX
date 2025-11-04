@@ -3,7 +3,7 @@
 //─────────────────────────────────────────────────────────────────────────────
 //  Initial Sampling DI
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(8, 8, 1)]
+[numthreads(8, 4, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
@@ -18,13 +18,43 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Trace the initial camera rays and store the sdata.
     SampleData sdata = SampleCameraRay(pixelIdx, launchIndex, dims);
 
-    // Create the path state +  throughput state object from the sdata information
-    PathState pstate = initPathState(sdata.x1, sdata.n1, sdata.o, sdata.objID, sdata.matID);
-    ThroughputState tstate = initThroughputState();
+    // If we hit an emitter (or the sky), color the pixel and return
+    if(any(sdata.L1 > 0.0f)){
+        gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0);
+        return;
+    }
 
+    // Create the path state + throughput state object from the sdata information
+    PathState pstate = InitPathState(sdata.x1, sdata.n1_g, sdata.n1_s, sdata.o, sdata.objID, sdata.matID);
+    ThroughputState tstate = InitThroughputState();
+
+    for(int i = 0; i < 4; i++){
+        // Sample a direction and hitpoint using bsdf sampling
+        SampleState sstate = Sample_BSDF_BW_S(pstate, rdata);
+
+        // Evaluate throughput and adjust path throughput
+        float3 tpp = EvaluateBRDF_COMBINED(pstate.matID, pstate.n_s, -sstate.s, pstate.o) * dot(pstate.n_s, sstate.s);
+        float pdfp = BRDF_PDF_COMBINED(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
+
+        // Did we hit a light? If so, terminate path, write color and return
+        if(any(sstate.L > 0.0f)){
+            float3 tp_final = tpp * tstate.t * sstate.L;
+            float pdf_final = pdfp * tstate.pdf;
+            gScratchPing[uint3(tid.xy, 1)] = float4(tp_final/pdf_final, 0);
+            return;
+        }
+
+        tstate.t *= tpp;
+        tstate.pdf *= pdfp;
+
+        // Advance the path state
+        AdvancePathState(sstate, pstate);
+    }
+
+    gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
 
     //Debug
-    gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1+1.0f)/2.0f, 0.0f); // Norm
+    //gScratchPing[uint3(tid.xy, 1)] = float4((sstate.s+1.0f)/2.0f, 0.0f); // Norm
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.x1, 0.0f); // Pos
     //gScratchPing[uint3(tid.xy, 1)] = float4(materials[sdata.matID].Kd.xyz, 0.0f); // Material
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0.0f); // Emission
