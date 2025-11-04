@@ -1,5 +1,5 @@
 // Simple Cosine-Weighted hemisphere sampling
-float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
+float3 CosineUnitVectorInHemisphere(float3 normal, inout uint2 seed)
 {
     // Generate two random numbers
     float u1 = RandomFloat(seed);
@@ -21,35 +21,35 @@ float3 RandomUnitVectorInHemisphere(float3 normal, inout uint2 seed)
     float3 hemisphereSample = x * right + y * forward + z * h;
 
     hemisphereSample = normalize(hemisphereSample);
-    if (dot(hemisphereSample, normal) < 0.0f) {
-        hemisphereSample = -hemisphereSample;
-    }
-
     return hemisphereSample;
 }
 
-
-
-// Sample the BRDF of the given material
-void SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flatNormal, inout float3 sample, inout uint2 seed) {
-    // Sample a random direction in the hemisphere oriented around the flatNormal
-    sample = RandomUnitVectorInHemisphere(normal, seed);
-}
-
 // Evaluate the BRDF for the given material
-float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance) {
-    if(dot(normal, -incoming) < 0.0f)
-        return (float3).0f;
-    transmittance = 1.0f - materials[mID].Kd.w;
+inline float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing, float etai, float etat) {
     // For Lambertian reflection, the BRDF is constant
     // BRDF = Kd / PI
     return materials[mID].Kd.xyz / PI;
 }
 
+// etaR is the ior of the material the ray is currently in before hitting the material
+inline float Transmittance_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing, float etai, float etat){
+    return saturate(1.0f - materials[mID].Kd.w);
+}
+
+// Sampling weight function describes an approximation of the transmittance before sampling, as incoming isnt known yet
+inline float Sampling_Weight_Lambertian(uint mID, float3 normal, float3 outgoing, float etai, float etat){
+    return saturate(1.0f - materials[mID].Kd.w); // This one is exact
+}
+
+
+// Sample the BRDF of the given material
+inline float3 SampleBRDF_Lambertian(uint mID, float3 incoming, float3 normal, float3 flatNormal, inout uint2 seed) {
+    // Sample a random direction in the hemisphere oriented around the flatNormal
+    return CosineUnitVectorInHemisphere(normal, seed);
+}
+
 // Calculate the PDF for a given sample direction
-float BRDF_PDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
-    if(dot(normal, -incoming) < 0.0f)
-        return (float3).0f;
+inline float BRDF_PDF_Lambertian(uint mID, float3 normal, float3 incoming, float3 outgoing) {
     // For cosine-weighted hemisphere sampling over a Lambertian surface
     return max(dot(normalize(normal), normalize(-incoming)), 0.0f) / PI;
 }

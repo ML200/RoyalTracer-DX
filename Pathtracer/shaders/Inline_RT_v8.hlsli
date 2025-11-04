@@ -112,7 +112,7 @@ inline void EvalSurface(
         N_obj = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
 
         // Ensure shading normal is in the same hemisphere as the geometric normal
-        if (dot(N_obj, flatN_obj) < 0.0f) N_obj = flatN_obj;
+        //if (dot(N_obj, flatN_obj) < 0.0f) N_obj = -N_obj;
     }
 
     // --- World-space transformations and HitInfo assignment ---

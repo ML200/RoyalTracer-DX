@@ -10,7 +10,8 @@ struct PathState{
     uint objID; // object id of the mesh the shading point lies on
     uint matID; // material id of the mesh the shading point lies on
     uint ior_pointer; // What medium are we currently in?
-    float ior_stack[8]; // stack of mediums for transmission
+    float ior_stack[4]; // stack of mediums for transmission
+    float priority_stack[4]; // stack priority of objects we currently traverse
 };
 
 PathState initPathState(float3 x, float3 n, float3 o, uint objID, uint matID){
@@ -22,9 +23,8 @@ PathState initPathState(float3 x, float3 n, float3 o, uint objID, uint matID){
     pstate.matID = matID;
 
     [unroll] // Stupid hlsl
-    for (int i = 0; i < 8; ++i) pstate.ior_stack[i] = 0.0f;
-    pstate.ior_stack[0] = 1.0f;
-
+    for (int i = 0; i < 4; ++i) pstate.ior_stack[i] = 0.0f;
+    for (int i = 0; i < 4; ++i) pstate.priority_stack[i] = 0.0f;
     return pstate;
 }
 

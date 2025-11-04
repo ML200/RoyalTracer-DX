@@ -19,7 +19,6 @@ static uint3 gDispatchIdx;
 #include "Data_v8.hlsli"
 #include "Random_v8.hlsli"
 #include "Compression_v8.hlsli"
-#include "Fresnel_v8.hlsli"
 
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
@@ -55,6 +54,8 @@ Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
 // Needs access to all structured/random buffers
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
+#include "Fresnel_v8.hlsli"
+#include "Material_Common_v8.hlsli"
 #include "Material_GGX_v8.hlsli"
 #include "Material_Lambertian_v8.hlsli"
 #include "Material_Coat_v8.hlsli"

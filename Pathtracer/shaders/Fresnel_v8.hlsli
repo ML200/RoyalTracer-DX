@@ -1,56 +1,41 @@
-float FresnelExact(float3 wo, float3 n, float eta_i, float eta_t)
+static inline float3 ComputeF0(int mID, float eta_i, float eta_t)
 {
-    float cosI = dot(wo, n);
-    if (cosI < 0.0f) return -1.0f; // invalid input
+    float  R0s = (eta_i - eta_t) / (eta_i + eta_t);
+    R0s *= R0s;
+    float3 R0 = R0s.xxx;
 
-    float eta = eta_i / eta_t;
+    float3 Kd = saturate(materials[mID].Kd.xyz);
+    float  Pm = saturate(materials[mID].Pr_Pm_Ps_Pc.y);
 
-    float sin2I = 1.0f - cosI * cosI;
-    float sin2T = eta * eta * sin2I;
-
-    // Total Internal Reflection: all light is reflected.
-    if (sin2T > 1.0f)
-    {
-        return 1.0f;
-    }
-
-    float cosT = sqrt(max(0.0f, 1.0f - sin2T));
-
-    // Fresnel term for s-polarization (perpendicular)
-    float term1_s = eta_i * cosI;
-    float term2_s = eta_t * cosT;
-    float Rs = (term1_s - term2_s) / (term1_s + term2_s);
-
-    // Fresnel term for p-polarization (parallel)
-    float term1_p = eta_t * cosI;
-    float term2_p = eta_i * cosT;
-    float Rp = (term1_p - term2_p) / (term1_p + term2_p);
-
-    // For unpolarized light, the reflectance is the average of the two
-    return 0.5f * (Rs * Rs + Rp * Rp);
+    return lerp(R0, Kd, Pm);
 }
 
-float FresnelSchlick(float3 wo, float3 n, float eta_i, float eta_t)
+static inline float3 FresnelSchlick(float3 F0, float3 wo, float3 n, float eta_i, float eta_t)
 {
-    float cosI = dot(wo, n);
-    if (cosI < 0.0f) return -1.0f;
+    float ci = saturate(abs(dot(wo, n)));
 
-    // This optional TIR guard makes the Schlick approximation exact for TIR cases
-    float eta = eta_i / eta_t;
-    float sin2I = 1.0f - cosI * cosI;
+    float oneMinus  = 1.0f - ci;
+    float oneMinus2 = oneMinus * oneMinus;
+    float oneMinus5 = oneMinus2 * oneMinus2 * oneMinus;
+
+    return F0 + (1.0f - F0) * oneMinus5;
+}
+
+static inline float3 FresnelSchlickTIR(float3 F0, float3 wo, float3 n, float eta_i, float eta_t)
+{
+    float ci = saturate(abs(dot(wo, n)));
+
+    // Exact TIR test with provided indices
+    float eta   = eta_i / eta_t;
+    float sin2I = max(0.0f, 1.0f - ci * ci);
     if (eta * eta * sin2I > 1.0f)
     {
-        return 1.0f;
+        return 1.0f.xxx; // total internal reflection
     }
 
-    // Reflectance at normal incidence (0 degrees)
-    float R0 = (eta_i - eta_t) / (eta_i + eta_t);
-    R0 = R0 * R0;
+    float oneMinus  = 1.0f - ci;
+    float oneMinus2 = oneMinus * oneMinus;
+    float oneMinus5 = oneMinus2 * oneMinus2 * oneMinus;
 
-    // Schlick's approximation
-    float m  = 1.0f - cosI;
-    float m2 = m * m;
-    float m5 = m2 * m2 * m; // pow(m, 5)
-
-    return R0 + (1.0f - R0) * m5;
+    return F0 + (1.0f - F0) * oneMinus5;
 }
