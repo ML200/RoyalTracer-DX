@@ -28,9 +28,15 @@ void main(uint3 tid : SV_DispatchThreadID)
     PathState pstate = InitPathState(sdata.x1, sdata.n1_g, sdata.n1_s, sdata.o, sdata.objID, sdata.matID);
     ThroughputState tstate = InitThroughputState();
 
-    for(int i = 0; i < 4; i++){
+    for(int i = 0; i < 10; i++){
         // Sample a direction and hitpoint using bsdf sampling
         SampleState sstate = Sample_BSDF_BW_S(pstate, rdata);
+
+        // Is the sample well defined?
+        if(!ValidSampleState(sstate)){
+            gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
+            return;
+        }
 
         // Evaluate throughput and adjust path throughput
         float3 tpp = EvaluateBRDF_COMBINED(pstate.matID, pstate.n_s, -sstate.s, pstate.o) * dot(pstate.n_s, sstate.s);
@@ -54,7 +60,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
 
     //Debug
-    //gScratchPing[uint3(tid.xy, 1)] = float4((sstate.s+1.0f)/2.0f, 0.0f); // Norm
+    //gScratchPing[uint3(tid.xy, 1)] = float4((sdata.n1_s+1.0f)/2.0f, 0.0f); // Norm
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.x1, 0.0f); // Pos
     //gScratchPing[uint3(tid.xy, 1)] = float4(materials[sdata.matID].Kd.xyz, 0.0f); // Material
     //gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0.0f); // Emission

@@ -110,9 +110,30 @@ inline void EvalSurface(
         if (dot(n2,n2) >= EPSILON) n2 = normalize(n2); else n2 = flatN_obj;
 
         N_obj = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
+        float normalDeviation = dot(N_obj, flatN_obj);
+        if (normalDeviation < MIN_NORMAL_INT)
+        {
+            // 1. Find the component of N_obj that is perpendicular to flatN_obj
+            float3 N_perp = N_obj - normalDeviation * flatN_obj;
+            float N_perp_len_sq = dot(N_perp, N_perp);
+            float3 N_perp_dir;
 
-        // Ensure shading normal is in the same hemisphere as the geometric normal
-        //if (dot(N_obj, flatN_obj) < 0.0f) N_obj = -N_obj;
+            // 2. Get the perpendicular direction.
+            if (N_perp_len_sq < EPSILON)
+            {
+                float3 arbitrary_axis = (abs(flatN_obj.x) > 0.9f) ? float3(0, 1, 0) : float3(1, 0, 0);
+                N_perp_dir = normalize(cross(flatN_obj, arbitrary_axis));
+            }
+            else
+            {
+                N_perp_dir = N_perp * rsqrt(N_perp_len_sq);
+            }
+
+            // 3. Reconstruct the new normal on the cone edge
+            const float sinThetaMax = sqrt(max(0.0f, 1.0f - MIN_NORMAL_INT * MIN_NORMAL_INT));
+            N_obj = flatN_obj * MIN_NORMAL_INT + N_perp_dir * sinThetaMax;
+            N_obj = normalize(N_obj);
+        }
     }
 
     // --- World-space transformations and HitInfo assignment ---

@@ -56,7 +56,7 @@ Buffer<uint>                       gLT_LeafAliasIdx  : register(t14);
 #include "Sample_Data_v8.hlsli"
 #include "Fresnel_v8.hlsli"
 #include "Material_Common_v8.hlsli"
-#include "Material_GGX_Dielectric_v8.hlsli"
+#include "Material_GGX_v8.hlsli"
 #include "Material_Lambertian_v8.hlsli"
 #include "Material_Coat_v8.hlsli"
 #include "Material_Sheen_v8.hlsli"

@@ -77,6 +77,12 @@ float3 Get_Emissive(HitInfo h){
     return materials[h.materialID].Ke.xyz;
 }
 
+// Helper to check if a given sample state is valid
+bool ValidSampleState(SampleState sstate){
+    if(length(sstate.n_g) < EPSILON) return false;
+    return true;
+}
+
 // Sample a single backward bsdf ray based on the material properties
 SampleState Sample_BSDF_BW_S(PathState pstate, inout RandomData rdata){
     // Sample a BSDF direction
@@ -88,9 +94,9 @@ SampleState Sample_BSDF_BW_S(PathState pstate, inout RandomData rdata){
     RayDesc ray;
     ray.Origin = pstate.x;
     ray.Direction = s;
-    ray.TMin = 0.001f;
+    ray.TMin = 0.00001f;
     ray.TMax = 10000.0f;
-    HitInfo payload;
+    HitInfo payload = (HitInfo)0.0f;
     TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
 
     SampleState sstate;

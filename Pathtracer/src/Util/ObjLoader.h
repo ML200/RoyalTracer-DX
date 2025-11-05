@@ -617,8 +617,9 @@ public:
                 t_mat.rmaTexID = loadTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures);
             }
 
-            //GenerateEssLUT(t_mat);
-            //GenerateSheenLUT(t_mat);
+            GenerateEssLUT(t_mat);
+            GenerateSheenLUT(t_mat);
+            PrintLUTAsVector(t_mat);
             mats->push_back(t_mat);
         }
 
