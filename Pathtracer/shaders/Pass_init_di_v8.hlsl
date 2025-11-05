@@ -39,8 +39,14 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
 
         // Evaluate throughput and adjust path throughput
-        float3 tpp = EvaluateBRDF_COMBINED(pstate.matID, pstate.n_s, -sstate.s, pstate.o) * dot(pstate.n_s, sstate.s);
-        float pdfp = BRDF_PDF_COMBINED(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
+        float3 tpp = EvaluateBRDF_COMBINED(pstate.matID, pstate.n_g, pstate.n_s, -sstate.s, pstate.o) * dot(pstate.n_s, sstate.s);
+        float pdfp = BRDF_PDF_COMBINED(pstate.matID, pstate.n_g, pstate.n_s, -sstate.s, pstate.o);
+
+        // If the pdf is invalid (==0), break;
+        if(pdfp == 0.0f && !isnan(pdfp)){
+            gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
+            return;
+        }
 
         // Did we hit a light? If so, terminate path, write color and return
         if(any(sstate.L > 0.0f)){

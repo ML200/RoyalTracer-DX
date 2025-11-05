@@ -1,4 +1,4 @@
-inline float3 EvaluateBTDF_GGXT(uint mID, float3 normal, float3 incoming, float3 outgoing, float etai, float etat)
+/*inline float3 EvaluateBTDF_GGXT(uint mID, float3 normal, float3 incoming, float3 outgoing, float etai, float etat)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
@@ -138,4 +138,4 @@ inline float BTDF_PDF_GGXT(uint mID, float3 normal, float3 incoming, float3 outg
 
     float pdf = pdf_m * dwh_dwi;
     return (isnan(pdf) || isinf(pdf)) ? 0.0f : pdf;
-}
+}*/
