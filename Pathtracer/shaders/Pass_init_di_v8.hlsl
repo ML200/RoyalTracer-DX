@@ -52,6 +52,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         if(any(sstate.L > 0.0f)){
             float3 tp_final = tpp * tstate.t * sstate.L;
             float pdf_final = pdfp * tstate.pdf;
+            if(pdf_final < EPSILON){
+                gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
+                return;
+            }
             gScratchPing[uint3(tid.xy, 1)] = float4(tp_final/pdf_final, 0);
             return;
         }
