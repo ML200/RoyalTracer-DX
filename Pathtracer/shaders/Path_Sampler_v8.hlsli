@@ -94,7 +94,7 @@ SampleState Sample_BSDF_BW_S(PathState pstate, inout RandomData rdata){
     RayDesc ray;
     ray.Origin = pstate.x;
     ray.Direction = s;
-    ray.TMin = 0.00001f;
+    ray.TMin = 0.0001f;
     ray.TMax = 10000.0f;
     HitInfo payload = (HitInfo)0.0f;
     TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);

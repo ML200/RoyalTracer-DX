@@ -14,15 +14,6 @@ inline float ESS_LUT(uint mID, float NdotV)
     return lerp(v0, v1, wTheta);
 }
 
-// Snells law
-inline bool RefractVector(float3 V, float3 H, float eta, out float3 L)
-{
-    float VdotH = dot(V, H);
-    float k = 1.0f - eta * eta * (1.0f - VdotH * VdotH);
-    L = eta * V - (eta * VdotH + sqrt(k)) * H;
-    return true;
-}
-
 inline float D_GGX(float NdotH, float alpha)
 {
     float alpha2 = alpha * alpha;
