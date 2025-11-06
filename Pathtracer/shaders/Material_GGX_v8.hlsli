@@ -39,11 +39,11 @@ inline float3 EvaluateBRDF_GGX(
     float fNdotV = max(0.0f, dot(fN, V));
     float fNdotL = dot(fN, L);
 
-    if (NdotV <= 0.0f || fNdotV <= 0.0f) return 0.0.xxx;
+    //if (NdotV <= 0.0f || fNdotV <= 0.0f) return 0.0.xxx;
 
     bool reflect = NdotL > 0.0f;
-    if (reflect && fNdotL <= 0.0f) return 0.0.xxx;
-    if (!reflect && fNdotL >= 0.0f) return 0.0.xxx;
+    //if (reflect && fNdotL <= 0.0f) return 0.0.xxx;
+    //if (!reflect && fNdotL >= 0.0f) return 0.0.xxx;
 
     float r = materials[mID].Pr_Pm_Ps_Pc.x;
     float alpha = max(0.001f, r * r);
@@ -53,19 +53,18 @@ inline float3 EvaluateBRDF_GGX(
     float3 H;
     if (reflect) {
         float3 Hun = V + L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
     } else {
         // Correct transmission half-vector: H ∝ V + eta * L, then flip to make V·H > 0
         float etaVL = etai / etat;            // V is on the etai side (N·V > 0 above)
         float3 Hun = V + etaVL * L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;         // ensure visible microfacet
     }
-    H = normal;
 
-    float NdotH = max(0.0f, dot(N, H));
+    float NdotH = dot(N, H);
     float VdotH = dot(V, H);
     float LdotH = dot(L, H);
 
@@ -193,7 +192,7 @@ inline float3 SampleBRDF_GGX(
     //if (dot(N, V) <= 0.0f || dot(fN, V) <= 0.0f) return (float3)0;
 
     // 1) Sample visible normal H
-    float3 H = normal;//SampleVNDF_H(alpha, V, N, seed);
+    float3 H = SampleVNDF_H(alpha, V, N, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
     // 2) Path probabilities for this H
@@ -201,8 +200,8 @@ inline float3 SampleBRDF_GGX(
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float  p_sum     = p_refl_H + p_tran_H;
-    if (p_sum <= 0.0f) return (float3)0;
-    float  pick_refl = 0.0f;//p_refl_H / p_sum;
+    //if (p_sum <= 0.0f) return (float3)0;
+    float  pick_refl = p_refl_H / p_sum;
 
     float3 L;
     if (RandomFloat(seed) < pick_refl)
@@ -215,12 +214,9 @@ inline float3 SampleBRDF_GGX(
     {
         // Transmission
         float eta = etai / etat; // if you support two-sided IOR, choose by side
-        L = refract(-V, H, eta);
-        if (length(L) < EPSILON)
-        {
-            // TIR: fall back to reflection
+        if (!RefractVector(V, H, eta, L)) {
+            // TIR for this H → reflect instead (matches PDF logic that adds TIR mass)
             L = reflect(-V, H);
-            //if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
         }
     }
 
@@ -238,29 +234,28 @@ inline float BRDF_PDF_GGX(
     float  NdotV = dot(N, V);
     float  NdotL = dot(N, L);
 
-    if (NdotV <= 0.0f ||
+    /*if (NdotV <= 0.0f ||
        (NdotL > 0.0f && dot(fN, L) <= 0.0f) ||
        (NdotL < 0.0f && dot(fN, L) >= 0.0f))
-        return 0.0f;
+        return 0.0f;*/
 
     bool reflect = NdotL > 0.0f;
 
     float3 H;
     if (reflect) {
         float3 Hun = V + L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
+        //if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
         H = normalize(Hun);
     } else {
         float etaVL = etai / etat;            // V is on etai side here
         float3 Hun = V + etaVL * L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
+        //if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;         // visible microfacet
     }
-    H = N;
 
     float NdotH = dot(N, H);
-    if (NdotH <= 0.0f) return 0.0f;
+    //if (NdotH <= 0.0f) return 0.0f;
 
     float  r         = materials[mID].Pr_Pm_Ps_Pc.x;
     float  alpha     = max(0.001f, r * r);
@@ -271,10 +266,10 @@ inline float BRDF_PDF_GGX(
     float pdf_H     = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH_abs) / max(1e-6f, NdotV);
 
     float F_diel    = FresnelDielectricTIR(V, H, etai, etat);
-    float p_refl_H  = 0.0f;//(1.0f - metalness) * F_diel + metalness;
-    float p_tran_H  = 1.0f;//(1.0f - metalness) * (1.0f - F_diel) * trans_w;
+    float p_refl_H  = (1.0f - metalness) * F_diel + metalness;
+    float p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float p_sum     = p_refl_H + p_tran_H;
-    if (p_sum <= 0.0f) return 0.0f;
+    //if (p_sum <= 0.0f) return 0.0f;
 
     if (reflect)
     {
@@ -292,19 +287,19 @@ inline float BRDF_PDF_GGX(
     {
         float VdotH = dot(V, H); // > 0 after flip
         float LdotH = dot(L, H); // < 0 for transmission
-        if (VdotH <= 0.0f || LdotH >= 0.0f) return 0.0f;
+        //if (VdotH <= 0.0f || LdotH >= 0.0f) return 0.0f;
 
         // Fresnel + mixing weights first, so we can short-circuit when transmission has no mass.
         float F_diel   = clamp(FresnelDielectricTIR(V, H, etai, etat).x, 0.0f, 1.0f);
         float p_refl_H = (1.0f - metalness) * F_diel + metalness;
         float p_tran_H = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
         float p_sum    = p_refl_H + p_tran_H;
-        if (p_sum <= EPSILON) return 0.0f;
-        if (p_tran_H <= EPSILON) return 0.0f; // avoid 0 * inf → NaN
+        //if (p_sum <= EPSILON) return 0.0f;
+        //if (p_tran_H <= EPSILON) return 0.0f; // avoid 0 * inf → NaN
 
         // Signed denominator for refraction mapping (Walter 2007)
         float denom = etai * VdotH + etat * LdotH; // signed
-        if (abs(denom) <= EPSILON) return 0.0f;
+        //if (abs(denom) <= EPSILON) return 0.0f;
 
         // VNDF pdf for H (visible normals), use V·H (not abs) and protect tiny divisors
         float VdotH_pos = max(EPSILON, VdotH);
@@ -313,7 +308,7 @@ inline float BRDF_PDF_GGX(
 
         // Jacobian for refraction mapping (only |L·H|)
         float jacobian = (etat * etat * abs(LdotH)) / (denom * denom);
-        if (!(jacobian > 0.0f)) return 0.0f;
+        //if (!(jacobian > 0.0f)) return 0.0f;
 
         return (p_tran_H / p_sum) * pdf_H * jacobian;
     }

@@ -416,7 +416,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = { "testScene_2.obj"};
+        std::vector<std::string> models = { "testScene_2.obj", "sponza_simple.obj"};
         for (const auto& modelName : models) {
             std::vector<Vertex> vertices;
             std::vector<UINT> indices;
@@ -512,13 +512,13 @@ void Renderer::OnInitTransform() {
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
     XMMATRIX translate    = XMMatrixTranslation(0.0f, 0.f, 0.0f);
 
-    m_instances[2].second = scale * selfRotation * translate;
+    m_instances[2].second = scale * selfRotation * translate;*/
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(2.f, 0.f, 0.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
