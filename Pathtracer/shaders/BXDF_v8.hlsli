@@ -30,9 +30,9 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 // 2 - Clearcoat
 // 3 - Sheen
 // 4 - Transmission
-inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, inout RandomData rdata)
+inline uint SelectSamplingStrategy(PathState pstate, inout RandomData rdata)
 {
-    SamplingP p = CalculateStrategyProbabilities(mID, outgoing, normal);
+    SamplingP p = CalculateStrategyProbabilities(pstate.matID, pstate.o, pstate.n_s);
     // Draw
     float r = RandomFloatSingle(rdata.seed.x);
 
@@ -43,35 +43,31 @@ inline uint SelectSamplingStrategy(uint mID, float3 outgoing, float3 normal, ino
 
 
 // Sample the BRDF of the given strategy
-inline float3 SampleBRDF(uint mID, float3 outgoing, float3 flatNormal, float3 normal, inout RandomData rdata) {
+inline float3 SampleBRDF(PathState pstate, inout RandomData rdata) {
     // Select one method
-    uint strategy = SelectSamplingStrategy(mID, outgoing, normal, rdata);
+    uint strategy = SelectSamplingStrategy(pstate, rdata);
     float3 sample;
 
     // TODO eta management ior of incoming and transmitted
-    float etat = materials[mID].Ni;
-    float etai = 1.0f;
+    float etat = materials[pstate.matID].Ni;
+    float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
 
     //Sample from the selected strategy
     if(strategy == 0){ // diffuse
-        sample = SampleBRDF_Lambertian(mID, outgoing, normal, flatNormal, rdata.seed);
+        sample = SampleBRDF_Lambertian(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
     else if(strategy == 1){ // specular
-        sample = SampleBRDF_GGX(mID, outgoing, normal, flatNormal, etai, etat, rdata.seed);
+        sample = SampleBRDF_GGX(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, etai, etat, rdata.seed);
     }
     else{
-        sample = SampleBRDF_Lambertian(mID, outgoing, normal, flatNormal, rdata.seed);
+        sample = SampleBRDF_Lambertian(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
-
-    // Check that the sampled direction is indeed on the right side of the surface
-    /*if(dot(sample, flatNormal) <= 0.0f)
-        return (float3)0.0f;*/
     return sample;
 }
 
 
 // Evaluation and pdf for the complete material model
-inline float3 EvaluateBRDF_COMBINED(uint mID, float3 Ng, float3 N, float3 wi, float3 wo)
+inline float3 EvaluateBRDF_COMBINED(PathState pstate, SampleState sstate)
 {
     float gate = 1.0f;
     float T = 1.0f;
@@ -79,30 +75,30 @@ inline float3 EvaluateBRDF_COMBINED(uint mID, float3 Ng, float3 N, float3 wi, fl
     float3 f = 0.0.xxx;
 
     // ior of incoming and transmitted
-    float etat = materials[mID].Ni;
-    float etai = 1.0f;
+    float etat = materials[pstate.matID].Ni;
+    float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
 
     // Base SPECULAR
-    float3 f_spec = EvaluateBRDF_GGX(mID, N, Ng, wi, wo, etai, etat);    // spec
+    float3 f_spec = EvaluateBRDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);    // spec
     f += gate * f_spec;
-    gate *= Transmittance_GGX(mID, N, wi, wo, etai, etat);
+    gate *= Transmittance_GGX(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, etat);
     // Base DIFFUSE
-    float3 f_diff = EvaluateBRDF_Lambertian(mID, N, Ng, wi, wo, etai, etat); // diff
+    float3 f_diff = EvaluateBRDF_Lambertian(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat); // diff
     f += gate * f_diff;
 
     return f;
 }
 
-inline float BRDF_PDF_COMBINED(uint mID, float3 Ng, float3 N, float3 wi, float3 wo)
+inline float BRDF_PDF_COMBINED(PathState pstate, SampleState sstate)
 {
-    SamplingP p = CalculateStrategyProbabilities(mID, wo, N);
+    SamplingP p = CalculateStrategyProbabilities(pstate.matID, pstate.o, pstate.n_s);
 
     // TODO eta management ior of incoming and transmitted
-    float etat = materials[mID].Ni;
-    float etai = 1.0f;
+    float etat = materials[pstate.matID].Ni;
+    float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
 
-    float pd = BRDF_PDF_Lambertian(mID, N, Ng, wi, wo);
-    float ps = BRDF_PDF_GGX(mID, N, Ng, wi, wo, etai, etat);
+    float pd = BRDF_PDF_Lambertian(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o);
+    float ps = BRDF_PDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);
 
     return p.Pdiff * pd + p.Pspec * ps;
 }

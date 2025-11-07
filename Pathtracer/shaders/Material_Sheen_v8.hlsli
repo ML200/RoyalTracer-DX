@@ -1,5 +1,5 @@
 // Constants for now
-static const float  SHEEN_R      = 0.10f;
+/*static const float  SHEEN_R      = 0.10f;
 static const float3 SHEEN_COLOR  = 1.0.xxx;
 
 inline float Luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -179,7 +179,7 @@ inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float
     return w * SHEEN_COLOR * (F * (G * D / denom));
 }
 
-inline float BRDF_PDF_SHEEN(uint /*mID*/, float3 N, float3 wi, float3 wo)
+inline float BRDF_PDF_SHEEN(uint mID, float3 N, float3 wi, float3 wo)
 {
     if(dot(N, -wi) < 0.0f)
         return (float3).0f;
@@ -195,3 +195,4 @@ inline float BRDF_PDF_SHEEN(uint /*mID*/, float3 N, float3 wi, float3 wo)
     // p(wi) = p(H) / (4 |V·H|), with p(H) = D(H) * (N·H)
     return SHEEN_D_Charlie(NdotH) * NdotH / (4.0f * VoH);
 }
+*/

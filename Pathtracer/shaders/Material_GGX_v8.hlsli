@@ -39,11 +39,11 @@ inline float3 EvaluateBRDF_GGX(
     float fNdotV = max(0.0f, dot(fN, V));
     float fNdotL = dot(fN, L);
 
-    //if (NdotV <= 0.0f || fNdotV <= 0.0f) return 0.0.xxx;
+    if (NdotV <= 0.0f || fNdotV <= 0.0f) return 0.0.xxx;
 
     bool reflect = NdotL > 0.0f;
-    //if (reflect && fNdotL <= 0.0f) return 0.0.xxx;
-    //if (!reflect && fNdotL >= 0.0f) return 0.0.xxx;
+    if (reflect && fNdotL <= 0.0f) return 0.0.xxx;
+    if (!reflect && fNdotL >= 0.0f) return 0.0.xxx;
 
     float r = materials[mID].Pr_Pm_Ps_Pc.x;
     float alpha = max(0.001f, r * r);
@@ -53,13 +53,13 @@ inline float3 EvaluateBRDF_GGX(
     float3 H;
     if (reflect) {
         float3 Hun = V + L;
-        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
     } else {
         // Correct transmission half-vector: H ∝ V + eta * L, then flip to make V·H > 0
         float etaVL = etai / etat;            // V is on the etai side (N·V > 0 above)
         float3 Hun = V + etaVL * L;
-        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;         // ensure visible microfacet
     }
@@ -189,18 +189,18 @@ inline float3 SampleBRDF_GGX(
     float3 N  = normalize(normal);
     float3 fN = normalize(flatNormal);
 
-    //if (dot(N, V) <= 0.0f || dot(fN, V) <= 0.0f) return (float3)0;
+    if (dot(N, V) <= 0.0f || dot(fN, V) <= 0.0f) return (float3)0;
 
     // 1) Sample visible normal H
     float3 H = SampleVNDF_H(alpha, V, N, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
     // 2) Path probabilities for this H
-    float  F_diel    = FresnelDielectricTIR(V, H, etai, etat);
+    float  F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float  p_sum     = p_refl_H + p_tran_H;
-    //if (p_sum <= 0.0f) return (float3)0;
+    if (p_sum <= 0.0f) return (float3)0;
     float  pick_refl = p_refl_H / p_sum;
 
     float3 L;
@@ -208,7 +208,7 @@ inline float3 SampleBRDF_GGX(
     {
         // Reflection
         L = reflect(-V, H);
-        //if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
+        if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
     }
     else
     {
@@ -234,10 +234,10 @@ inline float BRDF_PDF_GGX(
     float  NdotV = dot(N, V);
     float  NdotL = dot(N, L);
 
-    /*if (NdotV <= 0.0f ||
+    if (NdotV <= 0.0f ||
        (NdotL > 0.0f && dot(fN, L) <= 0.0f) ||
        (NdotL < 0.0f && dot(fN, L) >= 0.0f))
-        return 0.0f;*/
+        return 0.0f;
 
     bool reflect = NdotL > 0.0f;
 
@@ -265,7 +265,7 @@ inline float BRDF_PDF_GGX(
     float VdotH_abs = max(1e-6f, abs(dot(V, H)));
     float pdf_H     = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH_abs) / max(1e-6f, NdotV);
 
-    float F_diel    = FresnelDielectricTIR(V, H, etai, etat);
+    float F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float p_sum     = p_refl_H + p_tran_H;

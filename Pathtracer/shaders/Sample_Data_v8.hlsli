@@ -118,7 +118,7 @@ float3 ObjectToWorldPos(uint id, float3 Po)
 
 float3 ObjectToWorldNrm(uint id, float3 No)
 {
-    return normalize( mul(instanceProps[id].objectToWorldNormal, No) );
+    return normalize( mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
 }
 
 float3 WorldToObjectNrm(uint id, float3 Nw)

@@ -160,3 +160,38 @@ struct BlasRangeGpu {
 
 struct LT_Sample { uint id; float pdf; };
 struct LT_Path_Sample { float3 dir; float pdf; uint tri;};
+
+
+// Samplers output a SampleState object that contains information about the surface hit etc
+// Different to PathState objects, they shouldnt be persistent and just be used as containers for data in sampler calls
+struct SampleState{
+    float3 x;
+    float3 s; // The sample direction
+    float3 n_g; // Geometric vs shading normal of the hit surface
+    float3 n_s;
+    float3 o;
+    float3 L; // Theoretical emission
+    uint matID;
+    uint objID;
+    uint lightID; // Did we hit an emitter? If not the id is 0xFFFFFFFF
+    bool b; // Did we hit a backface?
+};
+
+// Storage for the current state of the path up until this path vertex
+struct ThroughputState{
+    float3 t;
+    float pdf;
+};
+
+// Define a path state object
+struct PathState{
+    float3 x; // current ray shading point
+    float3 n_g; // geometric normal
+    float3 n_s; // shading normal
+    float3 o; // current outgoing direction
+    uint objID; // object id of the mesh the shading point lies on
+    uint matID; // material id of the mesh the shading point lies on
+    int ior_pointer; // What medium are we currently in?
+    float ior_stack[4]; // stack of mediums for transmission
+    float priority_stack[4]; // stack priority of objects we currently traverse
+};

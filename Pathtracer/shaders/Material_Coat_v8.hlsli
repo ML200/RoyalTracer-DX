@@ -1,7 +1,7 @@
 // The coat code mostly copies the GGX lobe except it doesnt use the energy compensation
 
 // Orthonormal basis
-inline void COAT_CoordinateSystem(float3 N, out float3 T, out float3 B)
+/*inline void COAT_CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f) T = normalize(cross(float3(0.0f, 0.0f, 1.0f), N));
     else                   T = normalize(cross(float3(1.0f, 0.0f, 0.0f), N));
@@ -147,4 +147,4 @@ inline float BRDF_PDF_COAT(uint mID, float3 N, float3 wi, float3 wo)
     float  G1    = COAT_G1_SmithGGX(NdotV, alpha);
 
     return (D * G1) / max(4.0f * NdotV, EPSILON);
-}
+}*/

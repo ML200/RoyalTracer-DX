@@ -28,7 +28,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     PathState pstate = InitPathState(sdata.x1, sdata.n1_g, sdata.n1_s, sdata.o, sdata.objID, sdata.matID);
     ThroughputState tstate = InitThroughputState();
 
-    for(int i = 0; i < 20; i++){
+    for(int i = 0; i < 5; i++){
         // Sample a direction and hitpoint using bsdf sampling
         SampleState sstate = Sample_BSDF_BW_S(pstate, rdata);
 
@@ -39,8 +39,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
 
         // Evaluate throughput and adjust path throughput
-        float3 tpp = EvaluateBRDF_COMBINED(pstate.matID, pstate.n_g, pstate.n_s, -sstate.s, pstate.o) * abs(dot(pstate.n_s, sstate.s));
-        float pdfp = BRDF_PDF_COMBINED(pstate.matID, pstate.n_g, pstate.n_s, -sstate.s, pstate.o);
+        float3 tpp = EvaluateBRDF_COMBINED(pstate, sstate) * abs(dot(pstate.n_s, sstate.s));
+        float pdfp = BRDF_PDF_COMBINED(pstate, sstate);
 
         // If the pdf is invalid (==0), break;
         if(pdfp == 0.0f || isnan(pdfp) || isinf(pdfp)){
@@ -52,7 +52,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         if(any(sstate.L > 0.0f)){
             float3 tp_final = tpp * tstate.t * sstate.L;
             float pdf_final = pdfp * tstate.pdf;
-            if(any(isnan(tp_final/pdf_final)) || pdf_final < 1e-12f){
+            if(any(isnan(tp_final/pdf_final)) || pdf_final < 1e-16f){
                 gScratchPing[uint3(tid.xy, 1)] = float4(0,0,0,0);
                 return;
             }
