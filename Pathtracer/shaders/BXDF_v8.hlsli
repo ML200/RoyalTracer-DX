@@ -52,16 +52,27 @@ inline float3 SampleBRDF(PathState pstate, inout RandomData rdata) {
     float etat = materials[pstate.matID].Ni;
     float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
 
+    bool refract = false;
+
     //Sample from the selected strategy
     if(strategy == 0){ // diffuse
         sample = SampleBRDF_Lambertian(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
     else if(strategy == 1){ // specular
-        sample = SampleBRDF_GGX(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, etai, etat, rdata.seed);
+        sample = SampleBRDF_GGX(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, etai, etat, refract, rdata.seed);
     }
     else{
         sample = SampleBRDF_Lambertian(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
+
+    // Reject invalid (below surface) samples
+    if(refract){
+        if(dot(sample, pstate.n_g) > 0.0f) return (float3)0.0f;
+    }
+    else{
+        if(dot(sample, pstate.n_g) <= 0.0f) return (float3)0.0f;
+    }
+
     return sample;
 }
 

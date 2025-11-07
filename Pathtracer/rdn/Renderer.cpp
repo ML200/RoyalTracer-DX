@@ -416,7 +416,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = { "testScene_2.obj", "giga_sphere.obj"};
+        std::vector<std::string> models = { "testScene_2.obj"/*, "giga_sphere.obj"*/};
         for (const auto& modelName : models) {
             std::vector<Vertex> vertices;
             std::vector<UINT> indices;
@@ -514,11 +514,11 @@ void Renderer::OnInitTransform() {
 
     m_instances[2].second = scale * selfRotation * translate;*/
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(2.f, 2.f, 0.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
