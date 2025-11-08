@@ -1,12 +1,9 @@
 // Walter 2007 microfacet transmission mapping
-// wo points out of the *current* medium. m is a visible microfacet (dot(wo,m) > 0).
-// eta = etai/etat for the current interface.
-// Returns false on TIR or degenerate output.
 inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 {
-    float cosWoM  = dot(wo, m);                       // VNDF ensures > 0
+    float cosWoM  = dot(wo, m);
     float sin2WoM = max(0.0f, 1.0f - cosWoM * cosWoM);
-    float k       = 1.0f - eta * eta * sin2WoM;       // = cos^2(theta_t)
+    float k       = 1.0f - eta * eta * sin2WoM;
     if (k <= 0.0f) return false;                      // TIR
 
     float cosWtM = sqrt(k);
@@ -23,7 +20,7 @@ inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 // GGX BRDF/BXDF
 // -----------------------------------------------------------------------------
 
-// Evaluate the GGX BRDF/BTDF (specular only)
+// Evaluate the GGX BRDF/BTDF
 inline float3 EvaluateBRDF_GGX(
     uint mID, float3 normal, float3 flatNormal,
     float3 incoming, float3 outgoing,
@@ -39,8 +36,6 @@ inline float3 EvaluateBRDF_GGX(
     float fNdotL = dot(fN, L);
 
     bool reflect = NdotL > 0.0f;
-    /*if (reflect && fNdotL <= 0.0f) return 0.0.xxx;
-    if (!reflect && fNdotL >= 0.0f) return 0.0.xxx;*/
 
     float r = materials[mID].Pr_Pm_Ps_Pc.x;
     float alpha = max(0.001f, r * r);
@@ -50,15 +45,15 @@ inline float3 EvaluateBRDF_GGX(
     float3 H;
     if (reflect) {
         float3 Hun = V + L;
-        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
     } else {
-        // Correct transmission half-vector: H ∝ V + eta * L, then flip to make V·H > 0
-        float etaVL = etai / etat;            // V is on the etai side (N·V > 0 above)
+        // Correct transmission half-vector
+        float etaVL = etai / etat;
         float3 Hun = V + etaVL * L;
-        //if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
-        if (dot(V, H) < 0.0f) H = -H;         // ensure visible microfacet
+        if (dot(V, H) < 0.0f) H = -H;
     }
 
     float NdotH = dot(N, H);
@@ -89,26 +84,16 @@ inline float3 EvaluateBRDF_GGX(
     }
     else
     {
-        // Signed transmission constraints: V·H > 0, L·H < 0
-        //if (VdotH <= 0.0f || LdotH >= 0.0f) return 0.0.xxx;
-
-        // Scalar Fresnel; short-circuit when transmission has zero weight (incl. TIR → F==1)
         float F = clamp(FresnelDielectricTIR(V, H, etai, etat).x, 0.0f, 1.0f);
         float oneMinusF = 1.0f - F;
-        //if (oneMinusF <= 0.0f) return 0.0.xxx; // avoid 0 * inf → NaN
 
         float denom_bsdf = NdotV * abs(NdotL);
-        //if (abs(denom_bsdf) <= EPSILON) return 0.0.xxx;
+        float denom_jac = etai * VdotH + etat * LdotH;
 
-        float denom_jac = etai * VdotH + etat * LdotH; // signed
-        //if (abs(denom_jac) <= EPSILON) return 0.0.xxx;
-
-        // Walter transmission form: needs |V·H| * |L·H|
+        // Walter transmission form
         float numer = (etat * etat) * abs(VdotH) * abs(LdotH);
 
         float btdf = (oneMinusF) * D * G * numer / (denom_bsdf * denom_jac * denom_jac);
-
-        // Opaqueness gate (Kd.w==1 → zero) and no transmission for metals
         float gate = (1.0f - materials[mID].Kd.w) * (1.0f - metalness);
         float scalar_t = btdf * gate;
 
@@ -148,6 +133,7 @@ inline float Transmittance_GGX(
     return gate * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
 }
 
+
 // Approximate sampling weight for choosing transmission in MIS
 inline float Sampling_Weight_GGX(
     uint   mID,
@@ -166,7 +152,8 @@ inline float Sampling_Weight_GGX(
     return (1.0f - metalness) * F_d + metalness * Luma(F_c);
 }
 
-// VNDF sampling GGX (specular reflection + transmission)
+
+// VNDF sampling GGX
 inline float3 SampleBRDF_GGX(
     uint   mID,
     float3 outgoing,
@@ -180,13 +167,11 @@ inline float3 SampleBRDF_GGX(
     float  r         = materials[mID].Pr_Pm_Ps_Pc.x;
     float  alpha     = max(0.001f, r * r);
     float  metalness = materials[mID].Pr_Pm_Ps_Pc.y;
-    float  trans_w   = 1.0f - materials[mID].Kd.w; // Kd.w == 1 → opaque
+    float  trans_w   = 1.0f - materials[mID].Kd.w;
 
     float3 V  = normalize(outgoing);
     float3 N  = normalize(normal);
     float3 fN = normalize(flatNormal);
-
-    //if (dot(N, V) <= 0.0f || dot(fN, V) <= 0.0f) return (float3)0;
 
     // 1) Sample visible normal H
     float3 H = SampleVNDF_H(alpha, V, N, seed);
@@ -197,7 +182,6 @@ inline float3 SampleBRDF_GGX(
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float  p_sum     = p_refl_H + p_tran_H;
-    //if (p_sum <= 0.0f) return (float3)0;
     float  pick_refl = p_refl_H / p_sum;
 
     float3 L;
@@ -211,9 +195,8 @@ inline float3 SampleBRDF_GGX(
     else
     {
         // Transmission
-        float eta = etai / etat; // if you support two-sided IOR, choose by side
+        float eta = etai / etat;
         if (!RefractVector(V, H, eta, L)) {
-            // TIR for this H → reflect instead (matches PDF logic that adds TIR mass)
             refract = false;
             L = reflect(-V, H);
         }
@@ -222,6 +205,7 @@ inline float3 SampleBRDF_GGX(
 
     return normalize(L);
 }
+
 
 // PDF matching SampleBRDF_GGX
 inline float BRDF_PDF_GGX(
@@ -235,11 +219,6 @@ inline float BRDF_PDF_GGX(
     float  NdotL = dot(N, L);
     float fNdotL = dot(fN, L);
 
-    /*if (NdotV <= 0.0f ||
-       (NdotL > 0.0f && dot(fN, L) <= 0.0f) ||
-       (NdotL < 0.0f && dot(fN, L) >= 0.0f))
-        return 0.0f;*/
-
     bool reflect = NdotL > 0.0f;
 
     float3 H;
@@ -248,11 +227,11 @@ inline float BRDF_PDF_GGX(
         if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
         H = normalize(Hun);
     } else {
-        float etaVL = etai / etat;            // V is on etai side here
+        float etaVL = etai / etat;
         float3 Hun = V + etaVL * L;
         if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
         H = normalize(Hun);
-        if (dot(V, H) < 0.0f) H = -H;         // visible microfacet
+        if (dot(V, H) < 0.0f) H = -H;
     }
 
     float NdotH = dot(N, H);
@@ -273,7 +252,7 @@ inline float BRDF_PDF_GGX(
 
     if (reflect)
     {
-        float VdotH_pos = max(1e-6f, dot(V, H));      // reflection requires V·H > 0
+        float VdotH_pos = max(1e-6f, dot(V, H));
         float p_sel     = p_refl_H;
 
         // Add TIR mass if transmit would be invalid for this H
@@ -285,25 +264,22 @@ inline float BRDF_PDF_GGX(
     }
     else
     {
-        float VdotH = dot(V, H); // > 0 after flip
-        float LdotH = dot(L, H); // < 0 for transmission
-        //if (VdotH <= 0.0f || LdotH >= 0.0f) return 0.0f;
+        float VdotH = dot(V, H);
+        float LdotH = dot(L, H);
 
-        // Fresnel + mixing weights first, so we can short-circuit when transmission has no mass.
+        // Fresnel
         float F_diel   = clamp(FresnelDielectricTIR(V, H, etai, etat).x, 0.0f, 1.0f);
         float p_refl_H = (1.0f - metalness) * F_diel + metalness;
         float p_tran_H = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
         float p_sum    = p_refl_H + p_tran_H;
 
         // Signed denominator for refraction mapping (Walter 2007)
-        float denom = etai * VdotH + etat * LdotH; // signed
-
-        // VNDF pdf for H (visible normals), use V·H (not abs) and protect tiny divisors
+        float denom = etai * VdotH + etat * LdotH;
         float VdotH_pos = max(EPSILON, VdotH);
         float pdf_H     = (D_GGX(NdotH, alpha) * G1_SmithGGX(max(NdotV, EPSILON), alpha) * VdotH_pos)
                         / max(NdotV, EPSILON);
 
-        // Jacobian for refraction mapping (only |L·H|)
+        // Jacobian for refraction mapping
         float jacobian = (etat * etat * abs(LdotH)) / (denom * denom);
 
         return max(0.0f, (p_tran_H / p_sum) * pdf_H * jacobian);

@@ -19,7 +19,8 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 
     SamplingP sp;
     sp.Pspec = 0.5f;
-    sp.Pdiff = 0.5f;
+    sp.Pdiff = 0.3f;
+    sp.Psheen = 0.2f;
     return sp;
 }
 
@@ -37,7 +38,8 @@ inline uint SelectSamplingStrategy(PathState pstate, inout RandomData rdata)
     float r = RandomFloatSingle(rdata.seed.x);
 
     // CDF
-    float c = p.Pspec;                 if (r < c) return 1;  // spec
+    if (r < p.Pspec) return 1;  // spec
+    if (r < p.Psheen) return 3;  // spec
     return 0; // diffuse
 }
 
@@ -60,6 +62,9 @@ inline float3 SampleBRDF(PathState pstate, inout RandomData rdata) {
     }
     else if(strategy == 1){ // specular
         sample = SampleBRDF_GGX(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, etai, etat, refract, rdata.seed);
+    }
+    else if(strategy == 3){ // sheen
+        sample = SampleBRDF_SHEEN(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
     else{
         sample = SampleBRDF_Lambertian(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
@@ -98,6 +103,11 @@ inline float3 EvaluateBRDF_COMBINED(PathState pstate, SampleState sstate)
     float etat = materials[pstate.matID].Ni;
     float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
 
+    // Base SHEEN
+    float3 f_sheen = EvaluateBRDF_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
+    f += gate * f_sheen;
+    gate *= Transmittance_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
+
     // Base SPECULAR
     float3 f_spec = EvaluateBRDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);    // spec
     f += gate * f_spec;
@@ -119,6 +129,7 @@ inline float BRDF_PDF_COMBINED(PathState pstate, SampleState sstate)
 
     float pd = BRDF_PDF_Lambertian(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o);
     float ps = BRDF_PDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);
+    float psh = BRDF_PDF_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
 
-    return p.Pdiff * pd + p.Pspec * ps;
+    return p.Pdiff * pd + p.Pspec * ps + p.Psheen * psh;
 }

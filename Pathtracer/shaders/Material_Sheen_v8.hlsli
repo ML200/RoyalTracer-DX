@@ -1,6 +1,6 @@
 // Constants for now
-static const float  SHEEN_R      = 0.10f;
-static const float3 SHEEN_COLOR  = 1.0.xxx;
+static const float  SHEEN_R      = 0.20f;
+static const float3 SHEEN_COLOR  = float3(1,1,1);
 
 // Get the transmitted energy
 inline float SheenAlpha_FromLUT(uint mID, float NdotV)
@@ -16,7 +16,6 @@ inline float SheenAlpha_FromLUT(uint mID, float NdotV)
     return lerp(a0, a1, w);
 }
 
-
 // D term (Eq. 2): D(m) = (2 + 1/r) * sin(theta_h)^(1/r) / (2pi)
 inline float SHEEN_D_Charlie(float NdotH)
 {
@@ -28,7 +27,7 @@ inline float SHEEN_D_Charlie(float NdotH)
     return D;
 }
 
-// Λ fit from the paper (Table 1 + Eq. 3), correlated Smith G = 1 / (1 + A(V) + A(L))
+// A fit from the paper (Table 1 + Eq. 3), correlated Smith G = 1 / (1 + A(V) + A(L))
 inline float SHEEN_LambdaFit_params(out float a, out float b, out float c, out float d, out float e)
 {
     // interpolate between r=0.0 and r=1.0 fits: P = (1-r)^2 * P0 + (1-(1-r)^2) * P1
@@ -106,74 +105,122 @@ inline float3 SHEEN_SampleHalfVector(uint2 seed, float3 N, out float NdotH, out 
     return H;
 }
 
-inline void SampleBRDF_SHEEN(
+// BRDF eval: f = w * color * F * G * D / (4 N·V N·L); For sheen we take F~1
+inline float3 EvaluateBRDF_SHEEN(
+    uint   mID,
+    float3 normal,
+    float3 incoming,
+    float3 outgoing)
+{
+    float3 N = normalize(normal);
+    float3 V = normalize(outgoing);
+    float3 L = normalize(-incoming);
+
+    // Sheen weight
+    float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    if (w <= 0.0f) return 0.0.xxx;
+
+    float NdotV = max(0.0f, dot(N, V));
+    float NdotL = max(0.0f, dot(N, L));
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0.xxx;
+
+    // Half-vector and microfacet terms
+    float3 H    = normalize(V + L);
+    float  NdotH = max(0.0f, dot(N, H));
+
+    float  D = SHEEN_D_Charlie(NdotH);
+    float  G = SHEEN_G_Charlie(NdotV, NdotL);
+    float  denom = max(1e-6f, 4.0f * NdotV * NdotL);
+
+    float3 F = 1.0.xxx;
+    return w * SHEEN_COLOR * (F * (G * D / denom));
+}
+
+
+inline float Transmittance_SHEEN(
+    uint   mID,
+    float3 normal,
+    float3 incoming,
+    float3 outgoing)
+{
+    // If either leg is below the surface, nothing reaches the next layer
+    float3 N = normalize(normal);
+    float3 V = normalize(outgoing);
+    float3 L = normalize(-incoming);
+
+    float NdotV = dot(N, V);
+    float NdotL = dot(N, L);
+    // Transmission can occur, in that case, sheen lobe is 0
+    if (NdotV <= 0.0f || NdotL <= 0.0f)
+        return 1.0f;
+
+    // Sheen weight; if zero, all energy reaches the next layer
+    float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    if (w <= 0.0f)
+        return 1.0f;
+
+    // Directional integrated reflectance (from LUT)
+    float aV = SheenAlpha_FromLUT(mID, NdotV);
+    float aL = SheenAlpha_FromLUT(mID, NdotL);
+
+    // Optional tint coupling (achromatic if SHEEN_COLOR = 1)
+    float tintLum = saturate(Luma(SHEEN_COLOR));
+    aV *= tintLum;
+    aL *= tintLum;
+
+    // Fraction getting through on each leg
+    float T_in  = saturate(1.0f - w * aL);
+    float T_out = saturate(1.0f - w * aV);
+
+    // Net throughput to the next layer for this (L,V) pair
+    return T_in * T_out;
+}
+
+// We use the lut again for optimizing sampling probability
+inline float Sampling_Weight_SHEEN(
+    uint   mID,
+    float3 normal,
+    float3 outgoing)
+{
+    float3 N = normalize(normal);
+    float3 V = normalize(outgoing);
+    float  NdotV = max(0.0f, dot(N, V));
+
+    float  w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    if (w <= 0.0f || NdotV <= 0.0f) return 0.0f;
+
+    float  aV = SheenAlpha_FromLUT(mID, NdotV);
+    float  tintLum = saturate(Luma(SHEEN_COLOR));
+    return saturate(w * tintLum * aV);
+}
+
+
+inline float3 SampleBRDF_SHEEN(
     uint    mID,
     float3  outgoing,       // wo
     float3  normal,
     float3  flatNormal,
-    inout float3 sample,
     inout uint2 seed)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
 
     float NdotV = max(0.0f, dot(N, V));
-    if (NdotV <= 0.0f) { sample = float3(0,0,0); return; }
+    if (NdotV <= 0.0f) { return 0.0f; }
 
     float NdotH, pdfH;
     float3 H = SHEEN_SampleHalfVector(seed, N, NdotH, pdfH);
 
     // reflect view about H to get incident direction
     float3 wi = reflect(-V, H);
-    if (dot(N, wi) <= 0.0f) { sample = float3(0,0,0); return; }
+    if (dot(N, wi) <= 0.0f) { return 0.0f; }
 
-    sample = wi; // convention: integrator will use L = normalize(-wi)
+    return wi;
 }
 
-// BRDF eval: f = w * color * F * G * D / (4 N·V N·L); For sheen we take F~1
-inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float3 outgoing, out float transmittance)
-{
-    if(dot(normal, -incoming) < 0.0f)
-        return (float3).0f;
-    float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z); // sheen weight
-    if (w <= 0.0f) { transmittance = 1.0f; return 0.0.xxx; }
-
-    float3 N = normalize(normal);
-    float3 V = normalize(outgoing);
-    float3 L = normalize(-incoming);
-
-    float NdotV = max(0.0f, dot(N, V));
-    float NdotL = max(0.0f, dot(N, L));
-    if (NdotV <= 0.0f || NdotL <= 0.0f) { transmittance = 1.0f; return 0.0.xxx; }
-
-    float aV = SheenAlpha_FromLUT(mID, NdotV); // reflectance seen along V
-    float aL = SheenAlpha_FromLUT(mID, NdotL); // reflectance seen along L
-
-    // Sheen tint
-    float tintLum = saturate(Luma(SHEEN_COLOR));
-    aV *= tintLum;
-    aL *= tintLum;
-
-    // Fraction of energy that gets through the sheen layer
-    float T_in  = saturate(1.0f - w * aL);
-    float T_out = saturate(1.0f - w * aV);
-
-    transmittance = sqrt(T_in * T_out);
-    float3 H    = normalize(V + L);
-    float NdotH = max(0.0f, dot(N, H));
-
-    float  D = SHEEN_D_Charlie(NdotH);
-    float  G = SHEEN_G_Charlie(NdotV, NdotL);
-    float  denom = max(1e-6f, 4.0f * NdotV * NdotL);
-
-    float3 F = 1.0.xxx; // achromatic sheen; constant Fresnel
-    return w * SHEEN_COLOR * (F * (G * D / denom));
-}
 
 inline float BRDF_PDF_SHEEN(uint mID, float3 N, float3 wi, float3 wo)
 {
-    if(dot(N, -wi) < 0.0f)
-        return (float3).0f;
     float3 V = normalize(wo);
     float3 L = normalize(-wi);
     float NdotL = max(0.0f, dot(N, L));
