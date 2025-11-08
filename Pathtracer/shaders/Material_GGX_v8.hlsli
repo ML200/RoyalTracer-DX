@@ -34,7 +34,7 @@ inline float3 EvaluateBRDF_GGX(
     float3 V = normalize(outgoing);    // wo
     float3 L = normalize(-incoming);   // wi
 
-    float NdotV = dot(N, V);
+    float NdotV = abs(dot(N, V))+0.00001f;
     float NdotL = dot(N, L);
     float fNdotL = dot(fN, L);
 
@@ -231,14 +231,14 @@ inline float BRDF_PDF_GGX(
 {
     float3 V = normalize(wo);
     float3 L = normalize(-wi);
-    float  NdotV = dot(N, V);
+    float  NdotV = abs(dot(N, V))+0.0001f;
     float  NdotL = dot(N, L);
     float fNdotL = dot(fN, L);
 
-    if (NdotV <= 0.0f ||
+    /*if (NdotV <= 0.0f ||
        (NdotL > 0.0f && dot(fN, L) <= 0.0f) ||
        (NdotL < 0.0f && dot(fN, L) >= 0.0f))
-        return 0.0f;
+        return 0.0f;*/
 
     bool reflect = NdotL > 0.0f;
 

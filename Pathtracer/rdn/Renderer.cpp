@@ -416,7 +416,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = { "testScene_2.obj"/*, "giga_sphere.obj"*/};
+        std::vector<std::string> models = { "testScene_2.obj"/*, "sponza_simple.obj"*/};
         for (const auto& modelName : models) {
             std::vector<Vertex> vertices;
             std::vector<UINT> indices;
@@ -757,29 +757,40 @@ void Renderer::PopulateCommandList()
 
         case Stage::Compute:
             {
-                if (p.isWorkGraph)
-                {   // Work-Graph path
+            if (p.isWorkGraph)
+                {
                     const uint32_t wgIndex = p.wgIdx;
-                    const auto& rt = m_wgRuntime[wgIndex];   // which graph you want to run
+                    const auto& rt = m_wgRuntime[wgIndex];
 
+                    // 1) BIND COMPUTE ROOT SIGNATURE + PARAMS (REQUIRED)
+                    m_commandList->SetComputeRootSignature(m_computeSignature.Get());
+                    m_commandList->SetComputeRootDescriptorTable(
+                        0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+                    UINT imSize[2] = { GetWidth(), GetHeight() };
+                    m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
+
+                    // 2) Program = Work Graph + backing
                     D3D12_SET_PROGRAM_DESC setProg{};
                     setProg.Type                        = D3D12_PROGRAM_TYPE_WORK_GRAPH;
                     setProg.WorkGraph.ProgramIdentifier = rt.id;
                     setProg.WorkGraph.BackingMemory     = rt.backing;
 
-                    // Initialise the graph only the first time
-                    setProg.WorkGraph.Flags = D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
+                    static std::vector<bool> s_inited;
+                    if (s_inited.size() <= wgIndex) s_inited.resize(wgIndex + 1, false);
+                    setProg.WorkGraph.Flags = s_inited[wgIndex]
+                                              ? D3D12_SET_WORK_GRAPH_FLAG_NONE
+                                              : D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
                     m_commandList->SetProgram(&setProg);
+                    s_inited[wgIndex] = true;
 
-                    // dispatch - single “record” into entrypoint 0
+                    // 3) Dispatch the graph (entry "main" has NodeDispatchGrid)
                     D3D12_DISPATCH_GRAPH_DESC dg{};
                     dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
-                    dg.NodeCPUInput.EntrypointIndex      = 0;
-                    dg.NodeCPUInput.NumRecords           = 1;
-                    dg.NodeCPUInput.pRecords             = nullptr;
-                    dg.NodeCPUInput.RecordStrideInBytes  = 0;   // replicate the one record
+                    dg.NodeCPUInput.EntrypointIndex     = 0;
+                    dg.NodeCPUInput.NumRecords          = 1;
+                    dg.NodeCPUInput.pRecords            = nullptr;
+                    dg.NodeCPUInput.RecordStrideInBytes = 0;
                     m_commandList->DispatchGraph(&dg);
-
                     break;
                 }
                 // switch to CS PSO + bind its root signature

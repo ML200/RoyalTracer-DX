@@ -66,11 +66,20 @@ inline float3 SampleBRDF(PathState pstate, inout RandomData rdata) {
     }
 
     // Reject invalid (below surface) samples
-    if(refract){
-        if(dot(sample, pstate.n_g) > 0.0f) return (float3)0.0f;
-    }
-    else{
-        if(dot(sample, pstate.n_g) <= 0.0f) return (float3)0.0f;
+    float  Ng_wi  = dot(sample, pstate.n_g);
+
+    if (!refract) {
+        // reflection
+        if (Ng_wi <= 0.0f) {
+            sample = reflect(sample, pstate.n_g);
+            Ng_wi  = -Ng_wi;
+        }
+    } else {
+        // transmission wants
+        if (Ng_wi >= 0.0f) {
+            sample = reflect(sample, pstate.n_g);
+            Ng_wi  = -Ng_wi;
+        }
     }
 
     return sample;

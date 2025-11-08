@@ -62,35 +62,93 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N)
 }
 
 
-// Clamp shading normal to be hittable by V: dot(N,V) >= eps.
-inline float3 ClampNormalToView(float3 N, float3 V, float3 Ng, float eps)
+inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
-    // a = cos between N and V
-    float a = dot(N, V);
-    if (a >= eps) return N;
+    float3 Vn  = normalize(V);
+    float3 Nn  = normalize(N);
+    float3 NGn = normalize(Ng);
 
-    // Project N onto plane orthogonal to V to get azimuth direction
-    float3 Nperp = N - a * V;
-    float len2   = dot(Nperp, Nperp);
+    // Make sure the surface defined by the interpolated normal is hittable by the view vector
+    float a = dot(Nn, Vn); // cos between N and V
+    if (a < epsView)
+    {
+        float3 Nperp = Nn - a * Vn;
+        float  len2  = dot(Nperp, Nperp);
 
-    // Degenerate case: N ~ +/- V  -> build any perp dir fast
-    if (len2 < 1e-12f) {
-        float3 t = (abs(V.x) > 0.5f) ? float3(-V.y, V.x, 0.0f)
-                                     : float3(0.0f, -V.z, V.y);
-        Nperp = normalize(cross(V, t));
-    } else {
-        Nperp *= rsqrt(len2);
+        // Degenerate: N ~ +/- V
+        float3 u_any;
+        {
+            float3 t = (abs(Vn.x) > 0.5f) ? float3(-Vn.y, Vn.x, 0.0f) : float3(0.0f, -Vn.z, Vn.y);
+            u_any = normalize(cross(Vn, t));
+        }
+        float3 u = (len2 < 1e-12f) ? u_any : (Nperp * rsqrt(len2));
+
+        float s_view = sqrt(saturate(1.0f - epsView * epsView));
+        Nn = normalize(s_view * u + epsView * Vn);
     }
-    float s = sqrt(max(0.0f, 1.0f - eps*eps));
-    float3 Nnew = s * Nperp + eps * V;
-    if (dot(Nnew, Ng) < 0.0f)
-        Nnew = normalize(Nnew - 2.0f * dot(Nnew, Ng) * Ng);
+
+    if (dot(Nn, NGn) < 0.0f)
+        Nn = normalize(Nn - 2.0f * dot(Nn, NGn) * NGn);
+
+    // Quick reflection test
+    {
+        float3 R = reflect(-Vn, Nn);
+        if (dot(R, NGn) >= epsRefl)
+            return Nn;
+    }
+
+    // Make sure that a potentially reflected ray has substantial coverage above the normal
+    float  c     = dot(Vn, NGn);
+    float3 Ngp   = NGn - c * Vn;
+    float  ngp2  = dot(Ngp, Ngp);
+    float  m     = (ngp2 > 0.0f) ? rsqrt(ngp2) * ngp2 : 0.0f;
+    float3 u;
+    if (ngp2 > 1e-16f) {
+        u = Ngp * rsqrt(ngp2);
+    } else {
+        float3 t = (abs(Vn.x) > 0.5f) ? float3(-Vn.y, Vn.x, 0.0f) : float3(0.0f, -Vn.z, Vn.y);
+        u = normalize(cross(Vn, t));
+    }
+
+    a = saturate(dot(Nn, Vn));
+    float thetaStart = acos(a);
+    float thetaMax   = acos(saturate(epsView));
+
+    float alpha = atan2(sqrt(saturate(1.0f - c*c)), c);
+    float delta = acos(clamp(epsRefl, -1.0f, 1.0f));
+
+    float L = 0.5f * (alpha - delta);
+    float U = 0.5f * (alpha + delta);
+
+    // Intersect with [0, thetaMax]
+    float Lc = max(0.0f, L);
+    float Uc = min(thetaMax, U);
+
+    float thetaTarget;
+    if (Lc <= Uc)
+    {
+        // If current θ inside intersection, keep it
+        thetaTarget = clamp(thetaStart, Lc, Uc);
+    }
     else
-        Nnew = normalize(Nnew);
+    {
+        // No feasible θ within view constraint. Best-effort fallback
+        thetaTarget = 0.0f;
+    }
 
-    return Nnew;
+    // Rebuild N
+    float aT = cos(thetaTarget);
+    float sT = sqrt(saturate(1.0f - aT * aT));
+    float3 Nopt = aT * Vn + sT * u;
+
+    // Hemisphere fix
+    if (dot(Nopt, NGn) < 0.0f)
+        Nopt = normalize(Nopt - 2.0f * dot(Nopt, NGn) * NGn);
+    else
+        Nopt = normalize(Nopt);
+
+    return Nopt;
 }
-
 
 
 inline void EvalSurface(
@@ -103,8 +161,6 @@ inline void EvalSurface(
 {
     const uint baseI = instanceProps[instID].indexBase;
     const uint baseM = instanceProps[instID].materialBase;
-
-    // --- Object-space calculations ---
 
     // Indices
     const uint i0 = indices[baseI + 3u*primID + 0];
@@ -133,10 +189,10 @@ inline void EvalSurface(
 
 
     float3 N_obj = flatN_obj;
-    // Normalize inputs to be safe
-    if (dot(n0,n0) >= EPSILON && dot(normalize(n0), flatN_obj) > 0.3f) n0 = normalize(n0); else n0 = flatN_obj;
-    if (dot(n1,n1) >= EPSILON && dot(normalize(n1), flatN_obj) > 0.3f) n1 = normalize(n1); else n1 = flatN_obj;
-    if (dot(n2,n2) >= EPSILON && dot(normalize(n2), flatN_obj) > 0.3f) n2 = normalize(n2); else n2 = flatN_obj;
+    // Normalize inputs to be safe and clamp normal candidates to conservative values
+    if (dot(n0,n0) >= EPSILON && dot(normalize(n0), flatN_obj) > 0.4f) n0 = normalize(n0); else n0 = flatN_obj;
+    if (dot(n1,n1) >= EPSILON && dot(normalize(n1), flatN_obj) > 0.4f) n1 = normalize(n1); else n1 = flatN_obj;
+    if (dot(n2,n2) >= EPSILON && dot(normalize(n2), flatN_obj) > 0.4f) n2 = normalize(n2); else n2 = flatN_obj;
 
     N_obj = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
 
@@ -155,7 +211,7 @@ inline void EvalSurface(
 
     // Fill the HitInfo payload
     hit.hitPosition = ray.Origin + t * ray.Direction;
-    hit.area        = area_obj; // Area is in object-space units
+    hit.area        = area_obj;
     hit.materialID  = materialIDs[baseM + primID];
     hit.objID       = instID;
     hit.hitBackface = dot(ray.Direction, gNormW) > 0.0f;
@@ -163,9 +219,10 @@ inline void EvalSurface(
     hit.hitGNormal   = hit.hitBackface ? normalize(-gNormW) : normalize(gNormW);
 
     {
-        const float3 Vw  = normalize(-ray.Direction);
-        const float   eps = 0.1f;
-        hit.hitNormal = ClampNormalToView(hit.hitNormal, Vw, hit.hitGNormal, eps);
+        const float3 Vw   = normalize(-ray.Direction);
+        const float  epsV = 0.1f;
+        const float  epsR = 0.02f;
+        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, epsV, epsR);
     }
 
     // Light ID lookup

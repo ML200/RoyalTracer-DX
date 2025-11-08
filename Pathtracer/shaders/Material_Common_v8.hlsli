@@ -64,7 +64,7 @@ inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint2 seed)
     float alpha_y = alpha;
     float vx = dot(T1, V);
     float vy = dot(T2, V);
-    float vz = dot(N,  V);
+    float vz = abs(dot(N,  V))+0.00001f;
 
     float3 Ve = normalize(float3(alpha_x * vx, alpha_y * vy, vz));
 

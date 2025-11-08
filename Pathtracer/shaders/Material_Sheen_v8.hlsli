@@ -1,15 +1,6 @@
 // Constants for now
-/*static const float  SHEEN_R      = 0.10f;
+static const float  SHEEN_R      = 0.10f;
 static const float3 SHEEN_COLOR  = 1.0.xxx;
-
-inline float Luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
-
-inline void SHEEN_CoordinateSystem(float3 N, out float3 T, out float3 B)
-{
-    if (abs(N.z) < 0.999f) T = normalize(cross(float3(0,0,1), N));
-    else                   T = normalize(cross(float3(1,0,0), N));
-    B = cross(N, T);
-}
 
 // Get the transmitted energy
 inline float SheenAlpha_FromLUT(uint mID, float NdotV)
@@ -104,7 +95,7 @@ inline float3 SHEEN_SampleHalfVector(uint2 seed, float3 N, out float NdotH, out 
     float phi      = 2.0f * PI * u2;
 
     float3 T, B;
-    SHEEN_CoordinateSystem(N, T, B);
+    CoordinateSystem(N, T, B);
     float3 H = sinTh * cos(phi) * T + sinTh * sin(phi) * B + cosTh * N;
     H = normalize(H);
 
@@ -159,7 +150,7 @@ inline float3 EvaluateBRDF_SHEEN(uint mID, float3 normal, float3 incoming, float
     float aL = SheenAlpha_FromLUT(mID, NdotL); // reflectance seen along L
 
     // Sheen tint
-    float tintLum = saturate(Luminance(SHEEN_COLOR));
+    float tintLum = saturate(Luma(SHEEN_COLOR));
     aV *= tintLum;
     aL *= tintLum;
 
@@ -195,4 +186,3 @@ inline float BRDF_PDF_SHEEN(uint mID, float3 N, float3 wi, float3 wo)
     // p(wi) = p(H) / (4 |V·H|), with p(H) = D(H) * (N·H)
     return SHEEN_D_Charlie(NdotH) * NdotH / (4.0f * VoH);
 }
-*/

@@ -116,7 +116,7 @@ IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
 
   // Compile
   IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_6", arguments, _countof(arguments), nullptr, 0,
+  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_8", arguments, _countof(arguments), nullptr, 0,
                                    dxcIncludeHandler, &pResult));
 
   // Verify the result
@@ -437,7 +437,7 @@ CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
     ThrowIfFailed(s_compiler->Compile(
         textBlob.Get(), fileName,
         entryPoint,
-        L"lib_6_6",
+        L"lib_6_8",
         args, _countof(args),
         nullptr, 0,
         s_includeHandler,
