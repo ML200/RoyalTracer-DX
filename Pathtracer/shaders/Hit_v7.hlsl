@@ -1,8 +1,8 @@
-#include "Includes_v7.hlsli"
+#include "Includes_v8.hlsli"
 
 
 [shader("closesthit")] void ClosestHit(inout HitInfo payload, Attributes attrib) {
-    payload.objID = InstanceID();
+    /*payload.objID = InstanceID();
     // Get information about the surface hit
     float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
     uint vertId = 3 * PrimitiveIndex();
@@ -49,5 +49,5 @@
 
     payload.hitNormal = normal;
     payload.materialID = materialID;
-    payload.hitPosition = worldOrigin;
+    payload.hitPosition = worldOrigin;*/
 }
