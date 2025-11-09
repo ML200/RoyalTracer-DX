@@ -102,6 +102,7 @@ inline float3 EvaluateBRDF_COMBINED(PathState pstate, SampleState sstate)
 
     float3 f = 0.0.xxx;
 
+    // TODO
     // ior of incoming and transmitted
     float etat = materials[pstate.matID].Ni;
     float etai = pstate.ior_pointer >= 0 ? pstate.ior_stack[pstate.ior_pointer] : 1.0f;
@@ -111,7 +112,7 @@ inline float3 EvaluateBRDF_COMBINED(PathState pstate, SampleState sstate)
     f += gate * f_sheen;
     gate *= Transmittance_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
     // Base COAT
-    float3 f_coat = EvaluateBRDF_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, 1.5f);    // coat
+    float3 f_coat = EvaluateBRDF_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, etat);    // coat
     f += gate * f_coat;
     gate *= Transmittance_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, etat);
     // Base SPECULAR
