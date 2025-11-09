@@ -7,7 +7,6 @@ struct SamplingP{
     float Pcoat;
     float Pspec;
     float Pdiff;
-    float Ptrans;
 };
 
 inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal)
@@ -20,7 +19,8 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
     SamplingP sp;
     sp.Pspec = 0.5f;
     sp.Pdiff = 0.3f;
-    sp.Psheen = 0.2f;
+    sp.Psheen = 0.1f;
+    sp.Pcoat = 0.1f;
     return sp;
 }
 
@@ -30,17 +30,17 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 // 1 - Specular GGX
 // 2 - Clearcoat
 // 3 - Sheen
-// 4 - Transmission
 inline uint SelectSamplingStrategy(PathState pstate, inout RandomData rdata)
 {
     SamplingP p = CalculateStrategyProbabilities(pstate.matID, pstate.o, pstate.n_s);
-    // Draw
     float r = RandomFloatSingle(rdata.seed.x);
-
-    // CDF
-    if (r < p.Pspec) return 1;  // spec
-    if (r < p.Psheen) return 3;  // spec
-    return 0; // diffuse
+    float c = p.Pdiff;
+    if (r < c) return 0;                 // Diffuse
+    c += p.Pspec;
+    if (r < c) return 1;                 // GGX
+    c += p.Pcoat;
+    if (r < c) return 2;                 // Coat
+    return 3;                            // Sheen
 }
 
 
@@ -62,6 +62,9 @@ inline float3 SampleBRDF(PathState pstate, inout RandomData rdata) {
     }
     else if(strategy == 1){ // specular
         sample = SampleBRDF_GGX(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, etai, etat, refract, rdata.seed);
+    }
+    else if(strategy == 2){ // coat
+        sample = SampleBRDF_COAT(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
     }
     else if(strategy == 3){ // sheen
         sample = SampleBRDF_SHEEN(pstate.matID, pstate.o, pstate.n_s, pstate.n_g, rdata.seed);
@@ -107,7 +110,10 @@ inline float3 EvaluateBRDF_COMBINED(PathState pstate, SampleState sstate)
     float3 f_sheen = EvaluateBRDF_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
     f += gate * f_sheen;
     gate *= Transmittance_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
-
+    // Base COAT
+    float3 f_coat = EvaluateBRDF_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, 1.5f);    // coat
+    f += gate * f_coat;
+    gate *= Transmittance_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, etat);
     // Base SPECULAR
     float3 f_spec = EvaluateBRDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);    // spec
     f += gate * f_spec;
@@ -129,7 +135,8 @@ inline float BRDF_PDF_COMBINED(PathState pstate, SampleState sstate)
 
     float pd = BRDF_PDF_Lambertian(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o);
     float ps = BRDF_PDF_GGX(pstate.matID, pstate.n_s, pstate.n_g, -sstate.s, pstate.o, etai, etat);
+    float pc = BRDF_PDF_COAT(pstate.matID, pstate.n_s, -sstate.s, pstate.o, etai, etat);
     float psh = BRDF_PDF_SHEEN(pstate.matID, pstate.n_s, -sstate.s, pstate.o);
 
-    return p.Pdiff * pd + p.Pspec * ps + p.Psheen * psh;
+    return p.Pdiff * pd + p.Pspec * ps + p.Psheen * psh + p.Pcoat * pc;
 }
