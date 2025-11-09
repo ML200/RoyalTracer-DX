@@ -150,8 +150,9 @@ private:
     //  Global arrays used by EvalSurface() in the inline‑ray‑query path
     struct BTriVertex          // same layout as in HLSL
     {
-        DirectX::XMFLOAT3 vertex;
-        DirectX::XMFLOAT4 normal;      // xyz = normal,  w = optional matID
+        XMFLOAT3 vertex;
+        XMFLOAT4 normal;
+        XMFLOAT2 texCoord;
     };
 
     ComPtr<ID3D12Resource> m_vertexGlobal;
@@ -397,6 +398,10 @@ private:
   UINT materialIDOffset = 0;
   UINT materialVertexOffset = 0;
 
+    ComPtr<ID3D12Resource> m_albedoTextureArray;
+    ComPtr<ID3D12Resource> m_normalTextureArray;
+    ComPtr<ID3D12Resource> m_rmaTextureArray;
+
   //Support for several objects (instanced optionally)
   std::vector<ComPtr<ID3D12Resource>> m_VB;
   std::vector<ComPtr<ID3D12Resource>> m_IB;
@@ -463,7 +468,10 @@ private:
   void BuildAliasTableSoA(const std::vector<LightTriangle> &tris);
 
   void CreateAliasBuffers();
+    void CreateTextureArrays(
+    const std::vector<TextureData>& albedoTextures,
+    const std::vector<TextureData>& normalTextures,
+    const std::vector<TextureData>& rmaTextures);
 
-  float
-    ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
+  float ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
 };

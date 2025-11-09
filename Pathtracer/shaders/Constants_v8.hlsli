@@ -1,0 +1,6 @@
+#define EPSILON 0.000003
+#define SBIAS 0.0008
+#define PI 3.1415926535
+#define INV_PI 0.3183098861
+#define LUT_SIZE 16
+#define MIN_NORMAL_INT 0.33f

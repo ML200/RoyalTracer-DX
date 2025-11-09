@@ -47,6 +47,7 @@ add_executable(Pathtracer WIN32
         src/Util/ObjLoader.h
         rdn/Diagnostics.h
         rdn/LightTree.h
+        src/Util/stb_image.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────

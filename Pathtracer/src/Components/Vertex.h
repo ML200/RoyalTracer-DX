@@ -1,54 +1,69 @@
-//
-// Created by m on 30.01.2024.
-//
-
-#ifndef PATHTRACER_VERTEX_H
-#define PATHTRACER_VERTEX_H
+#pragma once
+#include <DirectXMath.h>
 
 
-#include <functional>
-#include "../../rdn/Renderer.h"
-
-using namespace DirectX;
-
-struct Material{
- XMFLOAT4 Kd = {1,1,1,1};
- XMFLOAT3 Ks = {1,1,1};  float Ni = 1;
- XMFLOAT3 Ke = {0,0,0};  float pad0 = 0;
- XMFLOAT4 Pr_Pm_Ps_Pc = {0,0,0,0};
- float LUT[16] = {0};
-
- //ADD MAP IDs LATER
- Material(XMFLOAT4 kd, XMFLOAT4 pr_pm_ps_pc):Kd(kd), Pr_Pm_Ps_Pc(pr_pm_ps_pc){}
+struct TextureData
+{
+    std::vector<unsigned char> pixels;
+    int width;
+    int height;
+    int channels;
 };
 
-struct Vertex {
-    XMFLOAT3 position;
-    XMFLOAT4 normal_material = {1,1,1, 0};
-    // #DXR Extra: Indexed Geometry
-    Vertex(XMFLOAT3 pos, XMFLOAT4 norm) : position(pos), normal_material(norm.x,norm.y,norm.z,norm.w) {}
+struct alignas(16) Material {
+    DirectX::XMFLOAT4 Kd;
+    DirectX::XMFLOAT3 Ke;
+    float Ni;
+    DirectX::XMFLOAT4 Pr_Pm_Ps_Pc;
+    DirectX::XMFLOAT3 Pcr_aniso_anisor;
+    float pcr_pad; // ADDED: Pad the float3 to align to 16 bytes
+    float LUT[16];
+    float SheenLUT[16];
+    int albedoTexID;
+    int normalTexID;
+    int rmaTexID;
+    int pad;       // ADDED: Pad the three ints to align to 16 bytes
 
-    // Equality operator
-    bool operator==(const Vertex& other) const {
-        return XMVector3Equal(XMLoadFloat3(&position), XMLoadFloat3(&other.position));
+    Material() :
+        Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
+        Pr_Pm_Ps_Pc(0.5f, 0.0f, 0.0f, 0.0f), Pcr_aniso_anisor(0.0f, 0.0f, 0.0f),
+        pcr_pad(0.0f), albedoTexID(-1), normalTexID(-1), rmaTexID(-1), pad(0)
+    {
+        for (int i = 0; i < 16; ++i) {
+            LUT[i] = 0.0f;
+            SheenLUT[i] = 0.0f;
+        }
     }
 };
 
-namespace std {
-    template<>
-    struct hash<Vertex> {
-        size_t operator()(const Vertex& vertex) const {
-            auto hashFloat3 = [](const XMFLOAT3& v) {
-                return std::hash<float>()(v.x) ^ std::hash<float>()(v.y) << 1 ^ std::hash<float>()(v.z) << 2;
-            };
-            auto hashFloat4 = [](const XMFLOAT4& v) {
-                return std::hash<float>()(v.x) ^ std::hash<float>()(v.y) << 1 ^ std::hash<float>()(v.z) << 2 ^ std::hash<float>()(v.w) << 3;
-            };
 
-            return hashFloat3(vertex.position) << 1;
+struct Vertex {
+    DirectX::XMFLOAT3 position;
+    DirectX::XMFLOAT4 normal_material; // w component holds material id
+    DirectX::XMFLOAT2 texCoord;
+
+    // Default constructor
+    Vertex() : position{}, normal_material{}, texCoord{} {}
+
+    // Parameterized constructor
+    Vertex(const DirectX::XMFLOAT3& pos, const DirectX::XMFLOAT4& norm_mat, const DirectX::XMFLOAT2& uv)
+        : position(pos), normal_material(norm_mat), texCoord(uv) {}
+
+    bool operator==(const Vertex& other) const {
+        return position.x == other.position.x && position.y == other.position.y && position.z == other.position.z &&
+               normal_material.x == other.normal_material.x && normal_material.y == other.normal_material.y && normal_material.z == other.normal_material.z &&
+               texCoord.x == other.texCoord.x && texCoord.y == other.texCoord.y;
+    }
+};
+
+// Hash function for Vertex
+namespace std {
+    template<> struct hash<Vertex> {
+        size_t operator()(Vertex const& vertex) const {
+            size_t h1 = hash<float>()(vertex.position.x) ^ hash<float>()(vertex.position.y) ^ hash<float>()(vertex.position.z);
+            size_t h2 = hash<float>()(vertex.normal_material.x) ^ hash<float>()(vertex.normal_material.y) ^ hash<float>()(vertex.normal_material.z);
+            size_t h3 = hash<float>()(vertex.texCoord.x) ^ hash<float>()(vertex.texCoord.y);
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
         }
     };
 }
-
-
-#endif //PATHTRACER_VERTEX_H
