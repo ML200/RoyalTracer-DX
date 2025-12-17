@@ -131,12 +131,14 @@ public:
   /// the size of the resulting structure. The allocation of the buffers is then left to the
   /// application
   void ComputeASBufferSizes(
-      ID3D12Device5* device, /// Device on which the build will be performed
-      bool allowUpdate,           /// If true, the resulting acceleration structure will
+      ID3D12Device5 *device,
+      /// If true, the resulting acceleration structure will
                                   /// allow iterative updates
-      UINT64* scratchSizeInBytes, /// Required scratch memory on the GPU to
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags,
+      UINT64 *scratchSizeInBytes,
+      /// Required scratch memory on the GPU to
                                   /// build the acceleration structure
-      UINT64* resultSizeInBytes   /// Required GPU memory to store the
+      UINT64 *resultSizeInBytes   /// Required GPU memory to store the
                                   /// acceleration structure
   );
 

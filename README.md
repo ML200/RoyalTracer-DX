@@ -1,9 +1,6 @@
 # Royal Tracer DX
 A real-time path tracer written in HLSL using the DirectX 12 API.
 
-https://github.com/user-attachments/assets/b9356007-c2ea-4cd2-919c-3017e565f874
-
-
 ## Background
 What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real-time capabilities. Since then, the focus has shifted to implementing and evaluating state-of-the-art algorithms for improving unbiased sampling efficiency. For that reason, the renderer is still missing some core backend features such as texture maps, GLTF loading, or correct instancing.
 
@@ -11,16 +8,13 @@ What started as a port of the [RoyalTracer university project](https://github.co
 <details>
   <summary><strong>Materials</strong></summary>
   
-  - Simple principled two-lobe PBR material model
+  - Simple two-lobe PBR material model
     - Lambertian Diffuse lobe
     - Energy-conserving GGX specular lobe
-  ![Spheres](./media/balls.png)
   - VNDF importance sampling
-  - MIS between NEE and BSDF sampling
-  ![MIS](./media/MIS.png)
 </details>
 <details>
-  <summary><strong>Light Tree</strong></summary>
+  <summary><strong>Light Sampling</strong></summary>
 </details>
 <details>
   <summary><strong>ReSTIR</strong></summary>

@@ -66,6 +66,14 @@ using namespace DirectX;
 // the class method: OnDestroy().
 using Microsoft::WRL::ComPtr;
 
+// Lut settings
+constexpr int NUM_LUTS = 2;
+constexpr int LUT_RESOLUTION = 16;
+constexpr int NUM_SAMPLES_LUT = 32000;
+
+static const UINT MAX_STACKS = 4;
+static const UINT MAX_INDIRECT_COMMANDS = MAX_STACKS;
+
 class Renderer : public DXSample {
 public:
     void BuildGlobalMeshBuffers();
@@ -83,8 +91,20 @@ public:
 
 private:
     // ── utilities ───────────────────────────────────────────────────────────────
-    enum class Stage { RayGen, Compute, Barrier };
+    // 1. Update the Stage Enum to include control flow
+    enum class Stage {
+        RayGen,
+        Compute,
+        FixedCompute,
+        Wavefront,
+        Barrier,
+        LoopStart,
+        LoopEnd,
+        PingSwap,
+        ClearSort
+    };
 
+    // 2. Update PassDesc to hold loop information
     struct PassDesc
     {
         std::wstring  file;               // *.hlsl
@@ -93,55 +113,101 @@ private:
         uint32_t      psoIdx  = UINT32_MAX;      // CS
         bool          isWorkGraph = false;
         uint32_t      wgIdx  = UINT32_MAX;       // index into state-object array
+
+        // Loop specific data
+        uint32_t      loopCount = 0;     // How many times to loop (for LoopStart)
+        int32_t       targetIdx = -1;    // Index to jump to (LoopEnd -> LoopStart)
     };
 
-
-
-    PassDesc ParsePass(const std::wstring& token)
+    // 3. Update ParsePass to detect new keywords
+    static PassDesc ParsePass(const std::wstring& token)
     {
         PassDesc p{};
 
-        // explicit barrier
-        if (token == L"barrier")
-        {
-            p.stage = Stage::Barrier;
+        // --- Control Flow & Barriers ---
+        if (token == L"barrier")   { p.stage = Stage::Barrier;   return p; }
+        if (token == L"pingswap")  { p.stage = Stage::PingSwap;  return p; }
+        if (token == L"endloop")   { p.stage = Stage::LoopEnd;   return p; }
+        if (token == L"clearsort") { p.stage = Stage::ClearSort; return p; }
+
+        if (token.rfind(L"loop:", 0) == 0) {
+            p.stage = Stage::LoopStart;
+            if (swscanf_s(token.c_str() + 5, L"%u", &p.loopCount) != 1)
+                throw std::runtime_error("Invalid loop count format");
             return p;
         }
 
-        // split “file|suffix”
+        // --- Shader Files ---
         const size_t bar = token.find(L'|');
-        p.file = token.substr(0, bar);              // part before ‘|’
-
-        // no ‘|’  → plain ray-gen
-        if (bar == std::wstring::npos)
-            return p;
+        p.file = token.substr(0, bar);
+        if (bar == std::wstring::npos) return p; // Assume RayGen if no pipe
 
         const std::wstring tail = token.substr(bar + 1);
 
-        // explicit ray-gen tag
-        if (tail == L"rg" || tail == L"raygen")
-            return p;                               // still Stage::RayGen
+        if (tail == L"rg" || tail == L"raygen") return p; // Default is Stage::RayGen
 
-        // work graph pass “wg:WxH”
-        if (tail.rfind(L"wg:",0)==0)
-        {
-            p.stage        = Stage::Compute;        // will be scheduled like CS
-            p.isWorkGraph  = true;
-            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY);
+        // Work Graph
+        if (tail.rfind(L"wg:", 0) == 0) {
+            p.stage = Stage::Compute;
+            p.isWorkGraph = true;
+            swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY);
             return p;
         }
 
-        // compute shader tag  “cs:WxH”
-        if (tail.rfind(L"cs:", 0) == 0)
-        {
+        // Wavefront (Indirect)
+        if (tail.rfind(L"wf:", 0) == 0) {
+            p.stage = Stage::Wavefront;
+            if (swscanf_s(tail.c_str() + 3, L"%u", &p.groupX) != 1)
+                throw std::runtime_error("Invalid wf size");
+            p.groupY = 1;
+            return p;
+        }
+
+        // Standard Compute (Dense)
+        if (tail.rfind(L"cs:", 0) == 0) {
             p.stage = Stage::Compute;
-            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
-                p.groupX == 0 || p.groupY == 0)
-                throw std::runtime_error("Invalid group size in pass string");
+            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2)
+                throw std::runtime_error("Invalid cs size");
+            return p;
+        }
+
+        // Fixed Compute (Direct, Explicit Group Count) <--- NEW
+        if (tail.rfind(L"fx:", 0) == 0) {
+            p.stage = Stage::FixedCompute;
+            if (swscanf_s(tail.c_str() + 3, L"%u", &p.groupX) != 1) // e.g., fx:1
+                throw std::runtime_error("Invalid fx size");
+            p.groupY = 1;
             return p;
         }
 
         throw std::runtime_error("Unknown stage spec in pass string");
+    }
+
+    // 4. NEW: Helper to link "endloop" back to "loop" and validate nesting.
+    // Call this in your Constructor/OnInit after parsing all strings into m_passes.
+    void LinkLoops()
+    {
+        std::vector<size_t> stack;
+        for (size_t i = 0; i < m_passes.size(); ++i)
+        {
+            if (m_passes[i].stage == Stage::LoopStart)
+            {
+                stack.push_back(i);
+            }
+            else if (m_passes[i].stage == Stage::LoopEnd)
+            {
+                if (stack.empty())
+                    throw std::runtime_error("Found 'endloop' without matching 'loop:'");
+
+                size_t startIdx = stack.back();
+                stack.pop_back();
+
+                // Link the end node to the start node
+                m_passes[i].targetIdx = static_cast<int32_t>(startIdx);
+            }
+        }
+        if (!stack.empty())
+            throw std::runtime_error("Found 'loop:' without matching 'endloop'");
     }
     std::vector<std::wstring>                    m_passSequence;
     std::unordered_map<std::wstring, uint32_t>   m_passIndex;
@@ -151,8 +217,8 @@ private:
     struct BTriVertex          // same layout as in HLSL
     {
         XMFLOAT3 vertex;
-        XMFLOAT4 normal;
-        XMFLOAT2 texCoord;
+        UINT     packedNormal;
+        PackedVector::XMHALF2  texCoord;
     };
 
     ComPtr<ID3D12Resource> m_vertexGlobal;
@@ -172,6 +238,11 @@ private:
     std::vector<PassDesc> m_passes;
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
     std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
+
+    std::vector<ComPtr<ID3D12Resource>> m_textureUploadHeaps;
+
+    std::vector<std::vector<Vertex>> m_cpuVertexData;
+    std::vector<std::vector<UINT>> m_cpuIndexData;
 
     struct WgRuntimeData
     {
@@ -227,6 +298,7 @@ private:
   struct AccelerationStructureBuffers {
     ComPtr<ID3D12Resource> pScratch;      // Scratch memory for AS builder
     ComPtr<ID3D12Resource> pResult;       // Where the AS is
+    ComPtr<ID3D12Resource> pResultUncompacted;
     ComPtr<ID3D12Resource> pInstanceDesc; // Hold the matrices of the instances
   };
 
@@ -249,6 +321,9 @@ private:
     // default‑heap GPU copies
     ComPtr<ID3D12Resource> m_aliasIdxBuffer;
     ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
+
+    ComPtr<ID3D12Resource> m_pathStateBuffer;
+    void CreatePathStateBuffer();
 
     lt::LightTreeBuilder m_lightTree;
 
@@ -281,6 +356,15 @@ private:
     std::vector<uint32_t>           m_instTriOffset;    // size = #instances
     std::vector<uint32_t>           m_triToLightId;     // size = sum over instances of tri-count
     ComPtr<ID3D12Resource>          m_triToLightIdBuffer;
+
+    // LUTs
+    ComPtr<ID3D12Resource> m_lutTextureArray;
+    std::vector<ComPtr<ID3D12Resource>> m_lutUploadHeaps;
+
+    void GenerateLutTextures();
+    void CreateAndUploadLutArray(const std::vector<std::vector<float>>& allLutData,
+                                 ComPtr<ID3D12Resource>& textureArrayResource,
+                                 const std::wstring& resourceName);
 
 
     /// Create the acceleration structure of an instance
@@ -342,7 +426,19 @@ private:
     ComPtr<ID3D12Resource> m_permanentDataTexture;
     ComPtr<ID3D12Resource> m_scratchPing;
     ComPtr<ID3D12Resource> m_svgfConstBuffer;
-  ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
+    // Heaps
+    ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;     // Main Shader-Visible Heap
+    ComPtr<ID3D12DescriptorHeap> m_stagingUavHeap; // Non-Shader-Visible Heap (Required for ClearUAV)
+
+    // Handles for Sort Buffers
+    D3D12_GPU_DESCRIPTOR_HANDLE m_sortCountGpuHandle;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_sortCountCpuHandle;
+
+    D3D12_GPU_DESCRIPTOR_HANDLE m_sortOffsetGpuHandle;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_sortOffsetCpuHandle;
+
+    D3D12_GPU_DESCRIPTOR_HANDLE m_sortBoundsGpuHandle;
+    D3D12_CPU_DESCRIPTOR_HANDLE m_sortBoundsCpuHandle;
 
   // #DXR
   void CreateShaderBindingTable();
@@ -474,4 +570,30 @@ private:
     const std::vector<TextureData>& rmaTextures);
 
   float ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
+
+    // --- Streaming Compaction Resources ---
+    ComPtr<ID3D12Resource> m_stackBuffers[MAX_STACKS];    // The ping-pong stacks (hold uint pixel indices)
+    ComPtr<ID3D12Resource> m_globalCounterBuffer;         // Holds one UINT counter per stack
+    ComPtr<ID3D12Resource> m_indirectArgsBuffer;          // Holds D3D12_DISPATCH_ARGUMENTS
+    ComPtr<ID3D12CommandSignature> m_commandSignature;    // Defines the indirect execution layout
+
+    ComPtr<ID3D12PipelineState> m_psoSetupIndirect;       // Pipeline for the helper shader
+    ComPtr<ID3D12PipelineState> m_psoSetupIndirectNoClear;
+    ComPtr<ID3D12Resource> m_sortBoundsResetBuffer;
+    ComPtr<ID3D12RootSignature> m_rsSetupIndirect;        // Root sig for the helper shader
+
+    // Helpers
+    void CreateStreamingCompactionBuffers();
+    void CreateIndirectCommandSignature();
+    void CompileSetupIndirectShader();
+    ComPtr<ID3D12Resource> m_zeroBuffer;
+
+    // Sorting Resources
+    ComPtr<ID3D12Resource> m_sortCountBuffer;
+    ComPtr<ID3D12Resource> m_sortOffsetBuffer;
+    ComPtr<ID3D12Resource> m_sortBoundsBuffer;
+
+    // Constants
+    static const UINT SORT_BUCKETS = 65536;
+    void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 };

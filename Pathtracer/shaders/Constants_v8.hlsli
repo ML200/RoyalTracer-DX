@@ -4,3 +4,8 @@
 #define INV_PI 0.3183098861
 #define LUT_SIZE 16
 #define MIN_NORMAL_INT 0.33f
+
+
+// TEXTURES & LUTs
+#define SHEEN_LUT_INDEX 0
+#define GGX_ESS_LUT_INDEX 1

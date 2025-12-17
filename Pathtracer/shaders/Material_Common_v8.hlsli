@@ -1,18 +1,16 @@
-inline float ESS_LUT(uint mID, float NdotV)
+inline float GetSheenLUT(float roughness, float NdotV)
 {
-    NdotV = saturate(NdotV);
-    float thetaIdxF = NdotV * (LUT_SIZE - 1);
-
-    int thetaIdx0 = (int)floor(thetaIdxF);
-    int thetaIdx1 = min(thetaIdx0 + 1, LUT_SIZE - 1);
-
-    // Interpolate between lut entries
-    float wTheta = thetaIdxF - thetaIdx0;
-
-    float v0 = materials[mID].LUT[thetaIdx0];
-    float v1 = materials[mID].LUT[thetaIdx1];
-    return lerp(v0, v1, wTheta);
+    float3 uvw = float3(roughness, saturate(NdotV), SHEEN_LUT_INDEX);
+    return g_LUT.SampleLevel(g_sampler_LUT, uvw, 0).r;
 }
+
+inline float GetEssLUT(float roughness, float NdotV)
+{
+    float3 uvw = float3(roughness, saturate(NdotV), GGX_ESS_LUT_INDEX);
+    return g_LUT.SampleLevel(g_sampler_LUT, uvw, 0).r;
+}
+
+
 
 inline float D_GGX(float NdotH, float alpha)
 {
@@ -53,7 +51,7 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 
 
 // Sample the microfacet normal using vndf sampling
-inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint2 seed)
+inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint seed)
 {
     // world to local transform
     float3 T1, T2;
@@ -76,8 +74,8 @@ inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint2 seed)
     float3 T2h = cross(Ve, T1h);
 
     // sample disk and warp
-    float U1  = RandomFloat(seed);
-    float U2  = RandomFloat(seed);
+    float U1  = RandomFloatSingle(seed);
+    float U2  = RandomFloatSingle(seed);
     float r   = sqrt(U1);
     float phi = 2.0f * PI * U2;
     float t1  = r * cos(phi);

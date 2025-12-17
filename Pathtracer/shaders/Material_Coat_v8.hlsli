@@ -31,6 +31,13 @@ inline float3 EvaluateBRDF_COAT(
     float3 F = FresnelDielectricTIR(V, H, etai, etat);
 
     float3 spec = pc * (F * D * G) / denom;
+
+    float Pr  = materials[mID].Pcr_aniso_anisor.x;
+    float Ess = GetEssLUT(Pr, NdotV);
+    float kms = (1.0f - Ess) / max(Ess, 1e-6f);
+
+    spec = spec * (1.0f + F * kms);
+
     return (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
 }
 
@@ -77,7 +84,7 @@ inline float Sampling_Weight_COAT(
     float  pc = saturate(materials[mID].Pr_Pm_Ps_Pc.w);
     if (pc <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
-    float Fv = FresnelDielectric(V, N, etat, etai).x;
+    float Fv = FresnelDielectric(V, N, etai, etat).x;
     return saturate(pc * Fv);
 }
 
@@ -86,7 +93,7 @@ inline float3 SampleBRDF_COAT(
     float3  outgoing,
     float3  normal,
     float3  flatNormal,
-    inout uint2  seed)
+    inout uint  seed)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);

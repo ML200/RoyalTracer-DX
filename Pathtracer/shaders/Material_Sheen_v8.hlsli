@@ -2,20 +2,6 @@
 static const float  SHEEN_R      = 0.20f;
 static const float3 SHEEN_COLOR  = float3(1,1,1);
 
-// Get the transmitted energy
-inline float SheenAlpha_FromLUT(uint mID, float NdotV)
-{
-    NdotV = saturate(NdotV);
-    float f = NdotV * (16 - 1);
-    int   i0 = (int)floor(f);
-    int   i1 = min(i0 + 1, 16 - 1);
-    float w  = f - i0;
-
-    float a0 = materials[mID].SheenLUT[i0];
-    float a1 = materials[mID].SheenLUT[i1];
-    return lerp(a0, a1, w);
-}
-
 // D term (Eq. 2): D(m) = (2 + 1/r) * sin(theta_h)^(1/r) / (2pi)
 inline float SHEEN_D_Charlie(float NdotH)
 {
@@ -81,10 +67,10 @@ inline float SHEEN_G_Charlie(float NdotV, float NdotL)
 
 // Half-vector sampling for Charlie: sample m ~ D(m) * (N·m)
 // Derivation gives sin^2(theta_h) = u^(2r/(2r+1))
-inline float3 SHEEN_SampleHalfVector(uint2 seed, float3 N, out float NdotH, out float pdf_H)
+inline float3 SHEEN_SampleHalfVector(uint seed, float3 N, out float NdotH, out float pdf_H)
 {
-    float u1  = RandomFloat(seed);
-    float u2  = RandomFloat(seed);
+    float u1  = RandomFloatSingle(seed);
+    float u2  = RandomFloatSingle(seed);
 
     float r        = SHEEN_R;
     float expo     = (2.0f * r) / (2.0f * r + 1.0f);
@@ -143,37 +129,21 @@ inline float Transmittance_SHEEN(
     float3 incoming,
     float3 outgoing)
 {
-    // If either leg is below the surface, nothing reaches the next layer
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
-    float3 L = normalize(-incoming);
-
     float NdotV = dot(N, V);
-    float NdotL = dot(N, L);
-    // Transmission can occur, in that case, sheen lobe is 0
-    if (NdotV <= 0.0f || NdotL <= 0.0f)
+
+    if (NdotV <= 0.0f)
         return 1.0f;
 
-    // Sheen weight; if zero, all energy reaches the next layer
     float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
     if (w <= 0.0f)
         return 1.0f;
 
-    // Directional integrated reflectance (from LUT)
-    float aV = SheenAlpha_FromLUT(mID, NdotV);
-    float aL = SheenAlpha_FromLUT(mID, NdotL);
-
-    // Optional tint coupling (achromatic if SHEEN_COLOR = 1)
+    float aV = GetSheenLUT(SHEEN_R, NdotV);
     float tintLum = saturate(Luma(SHEEN_COLOR));
     aV *= tintLum;
-    aL *= tintLum;
-
-    // Fraction getting through on each leg
-    float T_in  = saturate(1.0f - w * aL);
-    float T_out = saturate(1.0f - w * aV);
-
-    // Net throughput to the next layer for this (L,V) pair
-    return T_in * T_out;
+    return saturate(1.0f - w * aV);
 }
 
 // We use the lut again for optimizing sampling probability
@@ -189,7 +159,7 @@ inline float Sampling_Weight_SHEEN(
     float  w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
     if (w <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
-    float  aV = SheenAlpha_FromLUT(mID, NdotV);
+    float  aV = GetSheenLUT(SHEEN_R, NdotV);
     float  tintLum = saturate(Luma(SHEEN_COLOR));
     return saturate(w * tintLum * aV);
 }
@@ -200,7 +170,7 @@ inline float3 SampleBRDF_SHEEN(
     float3  outgoing,       // wo
     float3  normal,
     float3  flatNormal,
-    inout uint2 seed)
+    inout uint seed)
 {
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);

@@ -24,7 +24,7 @@ inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 inline float3 EvaluateBRDF_GGX(
     uint mID, float3 normal, float3 flatNormal,
     float3 incoming, float3 outgoing,
-    float etai, float etat)
+    float etai, float etat, float3 Kd, float Pr, float Pm)
 {
     float3 N = normalize(normal);
     float3 fN = normalize(flatNormal);
@@ -37,9 +37,9 @@ inline float3 EvaluateBRDF_GGX(
 
     bool reflect = NdotL > 0.0f;
 
-    float r = materials[mID].Pr_Pm_Ps_Pc.x;
+    float r = Pr;
     float alpha = max(0.001f, r * r);
-    float metalness = materials[mID].Pr_Pm_Ps_Pc.y;
+    float metalness = Pm;
 
     // --- Half-vector ---
     float3 H;
@@ -50,7 +50,7 @@ inline float3 EvaluateBRDF_GGX(
     } else {
         // Correct transmission half-vector
         float etaVL = etai / etat;
-        float3 Hun = V + etaVL * L;
+        float3 Hun = etai * V + etat * L;
         if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;
@@ -65,8 +65,9 @@ inline float3 EvaluateBRDF_GGX(
 
     if (reflect)
     {
+        //if(etai == 1.0f) return 0.0f;
         float3 F0_d = ComputeF0Dielectric(etai, etat);
-        float3 F0_c = materials[mID].Kd.xyz;
+        float3 F0_c = Kd;
         float3 F_d  = FresnelDielectricTIR(V, H, etai, etat);
         float3 F_c  = FresnelConductor(F0_c, V, H);
 
@@ -75,7 +76,7 @@ inline float3 EvaluateBRDF_GGX(
         float3 specular_d = (F_d * D * G) / denom;
         float3 specular_c = (F_c * D * G) / denom;
 
-        float Ess = ESS_LUT(mID, NdotV);
+        float Ess = GetEssLUT(Pr, NdotV);
         float kms = (1.0f - Ess) / max(Ess, 1e-6f);
 
         float3 spec = (1.0f - metalness) * specular_d * (1.0f + F0_d * kms)
@@ -84,7 +85,7 @@ inline float3 EvaluateBRDF_GGX(
     }
     else
     {
-        float F = clamp(FresnelDielectricTIR(V, H, etai, etat).x, 0.0f, 1.0f);
+        float F = FresnelDielectricTIR(V, H, etai, etat).x;
         float oneMinusF = 1.0f - F;
 
         float denom_bsdf = NdotV * abs(NdotL);
@@ -110,9 +111,11 @@ inline float Transmittance_GGX(
     float3 incoming,
     float3 outgoing,
     float  etai,
-    float  etat)
+    float  etat,
+    float3 Kd,
+    float Pr,
+    float Pm)
 {
-    float  Pr   = materials[mID].Pr_Pm_Ps_Pc.x;
     float  Ni   = materials[mID].Ni;
     float  F0   = ComputeF0Dielectric(etat, etai).x;
     float  Favg = (F0 + (1.0f - F0) * (1.0f / 21.0f)) * (1.0f/Ni);
@@ -124,10 +127,10 @@ inline float Transmittance_GGX(
     float  Fo = FresnelDielectric(wo, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
     float  Fi = FresnelDielectric(wi, N, etai, etat).x;
 
-    float  Kd_frac = Avg3(materials[mID].Kd.xyz * materials[mID].Kd.w);
+    float  Kd_frac = Avg3(Kd * materials[mID].Kd.w);
 
     // No transmission for metals
-    float  metalness = materials[mID].Pr_Pm_Ps_Pc.y;
+    float  metalness = Pm;
     float  gate      = materials[mID].Kd.w * (1.0f - metalness);
 
     return gate * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
@@ -140,16 +143,18 @@ inline float Sampling_Weight_GGX(
     float3 normal,
     float3 outgoing,
     float  etai,
-    float  etat)
+    float  etat,
+    float3 Kd,
+    float Pm)
 {
     float3 N  = normalize(normal);
     float3 wo = normalize(outgoing);
 
-    float  metalness = materials[mID].Pr_Pm_Ps_Pc.y;
-    float3 F_c       = FresnelConductor(materials[mID].Kd.xyz, wo, N);
-    float  F_d       = FresnelDielectric(wo, N, etat, etai).x;
+    float  metalness = Pm;
+    float3 F_c       = FresnelConductor(Kd, wo, N);
+    float  F_d       = FresnelDielectricTIR(wo, N, etai, etat).x;
 
-    return (1.0f - metalness) * F_d + metalness * Luma(F_c);
+    return (1.0f - metalness) * F_d + metalness * Luma(F_c) + (1 - F_d) * (1.0 - materials[mID].Kd.w);
 }
 
 
@@ -162,11 +167,15 @@ inline float3 SampleBRDF_GGX(
     float  etai,
     float  etat,
     inout bool refract,
-    inout uint2 seed)
+    inout uint seed,
+    float3 Kd,
+    float Pr,
+    float Pm,
+    bool canRefract)
 {
-    float  r         = materials[mID].Pr_Pm_Ps_Pc.x;
+    float  r         = Pr;
     float  alpha     = max(0.001f, r * r);
-    float  metalness = materials[mID].Pr_Pm_Ps_Pc.y;
+    float  metalness = Pm;
     float  trans_w   = 1.0f - materials[mID].Kd.w;
 
     float3 V  = normalize(outgoing);
@@ -185,12 +194,12 @@ inline float3 SampleBRDF_GGX(
     float  pick_refl = p_refl_H / p_sum;
 
     float3 L;
-    if (RandomFloat(seed) < pick_refl)
+    if (RandomFloatSingle(seed) < pick_refl || !canRefract)
     {
         // Reflection
         L = reflect(-V, H);
         refract = false;
-        if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
+        //if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
     }
     else
     {
@@ -211,7 +220,7 @@ inline float3 SampleBRDF_GGX(
 inline float BRDF_PDF_GGX(
     uint mID, float3 N, float3 fN,
     float3 wi, float3 wo,
-    float etai, float etat)
+    float etai, float etat, float3 Kd, float Pr, float Pm)
 {
     float3 V = normalize(wo);
     float3 L = normalize(-wi);
@@ -228,7 +237,7 @@ inline float BRDF_PDF_GGX(
         H = normalize(Hun);
     } else {
         float etaVL = etai / etat;
-        float3 Hun = V + etaVL * L;
+        float3 Hun = etai * V + etat * L;
         if (dot(Hun,Hun) <= 1e-16f) return 0.0f;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;
@@ -236,9 +245,9 @@ inline float BRDF_PDF_GGX(
 
     float NdotH = dot(N, H);
 
-    float  r         = materials[mID].Pr_Pm_Ps_Pc.x;
+    float  r         = Pr;
     float  alpha     = max(0.001f, r * r);
-    float  metalness = materials[mID].Pr_Pm_Ps_Pc.y;
+    float  metalness = Pm;
     float  trans_w   = 1.0f - materials[mID].Kd.w;
 
     float VdotH_abs = max(1e-6f, abs(dot(V, H)));
@@ -268,7 +277,7 @@ inline float BRDF_PDF_GGX(
         float LdotH = dot(L, H);
 
         // Fresnel
-        float F_diel   = clamp(FresnelDielectricTIR(V, H, etai, etat).x, 0.0f, 1.0f);
+        float F_diel   = FresnelDielectricTIR(V, H, etai, etat).x;
         float p_refl_H = (1.0f - metalness) * F_diel + metalness;
         float p_tran_H = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
         float p_sum    = p_refl_H + p_tran_H;

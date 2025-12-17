@@ -1,4 +1,14 @@
-StructuredBuffer<uint> gTriToLightId : register(t15);
+// Minimal payload type (must be a user-defined struct)
+struct TracePayload
+{
+    uint dummy;
+};
+
+// Optional: if you prefer your own wrapper instead of BuiltInTriangleIntersectionAttributes
+struct TriAttrs
+{
+    float2 bary; // numeric-only, OK
+};
 
 
 #ifndef ENABLE_RAY_QUERY_INLINE
@@ -150,131 +160,223 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
+// Helpers for the surface eval
+// =====================================================================================================================
+void GetOrthonormalBasis(float3 N, out float3 T, out float3 B)
+{
+    float sign = (N.z >= 0.0) ? 1.0 : -1.0;
+    const float a = -1.0 / (sign + N.z);
+    const float b = N.x * N.y * a;
+    T = float3(1.0 + sign * N.x * N.x * a, sign * b, -sign * N.x);
+    B = float3(b, sign + N.y * N.y * a, -N.y);
+}
 
-inline void EvalSurface(
+float3 CalculateGeometricTangent(float3 p0, float3 p1, float3 p2, float2 uv0, float2 uv1, float2 uv2, float3 normal)
+{
+    float3 e1 = p1 - p0;
+    float3 e2 = p2 - p0;
+    float2 duv1 = uv1 - uv0;
+    float2 duv2 = uv2 - uv0;
+
+    float det = duv1.x * duv2.y - duv1.y * duv2.x;
+
+    float3 T;
+    if (abs(det) < 1e-6f)
+    {
+        // Fallback if UVs are degenerate
+        float3 B_unused;
+        GetOrthonormalBasis(normal, T, B_unused);
+    }
+    else
+    {
+        float invDet = 1.0f / det;
+        T = normalize((e1 * duv2.y - e2 * duv1.y) * invDet);
+    }
+
+    return T;
+}
+
+float3 EvaluateAlbedo(in Material mat, float2 uv)
+{
+    float3 albedo = mat.Kd.rgb;
+    if (mat.albedoTexID != -1)
+    {
+        float2 albedoUV = uv * mat.albedoUVScale;
+        albedo = albedoTextures.SampleLevel(g_sampler, float3(albedoUV, mat.albedoTexID), 0).rgb;
+    }
+    return albedo;
+}
+
+float2 EvaluatePBRProperties(in Material mat, float2 uv)
+{
+    float2 pbrProps;
+    pbrProps.x = mat.Pr_Pm_Ps_Pc.x;
+    pbrProps.y = mat.Pr_Pm_Ps_Pc.y;
+
+    if (mat.rmaTexID != -1)
+    {
+        float2 rmaUV = uv * mat.rmaUVScale;
+        float4 rmaSample = rmaTextures.SampleLevel(g_sampler, float3(rmaUV, mat.rmaTexID), 0);
+
+        pbrProps.x = rmaSample.g; // Roughness
+        pbrProps.y = rmaSample.b; // Metallic
+    }
+    return pbrProps;
+}
+// =====================================================================================================================
+
+inline dx::HitObject TraceRay_Custom(
+    RaytracingAccelerationStructure SceneBVH,
+    RayDesc ray,
+    uint rayFlags = RAY_FLAG_NONE,
+    uint instanceMask = 0xFF)
+{
+
+    TracePayload payload = (TracePayload)0; // Dummy payload
+    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
+
+    uint hint = hitObj.IsHit()?1:0;
+    dx::MaybeReorderThread(hitObj, hint, 1);
+    return hitObj;
+}
+
+
+inline float3 EvalMissState()
+{
+    // Miss shader
+    return float3(1.2f, 1.2f, 1.2f);
+}
+
+inline HitInfo EvalSurfaceState(
     uint      instID,
     uint      primID,
     float2    bc2,
-    float     t,
-    in RayDesc ray,
-    out HitInfo hit)
+    float3    origin
+    )
 {
+    // 1. DATA GATHER
     const uint baseI = instanceProps[instID].indexBase;
     const uint baseM = instanceProps[instID].materialBase;
+    const uint materialID = materialIDs[baseM + primID];
 
-    // Indices
     const uint i0 = indices[baseI + 3u*primID + 0];
     const uint i1 = indices[baseI + 3u*primID + 1];
     const uint i2 = indices[baseI + 3u*primID + 2];
 
-    // Vertices
-    const float3 p0 = BTriVertex[i0].vertex;
-    const float3 p1 = BTriVertex[i1].vertex;
-    const float3 p2 = BTriVertex[i2].vertex;
+    const STriVertex v0 = BTriVertex[i0];
+    const STriVertex v1 = BTriVertex[i1];
+    const STriVertex v2 = BTriVertex[i2];
 
-    // Geometric normal + area in object space
-    const float3 e1 = p1 - p0;
-    const float3 e2 = p2 - p0;
-    const float3 faceN_un = cross(e1, e2);
-    const float  area_obj = 0.5f * length(faceN_un);
-    const float3 flatN_obj = (area_obj > 0.0f) ? normalize(faceN_un) : float3(0,0,1);
+    // 2. LOCAL GEOMETRY
+    const float3 bary = float3(1.0f - bc2.x - bc2.y, bc2.x, bc2.y);
 
-    // Barycentrics
-    const float3 bary = float3(1.0 - bc2.x - bc2.y, bc2.x, bc2.y);
+    const float3 p_local = v0.vertex * bary.x + v1.vertex * bary.y + v2.vertex * bary.z;
 
-    // Per-vertex shading normals
-    float3 n0 = BTriVertex[i0].normal.xyz;
-    float3 n1 = BTriVertex[i1].normal.xyz;
-    float3 n2 = BTriVertex[i2].normal.xyz;
+    const float2 uv0 = (float2)v0.texCoord;
+    const float2 uv1 = (float2)v1.texCoord;
+    const float2 uv2 = (float2)v2.texCoord;
+    const float2 uv  = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
 
+    float3 n0 = UnpackNormal_INT(v0.packedNormal);
+    float3 n1 = UnpackNormal_INT(v1.packedNormal);
+    float3 n2 = UnpackNormal_INT(v2.packedNormal);
 
-    float3 N_obj = flatN_obj;
-    // Normalize inputs to be safe and clamp normal candidates to conservative values
-    if (dot(n0,n0) >= EPSILON && dot(normalize(n0), flatN_obj) > 0.4f) n0 = normalize(n0); else n0 = flatN_obj;
-    if (dot(n1,n1) >= EPSILON && dot(normalize(n1), flatN_obj) > 0.4f) n1 = normalize(n1); else n1 = flatN_obj;
-    if (dot(n2,n2) >= EPSILON && dot(normalize(n2), flatN_obj) > 0.4f) n2 = normalize(n2); else n2 = flatN_obj;
+    // Fix degenerate normals logic (kept same as yours)
+    const float3 e1_local = v1.vertex - v0.vertex;
+    const float3 e2_local = v2.vertex - v0.vertex;
+    const float3 faceN_local_un = cross(e1_local, e2_local);
+    const float  area_obj       = 0.5f * length(faceN_local_un);
+    const float3 flatN_obj      = (area_obj > 0.0f) ? normalize(faceN_local_un) : float3(0,0,1);
 
-    N_obj = normalize(n0*bary.x + n1*bary.y + n2*bary.z);
+    if (dot(n0, n0) < EPSILON || dot(normalize(n0), flatN_obj) <= 0.4f) n0 = flatN_obj;
+    if (dot(n1, n1) < EPSILON || dot(normalize(n1), flatN_obj) <= 0.4f) n1 = flatN_obj;
+    if (dot(n2, n2) < EPSILON || dot(normalize(n2), flatN_obj) <= 0.4f) n2 = flatN_obj;
 
-    // Adjust normal to always lie in the geometric normal plane
-    if (dot(N_obj, flatN_obj) < 0.0f) {
-        N_obj = normalize(N_obj - 2.0f * dot(N_obj, flatN_obj) * flatN_obj);
+    float3 n_local = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
+
+    if (dot(n_local, flatN_obj) < 0.0f) {
+        n_local = normalize(n_local - 2.0f * dot(n_local, flatN_obj) * flatN_obj);
     }
 
-    float4x4 normalMatrix = instanceProps[instID].objectToWorldNormal;
-
-    // Transform geometric normal to world space for backface check
-    float3 gNormW = mul(normalMatrix, float4(flatN_obj, 0)).xyz;
-
-    // Transform shading normal to world space
-    float3 nW = mul(normalMatrix, float4(N_obj, 0)).xyz;
-
-    // Fill the HitInfo payload
-    hit.hitPosition = ray.Origin + t * ray.Direction;
-    hit.area        = area_obj;
-    hit.materialID  = materialIDs[baseM + primID];
-    hit.objID       = instID;
-    hit.hitBackface = dot(ray.Direction, gNormW) > 0.0f;
-    hit.hitNormal   = hit.hitBackface ? normalize(-nW) : normalize(nW);
-    hit.hitGNormal   = hit.hitBackface ? normalize(-gNormW) : normalize(gNormW);
+    // 3. TRANSFORM
+    float3 posW, normW, geoNormW, tangentW_geom;
 
     {
-        const float3 Vw   = normalize(-ray.Direction);
-        const float  epsV = 0.1f;
-        const float  epsR = 0.02f;
-        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, epsV, epsR);
+        float4x4 M = instanceProps[instID].objectToWorld;
+        float3x3 M_rot = (float3x3)M;
+
+        posW = mul(M, float4(p_local, 1.0f)).xyz;
+        normW    = normalize(mul(M_rot, n_local));
+        geoNormW = normalize(mul(M_rot, flatN_obj));
+
+        // Calculate Tangent in World Space using transformed vertices
+        // We do this here because non-uniform scaling might skew local tangents
+        float3 p0W = mul(M, float4(v0.vertex, 1.0)).xyz;
+        float3 p1W = mul(M, float4(v1.vertex, 1.0)).xyz;
+        float3 p2W = mul(M, float4(v2.vertex, 1.0)).xyz;
+
+        tangentW_geom = CalculateGeometricTangent(p0W, p1W, p2W, uv0, uv1, uv2, normW);
     }
 
-    // Light ID lookup
+    // 4. MATERIAL & TEXTURING
+    const Material mat = materials[materialID];
+    HitInfo hit = (HitInfo)0.0f;
+    hit.localKd = EvaluateAlbedo(mat, uv);
+    float2 pbr  = EvaluatePBRProperties(mat, uv);
+    hit.localPr = pbr.x;
+    hit.localPm = pbr.y;
+
+    // 5. NORMAL MAPPING (FIXED)
+    if (mat.normalTexID != -1)
+    {
+        float2 normalUV = uv * mat.normalUVScale;
+
+        // Use the geometric tangent we calculated above
+        float3 T = tangentW_geom;
+
+        // Re-orthogonalize T with respect to the shading normal
+        float3 tangentW   = normalize(T - dot(T, normW) * normW);
+        // Compute Bitangent
+        float3 bitangentW = cross(normW, tangentW);
+
+        float3x3 tbn = float3x3(tangentW, bitangentW, normW);
+
+        // FIX: Use SampleLevel(..., 0)
+        float3 n_tangent = normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), 0).xyz * 2.0f - 1.0f;
+
+        normW = normalize(mul(n_tangent, tbn));
+    }
+
+    // 6. FINALIZE HIT INFO
+    float3 viewDir = normalize(posW - origin);
+
+    hit.hitT = length(posW - origin);
+    hit.materialID  = materialID;
+    hit.objID       = instID;
+    hit.hitNormal   = dot(viewDir, geoNormW) > 0.0f ? -normW : normW;
+    hit.hitGNormal  = dot(viewDir, geoNormW) > 0.0f ? -geoNormW : geoNormW;
+
+    {
+        const float3 Vw = -viewDir;
+        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, 0.1f, 0.02f);
+    }
+
     const uint baseL = instanceProps[instID].triToLightBase;
     hit.lightID = gTriToLightId[baseL + primID];
+
+    return hit;
 }
 
-inline void EvalMissHit(in RayDesc ray, out HitInfo hit)
+// Cheap helper to check if hit triangle is a light and return emission for immediate processing
+float3 GetEmissionFast(uint instID, uint primID)
 {
-    // Miss shader mirror
-    hit.hitPosition = float3(0.4f, 0.4f, 0.5f); // for now blueish color
-    hit.materialID  = 0xFFFFFFFFu; // material id is the env map
-
-    float3 nd = (dot(ray.Direction, ray.Direction) > 1e-12f)
-              ? normalize(ray.Direction)
-              : float3(0.0f, 0.0f, 1.0f);
-
-    hit.hitNormal   = -nd;              // face toward the camera
-    hit.hitGNormal   = -nd;              // face toward the camera
-    hit.hitBackface = false;            // not applicable for env
-    hit.area        = 0.0f;             // infinite/none
-    hit.objID       = 0xFFFFFFFFu;      // no instance
-    hit.lightID     = 0xFFFFFFFFu;      // not a light
-}
-
-// INLINE BSDF ray, dont use for shadow ray because unoptimized
-inline bool TraceRayInline_HitInfo(
-    RaytracingAccelerationStructure SceneBVH,
-    RayDesc ray,
-    out HitInfo hit,
-    uint rayFlags = RAY_FLAG_NONE,
-    uint instanceMask = 0xFF)
-{
-    if(length(ray.Direction) < EPSILON) return false;
-    RayQuery<RAY_FLAG_NONE> rq;
-    rq.TraceRayInline(SceneBVH, rayFlags, instanceMask, ray);
-    while (rq.Proceed());
-
-    if (rq.CommittedStatus() != COMMITTED_TRIANGLE_HIT){
-        EvalMissHit(ray, hit);
-        return false;
+    const uint base = instanceProps[instID].triToLightBase;
+    const uint lightID = gTriToLightId[base + primID];
+    if (lightID == 0xFFFFFFFF)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
     }
-
-    // Get hit details from the ray query
-    const float2 bc2    = rq.CommittedTriangleBarycentrics();
-    const uint   primID = rq.CommittedPrimitiveIndex();
-    const uint   instID = rq.CommittedInstanceID();
-    const float  t      = rq.CommittedRayT();
-
-    // Evaluate the surface hit and write directly to the hit info struct
-    EvalSurface(instID, primID, bc2, t, ray, hit);
-
-    return true;
+    return g_EmissiveTriangles[lightID].emission;
 }
+
 #endif

@@ -70,10 +70,31 @@ extern "C" {
     __declspec(dllexport) extern const char* D3D12SDKPath    = ".\\";
 }
 
+static inline UINT EncodeNormalOct(const XMVECTOR& n)
+{
+    // Project the normal onto the octahedron and then to a 2D plane
+    XMVECTOR p = n / (abs(XMVectorGetX(n)) + abs(XMVectorGetY(n)) + abs(XMVectorGetZ(n)));
+
+    // If the normal is pointing down, reflect it onto the upper hemisphere
+    if (XMVectorGetZ(p) < 0.0f)
+    {
+        float oldX = XMVectorGetX(p);
+        float oldY = XMVectorGetY(p);
+        p = XMVectorSetX(p, (1.0f - abs(oldY)) * (oldX >= 0.0f ? 1.0f : -1.0f));
+        p = XMVectorSetY(p, (1.0f - abs(oldX)) * (oldY >= 0.0f ? 1.0f : -1.0f));
+    }
+
+    // Pack the 2D coordinates into two 16-bit signed normalized integers (-1 to 1 range)
+    int ix = static_cast<int>(XMVectorGetX(p) * 32767.0f);
+    int iy = static_cast<int>(XMVectorGetY(p) * 32767.0f);
+
+    // Pack into a single UINT
+    return (static_cast<uint16_t>(iy) << 16) | static_cast<uint16_t>(ix);
+}
+
 void Renderer::BuildGlobalMeshBuffers()
 {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
-    // 1) Precompute totals & per-mesh offsets
     m_geoOffsets.clear();
     size_t totalVerts = 0, totalIdx = 0;
     m_geoOffsets.resize(m_VB.size());
@@ -87,10 +108,10 @@ void Renderer::BuildGlobalMeshBuffers()
     m_totalVertexCount = (UINT)totalVerts;
     m_totalIndexCount = (UINT)totalIdx;
 
+    // The size of BTriVertex has changed, so this calculation is updated automatically.
     const UINT vbBytes = m_totalVertexCount * sizeof(BTriVertex);
     const UINT ibBytes = m_totalIndexCount * sizeof(uint32_t);
 
-    // Create default targets
     auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst, const wchar_t* name)
     {
         dst = nv_helpers_dx12::CreateBuffer(
@@ -101,7 +122,6 @@ void Renderer::BuildGlobalMeshBuffers()
     makeDefault(vbBytes, m_vertexGlobal, L"GlobalVertexBuffer");
     makeDefault(ibBytes, m_indexGlobal, L"GlobalIndexBuffer");
 
-    // One big UPLOAD buffer; map once
     ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
         m_device.Get(), vbBytes + ibBytes, D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
@@ -111,13 +131,10 @@ void Renderer::BuildGlobalMeshBuffers()
     auto* dstVerts = reinterpret_cast<BTriVertex*>(pUpload + 0);
     auto* dstIdx = reinterpret_cast<uint32_t*>(pUpload + vbBytes);
 
-    // Fill upload buffer directly
-    for (size_t m = 0; m < m_VB.size(); ++m)
+    for (size_t m = 0; m < m_cpuVertexData.size(); ++m)
     {
-        // Map source once
-        Vertex* srcV = nullptr;  UINT* srcI = nullptr;
-        { CD3DX12_RANGE r(0, 0); m_VB[m]->Map(0, &r, (void**)&srcV); }
-        { CD3DX12_RANGE r(0, 0); m_IB[m]->Map(0, &r, (void**)&srcI); }
+        const std::vector<Vertex>& srcV = m_cpuVertexData[m];
+        const std::vector<UINT>&   srcI = m_cpuIndexData[m];
 
         const UINT vCount = m_VertexCount[m];
         const UINT iCount = m_IndexCount[m];
@@ -127,23 +144,19 @@ void Renderer::BuildGlobalMeshBuffers()
         BTriVertex* outV = dstVerts + vBase;
         for (UINT i = 0; i < vCount; ++i) {
             outV[i].vertex = srcV[i].position;
-            outV[i].normal.x = srcV[i].normal_material.x;
-            outV[i].normal.y = srcV[i].normal_material.y;
-            outV[i].normal.z = srcV[i].normal_material.z;
-            outV[i].normal.w = srcV[i].normal_material.w;
-            outV[i].texCoord = srcV[i].texCoord;
-        }
+            XMVECTOR normal = XMVectorSet(srcV[i].normal_material.x, srcV[i].normal_material.y, srcV[i].normal_material.z, 0.0f);
+            normal = XMVector3Normalize(normal);
+            outV[i].packedNormal = EncodeNormalOct(normal);
 
+            // 2. Pack the Texture Coordinates
+            XMVECTOR texCoord = XMLoadFloat2(&srcV[i].texCoord);
+            PackedVector::XMStoreHalf2(&outV[i].texCoord, texCoord);
+        }
         uint32_t* outI = dstIdx + iBase;
         for (UINT i = 0; i < iCount; ++i) outI[i] = srcI[i] + vBase;
-
-        m_VB[m]->Unmap(0, nullptr);
-        m_IB[m]->Unmap(0, nullptr);
     }
 
     upload->Unmap(0, nullptr);
-
-    // Copy once to defaults
     m_commandList->CopyBufferRegion(m_vertexGlobal.Get(), 0, upload.Get(), 0, vbBytes);
     m_commandList->CopyBufferRegion(m_indexGlobal.Get(), 0, upload.Get(), vbBytes, ibBytes);
 
@@ -202,74 +215,92 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Pass_init_di_v8.hlsl|cs:8x4",
+        L"Pass_raygen_v8.hlsl|rg",
+        //L"Pass_trace_mono_v8.hlsl|cs:8x8",
         L"barrier",
-        /*L"Pass_init_gi_v8.hlsl|cs:8x8",
-        L"barrier",*/
-        /*L"Pass_temp_di_v7.hlsl|cs:16x8",
-        L"Pass_temp_gi_v7.hlsl|cs:16x8",
-        L"barrier",
-        L"Pass_spat_di_v7_1.hlsl|cs:16x16",
-        L"Pass_spat_gi_v7_1.hlsl|cs:16x16",
-        L"barrier",*/
+        /*L"loop:1",
+            L"Pass_trace_eval_wf_v8.hlsl|wf:64",
+            L"barrier",
+            L"pingswap",
+            L"barrier",
+        L"endloop",*/
+
         L"Pass_shading_v8.hlsl|cs:16x16",
         L"barrier",
-        /*L"Pass_denoiser_firefly_v7.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_temp_v7.hlsl|cs:8x4",
-        L"barrier",
-        L"Pass_denoiser_blur_1_v7.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_blur_2_v7.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_blur_3_v7.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_copy_v7.hlsl|cs:8x4"*/
-        //L"barrier",
-        //L"Pass_wgtest_v7.hlsl|wg:16x16"
     };
-    /*m_passSequence = {
-        L"RayGen_v6_pass1.hlsl|rg",
-        L"barrier",
-        L"RayGen_v6_pass2.hlsl|rg",
-        L"barrier",
-        L"RayGen_v6_pass3.hlsl|rg"
-    };*/
 
-    for (auto& s : m_passSequence)
-        m_passes.push_back(ParsePass(s));
+    try {
+        m_passes.clear();
+        for (auto& s : m_passSequence)
+            m_passes.push_back(ParsePass(s));
+        LinkLoops();
+    }
+    catch (const std::exception& e) {
+        // This catches 0xe06d7363 and shows you the actual text
+        MessageBoxA(nullptr, e.what(), "Pass Parsing Error", MB_OK | MB_ICONERROR);
+        exit(1);
+    }
 }
 
 void Renderer::OnInit() {
+    //try {
+        nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
+        nv_helpers_dx12::CameraManip.setLookat(
+            glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
+        nv_helpers_dx12::CameraManip.setMode(
+        nv_helpers_dx12::Manipulator::Fly);
+        nv_helpers_dx12::CameraManip.setSpeed(0.0f);
 
-  nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
-  nv_helpers_dx12::CameraManip.setLookat(
-      glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
-    nv_helpers_dx12::CameraManip.setMode(
-    nv_helpers_dx12::Manipulator::Fly);
-    nv_helpers_dx12::CameraManip.setSpeed(0.0f);
+        LoadPipeline();
+        try {
+            LoadAssets();
+        }
+        catch (const std::exception& e) {
+            MessageBoxA(nullptr, e.what(), "An exception occurred", MB_OK | MB_ICONERROR);
+            exit(1);
+        }
+        GenerateLutTextures();
+        CheckRaytracingSupport();
 
-  LoadPipeline();
-  LoadAssets();
-  CheckRaytracingSupport();
+        CreateAccelerationStructures();
+        BuildGlobalMeshBuffers();
+        ThrowIfFailed(m_commandList->Close());
 
-  CreateAccelerationStructures();
-    BuildGlobalMeshBuffers();
-    ThrowIfFailed(m_commandList->Close());
+        // Execute and wait for the upload to finish
+        ID3D12CommandList* initLists[] = { m_commandList.Get() };
+        m_commandQueue->ExecuteCommandLists(_countof(initLists), initLists);
+        WaitForPreviousFrame();
 
-    // execute and wait for the upload to finish
-    ID3D12CommandList* initLists[] = { m_commandList.Get() };
-    m_commandQueue->ExecuteCommandLists(_countof(initLists), initLists);
-    WaitForPreviousFrame();
-  CreateRaytracingPipeline();
-  CreatePerInstanceConstantBuffers();
-  CreateGlobalConstantBuffer();
-  CreateRaytracingOutputBuffer();
-  CreateInstancePropertiesBuffer();
-  CreateCameraBuffer();
-  CreateShaderResourceHeap();
-  CreateShaderBindingTable();
-    slGetNewFrameToken(m_frameToken, nullptr);   // TODO: integrate sl correctly
+        // Now that the GPU has finished the copy commands, we can
+        // safely release the intermediate upload heaps.
+        m_textureUploadHeaps.clear();
+        m_lutUploadHeaps.clear();
+
+        CreateRaytracingPipeline();
+
+        CreateStreamingCompactionBuffers();
+        CreateIndirectCommandSignature();
+        CompileSetupIndirectShader();
+
+        CreatePerInstanceConstantBuffers();
+        CreateGlobalConstantBuffer();
+        CreateRaytracingOutputBuffer();
+        CreateInstancePropertiesBuffer();
+        CreateCameraBuffer();
+        CreateShaderResourceHeap();
+        CreateShaderBindingTable();
+        slGetNewFrameToken(m_frameToken, nullptr);
+    /*}
+    catch (const std::exception& e) {
+        // THIS CATCHES THE CRASH AND SHOWS THE ERROR
+        wchar_t wMsg[4096];
+        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
+        MessageBoxW(NULL, wMsg, L"Fatal Initialization Error", MB_OK | MB_ICONERROR);
+
+        // Exit cleanly so we don't loop
+        exit(1);
+    }*/
+
 }
 
 // Load the rendering pipeline dependencies.
@@ -297,6 +328,18 @@ void Renderer::LoadPipeline() {
     auto slCreateDXGIFactory2 = reinterpret_cast<PFunCreateDXGIFactory2>(GetProcAddress(m_mod, "CreateDXGIFactory2"));
     auto slDXGIGetDebugInterface1 = reinterpret_cast<PFunDXGIGetDebugInterface1>(GetProcAddress(m_mod, "DXGIGetDebugInterface1"));
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
+
+
+    static const UUID D3D12ExperimentalShaderModels =
+    { 0x76f5573e, 0xf13a, 0x40f5, { 0xb2, 0x97, 0x81, 0xce, 0x9e, 0x18, 0x93, 0x3f } };
+
+
+    HRESULT hr = D3D12EnableExperimentalFeatures(1, &D3D12ExperimentalShaderModels, nullptr, nullptr);
+    if (FAILED(hr)) {
+        // CRITICAL FAILURE
+        MessageBoxA(nullptr, "Failed to enable Experimental Shader Models.\nMake sure Windows Developer Mode is ON.", "Error", MB_OK | MB_ICONERROR);
+        exit(1);
+    }
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -416,8 +459,15 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = { "testScene_2.obj"/*, "sponza_simple.obj"*/};
+        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ "./pot/pot.obj"};
         for (const auto& modelName : models) {
+
+            std::string material_search_path = "./";
+            const auto last_slash_idx = modelName.find_last_of("/\\");
+            if (std::string::npos != last_slash_idx) {
+                material_search_path = modelName.substr(0, last_slash_idx + 1);
+            }
+
             std::vector<Vertex> vertices;
             std::vector<UINT> indices;
             // Use a temporary vector for materials from just this model
@@ -427,7 +477,7 @@ void Renderer::LoadAssets() {
             ObjLoader::loadObjFile(
                 modelName, &vertices, &indices, &modelScopedMaterials, &modelMaterialIDs,
                 &materialIDOffset, &materialVertexOffset,
-                textureMap, albedoTextures, normalTextures, rmaTextures, "./"
+                textureMap, albedoTextures, normalTextures, rmaTextures, material_search_path
             );
 
             m_materialIDOffsets.push_back(static_cast<UINT>(m_materialIDs.size()));
@@ -463,6 +513,9 @@ void Renderer::LoadAssets() {
             m_IB.push_back(ib);
             m_IBView.push_back({ ib->GetGPUVirtualAddress(), ibSize, DXGI_FORMAT_R32_UINT });
             m_IndexCount.push_back(static_cast<UINT>(indices.size()));
+
+            m_cpuVertexData.push_back(std::move(vertices));
+            m_cpuIndexData.push_back(std::move(indices));
         }
     }
 
@@ -514,11 +567,11 @@ void Renderer::OnInitTransform() {
 
     m_instances[2].second = scale * selfRotation * translate;*/
 
-    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(2.f, 2.f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-5.f, 0.2f, 5.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
@@ -651,18 +704,19 @@ void Renderer::OnDestroy() {
 
 void Renderer::PopulateCommandList()
 {
+    // ------------------------------------------------------------------------
+    // 1. STANDARD SETUP
+    // ------------------------------------------------------------------------
+
     // Reset allocator & list
     auto* allocator = m_commandAllocators[m_frameIndex].Get();
     ThrowIfFailed(allocator->Reset());
-    ThrowIfFailed(m_commandList->Reset(
-            allocator, m_pipelineState.Get()));
+    ThrowIfFailed(m_commandList->Reset(allocator, m_pipelineState.Get()));
 
     // Graphics setup: signature, viewports, RTV/DSV
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
     m_commandList->RSSetViewports(1, &m_viewport);
     m_commandList->RSSetScissorRects(1, &m_scissorRect);
-
-
 
     // Transition backbuffer PRESENT->RENDER_TARGET
     {
@@ -688,8 +742,7 @@ void Renderer::PopulateCommandList()
         m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
     }
 
-
-    // Prepare raytracing descriptors
+    // Prepare raytracing descriptors (Legacy DXR / Reference)
     D3D12_DISPATCH_RAYS_DESC raysDesc{};
     raysDesc.Width  = GetWidth();
     raysDesc.Height = GetHeight();
@@ -717,59 +770,144 @@ void Renderer::PopulateCommandList()
         m_commandList->ResourceBarrier(1, &u);
     }
 
-    // Loop over passes
-    uint32_t rgSlot = 0;
-    for (auto& p : m_passes)
     {
+        auto barrierToDest = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_globalCounterBuffer.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->ResourceBarrier(1, &barrierToDest);
+
+        m_commandList->CopyBufferRegion(
+            m_globalCounterBuffer.Get(), 0,
+            m_zeroBuffer.Get(), 0,
+            MAX_STACKS * sizeof(uint32_t));
+
+        auto barrierToUAV = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_globalCounterBuffer.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        m_commandList->ResourceBarrier(1, &barrierToUAV);
+    }
+
+    // ------------------------------------------------------------------------
+    // 2. STREAMING COMPACTION STATE
+    // ------------------------------------------------------------------------
+
+    // Stack 0 starts as input (init shader writes here), Stack 1 as output.
+    uint32_t currentStackIdx = 0;
+    uint32_t nextStackIdx    = 1;
+
+    // Track loop recursion
+    std::vector<std::pair<int, uint32_t>> loopStack;
+
+    // ------------------------------------------------------------------------
+    // 3. PASS EXECUTION LOOP
+    // ------------------------------------------------------------------------
+    for (size_t i = 0; i < m_passes.size(); ++i)
+    {
+        CD3DX12_RESOURCE_BARRIER barriers[] = {
+            CD3DX12_RESOURCE_BARRIER::UAV(m_sortBoundsBuffer.Get()),
+            CD3DX12_RESOURCE_BARRIER::UAV(m_sortCountBuffer.Get())
+        };
+        m_commandList->ResourceBarrier(_countof(barriers), barriers);
+
+        auto& p = m_passes[i];
+
         switch (p.stage)
         {
-        case Stage::Barrier:
+            // ── Loop Start ──
+            case Stage::LoopStart:
+            {
+                loopStack.push_back({ -1, p.loopCount });
+                break;
+            }
+
+            case Stage::PingSwap:
+            {
+                // Swap the input and output stack indices.
+                // The next shader dispatched will use the swapped values
+                // via its RootConstants.
+                std::swap(currentStackIdx, nextStackIdx);
+                break;
+            }
+
+            // ── Loop End ──
+            case Stage::LoopEnd:
+            {
+                if (!loopStack.empty())
+                {
+                    loopStack.back().second--;
+                    if (loopStack.back().second > 0)
+                    {
+                        // Jump back to start
+                        i = p.targetIdx;
+                    }
+                    else
+                    {
+                        // Loop done, remove from stack
+                        loopStack.pop_back();
+                    }
+                }
+                break;
+            }
+
+            // ── Barrier ──
+            case Stage::Barrier:
             {
                 auto u = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
                 m_commandList->ResourceBarrier(1, &u);
+                break;
             }
-            break;
 
-        case Stage::RayGen:
-        {
-            // RE-BIND THE DXR PSO
-            m_commandList->SetPipelineState1(m_rtStateObject.Get());
-            // ────────────────────────────────────────────────────────────────
-
-            // bind the matching root signature
-            m_commandList->SetComputeRootSignature(m_rayGenSignature.Get());
-
-            // descriptor-table + two constants
-            m_commandList->SetComputeRootDescriptorTable(
-                0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT imSize[2] = { GetWidth(), GetHeight() };
-            m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
-
-            // point the SBT at the correct ray‐gen entry
-            raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
-            raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
-
-            m_commandList->DispatchRays(&raysDesc);
-            ++rgSlot;
-        }
-        break;
-
-
-        case Stage::Compute:
+            case Stage::ClearSort:
             {
-            if (p.isWorkGraph)
+                ClearSortBuffers(m_commandList.Get());
+
+                // Add barrier to ensure clear finishes before KeyGen
+                CD3DX12_RESOURCE_BARRIER barriers[] = {
+                    CD3DX12_RESOURCE_BARRIER::UAV(m_sortBoundsBuffer.Get()),
+                    CD3DX12_RESOURCE_BARRIER::UAV(m_sortCountBuffer.Get())
+                };
+                m_commandList->ResourceBarrier(_countof(barriers), barriers);
+                break;
+            }
+
+            // ── Standard DXR (Legacy) ──
+            case Stage::RayGen:
+            {
+                m_commandList->SetPipelineState1(m_rtStateObject.Get());
+                m_commandList->SetComputeRootSignature(m_rayGenSignature.Get());
+                m_commandList->SetComputeRootDescriptorTable(
+                    0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+
+                UINT constants[6] = { GetWidth(), GetHeight(), 0, 0, 0, 0 };
+                m_commandList->SetComputeRoot32BitConstants(1, 6, constants, 0);
+
+                uint32_t currentRgSlot = m_passIndex[p.file];
+                raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + currentRgSlot * rgSize;
+                raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
+
+                m_commandList->DispatchRays(&raysDesc);
+                break;
+            }
+
+            // ── Standard Compute (Dense) ──
+            // Used for Initialization (Pass_init) or Post-Processing
+            case Stage::Compute:
+            {
+                if (p.isWorkGraph)
                 {
+                    // [Work Graph logic]
                     const uint32_t wgIndex = p.wgIdx;
                     const auto& rt = m_wgRuntime[wgIndex];
 
-                    // 1) BIND COMPUTE ROOT SIGNATURE + PARAMS (REQUIRED)
                     m_commandList->SetComputeRootSignature(m_computeSignature.Get());
                     m_commandList->SetComputeRootDescriptorTable(
                         0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                    UINT imSize[2] = { GetWidth(), GetHeight() };
-                    m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
 
-                    // 2) Program = Work Graph + backing
+                    UINT constants[6] = { GetWidth(), GetHeight(), currentStackIdx, nextStackIdx, 0, 0 };
+                    m_commandList->SetComputeRoot32BitConstants(1, 6, constants, 0);
+
                     D3D12_SET_PROGRAM_DESC setProg{};
                     setProg.Type                        = D3D12_PROGRAM_TYPE_WORK_GRAPH;
                     setProg.WorkGraph.ProgramIdentifier = rt.id;
@@ -783,34 +921,130 @@ void Renderer::PopulateCommandList()
                     m_commandList->SetProgram(&setProg);
                     s_inited[wgIndex] = true;
 
-                    // 3) Dispatch the graph (entry "main" has NodeDispatchGrid)
                     D3D12_DISPATCH_GRAPH_DESC dg{};
                     dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
                     dg.NodeCPUInput.EntrypointIndex     = 0;
                     dg.NodeCPUInput.NumRecords          = 1;
-                    dg.NodeCPUInput.pRecords            = nullptr;
-                    dg.NodeCPUInput.RecordStrideInBytes = 0;
                     m_commandList->DispatchGraph(&dg);
-                    break;
                 }
-                // switch to CS PSO + bind its root signature
+                else
+                {
+                    // Standard Compute: Runs on EVERY pixel (Dense)
+                    // Used for seeding the stack in Pass_init
+                    m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
+                    m_commandList->SetComputeRootSignature(m_computeSignature.Get());
+                    m_commandList->SetComputeRootDescriptorTable(
+                        0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+
+                    // Pass constants. Even if this is dense, we tell it where the stacks are
+                    // so Pass_init knows where to write the initial indices.
+                    UINT constants[6] = { GetWidth(), GetHeight(), currentStackIdx, nextStackIdx, 0, 0 };
+                    m_commandList->SetComputeRoot32BitConstants(1, 6, constants, 0);
+
+                    uint32_t gx = (GetWidth()  + p.groupX - 1) / p.groupX;
+                    uint32_t gy = (GetHeight() + p.groupY - 1) / p.groupY;
+                    m_commandList->Dispatch(gx, gy, 1);
+                }
+                break;
+            }
+
+            case Stage::FixedCompute:
+            {
                 m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 m_commandList->SetComputeRootSignature(m_computeSignature.Get());
                 m_commandList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                UINT imSize[2] = { GetWidth(), GetHeight() };
-                m_commandList->SetComputeRoot32BitConstants(1, 2, imSize, 0);
 
-                uint32_t gx = (GetWidth()  + p.groupX - 1) / p.groupX;
-                uint32_t gy = (GetHeight() + p.groupY - 1) / p.groupY;
-                m_commandList->Dispatch(gx, gy, 1);
+                // Bind constants (Width, Height, Stacks...)
+                UINT constants[6] = { GetWidth(), GetHeight(), currentStackIdx, nextStackIdx, 0, 0 };
+                m_commandList->SetComputeRoot32BitConstants(1, 6, constants, 0);
+
+                // Dispatch exact number of groups specified in string (e.g. fx:1 -> 1,1,1)
+                m_commandList->Dispatch(p.groupX, p.groupY, 1);
+                break;
             }
-            break;
-        }
-    }
+
+            // ── Wavefront Compute (Sparse) ──
+            // Used for Tracing/Shading. Uses Indirect Dispatch based on Counters.
+            case Stage::Wavefront:
+            {
+                // === Step A: Run Setup Shader ===
+
+                // 1. Determine which PSO to use
+                // If we are reading and writing to the same stack (e.g. Sort Key Generation),
+                // we MUST NOT clear the counter, otherwise the next pass sees 0 rays.
+                // If we are moving data (Trace: 0->1, Reorder: 1->0), we MUST clear the destination counter.
+                bool isInPlace = (currentStackIdx == nextStackIdx);
+
+                if (isInPlace) {
+                    m_commandList->SetPipelineState(m_psoSetupIndirectNoClear.Get());
+                } else {
+                    m_commandList->SetPipelineState(m_psoSetupIndirect.Get());
+                }
+
+                m_commandList->SetComputeRootSignature(m_rsSetupIndirect.Get());
+
+                // ... [Bind Descriptors as before] ...
+                // Calculate handle for Counters/Args (Slot 33 in heap)
+                auto gpuHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
+                UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+                gpuHandle.ptr += 33 * inc;
+                m_commandList->SetComputeRootDescriptorTable(0, gpuHandle);
 
 
+                // Setup Constants: [ReadCounterIdx, WriteArgIdx, ClearCounterIdx, GroupSize]
+                // Note: If using NoClear PSO, the 'nextStackIdx' passed here is ignored by the shader logic,
+                // but we pass it anyway for consistency.
+                UINT setupConsts[4] = { currentStackIdx, 0, nextStackIdx, p.groupX };
+                m_commandList->SetComputeRoot32BitConstants(1, 4, setupConsts, 0);
 
-    // Copy ray-output -> backbuffer and barrier back to RT/PRESENT
+                m_commandList->Dispatch(1, 1, 1);
+
+                // Barriers: Wait for Args and Counter Reset
+                CD3DX12_RESOURCE_BARRIER barriers[] = {
+                    CD3DX12_RESOURCE_BARRIER::UAV(m_indirectArgsBuffer.Get()),
+                    // Transition Args to INDIRECT_ARGUMENT state
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(),
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)
+                };
+                m_commandList->ResourceBarrier(_countof(barriers), barriers);
+
+                // === Step B: Run Wavefront Shader ===
+
+                m_commandList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
+                m_commandList->SetComputeRootSignature(m_computeSignature.Get());
+                m_commandList->SetComputeRootDescriptorTable(
+                    0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+
+                // Constants: [W, H, InputStack, OutputStack]
+                UINT traceConsts[6] = { GetWidth(), GetHeight(), currentStackIdx, nextStackIdx, 0, 0 };
+                m_commandList->SetComputeRoot32BitConstants(1, 6, traceConsts, 0);
+
+                // Execute Indirect
+                m_commandList->ExecuteIndirect(
+                    m_commandSignature.Get(),
+                    1,
+                    m_indirectArgsBuffer.Get(),
+                    0,
+                    nullptr, 0);
+
+                // Transition Args back to UAV for next pass + UAV barrier for stacks
+                CD3DX12_RESOURCE_BARRIER postBarriers[] = {
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(),
+                        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                    CD3DX12_RESOURCE_BARRIER::UAV(m_stackBuffers[nextStackIdx].Get()),
+                    CD3DX12_RESOURCE_BARRIER::UAV(m_globalCounterBuffer.Get())
+                };
+                m_commandList->ResourceBarrier(_countof(postBarriers), postBarriers);
+
+                break;
+            }
+
+        } // switch
+    } // for
+
+    // ------------------------------------------------------------------------
+    // 4. FINAL OUTPUT COPY
+    // ------------------------------------------------------------------------
     {
         auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(
             m_outputResource.Get(),
@@ -837,7 +1071,7 @@ void Renderer::PopulateCommandList()
             D3D12_RESOURCE_STATE_RENDER_TARGET);
         m_commandList->ResourceBarrier(1, &backToRT);
 
-        // final PRESENT barrier
+        // Final PRESENT barrier
         auto pres = CD3DX12_RESOURCE_BARRIER::Transition(
             m_renderTargets[m_frameIndex].Get(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -910,58 +1144,147 @@ void Renderer::OnKeyUp(UINT8 key) {
 // buffers, and building the actual AS
 //
 // #DXR Extra: Indexed Geometry
+constexpr bool kUseBlasCompaction = true;
+
 Renderer::AccelerationStructureBuffers
 Renderer::CreateBottomLevelAS(
     std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
-    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers) {
-  nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
+    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers)
+{
+    nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
 
-  // Adding all vertex buffers and not transforming their position.
-  for (size_t i = 0; i < vVertexBuffers.size(); i++) {
-    // for (const auto &buffer : vVertexBuffers) {
-    if (i < vIndexBuffers.size() && vIndexBuffers[i].second > 0)
-      bottomLevelAS.AddVertexBuffer(vVertexBuffers[i].first.Get(), 0,
-                                    vVertexBuffers[i].second, sizeof(Vertex),
-                                    vIndexBuffers[i].first.Get(), 0,
-                                    vIndexBuffers[i].second, nullptr, 0, true);
+    for (size_t i = 0; i < vVertexBuffers.size(); i++) {
+        bottomLevelAS.AddVertexBuffer(
+            vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second, sizeof(Vertex),
+            vIndexBuffers[i].first.Get(), 0, vIndexBuffers[i].second, nullptr, 0, true);
+    }
 
+    UINT64 scratchSizeInBytes = 0;
+    UINT64 resultSizeInBytes = 0;
+
+    // 2. BUILD FLAGS: Only add ALLOW_COMPACTION if the flag is true
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags =
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
+
+    if constexpr (kUseBlasCompaction) {
+        buildFlags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
+    }
+
+    bottomLevelAS.ComputeASBufferSizes(m_device.Get(), buildFlags, &scratchSizeInBytes, &resultSizeInBytes);
+
+    AccelerationStructureBuffers buffers;
+
+    // Scratch buffer is required regardless of compaction
+    buffers.pScratch = nv_helpers_dx12::CreateBuffer(
+        m_device.Get(), scratchSizeInBytes,
+        D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+        nv_helpers_dx12::kDefaultHeapProps);
+
+    // -----------------------------------------------------------------------
+    // PATH A: NO COMPACTION (Fast Build, Higher VRAM Usage)
+    // -----------------------------------------------------------------------
+    if constexpr (!kUseBlasCompaction)
+    {
+        // Allocate the result buffer directly using the estimated size
+        buffers.pResult = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), resultSizeInBytes,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            nv_helpers_dx12::kDefaultHeapProps);
+        buffers.pResult->SetName(L"BLAS (Uncompacted)");
+
+        // Build directly into the final result buffer
+        bottomLevelAS.Generate(m_commandList.Get(), buffers.pScratch.Get(),
+                               buffers.pResult.Get(), false, nullptr);
+
+        // No flush, no readback, no copy barriers needed here.
+    }
+    // -----------------------------------------------------------------------
+    // PATH B: COMPACTION ENABLED (Slower Build, Lower VRAM Usage)
+    // -----------------------------------------------------------------------
     else
-      bottomLevelAS.AddVertexBuffer(vVertexBuffers[i].first.Get(), 0,
-                                    vVertexBuffers[i].second, sizeof(Vertex), 0,
-                                    0);
-  }
+    {
+        // Temporary large buffer
+        buffers.pResultUncompacted = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), resultSizeInBytes,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            nv_helpers_dx12::kDefaultHeapProps);
 
-  // The AS build requires some scratch space to store temporary information.
-  // The amount of scratch memory is dependent on the scene complexity.
-  UINT64 scratchSizeInBytes = 0;
-  // The final AS also needs to be stored in addition to the existing vertex
-  // buffers. It size is also dependent on the scene complexity.
-  UINT64 resultSizeInBytes = 0;
+        // Query for the compacted size
+        ComPtr<ID3D12Resource> compactedSizeBuffer = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), sizeof(UINT64),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nv_helpers_dx12::kDefaultHeapProps);
+        compactedSizeBuffer->SetName(L"BLAS Compacted Size Buffer");
 
-  bottomLevelAS.ComputeASBufferSizes(m_device.Get(), false, &scratchSizeInBytes,
-                                     &resultSizeInBytes);
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC postBuildInfoDesc = {};
+        postBuildInfoDesc.DestBuffer = compactedSizeBuffer->GetGPUVirtualAddress();
+        postBuildInfoDesc.InfoType = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
 
-  // Once the sizes are obtained, the application is responsible for allocating
-  // the necessary buffers. Since the entire generation will be done on the GPU,
-  // we can directly allocate those on the default heap
-  AccelerationStructureBuffers buffers;
-  buffers.pScratch = nv_helpers_dx12::CreateBuffer(
-      m_device.Get(), scratchSizeInBytes,
-      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
-      nv_helpers_dx12::kDefaultHeapProps);
-  buffers.pResult = nv_helpers_dx12::CreateBuffer(
-      m_device.Get(), resultSizeInBytes,
-      D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-      D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-      nv_helpers_dx12::kDefaultHeapProps);
+        // Build the initial, uncompacted BLAS and enqueue the size query
+        bottomLevelAS.Generate(m_commandList.Get(), buffers.pScratch.Get(),
+                            buffers.pResultUncompacted.Get(), false, nullptr);
 
-  // Build the acceleration structure. Note that this call integrates a barrier
-  // on the generated AS, so that it can be used to compute a top-level AS right
-  // after this method.
-  bottomLevelAS.Generate(m_commandList.Get(), buffers.pScratch.Get(),
-                         buffers.pResult.Get(), false, nullptr);
+        // Enqueue the query command
+        D3D12_GPU_VIRTUAL_ADDRESS sourceASAddress = buffers.pResultUncompacted->GetGPUVirtualAddress();
+        m_commandList->EmitRaytracingAccelerationStructurePostbuildInfo(
+            &postBuildInfoDesc, 1, &sourceASAddress);
 
-  return buffers;
+        // Execute, read back size, and create final buffer
+        ComPtr<ID3D12Resource> readbackBuffer = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), sizeof(UINT64),
+            D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nv_helpers_dx12::kReadbackHeapProps);
+
+        CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            compactedSizeBuffer.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        m_commandList->ResourceBarrier(1, &barrier);
+        m_commandList->CopyResource(readbackBuffer.Get(), compactedSizeBuffer.Get());
+
+        // --- STALL POINT ---
+        // We must flush to CPU to read the size. This is expensive.
+        ThrowIfFailed(m_commandList->Close());
+        ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+        m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+        WaitForPreviousFrame();
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), nullptr));
+        // -------------------
+
+        // Read the size
+        UINT64 compactedResultSizeInBytes;
+        void* pMappedData;
+        ThrowIfFailed(readbackBuffer->Map(0, nullptr, &pMappedData));
+        memcpy(&compactedResultSizeInBytes, pMappedData, sizeof(UINT64));
+        readbackBuffer->Unmap(0, nullptr);
+
+        std::wcout << L"BLAS Original Size: " << resultSizeInBytes << L" | Compacted Size: " << compactedResultSizeInBytes << std::endl;
+
+        // Allocate final buffer
+        buffers.pResult = nv_helpers_dx12::CreateBuffer(
+            m_device.Get(), compactedResultSizeInBytes,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+            nv_helpers_dx12::kDefaultHeapProps);
+        buffers.pResult->SetName(L"Compacted BLAS");
+
+        // Perform compaction copy
+        m_commandList->CopyRaytracingAccelerationStructure(
+            buffers.pResult->GetGPUVirtualAddress(),
+            buffers.pResultUncompacted->GetGPUVirtualAddress(),
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE_COMPACT);
+
+        // Barrier for safety
+        barrier = CD3DX12_RESOURCE_BARRIER::UAV(buffers.pResult.Get());
+        m_commandList->ResourceBarrier(1, &barrier);
+    }
+
+    return buffers;
 }
 
 //-----------------------------------------------------------------------------
@@ -1042,23 +1365,24 @@ void Renderer::CreateAccelerationStructures() {
   // #DXR Extra: Indexed Geometry
   // Build the bottom AS from the Menger Sponge vertex buffer
 
-    std::vector<AccelerationStructureBuffers> blasBuffers;
+    std::vector<AccelerationStructureBuffers> allBlasBuffers;
     m_instances.clear();
     m_instanceModelIndices.clear();
 
-    // Assume m_VB, m_IB, m_VertexCount, and m_IndexCount are all std::vector and have the same size.
     for (size_t i = 0; i < m_VB.size(); ++i) {
+        // CreateBottomLevelAS now performs compaction and returns the final compacted buffer in pResult.
+        // It also handles command list execution and reset internally.
         AccelerationStructureBuffers buffers = CreateBottomLevelAS(
-                {{m_VB[i].Get(), m_VertexCount[i]}},
-                {{m_IB[i].Get(), m_IndexCount[i]}}
+            {{m_VB[i].Get(), m_VertexCount[i]}},
+            {{m_IB[i].Get(), m_IndexCount[i]}}
         );
 
-        blasBuffers.push_back(buffers);
-
-        // Assuming each instance will use an identity matrix for simplicity,
-        // but you can replace XMMatrixIdentity() with any transformation matrix.
+        // We only need the final pResult for the TLAS.
         m_instances.emplace_back(buffers.pResult, XMMatrixIdentity());
         m_instanceModelIndices.push_back(static_cast<UINT>(i));
+
+        // Store the buffer objects to manage their lifetime.
+        allBlasBuffers.push_back(buffers);
     }
     OnInitTransform();
   CreateTopLevelAS(m_instances);
@@ -1113,103 +1437,256 @@ void Renderer::CreateAccelerationStructures() {
 
 // Create the resource signatures for raygen (legacy) and compute hybrid pipeline
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-    nv_helpers_dx12::RootSignatureGenerator rsc;
+    CD3DX12_ROOT_PARAMETER1 rootParameters[2];
+    std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
+    ranges.reserve(40); // Reserve space
 
-    rsc.AddHeapRangesParameter(
-            {
-                    {0 /*u0*/, 1 /*1 descriptor */, 0 /*use the implicit register space 0*/, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,0 /*heap slot where the UAV is defined*/},
-                    {1 /*u1*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 7},
-                    {0 /*t0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,1},
-                    {0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Camera parameters*/,2},
-                    {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3}, // **Added SRV for t3**
-                    {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
-                    {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
-                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV,6},
-                    {2 /*u2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,8},
-                    {3 /*u3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,9},
-                    {4 /*u4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,10},
-                    {5 /*u5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,11},
-                    {6 /*u6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,12},
-                    {7 /*u7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,13},
-                    {7 /*t7*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 14}, // aliasProb
-                    {8 /*t8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 15}, // aliasIdx
-                    {8 /*u8*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* scratchPing */, 16 /*heap slot*/ },
-                    {9 /*u9*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 17 /* Initial BSDF Rays */},
-                    {  9 /*t9*/,  1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 20 }, // gLT_TLAS
-                    { 10 /*t10*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 21 }, // gLT_BLAS
-                    { 11 /*t11*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 22 }, // gLT_Range
-                    { 12 /*t12*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 23 }, // gLT_LeafTriIndex
-                    { 13 /*t13*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 24 }, // gLT_LeafAliasProb
-                    { 14 /*t14*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 25 }, // gLT_LeafAliasIdx
-                    { 15 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 26 }, // gTriToLightId
-                    { 16 /*t15*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 27 }, // gLT_TriToBLAS
-                    { 17 /*t16*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 28 }, // gLT_TriToLeafOffset
-                    { 18 /*t17*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 29 }, // gLT_BLASToItem
-            }
-    );
-    rsc.AddRootParameter(
-        D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-        /* shaderRegister = */ 1,   //  b1
-        /* registerSpace  = */ 0,
-        /* numConstants   = */ 2);  //  uint2
+    // Flags
+    const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
 
-    return rsc.Generate(m_device.Get(), true);
+
+    // Slot 0:  UAV u0 (Output)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 1:  UAV u1 (Permanent Data / Accumulation)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 2:  SRV t0 (TLAS)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 3:  SRV t1 (Global Index Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 4:  SRV t2 (Global Vertex Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 5:  CBV b0 (Camera)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 6:  SRV t3 (Instance Properties)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 7:  SRV t4 (Material IDs)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 8:  SRV t5 (Materials)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 9:  SRV t6 (Emissive Triangles)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 10-15: UAVs u2-u7 (Reservoirs & Sample Buffers)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 4, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 5, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 6, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 7, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 16: SRV t7 (Alias Prob)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 17: SRV t8 (Alias Idx)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 18: UAV u8 (Scratch Ping)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 8, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 19: UAV u9 (Initial BSDF Rays)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 9, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 20-23: LightTree SRVs (t9-t12)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 10, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 24: SRV t15 (TriToLightId)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 25-27: LightTree Lookups (t16-t18)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 16, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 17, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 18, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 28-31: Texture Arrays (t30-t33)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 30, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 31, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 32, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 33, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 32: UAV u10 (PathState Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 10, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 33: UAV u34 (Global Counters)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 34, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 34: UAV u35 (Indirect Args)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 35, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 35: UAVs u36-u39 (Pixel Stacks)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 36: Sort Buffers (u60-u62)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE,  D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // -----------------------------------------------------------------------
+
+    // Parameter 0: The Descriptor Table (matches global heap exactly)
+    rootParameters[0].InitAsDescriptorTable(static_cast<UINT>(ranges.size()), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
+
+    // Parameter 1: Constants (b1) - Same 6 constants as compute shader
+    rootParameters[1].InitAsConstants(6, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+    // Static Samplers
+    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
+    staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+    staticSamplers[0].MaxAnisotropy = 16;
+    staticSamplers[1].Init(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+
+    // Serialize and Create
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+    ComPtr<ID3DBlob> signature;
+    ComPtr<ID3DBlob> error;
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rootSignatureDesc, &signature, &error);
+    if (FAILED(hr)) {
+        if (error) { OutputDebugStringA(static_cast<char*>(error->GetBufferPointer())); }
+        ThrowIfFailed(hr);
+    }
+
+    ComPtr<ID3D12RootSignature> pRootSignature;
+    ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&pRootSignature)));
+    return pRootSignature;
 }
 
 ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
 {
+    // Define the Root Parameters (Descriptor Table + Constants)
     CD3DX12_ROOT_PARAMETER1 rootParameters[2];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
-    ranges.reserve(31); // The total number of ranges is now 33 - 2 = 31
+    ranges.reserve(40); // Reserve space to avoid reallocations
 
-    // Ranges 0-23 are unchanged
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 0);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 7);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 1);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 18);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 19);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 2);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE, 3);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 4);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 5);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 6);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 8);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 9);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 4, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 10);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 5, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 11);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 6, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 12);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 7, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 13);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 14);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 15);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 8, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 16);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 9, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE, 17);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 20);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 10, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 21);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 22);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 23);
+    // Flags to optimize driver behavior
+    // VOLATILE: The buffer content might change (UAVs)
+    // STATIC: The descriptor/buffer won't change during execution
+    const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
 
-    // --- ALIAS TABLE RANGES (t13, t14 at offsets 24, 25) ARE NOW REMOVED ---
 
-    // --- SUBSEQUENT RANGES ARE SHIFTED UP BY 2 SLOTS ---
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 24); // Was 26
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 16, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 25); // Was 27
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 17, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 26); // Was 28
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 18, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 27); // Was 29
-    // Texture arrays
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 30, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 28); // Was 30
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 31, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 29); // Was 31
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 32, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC, 30); // Was 32
+    // Slot 0:  UAV u0 (Output)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
+    // Slot 1:  UAV u1 (Permanent Data / Accumulation)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 1, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 2:  SRV t0 (TLAS)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 3:  SRV t1 (Global Index Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 4:  SRV t2 (Global Vertex Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 2, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 5:  CBV b0 (Camera)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 6:  SRV t3 (Instance Properties)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 3, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 7:  SRV t4 (Material IDs)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 8:  SRV t5 (Materials)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 5, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 9:  SRV t6 (Emissive Triangles)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 6, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 10-15: UAVs u2-u7 (Reservoirs & Sample Buffers)
+    // u2
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 2, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // u3
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 3, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // u4
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 4, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // u5
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 5, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // u6
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 6, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // u7
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 7, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 16: SRV t7 (Alias Prob)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 7, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 17: SRV t8 (Alias Idx)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 8, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 18: UAV u8 (Scratch Ping)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 8, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 19: UAV u9 (Initial BSDF Rays)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 9, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 20-23: LightTree SRVs (t9-t12)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 9, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 10, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 11, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 12, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 24: SRV t15 (TriToLightId) -- Note the jump to register t15
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 15, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 25-27: LightTree Lookups (t16-t18)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 16, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 17, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 18, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 28-31: Texture Arrays (t30-t33) -- Note jump to register t30
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 30, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 31, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 32, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 33, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 32: UAV u10 (PathState Buffer)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 10, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 33: UAV u34 (Global Counters)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 34, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 34: UAV u35 (Indirect Args)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 35, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 35: UAVs u36-u39 (Pixel Stacks) - Range of 4 descriptors
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // Slot 36: Sort Buffers (3 UAVs)
+    // u60: Sort Count
+    // u61: Sort Offset
+    // u62: Sort Bounds
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV,  3, 60, 0, VOLATILE,  D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+
+    // -----------------------------------------------------------------------
+
+    // Parameter 0: The Descriptor Table (SRV/UAV/CBV)
     rootParameters[0].InitAsDescriptorTable(static_cast<UINT>(ranges.size()), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    rootParameters[1].InitAsConstants(2, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    CD3DX12_STATIC_SAMPLER_DESC staticSampler(
-        0, D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP);
-    staticSampler.MaxAnisotropy = 16;
-    staticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    // Parameter 1: Constants (b1) - Used for dimensions, etc.
+    rootParameters[1].InitAsConstants(6, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
+    // Static Samplers (Unchanged)
+    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
+    staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+    staticSamplers[0].MaxAnisotropy = 16;
+    staticSamplers[1].Init(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+
+    // Serialize and Create
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, 1, &staticSampler, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
     ComPtr<ID3DBlob> signature;
     ComPtr<ID3DBlob> error;
@@ -1231,32 +1708,20 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
 // not require any resources
 //
 
-// TODO: remove this stuff when converting to compute only
 ComPtr<ID3D12RootSignature> Renderer::CreateHitSignature() {
-  nv_helpers_dx12::RootSignatureGenerator rsc;
-  rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV,
-                       2 /*t0*/); // vertices and colors
-  rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV, 1 /*t1*/); // indices
-  // #DXR Extra: Per-Instance Data
-  // The vertex colors may differ for each instance, so it is not possible to
-  // point to a single buffer in the heap. Instead we use the concept of root
-  // parameters, which are defined directly by a pointer in memory. In the
-  // shader binding table we will associate each hit shader instance with its
-  // constant buffer. Here we bind the buffer to the first slot, accessible in
-  // HLSL as register(b0)
-  rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, 0);
-  // #DXR Extra - Another ray type
-  // Add a single range pointing to the TLAS in the heap
-    rsc.AddHeapRangesParameter(
-            {{0 /*t2*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1 /*2nd slot of the heap*/},
-             //{0 /*b0*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_CBV /*Scene data*/, 2},
-                    // # DXR Extra - Simple Lighting
-             {3 /*t3*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Per-instance data*/, 3},
-             {4 /*t4*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4 /*5th slot - Material IDs*/},
-             {5 /*t5*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5 /*6th slot - Materials*/},
-                    {6 /*t6*/, 1, 0, D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6 /*7th slot - Light triangles*/}
-            });
-  return rsc.Generate(m_device.Get(), true);
+    nv_helpers_dx12::RootSignatureGenerator rsc;
+
+    // REMOVE ALL PARAMETERS HERE.
+    // We rely on the Global Root Signature for resources (t0, t1, t2, etc.).
+
+    /*
+    rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV, 2);
+    rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV, 1);
+    rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, 0);
+    rsc.AddHeapRangesParameter(...);
+    */
+
+    return rsc.Generate(m_device.Get(), true);
 }
 
 //-----------------------------------------------------------------------------
@@ -1288,6 +1753,8 @@ void Renderer::CreateRaytracingPipeline()
     m_missSignature   = CreateMissSignature();
     m_hitSignature    = CreateHitSignature();
 
+    pipeline.SetGlobalRootSignature(m_rayGenSignature.Get());
+
     // Iterate over the parsed pass list
     m_rayGenLibs.clear();
     m_csPSOs   .clear();
@@ -1299,6 +1766,12 @@ void Renderer::CreateRaytracingPipeline()
     for (PassDesc& p : m_passes)
     {
         if (p.stage == Stage::Barrier) continue;
+
+        if (p.stage == Stage::LoopStart || p.stage == Stage::LoopEnd) continue;
+
+        if (p.stage == Stage::PingSwap) continue;
+
+        if (p.stage == Stage::ClearSort) continue;
 
         if (p.isWorkGraph)
         {
@@ -1394,24 +1867,23 @@ void Renderer::CreateRaytracingPipeline()
         }
 
 
-        if (p.stage == Stage::Compute && !p.isWorkGraph)
+        if ((p.stage == Stage::Compute || p.stage == Stage::Wavefront || p.stage == Stage::FixedCompute) && !p.isWorkGraph)
         {
             // compile CS and make a PSO
-            ComPtr<IDxcBlob> cs =
-                nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
+            ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(p.file.c_str(), L"main");
 
             D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
-            desc.pRootSignature = m_computeSignature.Get();            // reuse RS
+            desc.pRootSignature = m_computeSignature.Get();
             desc.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
 
             ComPtr<ID3D12PipelineState> pso;
-            ThrowIfFailed(m_device->CreateComputePipelineState(
-                              &desc, IID_PPV_ARGS(&pso)));
+            ThrowIfFailed(m_device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso)));
 
             m_csPSOs.push_back(pso);
             p.psoIdx = nextCs++;
             continue;
         }
+
 
         // ray-generation library
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
@@ -1445,8 +1917,8 @@ void Renderer::CreateRaytracingPipeline()
 
 
     // Libraries:  miss / hit / shadow
-    m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v7.hlsl");
-    m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v7.hlsl");
+    m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
+    m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
     m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
 
     pipeline.AddLibrary(m_missLibrary.Get(),   { L"Miss" });
@@ -1458,21 +1930,21 @@ void Renderer::CreateRaytracingPipeline()
     pipeline.AddHitGroup(L"ShadowHitGroup",  L"ShadowClosestHit");
 
     // Root-signature associations
-    for (const PassDesc& p : m_passes)
+    /*for (const PassDesc& p : m_passes)
     {
         if (p.stage != Stage::RayGen) continue;
 
         std::wstring base = p.file.substr(0, p.file.rfind(L'.'));
         pipeline.AddRootSignatureAssociation(
             m_rayGenSignature.Get(), { base.c_str() });
-    }
+    }*/
 
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(),  { L"Miss", L"ShadowMiss" });
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),   { L"HitGroup" });
     pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
     // Payload / attribute / recursion depth (we dont use recursion)
-    pipeline.SetMaxPayloadSize( 11*sizeof(float) + 3*sizeof(UINT));
+    pipeline.SetMaxPayloadSize( 16*sizeof(float) + 3*sizeof(UINT));
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
@@ -1516,7 +1988,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
     textureDesc.Height = GetHeight();
     textureDesc.DepthOrArraySize = 1;
     textureDesc.MipLevels = 1;
-    textureDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT; // Choose an appropriate format
+    textureDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     textureDesc.SampleDesc.Count = 1;
     textureDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
     textureDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -1550,6 +2022,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
         nullptr,
         IID_PPV_ARGS(&m_scratchPing)));
 
+    CreatePathStateBuffer();
 }
 
 //-----------------------------------------------------------------------------
@@ -1560,35 +2033,84 @@ void Renderer::CreateRaytracingOutputBuffer() {
 // REPLACE THE ENTIRE CONTENTS OF THIS FUNCTION
 
 void Renderer::CreateShaderResourceHeap() {
-    // We need a heap large enough for all our resources. Let's ensure it's big enough.
-    // Current count is 31, so 64 is a safe size.
+    // ---------------------------------------------------------------------------
+    // 1. Create Main Heap (Shader Visible - GPU Access)
+    // ---------------------------------------------------------------------------
+    // We need space for ~40 descriptors + buffers + sort buffers
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-        m_device.Get(), 64, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+        m_device.Get(), 100, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+    m_srvUavHeap->SetName(L"Main SRV/UAV Heap");
 
+    // ---------------------------------------------------------------------------
+    // 2. Create Staging Heap (Non-Shader Visible - CPU Access)
+    // ---------------------------------------------------------------------------
+    // CRITICAL: This heap must NOT be shader visible (Flag = NONE).
+    // It must persist (be a member variable), or handles become invalid.
+    D3D12_DESCRIPTOR_HEAP_DESC stagingDesc = {};
+    stagingDesc.NumDescriptors = 4; // SortCount, SortOffset, SortBounds
+    stagingDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    stagingDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE; // CPU Only
+    stagingDesc.NodeMask = 0;
+    ThrowIfFailed(m_device->CreateDescriptorHeap(&stagingDesc, IID_PPV_ARGS(&m_stagingUavHeap)));
+    m_stagingUavHeap->SetName(L"Staging UAV Heap");
+
+    // ---------------------------------------------------------------------------
+    // 3. Setup Handles
+    // ---------------------------------------------------------------------------
+    // Handles for Main Heap
     CD3DX12_CPU_DESCRIPTOR_HANDLE handle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
     const UINT inc = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Helper to create a "null" SRV for a buffer, used when a resource is optional.
-    auto createNullBufferSrv = [&](D3D12_SHADER_RESOURCE_VIEW_DESC& srvDesc) {
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Buffer.NumElements = 1;
-        srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-        m_device->CreateShaderResourceView(nullptr, &srvDesc, handle);
+    // Handles for Staging Heap
+    CD3DX12_CPU_DESCRIPTOR_HANDLE stagingHandle(m_stagingUavHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // Helper to advance Main Heap slots
+    auto nextSlot = [&]() {
+        handle.Offset(1, inc);
+        gpuHandle.Offset(1, inc);
     };
 
-    // Slot 0: Output Buffer UAV (u0)
+    // Helper to advance Staging Heap slots
+    auto nextStaging = [&]() {
+        stagingHandle.Offset(1, inc);
+    };
+
+    // Helper for null descriptors
+    auto createNullSRV = [&](D3D12_SRV_DIMENSION dim = D3D12_SRV_DIMENSION_BUFFER) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = DXGI_FORMAT_R32_UINT;
+        srvDesc.ViewDimension = dim;
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        if(dim == D3D12_SRV_DIMENSION_BUFFER) srvDesc.Buffer.NumElements = 1;
+        m_device->CreateShaderResourceView(nullptr, &srvDesc, handle);
+        nextSlot();
+    };
+
+    // ---------------------------------------------------------------------------
+    // 4. Fill Descriptors
+    // ---------------------------------------------------------------------------
+
+    // --- RANGE 0: UAV u0 (Output) ---
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         uavDesc.Texture2DArray.ArraySize = m_outputResource->GetDesc().DepthOrArraySize;
         m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
     }
-    handle.Offset(1, inc); // Move to slot 1
 
-    // Slot 1: Top-Level Acceleration Structure SRV (t0)
+    // --- RANGE 1: UAV u1 (Permanent Data / Accumulation) ---
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 2: SRV t0 (TLAS) ---
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Format = DXGI_FORMAT_UNKNOWN;
@@ -1596,141 +2118,10 @@ void Renderer::CreateShaderResourceHeap() {
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.RaytracingAccelerationStructure.Location = m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
         m_device->CreateShaderResourceView(nullptr, &srvDesc, handle);
+        nextSlot();
     }
-    handle.Offset(1, inc); // Move to slot 2
 
-    // Slot 2: Camera CBV (b0)
-    {
-        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
-        cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
-        cbvDesc.SizeInBytes = m_cameraBufferSize;
-        m_device->CreateConstantBufferView(&cbvDesc, handle);
-    }
-    handle.Offset(1, inc); // Move to slot 3
-
-    // Slot 3: Instance Properties SRV (t3)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc.Buffer.NumElements = static_cast<UINT>(m_instances.size());
-        srvDesc.Buffer.StructureByteStride = sizeof(InstanceProperties);
-        m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc, handle);
-    }
-    handle.Offset(1, inc); // Move to slot 4
-
-    // Slot 4: Material IDs SRV (t4)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_R32_UINT;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materialIDs.size());
-        m_device->CreateShaderResourceView(m_materialIndexBuffer.Get(), &srvDesc, handle);
-    }
-    handle.Offset(1, inc); // Move to slot 5
-
-    // Slot 5: Materials SRV (t5)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materials.size());
-        srvDesc.Buffer.StructureByteStride = sizeof(Material);
-        m_device->CreateShaderResourceView(m_materialBuffer.Get(), &srvDesc, handle);
-    }
-    handle.Offset(1, inc); // Move to slot 6
-
-    // Slot 6: Emissive Triangles SRV (t6)
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        if (m_emissiveTrianglesBuffer) {
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            srvDesc.Buffer.NumElements = static_cast<UINT>(m_emissiveTriangles.size());
-            srvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
-            m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &srvDesc, handle);
-        } else { createNullBufferSrv(srvDesc); }
-    }
-    handle.Offset(1, inc); // Move to slot 7
-
-    // Slot 7: Permanent Data UAV (u1)
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        m_device->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &uavDesc, handle);
-    }
-    handle.Offset(1, inc); // Move to slot 8
-
-    // Helper for creating RAW buffer UAVs
-    auto createRawBufferUAV = [&](ComPtr<ID3D12Resource>& res, UINT size, const wchar_t* name) {
-        D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(size, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
-        ThrowIfFailed(m_device->CreateCommittedResource(&nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&res)));
-        res->SetName(name);
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
-        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
-        uavDesc.Buffer.NumElements = size / 4;
-        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-        m_device->CreateUnorderedAccessView(res.Get(), nullptr, &uavDesc, handle);
-        handle.Offset(1, inc);
-    };
-
-    UINT reservoirBufferSize_di = GetWidth() * GetHeight() * sizeof(Reservoir_DI);
-    UINT reservoirBufferSize_gi = GetWidth() * GetHeight() * sizeof(Reservoir_GI);
-    UINT sampleBufferSize = GetWidth() * GetHeight() * sizeof(SampleData);
-
-    // Slots 8-13: Reservoirs and Sample Buffers (u2-u7)
-    createRawBufferUAV(m_reservoirBuffer, reservoirBufferSize_di, L"ReservoirBuffer_1");       // Slot 8
-    createRawBufferUAV(m_reservoirBuffer_2, reservoirBufferSize_di, L"ReservoirBuffer_2");     // Slot 9
-    createRawBufferUAV(m_reservoirBuffer_3, reservoirBufferSize_gi, L"ReservoirBuffer_3");     // Slot 10
-    createRawBufferUAV(m_reservoirBuffer_4, reservoirBufferSize_gi, L"ReservoirBuffer_4");     // Slot 11
-    createRawBufferUAV(m_sampleBuffer_current, sampleBufferSize, L"SampleBuffer_Current");     // Slot 12
-    createRawBufferUAV(m_sampleBuffer_last, sampleBufferSize, L"SampleBuffer_Last");          // Slot 13
-
-    // Slots 14-15: Alias Table SRVs (t7, t8)
-    { // Slot 14
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        if (m_aliasProbBuffer) {
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasProb.size());
-            m_device->CreateShaderResourceView(m_aliasProbBuffer.Get(), &srvDesc, handle);
-        } else { createNullBufferSrv(srvDesc); }
-    }
-    handle.Offset(1, inc);
-    { // Slot 15
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        if (m_aliasIdxBuffer) {
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = DXGI_FORMAT_R32_UINT;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasIdx.size());
-            m_device->CreateShaderResourceView(m_aliasIdxBuffer.Get(), &srvDesc, handle);
-        } else { createNullBufferSrv(srvDesc); }
-    }
-    handle.Offset(1, inc);
-
-    // Slot 16: Scratch Ping UAV (u8)
-    {
-        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        uavDesc.Texture2DArray.ArraySize = 16;
-        m_device->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &uavDesc, handle);
-    }
-    handle.Offset(1, inc);
-
-    // Slot 17: Initial BSDF Ray UAV (u9)
-    UINT initialRayBufferSize = GetWidth() * GetHeight() * sizeof(InitialBSDFRay);
-    createRawBufferUAV(m_initialBSDFRayBuffer, initialRayBufferSize, L"InitialBSDFRayBuffer"); // Slot 17, handle advanced inside
-
-    // Slot 18: Global Index Buffer SRV (t1)
+    // --- RANGE 3: SRV t1 (Global Index Buffer) ---
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1738,10 +2129,10 @@ void Renderer::CreateShaderResourceHeap() {
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srvDesc.Buffer.NumElements = m_totalIndexCount;
         m_device->CreateShaderResourceView(m_indexGlobal.Get(), &srvDesc, handle);
+        nextSlot();
     }
-    handle.Offset(1, inc);
 
-    // Slot 19: Global Vertex Buffer SRV (t2)
+    // --- RANGE 4: SRV t2 (Global Vertex Buffer) ---
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1750,58 +2141,266 @@ void Renderer::CreateShaderResourceHeap() {
         srvDesc.Buffer.NumElements = m_totalVertexCount;
         srvDesc.Buffer.StructureByteStride = sizeof(BTriVertex);
         m_device->CreateShaderResourceView(m_vertexGlobal.Get(), &srvDesc, handle);
+        nextSlot();
     }
-    handle.Offset(1, inc); // Handle is now at slot 20
 
-    // Slots 20-23: LightTree SRVs (t9-t12)
-    m_lightTree.WriteSrvs(m_device.Get(), handle);
-    handle.Offset(4, inc); // Handle is now at slot 24
+    // --- RANGE 5: CBV b0 (Camera) ---
+    {
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {};
+        cbvDesc.BufferLocation = m_cameraBuffer->GetGPUVirtualAddress();
+        cbvDesc.SizeInBytes = m_cameraBufferSize;
+        m_device->CreateConstantBufferView(&cbvDesc, handle);
+        nextSlot();
+    }
 
-    // --- NO ALIAS SRVS for slots 24, 25 ---
-
-    // Slot 24: TriToLightId SRV (t15)
+    // --- RANGE 6: SRV t3 (Instance Properties) ---
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_instances.size());
+        srvDesc.Buffer.StructureByteStride = sizeof(InstanceProperties);
+        m_device->CreateShaderResourceView(m_instanceProperties.Get(), &srvDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 7: SRV t4 (Material IDs) ---
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R32_UINT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materialIDs.size());
+        m_device->CreateShaderResourceView(m_materialIndexBuffer.Get(), &srvDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 8: SRV t5 (Materials) ---
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srvDesc.Buffer.NumElements = static_cast<UINT>(m_materials.size());
+        srvDesc.Buffer.StructureByteStride = sizeof(Material);
+        m_device->CreateShaderResourceView(m_materialBuffer.Get(), &srvDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 9: SRV t6 (Emissive Triangles) ---
+    {
+        if (m_emissiveTrianglesBuffer) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_UNKNOWN;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_emissiveTriangles.size());
+            srvDesc.Buffer.StructureByteStride = sizeof(LightTriangle);
+            m_device->CreateShaderResourceView(m_emissiveTrianglesBuffer.Get(), &srvDesc, handle);
+        } else { createNullSRV(); }
+        nextSlot();
+    }
+
+    // Helper for Raw Buffer UAVs
+    auto createRawUAV = [&](ComPtr<ID3D12Resource>& res, UINT sizeInBytes) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.NumElements = sizeInBytes / 4;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        m_device->CreateUnorderedAccessView(res.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    };
+
+    UINT reservoirBytesDI = GetWidth() * GetHeight() * sizeof(Reservoir_DI);
+    UINT reservoirBytesGI = GetWidth() * GetHeight() * sizeof(Reservoir_GI);
+    UINT sampleBytes      = GetWidth() * GetHeight() * sizeof(SampleData);
+
+    // --- RANGE 10-15: Reservoirs & Sample Buffers (u2-u7) ---
+    createRawUAV(m_reservoirBuffer, reservoirBytesDI);       // u2
+    createRawUAV(m_reservoirBuffer_2, reservoirBytesDI);     // u3
+    createRawUAV(m_reservoirBuffer_3, reservoirBytesGI);     // u4
+    createRawUAV(m_reservoirBuffer_4, reservoirBytesGI);     // u5
+    createRawUAV(m_sampleBuffer_current, sampleBytes);       // u6
+    createRawUAV(m_sampleBuffer_last, sampleBytes);          // u7
+
+    // --- RANGE 16: SRV t7 (Alias Prob) ---
+    {
+        if (m_aliasProbBuffer) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasProb.size());
+            m_device->CreateShaderResourceView(m_aliasProbBuffer.Get(), &srvDesc, handle);
+        } else { createNullSRV(); }
+        nextSlot();
+    }
+
+    // --- RANGE 17: SRV t8 (Alias Idx) ---
+    {
+        if (m_aliasIdxBuffer) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R32_UINT;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+            srvDesc.Buffer.NumElements = static_cast<UINT>(m_aliasIdx.size());
+            m_device->CreateShaderResourceView(m_aliasIdxBuffer.Get(), &srvDesc, handle);
+        } else { createNullSRV(); }
+        nextSlot();
+    }
+
+    // --- RANGE 18: UAV u8 (Scratch Ping) ---
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        uavDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        uavDesc.Texture2DArray.ArraySize = 16;
+        m_device->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 19: UAV u9 (Initial Rays) ---
+    createRawUAV(m_initialBSDFRayBuffer, GetWidth() * GetHeight() * sizeof(InitialBSDFRay));
+
+    // --- RANGES 20-23: LightTree SRVs (t9-t12) ---
+    m_lightTree.WriteSrvs(m_device.Get(), handle);
+    handle.Offset(4, inc); // Skip 4 slots
+    gpuHandle.Offset(4, inc);
+
+    // --- RANGES 24-27: More LightTree SRVs (t15-t18) ---
+    // Range 24: SRV t15 (TriToLightId)
+    {
         if (m_triToLightIdBuffer) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             srvDesc.Format = DXGI_FORMAT_R32_UINT;
             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             srvDesc.Buffer.NumElements = static_cast<UINT>(m_triToLightId.size());
             m_device->CreateShaderResourceView(m_triToLightIdBuffer.Get(), &srvDesc, handle);
-        } else { createNullBufferSrv(srvDesc); }
+        } else { createNullSRV(); }
+        nextSlot();
     }
-    handle.Offset(1, inc); // Handle is now at slot 25
 
-    // Slots 25-27: LightTree Lookup SRVs (t16-t18)
+    // Range 25, 26, 27: LightTree Lookups (t16, t17, t18)
     m_lightTree.WriteLookupSrvs(m_device.Get(), handle);
-    handle.Offset(3, inc); // Handle is now at slot 28
+    handle.Offset(3, inc);
+    gpuHandle.Offset(3, inc);
 
-    // Helper for Texture Array SRVs
-    auto createTexArraySrv = [&](ComPtr<ID3D12Resource>& resource, DXGI_FORMAT format) {
+    // --- RANGES 28-31: Texture Arrays (t30-t33) ---
+    auto createTexSrv = [&](ComPtr<ID3D12Resource>& res) {
+        if (!res) { createNullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY); return; }
         D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
         desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        desc.Format = res->GetDesc().Format;
         desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        if (!resource) {
-            desc.Format = format;
-            desc.Texture2DArray.MipLevels = 1;
-            desc.Texture2DArray.ArraySize = 1;
-            m_device->CreateShaderResourceView(nullptr, &desc, handle);
-        } else {
-            const auto& resDesc = resource->GetDesc();
-            desc.Format = resDesc.Format;
-            desc.Texture2DArray.MipLevels = resDesc.MipLevels;
-            desc.Texture2DArray.ArraySize = resDesc.DepthOrArraySize;
-            m_device->CreateShaderResourceView(resource.Get(), &desc, handle);
-        }
-        handle.Offset(1, inc);
+        desc.Texture2DArray.MipLevels = res->GetDesc().MipLevels;
+        desc.Texture2DArray.ArraySize = res->GetDesc().DepthOrArraySize;
+        m_device->CreateShaderResourceView(res.Get(), &desc, handle);
+        nextSlot();
     };
 
-    // Slots 28-30: Texture Arrays (t30-t32)
-    createTexArraySrv(m_albedoTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB); // Slot 28
-    createTexArraySrv(m_normalTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM);   // Slot 29
-    createTexArraySrv(m_rmaTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM);      // Slot 30
+    createTexSrv(m_albedoTextureArray);
+    createTexSrv(m_normalTextureArray);
+    createTexSrv(m_rmaTextureArray);
+    createTexSrv(m_lutTextureArray);
 
-    std::wcout << L"All SRVs created successfully up to slot 30." << std::endl;
+    // --- RANGE 32: UAV u10 (PathState) ---
+    createRawUAV(m_pathStateBuffer, GetWidth() * GetHeight() * 88);
+
+    // --- RANGE 33: UAV u34 (Global Counters) ---
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uavDesc.Buffer.NumElements = MAX_STACKS;
+        m_device->CreateUnorderedAccessView(m_globalCounterBuffer.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 34: UAV u35 (Indirect Args) ---
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN; // Structured
+        uavDesc.Buffer.NumElements = MAX_INDIRECT_COMMANDS;
+        uavDesc.Buffer.StructureByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+        m_device->CreateUnorderedAccessView(m_indirectArgsBuffer.Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 35: UAVs u36-u39 (Pixel Stacks) ---
+    for(int i=0; i<4; ++i)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.Buffer.NumElements = GetWidth() * GetHeight();
+        uavDesc.Buffer.StructureByteStride = 8; // uint2
+        m_device->CreateUnorderedAccessView(m_stackBuffers[i].Get(), nullptr, &uavDesc, handle);
+        nextSlot();
+    }
+
+    // --- RANGE 36: Sort Buffers (u60, u61, u62) ---
+    // [CRITICAL FIX] We create in Staging, Store Staging Handle, Copy to Main, Store Main Handle.
+
+    // 1. Sort Count (u60)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uavDesc.Buffer.NumElements = SORT_BUCKETS;
+
+        m_device->CreateUnorderedAccessView(m_sortCountBuffer.Get(), nullptr, &uavDesc, stagingHandle);
+        m_sortCountCpuHandle = stagingHandle;
+
+        m_device->CopyDescriptorsSimple(1, handle, stagingHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_sortCountGpuHandle = gpuHandle;
+
+        nextSlot();
+        nextStaging();
+    }
+
+    // 2. Sort Offset (u61)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uavDesc.Buffer.NumElements = SORT_BUCKETS;
+
+        m_device->CreateUnorderedAccessView(m_sortOffsetBuffer.Get(), nullptr, &uavDesc, stagingHandle);
+        m_sortOffsetCpuHandle = stagingHandle;
+
+        m_device->CopyDescriptorsSimple(1, handle, stagingHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_sortOffsetGpuHandle = gpuHandle;
+
+        nextSlot();
+        nextStaging();
+    }
+
+    // 3. Sort Bounds (u62)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uavDesc.Buffer.NumElements = 8;
+
+        m_device->CreateUnorderedAccessView(m_sortBoundsBuffer.Get(), nullptr, &uavDesc, stagingHandle);
+        m_sortBoundsCpuHandle = stagingHandle;
+
+        m_device->CopyDescriptorsSimple(1, handle, stagingHandle, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_sortBoundsGpuHandle = gpuHandle;
+
+        nextSlot();
+        nextStaging();
+    }
+
+    std::wcout << L"Heap recreated strictly matching Root Signature." << std::endl;
 }
 
 //-----------------------------------------------------------------------------
@@ -1823,8 +2422,14 @@ void Renderer::CreateShaderBindingTable() {
     for (const auto& entry : m_passSequence)
     {
         if (entry == L"barrier") continue;
+        if (entry.rfind(L"loop:", 0) == 0) continue;
+        if (entry == L"endloop") continue;
+        if (entry == L"pingswap") continue;
+        if (entry == L"clearsort") continue;
         if (entry.find(L"|cs:") != std::wstring::npos) continue;
+        if (entry.find(L"|wf:") != std::wstring::npos) continue;
         if (entry.find(L"|wg:") != std::wstring::npos) continue;
+        if (entry.find(L"|fx:") != std::wstring::npos) continue;
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
@@ -1840,11 +2445,7 @@ void Renderer::CreateShaderBindingTable() {
     std::wcout << L"Adding hit groups for instances..." << std::endl;
     for (int i = 0; i < m_instances.size(); ++i) {
         std::wcout << L"Adding hit group for instance " << i << std::endl;
-        m_sbtHelper.AddHitGroup(
-                L"HitGroup",
-                {(void *) (m_VB[i]->GetGPUVirtualAddress()),
-                 (void *) (m_IB[i]->GetGPUVirtualAddress()),
-                 (void *) (m_perInstanceConstantBuffers[0]->GetGPUVirtualAddress()), heapPointer});
+        m_sbtHelper.AddHitGroup(L"HitGroup", {});
         m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
     }
 
@@ -2189,144 +2790,44 @@ void Renderer::CreateDepthBuffer() {
       m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
-// #DXR Extra: Indexed Geometry
-/*void Renderer::CreateVB(std::string name) {
-  std::vector<Vertex> vertices;
-  std::vector<UINT> indices;
-  std::vector<Material> materials;
-  std::vector<UINT> materialIDs;
-
-  ComPtr<ID3D12Resource> l_VB;
-  ComPtr<ID3D12Resource> l_IB;
-  D3D12_VERTEX_BUFFER_VIEW l_VBView;
-  D3D12_INDEX_BUFFER_VIEW l_IBView;
-  ComPtr<ID3D12Resource> l_material;
-  ComPtr<ID3D12Resource> l_materialID;
-  UINT l_IndexCount;
-  UINT l_VertexCount;
-
-  //nv_helpers_dx12::GenerateMengerSponge(3, 0.75, vertices, indices);
-  ObjLoader::loadObjFile(name,&vertices, &indices, &materials, &materialIDs, &materialIDOffset, &materialVertexOffset);
-    // Before inserting new material IDs, store the current offset
-    m_materialIDOffsets.push_back(static_cast<UINT>(m_materialIDs.size()));
-
-    // Insert the material IDs and materials
-    m_materialIDs.insert(m_materialIDs.end(), materialIDs.begin(), materialIDs.end());
-    m_materials.insert(m_materials.end(), materials.begin(), materials.end());
-  materialVertexOffset=m_materialIDs.size();
-  std::wcout << L"Triangle Offset: " << materialVertexOffset << std::endl;
-  {
-    const UINT mengerVBSize =
-        static_cast<UINT>(vertices.size()) * sizeof(Vertex);
-
-    // Note: using upload heaps to transfer static data like vert buffers is not
-    // recommended. Every time the GPU needs it, the upload heap will be
-    // marshalled over. Please read up on Default Heap usage. An upload heap is
-    // used here for code simplicity and because there are very few verts to
-    // actually transfer.
-    CD3DX12_HEAP_PROPERTIES heapProperty =
-        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferResource =
-        CD3DX12_RESOURCE_DESC::Buffer(mengerVBSize);
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&l_VB)));
-
-    // Copy the triangle data to the vertex buffer.
-    UINT8 *pVertexDataBegin;
-    CD3DX12_RANGE readRange(
-        0, 0); // We do not intend to read from this resource on the CPU.
-    ThrowIfFailed(l_VB->Map(
-        0, &readRange, reinterpret_cast<void **>(&pVertexDataBegin)));
-    memcpy(pVertexDataBegin, vertices.data(), mengerVBSize);
-      l_VB->Unmap(0, nullptr);
-
-    // Initialize the vertex buffer view.
-      l_VBView.BufferLocation = l_VB->GetGPUVirtualAddress();
-      l_VBView.StrideInBytes = sizeof(Vertex);
-      l_VBView.SizeInBytes = mengerVBSize;
-  }
-  {
-    const UINT IBSize = static_cast<UINT>(indices.size()) * sizeof(UINT);
-
-    // Note: using upload heaps to transfer static data like vert buffers is not
-    // recommended. Every time the GPU needs it, the upload heap will be
-    // marshalled over. Please read up on Default Heap usage. An upload heap is
-    // used here for code simplicity and because there are very few verts to
-    // actually transfer.
-    CD3DX12_HEAP_PROPERTIES heapProperty =
-        CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-    CD3DX12_RESOURCE_DESC bufferResource =
-        CD3DX12_RESOURCE_DESC::Buffer(IBSize);
-    ThrowIfFailed(m_device->CreateCommittedResource(
-        &heapProperty, D3D12_HEAP_FLAG_NONE, &bufferResource, //
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&l_IB)));
-
-    // Copy the triangle data to the index buffer.
-    UINT8 *pIndexDataBegin;
-    CD3DX12_RANGE readRange(
-        0, 0); // We do not intend to read from this resource on the CPU.
-    ThrowIfFailed(l_IB->Map(0, &readRange,
-                                  reinterpret_cast<void **>(&pIndexDataBegin)));
-    memcpy(pIndexDataBegin, indices.data(), IBSize);
-      l_IB->Unmap(0, nullptr);
-
-    // Initialize the index buffer view.
-      l_IBView.BufferLocation = l_IB->GetGPUVirtualAddress();
-      l_IBView.Format = DXGI_FORMAT_R32_UINT;
-      l_IBView.SizeInBytes = IBSize;
-
-      l_IndexCount = static_cast<UINT>(indices.size());
-      l_VertexCount = static_cast<UINT>(vertices.size());
-  }
-
-    //Fill the vectors with data
-    m_VB.push_back(l_VB);
-    m_VBView.push_back(l_VBView);
-    m_IB.push_back(l_IB);
-    m_IBView.push_back(l_IBView);
-    m_VertexCount.push_back(l_VertexCount);
-    m_IndexCount.push_back(l_IndexCount);
-    m_material.push_back(l_material);
-    m_materialID.push_back(l_materialID);
-
-}*/
-
 void Renderer::CreateTextureArrays(
     const std::vector<TextureData>& albedoTextures,
     const std::vector<TextureData>& normalTextures,
     const std::vector<TextureData>& rmaTextures)
 {
-    // Helper lambda to create one texture array
+    // Hilfs-Lambda zum Erstellen eines Textur-Arrays (jetzt für Mipmaps und Komprimierung aktualisiert)
     auto createArray = [&](
         const std::vector<TextureData>& textures,
         ComPtr<ID3D12Resource>& textureArrayResource,
-        DXGI_FORMAT format,
         const std::wstring& resourceName)
     {
         if (textures.empty()) return;
 
-        UINT width = textures[0].width;
-        UINT height = textures[0].height;
+        // Schritt 1: Metadaten aus dem ersten ScratchImage auslesen (Breite, Höhe, Format, Mip-Levels)
+        const DirectX::TexMetadata& metadata = textures[0].image.GetMetadata();
+        UINT width = static_cast<UINT>(metadata.width);
+        UINT height = static_cast<UINT>(metadata.height);
         UINT arraySize = static_cast<UINT>(textures.size());
+        UINT mipLevels = static_cast<UINT>(metadata.mipLevels);
+        DXGI_FORMAT format = metadata.format;
 
+        // (Optional) Konsistenzprüfung: Sicherstellen, dass alle Texturen die gleichen Dimensionen/Formate haben
         for (const auto& tex : textures) {
-            if (tex.width != width || tex.height != height) {
-                // This is a simple implementation. A more robust engine would handle
-                // different texture sizes, perhaps by grouping them or using a texture atlas.
-                std::string errorMsg = "All textures in an array must have the same dimensions. Failed for array: " + std::string(resourceName.begin(), resourceName.end());
-                throw std::runtime_error(errorMsg);
+            const auto& currentMeta = tex.image.GetMetadata();
+            if (currentMeta.width != width || currentMeta.height != height || currentMeta.format != format || currentMeta.mipLevels != mipLevels) {
+                throw std::runtime_error("All textures in an array must have the same dimensions, format, and mip level count. Failed for array: " + std::string(resourceName.begin(), resourceName.end()));
             }
         }
 
+        // Schritt 2: Die Texture2D-Array-Ressource auf der GPU erstellen
         D3D12_RESOURCE_DESC texDesc = {};
         texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         texDesc.Alignment = 0;
         texDesc.Width = width;
         texDesc.Height = height;
         texDesc.DepthOrArraySize = arraySize;
-        texDesc.MipLevels = 1;
-        texDesc.Format = format;
+        texDesc.MipLevels = mipLevels; // WICHTIG: Verwende Mip-Levels aus den Metadaten
+        texDesc.Format = format;       // WICHTIG: Verwende das komprimierte Format aus den Metadaten
         texDesc.SampleDesc.Count = 1;
         texDesc.SampleDesc.Quality = 0;
         texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
@@ -2341,30 +2842,49 @@ void Renderer::CreateTextureArrays(
             IID_PPV_ARGS(&textureArrayResource)));
         textureArrayResource->SetName(resourceName.c_str());
 
-        UINT64 uploadBufferSize;
-        m_device->GetCopyableFootprints(&texDesc, 0, arraySize, 0, nullptr, nullptr, nullptr, &uploadBufferSize);
+        // Schritt 3: Subressourcen-Daten für JEDEN Mip-Level JEDER Textur vorbereiten
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources;
+        subresources.reserve(arraySize * mipLevels);
 
-        ComPtr<ID3D12Resource> textureUploadHeap;
-        CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize); // CORRECTED
+        for (const auto& texData : textures)
+        {
+            // Durchlaufe jedes Bild (Mip-Level) im ScratchImage
+            for (size_t i = 0; i < texData.image.GetImageCount(); ++i)
+            {
+                const DirectX::Image* img = texData.image.GetImage(i, 0, 0);
+                if (!img)
+                {
+                    throw std::runtime_error("Failed to get image from ScratchImage.");
+                }
+
+                D3D12_SUBRESOURCE_DATA subresourceData = {};
+                subresourceData.pData = img->pixels;
+                subresourceData.RowPitch = static_cast<LONG_PTR>(img->rowPitch);
+                subresourceData.SlicePitch = static_cast<LONG_PTR>(img->slicePitch);
+
+                subresources.push_back(subresourceData);
+            }
+        }
+
+        // Schritt 4: Upload-Heap erstellen und Daten hochladen
+        const UINT64 uploadBufferSize = GetRequiredIntermediateSize(textureArrayResource.Get(), 0, static_cast<UINT>(subresources.size()));
+
+        m_textureUploadHeaps.emplace_back();
+        ComPtr<ID3D12Resource>& textureUploadHeap = m_textureUploadHeaps.back();
+
+        CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
         ThrowIfFailed(m_device->CreateCommittedResource(
             &nv_helpers_dx12::kUploadHeapProps,
             D3D12_HEAP_FLAG_NONE,
-            &uploadBufferDesc, // CORRECTED
+            &uploadBufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ,
             nullptr,
             IID_PPV_ARGS(&textureUploadHeap)));
         textureUploadHeap->SetName((resourceName + L" Upload Heap").c_str());
 
-        std::vector<D3D12_SUBRESOURCE_DATA> subresources(arraySize);
-        for (UINT i = 0; i < arraySize; ++i)
-        {
-            subresources[i].pData = textures[i].pixels.data();
-            subresources[i].RowPitch = static_cast<LONG_PTR>(textures[i].width) * 4;
-            subresources[i].SlicePitch = subresources[i].RowPitch * textures[i].height;
-        }
+        UpdateSubresources(m_commandList.Get(), textureArrayResource.Get(), textureUploadHeap.Get(), 0, 0, static_cast<UINT>(subresources.size()), subresources.data());
 
-        UpdateSubresources(m_commandList.Get(), textureArrayResource.Get(), textureUploadHeap.Get(), 0, 0, arraySize, subresources.data());
-
+        // Schritt 5: Ressource für die Shader-Nutzung bereit machen
         CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
             textureArrayResource.Get(),
             D3D12_RESOURCE_STATE_COPY_DEST,
@@ -2372,9 +2892,10 @@ void Renderer::CreateTextureArrays(
         m_commandList->ResourceBarrier(1, &barrier);
     };
 
-    createArray(albedoTextures, m_albedoTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, L"AlbedoTextureArray");
-    createArray(normalTextures, m_normalTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM, L"NormalTextureArray");
-    createArray(rmaTextures, m_rmaTextureArray, DXGI_FORMAT_R8G8B8A8_UNORM, L"RmaTextureArray");
+    // Rufe das Lambda für jeden Texturtyp auf. Die Format-Argumente werden nicht mehr benötigt.
+    createArray(albedoTextures, m_albedoTextureArray, L"AlbedoTextureArray");
+    createArray(normalTextures, m_normalTextureArray, L"NormalTextureArray");
+    createArray(rmaTextures, m_rmaTextureArray, L"RmaTextureArray");
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -2685,4 +3206,455 @@ void Renderer::CreateAliasBuffers()
 
     makeDefault(m_aliasProb.data(), probBytes, m_aliasProbBuffer);
     makeDefault(m_aliasIdx .data(), idxBytes , m_aliasIdxBuffer );
+}
+
+void Renderer::GenerateLutTextures()
+{
+    SCOPE_TIMER("GenerateLutTextures");
+    std::wcout << L"Starting generation of LUT Texture Array (" << NUM_LUTS << " slices)..." << std::endl;
+
+    // Create a vector of vectors to hold the data for each LUT slice
+    std::vector<std::vector<float>> allLutData(NUM_LUTS, std::vector<float>(LUT_RESOLUTION * LUT_RESOLUTION));
+
+    const XMFLOAT3 N = {0.0f, 0.0f, 1.0f};
+    Material tempMat;
+
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+    for (int y = 0; y < LUT_RESOLUTION; ++y) {
+        float cosTheta = static_cast<float>(y) / (LUT_RESOLUTION - 1);
+        cosTheta = std::max(0.01f, cosTheta);
+        float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
+        const XMFLOAT3 V = {sinTheta, 0.0f, cosTheta};
+
+        for (int x = 0; x < LUT_RESOLUTION; ++x) {
+            float roughness = static_cast<float>(x) / (LUT_RESOLUTION - 1);
+            roughness = std::max(0.01f, roughness);
+            tempMat.Pr_Pm_Ps_Pc.x = roughness;
+
+            size_t pixelIndex = (size_t)y * LUT_RESOLUTION + x;
+
+            // --- Calculate Sheen Albedo and store in slice 0 ---
+            float sheenAlbedo = ComputeSheenDirectionalAlbedo(N, V, roughness, NUM_SAMPLES_LUT);
+            allLutData[0][pixelIndex] = sheenAlbedo;
+
+            // --- Calculate E(ss) for GGX and store in slice 1 ---
+            float Ess = 0.0f;
+            for (int i = 0; i < NUM_SAMPLES_LUT; ++i) {
+                XMFLOAT3 L;
+                SampleGGX(tempMat, V, N, L, dist(gen), dist(gen));
+                if (dot(N, L) <= 0.0f) continue;
+                XMFLOAT3 brdf3 = EvaluateBRDF_GGX(V, L, N, {}, roughness);
+                float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
+                if (pdf > 1e-6f) Ess += (brdf3.x * dot(N, L)) / pdf;
+            }
+            allLutData[1][pixelIndex] = (NUM_SAMPLES_LUT > 0) ? (Ess / NUM_SAMPLES_LUT) : 0.0f;
+        }
+        std::wcout << L"  - LUT Generation Progress: " << ((y + 1) * 100 / LUT_RESOLUTION) << L"%\r";
+    }
+
+    // ====================================================================
+    PrintFullLutMatrix(allLutData[0], L"Sheen Directional Albedo LUT (Slice 0)");
+    PrintFullLutMatrix(allLutData[1], L"GGX E(ss) LUT (Slice 1)");
+    // ====================================================================
+
+    std::wcout << std::endl << L"LUT data generation complete. Uploading to GPU..." << std::endl;
+
+    CreateAndUploadLutArray(allLutData, m_lutTextureArray, L"LutTextureArray");
+}
+
+void Renderer::CreateAndUploadLutArray(const std::vector<std::vector<float>>& allLutData, ComPtr<ID3D12Resource>& textureArrayResource, const std::wstring& resourceName)
+{
+    if (allLutData.empty()) return;
+
+    UINT arraySize = static_cast<UINT>(allLutData.size());
+
+    D3D12_RESOURCE_DESC texDesc = {};
+    texDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    texDesc.Alignment = 0;
+    texDesc.Width = LUT_RESOLUTION;
+    texDesc.Height = LUT_RESOLUTION;
+    texDesc.DepthOrArraySize = arraySize; // The key change is here
+    texDesc.MipLevels = 1;
+    texDesc.Format = DXGI_FORMAT_R32_FLOAT;
+    texDesc.SampleDesc.Count = 1;
+    texDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &texDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&textureArrayResource)));
+    textureArrayResource->SetName(resourceName.c_str());
+
+    const UINT64 uploadBufferSize = GetRequiredIntermediateSize(textureArrayResource.Get(), 0, arraySize);
+
+    m_lutUploadHeaps.emplace_back();
+    ComPtr<ID3D12Resource>& uploadHeap = m_lutUploadHeaps.back();
+    CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadBufferSize);
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufferDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadHeap)));
+
+    // Prepare subresource data for each slice
+    std::vector<D3D12_SUBRESOURCE_DATA> subresources(arraySize);
+    for (UINT i = 0; i < arraySize; ++i) {
+        subresources[i].pData = allLutData[i].data();
+        subresources[i].RowPitch = LUT_RESOLUTION * sizeof(float);
+        subresources[i].SlicePitch = subresources[i].RowPitch * LUT_RESOLUTION;
+    }
+
+    UpdateSubresources(m_commandList.Get(), textureArrayResource.Get(), uploadHeap.Get(), 0, 0, arraySize, subresources.data());
+
+    CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        textureArrayResource.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    m_commandList->ResourceBarrier(1, &barrier);
+}
+
+
+void Renderer::CreatePathStateBuffer() {
+    // 88 bytes per pixel as defined in the shader (BYTES_PS)
+    UINT elementSize = 88;
+    UINT bufferSize = GetWidth() * GetHeight() * elementSize;
+
+    // Create the description struct first (as a local l-value)
+    auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+    // Create committed resource (Default Heap)
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps,
+        D3D12_HEAP_FLAG_NONE,
+        &bufferDesc,    // Now passing the address of a named variable
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        nullptr,
+        IID_PPV_ARGS(&m_pathStateBuffer)));
+
+    m_pathStateBuffer->SetName(L"PathStateBuffer");
+}
+
+void Renderer::CreateStreamingCompactionBuffers()
+{
+    UINT totalPixels = GetWidth() * GetHeight();
+
+    // 1. Create Stack Buffers
+    for (int i = 0; i < MAX_STACKS; ++i) {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            totalPixels * sizeof(uint32_t) * 2,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_stackBuffers[i])));
+
+        m_stackBuffers[i]->SetName((L"PixelStack_" + std::to_wstring(i)).c_str());
+    }
+
+    // 2. Create Global Counter Buffer
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            MAX_STACKS * sizeof(uint32_t),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_globalCounterBuffer)));
+        m_globalCounterBuffer->SetName(L"GlobalStackCounters");
+    }
+
+    // 3. Create Indirect Arguments Buffer
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            MAX_INDIRECT_COMMANDS * sizeof(D3D12_DISPATCH_ARGUMENTS),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        // FIX: Start in UNORDERED_ACCESS state to match the loop's first barrier expectation
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_indirectArgsBuffer)));
+        m_indirectArgsBuffer->SetName(L"IndirectArgsBuffer");
+    }
+
+    // 4. FIX: Create and Fill Zero Buffer (Upload Heap)
+    {
+        auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(MAX_STACKS * sizeof(uint32_t));
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &uploadHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_zeroBuffer)));
+
+        // Map and zero it out
+        void* pData;
+        m_zeroBuffer->Map(0, nullptr, &pData);
+        memset(pData, 0, MAX_STACKS * sizeof(uint32_t));
+        m_zeroBuffer->Unmap(0, nullptr);
+    }
+
+    // A. Sort Count Histogram (65536 * 4 bytes)
+    // Needs UAV access.
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            SORT_BUCKETS * sizeof(uint32_t),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortCountBuffer)));
+        m_sortCountBuffer->SetName(L"SortCountBuffer");
+    }
+
+    // B. Sort Offset Buffer (Prefix Sum) (65536 * 4 bytes)
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            SORT_BUCKETS * sizeof(uint32_t),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortOffsetBuffer)));
+        m_sortOffsetBuffer->SetName(L"SortOffsetBuffer");
+    }
+
+    // C. Sort Bounds Buffer (Min/Max) (8 bytes)
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            8 * sizeof(uint32_t), // [0]=Min, [1]=Max
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortBoundsBuffer)));
+        m_sortBoundsBuffer->SetName(L"SortBoundsBuffer");
+    }
+
+    // --- 1. Create Sort Count Buffer (Keep existing) ---
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            SORT_BUCKETS * sizeof(uint32_t),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortCountBuffer)));
+        m_sortCountBuffer->SetName(L"SortCountBuffer");
+    }
+
+    // --- 2. Create Sort Offset Buffer (Keep existing) ---
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            SORT_BUCKETS * sizeof(uint32_t),
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortOffsetBuffer)));
+        m_sortOffsetBuffer->SetName(L"SortOffsetBuffer");
+    }
+
+    // --- 3. Create Sort Bounds Buffer (Keep existing) ---
+    {
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(
+            8 * sizeof(uint32_t), // [0]=Min, [1]=Max
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&m_sortBoundsBuffer)));
+        m_sortBoundsBuffer->SetName(L"SortBoundsBuffer");
+    }
+
+    // -------------------------------------------------------------
+    // --- 4. NEW: Create Bounds Reset Buffer (Init Values) ---
+    // -------------------------------------------------------------
+    {
+        // Define the "Ordered Float" initialization pattern
+        const UINT MAX_U = 0xFFFFFFFF; // Maps to +FloatMax in ordered encoding
+        const UINT MIN_U = 0;          // Maps to -FloatMax in ordered encoding
+
+        // Layout:
+        // 0-2: MinOrigin (X,Y,Z) -> Set to MAX so InterlockedMin works
+        // 3-5: MaxOrigin (X,Y,Z) -> Set to MIN so InterlockedMax works
+        // 6:   MinKey            -> Set to MAX
+        // 7:   MaxKey            -> Set to MIN
+        const UINT initData[8] = {
+            MAX_U, MAX_U, MAX_U,
+            MIN_U, MIN_U, MIN_U,
+            MAX_U, MIN_U
+        };
+
+        const UINT bufferSize = sizeof(initData);
+
+        // Create Upload Buffer
+        auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(bufferSize);
+
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_sortBoundsResetBuffer)));
+        m_sortBoundsResetBuffer->SetName(L"SortBoundsResetBuffer");
+
+        // Map and Copy Data
+        void* pData;
+        CD3DX12_RANGE readRange(0, 0); // We do not intend to read from this resource on the CPU
+        ThrowIfFailed(m_sortBoundsResetBuffer->Map(0, &readRange, &pData));
+        memcpy(pData, initData, bufferSize);
+        m_sortBoundsResetBuffer->Unmap(0, nullptr);
+    }
+}
+
+void Renderer::CreateIndirectCommandSignature()
+{
+    D3D12_INDIRECT_ARGUMENT_DESC argDesc = {};
+    argDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+    D3D12_COMMAND_SIGNATURE_DESC cmdSigDesc = {};
+    cmdSigDesc.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+    cmdSigDesc.NumArgumentDescs = 1;
+    cmdSigDesc.pArgumentDescs = &argDesc;
+    cmdSigDesc.NodeMask = 0;
+
+    // Use the compute root signature if you are changing root constants per dispatch (optional),
+    // otherwise nullptr is fine for just Dispatch args.
+    ThrowIfFailed(m_device->CreateCommandSignature(
+        &cmdSigDesc, nullptr, IID_PPV_ARGS(&m_commandSignature)));
+}
+
+void Renderer::CompileSetupIndirectShader()
+{
+    // HLSL Code with preprocessor directive
+    const char* shaderCode = R"(
+        RWByteAddressBuffer Counters : register(u0);
+        RWStructuredBuffer<uint3> IndirectArgs : register(u1);
+
+        cbuffer Params : register(b0) {
+            uint counterReadIdx;   // Which counter to read (Active paths)
+            uint argWriteIdx;      // Where to write args
+            uint counterClearIdx;  // Which counter to reset (Next pass)
+            uint groupSize;        // e.g. 64 (threads per group in Trace shader)
+        };
+
+        [numthreads(1, 1, 1)]
+        void main() {
+            // 1. Read the number of active rays
+            uint activeCount = Counters.Load(counterReadIdx * 4);
+
+            // 2. Calculate Dispatch Args (Round up)
+            uint groups = (activeCount + groupSize - 1) / groupSize;
+
+            // 3. Write Dispatch Arguments (X, Y, Z)
+            IndirectArgs[argWriteIdx] = uint3(groups, 1, 1);
+
+            // 4. Reset the 'Next' counter ONLY if defined
+            #if CLEAR_COUNTER
+                Counters.Store(counterClearIdx * 4, 0);
+            #endif
+        }
+    )";
+
+    // --- Helper to compile with macros ---
+    auto CompileVariant = [&](const char* name, bool doClear, ComPtr<ID3D12PipelineState>& pso) {
+        D3D_SHADER_MACRO macros[] = {
+            { "CLEAR_COUNTER", doClear ? "1" : "0" },
+            { NULL, NULL }
+        };
+
+        ComPtr<ID3DBlob> shaderBlob;
+        ComPtr<ID3DBlob> errorBlob;
+        HRESULT hr = D3DCompile(shaderCode, strlen(shaderCode), name,
+                                macros, nullptr, "main", "cs_5_0", 0, 0, &shaderBlob, &errorBlob);
+
+        if (FAILED(hr)) {
+            if (errorBlob) OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+            throw std::runtime_error(std::string("Failed to compile Setup shader: ") + name);
+        }
+
+        D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+        psoDesc.pRootSignature = m_rsSetupIndirect.Get();
+        psoDesc.CS = { shaderBlob->GetBufferPointer(), shaderBlob->GetBufferSize() };
+        ThrowIfFailed(m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&pso)));
+    };
+
+    // 1. Create Root Signature (Shared by both)
+    {
+        CD3DX12_ROOT_PARAMETER1 rootParams[2];
+        CD3DX12_DESCRIPTOR_RANGE1 range[2];
+
+        // u0 (Counters), u1 (Args)
+        range[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
+        rootParams[0].InitAsDescriptorTable(1, &range[0]);
+
+        // b0 (Constants)
+        rootParams[1].InitAsConstants(4, 0);
+
+        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
+        rsDesc.Init_1_1(2, rootParams, 0, nullptr);
+
+        ComPtr<ID3DBlob> sigBlob, errBlob;
+        D3D12SerializeVersionedRootSignature(&rsDesc, &sigBlob, &errBlob);
+        ThrowIfFailed(m_device->CreateRootSignature(0, sigBlob->GetBufferPointer(), sigBlob->GetBufferSize(), IID_PPV_ARGS(&m_rsSetupIndirect)));
+    }
+
+    // 2. Compile Both Variants
+    CompileVariant("SetupIndirect_Clear",   true,  m_psoSetupIndirect);
+    CompileVariant("SetupIndirect_NoClear", false, m_psoSetupIndirectNoClear);
+}
+
+void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList)
+{
+    // -----------------------------------------------------------------------
+    // 1. Clear Histogram (Count Buffer) to 0
+    // -----------------------------------------------------------------------
+    // Since this buffer needs to be all Zeros, ClearUnorderedAccessViewUint is fastest.
+    UINT clearValuesCount[4] = { 0, 0, 0, 0 };
+    cmdList->ClearUnorderedAccessViewUint(
+        m_sortCountGpuHandle,
+        m_sortCountCpuHandle,
+        m_sortCountBuffer.Get(),
+        clearValuesCount,
+        0, nullptr
+    );
+
+    // -----------------------------------------------------------------------
+    // 2. Reset Bounds Buffer to {MAX, MAX, MAX, 0, 0, 0...}
+    // -----------------------------------------------------------------------
+    // We cannot use ClearUAV here because we need mixed values.
+    // We perform a Copy from the pre-calculated reset buffer.
+
+    // A. Transition Bounds Buffer to COPY_DEST
+    CD3DX12_RESOURCE_BARRIER barrierToDest = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_sortBoundsBuffer.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_COPY_DEST
+    );
+    cmdList->ResourceBarrier(1, &barrierToDest);
+
+    // B. Perform the Copy
+    cmdList->CopyResource(m_sortBoundsBuffer.Get(), m_sortBoundsResetBuffer.Get());
+
+    // C. Transition Bounds Buffer back to UAV
+    CD3DX12_RESOURCE_BARRIER barrierToUAV = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_sortBoundsBuffer.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+    );
+    cmdList->ResourceBarrier(1, &barrierToUAV);
 }

@@ -19,6 +19,18 @@ set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
 set(SHADERS_DIR   "${CMAKE_SOURCE_DIR}/shaders")
 
+
+# ────────────────────────── DirectXTex ─────────────────────────────
+file(GLOB DIRECTXTEX_SOURCES "DirectXTex/*.cpp")
+add_library(DirectXTex STATIC ${DIRECTXTEX_SOURCES})
+target_include_directories(DirectXTex PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/DirectXTex
+        ${D3D12_AGILITY_INCLUDE}
+)
+target_compile_features(DirectXTex PUBLIC cxx_std_17)
+target_link_libraries(DirectXTex PUBLIC dxguid ole32)
+
+
 # ───────────────────────── source files ──────────────────────────────────────
 add_executable(Pathtracer WIN32
         rdn/Main.cpp
@@ -48,15 +60,15 @@ add_executable(Pathtracer WIN32
         rdn/Diagnostics.h
         rdn/LightTree.h
         src/Util/stb_image.h
+        src/Util/stb_image_resize2.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────
 target_include_directories(Pathtracer PRIVATE
         ${D3D12_AGILITY_INCLUDE}
-        ${DIRECTX_SDK_INCLUDE}
         ${SL_INCLUDE_DIR})
 
-# ──────────────── Streamline import‑lib as an IMPORTED static library ────────
+# ──────────────── Streamline import‐lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)
 set_target_properties(sl_interposer PROPERTIES
         IMPORTED_LOCATION           "${SL_LIB_PATH}"
@@ -66,6 +78,7 @@ set_target_properties(sl_interposer PROPERTIES
 
 # ───────────────────────── link libraries ────────────────────────────────────
 target_link_libraries(Pathtracer PRIVATE
+        DirectXTex
         sl_interposer
         d3d12.lib
         dxgi.lib dxguid.lib
@@ -82,7 +95,7 @@ add_custom_command(
         COMMENT "Copying contents of 'includes' into build output directory."
 )
 
-# ────────────────── copy the contents of 'shaders' (new shaders) on every build ─────────
+# ────────────────── copy the contents of 'shaders' on every build ─────────
 add_custom_command(
         TARGET Pathtracer
         POST_BUILD
@@ -117,5 +130,3 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )
-
-

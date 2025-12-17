@@ -97,4 +97,39 @@ float3 UnpackNormal(uint bits)
     return normalize(n);
 }
 
+float3 UnpackNormal_INT(uint packed)
+{
+    int ix = (int)(packed << 16) >> 16;
+    int iy = (int)packed >> 16;
+    float2 f = float2(ix, iy) / 32767.0f;
+
+    float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
+
+    if (n.z < 0.0)
+    {
+        float oldX = n.x;
+        float oldY = n.y;
+        n.x = (1.0f - abs(oldY)) * (oldX >= 0.0f ? 1.0f : -1.0f);
+        n.y = (1.0f - abs(oldX)) * (oldY >= 0.0f ? 1.0f : -1.0f);
+    }
+
+    return normalize(n);
+}
+
+// Packs two [0..1] floats into one uint (16 bits each)
+uint PackScalars16(float a, float b)
+{
+    uint ua = (uint)(saturate(a) * 65535.0f);
+    uint ub = (uint)(saturate(b) * 65535.0f);
+    return ua | (ub << 16);
+}
+
+float2 UnpackScalars16(uint p)
+{
+    float a = float(p & 0xFFFF) / 65535.0f;
+    float b = float(p >> 16) / 65535.0f;
+    return float2(a, b);
+}
+
+
 
