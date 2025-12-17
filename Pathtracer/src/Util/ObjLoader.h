@@ -23,14 +23,13 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
 
 struct TextureData;
 constexpr float PI = 3.14159265359f;
-constexpr int LUT_SIZE_THETA = 16; // Number of samples for cos(theta)
-constexpr int NUM_SAMPLES_MC = 16000; // Monte Carlo samples per integral
-//Sheen
-constexpr float SHEEN_R_BAKE = 0.10f; // constant for now
-constexpr int   NUM_SAMPLES_SHEEN = 4096;
+// Texture packing
+constexpr int TARGET_TEX_DIM = 4096;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -438,90 +437,46 @@ inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N,
     return mean_f * PI;
 }
 
+void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title)
+{
+    std::wcout << L"\n======================================================================================\n";
+    std::wcout << L" Full 32x32 Matrix for: " << title << L"\n";
+    std::wcout << L"======================================================================================\n";
+    std::wcout << L"(Rows are cos(theta) from 0.0 to 1.0, Columns are Roughness from 0.0 to 1.0)\n\n";
 
-
-void PrintLUTAsVector(const Material& mat) {
-    std::wcout << L"1D LUT (Indexed by cosTheta):\n\n";
-
-    // Print column headers for cosTheta values
-    for (int idx = 0; idx < LUT_SIZE_THETA; ++idx) {
-        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1); // Normalize index
-
-        // Print cosTheta value as label
-        std::wcout << L"cosTheta = " << std::fixed << std::setprecision(2) << cosTheta << L": ";
-
-        // Print LUT value at this index
-        std::wcout << std::fixed << std::setprecision(3) << 1.0f + (1.0f -mat.LUT[idx]) / mat.LUT[idx] << L"\n";
+    // Print header row for Roughness values (printing every 4th value for brevity)
+    std::wcout << L"cos\\r |";
+    for (int x = 0; x < LUT_RESOLUTION; ++x) {
+        float roughness = static_cast<float>(x) / (LUT_RESOLUTION - 1);
+        std::wcout << L" " << std::fixed << std::setprecision(2) << roughness << L" ";
     }
-}
-
-void PrintSheenLUT(const Material& mat) {
-    std::wcout << L"Sheen 1D LUT (by cosTheta):\n\n";
-    for (int idx = 0; idx < LUT_SIZE_THETA; ++idx) {
-        float cosTheta = static_cast<float>(idx) / (LUT_SIZE_THETA - 1);
-        std::wcout << L"cosTheta = " << std::fixed << std::setprecision(2) << cosTheta << L": "
-                   << std::fixed << std::setprecision(4) << mat.SheenLUT[idx] << L"\n";
-    }
-}
+    std::wcout << L"\n" << std::wstring(120, L'-') << L"\n";
 
 
-void GenerateEssLUT(Material& mat) {
-    constexpr float EPSILON = 0.04f; // Small value to replace 0
+    // Print each row of the matrix
+    for (int y = 0; y < LUT_RESOLUTION; ++y) {
+        float cosTheta = static_cast<float>(y) / (LUT_RESOLUTION - 1);
 
-    // Start measuring time
-    auto startTime = std::chrono::high_resolution_clock::now();
+        // Print row header (cosTheta value)
+        std::wcout << std::fixed << std::setprecision(3) << cosTheta << L" | ";
 
-    // Loop over theta (view angle cosine)
-    for (int thetaIdx = 0; thetaIdx < LUT_SIZE_THETA; ++thetaIdx) {
-        // Replace 0 with EPSILON for cosTheta
-        float cosTheta = EPSILON + static_cast<float>(thetaIdx) / (LUT_SIZE_THETA - 1) * (1.0f - EPSILON);
-
-        // Ensure sinTheta is calculated safely
-        float sinTheta = sqrt((std::fmax)(EPSILON, 1.0f - cosTheta * cosTheta));
-
-        // Compute normal and view direction
-        XMFLOAT3 N = {0.0f, 0.0f, 1.0f}; // Fixed normal
-        XMFLOAT3 V = {sinTheta, 0.0f, cosTheta}; // View vector aligned with cosTheta
-
-        // Compute E_ss using Monte Carlo integration
-        mat.LUT[thetaIdx] = ComputeEss(N, V, mat.Pr_Pm_Ps_Pc.x, XMFLOAT3(1.0f, 1.0f, 1.0f), NUM_SAMPLES_MC, mat);
-
-        // Log progress to the console every 10% completed
-        if (thetaIdx % (LUT_SIZE_THETA / 10) == 0) {
-            std::wcout << L"Progress: " << (thetaIdx * 100 / LUT_SIZE_THETA) << L"% completed\n";
+        // Print all values in the row
+        for (int x = 0; x < LUT_RESOLUTION; ++x) {
+            float value = lutSliceData[y * LUT_RESOLUTION + x];
+            // Use scientific notation for small values, fixed for others
+            if (value < 0.001f && value != 0.0f) {
+                std::wcout << std::scientific << std::setprecision(1) << value << " ";
+            } else {
+                std::wcout << std::fixed << std::setprecision(3) << value << " ";
+            }
+        }
+        std::wcout << L"\n";
+        // Add a separator every 8 rows to make it easier to read
+        if ((y + 1) % 8 == 0) {
+            std::wcout << std::wstring(120, L'-') << L"\n";
         }
     }
-
-    // Stop measuring time
-    auto endTime = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-
-    // Log processing time
-    std::wcout << L"GenerateEssLUT completed in "
-               << duration.count() << L" ms ("
-               << std::fixed << std::setprecision(2)
-               << duration.count() / 1000.0 << L" seconds)\n";
-}
-
-void GenerateSheenLUT(Material& mat)
-{
-    constexpr float EPSILON = 0.04f;
-    XMFLOAT3 N = {0.0f, 0.0f, 1.0f};
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-
-    for (int thetaIdx = 0; thetaIdx < LUT_SIZE_THETA; ++thetaIdx) {
-        float cosTheta = EPSILON + static_cast<float>(thetaIdx) / (LUT_SIZE_THETA - 1) * (1.0f - EPSILON);
-        float sinTheta = sqrtf((std::fmax)(EPSILON, 1.0f - cosTheta * cosTheta));
-
-        XMFLOAT3 V = { sinTheta, 0.0f, cosTheta };
-
-        mat.SheenLUT[thetaIdx] = ComputeSheenDirectionalAlbedo(N, normalize(V), SHEEN_R_BAKE, NUM_SAMPLES_SHEEN);
-    }
-
-    auto t1 = std::chrono::high_resolution_clock::now();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    std::wcout << L"GenerateSheenLUT (1D x " << LUT_SIZE_THETA << L") in " << ms << L" ms\n";
+    std::wcout << L"\n";
 }
 
 class ObjLoader {
@@ -540,142 +495,309 @@ public:
         std::vector<TextureData>& rmaTextures,
         const std::string& material_search_path = "./")
     {
+        using namespace DirectX;
+
+        std::cout << "[ObjLoader] Starting to load OBJ file: " << inputfile << std::endl;
+
         tinyobj::ObjReaderConfig reader_config;
         reader_config.mtl_search_path = material_search_path;
         reader_config.triangulate = true;
 
         tinyobj::ObjReader reader;
-
         if (!reader.ParseFromFile(inputfile, reader_config)) {
-            if (!reader.Error().empty()) {
-                std::cerr << "TinyObjReader: " << reader.Error();
-                exit(1);
-            }
+            if (!reader.Error().empty()) { std::cerr << "TinyObjReader: " << reader.Error(); exit(1); }
         }
-
-        if (!reader.Warning().empty()) {
-            std::cout << "TinyObjReader: " << reader.Warning();
-        }
+        if (!reader.Warning().empty()) { std::cout << "TinyObjReader: " << reader.Warning(); }
 
         const auto& attrib = reader.GetAttrib();
         const auto& shapes = reader.GetShapes();
         auto& materials = reader.GetMaterials();
 
-        // Helper lambda to load a texture or return existing ID
-        auto loadTexture = [&](
-            const std::string& filename,
-            const std::string& materialPath,
-            std::vector<TextureData>& textureList) -> int
+        std::cout << "[ObjLoader] Parsed '" << inputfile << "':" << std::endl;
+        std::cout << "  - Shapes: " << shapes.size() << std::endl;
+        std::cout << "  - Materials: " << materials.size() << std::endl;
+        std::cout << "  - Vertices: " << (attrib.vertices.size() / 3) << std::endl;
+
+        // --- DEFINE A CONSISTENT TEXTURE SIZE FOR ALL ARRAYS ---
+        constexpr size_t TARGET_TEXTURE_DIM = 2048;
+
+        auto processTexture = [&](
+            const std::string& filename, const std::string& materialPath,
+            std::vector<TextureData>& textureList, bool isBumpMap,
+            bool isSrgb // ADDED: Flag to determine the color space
+            ) -> int
         {
-            if (filename.empty()) {
+            if (filename.empty()) return -1;
+
+            // CHANGED: Include sRGB status in the cache key to prevent conflicts
+            std::string srgb_suffix = isSrgb ? "_srgb" : "_linear";
+            std::string fullPath = materialPath + filename;
+            std::string cacheKey = fullPath + (isBumpMap ? "_bump_v2_uncompressed" : "_uncompressed") + srgb_suffix;
+
+            if (textureMap.count(cacheKey)) {
+                std::cout << "[ObjLoader] Texture '" << filename << "' found in cache. Reusing ID " << textureMap[cacheKey] << std::endl;
+                return static_cast<int>(textureMap[cacheKey]);
+            }
+
+            std::cout << "[ObjLoader] Loading and processing new texture: " << fullPath << std::endl;
+
+            int width, height, channels;
+            unsigned char* data = stbi_load(fullPath.c_str(), &width, &height, &channels, 4);
+            if (!data) {
+                std::cerr << "  ERROR: Failed to load texture with stb_image: " << fullPath << std::endl;
                 return -1;
             }
 
-            std::string fullPath = materialPath + filename;
+            // ADDED: Dynamically select the format based on the isSrgb flag
+            DXGI_FORMAT format = isSrgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+            std::cout << "      - Using format: " << (isSrgb ? "DXGI_FORMAT_R8G8B8A8_UNORM_SRGB" : "DXGI_FORMAT_R8G8B8A8_UNORM") << std::endl;
 
-            if (textureMap.count(fullPath)) {
-                return textureMap[fullPath];
-            }
+            ScratchImage scratchImage;
+            // CHANGED: Use the dynamically selected format
+            HRESULT hr = scratchImage.Initialize2D(format, width, height, 1, 1);
+            if (FAILED(hr)) { stbi_image_free(data); std::cerr << "  ERROR: Failed to initialize ScratchImage." << std::endl; return -1; }
+            memcpy(scratchImage.GetPixels(), data, scratchImage.GetPixelsSize());
+            stbi_image_free(data);
 
             TextureData texData;
-            int req_comp = 4; // Always load as RGBA
-            unsigned char* data = stbi_load(fullPath.c_str(), &texData.width, &texData.height, &texData.channels, req_comp);
+            texData.original_width = width;
+            texData.original_height = height;
 
-            if (!data) {
-                std::cerr << "Failed to load texture: " << fullPath << std::endl;
-                return -1;
+            if (isBumpMap) {
+                if (channels < 3) {
+                    std::cout << "  - Detected grayscale bump map. Converting to normal map." << std::endl;
+                    ScratchImage normalMapImage;
+                    // CHANGED: Ensure the converted normal map uses a LINEAR format.
+                    hr = ComputeNormalMap(*scratchImage.GetImage(0, 0, 0), CNMAP_DEFAULT, 1.0f, DXGI_FORMAT_R8G8B8A8_UNORM, normalMapImage);
+                    if (FAILED(hr)) { std::cerr << "  ERROR: Failed to convert bump map." << std::endl; return -1; }
+                    scratchImage = std::move(normalMapImage);
+                } else {
+                    std::cout << "  - WARNING: Texture was specified as a bump map but has " << channels << " channels. Treating it as a pre-existing normal map." << std::endl;
+                }
             }
 
-            texData.pixels.assign(data, data + (size_t)texData.width * texData.height * 4);
-            stbi_image_free(data);
+            // --- RESIZING LOGIC TO ENSURE ARRAY CONSISTENCY ---
+            const TexMetadata& metadata = scratchImage.GetMetadata();
+            if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
+                std::cout << "      - Note: Resizing texture from " << metadata.width << "x" << metadata.height
+                          << " to " << TARGET_TEXTURE_DIM << "x" << TARGET_TEXTURE_DIM << " for array consistency." << std::endl;
+                ScratchImage resizedImage;
+                hr = Resize(*scratchImage.GetImage(0, 0, 0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resizedImage);
+                if (FAILED(hr)) {
+                    std::cerr << "      - ERROR: Failed to resize texture." << std::endl;
+                    return -1;
+                }
+                scratchImage = std::move(resizedImage);
+            }
+            // --- END RESIZING LOGIC ---
+
+            ScratchImage mipChain;
+            std::cout << "  - Generating mipmaps..." << std::endl;
+            hr = GenerateMipMaps(*scratchImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
+            if (FAILED(hr)) { std::cerr << "  ERROR: Failed to generate mipmaps." << std::endl; return -1; }
+
+            // Storing the final uncompressed, mipmapped image
+            const TexMetadata& finalMetadata = mipChain.GetMetadata();
+            texData.width = static_cast<int>(finalMetadata.width);
+            texData.height = static_cast<int>(finalMetadata.height);
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
 
             uint32_t textureID = static_cast<uint32_t>(textureList.size());
             textureList.push_back(std::move(texData));
-            textureMap[fullPath] = textureID;
+            textureMap[cacheKey] = textureID;
+            std::cout << "[ObjLoader] Finished processing '" << filename << "'. New ID: " << textureID << std::endl;
+            return static_cast<int>(textureID);
+        };
 
-            std::cout << "Loaded texture " << fullPath << " with ID " << textureID << std::endl;
+        auto processAndCombineRMA = [&](
+            const std::string& r_fname, const std::string& m_fname,
+            float constant_roughness, float constant_metallic,
+            const std::string& materialPath, std::vector<TextureData>& rmaTextureList) -> int
+        {
+            if (r_fname.empty() && m_fname.empty()) return -1;
+            std::string combinedKey = materialPath + r_fname + "+" + m_fname + "_uncompressed";
 
-            return textureID;
+            if (textureMap.count(combinedKey)) {
+                std::cout << "[ObjLoader] Combined RMA texture found in cache. Reusing ID " << textureMap[combinedKey] << std::endl;
+                return static_cast<int>(textureMap[combinedKey]);
+            }
+
+            std::cout << "      - Combining Roughness ('" << (r_fname.empty() ? "None" : r_fname) << "') and Metallic ('" << (m_fname.empty() ? "None" : m_fname) << "')." << std::endl;
+
+            auto load_single_channel = [&](const std::string& fname, ScratchImage& out_image) -> bool {
+                if (fname.empty()) return false;
+                int w, h, c;
+                unsigned char* img_data = stbi_load((materialPath + fname).c_str(), &w, &h, &c, 1);
+                if (!img_data) return false;
+                out_image.Initialize2D(DXGI_FORMAT_R8_UNORM, w, h, 1, 1);
+                memcpy(out_image.GetPixels(), img_data, out_image.GetPixelsSize());
+                stbi_image_free(img_data);
+                return true;
+            };
+
+            ScratchImage r_img, m_img;
+            bool has_r = load_single_channel(r_fname, r_img);
+            bool has_m = load_single_channel(m_fname, m_img);
+
+            size_t width = has_r ? r_img.GetMetadata().width : (has_m ? m_img.GetMetadata().width : 0);
+            size_t height = has_r ? r_img.GetMetadata().height : (has_m ? m_img.GetMetadata().height : 0);
+            if (width == 0) return -1;
+
+            if (has_r && has_m && (r_img.GetMetadata().width != m_img.GetMetadata().width || r_img.GetMetadata().height != m_img.GetMetadata().height)) {
+                std::cout << "      - Note: Roughness and Metallic maps have different dimensions. Resizing to match." << std::endl;
+                ScratchImage& smaller = (r_img.GetPixelsSize() < m_img.GetPixelsSize()) ? r_img : m_img;
+                ScratchImage& larger = (r_img.GetPixelsSize() < m_img.GetPixelsSize()) ? m_img : r_img;
+                ScratchImage resized;
+                Resize(*smaller.GetImage(0, 0, 0), larger.GetMetadata().width, larger.GetMetadata().height, TEX_FILTER_DEFAULT, resized);
+                smaller = std::move(resized);
+                width = larger.GetMetadata().width;
+                height = larger.GetMetadata().height;
+            }
+
+            ScratchImage combinedImage;
+            // NOTE: Combined data textures like RMA are always linear.
+            combinedImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
+            uint8_t* dest_pixels = combinedImage.GetPixels();
+            const uint8_t* r_pixels = has_r ? r_img.GetPixels() : nullptr;
+            const uint8_t* m_pixels = has_m ? m_img.GetPixels() : nullptr;
+            uint8_t r_const = static_cast<uint8_t>(constant_roughness * 255.0f);
+            uint8_t m_const = static_cast<uint8_t>(constant_metallic * 255.0f);
+
+            for (size_t i = 0; i < width * height; ++i) {
+                dest_pixels[i * 4 + 0] = 255; // R: Ambient Occlusion (default 1.0)
+                dest_pixels[i * 4 + 1] = r_pixels ? r_pixels[i] : r_const; // G: Roughness
+                dest_pixels[i * 4 + 2] = m_pixels ? m_pixels[i] : m_const; // B: Metallic
+                dest_pixels[i * 4 + 3] = 255; // A: Unused
+            }
+
+            TextureData texData;
+            texData.original_width = width;
+            texData.original_height = height;
+
+            const TexMetadata& metadata = combinedImage.GetMetadata();
+            if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
+                std::cout << "      - Note: Resizing combined RMA texture from " << metadata.width << "x" << metadata.height
+                          << " to " << TARGET_TEXTURE_DIM << "x" << TARGET_TEXTURE_DIM << " for array consistency." << std::endl;
+                ScratchImage resizedImage;
+                HRESULT hr = Resize(*combinedImage.GetImage(0, 0, 0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resizedImage);
+                if (FAILED(hr)) {
+                    std::cerr << "      - ERROR: Failed to resize combined RMA texture." << std::endl;
+                    return -1;
+                }
+                combinedImage = std::move(resizedImage);
+            }
+
+            ScratchImage mipChain;
+            GenerateMipMaps(*combinedImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
+
+            const TexMetadata& finalMetadata = mipChain.GetMetadata();
+            texData.width = static_cast<int>(finalMetadata.width);
+            texData.height = static_cast<int>(finalMetadata.height);
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
+
+            uint32_t textureID = static_cast<uint32_t>(rmaTextureList.size());
+            rmaTextureList.push_back(std::move(texData));
+            textureMap[combinedKey] = textureID;
+            std::cout << "[ObjLoader] Finished combining RMA. New ID: " << textureID << std::endl;
+            return static_cast<int>(textureID);
         };
 
         Material defaultMaterial;
         mats->push_back(defaultMaterial);
         (*materialOffset)++;
 
+        std::cout << "[ObjLoader] Processing materials..." << std::endl;
         for (const auto& mat : materials) {
+            std::cout << "  [Material] Processing '" << mat.name << "'" << std::endl;
             Material t_mat;
             t_mat.Kd = { mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve };
             t_mat.Ke = { mat.emission[0], mat.emission[1], mat.emission[2] };
             t_mat.Ni = mat.ior;
             t_mat.Pr_Pm_Ps_Pc = { mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness };
             t_mat.Pcr_aniso_anisor = { mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation };
+            t_mat.Tf = {mat.transmittance[0],mat.transmittance[1], mat.transmittance[2]};
 
-            t_mat.albedoTexID = loadTexture(mat.diffuse_texname, material_search_path, albedoTextures);
+            std::cout << "    - Albedo map: " << (mat.diffuse_texname.empty() ? "None" : mat.diffuse_texname) << std::endl;
+            // CHANGED: Pass `true` for isSrgb for albedo textures
+            t_mat.albedoTexID = processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
+
+            bool isBump = !mat.bump_texname.empty() && mat.normal_texname.empty();
             std::string normalTexName = !mat.normal_texname.empty() ? mat.normal_texname : mat.bump_texname;
-            t_mat.normalTexID = loadTexture(normalTexName, material_search_path, normalTextures);
-            if (mat.unknown_parameter.count("map_rma")) {
-                t_mat.rmaTexID = loadTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures);
-            }
+            std::cout << "    - Normal/Bump map: " << (normalTexName.empty() ? "None" : normalTexName) << std::endl;
+            // CHANGED: Pass `false` for isSrgb for normal maps (they are linear data)
+            t_mat.normalTexID = processTexture(normalTexName, material_search_path, normalTextures, isBump, false);
 
-            GenerateEssLUT(t_mat);
-            GenerateSheenLUT(t_mat);
-            PrintLUTAsVector(t_mat);
+            if (mat.unknown_parameter.count("map_rma")) {
+                std::cout << "    - Found custom RMA map: " << mat.unknown_parameter.at("map_rma") << std::endl;
+                // CHANGED: Pass `false` for isSrgb for RMA maps (they are linear data)
+                t_mat.rmaTexID = processTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures, false, false);
+            } else if (!mat.roughness_texname.empty() || !mat.metallic_texname.empty()) {
+                t_mat.rmaTexID = processAndCombineRMA(mat.roughness_texname, mat.metallic_texname, mat.roughness, mat.metallic, material_search_path, rmaTextures);
+            } else {
+                std::cout << "    - No RMA or PBR maps found for this material." << std::endl;
+                t_mat.rmaTexID = -1;
+            }
             mats->push_back(t_mat);
         }
 
+        std::cout << "[ObjLoader] Processing vertices and indices..." << std::endl;
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
-        const float EPS_LEN = 1e-12f;
-        const float COS_TOL = 0.9998f;
-
         for (const auto& shape : shapes) {
             size_t index_offset = 0;
             for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
                 int fv = shape.mesh.num_face_vertices[f];
                 if (fv != 3) { index_offset += fv; continue; }
 
-                tinyobj::index_t i0 = shape.mesh.indices[index_offset + 0];
-                tinyobj::index_t i1 = shape.mesh.indices[index_offset + 1];
-                tinyobj::index_t i2 = shape.mesh.indices[index_offset + 2];
-
-                auto getPos = [&](const tinyobj::index_t& idx) { return XMFLOAT3(attrib.vertices[3 * idx.vertex_index + 0], attrib.vertices[3 * idx.vertex_index + 1], attrib.vertices[3 * idx.vertex_index + 2]); };
-                XMFLOAT3 p0 = getPos(i0); XMFLOAT3 p1 = getPos(i1); XMFLOAT3 p2 = getPos(i2);
-
-                auto getUV = [&](const tinyobj::index_t& idx) { if (idx.texcoord_index >= 0) { return XMFLOAT2(attrib.texcoords[2 * idx.texcoord_index + 0], 1.0f - attrib.texcoords[2 * idx.texcoord_index + 1]); } return XMFLOAT2(0.0f, 0.0f); };
-                XMFLOAT2 uv0 = getUV(i0); XMFLOAT2 uv1 = getUV(i1); XMFLOAT2 uv2 = getUV(i2);
-
-                XMVECTOR P0 = XMLoadFloat3(&p0); XMVECTOR P1 = XMLoadFloat3(&p1); XMVECTOR P2 = XMLoadFloat3(&p2);
-                XMVECTOR faceN_un = XMVector3Cross(P1 - P0, P2 - P0);
-                float faceN_len; XMStoreFloat(&faceN_len, XMVector3Length(faceN_un));
-                XMFLOAT3 faceN_f(0, 0, 1); if (faceN_len > EPS_LEN) { XMStoreFloat3(&faceN_f, XMVector3Normalize(faceN_un)); }
-
-                auto getObjN = [&](const tinyobj::index_t& idx) -> XMFLOAT3 { if (idx.normal_index >= 0) { return XMFLOAT3(attrib.normals[3 * idx.normal_index + 0], attrib.normals[3 * idx.normal_index + 1], attrib.normals[3 * idx.normal_index + 2]); } return XMFLOAT3(0, 0, 0); };
-                XMFLOAT3 n0_src = getObjN(i0); XMFLOAT3 n1_src = getObjN(i1); XMFLOAT3 n2_src = getObjN(i2);
-
-                auto lenSq = [](const XMFLOAT3& v) { return v.x * v.x + v.y * v.y + v.z * v.z; };
-                auto aligned = [&](const XMFLOAT3& n) { if (lenSq(n) <= EPS_LEN) return false; float dot; XMStoreFloat(&dot, XMVector3Dot(XMVector3Normalize(XMLoadFloat3(&n)), XMLoadFloat3(&faceN_f))); return dot > COS_TOL; };
-                bool all_match_face = aligned(n0_src) && aligned(n1_src) && aligned(n2_src);
-
                 int materialID = (f < shape.mesh.material_ids.size()) ? shape.mesh.material_ids[f] : -1;
                 uint32_t matID = (materialID >= 0) ? uint32_t(materialID + *materialOffset) : 0u;
                 materialIDs->push_back(matID);
 
-                auto makeNormal = [&](const XMFLOAT3& src) { return all_match_face ? XMFLOAT4(0.0f, 0.0f, 0.0f, *materialVertexOffset) : XMFLOAT4(src.x, src.y, src.z, *materialVertexOffset); };
+                tinyobj::index_t idx[3] = { shape.mesh.indices[index_offset], shape.mesh.indices[index_offset + 1], shape.mesh.indices[index_offset + 2] };
+                XMFLOAT3 p[3], n[3]; XMFLOAT2 uv[3];
+                for (int i = 0; i < 3; ++i) {
+                    p[i] = { attrib.vertices[3 * idx[i].vertex_index + 0], attrib.vertices[3 * idx[i].vertex_index + 1], attrib.vertices[3 * idx[i].vertex_index + 2] };
+                    uv[i] = (idx[i].texcoord_index >= 0) ? XMFLOAT2{ attrib.texcoords[2 * idx[i].texcoord_index + 0], 1.0f - attrib.texcoords[2 * idx[i].texcoord_index + 1] } : XMFLOAT2{0,0};
+                    n[i] = (idx[i].normal_index >= 0) ? XMFLOAT3{ attrib.normals[3 * idx[i].normal_index + 0], attrib.normals[3 * idx[i].normal_index + 1], attrib.normals[3 * idx[i].normal_index + 2] } : XMFLOAT3{0,0,0};
+                }
 
-                Vertex v0(p0, makeNormal(n0_src), uv0);
-                Vertex v1(p1, makeNormal(n1_src), uv1);
-                Vertex v2(p2, makeNormal(n2_src), uv2);
+                if (idx[0].normal_index < 0) {
+                    XMVECTOR p0_v = XMLoadFloat3(&p[0]), p1_v = XMLoadFloat3(&p[1]), p2_v = XMLoadFloat3(&p[2]);
+                    XMVECTOR faceNormalVec = XMVector3Normalize(XMVector3Cross(p1_v - p0_v, p2_v - p0_v));
+                    XMStoreFloat3(&n[0], faceNormalVec); n[1] = n[2] = n[0];
+                }
 
-                auto pushUnique = [&](const Vertex& v) -> uint32_t { auto it = uniqueVertices.find(v); if (it == uniqueVertices.end()) { uint32_t newIndex = static_cast<uint32_t>(vertices->size()); uniqueVertices[v] = newIndex; vertices->push_back(v); return newIndex; } return it->second; };
-                indices->push_back(pushUnique(v0));
-                indices->push_back(pushUnique(v1));
-                indices->push_back(pushUnique(v2));
-
+                for (int i = 0; i < 3; ++i) {
+                    Vertex v({p[i]}, {n[i].x, n[i].y, n[i].z, static_cast<float>(matID)}, {uv[i]});
+                    if (uniqueVertices.count(v)) {
+                        indices->push_back(uniqueVertices[v]);
+                    } else {
+                        uint32_t newIndex = static_cast<uint32_t>(vertices->size());
+                        uniqueVertices[v] = newIndex;
+                        indices->push_back(newIndex);
+                        vertices->push_back(v);
+                    }
+                }
                 index_offset += fv;
             }
         }
-        *materialOffset += materials.size();
+
+        std::cout << "[ObjLoader] Finished processing geometry for '" << inputfile << "'." << std::endl;
+        std::cout << "  - Unique vertices created: " << uniqueVertices.size() << std::endl;
+        std::cout << "  - Total indices created: " << indices->size() << std::endl;
+
+        *materialOffset += static_cast<UINT>(materials.size());
+
+        std::cout << "[ObjLoader] COMPLETED loading '" << inputfile << "'." << std::endl;
+        std::cout << "  - Total vertices in buffer: " << vertices->size() << std::endl;
+        std::cout << "  - Total indices in buffer: " << indices->size() << std::endl;
+        std::cout << "  - Total materials in buffer: " << mats->size() << std::endl;
+        std::cout << "  - Total albedo textures loaded: " << albedoTextures.size() << std::endl;
+        std::cout << "  - Total normal textures loaded: " << normalTextures.size() << std::endl;
+        std::cout << "  - Total RMA textures loaded: " << rmaTextures.size() << std::endl;
+        std::cout << "-----------------------------------------------------" << std::endl;
     }
 };
-
 
 #endif //PATHTRACER_OBJLOADER_H

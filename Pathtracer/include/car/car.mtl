@@ -1,0 +1,276 @@
+# Blender 4.3.2 MTL File: '65_FOR_Mustang_F_v2_wwc_ADV.blend'
+# www.blender.org
+
+newmtl 65MSTNG-ext-carpaint
+Kd 0.250000 0.000000 0.000000
+Ks 0.300000 0.300000 0.300000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Pr 65MSTNG-ext-carpaint_Roughness.jpg
+map_Bump -bm 0.500000 65MSTNG-ext-carpaint_Normal.png
+
+newmtl 65MSTNG-ext-common
+Ks 0.300000 0.300000 0.300000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-ext-common_BaseColor.jpg
+map_Pm 65MSTNG-ext-common_Metallic.jpg
+map_Pr 65MSTNG-ext-common_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-ext-common_Normal.png
+
+newmtl 65MSTNG-ext-logos
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-ext-logos_BaseColor.jpg
+map_Pm 65MSTNG-ext-logos_Metallic.jpg
+map_Pr 65MSTNG-ext-logos_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-ext-logos_Normal.png
+
+newmtl 65MSTNG-ext-undercarriage
+Ks 0.300000 0.300000 0.300000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-ext-undercarriage_BaseColor.jpg
+map_Pm 65MSTNG-ext-undercarriage_Metallic.jpg
+map_Pr 65MSTNG-ext-undercarriage_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-ext-undercarriage_Normal.png
+
+newmtl 65MSTNG-gl-interior
+Kd 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.0300000
+d 0.000000
+illum 2
+Pr 0.000000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+Tf 1.000000 1.000000 1.000000
+
+newmtl 65MSTNG-gl-orange
+Kd 1.000000 0.315011 0.188333
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.000000
+illum 2
+Pr 0.000000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+aniso 0.000000
+anisor 0.000000
+Tf 1.000000 1.000000 1.000000
+map_Bump -bm 0.500000 65MSTNG-gl_Normal.png
+
+newmtl 65MSTNG-gl-red
+Kd 0.700000 0.000000 0.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.000000
+illum 2
+Pr 0.000000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+Tf 1.000000 1.000000 1.000000
+map_Bump -bm 0.550000 65MSTNG-gl_Normal.png
+
+newmtl 65MSTNG-gl-white
+Kd 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.000000
+illum 2
+Pr 0.000000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+Tf 1.000000 1.000000 1.000000
+map_Bump -bm 1.000000 65MSTNG-gl_Normal.png
+
+newmtl 65MSTNG-gl-windows
+Kd 1.000000 1.000000 1.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 0.000000
+illum 2
+Pr 0.000000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+Tf 1.000000 1.000000 1.000000
+
+newmtl 65MSTNG-int-carpets
+Ks 0.300000 0.300000 0.300000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.821577
+Pm 0.000000
+Ps 0.091286
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-int-carpets_BaseColor.jpg
+map_Bump -bm 1.000000 65MSTNG-int-carpets_Normal.png
+
+newmtl 65MSTNG-int-common
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-int-common_BaseColor.jpg
+map_Pm 65MSTNG-int-common_Metallic.jpg
+map_Pr 65MSTNG-int-common_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-int-common_Normal.png
+
+newmtl 65MSTNG-int-decals
+Ks 0.250000 0.250000 0.250000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-int-decals_BaseColor.jpg
+map_Pm 65MSTNG-int-decals_Metallic.jpg
+map_Pr 65MSTNG-int-decals_Roughness.jpg
+
+newmtl 65MSTNG-int-leather
+Ks 0.350000 0.350000 0.350000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-int-leather_BaseColor.jpg
+map_Pr 65MSTNG-int-leather_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-int-leather_Normal.png
+
+newmtl 65MSTNG-int-paint
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-int-paint_BaseColor.jpg
+map_Pr 65MSTNG-int-paint_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-int-paint_Normal.png
+
+newmtl 65MSTNG-shadow
+Kd 0.000000 0.000000 0.000000
+Ks 0.000000 0.000000 0.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 1
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl 65MSTNG-wh-rims
+Ks 0.300000 0.300000 0.300000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-wh-rims_BaseColor.jpg
+map_Pm 65MSTNG-wh-rims_Metallic.jpg
+map_Pr 65MSTNG-wh-rims_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-wh-rims_Normal.jpg
+
+newmtl 65MSTNG-wh-tires
+Ks 0.350000 0.350000 0.350000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd 65MSTNG-wh-tires_BaseColor.jpg
+map_Pr 65MSTNG-wh-tires_Roughness.jpg
+map_Bump -bm 1.000000 65MSTNG-wh-tires_Normal.jpg

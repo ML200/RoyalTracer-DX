@@ -1,82 +1,199 @@
 /*
-Class for sampling path segements
+Class for sampling path segments - Refactored for Semi-SoA Layout
 */
 
-PathState InitPathState(float3 x, float3 n_g, float3 n_s, float3 o, uint objID, uint matID){
-    PathState pstate = (PathState)0.0f;
-    pstate.x = x;
-    pstate.n_g = n_g;
-    pstate.n_s = n_s;
-    pstate.o = o;
-    pstate.objID = objID;
-    pstate.matID = matID;
+// =================================================================================
+// HELPER: 8-Bit Boundary Hash
+// =================================================================================
 
-    pstate.ior_pointer = -1; // We start in the air.
-
-    [unroll] // Stupid hlsl
-    for (int i = 0; i < 4; ++i) pstate.ior_stack[i] = 0.0f;
-    for (int i = 0; i < 4; ++i) pstate.priority_stack[i] = 0.0f;
-    return pstate;
+inline bool BoundaryMatch(VolumeAux a, int slot, uint matID, uint objID)
+{
+    return a.matID_stack[slot] == matID && a.objID_stack[slot] == objID;
 }
 
-ThroughputState InitThroughputState(){
-    ThroughputState tstate;
-    tstate.t = float3(1.0f, 1.0f, 1.0f);
-    tstate.pdf = 1.0f;
-    return tstate;
+// =================================================================================
+// VOLUME & IOR LOGIC (FIXED)
+// =================================================================================
+
+inline float2 GetIORs(
+    in VolumeIOR vIOR,
+    in VolumeAux vAux,
+    uint surfaceMatID,
+    uint surfaceObjID)
+{
+    float2 iors;
+
+    // Incident IOR (current / dominant medium)
+    int ptr = vIOR.pointer;
+    float incident = (ptr >= 0 && ptr < 4) ? vIOR.ior_stack[ptr] : 1.0f;
+    iors.x = incident;
+
+    // Detect whether we're exiting an existing boundary
+    int exiting_slot = -1;
+    [unroll]
+    for (int v = 0; v < 4; ++v)
+    {
+        if (vIOR.ior_stack[v] > 0.0f && BoundaryMatch(vAux, v, surfaceMatID, surfaceObjID))
+        {
+            exiting_slot = v;
+            break;
+        }
+    }
+
+    if (exiting_slot < 0)
+    {
+        // ENTERING: candidate destination is the surface material
+        float ni = materials[surfaceMatID].Ni;
+        iors.y = (ni <= incident + EPSILON) ? 0.0f : ni;
+    }
+    else
+    {
+        // EXITING: destination is the highest-IOR remaining medium
+        float max_remaining_ior = 0.0f;
+
+        [unroll]
+        for (int v = 0; v < 4; ++v)
+        {
+            float n = vIOR.ior_stack[v];
+            if (v != exiting_slot && n > max_remaining_ior)
+                max_remaining_ior = n;
+        }
+
+        iors.y = (max_remaining_ior > 0.0f) ? max_remaining_ior : 1.0f;
+
+        // If we're exiting a lower-priority volume, this naturally becomes a null interface.
+        if (abs(iors.y - incident) < EPSILON)
+            iors.y = 0.0f;
+    }
+
+    return iors;
 }
 
-// Update the path state with a sample
-void AdvancePathState(SampleState sstate, inout PathState pstate){
-    pstate.x = sstate.x;
-    pstate.n_g = sstate.n_g;
-    pstate.n_s = sstate.n_s;
-    pstate.o = sstate.o;
-    pstate.objID = sstate.objID;
-    pstate.matID = sstate.matID;
+
+inline void UpdateIORStack(
+    inout VolumeIOR vIOR,
+    inout VolumeAux vAux,
+    uint surfaceMatID,
+    uint surfaceObjID)
+{
+    int existing_slot = -1;
+    int empty_slot    = -1;
+
+    // Find match (exit) and first empty (enter)
+    for (int v = 0; v < 4; ++v)
+    {
+        bool occupied = (vIOR.ior_stack[v] > 0.0f);
+
+        if (occupied)
+        {
+            if (BoundaryMatch(vAux, v, surfaceMatID, surfaceObjID))
+                existing_slot = v;
+        }
+        else
+        {
+            if (empty_slot < 0)
+                empty_slot = v;
+        }
+    }
+
+    // Toggle
+    if (existing_slot >= 0)
+    {
+        // EXIT
+        vIOR.ior_stack[existing_slot] = 0.0f;
+        vAux.matID_stack[existing_slot] = 0;
+        vAux.objID_stack[existing_slot] = 0;
+    }
+    else if (empty_slot >= 0)
+    {
+        // ENTER
+        float ni = materials[surfaceMatID].Ni;
+        vIOR.ior_stack[empty_slot] = ni;
+        vAux.matID_stack[empty_slot] = surfaceMatID;
+        vAux.objID_stack[empty_slot] = surfaceObjID;
+    }
+
+    // Recompute pointer = max IOR
+    int   new_ptr = -1;
+    float max_ior = 0.0f;
+
+    for (int v = 0; v < 4; ++v)
+    {
+        float n = vIOR.ior_stack[v];
+        if (n > max_ior)
+        {
+            max_ior = n;
+            new_ptr = v;
+        }
+    }
+
+    vIOR.pointer = new_ptr;
 }
 
-// Helper to check if we have a termination condition
-float3 Get_Emissive(HitInfo h){
-    if(h.materialID == 0xFFFFFFFF) // we hit the sky
-        return h.hitPosition;
-    if(h.hitBackface)
-        return float3(0,0,0);
-    return materials[h.materialID].Ke.xyz;
+// Get the Material ID of the volume the camera is currently inside
+inline uint GetCurrentMediumMaterialID(in VolumeIOR vIOR, in VolumeAux vAux)
+{
+    return (vIOR.pointer >= 0 && vIOR.pointer < 4) ? vAux.matID_stack[vIOR.pointer] : 0x0000FFFF;
 }
 
-// Helper to check if a given sample state is valid
-bool ValidSampleState(SampleState sstate){
-    if(length(sstate.n_g) < EPSILON) return false;
-    return true;
+// =================================================================================
+// MISC HELPERS
+// =================================================================================
+
+inline float3 CalculateAbsorptionThroughput(
+    float3 tintColor,
+    float distanceTraveled)
+{
+    // Beer-Lambert Law
+    float3 throughput = float3(
+        exp(-tintColor.x * distanceTraveled),
+        exp(-tintColor.y * distanceTraveled),
+        exp(-tintColor.z * distanceTraveled)
+    );
+    return throughput;
 }
 
-// Sample a single backward bsdf ray based on the material properties
-SampleState Sample_BSDF_BW_S(PathState pstate, inout RandomData rdata){
-    // Sample a BSDF direction
-    float3 s = SampleBRDF(pstate, rdata);
-    if(all(s == 0.0f))
-        return (SampleState)0; // Invalid sample: geometric normal is 0
+// =================================================================================
+// INITIALIZERS (Updated for Split Structs)
+// =================================================================================
 
-    // Trace the ray
-    RayDesc ray;
-    ray.Origin = pstate.x;
-    ray.Direction = s;
-    ray.TMin = 0.0001f;
-    ray.TMax = 10000.0f;
-    HitInfo payload = (HitInfo)0.0f;
-    TraceRayInline_HitInfo(SceneBVH, ray, payload, RAY_FLAG_NONE, 0xFF);
+RayGeometry InitRayGeometry(float3 origin, float3 dir)
+{
+    RayGeometry geom;
+    geom.origin = origin;
+    geom.dir    = dir;
+    return geom;
+}
 
-    SampleState sstate;
-    sstate.x = payload.hitPosition;
-    sstate.s = s;
-    sstate.n_g = payload.hitGNormal;
-    sstate.n_s = payload.hitNormal;
-    sstate.o = normalize(pstate.x - payload.hitPosition);
-    sstate.L = Get_Emissive(payload);
-    sstate.matID = payload.materialID;
-    sstate.objID = payload.objID;
-    sstate.b = payload.hitBackface;
-    sstate.lightID = sstate.b ? 0xFFFFFFFF : payload.lightID; // If we hit a backface, it doesnt count as light
-    return sstate;
+PathPayload InitPathPayload(uint seed)
+{
+    PathPayload payload;
+    payload.throughput = float3(1.0f, 1.0f, 1.0f); // Init throughput to 1 (White)
+    payload.seed       = seed;
+    return payload;
+}
+
+VolumeIOR InitVolumeIOR()
+{
+    VolumeIOR vol;
+    vol.pointer = -1; // Represents Vacuum/Air
+
+    [unroll]
+    for (int i = 0; i < 4; i++)
+    {
+        vol.ior_stack[i] = 0.0f; // 0.0f means empty slot
+    }
+    return vol;
+}
+
+VolumeAux InitVolumeAux()
+{
+    VolumeAux aux;
+    [unroll]
+    for (int i = 0; i < 4; i++)
+    {
+        aux.matID_stack[i]    = 0;
+        aux.objID_stack[i] = 0;
+    }
+    return aux;
 }

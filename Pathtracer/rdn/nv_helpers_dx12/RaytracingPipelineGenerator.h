@@ -122,6 +122,8 @@ public:
   /// Compiles the raytracing state object
   ID3D12StateObject* Generate();
 
+  void SetGlobalRootSignature(ID3D12RootSignature* rootSig);
+
 private:
   /// Storage for DXIL libraries and their exported symbols
   struct Library
@@ -191,7 +193,7 @@ private:
   ID3D12RootSignature* m_dummyLocalRootSignature;
   ID3D12RootSignature* m_dummyGlobalRootSignature;
 
-  
+  ID3D12RootSignature* m_globalRootSignature;
 };
 
 } // namespace nv_helpers_dx12

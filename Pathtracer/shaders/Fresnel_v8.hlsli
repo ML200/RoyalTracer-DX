@@ -8,7 +8,7 @@ static inline float3 ComputeF0Dielectric(float eta_i, float eta_t)
 // Only dielectric part of the fresnel equation - single float
 static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float eta_t)
 {
-    float ci = saturate(abs(dot(wo, n)));
+    float ci = abs(dot(wo, n));
     float3 R0 = ComputeF0Dielectric(eta_i, eta_t);
 
     float oneMinus  = 1.0f - ci;
@@ -20,7 +20,7 @@ static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float e
 
 static inline float3 FresnelDielectricTIR(float3 wo, float3 n, float eta_i, float eta_t)
 {
-    float ci = saturate(abs(dot(wo, n)));
+    float ci = abs(dot(wo, n));
     // Exact TIR test with provided indices
     float eta   = eta_i / eta_t;
     float sin2I = max(0.0f, 1.0f - ci * ci);

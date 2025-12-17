@@ -373,6 +373,77 @@ inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objI
     return p_select / area;
 }
 
+// Helper to select a light source, a point on it and return point and pdf.
+
+struct LT_LightSampleResult
+{
+    float3 position;      // World space position on light
+    float3 normal;        // Geometric normal of the light triangle
+    float3 emission;      // Emissive color
+    float  pdfSolidAngle; // PDF w.r.t Solid Angle (for MIS)
+    uint   triIndex;      // The selected global triangle index
+    uint   objID;         // The InstanceID of the light
+};
+
+// Requires: g_EmissiveTriangles, instanceProps
+LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
+{
+    LT_LightSampleResult result;
+
+    // 1. Pick a triangle from the tree
+    LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
+    result.triIndex = treeSample.id;
+
+    // 2. Fetch Triangle Data
+    LightTriangle triData = g_EmissiveTriangles[result.triIndex];
+    result.objID    = triData.instanceID;
+    result.emission = triData.emission;
+
+    // 3. Transform Vertices
+    float4x4 worldMat = instanceProps[result.objID].objectToWorld;
+    float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
+    float3 v1 = mul(worldMat, float4(triData.y, 1.0)).xyz;
+    float3 v2 = mul(worldMat, float4(triData.z, 1.0)).xyz;
+
+    // 4. Sample Point Uniformly
+    float r1 = RandomFloatSingle(rng);
+    float r2 = RandomFloatSingle(rng);
+    float sqrtR1 = sqrt(r1);
+    float u = 1.0f - sqrtR1;
+    float v = r2 * sqrtR1;
+
+    result.position = (1.0f - u - v) * v0 + u * v1 + v * v2;
+
+    // 5. Normal & Area
+    float3 e1 = v1 - v0;
+    float3 e2 = v2 - v0;
+    float3 crossP = cross(e1, e2);
+    float area2 = length(crossP);
+    result.normal = crossP / area2; // Normalize
+    float area = 0.5f * area2;
+
+    // 6. Calculate Solid Angle PDF
+    //    PDF_SA = PDF_Area * (dist^2 / cosTheta_Light)
+    float3 toLight = result.position - refPos;
+    float distSq   = dot(toLight, toLight);
+    float dist     = sqrt(distSq);
+
+    // Check for valid geometry (avoid divide by zero)
+    float cosLight = abs(dot(result.normal, toLight / dist));
+
+    float pdfArea = treeSample.pdf / max(area, 1e-10f);
+
+    if (cosLight > 1e-6f) {
+        result.pdfSolidAngle = pdfArea * distSq / cosLight;
+    } else {
+        result.pdfSolidAngle = 0.0f;
+    }
+
+    return result;
+}
+
+
+
 // ============================================================================
 // INDIRECT LIGHT-TREE TRAVERSAL
 // ============================================================================
