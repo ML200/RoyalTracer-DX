@@ -29,7 +29,7 @@
 struct TextureData;
 constexpr float PI = 3.14159265359f;
 // Texture packing
-constexpr int TARGET_TEX_DIM = 4096;
+constexpr int TARGET_TEXTURE_DIM = 2048;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
@@ -517,9 +517,6 @@ public:
         std::cout << "  - Shapes: " << shapes.size() << std::endl;
         std::cout << "  - Materials: " << materials.size() << std::endl;
         std::cout << "  - Vertices: " << (attrib.vertices.size() / 3) << std::endl;
-
-        // --- DEFINE A CONSISTENT TEXTURE SIZE FOR ALL ARRAYS ---
-        constexpr size_t TARGET_TEXTURE_DIM = 2048;
 
         auto processTexture = [&](
             const std::string& filename, const std::string& materialPath,

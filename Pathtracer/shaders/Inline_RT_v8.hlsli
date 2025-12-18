@@ -244,7 +244,7 @@ inline dx::HitObject TraceRay_Custom(
 inline float3 EvalMissState()
 {
     // Miss shader
-    return float3(1.2f, 1.2f, 1.2f);
+    return float3(0.5f, 0.5f, 0.5f);
 }
 
 inline HitInfo EvalSurfaceState(
@@ -353,8 +353,9 @@ inline HitInfo EvalSurfaceState(
     hit.hitT = length(posW - origin);
     hit.materialID  = materialID;
     hit.objID       = instID;
-    hit.hitNormal   = dot(viewDir, geoNormW) > 0.0f ? -normW : normW;
-    hit.hitGNormal  = dot(viewDir, geoNormW) > 0.0f ? -geoNormW : geoNormW;
+    const bool isBackface = (dot(viewDir, geoNormW) > 0.0f);
+    hit.hitNormal   = isBackface ? -normW : normW;
+    hit.hitGNormal  = isBackface ? -geoNormW : geoNormW;
 
     {
         const float3 Vw = -viewDir;
@@ -362,7 +363,9 @@ inline HitInfo EvalSurfaceState(
     }
 
     const uint baseL = instanceProps[instID].triToLightBase;
-    hit.lightID = gTriToLightId[baseL + primID];
+    const uint frontLightID = gTriToLightId[baseL + primID];
+
+    hit.lightID = isBackface ? 0xFFFFFFFFu : frontLightID;
 
     return hit;
 }
