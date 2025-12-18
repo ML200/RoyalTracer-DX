@@ -1,4 +1,5 @@
 #define EPSILON 0.000003
+#define ONE_MINUS_EPSILON 0x1.fffffep-1f // ~0.99999994
 #define SBIAS 0.0008
 #define PI 3.1415926535
 #define INV_PI 0.3183098861

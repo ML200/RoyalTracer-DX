@@ -20,7 +20,9 @@ void Pass_raygen_v8()
     VolumeIOR vior = InitVolumeIOR();
     VolumeAux aior = InitVolumeAux();
 
-    float prev_pdf = 1.0f;
+    float  prev_pdf = 1.0f;
+    float3 prev_x;
+    float3 prev_n;
 
 
     [loop]
@@ -43,17 +45,17 @@ void Pass_raygen_v8()
         {
             float3 emission = GetEmissionFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
 
-            if (any(emission != 0)) {
+            if (any(emission != 0) && hinfo.lightID != 0xFFFFFFFFu) {
                 if(depth == 0){
                     accumulatedRadiance = emission;
                     break;
                 }
                 else {
-                    float lightPdfArea = LT_Pdf_LightTree_Area(rayOrigin, hinfo.hitNormal, hinfo.lightID, hinfo.objID);
-                    float distSq   = hinfo.hitT * hinfo.hitT;
-                    float cosLight = abs(dot(hinfo.hitNormal, -rayDir));
-                    float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * distSq / cosLight) : 0.0f;
-                    float misWeight = prev_pdf / (prev_pdf + lightPdfSA);
+                    float lightPdfArea = LT_Pdf_LightTree_Area(prev_x, prev_n, hinfo.lightID, hinfo.objID);
+                    float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
+                    float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * hinfo.hitT * hinfo.hitT / cosLight) : 0.0f;
+                    float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
+
                     accumulatedRadiance += throughput * emission * misWeight;
                 }
             }
@@ -77,7 +79,7 @@ void Pass_raygen_v8()
         }
 
         // Only if we are not inside a medium, perform NEE. Also, the surface should have a diffuse component
-        if(!(currentMatID != 0x0000FFFF || materials[hinfo.materialID].Kd.w < EPSILON || (hinfo.localPm > 0.9f && hinfo.localPr < 0.3f))){
+        if(!(currentMatID != 0x0000FFFF || materials[hinfo.materialID].Kd.w < EPSILON)){
             LT_LightSampleResult light = LT_SamplePointOnLight(rayOrigin + rayDir * hinfo.hitT, hinfo.hitNormal, seed);
 
             float3 toLight = light.position - (rayOrigin + rayDir * hinfo.hitT);
@@ -113,13 +115,15 @@ void Pass_raygen_v8()
                         hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
                     );
 
+                    float cosSurf = dot(hinfo.hitNormal, L);
+
                     float lightPdf = light.pdfSolidAngle;
                     float bsdfPdf  = bdataNEE.pdf;
 
                     if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                     {
                         float misWeight = lightPdf / (lightPdf + bsdfPdf);
-                        accumulatedRadiance += throughput * light.emission * bdataNEE.val * (misWeight / lightPdf);
+                        accumulatedRadiance += throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf);
                     }
                 }
             }
@@ -156,21 +160,26 @@ void Pass_raygen_v8()
         // Update throughput
         float cosThetaLoop = abs(dot(hinfo.hitNormal, s));
         throughput *= (bdata.val * cosThetaLoop) / bdata.pdf;
-        prev_pdf = bdata.pdf;
 
         // Aggressive russian roulette termination to leverage max SER
-        float survivalProb = Luma(throughput);
-        if (survivalProb > 1.0f) survivalProb = 1.0f;
+        if(depth > 0){
+            float survivalProb = Luma(throughput);
+            if (survivalProb > 1.0f) survivalProb = 1.0f;
 
-        if (RandomFloatSingle(seed) >= survivalProb)
-        {
-            break;
+            if (RandomFloatSingle(seed) >= survivalProb)
+            {
+                break;
+            }
+            throughput /= max(survivalProb, 0.0001f);
         }
-        throughput /= max(survivalProb, 0.0001f);
 
         // Setup for next bounce
         rayOrigin += hinfo.hitT * rayDir;
         rayDir    = s;
+
+        prev_pdf = bdata.pdf;
+        prev_x  = rayOrigin;
+        prev_n  = hinfo.hitNormal;
     }
 
     gScratchPing[uint3(DispatchRaysIndex().xy, 1)] = float4(accumulatedRadiance, 0);

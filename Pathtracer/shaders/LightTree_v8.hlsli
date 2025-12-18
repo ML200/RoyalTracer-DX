@@ -58,7 +58,8 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
     }
     float wi = max(w[idx], 0.0);
     p_chosen = wi / sum;
-    xi_out = (wi > 0.0) ? saturate((target - accum) / wi) : 0.0;
+    xi_out = (wi > 0.0) ? ((target - accum) / wi) : 0.0;
+    xi_out = clamp(xi_out, 0.0, ONE_MINUS_EPSILON);
     return idx;
 }
 
@@ -143,9 +144,9 @@ inline float LT_NodeImportance_Common(
     float d2   = isGlobalLight ? 1.0 : (d0*d0 + R*R); // conservative near field clamp
     float geom = isGlobalLight ? 1.0 : rcp(d2);
 
-    float visCorners = LT_AabbVertexVisibilityWeight(x, n, bmin, bmax);
+    //float visCorners = LT_AabbVertexVisibilityWeight(x, n, bmin, bmax);
 
-    return power * geom * orientTerm * visCorners;
+    return power * geom * orientTerm;// * visCorners;
 }
 
 inline float LT_NodeImportance_TLAS(LightTLASNodeGpu n, float3 x, float3 norm)
@@ -221,7 +222,7 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
 
         float p, xi_next;
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
-        pdfBLAS *= max(p, 1e-20);
+        pdfBLAS *= p;
         node = N.firstChild + idx;
         xi   = xi_next;
     }
@@ -253,13 +254,15 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
 LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 {
     // Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
-    float xi = RandomFloatSingle(rng);
+    float xiT = RandomFloatSingle(rng);
+    float xiB = RandomFloatSingle(rng);
+    float xiL = RandomFloatSingle(rng);
 
     float pdfT, pdfB, pdfL;
 
-    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
-    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
-    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfL);
+    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xiT, pdfT);
+    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xiB, pdfB);
+    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xiL, pdfL);
 
     LT_Sample s; s.id = tri; s.pdf = pdfT * pdfB * pdfL;
     return s;
@@ -429,7 +432,7 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
     float dist     = sqrt(distSq);
 
     // Check for valid geometry (avoid divide by zero)
-    float cosLight = abs(dot(result.normal, toLight / dist));
+    float cosLight = max(dot(result.normal, -toLight / dist), 0.0f);
 
     float pdfArea = treeSample.pdf / max(area, 1e-10f);
 
