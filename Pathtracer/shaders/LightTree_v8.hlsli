@@ -362,7 +362,7 @@ inline float LT_TriangleArea(uint tri, uint objID)
     return 0.5 * length(cross(B - A, C - A));
 }
 
-inline float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
+float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
 {
     float p_select = LT_PdfSelectTriangle(x, n, tri);
     float area     = max(1e-10, LT_TriangleArea(tri, objID));

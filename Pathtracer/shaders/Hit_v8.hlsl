@@ -5,7 +5,7 @@
     uint   primIdx     = PrimitiveIndex();
     float3 rayOrigin   = WorldRayOrigin();
 
-    HitInfo info = EvalSurfaceState(instanceIdx, primIdx, attr.barycentrics, rayOrigin);
+    HitInfo info = EvalSurfaceState(instanceIdx, primIdx, attr.barycentrics, rayOrigin, 0);
 
     CompressToPayload(info, payload);
 

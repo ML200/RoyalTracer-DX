@@ -1,5 +1,49 @@
 #include "Includes_v8.hlsli"
 
+inline float3 sRGBGammaCorrection(float3 color)
+{
+    float3 result;
+
+    // Red channel
+    if (color.r <= 0.0031308f)
+        result.r = 12.92f * color.r;
+    else
+        result.r = 1.055f * pow(color.r, 1.0f / 2.4f) - 0.055f;
+
+    // Green channel
+    if (color.g <= 0.0031308f)
+        result.g = 12.92f * color.g;
+    else
+        result.g = 1.055f * pow(color.g, 1.0f / 2.4f) - 0.055f;
+
+    // Blue channel
+    if (color.b <= 0.0031308f)
+        result.b = 12.92f * color.b;
+    else
+        result.b = 1.055f * pow(color.b, 1.0f / 2.4f) - 0.055f;
+
+    return result;
+}
+
+float3 PBRNeutral(float3 color) {
+    const float startCompression = 0.8f - 0.04f;
+    const float desaturation = 0.15f;
+
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    color -= offset;
+
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < startCompression) return max(color, 0.0f);
+
+    float d = 1.0f - startCompression;
+    float newPeak = 1.0f - d * d / (peak + d - startCompression);
+    color *= newPeak / peak;
+
+    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
+    return lerp(color, newPeak.xxx, g);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
 // ─────────────────────────────────────────────────────────────────────────────
@@ -44,27 +88,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
-    // show accumulated image
-    float3 fColor = sRGBGammaCorrection(newAvg);
-    gOutput[uint3(DTid.xy, 0)]  = float4(fColor, 1);
-    //override if target is real time undenoised
-    float3 finalColor = sRGBGammaCorrection(accumulation);
-    //gOutput[uint3(DTid.xy, 0)]  = float4(finalColor, 1);
+    float3 sceneLinear = PBRNeutral(newAvg);
+    float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
 
-    // Denoiser buffers etc.
-    /*uint2  launchIndex   = DTid.xy;
-    float2 dims = float2(IMG_W, IMG_H);
-    uint   pixelIdx  = MapPixelID(dims, launchIndex);
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    SampleData sdata_l = loadSampleData(g_sample_last, pixelIdx);
-
-    gScratchPing[uint3(DTid.xy, 2)] = length(materials[sdata.matID].Ke) > 0.0f ? float4(materials[sdata.matID].Ke, 0) : materials[sdata.matID].Kd;
-    gScratchPing[uint3(DTid.xy, 3)] = float4(length(materials[sdata.matID].Ke) > 0.0f ? 1 : 0, materials[sdata.matID].Pr_Pm_Ps_Pc.x, sdata.objID, 0);
-    gScratchPing[uint3(DTid.xy, 4)] = float4(sdata.n1,0);
-
-    Reservoir_GI rgi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, rgi.M_gi);
-    gScratchPing[uint3(DTid.xy, 6)] = float4(sdata_l.x1,0);
-
-    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 0);*/
+    gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 }

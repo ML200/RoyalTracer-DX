@@ -40,22 +40,28 @@ void Pass_raygen_v8()
 
         if (!hitObj.IsHit()) { accumulatedRadiance += throughput * EvalMissState(); break; }
 
-        HitInfo hinfo = EvalSurfaceState(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex(), hitObj.GetAttributes<BuiltInTriangleIntersectionAttributes>().barycentrics, rayOrigin);
+        float3 emission = GetEmissionFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
+        HitInfo hinfo = EvalSurfaceState(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex(), hitObj.GetAttributes<BuiltInTriangleIntersectionAttributes>().barycentrics, rayOrigin, depth);
 
         {
-            float3 emission = GetEmissionFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
-
             if (any(emission != 0) && hinfo.lightID != 0xFFFFFFFFu) {
                 if(depth == 0){
                     accumulatedRadiance = emission;
                     break;
                 }
                 else {
-                    float lightPdfArea = LT_Pdf_LightTree_Area(prev_x, prev_n, hinfo.lightID, hinfo.objID);
+                    LightTreePdfPayload pdfPayload;
+                    pdfPayload.prev_x  = prev_x;
+                    pdfPayload.prev_n  = prev_n;
+                    pdfPayload.lightID = hinfo.lightID;
+                    pdfPayload.objID   = hinfo.objID;
+
+                    CallShader(0, pdfPayload);
+
+                    float lightPdfArea = pdfPayload.prev_x.x;
                     float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
                     float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * hinfo.hitT * hinfo.hitT / cosLight) : 0.0f;
                     float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
-
                     accumulatedRadiance += throughput * emission * misWeight;
                 }
             }
@@ -157,6 +163,8 @@ void Pass_raygen_v8()
         {
             break;
         }
+
+
         // Update throughput
         float cosThetaLoop = abs(dot(hinfo.hitNormal, s));
         throughput *= (bdata.val * cosThetaLoop) / bdata.pdf;
@@ -170,7 +178,7 @@ void Pass_raygen_v8()
             {
                 break;
             }
-            throughput /= max(survivalProb, 0.0001f);
+            throughput /= max(survivalProb, 0.1f);
         }
 
         // Setup for next bounce
