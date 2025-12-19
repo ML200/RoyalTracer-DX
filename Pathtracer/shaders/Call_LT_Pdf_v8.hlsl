@@ -2,7 +2,7 @@
 
 // Simple wrapper for making LT_Pdf_LightTree_Area callable
 [shader("callable")]
-void LT_Pdf_v8(inout LightTreePdfPayload params)
+void Call_LT_Pdf_v8(inout CALL_LT_PDF_PAYLOAD params)
 {
     float result = LT_Pdf_LightTree_Area(
         params.prev_x,

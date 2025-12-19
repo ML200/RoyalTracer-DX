@@ -215,7 +215,7 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"LT_Pdf_v8.hlsl|call",
+        L"Call_LT_Pdf_v8.hlsl|call",
 
         L"Pass_raygen_v8.hlsl|rg",
         //L"Pass_trace_mono_v8.hlsl|cs:8x8",
@@ -1968,7 +1968,7 @@ void Renderer::CreateRaytracingPipeline()
     pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
     // Payload / attribute / recursion depth (we dont use recursion)
-    pipeline.SetMaxPayloadSize( 16*sizeof(float) + 3*sizeof(UINT));
+    pipeline.SetMaxPayloadSize( 19*sizeof(float) + 4*sizeof(UINT));
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
