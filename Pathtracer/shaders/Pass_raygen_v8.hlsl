@@ -50,7 +50,7 @@ void Pass_raygen_v8()
                     break;
                 }
                 else {
-                    LightTreePdfPayload pdfPayload;
+                    CALL_LT_PDF_PAYLOAD pdfPayload;
                     pdfPayload.prev_x  = prev_x;
                     pdfPayload.prev_n  = prev_n;
                     pdfPayload.lightID = hinfo.lightID;
@@ -135,7 +135,7 @@ void Pass_raygen_v8()
             }
         }
 
-        SamplingP sp = CalculateStrategyProbabilities(
+        /*SamplingP sp = CalculateStrategyProbabilities(
             hinfo.materialID, -rayDir, hinfo.hitNormal,
             iors.x, iors.y, hinfo.localKd, hinfo.localPm
         );
@@ -146,17 +146,17 @@ void Pass_raygen_v8()
             seed, iors.x, iors.y, vior.pointer
         );
 
+        // Evaluate and PDF
+        BrdfData bdata = EvaluateAndPdf_COMBINED(
+            sp, hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
+            hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
+        );*/
+
         // Update IOR stack on transmis
         if (dot(hinfo.hitGNormal, s) < 0.0f)
         {
             UpdateIORStack(vior, aior, hinfo.materialID, hinfo.objID);
         }
-
-        // Evaluate and PDF
-        BrdfData bdata = EvaluateAndPdf_COMBINED(
-            sp, hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
-            hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
-        );
 
         // Terminate on invalid samples
         if (length(s) == 0.0f || bdata.pdf <= 1e-6f || any(isnan(bdata.val)))
