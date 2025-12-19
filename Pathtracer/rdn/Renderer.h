@@ -101,7 +101,8 @@ private:
         LoopStart,
         LoopEnd,
         PingSwap,
-        ClearSort
+        ClearSort,
+        Callable
     };
 
     // 2. Update PassDesc to hold loop information
@@ -145,6 +146,10 @@ private:
         const std::wstring tail = token.substr(bar + 1);
 
         if (tail == L"rg" || tail == L"raygen") return p; // Default is Stage::RayGen
+        if (tail == L"call") {
+            p.stage = Stage::Callable;
+            return p;
+        }
 
         // Work Graph
         if (tail.rfind(L"wg:", 0) == 0) {
@@ -408,6 +413,8 @@ private:
   ComPtr<ID3D12RootSignature> m_rayGenSignature;
   ComPtr<ID3D12RootSignature> m_hitSignature;
   ComPtr<ID3D12RootSignature> m_missSignature;
+
+    std::vector<std::wstring> m_callableShaderNames;
 
   // Ray tracing pipeline state
   ComPtr<ID3D12StateObject> m_rtStateObject;

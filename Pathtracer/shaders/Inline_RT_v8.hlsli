@@ -196,18 +196,18 @@ float3 CalculateGeometricTangent(float3 p0, float3 p1, float3 p2, float2 uv0, fl
     return T;
 }
 
-float3 EvaluateAlbedo(in Material mat, float2 uv)
+float3 EvaluateAlbedo(in Material mat, float2 uv, uint level)
 {
     float3 albedo = mat.Kd.rgb;
     if (mat.albedoTexID != -1)
     {
         float2 albedoUV = uv * mat.albedoUVScale;
-        albedo = albedoTextures.SampleLevel(g_sampler, float3(albedoUV, mat.albedoTexID), 0).rgb;
+        albedo = albedoTextures.SampleLevel(g_sampler, float3(albedoUV, mat.albedoTexID), level).rgb;
     }
     return albedo;
 }
 
-float2 EvaluatePBRProperties(in Material mat, float2 uv)
+float2 EvaluatePBRProperties(in Material mat, float2 uv, uint level)
 {
     float2 pbrProps;
     pbrProps.x = mat.Pr_Pm_Ps_Pc.x;
@@ -216,7 +216,7 @@ float2 EvaluatePBRProperties(in Material mat, float2 uv)
     if (mat.rmaTexID != -1)
     {
         float2 rmaUV = uv * mat.rmaUVScale;
-        float4 rmaSample = rmaTextures.SampleLevel(g_sampler, float3(rmaUV, mat.rmaTexID), 0);
+        float4 rmaSample = rmaTextures.SampleLevel(g_sampler, float3(rmaUV, mat.rmaTexID), level);
 
         pbrProps.x = rmaSample.g; // Roughness
         pbrProps.y = rmaSample.b; // Metallic
@@ -244,14 +244,15 @@ inline dx::HitObject TraceRay_Custom(
 inline float3 EvalMissState()
 {
     // Miss shader
-    return float3(0.5f, 0.5f, 0.5f);
+    return float3(0.8f, 0.8f, 0.8f);
 }
 
 inline HitInfo EvalSurfaceState(
     uint      instID,
     uint      primID,
     float2    bc2,
-    float3    origin
+    float3    origin,
+    uint level
     )
 {
     // 1. DATA GATHER
@@ -321,8 +322,8 @@ inline HitInfo EvalSurfaceState(
     // 4. MATERIAL & TEXTURING
     const Material mat = materials[materialID];
     HitInfo hit = (HitInfo)0.0f;
-    hit.localKd = EvaluateAlbedo(mat, uv);
-    float2 pbr  = EvaluatePBRProperties(mat, uv);
+    hit.localKd = EvaluateAlbedo(mat, uv, level);
+    float2 pbr  = EvaluatePBRProperties(mat, uv, level);
     hit.localPr = pbr.x;
     hit.localPm = pbr.y;
 
@@ -341,8 +342,7 @@ inline HitInfo EvalSurfaceState(
 
         float3x3 tbn = float3x3(tangentW, bitangentW, normW);
 
-        // FIX: Use SampleLevel(..., 0)
-        float3 n_tangent = normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), 0).xyz * 2.0f - 1.0f;
+        float3 n_tangent = normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), level).xyz * 2.0f - 1.0f;
 
         normW = normalize(mul(n_tangent, tbn));
     }
@@ -371,10 +371,10 @@ inline HitInfo EvalSurfaceState(
 }
 
 // Cheap helper to check if hit triangle is a light and return emission for immediate processing
-float3 GetEmissionFast(uint instID, uint primID)
+inline float3 GetEmissionFast(in uint instID, in uint primID)
 {
-    const uint base = instanceProps[instID].triToLightBase;
-    const uint lightID = gTriToLightId[base + primID];
+    uint base = instanceProps[instID].triToLightBase;
+    uint lightID = gTriToLightId[base + primID];
     if (lightID == 0xFFFFFFFF)
     {
         return float3(0.0f, 0.0f, 0.0f);

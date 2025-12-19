@@ -215,6 +215,8 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
+        L"LT_Pdf_v8.hlsl|call",
+
         L"Pass_raygen_v8.hlsl|rg",
         //L"Pass_trace_mono_v8.hlsl|cs:8x8",
         L"barrier",
@@ -459,7 +461,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = {"./workshop/workshop.obj", /*"./workshop/workshop.obj",*/ /*"./car/car.obj"*/};
+        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ "./pot/pot.obj"};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -569,7 +571,7 @@ void Renderer::OnInitTransform() {
 
     XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 0.0f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-5.f, 0.2f, 5.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
@@ -752,14 +754,18 @@ void Renderer::PopulateCommandList()
     const uint32_t rgSize   = m_sbtHelper.GetRayGenEntrySize();
     const uint32_t numRG    = (uint32_t)m_passIndex.size();
 
-    raysDesc.MissShaderTable.StartAddress  = sbtStart + numRG * rgSize;
+    raysDesc.MissShaderTable.StartAddress = sbtStart + m_sbtHelper.GetRayGenSectionSize();
     raysDesc.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
     raysDesc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
 
     raysDesc.HitGroupTable.StartAddress    =
-        raysDesc.MissShaderTable.StartAddress + raysDesc.MissShaderTable.SizeInBytes;
+    raysDesc.MissShaderTable.StartAddress + raysDesc.MissShaderTable.SizeInBytes;
     raysDesc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
     raysDesc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
+
+    raysDesc.CallableShaderTable.StartAddress  = raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
+    raysDesc.CallableShaderTable.SizeInBytes   = m_sbtHelper.GetCallableSectionSize();
+    raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
 
     // Ray-trace output -> UAV
     {
@@ -1884,6 +1890,24 @@ void Renderer::CreateRaytracingPipeline()
             continue;
         }
 
+        if (p.stage == Stage::Callable)
+        {
+            // Extract base name: "Folder/Shader.hlsl" -> "Shader"
+            std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
+            base = base.substr(0, base.rfind(L'.'));
+
+            // Compile the library
+            // NOTE: Ensure your HLSL file has [shader("callable")] void ShaderName(...)
+            ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
+
+            // Add to pipeline with the filename as the export symbol
+            pipeline.AddLibrary(lib.Get(), { base.c_str() });
+
+            // Store for SBT generation
+            m_callableShaderNames.push_back(base);
+            continue;
+        }
+
 
         // ray-generation library
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
@@ -1952,6 +1976,38 @@ void Renderer::CreateRaytracingPipeline()
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(
         m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
+
+    // 1. Query individual shader stack requirements
+    // Note: Use the export name (usually the filename without extension based on your compilation logic)
+    UINT64 rgStackSize = m_rtStateObjectProps->GetShaderStackSize(L"Pass_raygen_v8");
+    std::wcout << L"\n[Stack Analysis] RayGen (Pass_raygen_v8): " << rgStackSize << L" bytes" << std::endl;
+
+    UINT64 maxCallableStack = 0;
+    for (const auto& name : m_callableShaderNames)
+    {
+        UINT64 size = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
+        std::wcout << L"[Stack Analysis] Callable (" << name << L"): " << size << L" bytes" << std::endl;
+        if (size > maxCallableStack) maxCallableStack = size;
+    }
+
+    UINT64 missStackSize = m_rtStateObjectProps->GetShaderStackSize(L"Miss");
+    std::wcout << L"[Stack Analysis] Miss (Miss): " << missStackSize << L" bytes" << std::endl;
+
+    // 2. Calculate Total Pipeline Stack Size
+    // Formula: RayGen + Max(Hit, Miss, Callable) * RecursionDepth
+    // Since you use CallShader (which counts as recursion in terms of stack depth 1->2),
+    // and assuming MaxRecursionDepth is 1 (RayGen calls Callable, Callable doesn't recurse):
+    UINT64 totalStackSize = rgStackSize + std::max(maxCallableStack, missStackSize);
+
+    // Add a little padding for safety (e.g. 64 bytes) or alignment
+    totalStackSize = (totalStackSize + 255) & ~255; // Align to 256 bytes
+
+    std::wcout << L"[Stack Analysis] CALCULATED TOTAL REQUIRED: " << totalStackSize << L" bytes" << std::endl;
+
+    // 3. FORCE the stack size
+    // If you don't do this, the driver often defaults to 4096 bytes per ray, killing occupancy!
+    m_rtStateObjectProps->SetPipelineStackSize(totalStackSize);
+    std::wcout << L"[Stack Analysis] Pipeline Stack Size set to: " << totalStackSize << L" bytes\n" << std::endl;
 }
 
 
@@ -2430,6 +2486,7 @@ void Renderer::CreateShaderBindingTable() {
         if (entry.find(L"|wf:") != std::wstring::npos) continue;
         if (entry.find(L"|wg:") != std::wstring::npos) continue;
         if (entry.find(L"|fx:") != std::wstring::npos) continue;
+        if (entry.find(L"|call") != std::wstring::npos) continue;
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
@@ -2452,6 +2509,14 @@ void Renderer::CreateShaderBindingTable() {
     // Adding final ShadowHitGroup
     std::wcout << L"Adding ShadowHitGroup..." << std::endl;
     m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
+
+    // --- NEW BLOCK: Add Callable Programs ---
+    std::wcout << L"Adding callable programs..." << std::endl;
+    for (const auto& name : m_callableShaderNames)
+    {
+        // Bind the global heap pointer just like RayGen
+        m_sbtHelper.AddCallableProgram(name, { heapPointer });
+    }
 
     // Compute the size of the SBT
     std::wcout << L"Computing SBT size..." << std::endl;
