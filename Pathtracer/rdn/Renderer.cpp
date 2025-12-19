@@ -215,8 +215,6 @@ Renderer::Renderer(UINT width, UINT height,
     m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
-        L"Call_LT_Pdf_v8.hlsl|call",
-
         L"Pass_raygen_v8.hlsl|rg",
         //L"Pass_trace_mono_v8.hlsl|cs:8x8",
         L"barrier",

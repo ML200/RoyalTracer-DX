@@ -98,5 +98,3 @@ cbuffer CameraParams : register(b0)
 #include "Inline_RT_v8.hlsli"
 #include "Camera_ray_v8.hlsli"
 #include "Path_Sampler_v8.hlsli"
-#include "AilaCompact_v8.hlsli"
-#include "Callables_util_v8.hlsli"

@@ -50,15 +50,7 @@ void Pass_raygen_v8()
                     break;
                 }
                 else {
-                    CALL_LT_PDF_PAYLOAD pdfPayload;
-                    pdfPayload.prev_x  = prev_x;
-                    pdfPayload.prev_n  = prev_n;
-                    pdfPayload.lightID = hinfo.lightID;
-                    pdfPayload.objID   = hinfo.objID;
-
-                    CallShader(0, pdfPayload);
-
-                    float lightPdfArea = pdfPayload.prev_x.x;
+                    float lightPdfArea = LT_Pdf_LightTree_Area(prev_x, prev_n, hinfo.lightID, hinfo.objID);
                     float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
                     float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * hinfo.hitT * hinfo.hitT / cosLight) : 0.0f;
                     float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
@@ -135,7 +127,7 @@ void Pass_raygen_v8()
             }
         }
 
-        /*SamplingP sp = CalculateStrategyProbabilities(
+        SamplingP sp = CalculateStrategyProbabilities(
             hinfo.materialID, -rayDir, hinfo.hitNormal,
             iors.x, iors.y, hinfo.localKd, hinfo.localPm
         );
@@ -146,17 +138,17 @@ void Pass_raygen_v8()
             seed, iors.x, iors.y, vior.pointer
         );
 
-        // Evaluate and PDF
-        BrdfData bdata = EvaluateAndPdf_COMBINED(
-            sp, hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
-            hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
-        );*/
-
         // Update IOR stack on transmis
         if (dot(hinfo.hitGNormal, s) < 0.0f)
         {
             UpdateIORStack(vior, aior, hinfo.materialID, hinfo.objID);
         }
+
+        // Evaluate and PDF
+        BrdfData bdata = EvaluateAndPdf_COMBINED(
+            sp, hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
+            hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
+        );
 
         // Terminate on invalid samples
         if (length(s) == 0.0f || bdata.pdf <= 1e-6f || any(isnan(bdata.val)))
