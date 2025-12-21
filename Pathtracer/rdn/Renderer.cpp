@@ -761,9 +761,18 @@ void Renderer::PopulateCommandList()
     raysDesc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
     raysDesc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
 
-    raysDesc.CallableShaderTable.StartAddress  = raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
-    raysDesc.CallableShaderTable.SizeInBytes   = m_sbtHelper.GetCallableSectionSize();
-    raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
+    if (m_sbtHelper.GetCallableSectionSize() > 0)
+    {
+        raysDesc.CallableShaderTable.StartAddress  = raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
+        raysDesc.CallableShaderTable.SizeInBytes   = m_sbtHelper.GetCallableSectionSize();
+        raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
+    }
+    else
+    {
+        raysDesc.CallableShaderTable.StartAddress  = 0;
+        raysDesc.CallableShaderTable.SizeInBytes   = 0;
+        raysDesc.CallableShaderTable.StrideInBytes = 0;
+    }
 
     // Ray-trace output -> UAV
     {
