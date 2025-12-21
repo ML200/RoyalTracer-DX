@@ -382,4 +382,10 @@ inline float3 GetEmissionFast(in uint instID, in uint primID)
     return g_EmissiveTriangles[lightID].emission;
 }
 
+inline uint GetMatIDFast(in uint instID, in uint primID){
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint baseM = instanceProps[instID].materialBase;
+    return materialIDs[baseM + primID];
+}
+
 #endif

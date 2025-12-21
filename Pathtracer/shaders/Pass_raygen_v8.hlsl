@@ -9,14 +9,16 @@ using namespace dx;
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
-    uint  seed        = initRandomData(DispatchRaysIndex().xy, uint2(8, 8), time, 1u);
+    // Reset output texture
+    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] = float4(0,0,0,0);
+    uint  seed        = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
 
     float3 rayOrigin = InitOrigin();
     float3 rayDir    = InitDirection(DispatchRaysIndex().xy, float2(DispatchRaysDimensions().xy), seed);
 
     // path state
-    float3 accumulatedRadiance = float3(0, 0, 0);
-    float3 throughput          = float3(1, 1, 1);
+    half3 accumulatedRadiance = float3(0, 0, 0);
+    half3 throughput          = float3(1, 1, 1);
     VolumeIOR vior = InitVolumeIOR();
     VolumeAux aior = InitVolumeAux();
 
@@ -38,124 +40,30 @@ void Pass_raygen_v8()
         ray.TMax      = 10000.0f;
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-        if (!hitObj.IsHit()) { accumulatedRadiance += throughput * EvalMissState(); break; }
+        if (!hitObj.IsHit()) { gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += throughput * EvalMissState(); break; }
 
-        float3 emission = GetEmissionFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
-        HitInfo hinfo = EvalSurfaceState(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex(), hitObj.GetAttributes<BuiltInTriangleIntersectionAttributes>().barycentrics, rayOrigin, depth);
-
-        {
-            if (any(emission != 0) && hinfo.lightID != 0xFFFFFFFFu) {
-                if(depth == 0){
-                    accumulatedRadiance = emission;
-                    break;
-                }
-                else {
-                    float lightPdfArea = LT_Pdf_LightTree_Area(prev_x, prev_n, hinfo.lightID, hinfo.objID);
-                    float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
-                    float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * hinfo.hitT * hinfo.hitT / cosLight) : 0.0f;
-                    float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
-                    accumulatedRadiance += throughput * emission * misWeight;
-                }
-            }
-        }
-
-        // Absorption
-        uint currentMatID = GetCurrentMediumMaterialID(vior, aior);
-        if (currentMatID != 0x0000FFFF)
-        {
-             float3 tint = CalculateAbsorptionThroughput(materials[currentMatID].Tf, hinfo.hitT);
-             throughput *= tint;
-        }
+        // Get material id of our current
+        uint matID = GetMatIDFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
 
         // Check iors, maybe for phantom surface
-        float2 iors = GetIORs(vior, aior, hinfo.materialID, hinfo.objID);
+        half2 iors = GetIORs(vior, aior, matID, hitObj.GetInstanceIndex());
         if (iors.y == 0.0f) // Phantom surfaces
         {
-            rayOrigin += hinfo.hitT * rayDir;
-            UpdateIORStack(vior, aior, hinfo.materialID, hinfo.objID);
+            rayOrigin += hitObj.GetRayTCurrent() * rayDir;
+            UpdateIORStack(vior, aior, matID, hitObj.GetInstanceIndex());
             continue;
         }
+        uint currentMatID = GetCurrentMediumMaterialID(vior, aior);
 
-        // Only if we are not inside a medium, perform NEE. Also, the surface should have a diffuse component
-        if(!(currentMatID != 0x0000FFFF || materials[hinfo.materialID].Kd.w < EPSILON)){
-            LT_LightSampleResult light = LT_SamplePointOnLight(rayOrigin + rayDir * hinfo.hitT, hinfo.hitNormal, seed);
-
-            float3 toLight = light.position - (rayOrigin + rayDir * hinfo.hitT);
-            float  distSq  = dot(toLight, toLight);
-            float  dist    = sqrt(distSq);
-            float3 L       = toLight / dist;
-
-            float cosSurf  = dot(hinfo.hitNormal, L);
-            float cosLight = dot(light.normal, -L);
-
-            if (cosSurf > 1e-6f && cosLight > 1e-6f)
-            {
-                RayDesc shadowRay;
-                shadowRay.Origin    = rayOrigin + rayDir * hinfo.hitT;
-                shadowRay.Direction = L;
-                shadowRay.TMin      = 0.001f;
-                shadowRay.TMax      = dist - 0.001f;
-
-                RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-                q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
-                q.Proceed();
-
-                if (q.CommittedStatus() == COMMITTED_NOTHING)
-                {
-                    SamplingP sp_nee = CalculateStrategyProbabilities(
-                        hinfo.materialID, -rayDir, hinfo.hitNormal,
-                        iors.x, iors.y, hinfo.localKd, hinfo.localPm
-                    );
-
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(
-                        sp_nee,
-                        hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir,
-                        hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
-                    );
-
-                    float cosSurf = dot(hinfo.hitNormal, L);
-
-                    float lightPdf = light.pdfSolidAngle;
-                    float bsdfPdf  = bdataNEE.pdf;
-
-                    if (lightPdf > 0.0f && bsdfPdf > 0.0f)
-                    {
-                        float misWeight = lightPdf / (lightPdf + bsdfPdf);
-                        accumulatedRadiance += throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf);
-                    }
-                }
-            }
-        }
-
-        SamplingP sp = CalculateStrategyProbabilities(
-            hinfo.materialID, -rayDir, hinfo.hitNormal,
-            iors.x, iors.y, hinfo.localKd, hinfo.localPm
-        );
-
-        float3 s = SampleBRDF(
-            sp, hinfo.materialID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal,
-            hinfo.localKd, hinfo.localPr, hinfo.localPm,
-            seed, iors.x, iors.y, vior.pointer
-        );
-
-        // Update IOR stack on transmis
-        if (dot(hinfo.hitGNormal, s) < 0.0f)
-        {
-            UpdateIORStack(vior, aior, hinfo.materialID, hinfo.objID);
-        }
-
-        // Evaluate and PDF
-        BrdfData bdata = EvaluateAndPdf_COMBINED(
-            sp, hinfo.materialID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
-            hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
-        );
+        PathRayPayload payload = InitPayload_Raygen_payload(matID, currentMatID, rayDir, seed, iors, depth, vior.pointer);
+        dx::HitObject::Invoke(hitObj, payload);
+        // Partial loaders loading the rest of the required data later (normal, updateior condition etc so we save registers)
 
         // Terminate on invalid samples
         if (length(s) == 0.0f || bdata.pdf <= 1e-6f || any(isnan(bdata.val)))
         {
             break;
         }
-
 
         // Update throughput
         float cosThetaLoop = abs(dot(hinfo.hitNormal, s));
@@ -173,6 +81,12 @@ void Pass_raygen_v8()
             throughput /= max(survivalProb, 0.1f);
         }
 
+        // Update IOR stack on transmission
+        if (dot(hinfo.hitGNormal, s) < 0.0f) // TODO replace the condition with flag return from the hit shader
+        {
+            UpdateIORStack(vior, aior, matID, hinfo.objID);
+        }
+
         // Setup for next bounce
         rayOrigin += hinfo.hitT * rayDir;
         rayDir    = s;
@@ -181,6 +95,4 @@ void Pass_raygen_v8()
         prev_x  = rayOrigin;
         prev_n  = hinfo.hitNormal;
     }
-
-    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] = float4(accumulatedRadiance, 0);
 }
