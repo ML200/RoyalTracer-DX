@@ -30,6 +30,14 @@ inline float2 UnpackHalf2_payload(uint u)
 }
 
 // --------------------------------------------
+// Helper: Robust Sign (Never returns 0.0)
+// --------------------------------------------
+inline float2 SignNotZero(float2 v)
+{
+    return float2((v.x >= 0.0f) ? 1.0f : -1.0f, (v.y >= 0.0f) ? 1.0f : -1.0f);
+}
+
+// --------------------------------------------
 // Shading normal packing (octahedral snorm16x2) - uniquely named
 // Packed into a uint: low16 = x, high16 = y
 // --------------------------------------------
@@ -38,7 +46,8 @@ inline uint PackOctSnorm16_payload(float3 n)
     n = normalize(n);
     n /= (abs(n.x) + abs(n.y) + abs(n.z) + 1e-20f);
 
-    float2 p = (n.z >= 0.0f) ? n.xy : (1.0f - abs(n.yx)) * sign(n.xy);
+    // FIX: Use SignNotZero instead of sign
+    float2 p = (n.z >= 0.0f) ? n.xy : (1.0f - abs(n.yx)) * SignNotZero(n.xy);
     p = clamp(p, -1.0f, 1.0f);
 
     int2 q = int2(round(p * 32767.0f));
@@ -47,14 +56,16 @@ inline uint PackOctSnorm16_payload(float3 n)
 
 inline float3 UnpackOctSnorm16_payload(uint u)
 {
-    int x = (int)(u << 16) >> 16; // sign-extend low16
-    int y = (int)u >> 16;         // sign-extend high16
+    int x = (int)(u << 16) >> 16;
+    int y = (int)u >> 16;
 
     float2 p = float2(x, y) / 32767.0f;
 
     float3 n = float3(p.x, p.y, 1.0f - abs(p.x) - abs(p.y));
     float t = clamp(-n.z, 0.0f, 1.0f);
-    n.xy += sign(n.xy) * t;
+
+    // FIX: Use SignNotZero instead of sign
+    n.xy += SignNotZero(n.xy) * t;
 
     return normalize(n);
 }
@@ -66,15 +77,28 @@ inline float3 UnpackOctSnorm16_payload(uint u)
 inline float2 OctEncodeFloat2_payload(float3 n)
 {
     n = normalize(n);
-    n /= (abs(n.x) + abs(n.y) + abs(n.z) + 1e-20f);
-    return (n.z >= 0.0f) ? n.xy : (1.0f - abs(n.yx)) * sign(n.xy);
+    // Project to octahedron
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+
+    // Reflect back hemisphere
+    if (n.z < 0.0f)
+    {
+        n.xy = (1.0f - abs(n.yx)) * SignNotZero(n.xy);
+    }
+
+    return n.xy;
 }
 
 inline float3 OctDecodeFloat2_payload(float2 e)
 {
     float3 n = float3(e.x, e.y, 1.0f - abs(e.x) - abs(e.y));
-    float t = clamp(-n.z, 0.0f, 1.0f);
-    n.xy += sign(n.xy) * t;
+
+    // Reflect back hemisphere
+    if (n.z < 0.0f)
+    {
+        n.xy = (1.0f - abs(n.yx)) * SignNotZero(n.xy);
+    }
+
     return normalize(n);
 }
 
@@ -182,26 +206,25 @@ inline void ClearFlags_payload(inout uint meta1, uint flags10)
 // --------------------------------------------
 struct [raypayload] PathRayPayload
 {
-    // in/out: current direction oct float2 (no quantization)
-    float2 dir2             : read(caller) : write(closesthit, miss);
+    // OUTPUT ONLY from CHS to caller (caller reads only on hit path)
+    float2 dir2             : read(caller) : write(closesthit);
 
-    // out: packed shading normal (Ns) for raygen origin offset, etc.
-    uint   packedNs         : read(caller) : write(closesthit, miss);
+    // ClosestHit reads previous normal for MIS and writes current normal
+    uint   packedNs         : read(caller, closesthit) : write(caller, closesthit, miss);
 
-    // in: packed state; out: below surface check
-    uint   meta0            : read(caller) : write(closesthit, miss);
-    uint   meta1            : read(caller) : write(closesthit, miss);
+    // ClosestHit reads incoming state and writes outgoing state
+    uint   meta0            : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   meta1            : read(caller, closesthit) : write(caller, closesthit, miss);
 
-    // in/out: RNG
-    uint   seed             : read(caller) : write(closesthit, miss);
-    // in IORs
-    uint   iorsPacked       : read(caller) : write(closesthit, miss);
+    // RNG + IORs: ClosestHit reads and updates
+    uint   seed             : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   iorsPacked       : read(caller, closesthit) : write(caller, closesthit, miss);
 
-    // Throughput (RGB9E5)
-    uint   packedThroughput : read(caller) : write(closesthit, miss);
+    // Throughput slot used as “weight”: ClosestHit writes, RayGen reads
+    uint   packedThroughput : read(caller, closesthit) : write(caller, closesthit, miss);
 
-    // out: BSDF PDF (Uncompressed)
-    float  bsdfPdf          : read(caller) : write(closesthit, miss);
+    // PDF: ClosestHit reads (prev) and writes (new)
+    float  bsdfPdf          : read(caller, closesthit) : write(caller, closesthit, miss);
 };
 
 // --------------------------------------------
@@ -263,6 +286,33 @@ inline PathRayPayload InitPayload_Raygen_payload(
 }
 
 // --------------------------------------------
+// Raygen initializer (packed inputs): avoids extra pack/encode work in raygen
+// --------------------------------------------
+inline PathRayPayload InitPayload_Raygen_packed_payload(
+    float2 dir2,              // already oct-encoded
+    uint   packedNs,          // already octsnorm16x2
+    uint   meta0,
+    uint   meta1,
+    uint   seed,
+    uint   iorsPacked,        // already half2 packed
+    uint   packedThroughput,  // already RGB9E5
+    float  bsdfPdf
+)
+{
+    PathRayPayload p = (PathRayPayload)0;
+    p.dir2             = dir2;
+    p.packedNs         = packedNs;
+    p.meta0            = meta0;
+    p.meta1            = meta1;
+    p.seed             = seed;
+    p.iorsPacked       = iorsPacked;
+    p.packedThroughput = packedThroughput;
+    p.bsdfPdf          = bsdfPdf;
+    return p;
+}
+
+
+// --------------------------------------------
 // Load: Compressed -> Uncompressed
 // --------------------------------------------
 inline PathPayloadUncompressed UnpackPayload_payload(PathRayPayload packed)
@@ -318,5 +368,40 @@ inline PathRayPayload PackPayload_payload(PathPayloadUncompressed u)
     p.bsdfPdf = u.bsdfPdf;
 
     return p;
+}
+
+
+// ============================================================================
+// Partial Payload Loaders (Selective Unpacking)
+// ============================================================================
+
+// Extracts the transmission flag (returns true if we transmitted through the surface)
+inline bool LoadTransmissionFlag(PathRayPayload p)
+{
+    return (GetFlags_payload(p.meta1) & PF_TRANSMIT_BACK) != 0;
+}
+
+// Extracts the Shading Normal (Ns) of the hit surface
+inline float3 LoadShadingNormal(PathRayPayload p)
+{
+    return UnpackOctSnorm16_payload(p.packedNs);
+}
+
+// Extracts the BSDF PDF of the sampled direction
+inline float LoadPDF(PathRayPayload p)
+{
+    return p.bsdfPdf;
+}
+
+// Extracts the sampled direction (s) for the next bounce
+inline float3 LoadDirection(PathRayPayload p)
+{
+    return OctDecodeFloat2_payload(p.dir2);
+}
+
+// Extracts the BSDF evaluation color (bdata.val) stored in the throughput field
+inline float3 LoadBSDFEval(PathRayPayload p)
+{
+    return UnpackRGB9E5(p.packedThroughput);
 }
 #endif // PAYLOAD_PATH_V1_HLSLI
