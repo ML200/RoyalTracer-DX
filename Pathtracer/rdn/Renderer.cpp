@@ -459,7 +459,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ "./pot/pot.obj"};
+        std::vector<std::string> models = {"./bistro/bistro.obj", /*"./workshop/workshop.obj",*/ "./pot/pot.obj"};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
