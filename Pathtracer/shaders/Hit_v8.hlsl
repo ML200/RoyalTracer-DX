@@ -1,28 +1,58 @@
 #include "Includes_raygen_v8.hlsli"
 
-[shader("closesthit")] void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttributes attr) {
-    uint   instanceIdx = InstanceID();
-    uint   primIdx     = PrimitiveIndex();
-    float3 rayOrigin   = WorldRayOrigin();
-    float2 bary = attr.barycentrics;
-
-    // Load data from raygen shader payload
+[shader("closesthit")]
+void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttributes attr)
+{
+    // 1. Unpack Payload (Load state from RayGen)
     PathPayloadUncompressed data = UnpackPayload_payload(payload);
 
+    // 3. Evaluate Surface
     HitInfo hinfo = EvalSurfaceState(InstanceID(), PrimitiveIndex(), attr.barycentrics, WorldRayOrigin(), data.depth);
 
-    // Absorption
-    if (data.mediumMatID != 0x0000FFFF)
+    // 4. Handle Absorption (Volume)
+    // We calculate it here and apply it to the BSDF return value later so RayGen applies it to throughput
+    float3 absorptionTint = float3(1, 1, 1);
+    if (data.mediumMatID != MEDIUM_INVALID_15)
     {
-         float3 tint = CalculateAbsorptionThroughput(materials[data.mediumMatID].Tf, RayTCurrent());
-         throughput *= tint;
+         absorptionTint = CalculateAbsorptionThroughput(materials[data.mediumMatID].Tf, RayTCurrent());
     }
 
-    // Only if we are not inside a medium, perform NEE. Also, the surface should have a diffuse component
-    if(!(data.mediumMatID != 0x0000FFFF || materials[data.matID].Kd.w < EPSILON)){
-        LT_LightSampleResult light = LT_SamplePointOnLight(rayOrigin + rayDir * RayTCurrent(), hinfo.hitNormal, seed);
+    // 5. Emission (Direct Leed) & MIS
+    {
+        float3 emission = GetEmissionFast(InstanceID(), PrimitiveIndex());
+        if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
+        {
+            if (data.depth == 0)
+            {
+                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission,0);
+            }
+            else
+            {
+                // MIS: Balance Heuristic
+                // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
+                float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, hinfo.objID);
 
-        float3 toLight = light.position - (rayOrigin + rayDir * RayTCurrent());
+                float cosLight   = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
+                float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
+
+                float prev_pdf   = data.bsdfPdf;
+                float misWeight  = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
+
+                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+            }
+        }
+    }
+
+    // 6. Next Event Estimation (NEE)
+    // Only perform if not in medium (simplified) and surface is not purely specular
+    bool performNEE = !(data.mediumMatID != MEDIUM_INVALID_15 || materials[data.matID].Kd.w < EPSILON);
+
+    if (performNEE)
+    {
+        float3 hitPos    = WorldRayOrigin() + WorldRayDirection() * RayTCurrent(); // Current intersection point
+        LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, data.seed);
+
+        float3 toLight = light.position - hitPos;
         float  distSq  = dot(toLight, toLight);
         float  dist    = sqrt(distSq);
         float3 L       = toLight / dist;
@@ -33,7 +63,7 @@
         if (cosSurf > 1e-6f && cosLight > 1e-6f)
         {
             RayDesc shadowRay;
-            shadowRay.Origin    = rayOrigin + rayDir * RayTCurrent();
+            shadowRay.Origin    = hitPos;
             shadowRay.Direction = L;
             shadowRay.TMin      = 0.001f;
             shadowRay.TMax      = dist - 0.001f;
@@ -44,18 +74,17 @@
 
             if (q.CommittedStatus() == COMMITTED_NOTHING)
             {
+                // Evaluate Surface for Light Direction
                 SamplingP sp_nee = CalculateStrategyProbabilities(
-                    data.matID, -rayDir, hinfo.hitNormal,
-                    iors.x, iors.y, hinfo.localKd, hinfo.localPm
+                    data.matID, -WorldRayDirection(), hinfo.hitNormal,
+                    data.iors.x, data.iors.y, hinfo.localKd, hinfo.localPm
                 );
 
                 BrdfData bdataNEE = EvaluateAndPdf_COMBINED(
                     sp_nee,
-                    data.matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir,
-                    hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
+                    data.matID, hinfo.hitNormal, hinfo.hitGNormal, L, -WorldRayDirection(),
+                    hinfo.localKd, hinfo.localPr, hinfo.localPm, data.iors.x, data.iors.y
                 );
-
-                float cosSurf = dot(hinfo.hitNormal, L);
 
                 float lightPdf = light.pdfSolidAngle;
                 float bsdfPdf  = bdataNEE.pdf;
@@ -63,50 +92,60 @@
                 if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                 {
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
-                    accumulatedRadiance += throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf);
+                    // data.throughput contains path throughput up to this vertex
+                    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0);
                 }
             }
         }
     }
 
-    {
-        float3 emission = GetEmissionFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
-        if (any(emission != 0) && hinfo.lightID != 0xFFFFFFFFu) {
-            if(depth == 0){
-                accumulatedRadiance = emission;
-                break;
-            }
-            else {
-                float lightPdfArea = LT_Pdf_LightTree_Area(prev_x, prev_n, hinfo.lightID, hinfo.objID);
-                float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
-                float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
-                float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
-                accumulatedRadiance += throughput * emission * misWeight;
-            }
-        }
-    }
-
-
+    // 7. Sample Next Direction (BSDF)
     SamplingP sp = CalculateStrategyProbabilities(
-        data.matID, -rayDir, hinfo.hitNormal,
-        iors.x, iors.y, hinfo.localKd, hinfo.localPm
+        data.matID, -WorldRayDirection(), hinfo.hitNormal,
+        data.iors.x, data.iors.y, hinfo.localKd, hinfo.localPm
     );
 
     float3 s = SampleBRDF(
-        sp, data.matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal,
+        sp, data.matID, -WorldRayDirection(), hinfo.hitNormal, hinfo.hitGNormal,
         hinfo.localKd, hinfo.localPr, hinfo.localPm,
-        seed, iors.x, iors.y, vior.pointer
+        data.seed, data.iors.x, data.iors.y, data.iorPointer
     );
 
-    // Evaluate and PDF
     BrdfData bdata = EvaluateAndPdf_COMBINED(
-        sp, data.matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir,
-        hinfo.localKd, hinfo.localPr, hinfo.localPm, iors.x, iors.y
+        sp, data.matID, hinfo.hitNormal, hinfo.hitGNormal, s, -WorldRayDirection(),
+        hinfo.localKd, hinfo.localPr, hinfo.localPm, data.iors.x, data.iors.y
     );
 
-    if (dot(hinfo.hitGNormal, s) < 0.0f)
-        // TODO set below surface flag bit
+    // 8. Update Payload for Return
 
-    // Update the payload and compress it for returning
+    // Direction & PDF
+    data.dir     = s;
+    data.bsdfPdf = bdata.pdf;
+
+    // Normal: Update to current shading normal (for next bounce cosine term in RayGen)
+    data.normal  = hinfo.hitNormal;
+
+    // Calculate the cosine term here
+    float cosTheta = abs(dot(hinfo.hitNormal, s));
+
+    // Calculate the full throughput update weight
+    // Weight = (BSDF * Absorption * Cos) / PDF
+    // This value is typically <= 1.0, so it packs safely into RGB9E5
+    float3 updateWeight = float3(0, 0, 0);
+    if (bdata.pdf > 1e-6f)
+    {
+        updateWeight = (bdata.val * absorptionTint * cosTheta) / bdata.pdf;
+    }
+
+    // Store the WEIGHT in the throughput slot, not the raw BSDF value
+    data.throughput = updateWeight;
+
+    // Flags: Update Transmission bit
+    if (dot(hinfo.hitGNormal, s) < 0.0f)
+        data.flags |= PF_TRANSMIT_BACK;
+    else
+        data.flags &= ~PF_TRANSMIT_BACK;
+
+    // 9. Pack and Return
     payload = PackPayload_payload(data);
 }

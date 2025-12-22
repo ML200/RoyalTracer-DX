@@ -6,93 +6,166 @@ using namespace dx;
 #define MAX_BOUNCES 30
 #endif
 
+
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
+    const uint2 pix = DispatchRaysIndex().xy;
+
     // Reset output texture
-    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] = float4(0,0,0,0);
-    uint  seed        = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
+    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
+
+    uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
     float3 rayOrigin = InitOrigin();
-    float3 rayDir    = InitDirection(DispatchRaysIndex().xy, float2(DispatchRaysDimensions().xy), seed);
 
-    // path state
-    half3 accumulatedRadiance = float3(0, 0, 0);
-    half3 throughput          = float3(1, 1, 1);
+    // Keep direction compressed across bounces: oct float2
+    float3 dir0   = InitDirection(pix, float2(DispatchRaysDimensions().xy), seed);
+    float2 rayDir2 = OctEncodeFloat2_payload(dir0);
+
+    // Keep throughput compressed across bounces: RGB9E5
+    uint packedThroughput = PackRGB9E5(float3(1.0f, 1.0f, 1.0f));
+
+    // Keep previous normal compressed across bounces: octsnorm16x2
+    uint prevNPacked = PackOctSnorm16_payload(float3(0.0f, 1.0f, 0.0f));
+
+    // Path state (still unpacked for now; biggest future win is packing these)
     VolumeIOR vior = InitVolumeIOR();
     VolumeAux aior = InitVolumeAux();
 
-    float  prev_pdf = 1.0f;
-    float3 prev_x;
-    float3 prev_n;
-
+    float prev_pdf = 1.0f;
 
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
-        bool badDir = any(isnan(rayDir)) || any(isinf(rayDir)) || length(rayDir) < 1e-6f;
-        bool badOrg = any(isnan(rayOrigin))    || any(isinf(rayOrigin));
+        // Decode direction only for the work that needs float3
+        float3 rayDir = OctDecodeFloat2_payload(rayDir2);
+
+        // Avoid sqrt; keep debug only
+        float d2 = dot(rayDir, rayDir);
+        bool badDir = any(isnan(rayDir)) || any(isinf(rayDir)) || (d2 < 1e-12f);
+        bool badOrg = any(isnan(rayOrigin)) || any(isinf(rayOrigin));
         if (badDir || badOrg) break;
+
         RayDesc ray;
         ray.Origin    = rayOrigin;
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
+
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-        if (!hitObj.IsHit()) { gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += throughput * EvalMissState(); break; }
+        if (!hitObj.IsHit())
+        {
+            // Unpack throughput only when needed
+            float3 T = UnpackRGB9E5(packedThroughput);
+            gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0);
+            break;
+        }
 
-        // Get material id of our current
+        // --------------------------------------------------------------------
+        // Pre-invoke setup (phantom check & payload init)
+        // --------------------------------------------------------------------
         uint matID = GetMatIDFast(hitObj.GetInstanceIndex(), hitObj.GetPrimitiveIndex());
 
-        // Check iors, maybe for phantom surface
+        // Get IORs (currently returns half2); pack immediately and keep packed
         half2 iors = GetIORs(vior, aior, matID, hitObj.GetInstanceIndex());
-        if (iors.y == 0.0f) // Phantom surfaces
+        uint  iorsPacked = PackHalf2_payload(float2(iors.x, iors.y));
+
+        // Phantom surface: if ior.y == 0, advance and continue
+        // (ior.y is stored in upper 16 bits in your PackHalf2)
+        if ((iorsPacked >> 16) == 0u)
         {
             rayOrigin += hitObj.GetRayTCurrent() * rayDir;
             UpdateIORStack(vior, aior, matID, hitObj.GetInstanceIndex());
             continue;
         }
-        uint currentMatID = GetCurrentMediumMaterialID(vior, aior);
 
-        PathRayPayload payload = InitPayload_Raygen_payload(matID, currentMatID, rayDir, seed, iors, depth, vior.pointer);
-        dx::HitObject::Invoke(hitObj, payload);
-        // Partial loaders loading the rest of the required data later (normal, updateior condition etc so we save registers)
+        uint currentMediumMatID = GetCurrentMediumMaterialID(vior, aior);
 
-        // Terminate on invalid samples
-        if (length(s) == 0.0f || bdata.pdf <= 1e-6f || any(isnan(bdata.val)))
+        // Metadata packed once
+        uint meta0 = PackMeta0_payload((uint)depth, vior.pointer, matID, currentMediumMatID);
+        uint meta1 = PackMeta1_payload(currentMediumMatID, (depth == 0) ? PF_FIRST_BOUNCE : 0);
+
+        // --------------------------------------------------------------------
+        // Invoke ClosestHit: keep payload strictly short-lived
+        // --------------------------------------------------------------------
+        float2 nextDir2;
+        uint   nextNPacked;
+        uint   nextPackedThroughput; // CHS currently returns updateWeight in this slot
+        float  nextPdf;
+        uint   nextSeed;
+        uint   outMeta1;
+
         {
-            break;
-        }
+            PathRayPayload payload = InitPayload_Raygen_packed_payload(
+                rayDir2,               // current ray dir in oct form
+                prevNPacked,           // previous shading normal packed
+                meta0,
+                meta1,
+                seed,
+                iorsPacked,
+                packedThroughput,      // path throughput up to this vertex (packed)
+                prev_pdf
+            );
 
-        // Update throughput
-        float cosThetaLoop = abs(dot(hinfo.hitNormal, s));
-        throughput *= (bdata.val * cosThetaLoop) / bdata.pdf;
+            dx::HitObject::Invoke(hitObj, payload);
 
-        // Aggressive russian roulette termination to leverage max SER
-        if(depth > 0){
-            float survivalProb = Luma(throughput);
-            if (survivalProb > 1.0f) survivalProb = 1.0f;
+            nextDir2            = payload.dir2;
+            nextNPacked         = payload.packedNs;
+            nextPackedThroughput= payload.packedThroughput;
+            nextPdf             = payload.bsdfPdf;
+            nextSeed            = payload.seed;
+            outMeta1            = payload.meta1;
 
-            if (RandomFloatSingle(seed) >= survivalProb)
+            // Transmission flag update uses meta1 from CHS
+            if ((GetFlags_payload(outMeta1) & PF_TRANSMIT_BACK) != 0)
             {
-                break;
+                UpdateIORStack(vior, aior, matID, hitObj.GetInstanceIndex());
             }
-            throughput /= max(survivalProb, 0.1f);
-        }
+        } // payload dies here
 
-        // Update IOR stack on transmission
-        if (dot(hinfo.hitGNormal, s) < 0.0f) // TODO replace the condition with flag return from the hit shader
+        // --------------------------------------------------------------------
+        // Validate and update state (keep unpacked locals short-lived)
+        // --------------------------------------------------------------------
+        // Decode next direction only for validation / tracing next bounce
+        float3 s = OctDecodeFloat2_payload(nextDir2);
+
+        // Weight is returned in packedThroughput slot (per your current CHS design)
+        float3 weight = UnpackRGB9E5(nextPackedThroughput);
+
+        // Validate
+        if (dot(s, s) < 1e-12f || nextPdf <= 1e-6f || any(isnan(weight)) || any(isinf(weight)))
+            break;
+
+        // Apply throughput update in a tight scope
         {
-            UpdateIORStack(vior, aior, matID, hinfo.objID);
+            float3 T = UnpackRGB9E5(packedThroughput);
+            T *= weight;
+            packedThroughput = PackRGB9E5(T);
         }
 
-        // Setup for next bounce
-        rayOrigin += hinfo.hitT * rayDir;
-        rayDir    = s;
+        // Update RNG
+        seed = nextSeed;
 
-        prev_pdf = bdata.pdf;
-        prev_x  = rayOrigin;
-        prev_n  = hinfo.hitNormal;
+        // Russian Roulette (unpack only for luma)
+        if (depth > 0)
+        {
+            float3 T = UnpackRGB9E5(packedThroughput);
+            float survivalProb = min(1.0f, Luma(T));
+            if (RandomFloatSingle(seed) >= survivalProb) break;
+            T /= max(survivalProb, 0.1f);
+            packedThroughput = PackRGB9E5(T);
+        }
+
+        // --------------------------------------------------------------------
+        // Advance ray
+        // --------------------------------------------------------------------
+        rayOrigin += hitObj.GetRayTCurrent() * rayDir;
+
+        // Carry compressed state to next bounce
+        rayDir2         = nextDir2;
+        prevNPacked     = nextNPacked;
+        prev_pdf        = nextPdf;
     }
 }
