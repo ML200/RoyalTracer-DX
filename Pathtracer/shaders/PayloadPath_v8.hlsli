@@ -46,12 +46,11 @@ inline uint PackOctSnorm16_payload(float3 n)
     n = normalize(n);
     n /= (abs(n.x) + abs(n.y) + abs(n.z) + 1e-20f);
 
-    // FIX: Use SignNotZero instead of sign
     float2 p = (n.z >= 0.0f) ? n.xy : (1.0f - abs(n.yx)) * SignNotZero(n.xy);
     p = clamp(p, -1.0f, 1.0f);
 
     int2 q = int2(round(p * 32767.0f));
-    return (uint(q.x) & 0xFFFFu) | (uint(q.y) << 16);
+    return (uint(q.x) & 0xFFFFu) | ((uint(q.y) & 0xFFFFu) << 16);
 }
 
 inline float3 UnpackOctSnorm16_payload(uint u)
@@ -60,12 +59,15 @@ inline float3 UnpackOctSnorm16_payload(uint u)
     int y = (int)u >> 16;
 
     float2 p = float2(x, y) / 32767.0f;
+    p = clamp(p, -1.0f, 1.0f);
 
     float3 n = float3(p.x, p.y, 1.0f - abs(p.x) - abs(p.y));
-    float t = clamp(-n.z, 0.0f, 1.0f);
 
-    // FIX: Use SignNotZero instead of sign
-    n.xy += SignNotZero(n.xy) * t;
+    // MATCHES your encoder: reflect for lower hemisphere
+    if (n.z < 0.0f)
+    {
+        n.xy = (1.0f - abs(n.yx)) * SignNotZero(n.xy);
+    }
 
     return normalize(n);
 }

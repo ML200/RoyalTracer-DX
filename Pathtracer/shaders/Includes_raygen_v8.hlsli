@@ -99,3 +99,4 @@ cbuffer CameraParams : register(b0)
 #include "Camera_ray_v8.hlsli"
 #include "Path_Sampler_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
+#include "VolumeStackPacked_v8.hlsli"
