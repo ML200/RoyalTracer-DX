@@ -100,3 +100,4 @@ cbuffer CameraParams : register(b0)
 #include "Path_Sampler_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
+#include "SunSampler_v8.hlsli"

@@ -30,7 +30,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             {
                 // MIS: Balance Heuristic
                 // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
-                float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, hinfo.objID);
+                float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceID());
 
                 float cosLight   = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
                 float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
@@ -94,6 +94,69 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
                     // data.throughput contains path throughput up to this vertex
                     gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0);
+                }
+            }
+        }
+    }
+
+    // Directional light
+    if (performNEE)
+    {
+        float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+
+        // ----------------------------------------------------
+        // A. EXISTING LOCAL LIGHTS (Keep your existing logic)
+        // ----------------------------------------------------
+        LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, data.seed);
+        // ... [Your existing Point Light code goes here] ...
+        // ...
+
+        // ----------------------------------------------------
+        // B. PHYSICAL SUN LIGHT (New Implementation)
+        // ----------------------------------------------------
+        {
+            // 1. Sample direction on the sun cone
+            float2 rSun = float2(RandomFloatSingle(data.seed), RandomFloatSingle(data.seed));
+            SunSampleResult sun = SampleSun(rSun);
+
+            float NdotL = dot(hinfo.hitNormal, sun.direction);
+
+            // Only trace if light is above horizon
+            if (NdotL > 1e-6f)
+            {
+                RayDesc shadowRay;
+                shadowRay.Origin    = hitPos;
+                shadowRay.Direction = sun.direction;
+                shadowRay.TMin      = 0.001f;
+                shadowRay.TMax      = sun.dist; // Effectively infinite
+
+                RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+                q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
+                q.Proceed();
+
+                if (q.CommittedStatus() == COMMITTED_NOTHING)
+                {
+                    // Evaluate BSDF for this Light Direction
+                    SamplingP sp_nee = CalculateStrategyProbabilities(
+                        data.matID, -WorldRayDirection(), hinfo.hitNormal,
+                        data.iors.x, data.iors.y, hinfo.localKd, hinfo.localPm
+                    );
+
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(
+                        sp_nee,
+                        data.matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -WorldRayDirection(),
+                        hinfo.localKd, hinfo.localPr, hinfo.localPm, data.iors.x, data.iors.y
+                    );
+
+                    float lightPdf = sun.pdf;
+                    float bsdfPdf  = bdataNEE.pdf;
+
+                    if (lightPdf > 0.0f && bsdfPdf > 0.0f)
+                    {
+                        float3 contrib = data.throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
+
+                        gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0);
+                    }
                 }
             }
         }
