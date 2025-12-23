@@ -244,131 +244,184 @@ inline dx::HitObject TraceRay_Custom(
 inline float3 EvalMissState()
 {
     // Miss shader
-    return float3(0.8f, 0.8f, 0.8f);
+    return float3(0.2f, 0.2f, 0.2f);
 }
 
-inline HitInfo EvalSurfaceState(
-    uint      instID,
-    uint      primID,
-    float2    bc2,
-    float3    origin,
-    uint level
-    )
+HitInfo EvalSurfaceState(
+    uint   instID,
+    uint   primID,
+    float2 bc2,
+    float3 origin,
+    uint   level
+)
 {
-    // 1. DATA GATHER
-    const uint baseI = instanceProps[instID].indexBase;
-    const uint baseM = instanceProps[instID].materialBase;
+    // 1) DATA GATHER (keep indices/offsets short-lived)
+    const uint baseI      = instanceProps[instID].indexBase;
+    const uint baseM      = instanceProps[instID].materialBase;
     const uint materialID = materialIDs[baseM + primID];
 
-    const uint i0 = indices[baseI + 3u*primID + 0];
-    const uint i1 = indices[baseI + 3u*primID + 1];
-    const uint i2 = indices[baseI + 3u*primID + 2];
+    const uint i0 = indices[baseI + 3u * primID + 0u];
+    const uint i1 = indices[baseI + 3u * primID + 1u];
+    const uint i2 = indices[baseI + 3u * primID + 2u];
 
-    const STriVertex v0 = BTriVertex[i0];
-    const STriVertex v1 = BTriVertex[i1];
-    const STriVertex v2 = BTriVertex[i2];
+    // Load only required vertex fields (avoid whole-struct register bloat)
+    const float3 p0 = BTriVertex[i0].vertex;
+    const float3 p1 = BTriVertex[i1].vertex;
+    const float3 p2 = BTriVertex[i2].vertex;
 
-    // 2. LOCAL GEOMETRY
-    const float3 bary = float3(1.0f - bc2.x - bc2.y, bc2.x, bc2.y);
+    const float2 uv0 = (float2)BTriVertex[i0].texCoord;
+    const float2 uv1 = (float2)BTriVertex[i1].texCoord;
+    const float2 uv2 = (float2)BTriVertex[i2].texCoord;
 
-    const float3 p_local = v0.vertex * bary.x + v1.vertex * bary.y + v2.vertex * bary.z;
+    const uint pn0 = BTriVertex[i0].packedNormal;
+    const uint pn1 = BTriVertex[i1].packedNormal;
+    const uint pn2 = BTriVertex[i2].packedNormal;
 
-    const float2 uv0 = (float2)v0.texCoord;
-    const float2 uv1 = (float2)v1.texCoord;
-    const float2 uv2 = (float2)v2.texCoord;
-    const float2 uv  = uv0 * bary.x + uv1 * bary.y + uv2 * bary.z;
+    // 2) LOCAL GEOMETRY
+    const float b1 = bc2.x;
+    const float b2 = bc2.y;
+    const float b0 = 1.0f - b1 - b2;
 
-    float3 n0 = UnpackNormal_INT(v0.packedNormal);
-    float3 n1 = UnpackNormal_INT(v1.packedNormal);
-    float3 n2 = UnpackNormal_INT(v2.packedNormal);
+    const float3 p_local = p0 * b0 + p1 * b1 + p2 * b2;
+    const float2 uv      = uv0 * b0 + uv1 * b1 + uv2 * b2;
 
-    // Fix degenerate normals logic (kept same as yours)
-    const float3 e1_local = v1.vertex - v0.vertex;
-    const float3 e2_local = v2.vertex - v0.vertex;
-    const float3 faceN_local_un = cross(e1_local, e2_local);
-    const float  area_obj       = 0.5f * length(faceN_local_un);
-    const float3 flatN_obj      = (area_obj > 0.0f) ? normalize(faceN_local_un) : float3(0,0,1);
+    // Face normal + degeneracy test without length()
+    const float3 e1_local = p1 - p0;
+    const float3 e2_local = p2 - p0;
+    const float3 faceN_un = cross(e1_local, e2_local);
+    const float  faceLen2 = dot(faceN_un, faceN_un);
 
-    if (dot(n0, n0) < EPSILON || dot(normalize(n0), flatN_obj) <= 0.4f) n0 = flatN_obj;
-    if (dot(n1, n1) < EPSILON || dot(normalize(n1), flatN_obj) <= 0.4f) n1 = flatN_obj;
-    if (dot(n2, n2) < EPSILON || dot(normalize(n2), flatN_obj) <= 0.4f) n2 = flatN_obj;
+    // Normalize via rsqrt; use fallback for degenerate triangle
+    const float3 flatN_obj =
+        (faceLen2 > 1e-20f) ? (faceN_un * rsqrt(faceLen2)) : float3(0.0f, 0.0f, 1.0f);
 
-    float3 n_local = normalize(n0 * bary.x + n1 * bary.y + n2 * bary.z);
+    // Shading normals (keep temporaries tight)
+    float3 n0 = UnpackNormal_INT(pn0);
+    float3 n1 = UnpackNormal_INT(pn1);
+    float3 n2 = UnpackNormal_INT(pn2);
 
-    if (dot(n_local, flatN_obj) < 0.0f) {
-        n_local = normalize(n_local - 2.0f * dot(n_local, flatN_obj) * flatN_obj);
+    // Replace degenerate / flipped / junk normals with flat normal
+    // (avoid normalize() unless needed)
+    {
+        const float n0l2 = dot(n0, n0);
+        if (n0l2 < EPSILON) n0 = flatN_obj;
+        else {
+            const float inv0 = rsqrt(n0l2);
+            if (dot(n0 * inv0, flatN_obj) <= 0.4f) n0 = flatN_obj;
+        }
+
+        const float n1l2 = dot(n1, n1);
+        if (n1l2 < EPSILON) n1 = flatN_obj;
+        else {
+            const float inv1 = rsqrt(n1l2);
+            if (dot(n1 * inv1, flatN_obj) <= 0.4f) n1 = flatN_obj;
+        }
+
+        const float n2l2 = dot(n2, n2);
+        if (n2l2 < EPSILON) n2 = flatN_obj;
+        else {
+            const float inv2 = rsqrt(n2l2);
+            if (dot(n2 * inv2, flatN_obj) <= 0.4f) n2 = flatN_obj;
+        }
     }
 
-    // 3. TRANSFORM
-    float3 posW, normW, geoNormW, tangentW_geom;
+    // Interpolate and normalize shading normal
+    float3 n_local = n0 * b0 + n1 * b1 + n2 * b2;
+    n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
+
+    // Ensure shading normal points to same hemisphere as geometric normal
+    if (dot(n_local, flatN_obj) < 0.0f)
+    {
+        n_local = n_local - 2.0f * dot(n_local, flatN_obj) * flatN_obj;
+        n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
+    }
+
+    // 3) TRANSFORM (only keep what is needed across later phases)
+    float3 posW;
+    float3 normW;
+    float3 geoNormW;
+    float3 tangentW_geom;
 
     {
-        float4x4 M = instanceProps[instID].objectToWorld;
-        float3x3 M_rot = (float3x3)M;
+        const float4x4 M = instanceProps[instID].objectToWorld;
+        const float3x3 R = (float3x3)M;
 
-        posW = mul(M, float4(p_local, 1.0f)).xyz;
-        normW    = normalize(mul(M_rot, n_local));
-        geoNormW = normalize(mul(M_rot, flatN_obj));
+        posW     = mul(M, float4(p_local, 1.0f)).xyz;
+        normW    = mul(R, n_local);
+        normW   *= rsqrt(max(dot(normW, normW), 1e-20f));
 
-        // Calculate Tangent in World Space using transformed vertices
-        // We do this here because non-uniform scaling might skew local tangents
-        float3 p0W = mul(M, float4(v0.vertex, 1.0)).xyz;
-        float3 p1W = mul(M, float4(v1.vertex, 1.0)).xyz;
-        float3 p2W = mul(M, float4(v2.vertex, 1.0)).xyz;
+        geoNormW = mul(R, flatN_obj);
+        geoNormW *= rsqrt(max(dot(geoNormW, geoNormW), 1e-20f));
 
-        tangentW_geom = CalculateGeometricTangent(p0W, p1W, p2W, uv0, uv1, uv2, normW);
+        // Geometric tangent in object space (from edges + UV deltas), then transform.
+        const float2 dUV1 = uv1 - uv0;
+        const float2 dUV2 = uv2 - uv0;
+
+        const float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+        const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
+
+        // Unnormalized object tangent
+        const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
+
+        tangentW_geom = mul(R, tanO);
+        // Normalize (safe even if det==0 -> tanO==0)
+        tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
     }
 
-    // 4. MATERIAL & TEXTURING
+    // 4) MATERIAL & TEXTURING
     const Material mat = materials[materialID];
+
     HitInfo hit = (HitInfo)0.0f;
     hit.localKd = EvaluateAlbedo(mat, uv, level);
-    float2 pbr  = EvaluatePBRProperties(mat, uv, level);
-    hit.localPr = pbr.x;
-    hit.localPm = pbr.y;
 
-    // 5. NORMAL MAPPING (FIXED)
-    if (mat.normalTexID != -1)
     {
-        float2 normalUV = uv * mat.normalUVScale;
-
-        // Use the geometric tangent we calculated above
-        float3 T = tangentW_geom;
-
-        // Re-orthogonalize T with respect to the shading normal
-        float3 tangentW   = normalize(T - dot(T, normW) * normW);
-        // Compute Bitangent
-        float3 bitangentW = cross(normW, tangentW);
-
-        float3x3 tbn = float3x3(tangentW, bitangentW, normW);
-
-        float3 n_tangent = normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), level).xyz * 2.0f - 1.0f;
-
-        normW = normalize(mul(n_tangent, tbn));
+        const float2 pbr = EvaluatePBRProperties(mat, uv, level);
+        hit.localPr = pbr.x;
+        hit.localPm = pbr.y;
     }
 
-    // 6. FINALIZE HIT INFO
-    float3 viewDir = normalize(posW - origin);
+    // 5) NORMAL MAPPING (avoid TBN matrix; scope aggressively)
+    [branch]
+    if (mat.normalTexID != -1)
+    {
+        const float2 normalUV = uv * mat.normalUVScale;
 
-    hit.hitT = length(posW - origin);
-    hit.materialID  = materialID;
-    hit.objID       = instID;
+        // Gram–Schmidt tangent against shading normal
+        float3 tangentW = tangentW_geom - dot(tangentW_geom, normW) * normW;
+        tangentW *= rsqrt(max(dot(tangentW, tangentW), 1e-20f));
+
+        const float3 bitangentW = cross(normW, tangentW);
+
+        const float3 n_tan =
+            normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), level).xyz * 2.0f - 1.0f;
+
+        // Apply TBN without materializing float3x3
+        normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
+        normW *= rsqrt(max(dot(normW, normW), 1e-20f));
+    }
+
+    // 6) FINALIZE HIT INFO
+    float3 viewDir = posW - origin;
+    viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
+
     const bool isBackface = (dot(viewDir, geoNormW) > 0.0f);
-    hit.hitNormal   = isBackface ? -normW : normW;
-    hit.hitGNormal  = isBackface ? -geoNormW : geoNormW;
 
+    hit.hitNormal  = isBackface ? -normW    : normW;
+    hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
+
+    // Clamp (keep Vw scoped)
     {
         const float3 Vw = -viewDir;
         hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, 0.1f, 0.02f);
     }
 
-    const uint baseL = instanceProps[instID].triToLightBase;
+    const uint baseL        = instanceProps[instID].triToLightBase;
     const uint frontLightID = gTriToLightId[baseL + primID];
-
     hit.lightID = isBackface ? 0xFFFFFFFFu : frontLightID;
 
     return hit;
 }
+
 
 // Cheap helper to check if hit triangle is a light and return emission for immediate processing
 inline float3 GetEmissionFast(in uint instID, in uint primID)

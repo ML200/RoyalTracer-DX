@@ -12,11 +12,8 @@ struct [raypayload] HitBlobPayload
 
 // Logical struct
 struct HitInfo {
-    float  hitT;
     float3 hitNormal;
     float3 hitGNormal;
-    uint   objID;
-    uint   materialID;
     uint   lightID;
     float3 localKd;
     half  localPr;
@@ -26,9 +23,6 @@ struct HitInfo {
 
 void CompressToPayload(in HitInfo info, inout HitBlobPayload payload)
 {
-    payload.hitT          = info.hitT;
-    payload.objID         = info.objID;
-    payload.materialID    = info.materialID;
     payload.lightID       = info.lightID;
     payload.packedNormalS = PackNormal(info.hitNormal);
     payload.packedNormalG = PackNormal(info.hitGNormal);
@@ -41,9 +35,6 @@ HitInfo DecompressHitInfo(in HitBlobPayload p)
     HitInfo info;
 
     // 1. Raw Copies
-    info.hitT       = p.hitT;
-    info.objID      = p.objID;
-    info.materialID = p.materialID;
     info.lightID    = p.lightID;
 
     // 2. Vector Unpacking (Done once)
