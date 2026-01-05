@@ -93,7 +93,6 @@ cbuffer CameraParams : register(b0)
     float time;
 }
 // These includes need access to ALL previous buffers
-#include "Reservoir_DI_v8.hlsli"
 #include "Reservoir_GI_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Camera_ray_v8.hlsli"

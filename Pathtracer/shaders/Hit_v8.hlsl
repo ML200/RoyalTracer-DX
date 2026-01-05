@@ -24,7 +24,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
         {
             if (data.depth == 0)
             {
-                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission,0);
+                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission,0); // TODO: UPDATE RESERVOIR HERE
             }
             else
             {
@@ -38,7 +38,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 float prev_pdf   = data.bsdfPdf;
                 float misWeight  = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
 
-                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0); // TODO: UPDATE RESERVOIR HERE
             }
         }
     }
@@ -93,7 +93,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 {
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
                     // data.throughput contains path throughput up to this vertex
-                    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0);
+                    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0); // TODO: UPDATE RESERVOIR HERE
                 }
             }
         }
@@ -155,7 +155,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     {
                         float3 contrib = data.throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
 
-                        gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0);
+                        gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0); // TODO: UPDATE RESERVOIR HERE
                     }
                 }
             }

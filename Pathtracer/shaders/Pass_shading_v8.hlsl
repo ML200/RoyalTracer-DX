@@ -88,7 +88,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
-    float3 sceneLinear = PBRNeutral(newAvg);
+    float3 sceneLinear = newAvg;//PBRNeutral(newAvg);
     float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
 
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
