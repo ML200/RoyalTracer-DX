@@ -16,7 +16,7 @@ void Pass_raygen_v8()
     const uint2 pix = DispatchRaysIndex().xy;
 
     // Reset output texture
-    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
+    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0); // TODO: replace with reservoir init
 
     uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
@@ -71,7 +71,7 @@ void Pass_raygen_v8()
         {
             // Unpack throughput only when needed
             float3 T = UnpackRGB9E5(packedThroughput);
-            gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0);
+            gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0); // TODO: UPDATE RESERVOIR HERE
             break;
         }
 
