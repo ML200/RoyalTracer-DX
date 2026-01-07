@@ -88,7 +88,6 @@ void UnpackSurfaceParams(uint v, out float r0, out float r1, out float m0, out f
 }
 
 // -- View Dir (24-bit Oct) + M (8-bit) --
-// -- View Dir (24-bit Oct) + M (8-bit) --
 // Encodes Normal to 2x12-bit Snorm, leaves 8 bits for M
 uint PackV_M(float3 V, uint M)
 {

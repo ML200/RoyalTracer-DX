@@ -103,17 +103,6 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
     if (performNEE)
     {
         float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-
-        // ----------------------------------------------------
-        // A. EXISTING LOCAL LIGHTS (Keep your existing logic)
-        // ----------------------------------------------------
-        LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, data.seed);
-        // ... [Your existing Point Light code goes here] ...
-        // ...
-
-        // ----------------------------------------------------
-        // B. PHYSICAL SUN LIGHT (New Implementation)
-        // ----------------------------------------------------
         {
             // 1. Sample direction on the sun cone
             float2 rSun = float2(RandomFloatSingle(data.seed), RandomFloatSingle(data.seed));
