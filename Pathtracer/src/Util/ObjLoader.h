@@ -29,7 +29,7 @@
 struct TextureData;
 constexpr float PI = 3.14159265359f;
 // Texture packing
-constexpr int TARGET_TEXTURE_DIM = 4096;
+constexpr int TARGET_TEXTURE_DIM = 2048;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
