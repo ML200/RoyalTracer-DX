@@ -1,244 +1,235 @@
-// =================================================================================
-// RIS Reservoir Storage Management
-// =================================================================================
-
+// RIS reservoir for direct lighting
 struct Reservoir_GI
 {
-    // Geometry (World Space)
-    float3 xn0;
-    float3 xn1;
+    float3 x2_gi;
+    float3 n2_gi;
+    float  W_gi;
+    float  w_sum_gi;
+    float3 L2_gi;
+    float3 V2_gi;
 
-    // Normals (Compressed Octahedral)
-    float3 nn0;
-    float3 nn1;
+    float F_gi;
+    float4 J_gi;
+    uint   lobe0_gi;
+    uint   lobe1_gi;
 
-    // RIS Weights
-    float  W;
-    float  wsum; // Stored for local reuse
+    uint   M_gi;
+    uint   objID_gi;
+    uint   matID_gi;
+    uint   rSeed_gi;
+    uint   rIndex_gi;
 
-    // Radiance of remaining path segment & target function for the current path stored in the reservoir (RGB9E5 Compressed)
-    float3 L;
-    float3 F;
-
-    uint   rSeed;
-
-    // Confidence weight
-    uint   M;
-
-    // View Direction (Octahedral 24-bit combined with M)
-    float3 V;
-
-    // Albedo (RGB9E5 Compressed)
-    float3 Kd0;
-    float3 Kd1;
-
-    // Surface Parameters (Packed 4x 8-bit)
-    // Pr = Roughness, Pm = Metallicness
-    float  Pr0;
-    float  Pr1;
-    float  Pm0;
-    float  Pm1;
-
-    // Object & Material IDs
-    uint   objID0;
-    uint   objID1;
-    uint   mID0;   // 16-bit
-    uint   mID1;   // 16-bit
+    // --- NEW FIELDS ---
+    float3 rKd_gi;  // Diffuse albedo (packed RGB9E5)
+    float  rPr_gi;  // Roughness parameter 1 (packed half)
+    float  rPm_gi;  // Roughness parameter 2 (packed half)
 };
 
-// =================================================================================
-// Memory Layout
-// =================================================================================
-// Size: 80 Bytes
+
+// Data management
+// Expanded from 64 to 80 bytes to fit Pack 5
 static const uint BYTES_GI    = 80u;
 
-static const uint O_GI_PACK1  =  0u;   // float4: xn0, nn0(pk)
-static const uint O_GI_PACK2  = 16u;   // float4: xn1, nn1(pk)
-static const uint O_GI_PACK3  = 32u;   // float4: W, wsum, L(pk), F(pk)
-static const uint O_GI_PACK4  = 48u;   // uint4:  obj0, obj1, mIDs(pk), seed
-static const uint O_GI_PACK5  = 64u;   // uint4:  Kd0(pk), Kd1(pk), Params(pk), V_M(pk)
+static const uint O_GI_PACK1  =  0u;   // float4
+static const uint O_GI_PACK2  = 16u;   // float4
+static const uint O_GI_PACK3  = 32u;   // float4
+static const uint O_GI_PACK4  = 48u;   // float4
+static const uint O_GI_PACK5  = 64u;   // float4 (x: rKd, y: rPr/Pm, z: w_sum, w: pad)
 
 uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * BYTES_GI; }
 
-// =================================================================================
-// Compression Helpers
-// =================================================================================
+// --- HELPERS ---
 
-// -- Material IDs: 2x 16-bit --
-uint PackMatIDs(uint m0, uint m1) { return (m0 & 0xFFFFu) | (m1 << 16); }
-void UnpackMatIDs(uint v, out uint m0, out uint m1) { m0 = v & 0xFFFFu; m1 = v >> 16; }
+uint  PackMatID_M(uint matID, uint M) { return (matID & 0xFFFFu) | (M << 16); }
+void  UnpackMatID_M(uint v, out uint matID, out uint M)
+{ matID = v & 0xFFFFu;  M = v >> 16; }
 
-// -- Surface Params: 4x 8-bit (Roughness/Metalness) --
-uint PackSurfaceParams(float r0, float r1, float m0, float m1)
+uint PackLobes16(uint a, uint b) { return ( (b & 0xFFu) << 8 ) | (a & 0xFFu); }
+void UnpackLobes16(uint v16, out uint a, out uint b)
 {
-    uint p0 = uint(saturate(r0) * 255.0f);
-    uint p1 = uint(saturate(r1) * 255.0f);
-    uint p2 = uint(saturate(m0) * 255.0f);
-    uint p3 = uint(saturate(m1) * 255.0f);
-    return p0 | (p1 << 8) | (p2 << 16) | (p3 << 24);
+    a =  v16       & 0xFFu;
+    b = (v16 >> 8) & 0xFFu;
 }
 
-void UnpackSurfaceParams(uint v, out float r0, out float r1, out float m0, out float m1)
+// Pack two floats into one uint as halfs
+uint PackHalfs(float a, float b)
 {
-    const float s = 1.0f / 255.0f;
-    r0 = float(v & 0xFFu) * s;
-    r1 = float((v >> 8) & 0xFFu) * s;
-    m0 = float((v >> 16) & 0xFFu) * s;
-    m1 = float(v >> 24) * s;
+    return (f32tof16(b) << 16) | f32tof16(a);
 }
 
-// -- View Dir (24-bit Oct) + M (8-bit) --
-// Encodes Normal to 2x12-bit Snorm, leaves 8 bits for M
-uint PackV_M(float3 V, uint M)
+void UnpackHalfs(uint v, out float a, out float b)
 {
-    // Octahedral Encode
-    float3 n = V / (abs(V.x) + abs(V.y) + abs(V.z));
-
-    // Fix: Use step() instead of ternary for vector conditions
-    // equivalent to: (n.xy >= 0.0f ? 1.0f : -1.0f)
-    float2 signVal = step(0.0f, n.xy) * 2.0f - 1.0f;
-
-    // The outer ternary is fine because the condition (n.z >= 0.0f) is scalar
-    float2 oct = n.z >= 0.0f ? n.xy : (1.0f - abs(n.yx)) * signVal;
-
-    // 12-bit quantization [0, 4095]
-    uint x = uint(saturate(oct.x * 0.5f + 0.5f) * 4095.0f);
-    uint y = uint(saturate(oct.y * 0.5f + 0.5f) * 4095.0f);
-
-    return x | (y << 12) | ((M & 0xFFu) << 24);
+    a = f16tof32(v & 0xFFFFu);
+    b = f16tof32(v >> 16);
 }
 
-void UnpackV_M(uint v, out float3 V, out uint M)
+// --- SEPARATE W_SUM OPERATIONS ---
+
+void store_w_sum_gi(RWByteAddressBuffer buf, uint pixelIdx, float w_sum)
 {
-    M = v >> 24;
-
-    float2 oct;
-    oct.x = float(v & 0xFFFu) * (1.0f / 4095.0f) * 2.0f - 1.0f;
-    oct.y = float((v >> 12) & 0xFFFu) * (1.0f / 4095.0f) * 2.0f - 1.0f;
-
-    float3 n = float3(oct, 1.0f - abs(oct.x) - abs(oct.y));
-    float t = max(-n.z, 0.0f);
-
-    // These ternaries are safe because the conditions are scalar
-    n.x += n.x >= 0.0f ? -t : t;
-    n.y += n.y >= 0.0f ? -t : t;
-
-    V = normalize(n);
+    // Stored in Pack5.z (Offset 64 + 8 = 72)
+    buf.Store(pixelBaseAddrGI(pixelIdx) + O_GI_PACK5 + 8u, asuint(w_sum));
 }
 
-// =================================================================================
-// Main Accessors
-// =================================================================================
+float load_w_sum_gi(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    // Loaded from Pack5.z (Offset 64 + 8 = 72)
+    return asfloat(buf.Load(pixelBaseAddrGI(pixelIdx) + O_GI_PACK5 + 8u));
+}
+
+// --- MAIN RESERVOIR IO ---
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
     uint base = pixelBaseAddrGI(pixelIdx);
+    float3 xO = WorldToObjectPos (r.objID_gi, r.x2_gi);
+    float3 nO = WorldToObjectNrm(r.objID_gi, r.n2_gi);
 
-    // Pack 1: xn0, nn0
-    buf.Store4(base + O_GI_PACK1, uint4(
-        asuint(r.xn0),
-        PackNormal(r.nn0)
-    ));
+    // Standard packs
+    buf.Store4(base + O_GI_PACK1, uint4(asuint(xO), PackNormal(nO)));
+    buf.Store4(base + O_GI_PACK2, uint4(PackRGB9E5(r.L2_gi),
+                                        PackNormal (r.V2_gi),
+                                        r.objID_gi,
+                                        PackMatID_M(r.matID_gi, r.M_gi)));
+    buf.Store4(base + O_GI_PACK3, asuint(r.J_gi));
 
-    // Pack 2: xn1, nn1
-    buf.Store4(base + O_GI_PACK2, uint4(
-        asuint(r.xn1),
-        PackNormal(r.nn1)
-    ));
+    uint lobes16 = PackLobes16(r.lobe0_gi, r.lobe1_gi);
+    uint rIndex16 = r.rIndex_gi & 0xFFFFu;
+    uint rIndexAndLobes = rIndex16 | (lobes16 << 16);
+    buf.Store4(base + O_GI_PACK4, uint4(asuint(r.W_gi),
+                                        r.rSeed_gi,
+                                        rIndexAndLobes,
+                                        r.F_gi));
 
-    // Pack 3: W, wsum, L, F
-    buf.Store4(base + O_GI_PACK3, uint4(
-        asuint(r.W),
-        asuint(r.wsum),
-        PackRGB9E5(r.L),
-        PackRGB9E5(r.F)
-    ));
-
-    // Pack 4: objID0, objID1, mIDs, rSeed
-    buf.Store4(base + O_GI_PACK4, uint4(
-        r.objID0,
-        r.objID1,
-        PackMatIDs(r.mID0, r.mID1),
-        r.rSeed
-    ));
-
-    // Pack 5: Kd0, Kd1, Params, V+M
-    buf.Store4(base + O_GI_PACK5, uint4(
-        PackRGB9E5(r.Kd0),
-        PackRGB9E5(r.Kd1),
-        PackSurfaceParams(r.Pr0, r.Pr1, r.Pm0, r.Pm1),
-        PackV_M(r.V, r.M)
-    ));
+    // Pack 5: Use Store2 to write ONLY rKd and rPr/Pm (8 bytes).
+    // This STRICTLY preserves w_sum which sits at offset +8 (byte 72).
+    buf.Store2(base + O_GI_PACK5, uint2(PackRGB9E5(r.rKd_gi),
+                                        PackHalfs(r.rPr_gi, r.rPm_gi)));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddrGI(pixelIdx);
-    Reservoir_GI r;
 
-    // Load full cache lines
     uint4 p1 = buf.Load4(base + O_GI_PACK1);
     uint4 p2 = buf.Load4(base + O_GI_PACK2);
     uint4 p3 = buf.Load4(base + O_GI_PACK3);
     uint4 p4 = buf.Load4(base + O_GI_PACK4);
-    uint4 p5 = buf.Load4(base + O_GI_PACK5);
+    uint4 p5 = buf.Load4(base + O_GI_PACK5); // Load full pack 5
 
-    // Unpack 1
-    r.xn0 = asfloat(p1.xyz);
-    r.nn0 = UnpackNormal(p1.w);
+    Reservoir_GI r;
+    r.objID_gi = p2.z;
+    UnpackMatID_M(p2.w, r.matID_gi, r.M_gi);
 
-    // Unpack 2
-    r.xn1 = asfloat(p2.xyz);
-    r.nn1 = UnpackNormal(p2.w);
+    r.x2_gi     = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
+    r.n2_gi     = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
+    r.L2_gi     = UnpackRGB9E5(p2.x);
+    r.V2_gi     = UnpackNormal (p2.y);
 
-    // Unpack 3
-    r.W    = asfloat(p3.x);
-    r.wsum = asfloat(p3.y);
-    r.L    = UnpackRGB9E5(p3.z);
-    r.F    = UnpackRGB9E5(p3.w);
+    r.J_gi      = asfloat(p3);
 
-    // Unpack 4
-    r.objID0 = p4.x;
-    r.objID1 = p4.y;
-    UnpackMatIDs(p4.z, r.mID0, r.mID1);
-    r.rSeed  = p4.w;
+    r.W_gi      = asfloat(p4.x);
+    r.rSeed_gi  = p4.y;
 
-    // Unpack 5
-    r.Kd0 = UnpackRGB9E5(p5.x);
-    r.Kd1 = UnpackRGB9E5(p5.y);
-    UnpackSurfaceParams(p5.z, r.Pr0, r.Pr1, r.Pm0, r.Pm1);
-    UnpackV_M(p5.w, r.V, r.M);
+    uint rIndexAndLobes = p4.z;
+    uint lobes16 = (rIndexAndLobes >> 16) & 0xFFFFu;
+    r.rIndex_gi  =  rIndexAndLobes        & 0x0000FFFFu;
+    UnpackLobes16(lobes16, r.lobe0_gi, r.lobe1_gi);
 
+    r.F_gi      = p4.w;
+
+    // Unpack new fields
+    r.rKd_gi = UnpackRGB9E5(p5.x);
+    UnpackHalfs(p5.y, r.rPr_gi, r.rPm_gi);
+
+    // w_sum is explicitly 0.0f on load (managed separately)
+    r.w_sum_gi = 0.0f;
     return r;
 }
 
-// =================================================================================
-// Fast Partial Accessors
-// =================================================================================
 
-// Optimized load for wsum only
-float load_wsum(RWByteAddressBuffer buf, uint pixelIdx)
+// --- FAST LOADERS ---
+
+float3 load_x2_gi(RWByteAddressBuffer b, uint id, uint obj)
+{ return ObjectToWorldPos(obj, asfloat(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK1).xyz)); }
+
+float3 load_n2_gi(RWByteAddressBuffer b, uint id, uint obj)
+{ return ObjectToWorldNrm(obj, UnpackNormal(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK1).w)); }
+
+float3 load_L2_gi(RWByteAddressBuffer b, uint id)
+{ return UnpackRGB9E5(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).x); }
+
+float3 load_V2_gi(RWByteAddressBuffer b, uint id)
+{ return UnpackNormal(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).y); }
+
+uint   load_objID_gi(RWByteAddressBuffer b, uint id)
+{ return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).z; }
+
+uint   load_matID_gi(RWByteAddressBuffer b, uint id)
+{ return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).w & 0xFFFFu; }
+
+uint   load_M_gi(RWByteAddressBuffer b, uint id)
+{ return b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).w >> 16; }
+
+float4 load_J_gi (RWByteAddressBuffer b, uint id)
+{ return asfloat(b.Load4(pixelBaseAddrGI(id)+O_GI_PACK3)); }
+
+float load_W_gi(RWByteAddressBuffer b, uint id)
+{return asfloat(b.Load4(pixelBaseAddrGI(id) + O_GI_PACK4).x); }
+
+inline float3 load_F_gi(RWByteAddressBuffer b, uint id)
 {
-    // wsum is in O_GI_PACK3 at offset .y (4 bytes in)
-    return asfloat(buf.Load(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3 + 4u));
+    uint4 p4 = b.Load4(pixelBaseAddrGI(id) + O_GI_PACK4);
+    return p4.w;
 }
 
-// Optimized store for wsum only
-void store_wsum(RWByteAddressBuffer buf, uint pixelIdx, float wsum)
+// New Fast Loaders
+float3 load_rKd_gi(RWByteAddressBuffer b, uint id)
 {
-    buf.Store(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3 + 4u, asuint(wsum));
+    return UnpackRGB9E5(b.Load4(pixelBaseAddrGI(id) + O_GI_PACK5).x);
 }
 
-// Fast loader for current sample geometry (Sample 0)
-// Used for ReSTIR geometric similarity
-void load_Geom0_fast(RWByteAddressBuffer buf, uint pixelIdx,
-                     out float3 xn0, out float3 nn0, out uint objID0)
+void load_rPr_rPm_gi(RWByteAddressBuffer b, uint id, out float rPr, out float rPm)
 {
-    uint base = pixelBaseAddrGI(pixelIdx);
-    uint4 p1 = buf.Load4(base + O_GI_PACK1); // xn0, nn0
-    xn0 = asfloat(p1.xyz);
-    nn0 = UnpackNormal(p1.w);
+    uint packed = b.Load4(pixelBaseAddrGI(id) + O_GI_PACK5).y;
+    UnpackHalfs(packed, rPr, rPm);
+}
 
-    // objID0 is in PACK4.x
-    objID0 = buf.Load(base + O_GI_PACK4);
+// Combined Fast Loaders
+inline void load_x2_n2_fast_gi(RWByteAddressBuffer b, uint id, uint obj,
+                               out float3 x2, out float3 n2)
+{
+    uint4 p1 = b.Load4(pixelBaseAddrGI(id)+O_GI_PACK1);
+    x2 = ObjectToWorldPos (obj, asfloat(p1.xyz));
+    n2 = ObjectToWorldNrm(obj, UnpackNormal(p1.w));
+}
+
+inline void load_L2_V2_fast_gi(RWByteAddressBuffer b, uint id,
+                               out float3 L2, out float3 V2)
+{
+    uint4 p2 = b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2);
+    L2 = UnpackRGB9E5(p2.x);
+    V2 = UnpackNormal (p2.y);
+}
+
+inline void load_IDs_fast_gi(RWByteAddressBuffer b, uint id,
+                             out uint objID, out uint matID, out uint M)
+{
+    uint v = b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).w;
+    objID = b.Load4(pixelBaseAddrGI(id)+O_GI_PACK2).z;
+    UnpackMatID_M(v, matID, M);
+}
+
+void   load_WSeedIndexLobes_F(RWByteAddressBuffer b, uint id,
+                              out float W, out uint rSeed, out uint rIndex,
+                              out uint l0, out uint l1, out float3 F)
+{
+    uint4 p4 = b.Load4(pixelBaseAddrGI(id)+O_GI_PACK4);
+    W      = asfloat(p4.x);
+    rSeed  = p4.y;
+    uint v = p4.z;
+    rIndex = v & 0xFFFFu;
+    uint lobes16 = (v >> 16) & 0xFFFFu;
+    UnpackLobes16(lobes16, l0, l1);
+    F = p4.w;
 }

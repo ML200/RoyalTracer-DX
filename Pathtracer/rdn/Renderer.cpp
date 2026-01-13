@@ -459,7 +459,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ "./pot/pot.obj"};
+        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -567,11 +567,11 @@ void Renderer::OnInitTransform() {
 
     m_instances[2].second = scale * selfRotation * translate;*/
 
-    XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
+    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.1f, 0.1f, 0.1f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.0f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(-5.f, 0.3f, 5.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
@@ -2620,6 +2620,7 @@ void Renderer::UpdateCameraBuffer() {
     memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(viewMat), 16 * sizeof(float));
 
     // Current projection matrix
+    // FOV
     float fovAngleY = 60.0f * XM_PI / 180.0f;
     matrices[1] = XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
 
