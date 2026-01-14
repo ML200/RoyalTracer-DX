@@ -376,8 +376,8 @@ HitInfo EvalSurfaceState(
 
     {
         const float2 pbr = EvaluatePBRProperties(mat, uv, level);
-        hit.localPr = pbr.x;
-        hit.localPm = pbr.y;
+        hit.localPr = (half)pbr.x;
+        hit.localPm = (half)pbr.y;
     }
 
     // 5) NORMAL MAPPING (avoid TBN matrix; scope aggressively)

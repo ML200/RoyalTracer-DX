@@ -44,8 +44,8 @@ HitInfo DecompressHitInfo(in HitBlobPayload p)
 
     // 3. Scalar Unpacking
     float2 params   = UnpackScalars16(p.packedParams);
-    info.localPr    = params.x;
-    info.localPm    = params.y;
+    info.localPr    = (half)params.x;
+    info.localPm    = (half)params.y;
 
     return info;
 }

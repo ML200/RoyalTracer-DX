@@ -17,7 +17,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
          absorptionTint = CalculateAbsorptionThroughput(materials[data.mediumMatID].Tf, RayTCurrent());
     }
 
-    // 5. Emission (Direct Leed) & MIS
+    // 5. Emission (Direct Light) & MIS
     {
         float3 emission = GetEmissionFast(InstanceID(), PrimitiveIndex());
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
