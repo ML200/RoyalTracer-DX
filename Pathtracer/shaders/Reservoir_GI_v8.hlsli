@@ -18,8 +18,19 @@ struct Reservoir_GI
     uint   matID_gi;
     uint   rSeed_gi;
     uint   rIndex_gi;
+
+    float3 localKd_gi;
+    float  localPr_gi;
+    float  localPm_gi;
+
+    float  etai_gi;
+    float  etat_gi;
 };
 
+// Conversion to scalar value used for phat (luminance)
+inline float GetPHat(float3 v){
+    return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
+}
 
 float JacobianDeterminant( float3 x1_c,
                            float3 x2_c,
@@ -75,92 +86,104 @@ inline bool IsValidReservoir_GI_opt(in float3 n2, in uint M){
 
 float3 BSDF_term(
     uint   mID,
-    float3 n1,
-    float3 ndirN,
-    float3 o)
+    float3 n_s,
+    float3 n_g,
+    float3 s,
+    float3 o,
+    float3 localKd,
+    float  localPr,
+    float  localPm,
+    float  etai,
+    float  etat)
 {
-    /*float2  p      = CalculateStrategyProbabilities(mID, o, n1);
-    float3  f0     = EvaluateBRDF(0, mID, n1, ndirN, o);
-    float3  f1     = EvaluateBRDF(1, mID, n1, ndirN, o);
-
-    return SafeMultiply(p.x, f0) +
-           SafeMultiply(p.y, f1);*/
-    return EvaluateBRDF_COMBINED(mID, n1, ndirN, o);
+    return EvaluateBRDF_COMBINED(mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
 float PDF_term(
     uint   mID,
-    float3 n1,
-    float3 ndirN,
-    float3 o)
+    float3 n_s,
+    float3 n_g,
+    float3 s,
+    float3 o,
+    float3 localKd,
+    float  localPr,
+    float  localPm,
+    float  etai,
+    float  etat)
 {
-    /*float2  p      = CalculateStrategyProbabilities(mID, o, n1);
-    float3  pdf0     = BRDF_PDF(0, mID, n1, ndirN, o);
-    float3  pdf1     = BRDF_PDF(1, mID, n1, ndirN, o);
-
-    return SafeMultiply(p.x, pdf0) +
-           SafeMultiply(p.y, pdf1);*/
-    return BRDF_PDF_COMBINED(mID, n1, ndirN, o);
+    SamplingP p = CalculateStrategyProbabilities(mID, s, n_s, etai, etat, localKd, localPm);
+    return BRDF_PDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
-float G_term(float3 n1, float3 ndirN)
+float G_term(float3 n, float3 s)
 {
-    return max(1e-15, dot(n1, -ndirN));
+    return max(1e-15f, dot(n, s));
 }
 
 float J_term(
     float3 n2,
-    float3 ndirN,
+    float3 s,
     float  dist)
 {
-    if (dot(n2, ndirN) < 0.0f)
+    if (dot(n2, s) < 0.0f)
         n2 = -n2;
 
-    float cosThetaX2 = max(EPSILON, dot(n2, ndirN));
+    float cosThetaX2 = max(EPSILON, dot(n2, s));
     return cosThetaX2 / max(EPSILON, dist * dist);
 }
 
 
 
-// Calculate reconnection (two–sided)
+// Calculate reconnection (two-sided)
 inline float3 ReconnectGI(
+    // Surface 1 (Receiver / Current Pixel)
     in float3  x1,
     in float3  n1,
     in float3  o,
     in uint    mID1,
-    in uint    mID2,
+    in float3  localKd1, in float localPr1, in float localPm1, in float etai1, in float etat1,
+
+    // Surface 2 (Source / Reservoir Sample)
     in float3  x2,
     in float3  n2,
     in float3  L2,
     in float3  V2,
+    in uint    mID2,
+    in float3  localKd2, in float localPr2, in float localPm2, in float etai2, in float etat2,
+
+    // Reconnection Params
     in float pdfx2,
-    in float Jc, // part of the jacoabian term of the canonical path
+    in float Jc, // part of the jacobian term of the canonical path
     in bool applyJ,
     out float Jn,
     out float J)
 {
+    Jn = 1.0f;
+    J = 1.0f;
     if (length(L2) < EPSILON)
         return 0;
 
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir);     // direction from x1 to x2
+    float3 ndirN = normalize(-dir); // Direction from x1 to x2
 
-    // Terms
-    float3 F1 = BSDF_term(mID1, n1, ndirN, o);
-    float3 F2 = BSDF_term(mID2, n2, V2, ndirN);
-    float   G = G_term(n1, ndirN); // Second G term is baked in
+    float3 F1 = BSDF_term(mID1, n1, n1, ndirN, o, localKd1, localPr1, localPm1, etai1, etat1);
+    float3 F2 = BSDF_term(mID2, n2, n2, V2, -ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
-    // Missing pdfs (Both at x1 and x2, the pdf needs to be recalculated, as L2 only includes the pdf from x3 onwards
-    float PDF1 = PDF_term(mID1, n1, ndirN, o);
+    float G = G_term(n1, ndirN); // Second G term is baked in
+
+    float PDF1 = PDF_term(mID1, n1, n1, ndirN, o, localKd1, localPr1, localPm1, etai1, etat1);
     float PDF2 = pdfx2;
-    if(pdfx2 == 0.0f) // if pdfx2 is not 0, we know that this is a NEE ray. We reuse the pdf because its expensive and doesnt depend on o
-        PDF2 = PDF_term(mID2, n2, V2, ndirN);
+    if(pdfx2 == 0.0f)
+    {
+        PDF2 = PDF_term(mID2, n2, n2, V2, -ndirN, localKd2, localPr2, localPm2, etai2, etat2);
+    }
 
     // Throughput
-    if(PDF1 <=0.0f || PDF2 <= 0.0f)
+    if(PDF1 <= 0.0f || PDF2 <= 0.0f)
         return 0.0f;
+
     float3 r = F1/PDF1 * F2/PDF2 * L2 * G;
 
     // Reconnection jacobian
@@ -168,10 +191,10 @@ inline float3 ReconnectGI(
     J = 1.0f;
     if(applyJ){
         // Apply the reconnection jacobian
-        float Gj = dot(ndirN, n2) / (dist * dist);
+        // Note: ndirN is x1->x2. We need dot(-ndirN, n2) for the angle at x2.
+        float Gj = max(0.0f, dot(-ndirN, n2)) / (dist * dist);
         Jn = (PDF1 * PDF2 * Gj);
-        J = Jn / Jc;
-        //r *=J;
+        J = Jn / max(1e-20f, Jc);
     }
 
     if (any(isnan(r)) || all(r < EPSILON))
@@ -181,64 +204,48 @@ inline float3 ReconnectGI(
 }
 
 inline float PSSJacobian(
+    // Surface 1
     in float3 x1,
     in float3 n1,
     in float3 o,
     in uint   mID1,
+    in float3 localKd1, in float localPr1, in float localPm1, in float etai1, in float etat1,
+
+    // Surface 2
     in float3 x2,
     in float3 n2,
     in float3 V2,
     in uint   mID2,
+    in float3 localKd2, in float localPr2, in float localPm2, in float etai2, in float etat2,
+
+    // Misc
     in float  pdfx2)
 {
     float3 dir   = x2 - x1;
     float  dist2 = dot(dir, dir);
-    float3 ndirN = normalize(-dir);             // your convention (x1 -> x2)
+    float3 ndirN = normalize(-dir); // x1 -> x2
 
-    // PDFs in the same measure as your BSDF_term/PDF_term (PSS)
-    float PDF1 = PDF_term(mID1, n1, ndirN, o);
+    // PDF at x1
+    float PDF1 = PDF_term(mID1, n1, n1, ndirN, o, localKd1, localPr1, localPm1, etai1, etat1);
     if (PDF1 <= 0.0f) return 0.0f;
 
-    float PDF2 = (pdfx2 > 0.0f) ? pdfx2 : PDF_term(mID2, n2, V2, ndirN);
+    // PDF at x2
+    float PDF2 = pdfx2;
+    if (PDF2 <= 0.0f)
+    {
+         PDF2 = PDF_term(mID2, n2, n2, V2, -ndirN, localKd2, localPr2, localPm2, etai2, etat2);
+    }
     if (PDF2 <= 0.0f) return 0.0f;
 
     // Pure geometric factor used in your reconnection Jacobian
-    float Gj =dot(ndirN, n2) / dist2;
+    // Angle at x2 / dist^2
+    float Gj = max(0.0f, dot(-ndirN, n2)) / dist2;
 
     return PDF1 * PDF2 * Gj;
 }
 
-// Calculate reconnection
-inline float3 ReconnectGISingle(
-    in float3 x1,
-    in float3 n1,
-    in float3 o,
-    in uint   mID,
-    in float3 x2,
-    in float3 n2,
-    in float pdf)
-{
-    // Geometric prep
-    float3 dir   = x2 - x1;
-    float  dist  = length(dir);
-    float3 ndirN = normalize(-dir);
 
-    // Terms
-    float3 F = BSDF_term(mID, n1, ndirN, o);
-    float   G = G_term(n1, ndirN);
-
-    // Throughput
-    if(pdf <= 0)
-        return 0.0f;
-    float3 r = F * G / pdf;
-
-    if (any(isnan(r)))
-        r = 0.0f;
-
-    return r;
-}
-
-
+// Update GI reservoir
 // Update GI reservoir
 bool UpdateReservoirGI(
     inout Reservoir_GI reservoir,
@@ -247,20 +254,27 @@ bool UpdateReservoirGI(
 
     in float3 x2,
     in float3 n2,
-    in float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Also,we dont want to reuse sample on a lights surface
+    in float3 L2,
     in float3 V2,
+
+    // Surface Params
+    in float3 localKd,
+    in float  localPr,
+    in float  localPm,
+    in float  etai, // Added
+    in float  etat, // Added
+
     in uint matID,
     in uint objID,
-    uint rSeed, // Seed used for replaying
-    float4 J, // Jacobian of the path (basically just the sequential pdf of replayed path)
-    uint rIndex, // Index of the reconnection vertex
-    in float F,         // cached contribution for the selected sample
-    in uint   lobe0,     // lobe id for k
-    in uint   lobe1,     // lobe id for k+1
+    uint rSeed,
+    float4 J,
+    uint rIndex,
+    in float F,
+    in uint   lobe0,
+    in uint   lobe1,
     inout uint2 seed
     )
 {
-
     reservoir.w_sum_gi += wi;
     reservoir.M_gi += M;
 
@@ -270,26 +284,34 @@ bool UpdateReservoirGI(
         reservoir.n2_gi = n2;
         reservoir.L2_gi = L2;
         reservoir.V2_gi = V2;
+
+        reservoir.localKd_gi = localKd;
+        reservoir.localPr_gi = localPr;
+        reservoir.localPm_gi = localPm;
+        reservoir.etai_gi    = etai; // Store
+        reservoir.etat_gi    = etat; // Store
+
         reservoir.objID_gi = objID;
         reservoir.matID_gi = matID;
         reservoir.rSeed_gi = rSeed;
-        reservoir.J_gi = J;
-        reservoir.rIndex_gi = rIndex;
-        reservoir.F_gi       = F;
-        reservoir.lobe0_gi   = lobe0;
-        reservoir.lobe1_gi   = lobe1;
+        reservoir.J_gi     = J;
+        reservoir.rIndex_gi= rIndex;
+        reservoir.F_gi     = F;
+        reservoir.lobe0_gi = lobe0;
+        reservoir.lobe1_gi = lobe1;
         return true;
     }
     return false;
 }
 
 // Data management
-static const uint BYTES_GI    = 64u;
+static const uint BYTES_GI    = 76u;
 
 static const uint O_GI_PACK1  =  0u;   // float4
 static const uint O_GI_PACK2  = 16u;   // float4
 static const uint O_GI_PACK3  = 32u;   // float4
 static const uint O_GI_PACK4  = 48u;   // float4
+static const uint O_GI_PACK5  = 64u;   // uint3 (was uint2)
 
 uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * BYTES_GI; }
 
@@ -309,19 +331,34 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     uint base = pixelBaseAddrGI(pixelIdx);
     float3 xO = WorldToObjectPos (r.objID_gi, r.x2_gi);
     float3 nO = WorldToObjectNrm(r.objID_gi, r.n2_gi);
+
+    // Pack 1-4 (Existing)
     buf.Store4(base + O_GI_PACK1, uint4(asuint(xO), PackNormal(nO)));
     buf.Store4(base + O_GI_PACK2, uint4(PackRGB9E5(r.L2_gi),
                                         PackNormal (r.V2_gi),
                                         r.objID_gi,
                                         PackMatID_M(r.matID_gi, r.M_gi)));
     buf.Store4(base + O_GI_PACK3, asuint(r.J_gi));
+
     uint lobes16 = PackLobes16(r.lobe0_gi, r.lobe1_gi);
     uint rIndex16 = r.rIndex_gi & 0xFFFFu;
     uint rIndexAndLobes = rIndex16 | (lobes16 << 16);
+
     buf.Store4(base + O_GI_PACK4, uint4(asuint(r.W_gi),
                                         r.rSeed_gi,
                                         rIndexAndLobes,
                                         r.F_gi));
+
+    // Pack 5 (Expanded)
+    // localKd -> compressed like L2 (RGB9E5)
+    // localPr, localPm -> compressed into one uint (Half2x16)
+    // etai, etat       -> compressed into one uint (Half2x16)
+    uint packedKd   = PackRGB9E5(r.localKd_gi);
+    uint packedPrPm = f32tof16(r.localPr_gi) | (f32tof16(r.localPm_gi) << 16);
+    uint packedEta  = f32tof16(r.etai_gi)    | (f32tof16(r.etat_gi)    << 16);
+
+    // Now Store3 instead of Store2
+    buf.Store3(base + O_GI_PACK5, uint3(packedKd, packedPrPm, packedEta));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -332,6 +369,9 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     uint4 p2 = buf.Load4(base + O_GI_PACK2);
     uint4 p3 = buf.Load4(base + O_GI_PACK3);
     uint4 p4 = buf.Load4(base + O_GI_PACK4);
+
+    // Load3 now for Pack 5
+    uint3 p5 = buf.Load3(base + O_GI_PACK5);
 
     Reservoir_GI r;
     r.objID_gi = p2.z;
@@ -354,7 +394,18 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.F_gi      = p4.w;
 
-    r.w_sum_gi = 0.0f; // not stored in memory
+    // Unpack Surface Params
+    r.localKd_gi = UnpackRGB9E5(p5.x);
+
+    // Unpack Pr/Pm
+    r.localPr_gi = f16tof32(p5.y & 0xFFFF);
+    r.localPm_gi = f16tof32(p5.y >> 16);
+
+    // Unpack Etas
+    r.etai_gi    = f16tof32(p5.z & 0xFFFF);
+    r.etat_gi    = f16tof32(p5.z >> 16);
+
+    r.w_sum_gi = 0.0f;
     return r;
 }
 
@@ -429,5 +480,36 @@ void   load_WSeedIndexLobes_F(RWByteAddressBuffer b, uint id,
     uint lobes16 = (v >> 16) & 0xFFFFu;
     UnpackLobes16(lobes16, l0, l1);
     F = p4.w;
+}
+
+inline float3 load_localKd_gi(RWByteAddressBuffer b, uint id)
+{
+    // Load just the first uint of PACK5
+    uint packed = b.Load(pixelBaseAddrGI(id) + O_GI_PACK5);
+    return UnpackRGB9E5(packed);
+}
+
+inline void load_localPrPm_gi(RWByteAddressBuffer b, uint id, out float Pr, out float Pm)
+{
+    // Load the second uint of PACK5 (offset + 4 bytes)
+    uint packed = b.Load(pixelBaseAddrGI(id) + O_GI_PACK5 + 4u);
+    Pr = f16tof32(packed & 0xFFFF);
+    Pm = f16tof32(packed >> 16);
+}
+
+inline void load_extended_surface_gi(RWByteAddressBuffer b, uint id,
+                                     out float3 Kd, out float Pr, out float Pm,
+                                     out float etai, out float etat)
+{
+    // Load3 to get Kd, PrPm, and EtaI/EtaT
+    uint3 p5 = b.Load3(pixelBaseAddrGI(id) + O_GI_PACK5);
+
+    Kd = UnpackRGB9E5(p5.x);
+
+    Pr = f16tof32(p5.y & 0xFFFF);
+    Pm = f16tof32(p5.y >> 16);
+
+    etai = f16tof32(p5.z & 0xFFFF);
+    etat = f16tof32(p5.z >> 16);
 }
 

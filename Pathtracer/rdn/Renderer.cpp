@@ -216,15 +216,9 @@ Renderer::Renderer(UINT width, UINT height,
 
     m_passSequence = {
         L"Pass_raygen_v8.hlsl|rg",
-        //L"Pass_trace_mono_v8.hlsl|cs:8x8",
         L"barrier",
-        /*L"loop:1",
-            L"Pass_trace_eval_wf_v8.hlsl|wf:64",
-            L"barrier",
-            L"pingswap",
-            L"barrier",
-        L"endloop",*/
-
+        L"Pass_temp_GI_v8.hlsl|cs:16x8",
+        L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",
         L"barrier",
     };
