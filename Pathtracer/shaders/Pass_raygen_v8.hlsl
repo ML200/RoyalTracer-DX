@@ -72,6 +72,19 @@ void Pass_raygen_v8()
             // Unpack throughput only when needed
             float3 T = UnpackRGB9E5(packedThroughput);
             gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0); // TODO: UPDATE RESERVOIR HERE
+
+            // TODO NEW this is bullshit
+            float wi = GetPHat(T * EvalMissState());
+            /*UpdateReservoirGI_Initial(
+                pixelIdx, // pixel id (for storage)
+                wi, 1, // wi and M, M is always 1 for initial samples
+                float3(0,0,0), float3(1,0,0), EvalMissState(), float3(1,0,0), // x2, n2, L2, V2 (set to filler values here, as theres no hit point really)
+                float3(0,0,0), 0, 0, 1.0f, 1.0f, // Dummy surface params
+                0, 0, // matID, objID (dummy)
+                masterSeed, float4(1,1,1,1), rIndex,
+                wi, 0, 0,
+                seed
+            );*/
             break;
         }
 
