@@ -57,10 +57,10 @@ void main(uint3 tid : SV_DispatchThreadID)
             float J = 1.0f;
 
             float3 f_c = ReconnectGI(
-                sdata.x1, sdata.n1_s, sdata.o, sdata.matID,
+                sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
                 sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
 
-                rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+                rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
                 rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
 
                 rdi.J_gi.x, 1.0f, false, Jnc, J
@@ -71,24 +71,23 @@ void main(uint3 tid : SV_DispatchThreadID)
             // --- 2. Neighbor Path -> Current Res Sample (Previous Surface -> Current Res Sample) ---
             // Used for MIS weight of current reservoir
             float3 f_p_n = ReconnectGI(
-                sdata_r.x1, sdata_r.n1_s, sdata_r.o, sdata_r.matID,
+                sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID,
                 sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat,
 
-                rdi.x2_gi, rdi.n2_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+                rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
                 rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
 
                 rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1
             );
             float p_n = GetPHat(f_p_n);
-            // * VisibilityCheckCP(...) omitted for perf
 
             // --- 3. Canonical Path -> Neighbor Res Sample (Current Surface -> Previous Res Sample) ---
             // The candidate sample we might merge
             float3 fn_c = ReconnectGI(
-                sdata.x1, sdata.n1_s, sdata.o, sdata.matID,
+                sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
                 sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
 
-                rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi,
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi,
                 rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi,
 
                 rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2
@@ -98,11 +97,12 @@ void main(uint3 tid : SV_DispatchThreadID)
 
             // --- 4. Neighbor Target Function (Previous Surface -> Previous Res Sample) ---
             float visReuse = rdi_r.W_gi > 0.0f ? 1.0f : 0.0f;
+            // FIX: Added sdata_r.n1_g and rdi_r.n2_g_gi
             float3 f_n_n = ReconnectGI(
-                sdata_r.x1, sdata_r.n1_s, sdata_r.o, sdata_r.matID,
+                sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID,
                 sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat,
 
-                rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi,
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi,
                 rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi,
 
                 rdi_r.J_gi.x, 1.0f, false, Jnc, J
@@ -128,11 +128,10 @@ void main(uint3 tid : SV_DispatchThreadID)
             // --- Update Reservoir ---
             float p_hat_final = p_c;
 
-            // Pass all new material properties to the Update function
             if(UpdateReservoirGI(
                 rdi, w_n, rdi_r.M_gi,
-                rdi_r.x2_gi, rdi_r.n2_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi, // New params
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.rSeed_gi, rdi_r.J_gi, rdi_r.rIndex_gi,
                 rdi_r.F_gi, rdi_r.lobe0_gi, rdi_r.lobe1_gi, seed))
             {
@@ -151,12 +150,12 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
 
             // --- Update Jacobian for next frame (PSS) ---
-            // Calculates Jacobian of (Surface 1 -> Selected Sample)
+            // FIX: Added sdata.n1_g and rdi.n2_g_gi, renamed n2_gi to n2_s_gi
             rdi.J_gi.y = PSSJacobian(
-                sdata.x1, sdata.n1_s, sdata.o, sdata.matID,
+                sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
                 sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
 
-                rdi.x2_gi, rdi.n2_gi, rdi.V2_gi, rdi.matID_gi,
+                rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi,
                 rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
 
                 rdi.J_gi.x
