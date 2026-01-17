@@ -143,69 +143,20 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
     return s;
 }
 
-// --- simple single loaders ---
+// --- single loaders ---
 float3 load_x1   (RWByteAddressBuffer b, uint id){return asfloat(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).xyz);}
 float3 load_n1_s (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).w);}
+float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
 float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).x);}
 float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
-float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
 uint   load_objID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) & 0xFFFFu;}
 uint   load_matID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) >> 16;}
-
-// Extended single loaders
 float3 load_localKd(RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD));}
-
-// Note: Offset logic for single float loads
-// p3.y is at offset +4 bytes
-// p3.z is at offset +8 bytes
 float  load_localPr(RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) & 0xFFFFu);}
 float  load_localPm(RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) >> 16);}
 float  load_etai   (RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) & 0xFFFFu);}
 float  load_etat   (RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) >> 16);}
 
-
-// --- fast loaders ---
-inline void load_x1_n1_s_fast(RWByteAddressBuffer buf,
-                             uint                pixelIdx,
-                             out float3          x1,
-                             out float3          n1_s)
-{
-    uint4 p1 = buf.Load4(pixelBaseAddr_SD(pixelIdx) + O_PACK1_SD);
-    x1 = asfloat(p1.xyz);
-    n1_s = UnpackNormal(p1.w);
-}
-
-inline void load_L1_o_n1g_IDs_fast(RWByteAddressBuffer buf,
-                                    uint               pixelIdx,
-                                    out float3         L1,
-                                    out float3         o,
-                                    out float3         n1_g,
-                                    out uint           objID,
-                                    out uint           matID)
-{
-    uint4 p2 = buf.Load4(pixelBaseAddr_SD(pixelIdx) + O_PACK2_SD);
-    L1   = UnpackRGB9E5(p2.x);
-    o    = UnpackNormal(p2.y);
-    n1_g = UnpackNormal(p2.z);
-    UnpackID16(p2.w, objID, matID);
-}
-
-// Updated extended fast loader
-inline void load_extended_surface_fast_sd(RWByteAddressBuffer buf,
-                                          uint                pixelIdx,
-                                          out float3          localKd,
-                                          out float           localPr,
-                                          out float           localPm,
-                                          out float           etai,
-                                          out float           etat)
-{
-    // Load3 to get Kd, PrPm, and Etas
-    uint3 p3 = buf.Load3(pixelBaseAddr_SD(pixelIdx) + O_PACK3_SD);
-
-    localKd = UnpackRGB9E5(p3.x);
-    UnpackFloat2x16(p3.y, localPr, localPm);
-    UnpackFloat2x16(p3.z, etai, etat);
-}
 
 
 // OtW / WtO helpers
