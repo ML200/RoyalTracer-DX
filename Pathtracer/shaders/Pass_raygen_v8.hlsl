@@ -16,7 +16,8 @@ void Pass_raygen_v8()
     const uint2 pix = DispatchRaysIndex().xy;
 
     // Reset output texture
-    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0); // TODO: replace with reservoir init
+    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
+    // TODO: reservoir init
 
     uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
@@ -69,22 +70,19 @@ void Pass_raygen_v8()
 
         if (!hitObj.IsHit())
         {
+            // Store sample data miss case
+            if(depth == 0){
+                SampleData sdata = (SampleData)0;
+                sdata.L1 = EvalMissState();
+                uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+                gScratchPing[uint3(pix, 1)] += float4(sdata.L1, 0);
+                storeSampleData(g_sample_current, idx, sdata);
+                break;
+            }
             // Unpack throughput only when needed
             float3 T = UnpackRGB9E5(packedThroughput);
-            gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0); // TODO: UPDATE RESERVOIR HERE
-
-            // TODO NEW this is bullshit
-            float wi = GetPHat(T * EvalMissState());
-            /*UpdateReservoirGI_Initial(
-                pixelIdx, // pixel id (for storage)
-                wi, 1, // wi and M, M is always 1 for initial samples
-                float3(0,0,0), float3(1,0,0), EvalMissState(), float3(1,0,0), // x2, n2, L2, V2 (set to filler values here, as theres no hit point really)
-                float3(0,0,0), 0, 0, 1.0f, 1.0f, // Dummy surface params
-                0, 0, // matID, objID (dummy)
-                masterSeed, float4(1,1,1,1), rIndex,
-                wi, 0, 0,
-                seed
-            );*/
+            //gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0);
+            // TODO: UPDATE RESERVOIR HERE
             break;
         }
 

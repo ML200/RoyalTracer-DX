@@ -92,4 +92,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
 
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
+
+    // DEBUG
+    /*float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, DTid.xy);
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    gOutput[uint3(DTid.xy, 0)] = float4(abs(sdata.localKd), 0);*/
+
 }

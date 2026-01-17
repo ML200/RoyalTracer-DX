@@ -11,6 +11,18 @@
 #define SHEEN_LUT_INDEX 0
 #define GGX_ESS_LUT_INDEX 1
 
+// ___ DI Reuse ___
+#define TEMP_MCAP_DI 30
+
+#define SPAT_MCAP_DI 500
+#define SPAT_EXP_DI 1.0f
+#define SPAT_RAD_MAX 32
+#define SPAT_RAD_MIN 24
+
+#define SPAT_COUNT_MAX_DI 0
+#define SPAT_COUNT_MIN_DI 0
+#define SPAT_TRIS_DI 4
+
 
 // ___ GI Reuse ___
 #define TEMP_MCAP_GI 30

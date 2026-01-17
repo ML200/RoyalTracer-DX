@@ -20,26 +20,45 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
     // 5. Emission (Direct Light) & MIS
     {
         float3 emission = GetEmissionFast(InstanceID(), PrimitiveIndex());
+
+        // initialize the sample data structure here and store it.
+        if(data.depth == 0){
+            SampleData sdata = (SampleData)0;
+            sdata.x1 = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+            sdata.n1_s = hinfo.hitNormal;
+            sdata.n1_g = hinfo.hitGNormal;
+            sdata.L1 = emission;
+            sdata.o = -WorldRayDirection();
+            sdata.objID = InstanceIndex();
+            sdata.matID = data.matID;
+            sdata.localKd = hinfo.localKd;
+            sdata.localPr = hinfo.localPr;
+            sdata.localPm = hinfo.localPm;
+            sdata.etai = data.iors.x;
+            sdata.etat = data.iors.y;
+            uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+            gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission, 0);
+            storeSampleData(g_sample_current, idx, sdata);
+        }
+
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
-            if (data.depth == 0)
-            {
-                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission,0); // TODO: UPDATE RESERVOIR HERE
-            }
-            else
-            {
-                // MIS: Balance Heuristic
-                // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
-                float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceID());
+            // MIS: Balance Heuristic
+            // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
+            float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceID());
 
-                float cosLight   = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
-                float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
+            float cosLight   = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
+            float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
 
-                float prev_pdf   = data.bsdfPdf;
-                float misWeight  = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
+            float prev_pdf   = data.bsdfPdf;
+            float misWeight  = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
 
-                gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0); // TODO: UPDATE RESERVOIR HERE
-            }
+            //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+            // TODO: UPDATE RESERVOIR HERE
+
+            data.bsdfPdf = 0.0f;
+            payload = PackPayload_payload(data);
+            return;
         }
     }
 
@@ -93,7 +112,8 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 {
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
                     // data.throughput contains path throughput up to this vertex
-                    gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0); // TODO: UPDATE RESERVOIR HERE
+                    //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0);
+                    // TODO: UPDATE RESERVOIR HERE
                 }
             }
         }
@@ -144,7 +164,8 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     {
                         float3 contrib = data.throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
 
-                        gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0); // TODO: UPDATE RESERVOIR HERE
+                        //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0);
+                        // TODO: UPDATE RESERVOIR HERE
                     }
                 }
             }

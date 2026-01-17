@@ -271,11 +271,6 @@ float load_wsum_gi(RWByteAddressBuffer buf, uint pixelIdx)
     return asfloat(buf.Load(pixelBaseAddrGI(pixelIdx) + O_GI_PACK_WSUM));
 }
 
-// Conversion to scalar value used for phat (luminance)
-inline float GetPHat(float3 v){
-    return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
-}
-
 // Jacobian: Uses geometric normals for correct manifold calculations
 float JacobianDeterminant( float3 x1_c,
                            float3 x2_c,

@@ -217,7 +217,9 @@ Renderer::Renderer(UINT width, UINT height,
     m_passSequence = {
         L"Pass_raygen_v8.hlsl|rg",
         L"barrier",
-        L"Pass_temp_GI_v8.hlsl|cs:16x8",
+        L"Pass_temp_di_v8.hlsl|cs:16x8",
+        L"barrier",
+        L"Pass_spat_di_v8.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",
         L"barrier",
@@ -2078,6 +2080,38 @@ void Renderer::CreateRaytracingOutputBuffer() {
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
         nullptr,
         IID_PPV_ARGS(&m_scratchPing)));
+
+
+    auto CreateRawBuffer = [&](ComPtr<ID3D12Resource>& resource, UINT sizeInBytes, const std::wstring& name) {
+        D3D12_RESOURCE_DESC bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(
+            sizeInBytes,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        );
+
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            nullptr,
+            IID_PPV_ARGS(&resource)));
+
+        resource->SetName(name.c_str());
+    };
+
+    UINT pixelCount = GetWidth() * GetHeight();
+    UINT reservoirSizeDI = pixelCount * sizeof(Reservoir_DI);
+    UINT reservoirSizeGI = pixelCount * sizeof(Reservoir_GI);
+    UINT sampleSize      = pixelCount * sizeof(SampleData);
+    UINT initRaySize     = pixelCount * sizeof(InitialBSDFRay);
+
+    CreateRawBuffer(m_reservoirBuffer,      reservoirSizeDI, L"ReservoirBuffer_DI_1");
+    CreateRawBuffer(m_reservoirBuffer_2,    reservoirSizeDI, L"ReservoirBuffer_DI_2");
+    CreateRawBuffer(m_reservoirBuffer_3,    reservoirSizeGI, L"ReservoirBuffer_GI_1");
+    CreateRawBuffer(m_reservoirBuffer_4,    reservoirSizeGI, L"ReservoirBuffer_GI_2");
+    CreateRawBuffer(m_sampleBuffer_current, sampleSize,      L"SampleBuffer_Current");
+    CreateRawBuffer(m_sampleBuffer_last,    sampleSize,      L"SampleBuffer_Last");
+    CreateRawBuffer(m_initialBSDFRayBuffer, initRaySize,     L"InitialBSDFRayBuffer");
 
     CreatePathStateBuffer();
 }
