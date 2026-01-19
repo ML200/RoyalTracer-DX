@@ -10,12 +10,13 @@ struct Reservoir_DI
     uint objID_di;
 };
 
-static const uint BYTES_DI   = 32u;
+static const uint BYTES_DI   = 36u;
 
 static const uint O_PACK1 = 0u;   // float4 (Position + Normal)
 static const uint O_PACK2 = 16u;  // float2 (Radiance + W)
 static const uint O_PACK3 = 24u;  // uint   (ObjID + M)
 static const uint O_WSUM  = 28u;  // float  (w_sum)
+static const uint O_PHAT  = 32u;  // p_hat
 
 // helpers
 uint pixelBaseAddr(uint pixelIdx) { return pixelIdx * BYTES_DI; }
@@ -27,11 +28,6 @@ void  UnpackObjID_M(uint v, out uint o, out uint m) { o = v & 0xFFFFu;  m = v >>
 // Store Functions
 // ------------------------------------------------------------------
 
-void store_wsum_di(RWByteAddressBuffer buf, uint pixelIdx, float w_sum)
-{
-    uint base = pixelBaseAddr(pixelIdx);
-    buf.Store(base + O_WSUM, asuint(w_sum));
-}
 
 void storeReservoirDI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_DI r)
 {
@@ -47,11 +43,6 @@ void storeReservoirDI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_DI
 // ------------------------------------------------------------------
 // Load Functions
 // ------------------------------------------------------------------
-
-float load_wsum_di(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return asfloat(buf.Load(pixelBaseAddr(pixelIdx) + O_WSUM));
-}
 
 Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
 {
@@ -117,8 +108,45 @@ uint   load_objID_di(RWByteAddressBuffer buf, uint pixelIdx)
     return buf.Load(pixelBaseAddr(pixelIdx) + O_PACK3) & 0xFFFFu;
 }
 
+void store_W_di(RWByteAddressBuffer buf, uint pixelIdx, float W)
+{
+    // W is stored at the second 4-byte slot of O_PACK2
+    buf.Store(pixelBaseAddr(pixelIdx) + O_PACK2 + 4, asuint(W));
+}
+
+void store_M_di(RWByteAddressBuffer buf, uint pixelIdx, uint M)
+{
+    uint addr = pixelBaseAddr(pixelIdx) + O_PACK3;
+    uint packed = buf.Load(addr);
+    uint objID = packed & 0xFFFFu;
+    buf.Store(addr, PackObjID_M(objID, M));
+}
+
+// Load and store for p_hat caching
+void store_phat_di(RWByteAddressBuffer buf, uint pixelIdx, float p_hat)
+{
+    buf.Store(pixelBaseAddr(pixelIdx) + O_PHAT, asuint(p_hat));
+}
+
+float load_phat_di(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load(pixelBaseAddr(pixelIdx) + O_PHAT));
+}
+
+// Load and store w sum
+void store_wsum_di(RWByteAddressBuffer buf, uint pixelIdx, float w_sum)
+{
+    uint base = pixelBaseAddr(pixelIdx);
+    buf.Store(base + O_WSUM, asuint(w_sum));
+}
+
+float load_wsum_di(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load(pixelBaseAddr(pixelIdx) + O_WSUM));
+}
 
 
+//---------------------------------------------------------------------------------------
 inline bool RejectNormal_DI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
     return (similarity < threshold);
@@ -211,10 +239,25 @@ inline float3 ReconnectDI(
     float  localPr,
     float  localPm,
     float  etai,
-    float  etat)
+    float  etat,
+    in uint objID_di)
 {
     if (all(L < EPSILON))
         return 0;
+
+    // Infinite light
+    if (objID_di == 0xFFFFFFFFu)
+    {
+        float3 wi = normalize(x2);
+        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
+
+        float cosTheta = max(1e-15f, dot(n1_s, wi));
+
+        float3 r = F * L * cosTheta;
+        if (any(isnan(r)))
+            r = 0;
+        return r;
+    }
 
     // Geometric prep
     float3 dir   = x2 - x1;
@@ -222,8 +265,8 @@ inline float3 ReconnectDI(
     float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
     // Terms
-    float3 F = BSDF_term(mID, n1_s, n1_g, ndirN, o, localKd, localPr, localPm, etai, etat);
-    float   G = G_term(n1_s, ndirN);
+    float3 F = BSDF_term(mID, n1_s, n1_g, -ndirN, o, localKd, localPr, localPm, etai, etat);
+    float   G = G_term(n1_s, -ndirN);
     float   J = J_term(n2, ndirN, dist);
 
     // Throughput

@@ -55,7 +55,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Load the DI pipeline output
     float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
-    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
+    float3 output_GI = 0.0f;//gScratchPing[uint3(DTid.xy, 2)];
 
     float3 accumulation = output_DI + output_GI;
 
@@ -89,14 +89,18 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
     float3 sceneLinear = newAvg;//PBRNeutral(newAvg);
+    //float3 sceneLinear = accumulation;
     float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
 
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 
     // DEBUG
-    /*float2 dims = float2(IMG_W, IMG_H);
+    /*gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
+    float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    gOutput[uint3(DTid.xy, 0)] = float4(abs(sdata.localKd), 0);*/
+    Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+    float3 f = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat) * rdi.W_di;
+    gOutput[uint3(DTid.xy, 0)] = float4(rdi.n2_di, 0);*/
 
 }

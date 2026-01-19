@@ -71,9 +71,16 @@ float2 signNotZero(float2 v)
     return step(0.0f, v) * 2.0f - 1.0f;
 }
 
-// pack/unpack normal into 8 bits
+static const uint PROBE_DI_NORMAL_ZERO_CODE = ~0u;
+
 uint PackNormal(float3 n)
 {
+    if (dot(n, n) < 1e-6f)
+    {
+        return PROBE_DI_NORMAL_ZERO_CODE;
+    }
+
+    // 2. Standard Octahedral Encoding
     n = normalize(n);
     float3 a = abs(n);
     float2 p = n.xy / (a.x + a.y + a.z);
@@ -82,11 +89,23 @@ uint PackNormal(float3 n)
         p = (1.0f - abs(p.yx)) * signNotZero(p);
 
     uint2 q = uint2(round((p * 0.5f + 0.5f) * kMax16));
-    return q.x | (q.y << 16);
+
+    uint packed = q.x | (q.y << 16);
+    if (packed == PROBE_DI_NORMAL_ZERO_CODE)
+        packed--;
+
+    return packed;
 }
 
 float3 UnpackNormal(uint bits)
 {
+    // 1. Handle Zero Vector explicitly
+    if (bits == PROBE_DI_NORMAL_ZERO_CODE)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    // 2. Standard Octahedral Decoding
     float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
     float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));

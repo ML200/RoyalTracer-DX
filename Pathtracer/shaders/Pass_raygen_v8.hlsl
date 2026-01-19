@@ -18,6 +18,11 @@ void Pass_raygen_v8()
     // Reset output texture
     gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
     // TODO: reservoir init
+    uint idx1 = MapPixelID(float2(DispatchRaysDimensions().xy), pix);
+    storeReservoirDI(g_Reservoirs_current_di, idx1, (Reservoir_DI)0);
+    store_wsum_di(g_Reservoirs_current_di, idx1, 0.0f);
+    store_W_di(g_Reservoirs_current_di, idx1, 0.0f);
+    store_phat_di(g_Reservoirs_current_di, idx1, 0.0f);
 
     uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
@@ -74,15 +79,23 @@ void Pass_raygen_v8()
             if(depth == 0){
                 SampleData sdata = (SampleData)0;
                 sdata.L1 = EvalMissState();
-                uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+                uint idx2 = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                 gScratchPing[uint3(pix, 1)] += float4(sdata.L1, 0);
-                storeSampleData(g_sample_current, idx, sdata);
+                storeSampleData(g_sample_current, idx2, sdata);
                 break;
             }
             // Unpack throughput only when needed
             float3 T = UnpackRGB9E5(packedThroughput);
             //gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0);
             // TODO: UPDATE RESERVOIR HERE
+            /*if(depth == 1){
+                uint idx4 = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+                float p_hat = GetPHat(T * EvalMissState() * prev_pdf);
+                float wi = p_hat / prev_pdf; // We need to remove the previous pdf; Cancel it my multiplying with it
+                float3 dir = rayDir;
+                bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx4, wi, dir, EvalMissState(), 0xFFFFFFFFu, seed);
+                if(update)store_phat_di(g_Reservoirs_current_di, idx4, p_hat);
+            }*/
             break;
         }
 
@@ -195,4 +208,18 @@ void Pass_raygen_v8()
         prevNPacked = nextNPacked;
         prev_pdf    = nextPdf;
     }
+
+    // Finally set W of the reservoirs (TODO: GI)
+    uint idx3 = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+    float p_hat = load_phat_di(g_Reservoirs_current_di, idx3);
+    float w_sum = load_wsum_di(g_Reservoirs_current_di, idx3);
+    float W = 0.0f;
+    if (p_hat > 1e-6f && w_sum > 0.0f)
+    {
+        W = w_sum / p_hat;
+    }
+
+    // Store W, not w_sum!
+    store_W_di(g_Reservoirs_current_di, idx3, W);
+    store_M_di(g_Reservoirs_current_di, idx3, 1);
 }
