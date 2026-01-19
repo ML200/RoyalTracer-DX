@@ -123,7 +123,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         float p_hat_final = GetPHat(contrib_final);
-        if (p_hat_final > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
+        if (p_hat_final > 1e-5 && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
             float W = rdi.w_sum_di / p_hat_final;
             // NaN/Inf protection
             if (isnan(W) || isinf(W)) {

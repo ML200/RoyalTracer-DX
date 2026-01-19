@@ -21,7 +21,7 @@
 
 #define SPAT_COUNT_MAX_DI 2
 #define SPAT_COUNT_MIN_DI 1
-#define SPAT_TRIS_DI 4
+#define SPAT_TRIS_DI 9
 
 
 // ___ GI Reuse ___
