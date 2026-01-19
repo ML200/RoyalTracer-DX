@@ -47,15 +47,27 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
             float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceID());
 
-            float cosLight   = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
-            float lightPdfSA = (cosLight > 1e-6f) ? (lightPdfArea * RayTCurrent() * RayTCurrent() / cosLight) : 0.0f;
+            float cosLight = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
+            float dist2 = max(RayTCurrent() * RayTCurrent(), EPSILON);
+            float lightPdfSA = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
 
-            float prev_pdf   = data.bsdfPdf;
-            float misWeight  = prev_pdf / max(prev_pdf + lightPdfSA, 1e-20f);
+            float jacobian = (dist2 > EPSILON) ? (cosLight / dist2) : 0.0f;
+            float prev_pdf = data.bsdfPdf;
+            float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
 
-            //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+            float pdfAM = jacobian * prev_pdf;
+
             // TODO: UPDATE RESERVOIR HERE
-
+            if(data.depth == 1){
+                /*DEBUG*///gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+                uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+                float p_hat = GetPHat(data.throughput * emission * prev_pdf * jacobian); // We need to remove the previous pdf; Cancel it my multiplying with it
+                float wi = misWeight * p_hat / pdfAM;
+                float3 x2 = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+                float3 n2 = hinfo.hitNormal;
+                bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, x2, n2, emission, InstanceIndex(), data.seed);
+                if(update)store_phat_di(g_Reservoirs_current_di, idx, p_hat);
+            }
             data.bsdfPdf = 0.0f;
             payload = PackPayload_payload(data);
             return;
@@ -68,7 +80,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
     if (performNEE)
     {
-        float3 hitPos    = WorldRayOrigin() + WorldRayDirection() * RayTCurrent(); // Current intersection point
+        float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
         LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, data.seed);
 
         float3 toLight = light.position - hitPos;
@@ -79,6 +91,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
         float cosSurf  = dot(hinfo.hitNormal, L);
         float cosLight = dot(light.normal, -L);
 
+        // Check geometry and backfacing lights
         if (cosSurf > 1e-6f && cosLight > 1e-6f)
         {
             RayDesc shadowRay;
@@ -93,7 +106,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
             if (q.CommittedStatus() == COMMITTED_NOTHING)
             {
-                // Evaluate Surface for Light Direction
+                // Evaluate BSDF
                 SamplingP sp_nee = CalculateStrategyProbabilities(
                     data.matID, -WorldRayDirection(), hinfo.hitNormal,
                     data.iors.x, data.iors.y, hinfo.localKd, hinfo.localPm
@@ -110,10 +123,27 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
                 if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                 {
+                    // MIS Weight (using Solid Angle measure for ratios)
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
-                    // data.throughput contains path throughput up to this vertex
-                    //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * cosSurf * light.emission * bdataNEE.val * (misWeight / lightPdf), 0);
-                    // TODO: UPDATE RESERVOIR HERE
+
+                    // UPDATE RESERVOIR (NEE Area Light)
+                    if(data.depth == 0)
+                    {
+                        uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+                        float G = (cosSurf * cosLight) / max(distSq, 1e-20f);
+                        float3 targetRadiance = data.throughput * light.emission * bdataNEE.val * G;
+                        float p_hat = GetPHat(targetRadiance);
+                        float pdfAM = lightPdf * cosLight / max(distSq, 1e-20f);
+                        float wi = (pdfAM > 1e-20f) ? (misWeight * p_hat / pdfAM) : 0.0f;
+
+                        bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, light.position, light.normal, light.emission, light.objID, data.seed);
+
+                        if(update)
+                        {
+                            store_phat_di(g_Reservoirs_current_di, idx, p_hat);
+                        }
+                    }
                 }
             }
         }

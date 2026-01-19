@@ -88,7 +88,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate canonical pixel p_hat before loading the expensive data
         float visReuse = rdi.W_di > 0.0f ? 1.0f : 0.0f;
-        float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat) * visReuse;
+        float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID) * visReuse;
         float p_c = GetPHat(contrib_c);
         float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
@@ -104,7 +104,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nIds[i]);
-                float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_s);
+                float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_s);
                 float p_hat_from = GetPHat(contrib_n);
                 // Calculate the samples MIS weight
                 float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, M_c, min(SPAT_MCAP_DI ,rdi_r.M_di), p_c, p_hat_from, nIds[i], rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di);
@@ -145,7 +145,6 @@ void main(uint3 tid : SV_DispatchThreadID)
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
         gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
-
     }
     else
         gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0);
