@@ -3,7 +3,7 @@ using namespace dx;
 #include "Includes_raygen_v8.hlsli"
 
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 1
+#define MAX_BOUNCES 30
 #endif
 
 #ifndef MEDIUM_INVALID_15
