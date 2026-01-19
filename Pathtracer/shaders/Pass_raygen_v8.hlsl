@@ -88,14 +88,14 @@ void Pass_raygen_v8()
             float3 T = UnpackRGB9E5(packedThroughput);
             //gScratchPing[uint3(pix, 1)] += float4(T * EvalMissState(), 0);
             // TODO: UPDATE RESERVOIR HERE
-            /*if(depth == 1){
+            if(depth == 1){
                 uint idx4 = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                 float p_hat = GetPHat(T * EvalMissState() * prev_pdf);
                 float wi = p_hat / prev_pdf; // We need to remove the previous pdf; Cancel it my multiplying with it
                 float3 dir = rayDir;
                 bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx4, wi, dir, EvalMissState(), 0xFFFFFFFFu, seed);
                 if(update)store_phat_di(g_Reservoirs_current_di, idx4, p_hat);
-            }*/
+            }
             break;
         }
 

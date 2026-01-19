@@ -79,6 +79,7 @@ float PairwiseMIS_Canonical_Spat_DI(
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_DI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
+    in float3 x1_c,
     in float3 x2_c,
     in float3 n2_c,
     in float3 L2_c
@@ -92,7 +93,8 @@ float PairwiseMIS_Canonical_Spat_DI(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1_s(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_n1_g(g_sample_current, nIds[i]), load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), x2_c, n2_c, L2_c, load_localKd(g_sample_current, nIds[i]), load_localPr(g_sample_current, nIds[i]), load_localPm(g_sample_current, nIds[i]), load_etai(g_sample_current, nIds[i]), load_etat(g_sample_current, nIds[i]), load_objID(g_sample_current, nIds[i]))); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_n1_g(g_sample_current, nIds[i]), load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), x2_c, n2_c, L2_c, load_localKd(g_sample_current, nIds[i]), load_localPr(g_sample_current, nIds[i]), load_localPm(g_sample_current, nIds[i]), load_etai(g_sample_current, nIds[i]), load_etat(g_sample_current, nIds[i]), load_objID_di(g_Reservoirs_current_di, nIds[i]))); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, x1, n2_c, load_objID_di(g_Reservoirs_current_di, nIds[i]));
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1); // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 0.0f)
