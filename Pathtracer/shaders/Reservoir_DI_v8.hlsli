@@ -424,7 +424,7 @@ float JacobianDeterminantDI(
     float   distn = dot(v_n, v_n);
     float   cosn  = abs(dot(normalize(v_n), n2_c));
 
-    float J = (cosn / cosc) * (distc / distn);
+    float J = (cosn / max(cosc,1e-4)) * (distc / max(distn,1e-4));
 
     return !isnan(J)?J:0.0f;
 }
