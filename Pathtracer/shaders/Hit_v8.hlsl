@@ -58,16 +58,16 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             float pdfAM = jacobian * prev_pdf;
 
             // TODO: UPDATE RESERVOIR HERE
-            if(data.depth == 1){
-                /*DEBUG*///gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+            /*if(data.depth == 1){
+                //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
                 uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-                float p_hat = GetPHat(data.throughput * emission * prev_pdf * jacobian); // We need to remove the previous pdf; Cancel it my multiplying with it
-                float wi = misWeight * p_hat / pdfAM;
+                float p_hat = GetPHat(data.throughput * emission * prev_pdf); // We need to remove the previous pdf; Cancel it my multiplying with it
+                float wi = misWeight * p_hat / prev_pdf;//pdfAM;
                 float3 x2 = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
                 float3 n2 = hinfo.hitNormal;
                 bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, x2, n2, emission, InstanceIndex(), data.seed);
                 if(update)store_phat_di(g_Reservoirs_current_di, idx, p_hat);
-            }
+            }*/
             data.bsdfPdf = 0.0f;
             payload = PackPayload_payload(data);
             return;
@@ -126,24 +126,16 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     // MIS Weight (using Solid Angle measure for ratios)
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
-                    // UPDATE RESERVOIR (NEE Area Light)
-                    if(data.depth == 0)
+                    // TODO UPDATE RESERVOIR (NEE Area Light)
+                    /*if(data.depth == 0)
                     {
                         uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-
-                        float G = (cosSurf * cosLight) / max(distSq, 1e-20f);
-                        float3 targetRadiance = data.throughput * light.emission * bdataNEE.val * G;
+                        float3 targetRadiance = data.throughput * light.emission * bdataNEE.val * cosSurf;
                         float p_hat = GetPHat(targetRadiance);
-                        float pdfAM = lightPdf * cosLight / max(distSq, 1e-20f);
-                        float wi = (pdfAM > 1e-20f) ? (misWeight * p_hat / pdfAM) : 0.0f;
-
+                        float wi = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
                         bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, light.position, light.normal, light.emission, light.objID, data.seed);
-
-                        if(update)
-                        {
-                            store_phat_di(g_Reservoirs_current_di, idx, p_hat);
-                        }
-                    }
+                        if(update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
+                    }*/
                 }
             }
         }

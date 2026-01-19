@@ -36,16 +36,20 @@ void main(uint3 tid : SV_DispatchThreadID)
                 IsValidReservoir_DI(rdi_r) &&
                 !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
                 (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f))  &&
+                (JacobianDeterminantDI(sdata.x1, rdi.x2_di, sdata_r.x1, rdi.n2_di, rdi.objID_di)<5.0f)  &&
+                (JacobianDeterminantDI(sdata_r.x1, rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di)<5.0f)  &&
                 (sdata_r.matID == sdata.matID));
 
         if(tempPixelIdx != 0xFFFFFFFF /*&& valid_history*/ && valid){
             // Calculate the canonical target function
             float visReuse_c = rdi.W_di > 0.0f ? 1.0f : 0.0f;
-            float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID)) * visReuse_c;
-            float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, sdata_r.objID)) * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1_s); // would require last frame AS and we dont store it, can be ommited for minimal added bias
-            float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_g);
+            float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.objID_di)) * visReuse_c;
+            float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, rdi.objID_di)) * VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1_s);
+            p_n *= JacobianDeterminantDI(sdata.x1, rdi.x2_di, sdata_r.x1, rdi.n2_di, rdi.objID_di);
+            float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi_r.objID_di)) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_g);
+            n_c *= JacobianDeterminantDI(sdata_r.x1, rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di);
             float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
-            float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, sdata_r.objID)) * visReuse;
+            float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, rdi_r.objID_di)) * visReuse;
             float M_c = min(TEMP_MCAP_DI,rdi.M_di);
             float M_n = min(TEMP_MCAP_DI,rdi_r.M_di);
             float M_sum = M_c + M_n;

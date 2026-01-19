@@ -88,11 +88,11 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Calculate canonical pixel p_hat before loading the expensive data
         float visReuse = rdi.W_di > 0.0f ? 1.0f : 0.0f;
-        float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID) * visReuse;
+        float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.objID_di) * visReuse;
         float p_c = GetPHat(contrib_c);
         float3 contrib_final = contrib_c;
         // Compute the pairwise MIS weight for the canonical sample
-        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, M_c, nIds, rdi.x2_di, rdi.n2_di, rdi.L2_di);
+        float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, M_c, nIds, sdata.x1, rdi.x2_di, rdi.n2_di, rdi.L2_di);
         //debug += mis_c;
         // Adjust the weight in the canonical reservoir
         rdi.w_sum_di = mis_c * p_c * rdi.W_di;
@@ -104,8 +104,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             if(nIds[i] != 0xFFFFFFFF){
                 // Calculate p_hat for the neighbor using the canonical sample position
                 Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nIds[i]);
-                float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, sdata.objID) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_s);
-                float p_hat_from = GetPHat(contrib_n);
+                float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi_r.objID_di) * VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_s);
+                float p_hat_from = GetPHat(contrib_n * JacobianDeterminantDI(load_x1(g_sample_current, nIds[i]), rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di));
                 // Calculate the samples MIS weight
                 float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, M_c, min(SPAT_MCAP_DI ,rdi_r.M_di), p_c, p_hat_from, nIds[i], rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di);
                 //debug += mis_n;
