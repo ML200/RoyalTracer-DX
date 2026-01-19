@@ -58,7 +58,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             float pdfAM = jacobian * prev_pdf;
 
             // TODO: UPDATE RESERVOIR HERE
-            /*if(data.depth == 1){
+            if(data.depth == 1){
                 //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
                 uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                 float p_hat = GetPHat(data.throughput * emission * prev_pdf); // We need to remove the previous pdf; Cancel it my multiplying with it
@@ -67,7 +67,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 float3 n2 = hinfo.hitNormal;
                 bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, x2, n2, emission, InstanceIndex(), data.seed);
                 if(update)store_phat_di(g_Reservoirs_current_di, idx, p_hat);
-            }*/
+            }
             data.bsdfPdf = 0.0f;
             payload = PackPayload_payload(data);
             return;
@@ -127,7 +127,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
                     // TODO UPDATE RESERVOIR (NEE Area Light)
-                    /*if(data.depth == 0)
+                    if(data.depth == 0)
                     {
                         uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                         float3 targetRadiance = data.throughput * light.emission * bdataNEE.val * cosSurf;
@@ -135,7 +135,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                         float wi = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
                         bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, light.position, light.normal, light.emission, light.objID, data.seed);
                         if(update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
-                    }*/
+                    }
                 }
             }
         }
@@ -188,6 +188,15 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
                         //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0);
                         // TODO: UPDATE RESERVOIR HERE
+                        if (data.depth == 0)
+                        {
+                            uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+                            float3 target = data.throughput * bdataNEE.val * NdotL * sun.radiance;
+                            float  p_hat  = GetPHat(target);
+                            float  wi = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
+                            bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFFu, data.seed);
+                            if (update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
+                        }
                     }
                 }
             }
