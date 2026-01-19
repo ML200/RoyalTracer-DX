@@ -455,7 +455,7 @@ void Renderer::LoadAssets() {
 
     // --- Model loading logic ---
     {
-        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
+        std::vector<std::string> models = {"./bistro/bistro.obj", /*"./workshop/workshop.obj",*/ "./chungmu/chungmu.obj"};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -563,11 +563,11 @@ void Renderer::OnInitTransform() {
 
     m_instances[2].second = scale * selfRotation * translate;*/
 
-    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.1f, 0.1f, 0.1f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.3f, 0.3f, 0.3f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.0f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(-5.f, 0.3f, 5.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);

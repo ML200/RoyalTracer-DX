@@ -100,7 +100,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-    float3 f = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.objID_di) * rdi.W_di;
-    gOutput[uint3(DTid.xy, 0)] = float4(rdi.x2_di, 0);*/
+    gOutput[uint3(DTid.xy, 0)] = float4(rdi.W_di,rdi.W_di,rdi.W_di, 0);*/
 
 }

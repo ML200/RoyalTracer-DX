@@ -30,21 +30,20 @@ inline float2 GetLastFramePixelCoordinates_Float(
     float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
     float4 clipPos      = mul(prevProjection, mul(prevView, prevWorldPos));
 
-    // reject behind camera or bad w
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1.0f, -1.0f);
 
     float2 ndc = clipPos.xy / clipPos.w;
 
-    // reject if outside the clip volume
     if (any(ndc < -1.0f) || any(ndc > 1.0f)) return float2(-1.0f, -1.0f);
 
-    float2 screenUV = ndc * 0.5f + 0.5f;
-    screenUV.y = 1.0f - screenUV.y;
+    float2 uv = ndc * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
 
-    float2 px = screenUV * resolution;
+    // pixel-center coordinates
+    float2 px = uv * resolution - 0.5f;
 
-    // extra safety against tiny numeric drift
-    if (any(px < 0.0f) || any(px > (resolution - 1.0f))) return float2(-1.0f, -1.0f);
+    // allow half-pixel margin
+    if (any(px < -0.5f) || any(px > (resolution - 0.5f))) return float2(-1.0f, -1.0f);
 
     return px;
 }
@@ -56,16 +55,18 @@ inline int2 GetBestReprojectedPixel_d(
     float2 resolution,
     uint objID)
 {
-    float2 subPixel = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
-    if (subPixel.x < 0.0f) return int2(-1, -1); // propagated reject
+    float2 px = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
+    if (px.x < 0.0f) return int2(-1, -1);
 
-    int2 p = int2(round(subPixel));
+    // Nearest pixel center (less bias than round on non-centered coords)
+    int2 p = int2(floor(px + 0.5f));
 
     int2 resi = int2(resolution);
-    if (any(p < int2(0,0)) || any(p >= resi)) return int2(-1, -1);
+    if (any(p < 0) || any(p >= resi)) return int2(-1, -1);
 
     return p;
 }
+
 
 
 inline int MirrorCoord(int v, int extent)

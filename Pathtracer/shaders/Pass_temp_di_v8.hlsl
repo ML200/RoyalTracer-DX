@@ -24,7 +24,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi_r;
         //uint tempPixelIdx = 0xFFFFFFFF;
 
-        int2 tempPixelCoordinate = tid.xy;//GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+        int2 tempPixelCoordinate = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
         if(tempPixelCoordinate.x == -1 && tempPixelCoordinate.y == -1)
             tempPixelCoordinate = launchIndex;
 
@@ -71,7 +71,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
 
             // Calculate new W
-            if (p_hat_final > EPSILON && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
+            if (p_hat_final > 1e-5 && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
                 float W = rdi.w_sum_di / p_hat_final;
                 // NaN/Inf protection
                 if (isnan(W) || isinf(W)) {
