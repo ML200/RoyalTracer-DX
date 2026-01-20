@@ -27,20 +27,38 @@ struct Reservoir_GI
 
 
 // Data management
-static const uint BYTES_GI    = 80u;
+static const uint BYTES_GI        = 80u;
+static const uint BYTES_GI_VPOST  = 4u;
+static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST; // 84
 
-static const uint O_GI_PACK1  =  0u;   // uint4
-static const uint O_GI_PACK2  = 16u;   // uint4
-static const uint O_GI_PACK3  = 32u;   // uint4
-static const uint O_GI_PACK4  = 48u;   // uint4
-static const uint O_GI_PACK5  = 64u;   // uint4
+uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * STRIDE_GI; }
 
-static const uint O_GI_W      = O_GI_PACK5 +  0u; // float
-static const uint O_GI_F      = O_GI_PACK5 +  4u; // float
-static const uint O_GI_M      = O_GI_PACK5 +  8u; // uint
-static const uint O_GI_WSUM   = O_GI_PACK5 + 12u; // float
+static const uint O_GI_PACK1  =  0u;
+static const uint O_GI_PACK2  = 16u;
+static const uint O_GI_PACK3  = 32u;
+static const uint O_GI_PACK4  = 48u;
+static const uint O_GI_PACK5  = 64u;
 
-uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * BYTES_GI; }
+static const uint O_GI_W      = O_GI_PACK5 +  0u;
+static const uint O_GI_F      = O_GI_PACK5 +  4u;
+static const uint O_GI_M      = O_GI_PACK5 +  8u;
+static const uint O_GI_WSUM   = O_GI_PACK5 + 12u;
+
+static const uint O_GI_VPOST_BASE = BYTES_GI; // 80
+
+uint addr_Vpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_VPOST_BASE; } // <-- uses same base
+
+
+// Store/load packed V_post (world-space)
+void store_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
+{
+    b.Store(addr_Vpost(pixelIdx), PackNormal(normalize(Vpost_world)));
+}
+
+float3 load_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return UnpackNormal(b.Load(addr_Vpost(pixelIdx)));
+}
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
@@ -476,43 +494,25 @@ bool UpdateReservoirGI(
 
 
 // Fast Update
-//
-// - Always updates w_sum and M in-place
-// - Acceptance test uses wi / newWSum.
-// - On accept:
-//   - Always updates L2 and resets W to 0.
-//   - PRIOR  (isPosterior=false): writes V2, J, F (and optionally constant fields if you pass them).
-//   - POSTERIOR (isPosterior=true): only updates what varies (L2 + F optional), leaves V2/J/const intact.
-//
 bool UpdateReservoirGI_Fast(
     RWByteAddressBuffer buf,
     uint pixelIdx,
-
     float wi,
-    uint  M_add,
-    bool  isPosterior,
 
-    // Varying
+    // Varying (always written on accept)
     float3 L2_new,
-    float4 J_new,      // only used for prior
-    float3 V2_new,     // only used for prior (stored in world packed normal)
+    float4 J_new,
+    float3 V2_new,
 
     inout uint2 seed
 )
 {
     const uint base = pixelBaseAddrGI(pixelIdx);
 
-    // w_sum always accumulates (prior + posterior)
+    // w_sum accumulates
     float currentWSum = asfloat(buf.Load(base + O_GI_WSUM));
     float newWSum     = currentWSum + wi;
     buf.Store(base + O_GI_WSUM, asuint(newWSum));
-
-    // M only updates for PRIOR (posterior never touches M; M is initialized elsewhere to 1)
-    if (!isPosterior)
-    {
-        uint currentM = buf.Load(base + O_GI_M);
-        buf.Store(base + O_GI_M, currentM + M_add);
-    }
 
     bool isAccepted = false;
 
@@ -520,21 +520,14 @@ bool UpdateReservoirGI_Fast(
     {
         isAccepted = true;
 
-        // Always update L2 (Pack2.x)
+        // Pack2: always update L2 + V2 (world packed normal)
         uint4 p2 = buf.Load4(base + O_GI_PACK2);
         p2.x = PackRGB9E5(L2_new);
-
-        if (!isPosterior)
-        {
-            // PRIOR: update V2 (Pack2.y) + J (Pack4)
-            p2.y = PackNormal(normalize(V2_new));
-            buf.Store4(base + O_GI_PACK4, asuint(J_new));
-        }
-
-        // Commit Pack2 (L2 always; V2 only if prior)
+        p2.y = PackNormal(normalize(V2_new));
         buf.Store4(base + O_GI_PACK2, p2);
 
-        // NOTE: W and F are not touched here. Use dedicated helpers if needed.
+        // Pack4: always overwrite J
+        buf.Store4(base + O_GI_PACK4, asuint(J_new));
     }
 
     return isAccepted;

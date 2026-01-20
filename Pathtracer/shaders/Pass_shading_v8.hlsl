@@ -53,9 +53,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     // Load the DI pipeline output
-    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
-    float3 output_GI = 0.0f;//gScratchPing[uint3(DTid.xy, 2)];
+    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
     float3 accumulation = output_DI + output_GI;
 
@@ -95,11 +95,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 
     // DEBUG
-    /*gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
+    gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-    gOutput[uint3(DTid.xy, 0)] = float4(rdi.W_di,rdi.W_di,rdi.W_di, 0);*/
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    gOutput[uint3(DTid.xy, 0)] = (float4)(rdi.W_gi);
 
 }
