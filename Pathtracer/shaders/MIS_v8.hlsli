@@ -137,7 +137,8 @@ float PairwiseMIS_Neighbor_Spat_DI(
 #endif // ENABLE_RAY_QUERY_INLINE
 
 
-/*#ifdef ENABLE_RAY_QUERY_INLINE
+
+#ifdef ENABLE_RAY_QUERY_INLINE
 // Algorithm 7 from the gentle intro
 float PairwiseMIS_Canonical_Spat_GI(
     in float M_sum,
@@ -146,12 +147,18 @@ float PairwiseMIS_Canonical_Spat_GI(
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
     in float3 x2_c,
-    in float3 n2_c,
+    in float3 n2s_c,
+    in float3 n2g_c,
     in float3 L2_c,
     in float3 V2_c,
-    in uint matID_c,
-    in float pdfx2_c,
-    in float J_c
+    in uint   matID_c,
+    in float3 localKd2_c,
+    in float  localPr2_c,
+    in float  localPm2_c,
+    in float  etai2_c,
+    in float  etat2_c,
+    in float  pdfx2_c,
+    in float  J_c
     )
 {
     float m_c = M_c / M_sum;
@@ -160,21 +167,30 @@ float PairwiseMIS_Canonical_Spat_GI(
     [unroll]
     for(int i = 0; i < SPAT_COUNT_MAX_GI; i++){ // Iterate over all spatial neighbor candidates, skip invalid entries
         if(nIds[i] != 0xFFFFFFFF){
-            float3 x1 = load_x1(g_sample_current, nIds[i]);
-            float3 n1 = load_n1(g_sample_current, nIds[i]);
+            uint id = nIds[i];
+            float3 x1 = load_x1(g_sample_current, id);
+            float3 n1s = load_n1_s(g_sample_current, id);
+            float3 n1g = load_n1_g(g_sample_current, id);
+            float3 o   = load_o(g_sample_current, id);
+            uint   mID1 = load_matID(g_sample_current, id);
+            float3 kd1 = load_localKd(g_sample_current, id);
+            float  pr1 = load_localPr(g_sample_current, id);
+            float  pm1 = load_localPm(g_sample_current, id);
+            float  ei1 = load_etai(g_sample_current, id);
+            float  et1 = load_etat(g_sample_current, id);
+
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1) * J; // visibility check
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 0.0f)
-                m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, nIds[i]))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
+                m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, id))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
         }
     }
     return m_c;
 }
 #endif // ENABLE_RAY_QUERY_INLINE
-
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE
@@ -187,18 +203,35 @@ float PairwiseMIS_Neighbor_Spat_GI(
     in uint nID,// ID of the current candidate
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
     in float3 x2_n,
-    in float3 n2_n,
+    in float3 n2s_n,
+    in float3 n2g_n,
     in float3 L2_n,
     in float3 V2_n,
-    in uint matID_n,
-    in float pdfx2_n
+    in uint   matID_n,
+    in float3 localKd2_n,
+    in float  localPr2_n,
+    in float  localPm2_n,
+    in float  etai2_n,
+    in float  etat2_n,
+    in float  pdfx2_n
     )
 {
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
+    float3 x1  = load_x1(g_sample_current, nID);
+    float3 n1s = load_n1_s(g_sample_current, nID);
+    float3 n1g = load_n1_g(g_sample_current, nID);
+    float3 o   = load_o(g_sample_current, nID);
+    uint   mID1 = load_matID(g_sample_current, nID);
+    float3 kd1 = load_localKd(g_sample_current, nID);
+    float  pr1 = load_localPr(g_sample_current, nID);
+    float  pm1 = load_localPm(g_sample_current, nID);
+    float  ei1 = load_etai(g_sample_current, nID);
+    float  et1 = load_etat(g_sample_current, nID);
+
     float Jn = 0.0f;
     float J = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn, J));
+    float p_n = visReuse * GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_n, x2_n, n2s_n, n2g_n, L2_n, V2_n, localKd2_n, localPr2_n, localPm2_n, etai2_n, etat2_n, pdfx2_n, 1.0f, false, Jn, J));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -227,13 +260,19 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
     in float3 x2_c,
-    in float3 n2_c,
+    in float3 n2s_c,
+    in float3 n2g_c,
     in float3 L2_c,
     in float3 V2_c,
-    in uint matID_c,
-    in float pdfx2_c,
-    in float J_c,
-    in float beta
+    in uint   matID_c,
+    in float3 localKd2_c,
+    in float  localPr2_c,
+    in float  localPm2_c,
+    in float  etai2_c,
+    in float  etat2_c,
+    in float  pdfx2_c,
+    in float  J_c,
+    in float  beta
     )
 {
     float m_no_r = M_sum - 1.0f;
@@ -245,12 +284,22 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
 
     for(int i = 0; i < SPAT_COUNT_MAX_GI; i++){ // Iterate over all spatial neighbor candidates, skip invalid entries
         if(nIds[i] != 0xFFFFFFFF){
-            float3 x1 = load_x1(g_sample_current, nIds[i]);
-            float3 n1 = load_n1(g_sample_current, nIds[i]);
+            uint id = nIds[i];
+            float3 x1  = load_x1(g_sample_current, id);
+            float3 n1s = load_n1_s(g_sample_current, id);
+            float3 n1g = load_n1_g(g_sample_current, id);
+            float3 o   = load_o(g_sample_current, id);
+            uint   mID1 = load_matID(g_sample_current, id);
+            float3 kd1 = load_localKd(g_sample_current, id);
+            float  pr1 = load_localPr(g_sample_current, id);
+            float  pm1 = load_localPm(g_sample_current, id);
+            float  ei1 = load_etai(g_sample_current, id);
+            float  et1 = load_etat(g_sample_current, id);
+
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1, load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), matID_c, x2_c, n2_c, L2_c, V2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1) * J; // visibility check
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
 
             float D = SymRatio(p_c, p_hat_from, beta);
             sum += 1.0f/(1.0f + m_no_r * D);
@@ -259,7 +308,6 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     return (1.0f / m_no_r) * sum;
 }
 #endif // ENABLE_RAY_QUERY_INLINE
-
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE
@@ -272,25 +320,44 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
     in uint nID,// ID of the current candidate
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
     in float3 x2_n,
-    in float3 n2_n,
+    in float3 n2s_n,
+    in float3 n2g_n,
     in float3 L2_n,
     in float3 V2_n,
-    in uint matID_n,
-    in uint pdfx2_n,
-    in float beta
+    in uint   matID_n,
+    in float3 localKd2_n,
+    in float  localPr2_n,
+    in float  localPm2_n,
+    in float  etai2_n,
+    in float  etat2_n,
+    in float  pdfx2_n,
+    in float  beta
     )
 {
     float m_no_r = M_sum - 1.0f;
 
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
+
+    float3 x1  = load_x1(g_sample_current, nID);
+    float3 n1s = load_n1_s(g_sample_current, nID);
+    float3 n1g = load_n1_g(g_sample_current, nID);
+    float3 o   = load_o(g_sample_current, nID);
+    uint   mID1 = load_matID(g_sample_current, nID);
+    float3 kd1 = load_localKd(g_sample_current, nID);
+    float  pr1 = load_localPr(g_sample_current, nID);
+    float  pm1 = load_localPm(g_sample_current, nID);
+    float  ei1 = load_etai(g_sample_current, nID);
+    float  et1 = load_etat(g_sample_current, nID);
+
     float Jn = 0.0f;
     float J = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(load_x1(g_sample_current, nID), load_n1(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), matID_n, x2_n, n2_n, L2_n, V2_n, pdfx2_n, 1.0f, false, Jn, J));
+    float p_n = visReuse * GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_n, x2_n, n2s_n, n2g_n, L2_n, V2_n, localKd2_n, localPr2_n, localPm2_n, etai2_n, etat2_n, pdfx2_n, 1.0f, false, Jn, J));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float D = SymRatio(p_n, p_hat_from, beta);
     return D / (1.0f + m_no_r * D);
 
 }
-#endif // ENABLE_RAY_QUERY_INLINE*/
+#endif // ENABLE_RAY_QUERY_INLINE
+
 

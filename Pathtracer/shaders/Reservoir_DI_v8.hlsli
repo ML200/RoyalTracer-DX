@@ -210,7 +210,7 @@ float3 BSDF_term(
     return EvaluateBRDF_COMBINED(mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
-/*float PDF_term(
+float PDF_term(
     uint   mID,
     float3 n_s,
     float3 n_g, // Added
@@ -224,7 +224,7 @@ float3 BSDF_term(
 {
     SamplingP p = CalculateStrategyProbabilities(mID, s, n_s, etai, etat, localKd, localPm);
     return BRDF_PDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
-}*/
+}
 
 // G term uses Geometric Normal
 float G_term(float3 n_g, float3 s)
