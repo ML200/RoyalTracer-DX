@@ -24,6 +24,12 @@ void Pass_raygen_v8()
     store_W_di(g_Reservoirs_current_di, idx1, 0.0f);
     store_phat_di(g_Reservoirs_current_di, idx1, 0.0f);
 
+    storeReservoirGI(g_Reservoirs_current_gi, idx1, (Reservoir_GI)0);
+    store_wsum_gi(g_Reservoirs_current_gi, idx1, 0.0f);
+    store_W_gi   (g_Reservoirs_current_gi, idx1, 0.0f);
+    store_F_gi   (g_Reservoirs_current_gi, idx1, 0.0f);
+    store_M_gi   (g_Reservoirs_current_gi, idx1, 0u);
+
     uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
     float3 rayOrigin = InitOrigin();
@@ -95,6 +101,30 @@ void Pass_raygen_v8()
                 float3 dir = rayDir;
                 bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx4, wi, dir, EvalMissState(), 0xFFFFFFFFu, seed);
                 if(update)store_phat_di(g_Reservoirs_current_di, idx4, p_hat);
+            }
+
+            if (depth >= 2)
+            {
+                uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+                float3 envL = EvalMissState();
+
+                // Cancel only the immediately previous BSDF pdf (at x2), consistent with your existing DI pattern
+                float p_hat = GetPHat(T * envL);
+                float wi    = p_hat;
+
+                float3 V2_new = -rayDir; // incoming at x2 from x3->x2
+                if(depth > 2) V2_new = load_Vpost_gi(g_Reservoirs_current_gi, idx_gi);
+
+                float4 J_new = float4(0.0f, 1.0f, 0.0f, 0.0f);
+                if(depth > 2) J_new = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
+                                                    wi,
+                                                    envL, J_new, V2_new,
+                                                    seed);
+
+                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
             }
             break;
         }
@@ -222,4 +252,37 @@ void Pass_raygen_v8()
     // Store W, not w_sum!
     store_W_di(g_Reservoirs_current_di, idx3, W);
     store_M_di(g_Reservoirs_current_di, idx3, 1);
+
+    uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+    float F    = load_F_gi   (g_Reservoirs_current_gi, idx_gi);
+    float wsum = load_wsum_gi(g_Reservoirs_current_gi, idx_gi);
+
+    float Wgi = 0.0f;
+    if (F > 1e-6f && wsum > 0.0f)
+    {
+        Wgi = wsum / F;
+        if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
+    }
+
+    store_W_gi(g_Reservoirs_current_gi, idx_gi, Wgi);
+    store_M_gi(g_Reservoirs_current_gi, idx_gi, 1u);
+
+    // Update canonical Jacobian cache for the stored GI sample
+    if (F > 1e-6f)
+    {
+        SampleData  sd  = loadSampleData(g_sample_current, idx_gi);
+        Reservoir_GI r  = loadReservoirGI(g_Reservoirs_current_gi, idx_gi);
+
+        // Use cached pdfx2 in r.J_gi.x (0 for non-NEE, nonzero for NEE)
+        float Jc = PSSJacobian(sd.x1, sd.n1_s, sd.n1_g, sd.o, sd.matID,
+                               sd.localKd, sd.localPr, sd.localPm, sd.etai, sd.etat,
+                               r.x2_gi, r.n2_s_gi, r.n2_g_gi, r.V2_gi, r.matID_gi,
+                               r.localKd_gi, r.localPr_gi, r.localPm_gi, r.etai_gi, r.etat_gi,
+                               r.J_gi.x);
+
+        // Write back only J.y (keep J.x = pdfx2 as-is)
+        r.J_gi.y = Jc;
+        storeReservoirGI(g_Reservoirs_current_gi, idx_gi, r);
+    }
 }

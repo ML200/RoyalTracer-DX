@@ -68,9 +68,49 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, x2, n2, emission, InstanceIndex(), data.seed);
                 if(update)store_phat_di(g_Reservoirs_current_di, idx, p_hat);
             }
+            if (data.depth >= 2)
+            {
+                uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+                float3 V2_new = (data.depth == 2) ? (-WorldRayDirection()) : load_Vpost_gi(g_Reservoirs_current_gi, idx_gi);
+                float4 J_new  = float4(0.0f, 0.0f, 0.0f, 0.0f); // direct hit: no cached pdfx2, and posterior requires J=0
+
+                // PSS: contribution already includes /pdf along the path, so wi = p_hat
+                float3 contrib = data.throughput * emission * misWeight;
+                float  p_hat   = GetPHat(contrib);
+                float  wi      = p_hat;
+
+                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
+                                                    wi,
+                                                    emission, J_new, V2_new,
+                                                    data.seed);
+
+                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
+            }
             data.bsdfPdf = 0.0f;
             payload = PackPayload_payload(data);
             return;
+        }
+
+        if (data.depth == 1)
+        {
+            uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+            float3 x2 = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+
+            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, idx_gi,
+                                    x2, hinfo.hitNormal, hinfo.hitGNormal,
+                                    data.matID, InstanceIndex());
+
+            SetReservoirGI_LocalMaterial(g_Reservoirs_current_gi, idx_gi,
+                                         hinfo.localKd, hinfo.localPr, hinfo.localPm,
+                                         data.iors.x, data.iors.y);
+        }
+
+        if (data.depth == 2)
+        {
+            uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+            store_Vpost_gi(g_Reservoirs_current_gi, idx_gi, -WorldRayDirection());
         }
     }
 
@@ -136,6 +176,29 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                         bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, light.position, light.normal, light.emission, light.objID, data.seed);
                         if(update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
                     }
+                    // GI init: prior sample at x2 (depth==1) via NEE
+                    if (data.depth >= 1)
+                    {
+                        uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+                        float3 V2_new = (data.depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, idx_gi);
+
+                        // Prior keeps pdf cache; posterior forces it off.
+                        float4 J_new  = (data.depth == 1) ? float4(bdataNEE.pdf, 0.0f, 0.0f, 0.0f)
+                                                      : float4(0.0f,        0.0f, 0.0f, 0.0f);
+
+                        // PSS: contribution includes /lightPdf; wi = p_hat directly
+                        float3 contrib = data.throughput * light.emission * bdataNEE.val * cosSurf * misWeight / lightPdf;
+                        float  p_hat = GetPHat(contrib);
+                        float  wi    = p_hat;
+
+                        bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
+                                                        wi,
+                                                        light.emission, J_new, V2_new,
+                                                        data.seed);
+
+                        if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
+                    }
                 }
             }
         }
@@ -196,6 +259,28 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                             float  wi = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
                             bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFFu, data.seed);
                             if (update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
+                        }
+                        // GI init: prior sample at x2 (depth==1) via sun NEE
+                        if (data.depth >= 1)
+                        {
+                            uint idx_gi = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
+
+                            float3 V2_new = (data.depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, idx_gi);
+
+                            float4 J_new  = (data.depth == 1) ? float4(bdataNEE.pdf, 0.0f, 0.0f, 0.0f)
+                                                              : float4(0.0f,        0.0f, 0.0f, 0.0f);
+
+                            // If you want MIS against BSDF at the vertex, compute it here; otherwise keep as-is.
+                            float3 contrib = data.throughput * bdataNEE.val * NdotL * sun.radiance / lightPdf;
+                            float  p_hat   = GetPHat(contrib);
+                            float  wi      = p_hat;
+
+                            bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
+                                                                wi,
+                                                                sun.radiance, J_new, V2_new,
+                                                                data.seed);
+
+                            if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
                         }
                     }
                 }
