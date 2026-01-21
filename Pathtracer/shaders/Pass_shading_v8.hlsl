@@ -52,10 +52,22 @@ void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
+    //gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, DTid.xy);
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    float J = 1.0f;
+    float Jnc = 0.0f;
+    float3 f = ReconnectGI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x, 1.0f, false, Jnc, J);// * rdi.W_gi;
+    //float3 f = float3(rdi.W_gi, rdi.W_gi, rdi.W_gi);
+
     // Load the DI pipeline output
     float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
-    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
+    //float3 output_GI = gScratchPing[uint3(DTid.xy, 3)].xyz;
+    float3 output_GI = f;
+    //float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
     float3 accumulation = output_DI + output_GI;
 
@@ -95,11 +107,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 
     // DEBUG
-    gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
+    /*gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-    gOutput[uint3(DTid.xy, 0)] = (float4)(rdi.W_gi);
+    float J = 1.0f;
+    float Jnc = 0.0f;
+    float3 f = ReconnectGI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x, 1.0f, false, Jnc, J);
+    gOutput[uint3(DTid.xy, 0)] = float4(f, 0);*/
 
 }
