@@ -9,6 +9,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
     gDispatchIdx = tid;
 
+    // DEBUG
+    //gOutput[uint3(tid.xy, 0)] = float4(0,1,1,0);
+
     uint2  launchIndex   = tid.xy;
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, launchIndex);
@@ -99,7 +102,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.F_gi = p_hat_final;
 
             // Store the merged reservoir
-            //storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+            storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
 
             // DEBUG
             /*float3 heat;
@@ -108,8 +111,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
             heat.b = step(1.1, debug);          // blue when >1
             gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
-            //gOutput[uint3(tid.xy, 0)] = float4((float3), 1.0f);
-            gOutput[uint3(tid.xy, 0)] = float4(fn_c, 1.0f);
+            //gOutput[uint3(tid.xy, 0)] = float4((float3)(w_n/(w_c+w_n)), 1.0f);
+            //gOutput[uint3(tid.xy, 0)] = float4(f_c, 1.0f);
         }
     }
 }
