@@ -387,12 +387,12 @@ inline float3 ReconnectGI(
     if (PDF1 <= 0.0f || PDF2 <= 0.0f)
         return 0.0f;
 
-    // Throughput
-    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2;
-
     // Reconnection jacobian
     Jn = Jc;
     J  = 1.0f;
+
+    // Throughput
+    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2;
 
     if (applyJ)
     {
@@ -407,7 +407,7 @@ inline float3 ReconnectGI(
     if (any(isnan(r)) || all(r < EPSILON))
         r = (float3)0.0f;
 
-    return r;
+    return max(r,0.0f);
 }
 
 inline float PSSJacobian(
@@ -443,22 +443,22 @@ inline float PSSJacobian(
     float3 ndirN = normalize(-dir); // your convention (x1 -> x2)
 
     // PDFs in the same measure as your BSDF_term/PDF_term (PSS)
-    float PDF1 = PDF_term(mID1, n1_s, n1_g, ndirN, o,
+    float PDF1 = PDF_term(mID1, n1_s, n1_g, -ndirN, o,
                           localKd1, localPr1, localPm1, etai1, etat1);
-    if (PDF1 <= 0.0f) return 0.0f;
+    if (PDF1 <= EPSILON) return 0.0f;
 
     // Keep logic identical: reuse pdfx2 if provided, else recompute.
     // Note: the "o" parameter at x2 is the direction towards x1, i.e. -ndirN (same as ReconnectGI).
     float PDF2 = (pdfx2 > 0.0f)
         ? pdfx2
-        : PDF_term(mID2, n2_s, n2_g, V2, -ndirN,
+        : PDF_term(mID2, n2_s, n2_g, -V2, ndirN,
                    localKd2, localPr2, localPm2, etai2, etat2);
-    if (PDF2 <= 0.0f) return 0.0f;
+    if (PDF2 <= EPSILON) return 0.0f;
 
     // Pure geometric factor used in your reconnection Jacobian (use geometric normal at x2)
     float Gj = dot(ndirN, n2_g) / dist2;
 
-    return PDF1 * PDF2 * Gj;
+    return max(PDF1 * PDF2 * Gj, EPSILON);
 }
 
 
