@@ -277,10 +277,10 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                             float  wi      = p_hat;
 
                             float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
-                            if(data.depth > 1) tpostgi /= lightPdf;
+                            if(data.depth > 1) tpostgi /= lightPdf / NdotL;
 
-                            /*bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,sun.radiance * tpostgi, J_new, V2_new, data.seed);
-                            if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);*/
+                            bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,sun.radiance * tpostgi, J_new, V2_new, data.seed);
+                            if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
                         }
                     }
                 }

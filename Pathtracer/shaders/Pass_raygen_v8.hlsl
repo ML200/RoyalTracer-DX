@@ -125,13 +125,13 @@ void Pass_raygen_v8()
                 if(depth > 2) J_new = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
 
-                /*float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
+                float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
                 bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
                                                     wi,
                                                     envL * tpostgi, J_new, V2_new,
                                                     seed);
 
-                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);*/
+                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
             }
             break;
         }

@@ -63,7 +63,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //float3 f = float3(rdi.W_gi, rdi.W_gi, rdi.W_gi);
 
     // Load the DI pipeline output
-    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     // Load the GI pipeline output
     //float3 output_GI = gScratchPing[uint3(DTid.xy, 3)].xyz;
     //float3 output_GI = f;
