@@ -72,10 +72,8 @@ extern "C" {
 
 static inline UINT EncodeNormalOct(const XMVECTOR& n)
 {
-    // Project the normal onto the octahedron and then to a 2D plane
     XMVECTOR p = n / (abs(XMVectorGetX(n)) + abs(XMVectorGetY(n)) + abs(XMVectorGetZ(n)));
 
-    // If the normal is pointing down, reflect it onto the upper hemisphere
     if (XMVectorGetZ(p) < 0.0f)
     {
         float oldX = XMVectorGetX(p);
@@ -83,8 +81,6 @@ static inline UINT EncodeNormalOct(const XMVECTOR& n)
         p = XMVectorSetX(p, (1.0f - abs(oldY)) * (oldX >= 0.0f ? 1.0f : -1.0f));
         p = XMVectorSetY(p, (1.0f - abs(oldX)) * (oldY >= 0.0f ? 1.0f : -1.0f));
     }
-
-    // Pack the 2D coordinates into two 16-bit signed normalized integers (-1 to 1 range)
     int ix = static_cast<int>(XMVectorGetX(p) * 32767.0f);
     int iy = static_cast<int>(XMVectorGetY(p) * 32767.0f);
 
@@ -108,7 +104,6 @@ void Renderer::BuildGlobalMeshBuffers()
     m_totalVertexCount = (UINT)totalVerts;
     m_totalIndexCount = (UINT)totalIdx;
 
-    // The size of BTriVertex has changed, so this calculation is updated automatically.
     const UINT vbBytes = m_totalVertexCount * sizeof(BTriVertex);
     const UINT ibBytes = m_totalIndexCount * sizeof(uint32_t);
 
@@ -148,7 +143,6 @@ void Renderer::BuildGlobalMeshBuffers()
             normal = XMVector3Normalize(normal);
             outV[i].packedNormal = EncodeNormalOct(normal);
 
-            // 2. Pack the Texture Coordinates
             XMVECTOR texCoord = XMLoadFloat2(&srcV[i].texCoord);
             PackedVector::XMStoreHalf2(&outV[i].texCoord, texCoord);
         }
@@ -167,10 +161,10 @@ void Renderer::BuildGlobalMeshBuffers()
     m_commandList->ResourceBarrier(_countof(br), br);
 }
 
-static inline InstanceXformCPU ToInstanceXform(const DirectX::XMMATRIX& M)
+static InstanceXformCPU ToInstanceXform(const XMMATRIX& M)
 {
     InstanceXformCPU x{};
-    XMStoreFloat4x4(&x.objectToWorld, M);   // no transpose needed
+    XMStoreFloat4x4(&x.objectToWorld, M);
     return x;
 }
 
@@ -236,7 +230,6 @@ Renderer::Renderer(UINT width, UINT height,
         LinkLoops();
     }
     catch (const std::exception& e) {
-        // This catches 0xe06d7363 and shows you the actual text
         MessageBoxA(nullptr, e.what(), "Pass Parsing Error", MB_OK | MB_ICONERROR);
         exit(1);
     }
@@ -266,13 +259,10 @@ void Renderer::OnInit() {
         BuildGlobalMeshBuffers();
         ThrowIfFailed(m_commandList->Close());
 
-        // Execute and wait for the upload to finish
         ID3D12CommandList* initLists[] = { m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(_countof(initLists), initLists);
         WaitForPreviousFrame();
 
-        // Now that the GPU has finished the copy commands, we can
-        // safely release the intermediate upload heaps.
         m_textureUploadHeaps.clear();
         m_lutUploadHeaps.clear();
 
@@ -296,8 +286,6 @@ void Renderer::OnInit() {
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Initialization Error", MB_OK | MB_ICONERROR);
-
-        // Exit cleanly so we don't loop
         exit(1);
     }*/
 
@@ -451,13 +439,12 @@ void Renderer::LoadAssets() {
         0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocators[m_frameIndex].Get(),
         nullptr, IID_PPV_ARGS(&m_commandList)));
 
-    // --- Master lists for all textures loaded from all models ---
     std::map<std::string, uint32_t> textureMap;
     std::vector<TextureData> albedoTextures;
     std::vector<TextureData> normalTextures;
     std::vector<TextureData> rmaTextures;
 
-    // --- Model loading logic ---
+    // Model loading
     {
         std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
         for (const auto& modelName : models) {
@@ -470,7 +457,6 @@ void Renderer::LoadAssets() {
 
             std::vector<Vertex> vertices;
             std::vector<UINT> indices;
-            // Use a temporary vector for materials from just this model
             std::vector<Material> modelScopedMaterials;
             std::vector<UINT> modelMaterialIDs;
 
@@ -487,9 +473,9 @@ void Renderer::LoadAssets() {
             // Create Vertex Buffer for this model
             const UINT vbSize = static_cast<UINT>(vertices.size()) * sizeof(Vertex);
             ComPtr<ID3D12Resource> vb;
-            CD3DX12_RESOURCE_DESC vbDesc = CD3DX12_RESOURCE_DESC::Buffer(vbSize); // CORRECTED
+            CD3DX12_RESOURCE_DESC vbDesc = CD3DX12_RESOURCE_DESC::Buffer(vbSize);
             ThrowIfFailed(m_device->CreateCommittedResource(
-                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &vbDesc, // CORRECTED
+                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &vbDesc,
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&vb)));
             UINT8* pVertexDataBegin;
             vb->Map(0, nullptr, reinterpret_cast<void**>(&pVertexDataBegin));
@@ -502,9 +488,9 @@ void Renderer::LoadAssets() {
             // Create Index Buffer for this model
             const UINT ibSize = static_cast<UINT>(indices.size()) * sizeof(UINT);
             ComPtr<ID3D12Resource> ib;
-            CD3DX12_RESOURCE_DESC ibDesc = CD3DX12_RESOURCE_DESC::Buffer(ibSize); // CORRECTED
+            CD3DX12_RESOURCE_DESC ibDesc = CD3DX12_RESOURCE_DESC::Buffer(ibSize);
             ThrowIfFailed(m_device->CreateCommittedResource(
-                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &ibDesc, // CORRECTED
+                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &ibDesc,
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&ib)));
             UINT8* pIndexDataBegin;
             ib->Map(0, nullptr, reinterpret_cast<void**>(&pIndexDataBegin));
@@ -519,12 +505,12 @@ void Renderer::LoadAssets() {
         }
     }
 
-    // --- Upload material data (now includes texture IDs) ---
+    // Upload material data
     {
         const UINT materialBufferSize = static_cast<UINT>(m_materials.size()) * sizeof(Material);
-        CD3DX12_RESOURCE_DESC materialBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize); // CORRECTED
+        CD3DX12_RESOURCE_DESC materialBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
         ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialBufferDesc, // CORRECTED
+            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialBufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialBuffer)));
         UINT8* pMaterialDataBegin;
         m_materialBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pMaterialDataBegin));
@@ -533,9 +519,9 @@ void Renderer::LoadAssets() {
     }
     {
         const UINT materialIndexBufferSize = static_cast<UINT>(m_materialIDs.size()) * sizeof(UINT);
-        CD3DX12_RESOURCE_DESC materialIndexBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize); // CORRECTED
+        CD3DX12_RESOURCE_DESC materialIndexBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialIndexBufferSize);
         ThrowIfFailed(m_device->CreateCommittedResource(
-            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialIndexBufferDesc, // CORRECTED
+            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &materialIndexBufferDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_materialIndexBuffer)));
         UINT8* pMaterialIndexDataBegin;
         m_materialIndexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&pMaterialIndexDataBegin));
@@ -543,10 +529,9 @@ void Renderer::LoadAssets() {
         m_materialIndexBuffer->Unmap(0, nullptr);
     }
 
-    // --- Create and upload GPU texture arrays ---
+    // Create and upload GPU texture arrays
     CreateTextureArrays(albedoTextures, normalTextures, rmaTextures);
 
-    // --- Synchronization ---
     {
         ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
         m_fenceValue = 1;
@@ -554,9 +539,7 @@ void Renderer::LoadAssets() {
         if (m_fenceEvent == nullptr) {
             ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
         }
-        // This wait is important. It ensures the command list that contains texture uploads
-        // is finished before we try to use those textures. We'll execute it right after this function.
-        WaitForPreviousFrame(); // This should be called after ExecuteCommandLists
+        WaitForPreviousFrame();
     }
 }
 

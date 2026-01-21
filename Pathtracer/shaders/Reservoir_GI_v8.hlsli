@@ -384,7 +384,7 @@ inline float3 ReconnectGI(
     if (pdfx2 == 0.0f)
         PDF2 = PDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
-    if (PDF1 <= 0.0f || PDF2 <= 0.0f)
+    if (PDF1 <= EPSILON || PDF2 <= EPSILON)
         return 0.0f;
 
     // Reconnection jacobian
@@ -399,7 +399,8 @@ inline float3 ReconnectGI(
         // Apply reconnection jacobian (uses n2 geometric, as this is a geometric factor)
         float Gj = dot(ndirN, n2_g) / (dist * dist);
 
-        Jn = (PDF1 * PDF2 * Gj);
+        Jn = max(PDF1 * PDF2 * Gj, EPSILON);
+        if(Jc < EPSILON) return 0.0f;
         J  = Jn / Jc;
         // r *= J; // keep disabled as in your original
     }

@@ -14,20 +14,20 @@
 // ___ DI Reuse ___
 #define TEMP_MCAP_DI 24
 
-#define SPAT_MCAP_DI 48
+#define SPAT_MCAP_DI 144
 #define SPAT_EXP_DI 1.0f
 #define SPAT_RAD_MAX 32
 #define SPAT_RAD_MIN 24
 
 #define SPAT_COUNT_MAX_DI 2
 #define SPAT_COUNT_MIN_DI 1
-#define SPAT_TRIS_DI 9
+#define SPAT_TRIS_DI 6
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 30
+#define TEMP_MCAP_GI 24
 
-#define SPAT_MCAP_GI 240
+#define SPAT_MCAP_GI 144
 #define SPAT_EXP_GI 1.0f
 #define SPAT_RAD_MAX_GI 32
 #define SPAT_RAD_MIN_GI 24
