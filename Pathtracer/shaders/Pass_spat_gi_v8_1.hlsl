@@ -52,7 +52,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     bool candidateAcceptedGI =
                         IsValidReservoir_GI_opt(rdi_r.n2_g_gi, rdi_r.M_gi) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
-                        !RejectNormal_GI(sdata.n1_s, load_n1_s(g_sample_current, iID), 0.9f) &&
+                        !RejectNormal_GI(sdata.n1_s, load_n1_s(g_sample_current, iID), 0.36f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1_s, 0.02f) &&
                         !RejectLength_GI(rdi.x2_gi, rdi.n2_g_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
                         !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_g_gi, load_x1(g_sample_current, iID), sdata.x1, 0.5f) &&

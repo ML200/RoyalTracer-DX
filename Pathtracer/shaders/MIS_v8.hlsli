@@ -184,7 +184,7 @@ float PairwiseMIS_Canonical_Spat_GI(
             float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
-            if(m_den > 0.0f)
+            if(m_den > EPSILON)
                 m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, id))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
         }
     }
@@ -235,7 +235,7 @@ float PairwiseMIS_Neighbor_Spat_GI(
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
-    if(m_den>0.0f)
+    if(m_den>EPSILON)
         return (M_n/M_sum) * (m_num/m_den);
     return 0.0f;
 }
