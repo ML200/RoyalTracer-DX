@@ -29,7 +29,9 @@ struct Reservoir_GI
 // Data management
 static const uint BYTES_GI        = 80u;
 static const uint BYTES_GI_VPOST  = 4u;
-static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST; // 84
+static const uint BYTES_GI_TPOST  = 4u;
+
+static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 88
 
 uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * STRIDE_GI; }
 
@@ -44,10 +46,11 @@ static const uint O_GI_F      = O_GI_PACK5 +  4u;
 static const uint O_GI_M      = O_GI_PACK5 +  8u;
 static const uint O_GI_WSUM   = O_GI_PACK5 + 12u;
 
-static const uint O_GI_VPOST_BASE = BYTES_GI; // 80
+static const uint O_GI_VPOST_BASE = BYTES_GI;                  // 80
+static const uint O_GI_TPOST_BASE = BYTES_GI + BYTES_GI_VPOST; // 84
 
-uint addr_Vpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_VPOST_BASE; } // <-- uses same base
-
+uint addr_Vpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_VPOST_BASE; }
+uint addr_Tpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_TPOST_BASE; }
 
 // Store/load packed V_post (world-space)
 void store_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
@@ -59,6 +62,21 @@ float3 load_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
     return UnpackNormal(b.Load(addr_Vpost(pixelIdx)));
 }
+
+void store_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Tpost)
+{
+    // Throughput is non-negative; RGB9E5 is fine.
+    b.Store(addr_Tpost(pixelIdx), PackRGB9E5(max(Tpost, 0.0f)));
+}
+
+float3 load_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return UnpackRGB9E5(b.Load(addr_Tpost(pixelIdx)));
+}
+
+
+
+
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
@@ -280,7 +298,7 @@ inline bool RejectLength_GI(float3 x2_c, float3 n2_c,
 inline bool IsValidReservoir_GI(Reservoir_GI r){
     bool valid =
         any(abs(r.n2_s_gi) > 0.0f) &&
-        r.M_gi > 0.0f
+        r.M_gi > 0
         ;
     return valid;
 }
@@ -290,6 +308,18 @@ inline bool IsValidReservoir_GI_opt(in float3 n2, in uint M){
         any(abs(n2) > 0.0f) &&
         M > 0.0f;
     return valid;
+}
+
+inline void InvalidateReservoirGI_ShadingNormal(
+    RWByteAddressBuffer buf,
+    uint pixelIdx
+)
+{
+    // n2_s_gi is stored in PACK1.w
+    buf.Store(
+        pixelBaseAddrGI(pixelIdx) + O_GI_PACK1 + 12u,
+        0u
+    );
 }
 
 
@@ -337,34 +367,28 @@ inline float3 ReconnectGI(
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x1 to x2 (negated)
 
-    // Directions for each BSDF evaluation
-    // At x1: incoming is from x2 -> x1 (ndirN), outgoing is camera/next (o)
-    float3 s1 = ndirN;
-
-    // At x2: outgoing towards x1 is -ndirN; incoming is V2 (from x3 -> x2)
-    float3 o2 = -ndirN;
-
     // Terms (now require n_s + n_g + locals at both vertices)
-    float3 F1 = BSDF_term(mID1, n1_s, n1_g, s1, o,  localKd1, localPr1, localPm1, etai1, etat1);
-    float3 F2 = BSDF_term(mID2, n2_s, n2_g, V2, o2, localKd2, localPr2, localPm2, etai2, etat2);
+    float3 F1 = BSDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
+    float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     // Geometry term
-    float  G  = G_term(n1_s, s1);
+    float  G1  = G_term(n1_s, -ndirN);
+    float  G2  = G_term(n2_s, -V2);
 
     // Missing pdfs:
     // PDF at x1 always recomputed
-    float PDF1 = PDF_term(mID1, n1_s, n1_g, s1, o,  localKd1, localPr1, localPm1, etai1, etat1);
+    float PDF1 = PDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
 
     // PDF at x2: reuse if provided (NEE ray etc), else recompute
     float PDF2 = pdfx2;
     if (pdfx2 == 0.0f)
-        PDF2 = PDF_term(mID2, n2_s, n2_g, V2, o2, localKd2, localPr2, localPm2, etai2, etat2);
+        PDF2 = PDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     if (PDF1 <= 0.0f || PDF2 <= 0.0f)
         return 0.0f;
 
     // Throughput
-    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G;
+    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2;
 
     // Reconnection jacobian
     Jn = Jc;

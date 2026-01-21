@@ -3,7 +3,7 @@ using namespace dx;
 #include "Includes_raygen_v8.hlsli"
 
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 30
+#define MAX_BOUNCES 3
 #endif
 
 #ifndef MEDIUM_INVALID_15
@@ -29,6 +29,10 @@ void Pass_raygen_v8()
     store_W_gi   (g_Reservoirs_current_gi, idx1, 0.0f);
     store_F_gi   (g_Reservoirs_current_gi, idx1, 0.0f);
     store_M_gi   (g_Reservoirs_current_gi, idx1, 0u);
+
+    gScratchPing[uint3(DispatchRaysIndex().xy, 3)] = 0.0f;
+
+    store_Tpost_gi(g_Reservoirs_current_gi, idx1, 1.0f);
 
     uint seed = initRandomData(pix, uint2(8, 4), time, 1u);
 
@@ -110,6 +114,7 @@ void Pass_raygen_v8()
                 float3 envL = EvalMissState();
 
                 // Cancel only the immediately previous BSDF pdf (at x2), consistent with your existing DI pattern
+                //gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(T * envL,0);
                 float p_hat = GetPHat(T * envL);
                 float wi    = p_hat;
 
@@ -119,12 +124,14 @@ void Pass_raygen_v8()
                 float4 J_new = float4(0.0f, 1.0f, 0.0f, 0.0f);
                 if(depth > 2) J_new = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
+
+                /*float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
                 bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,
                                                     wi,
-                                                    envL, J_new, V2_new,
+                                                    envL * tpostgi, J_new, V2_new,
                                                     seed);
 
-                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
+                if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);*/
             }
             break;
         }
@@ -264,6 +271,8 @@ void Pass_raygen_v8()
         Wgi = wsum / F;
         if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
     }
+    if(Wgi == 0)
+        InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, idx_gi);
 
     store_W_gi(g_Reservoirs_current_gi, idx_gi, Wgi);
     store_M_gi(g_Reservoirs_current_gi, idx_gi, 1u);
