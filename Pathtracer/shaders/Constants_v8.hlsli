@@ -25,9 +25,9 @@
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 300
+#define TEMP_MCAP_GI 30
 
-#define SPAT_MCAP_GI 5000
+#define SPAT_MCAP_GI 500
 #define SPAT_EXP_GI 1.0f
 #define SPAT_RAD_MAX_GI 32
 #define SPAT_RAD_MIN_GI 24
