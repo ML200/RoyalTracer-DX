@@ -12,9 +12,9 @@
 #define GGX_ESS_LUT_INDEX 1
 
 // ___ DI Reuse ___
-#define TEMP_MCAP_DI 24
+#define TEMP_MCAP_DI 30
 
-#define SPAT_MCAP_DI 144
+#define SPAT_MCAP_DI 500
 #define SPAT_EXP_DI 1.0f
 #define SPAT_RAD_MAX 32
 #define SPAT_RAD_MIN 24
@@ -25,9 +25,9 @@
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 24
+#define TEMP_MCAP_GI 300
 
-#define SPAT_MCAP_GI 144
+#define SPAT_MCAP_GI 5000
 #define SPAT_EXP_GI 1.0f
 #define SPAT_RAD_MAX_GI 32
 #define SPAT_RAD_MIN_GI 24
