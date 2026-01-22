@@ -43,7 +43,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         bool valid =
             (all(sdata_r.L1 < EPSILON) &&
             IsValidReservoir_GI(rdi_r) &&
-            !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f)&&
+            !RejectNormal_GI(sdata.n1_s, sdata_r.n1_g, 0.36f)&&
             (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.1f))&&
             (sdata_r.matID == sdata.matID));
 

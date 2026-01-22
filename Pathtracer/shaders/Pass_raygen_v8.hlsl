@@ -136,9 +136,7 @@ void Pass_raygen_v8()
             break;
         }
 
-        // --------------------------------------------------------------------
-        // Pre-invoke setup (phantom check & payload init)
-        // --------------------------------------------------------------------
+        // Pre-invoke setup
         const uint instID = hitObj.GetInstanceIndex();
         const uint primID = hitObj.GetPrimitiveIndex();
 
@@ -157,7 +155,7 @@ void Pass_raygen_v8()
         }
 
         uint currentMediumMatID = GetCurrentMediumMaterialID_packed(viorP, aiorP);
-        if (currentMediumMatID == 0x0000FFFFu) currentMediumMatID = MEDIUM_INVALID_15; // if you still use old sentinel
+        if (currentMediumMatID == 0x0000FFFFu) currentMediumMatID = MEDIUM_INVALID_15;
 
         // Pointer from packed stack
         int viorPtr = GetVolumePtrFast_packed(viorP);
@@ -166,12 +164,10 @@ void Pass_raygen_v8()
         uint meta0 = PackMeta0_payload((uint)depth, viorPtr, matID, currentMediumMatID);
         uint meta1 = PackMeta1_payload(currentMediumMatID, (depth == 0) ? PF_FIRST_BOUNCE : 0);
 
-        // --------------------------------------------------------------------
-        // Invoke ClosestHit: keep payload strictly short-lived
-        // --------------------------------------------------------------------
+        // Invoke ClosestHit
         float2 nextDir2;
         uint   nextNPacked;
-        uint   nextPackedThroughput; // CHS returns updateWeight in this slot (per your current design)
+        uint   nextPackedThroughput; // CHS returns updateWeight in this slot
         float  nextPdf;
         uint   nextSeed;
         uint   outMeta1;
@@ -202,20 +198,16 @@ void Pass_raygen_v8()
             {
                 UpdateIORStack_packed(viorP, aiorP, matID, instID);
             }
-        } // payload dies here
+        }
 
-        // --------------------------------------------------------------------
-        // Validate and update state (keep unpacked locals short-lived)
-        // --------------------------------------------------------------------
+        // Validate and update state
         float3 s = OctDecodeFloat2_payload(nextDir2);
-
-        // Weight is returned in packedThroughput slot (per your current CHS design)
         float3 weight = UnpackRGB9E5(nextPackedThroughput);
 
         if (dot(s, s) < 1e-12f || nextPdf <= 1e-6f || any(isnan(weight)) || any(isinf(weight)))
             break;
 
-        // Apply throughput update in tight scope
+        // Apply throughput update
         {
             float3 T = UnpackRGB9E5(packedThroughput);
             T *= weight;
@@ -225,7 +217,7 @@ void Pass_raygen_v8()
         // Update RNG
         seed = nextSeed;
 
-        // Russian Roulette (unpack only for luma)
+        // Russian Roulette
         if (depth > 0)
         {
             float3 T = UnpackRGB9E5(packedThroughput);
@@ -235,9 +227,7 @@ void Pass_raygen_v8()
             packedThroughput = PackRGB9E5(T);
         }
 
-        // --------------------------------------------------------------------
         // Advance ray
-        // --------------------------------------------------------------------
         rayOrigin += hitObj.GetRayTCurrent() * rayDir;
 
         // Carry compressed state to next bounce
@@ -256,7 +246,6 @@ void Pass_raygen_v8()
         W = w_sum / p_hat;
     }
 
-    // Store W, not w_sum!
     store_W_di(g_Reservoirs_current_di, idx3, W);
     store_M_di(g_Reservoirs_current_di, idx3, 1);
 
