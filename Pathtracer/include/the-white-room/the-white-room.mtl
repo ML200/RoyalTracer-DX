@@ -1,11 +1,12 @@
-# Blender 4.5.3 LTS MTL File: 'the-white-room.blend'
+# Blender 4.3.2 MTL File: 'None'
 # www.blender.org
 
 newmtl Apple
 Kd 1.000000 0.100000 0.100000
+Ks 1.000000 1.000000 1.000000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
-d 1.00000
+d 1.000000
 illum 2
 Pr 0.100000
 Pm 0.000000
@@ -164,9 +165,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/carpet-text3b.jpg
 
 newmtl Ceiling-lampshade
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -179,7 +180,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/Shade-paper.jpg
 
 newmtl Chair-sofa-leather
 Kd 0.508878 0.467784 0.428691
@@ -240,7 +240,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/cushion-green-circles.jpg
 
 newmtl Cushion1
 Kd 0.200000 0.600000 0.200000
@@ -256,7 +255,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/cushion-stripe-purple.jpg
 
 newmtl Cushion3
 Kd 0.200000 0.600000 0.200000
@@ -272,10 +270,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/cushion-purple-yellow-stripe.jpg
 
 newmtl Emitter-Rear
-Kd 0.000000 0.000000 0.000000
+Kd 1.000000 1.000000 1.000000
 Ks 0.500000 0.500000 0.500000
 Ke 3.598413 4.407919 5.000000
 Ni 1.500000
@@ -306,34 +303,18 @@ anisor 0.000000
 
 newmtl Floor
 Kd 0.500000 0.500000 0.500000
+Ks 1.000000 1.000000 1.000000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 2
-Pr 0.173000
+Pr 0.300000
 Pm 0.000000
 Ps 0.000000
 Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd F:/Repos/HIPRT-Path-Tracer/data/GLTFs/the-white-room/WoodFloor051_2K-JPG_Color_reduced.jpg
-
-newmtl Glass-Fake-picframe
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.000000
-d 1.000000
-illum 2
-Pr 0.100000
-Pm 0.000000
-Ps 0.000000
-Pc 0.000000
-Pcr 0.000000
-aniso 0.000000
-anisor 0.000000
-Tf 1.000000 1.000000 1.000000
 
 newmtl Handle-chrome
 Kd 0.800000 0.800000 0.800000
@@ -364,7 +345,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/shade-stripes.jpg
 
 newmtl Love-letters
 Kd 0.800000 0.800000 0.800000
@@ -508,7 +488,7 @@ Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 2
-Pr 0.000000
+Pr 0.100000
 Pm 0.000000
 Ps 0.000000
 Pc 0.000000
@@ -530,22 +510,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-
-newmtl Radio-glass
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.000000
-d 1.000000
-illum 2
-Pr 0.000000
-Pm 0.000000
-Ps 0.000000
-Pc 0.000000
-Pcr 0.000000
-aniso 0.000000
-anisor 0.000000
-Tf 1.000000 1.000000 1.000000
 
 newmtl Radio-handle
 Kd 0.485147 0.467784 0.366253
@@ -689,7 +653,7 @@ Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 2
-Pr 0.500000
+Pr 0.100000
 Pm 0.000000
 Ps 0.000000
 Pc 1.000000
@@ -727,7 +691,23 @@ Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
 
+newmtl black
+Kd 0.000000 0.000000 0.000000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 3
+Pr 1.000000
+Pm 1.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
 newmtl book-shader
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -740,7 +720,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/book-spines.jpg
 
 newmtl bush-logo
 Kd 0.800000 0.800000 0.800000
@@ -802,22 +781,6 @@ Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
 
-newmtl lampshade-inner
-Kd 0.800000 0.800000 0.800000
-Ks 0.500000 0.500000 0.500000
-Ke 0.000000 0.000000 0.000000
-Ni 1.000000
-d 1.000000
-illum 2
-Pr 0.000000
-Pm 0.000000
-Ps 0.000000
-Pc 0.000000
-Pcr 0.000000
-aniso 0.000000
-anisor 0.000000
-Tf 0.627148 0.627148 0.627148
-
 newmtl light-fitting
 Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
@@ -834,6 +797,7 @@ aniso 0.000000
 anisor 0.000000
 
 newmtl magazine
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -846,7 +810,6 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/magazine.jpg
 
 newmtl picframe
 Kd 0.800000 0.800000 0.800000
@@ -879,6 +842,7 @@ aniso 0.000000
 anisor 0.000000
 
 newmtl picframe-pic
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -891,9 +855,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/photo1.jpg
 
 newmtl picframe-pic2
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -906,9 +870,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/pic5wide.jpg
 
 newmtl picframe-pic2.001
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -921,9 +885,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/pic3.jpg
 
 newmtl picframe-pica
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -936,9 +900,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/photo3.jpg
 
 newmtl picframe-picb
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -951,9 +915,9 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/photo4.jpg
 
 newmtl picframe-picc.001
+Kd 0.800000 0.800000 0.800000
 Ks 0.500000 0.500000 0.500000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
@@ -966,4 +930,3 @@ Pc 0.000000
 Pcr 0.000000
 aniso 0.000000
 anisor 0.000000
-map_Kd textures/photo2.jpg
