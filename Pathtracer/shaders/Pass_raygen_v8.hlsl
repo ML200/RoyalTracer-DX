@@ -265,22 +265,4 @@ void Pass_raygen_v8()
 
     store_W_gi(g_Reservoirs_current_gi, idx_gi, Wgi);
     store_M_gi(g_Reservoirs_current_gi, idx_gi, 1u);
-
-    // Update canonical Jacobian cache for the stored GI sample
-    if (F > 1e-6f)
-    {
-        SampleData  sd  = loadSampleData(g_sample_current, idx_gi);
-        Reservoir_GI r  = loadReservoirGI(g_Reservoirs_current_gi, idx_gi);
-
-        // Use cached pdfx2 in r.J_gi.x (0 for non-NEE, nonzero for NEE)
-        float Jc = PSSJacobian(sd.x1, sd.n1_s, sd.n1_g, sd.o, sd.matID,
-                               sd.localKd, sd.localPr, sd.localPm, sd.etai, sd.etat,
-                               r.x2_gi, r.n2_s_gi, r.n2_g_gi, r.V2_gi, r.matID_gi,
-                               r.localKd_gi, r.localPr_gi, r.localPm_gi, r.etai_gi, r.etat_gi,
-                               r.J_gi.x);
-
-        // Write back only J.y (keep J.x = pdfx2 as-is)
-        r.J_gi.y = Jc;
-        storeReservoirGI(g_Reservoirs_current_gi, idx_gi, r);
-    }
 }

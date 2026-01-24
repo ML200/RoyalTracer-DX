@@ -22,6 +22,15 @@ void main(uint3 tid : SV_DispatchThreadID)
         // Load current reservoir
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
+        // Update canonical Jacobian cache for the stored GI sample
+        float Jc = PSSJacobian(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
+                               sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
+                               rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi,
+                               rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
+                               rdi.J_gi.x);
+        rdi.J_gi.y = Jc;
+
+
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 2);
 

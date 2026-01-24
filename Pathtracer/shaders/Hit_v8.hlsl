@@ -136,7 +136,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             RayDesc shadowRay;
             shadowRay.Origin    = hitPos;
             shadowRay.Direction = L;
-            shadowRay.TMin      = 0.005f;
+            shadowRay.TMin      = 0.00001f;
             shadowRay.TMax      = dist - 0.001f;
 
             RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
@@ -205,7 +205,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
     }
 
     // Directional light
-    if (performNEE)
+    /*if (performNEE)
     {
         float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
         {
@@ -221,8 +221,8 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 RayDesc shadowRay;
                 shadowRay.Origin    = hitPos;
                 shadowRay.Direction = sun.direction;
-                shadowRay.TMin      = 0.005f;
-                shadowRay.TMax      = sun.dist; // Effectively infinite
+                shadowRay.TMin      = 0.00001f;
+                shadowRay.TMax      = 10000.0f; // Effectively infinite
 
                 RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
                 q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
@@ -279,14 +279,14 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                             float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
                             if(data.depth > 1) tpostgi /= lightPdf / NdotL;
 
-                            /*bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,sun.radiance * tpostgi, J_new, V2_new, data.seed);
-                            if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);*/
+                            bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,sun.radiance * tpostgi, J_new, V2_new, data.seed);
+                            if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
                         }
                     }
                 }
             }
         }
-    }
+    }*/
 
     // 7. Sample Next Direction (BSDF)
     SamplingP sp = CalculateStrategyProbabilities(
