@@ -222,14 +222,14 @@ float PDF_term(
     float  etai,
     float  etat)
 {
-    SamplingP p = CalculateStrategyProbabilities(mID, s, n_s, etai, etat, localKd, localPm);
+    SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
     return BRDF_PDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
 // G term uses Geometric Normal
 float G_term(float3 n_g, float3 s)
 {
-    return max(1e-15f, dot(n_g, s));
+    return dot(n_g, s);
 }
 
 float J_term(

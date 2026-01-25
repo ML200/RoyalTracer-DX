@@ -141,7 +141,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         // ########################################### NODE #############################################################
 
         // Calculate new W
-        float p_hat_final = GetPHat(contrib_final) /* VisibilityCheckCP(sdata.x1, rdi.x2_gi, sdata.n1)*/;
+        float p_hat_final = GetPHat(contrib_final);
         if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f) {
             float W = rdi.w_sum_gi / p_hat_final;
             // NaN/Inf protection
@@ -153,8 +153,14 @@ void main(uint3 tid : SV_DispatchThreadID)
         else
             rdi.W_gi = 0.0f;
 
+        rdi.F_gi = p_hat_final;
+        rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x);
+
         // Store the final output
         gScratchPing[uint3(tid.xy, 2)] = float4(contrib_final * rdi.W_gi, 0);
+
+        // Store the merged reservoir
+        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
 
         // DEBUG
         /*float3 heat;
@@ -167,9 +173,4 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     else
         gScratchPing[uint3(tid.xy, 2)] = float4(sdata.L1, 0);
-
-    rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x);
-
-    // Store the merged reservoir
-    storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
 }
