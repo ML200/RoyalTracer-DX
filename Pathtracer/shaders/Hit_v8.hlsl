@@ -37,7 +37,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             sdata.etai = data.iors.x;
             sdata.etat = data.iors.y;
             uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-            gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(emission, 0);
+            gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(emission, 0);
             storeSampleData(g_sample_current, idx, sdata);
         }
 
