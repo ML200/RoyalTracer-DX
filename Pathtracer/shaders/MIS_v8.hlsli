@@ -198,40 +198,15 @@ float PairwiseMIS_Neighbor_Spat_GI(
     in float M_sum,
     in float M_c,
     in float M_n,
-    in float p_c,
     in float p_hat_from,
-    in uint nID,// ID of the current candidate
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x2_n,
-    in float3 n2s_n,
-    in float3 n2g_n,
-    in float3 L2_n,
-    in float3 V2_n,
-    in uint   matID_n,
-    in float3 localKd2_n,
-    in float  localPr2_n,
-    in float  localPm2_n,
-    in float  etai2_n,
-    in float  etat2_n,
-    in float  pdfx2_n
+    in float W_n,
+    in float F_n
     )
 {
     // Reconstruct p_n from the neigbour reservoir
-    float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
-    float3 x1  = load_x1(g_sample_current, nID);
-    float3 n1s = load_n1_s(g_sample_current, nID);
-    float3 n1g = load_n1_g(g_sample_current, nID);
-    float3 o   = load_o(g_sample_current, nID);
-    uint   mID1 = load_matID(g_sample_current, nID);
-    float3 kd1 = load_localKd(g_sample_current, nID);
-    float  pr1 = load_localPr(g_sample_current, nID);
-    float  pm1 = load_localPm(g_sample_current, nID);
-    float  ei1 = load_etai(g_sample_current, nID);
-    float  et1 = load_etat(g_sample_current, nID);
-
-    float Jn = 0.0f;
-    float J = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_n, x2_n, n2s_n, n2g_n, L2_n, V2_n, localKd2_n, localPr2_n, localPm2_n, etai2_n, etat2_n, pdfx2_n, 1.0f, false, Jn, J));
+    float visReuse = W_n > 0.0f ? 1.0f : 0.0f;
+    float p_n = visReuse * F_n;
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -315,44 +290,18 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
     in float M_sum,
     in float M_c,
     in float M_n,
-    in float p_c,
     in float p_hat_from,
-    in uint nID,// ID of the current candidate
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x2_n,
-    in float3 n2s_n,
-    in float3 n2g_n,
-    in float3 L2_n,
-    in float3 V2_n,
-    in uint   matID_n,
-    in float3 localKd2_n,
-    in float  localPr2_n,
-    in float  localPm2_n,
-    in float  etai2_n,
-    in float  etat2_n,
-    in float  pdfx2_n,
+    in float W_n,
+    in float F_n,
     in float  beta
     )
 {
     float m_no_r = M_sum - 1.0f;
 
     // Reconstruct p_n from the neigbour reservoir
-    float visReuse = load_W_gi(g_Reservoirs_current_gi, nID) > 0.0f ? 1.0f : 0.0f;
-
-    float3 x1  = load_x1(g_sample_current, nID);
-    float3 n1s = load_n1_s(g_sample_current, nID);
-    float3 n1g = load_n1_g(g_sample_current, nID);
-    float3 o   = load_o(g_sample_current, nID);
-    uint   mID1 = load_matID(g_sample_current, nID);
-    float3 kd1 = load_localKd(g_sample_current, nID);
-    float  pr1 = load_localPr(g_sample_current, nID);
-    float  pm1 = load_localPm(g_sample_current, nID);
-    float  ei1 = load_etai(g_sample_current, nID);
-    float  et1 = load_etat(g_sample_current, nID);
-
-    float Jn = 0.0f;
-    float J = 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_n, x2_n, n2s_n, n2g_n, L2_n, V2_n, localKd2_n, localPr2_n, localPm2_n, etai2_n, etat2_n, pdfx2_n, 1.0f, false, Jn, J));
+    float visReuse = W_n > 0.0f ? 1.0f : 0.0f;
+    float p_n = visReuse * F_n;
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float D = SymRatio(p_n, p_hat_from, beta);
     return D / (1.0f + m_no_r * D);

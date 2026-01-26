@@ -229,7 +229,7 @@ float PDF_term(
 // G term uses Geometric Normal
 float G_term(float3 n_g, float3 s)
 {
-    return dot(n_g, s);
+    return max(1e-15, dot(n_g, s));
 }
 
 float J_term(
