@@ -91,6 +91,7 @@ void Pass_raygen_v8()
                 sdata.L1 = EvalMissState();
                 uint idx2 = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                 gScratchPing[uint3(pix, 1)] += float4(sdata.L1, 0);
+                gScratchPing[uint3(pix, 3)] += float4(sdata.L1, 0);
                 storeSampleData(g_sample_current, idx2, sdata);
                 break;
             }
@@ -114,7 +115,7 @@ void Pass_raygen_v8()
                 float3 envL = EvalMissState();
 
                 // Cancel only the immediately previous BSDF pdf (at x2), consistent with your existing DI pattern
-                //gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(T * envL,0);
+                gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(T * envL,0);
                 float p_hat = GetPHat(T * envL);
                 float wi    = p_hat;
 
