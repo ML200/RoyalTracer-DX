@@ -53,7 +53,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
     gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
 
-    float3 output_DI = 0.0f;//gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
     float3 accumulation = output_DI + output_GI;
@@ -102,8 +102,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
 
-    float3 sceneLinear = newAvg;//PBRNeutral(newAvg);
-    //float3 sceneLinear = accumulation;
+    //float3 sceneLinear = newAvg;//PBRNeutral(newAvg);
+    float3 sceneLinear = accumulation;
     float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 }

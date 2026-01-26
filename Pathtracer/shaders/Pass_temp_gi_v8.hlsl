@@ -36,7 +36,6 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         SampleData sdata_r;
         Reservoir_GI rdi_r;
-        //uint tempPixelIdx = 0xFFFFFFFF;
 
         int2 tempPixelCoordinate = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
         if(tempPixelCoordinate.x == -1 && tempPixelCoordinate.y == -1)
@@ -95,7 +94,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f) {
                 float W = rdi.w_sum_gi / p_hat_final;
                 // NaN/Inf protection
-                if (isnan(W) || isinf(W)) {
+                if (isnan(W) || isinf(W) || W<0.0f) {
                     W = 0.0f;
                 }
                 rdi.W_gi = W;
@@ -103,12 +102,12 @@ void main(uint3 tid : SV_DispatchThreadID)
             else
                 rdi.W_gi = 0.0f;
 
+            if(rdi.W_gi == 0.0f)
+                rdi.n2_s_gi = 0.0f;
+
             // Recompute and update the jacobian for the now-canonical stored sample
             rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x);
             rdi.F_gi = p_hat_final;
-
-            // Store the merged reservoir
-            storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
 
             // DEBUG
             /*float3 heat;
@@ -120,5 +119,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             //gOutput[uint3(tid.xy, 0)] = float4((float3)(w_n/(w_c+w_n)), 1.0f);
             //gOutput[uint3(tid.xy, 0)] = float4(f_c, 1.0f);
         }
+
+        // Store the merged reservoir
+        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
     }
 }
