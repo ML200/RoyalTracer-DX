@@ -372,8 +372,8 @@ inline float3 ReconnectGI(
     float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     // Geometry term
-    float  G1  = abs(G_term(n1_s, -ndirN));
-    float  G2  = abs(G_term(n2_s, -V2));
+    float  G1  = max(G_term(n1_s, -ndirN),0);
+    float  G2  = max(G_term(n2_s, -V2), 0);
 
     // Missing pdfs:
     // PDF at x1 always recomputed
@@ -397,15 +397,14 @@ inline float3 ReconnectGI(
     if (applyJ)
     {
         // Apply reconnection jacobian (uses n2 geometric, as this is a geometric factor)
-        float Gj = abs(dot(ndirN, n2_s)) / (dist * dist);
+        float Gj = max(dot(ndirN, n2_s),0) / (dist * dist);
 
         Jn = max(PDF1 * PDF2 * Gj, EPSILON);
         if(Jc < EPSILON) return 0.0f;
         J  = Jn / Jc;
-        // r *= J; // keep disabled as in your original
     }
 
-    if (any(isnan(r)) || all(r < EPSILON))
+    if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
         r = (float3)0.0f;
 
     return max(r,0.0f);

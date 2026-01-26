@@ -56,7 +56,7 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
     RayDesc ray;
     ray.Origin    = P + normalize(N) * SBIAS * 0.5f;
     ray.Direction = dir;
-    ray.TMin      = EPSILON;
+    ray.TMin      = EPSILON * 2.0f;
     ray.TMax      = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
 
     RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
