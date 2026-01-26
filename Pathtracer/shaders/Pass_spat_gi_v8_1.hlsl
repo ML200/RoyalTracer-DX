@@ -163,11 +163,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
 
         // DEBUG
-        float3 heat;
+        /*float3 heat;
         heat.r = step(debug, 0.9);          // red when <1
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
-        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);
+        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
         //gOutput[uint3(tid.xy, 0)] = float4(rdi.W_gi * 0.1f, rdi.W_gi* 0.1f, rdi.W_gi* 0.1f, 1.0f);
 
     }
