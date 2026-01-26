@@ -52,7 +52,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                     bool candidateAcceptedGI =
                         IsValidReservoir_GI_opt(rdi_r.n2_g_gi, rdi_r.M_gi) &&
                         (all(load_L1(g_sample_current, iID) < EPSILON) &&
-                        !RejectNormal_GI(sdata.n1_s, load_n1_g(g_sample_current, iID), 0.8f) &&
+                        !RejectNormal_GI(sdata.n1_s, load_n1_g(g_sample_current, iID), 0.36f) &&
                         !RejectDistance_GI(sdata.x1, load_x1(g_sample_current, iID), sdata.n1_s, 0.1f) &&
                         !RejectLength_GI(rdi.x2_gi, rdi.n2_g_gi, sdata.x1, load_x1(g_sample_current, iID), 0.1f) &&
                         !RejectLength_GI(rdi_r.x2_gi, rdi_r.n2_g_gi, load_x1(g_sample_current, iID), sdata.x1, 0.5f) &&
@@ -123,9 +123,9 @@ void main(uint3 tid : SV_DispatchThreadID)
                 // Calculate the samples MIS weight - low canonical M: use symmetric ratio, high M: use pairwise MIS. Why? Because if M is low, the image is more likely to contain correlations
                 float mis_n = 0.0f;
                 if(rdi.M_gi <= SPAT_MIN_M_GI)
-                    mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.J_gi.x, SPAT_BETA_GI);
+                    mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(M_sum_sym, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_hat_from, rdi_r.W_gi, rdi_r.F_gi, SPAT_BETA_GI);
                 else
-                    mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_c, p_hat_from, nIds[i], rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.matID_gi, rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.J_gi.x);
+                    mis_n = PairwiseMIS_Neighbor_Spat_GI(M_sum, M_c, min(SPAT_MCAP_GI ,rdi_r.M_gi), p_hat_from, rdi_r.W_gi, rdi_r.F_gi);
                 debug += mis_n;
                 // Calculate the sample weight
                 float w_n = mis_n * p_hat_from * rdi_r.W_gi;
@@ -163,11 +163,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
 
         // DEBUG
-        /*float3 heat;
+        float3 heat;
         heat.r = step(debug, 0.9);          // red when <1
         heat.g = saturate(1 - abs(debug-1)); // green at exactly 1
         heat.b = step(1.1, debug);          // blue when >1
-        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);*/
+        gOutput[uint3(tid.xy, 0)] = float4(heat, 1);
         //gOutput[uint3(tid.xy, 0)] = float4(rdi.W_gi * 0.1f, rdi.W_gi* 0.1f, rdi.W_gi* 0.1f, 1.0f);
 
     }

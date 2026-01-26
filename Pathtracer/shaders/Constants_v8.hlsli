@@ -36,5 +36,5 @@
 #define SPAT_COUNT_MIN_GI 1
 #define SPAT_TRIS_GI 6
 
-#define SPAT_MIN_M_GI 5
+#define SPAT_MIN_M_GI 0
 #define SPAT_BETA_GI 1.0f
