@@ -237,6 +237,7 @@ Renderer::Renderer(UINT width, UINT height,
 
 void Renderer::OnInit() {
     //try {
+        m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
         nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
         nv_helpers_dx12::CameraManip.setLookat(
@@ -574,28 +575,41 @@ void Renderer::OnUpdate() {
         std::chrono::duration<float>(tCurr - tPrev).count(); // seconds
     tPrev = tCurr;
 
-    glm::vec3 eye, center, up;
-    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+    // --- NEW LOGIC START ---
+    if (m_simulator.IsActive()) {
+        // Simulation Mode: override manual input
+        bool finished = m_simulator.Update(dt, nv_helpers_dx12::CameraManip);
 
-    glm::vec3 fwd   = glm::normalize(center - eye);
-    glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+        if (finished) {
+            std::wcout << L"\n[Sim] Data Generation Complete. Closing Application.\n";
+            PostQuitMessage(0);
+            return;
+        }
+    }
+    else {
+        // --- EXISTING INPUT LOGIC (Wrap your existing code in this else) ---
+        glm::vec3 eye, center, up;
+        nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
 
-    glm::vec3 move(0.0f);
-    float     speed = 5.0f;
+        glm::vec3 fwd   = glm::normalize(center - eye);
+        glm::vec3 right = glm::normalize(glm::cross(fwd, up));
+        glm::vec3 move(0.0f);
+        float speed = 5.0f;
 
-    if (g_keys['W'])          move +=  fwd;
-    if (g_keys['S'])          move -=  fwd;
-    if (g_keys['D'])          move +=  right;
-    if (g_keys['A'])          move -=  right;
-    if (g_keys[VK_SPACE])     move +=  up;
-    if (g_keys[VK_CONTROL])   move -=  up;
+        if (g_keys['W'])          move +=  fwd;
+        if (g_keys['S'])          move -=  fwd;
+        if (g_keys['D'])          move +=  right;
+        if (g_keys['A'])          move -=  right;
+        if (g_keys[VK_SPACE])     move +=  up;
+        if (g_keys[VK_CONTROL])   move -=  up;
 
-    if (glm::length(move) > 0.0f)
-    {
-        move = glm::normalize(move) * (speed * dt);
-        eye    += move;
-        center += move;
-        nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
+        if (glm::length(move) > 0.0f)
+        {
+            move = glm::normalize(move) * (speed * dt);
+            eye    += move;
+            center += move;
+            nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
+        }
     }
   // #DXR Extra: Perspective Camera
   UpdateCameraBuffer();

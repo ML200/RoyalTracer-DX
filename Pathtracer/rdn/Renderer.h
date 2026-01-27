@@ -57,6 +57,7 @@
 #include "../lib/imgui/imgui_impl_dx12.h"
 #include "../lib/imgui/imgui_impl_win32.h"
 #include "CameraRecorder.h"
+#include "CameraPathSimulator.h"
 
 using namespace DirectX;
 
@@ -606,4 +607,5 @@ private:
     void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
     CameraRecorder m_recorder;
+    CameraPathSimulator m_simulator;
 };
