@@ -91,21 +91,28 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 sceneLinear = accumulation;
     float3 outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
     gOutput[uint3(DTid.xy, 0)] = float4((float3)GetPHat(outSRGB), 1.0f);
+    gScratchPing[uint3(DTid.xy, 7)].x = GetPHat(outSRGB);
 
-    sceneLinear = newAvg;
     outSRGB       = sRGBGammaCorrection(saturate(sceneLinear));
     gOutput[uint3(DTid.xy, 10)] = float4((float3)GetPHat(outSRGB), 1.0f);
+    gScratchPing[uint3(DTid.xy, 7)].y = GetPHat(outSRGB);
 
-    sceneLinear = newAvg;
     outSRGB       = sRGBGammaCorrection(saturate(gt));
     gOutput[uint3(DTid.xy, 11)] = float4((float3)GetPHat(outSRGB), 1.0f);
+    gScratchPing[uint3(DTid.xy, 7)].z = GetPHat(outSRGB);
 
     // Load sdata for other buffers
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    gOutput[uint3(DTid.xy, 12)] = float4(sdata.n1_s, 1.0f);
+
+    gScratchPing[uint3(DTid.xy, 7)].w = GetPHat(sdata.localKd);
+
     gOutput[uint3(DTid.xy, 13)] = float4((float3)GetPHat(sdata.localKd), 1.0f);
     gOutput[uint3(DTid.xy, 14)] = float4((float3)sdata.localPr, 1.0f);
     gOutput[uint3(DTid.xy, 15)] = float4((float3)length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), 1.0f);
+    gScratchPing[uint3(DTid.xy, 8)] = float4(sdata.localPr, length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), 0.0f, 0.0f);
+
+    gOutput[uint3(DTid.xy, 12)] = float4(sdata.n1_s, 1.0f);
+    gScratchPing[uint3(DTid.xy, 8)] = float4(sdata.n1_s, 0.0f);
 }

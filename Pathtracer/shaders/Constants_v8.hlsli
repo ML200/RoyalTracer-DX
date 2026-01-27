@@ -38,3 +38,6 @@
 
 #define SPAT_MIN_M_GI 5
 #define SPAT_BETA_GI 1.0f
+
+
+// camera_path_2026-01-27_17-43-13.txt

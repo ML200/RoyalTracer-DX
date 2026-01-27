@@ -25,6 +25,10 @@
 #include "manipulator.h"
 #include "../src/Util/ObjLoader.h"
 #include "Diagnostics.h"
+#include <fstream>
+#include <vector>
+#include <string>
+#include <filesystem>
 
 void DumpD3D12Messages(ID3D12Device* device)
 {
@@ -277,6 +281,7 @@ void Renderer::OnInit() {
         CreatePerInstanceConstantBuffers();
         CreateGlobalConstantBuffer();
         CreateRaytracingOutputBuffer();
+        CreateReadbackBuffer();
         CreateInstancePropertiesBuffer();
         CreateCameraBuffer();
         CreateShaderResourceHeap();
@@ -577,8 +582,17 @@ void Renderer::OnUpdate() {
 
     // --- NEW LOGIC START ---
     if (m_simulator.IsActive()) {
-        // Simulation Mode: override manual input
-        bool finished = m_simulator.Update(dt, nv_helpers_dx12::CameraManip);
+        bool shouldCapture = false;
+
+        // Pass 'shouldCapture' by reference.
+        // The simulator sets this to true only when the wait time is over.
+        bool finished = m_simulator.Update(dt, nv_helpers_dx12::CameraManip, shouldCapture);
+
+        if (shouldCapture) {
+            // Simulator just finished convergence. Save frame N-1.
+            // (We capture the frame that just finished rendering)
+            SaveSimulationData(m_simulator.GetCurrentStepIndex());
+        }
 
         if (finished) {
             std::wcout << L"\n[Sim] Data Generation Complete. Closing Application.\n";
@@ -3763,4 +3777,154 @@ void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList)
         D3D12_RESOURCE_STATE_UNORDERED_ACCESS
     );
     cmdList->ResourceBarrier(1, &barrierToUAV);
+}
+
+void Renderer::CreateReadbackBuffer() {
+    D3D12_RESOURCE_DESC texDesc = m_scratchPing->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT64 totalBytes = 0;
+
+    m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, &footprint, nullptr, nullptr, &totalBytes);
+
+    auto heapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+    auto bufDesc   = CD3DX12_RESOURCE_DESC::Buffer(totalBytes);
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&m_readbackBuffer)));
+
+    m_readbackBuffer->SetName(L"SimulationReadbackBuffer");
+    std::wcout << L"[Init] Readback buffer created. Size: " << totalBytes << L" bytes." << std::endl;
+}
+
+void Renderer::SaveSimulationData(uint32_t stepIndex) {
+    namespace fs = std::filesystem;
+    if (!fs::exists("output")) {
+        fs::create_directory("output");
+    }
+
+    D3D12_RESOURCE_DESC texDesc = m_scratchPing->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    m_device->GetCopyableFootprints(&texDesc, 0, 1, 0, &footprint, nullptr, nullptr, nullptr);
+
+    UINT width = static_cast<UINT>(texDesc.Width);
+    UINT height = texDesc.Height;
+    UINT rowPitch = footprint.Footprint.RowPitch;
+
+    // --- SETUP START ---
+    // Ensure we start with a fresh allocator and an OPEN command list for the first slice
+    ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
+    ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), m_pipelineState.Get()));
+    // -------------------
+
+    // Helper to process one slice
+    auto ProcessSlice = [&](UINT sliceIndex, auto dataExtractionFunc) {
+        // 1. Barrier: UAV -> COPY_SOURCE
+        auto b1 = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        m_commandList->ResourceBarrier(1, &b1);
+
+        // 2. Copy Texture -> Buffer
+        UINT subresourceIndex = D3D12CalcSubresource(0, sliceIndex, 0, 1, texDesc.DepthOrArraySize);
+        CD3DX12_TEXTURE_COPY_LOCATION dst(m_readbackBuffer.Get(), footprint);
+        CD3DX12_TEXTURE_COPY_LOCATION src(m_scratchPing.Get(), subresourceIndex);
+        m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        // 3. Barrier: COPY_SOURCE -> UAV (Restore state for next usage/slice)
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        m_commandList->ResourceBarrier(1, &b2);
+
+        // 4. Flush and Wait
+        ThrowIfFailed(m_commandList->Close());
+        ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+        m_commandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+        m_fenceValue++;
+        m_commandQueue->Signal(m_fence.Get(), m_fenceValue);
+
+        // Wait for GPU to finish copy before mapping CPU buffer
+        if (m_fence->GetCompletedValue() < m_fenceValue) {
+            m_fence->SetEventOnCompletion(m_fenceValue, m_fenceEvent);
+            WaitForSingleObject(m_fenceEvent, INFINITE);
+        }
+
+        // 5. Read Data
+        uint8_t* pMappedData = nullptr;
+        // Range 0,0 indicates we do not intend to write, but we are reading
+        CD3DX12_RANGE readRange(0, footprint.Footprint.RowPitch * height);
+        ThrowIfFailed(m_readbackBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pMappedData)));
+
+        dataExtractionFunc(pMappedData);
+
+        // Range 0,0 indicates we didn't write anything to the CPU pointer
+        CD3DX12_RANGE writeRange(0, 0);
+        m_readbackBuffer->Unmap(0, &writeRange);
+
+        // 6. Reset for the NEXT iteration (or for final cleanup)
+        // Since we waited on the fence, the GPU is done with this allocator, so we can reset it.
+        ThrowIfFailed(m_commandAllocators[m_frameIndex]->Reset());
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocators[m_frameIndex].Get(), m_pipelineState.Get()));
+    };
+
+    // Helper to write binary
+    auto WriteBinary = [&](const std::string& suffix, const std::vector<float>& data) {
+        std::string filename = "output/" + std::to_string(stepIndex) + "_" + suffix + ".bin";
+        std::ofstream outFile(filename, std::ios::binary);
+        if (outFile.is_open()) {
+            outFile.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
+            outFile.close();
+        }
+    };
+
+    // Slice 7: Restir(x), GT(y), Init(z), Albedo(w)
+    ProcessSlice(7, [&](uint8_t* rawData) {
+        std::vector<float> a(width * height), b(width * height), c(width * height), d(width * height);
+        for (UINT y = 0; y < height; ++y) {
+            float* row = reinterpret_cast<float*>(rawData + (y * rowPitch));
+            for (UINT x = 0; x < width; ++x) {
+                a[y * width + x] = row[x * 4 + 0];
+                b[y * width + x] = row[x * 4 + 1];
+                c[y * width + x] = row[x * 4 + 2];
+                d[y * width + x] = row[x * 4 + 3];
+            }
+        }
+        WriteBinary("restir", a); WriteBinary("gt", b); WriteBinary("init", c); WriteBinary("albedo", d);
+    });
+
+    // Slice 8: Roughness(x), Depth(y)
+    ProcessSlice(8, [&](uint8_t* rawData) {
+        std::vector<float> e(width * height), f(width * height);
+        for (UINT y = 0; y < height; ++y) {
+            float* row = reinterpret_cast<float*>(rawData + (y * rowPitch));
+            for (UINT x = 0; x < width; ++x) {
+                e[y * width + x] = row[x * 4 + 0];
+                f[y * width + x] = row[x * 4 + 1];
+            }
+        }
+        WriteBinary("roughness", e); WriteBinary("depth", f);
+    });
+
+    // Slice 9: Normal(xyz)
+    ProcessSlice(9, [&](uint8_t* rawData) {
+        std::vector<float> g(width * height * 3);
+        for (UINT y = 0; y < height; ++y) {
+            float* row = reinterpret_cast<float*>(rawData + (y * rowPitch));
+            for (UINT x = 0; x < width; ++x) {
+                size_t idx = (y * width + x) * 3;
+                g[idx + 0] = row[x * 4 + 0];
+                g[idx + 1] = row[x * 4 + 1];
+                g[idx + 2] = row[x * 4 + 2];
+            }
+        }
+        WriteBinary("normal", g);
+    });
+
+    // --- CRITICAL FIX ---
+    // ProcessSlice leaves the command list in an OPEN (Reset) state.
+    // We must CLOSE it before returning, otherwise OnRender() will crash
+    // when it tries to reset the allocator.
+    ThrowIfFailed(m_commandList->Close());
+    // --------------------
+
+    std::wcout << L"[IO] Captured Step " << stepIndex << std::endl;
 }

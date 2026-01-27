@@ -606,6 +606,12 @@ private:
     static const UINT SORT_BUCKETS = 65536;
     void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
+    ComPtr<ID3D12Resource> m_readbackBuffer;
+
+    void CreateReadbackBuffer();
+
+    void SaveSimulationData(uint32_t stepIndex);
+
     CameraRecorder m_recorder;
     CameraPathSimulator m_simulator;
 };
