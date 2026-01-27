@@ -237,6 +237,7 @@ Renderer::Renderer(UINT width, UINT height,
 
 void Renderer::OnInit() {
     //try {
+        m_recorder.Initialize();
         nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
         nv_helpers_dx12::CameraManip.setLookat(
             glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
@@ -1127,6 +1128,9 @@ void Renderer::OnKeyUp(UINT8 key) {
     if (key == VK_SPACE) {
         m_raster = !m_raster;
         std::wcout << L"Space key pressed, toggling rasterization: " << m_raster << std::endl;
+    }
+    if (key == 'K') {
+        m_recorder.CaptureKeyframe(nv_helpers_dx12::CameraManip);
     }
 }
 

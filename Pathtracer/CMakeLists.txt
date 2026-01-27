@@ -61,6 +61,8 @@ add_executable(Pathtracer WIN32
         rdn/LightTree.h
         src/Util/stb_image.h
         src/Util/stb_image_resize2.h
+        rdn/CameraRecorder.cpp
+        rdn/CameraRecorder.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────

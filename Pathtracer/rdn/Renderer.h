@@ -56,6 +56,7 @@
 #include "../lib/imgui/imgui.h"
 #include "../lib/imgui/imgui_impl_dx12.h"
 #include "../lib/imgui/imgui_impl_win32.h"
+#include "CameraRecorder.h"
 
 using namespace DirectX;
 
@@ -603,4 +604,6 @@ private:
     // Constants
     static const UINT SORT_BUCKETS = 65536;
     void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
+
+    CameraRecorder m_recorder;
 };
