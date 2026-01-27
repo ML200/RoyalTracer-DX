@@ -153,9 +153,6 @@ void main(uint3 tid : SV_DispatchThreadID)
         else
             rdi.W_gi = 0.0f;
 
-        if(rdi.W_gi == 0.0f)
-            rdi.n2_s_gi = 0.0f;
-
         rdi.F_gi = p_hat_final;
         rdi.J_gi.y = PSSJacobian(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi, rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi, rdi.J_gi.x);
 
