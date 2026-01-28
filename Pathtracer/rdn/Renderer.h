@@ -562,7 +562,7 @@ private:
   HINSTANCE__ *m_mod;
 
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13, 14, 15, /*16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
+  std::vector<UINT> m_displayLevels = {0, 10, 11, /*12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
   void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
 
 
