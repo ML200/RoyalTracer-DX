@@ -453,7 +453,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-        std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./workshop/workshop.obj",*/ /*"./pot/pot.obj"*/};
+        std::vector<std::string> models = {"./workshop/workshop.obj", /*"./workshop/workshop.obj",*/ /*"./pot/pot.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -590,8 +590,8 @@ void Renderer::OnUpdate() {
 
         if (shouldCapture) {
             // Simulator just finished convergence. Save frame N-1.
-            // (We capture the frame that just finished rendering)
-            SaveSimulationData(m_simulator.GetCurrentStepIndex());
+            const size_t idx = m_simulator.GetLastCaptureIndex();
+            SaveSimulationData(idx);
         }
 
         if (finished) {
