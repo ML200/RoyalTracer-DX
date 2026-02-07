@@ -225,6 +225,10 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",
         L"barrier",
+        L"ml",
+        L"barrier",
+        L"Pass_finalize_v8.hlsl|cs:16x16",
+        L"barrier",
     };
 
     try {
@@ -281,6 +285,7 @@ void Renderer::OnInit() {
         CreatePerInstanceConstantBuffers();
         CreateGlobalConstantBuffer();
         CreateRaytracingOutputBuffer();
+        CreateMLBuffers();
         CreateReadbackBuffer();
         CreateInstancePropertiesBuffer();
         CreateCameraBuffer();
@@ -374,6 +379,8 @@ void Renderer::LoadPipeline() {
 
   ThrowIfFailed(
       m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)));
+
+    InitML_ONNX_DML(L"./models/denoiser_model.onnx");
 
   // Describe and create the swap chain.
   DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
@@ -894,6 +901,14 @@ void Renderer::PopulateCommandList()
                     CD3DX12_RESOURCE_BARRIER::UAV(m_sortCountBuffer.Get())
                 };
                 m_commandList->ResourceBarrier(_countof(barriers), barriers);
+                break;
+            }
+
+            case Stage::ML:
+            {
+                if (m_enableML) {
+                    RunMLPass();
+                }
                 break;
             }
 
@@ -1801,6 +1816,8 @@ void Renderer::CreateRaytracingPipeline()
 
         if (p.stage == Stage::ClearSort) continue;
 
+        if (p.stage == Stage::ML) continue;
+
         if (p.isWorkGraph)
         {
             // compile WG DXIL
@@ -2536,6 +2553,7 @@ void Renderer::CreateShaderBindingTable() {
         if (entry == L"endloop") continue;
         if (entry == L"pingswap") continue;
         if (entry == L"clearsort") continue;
+        if (entry == L"ml") continue;
         if (entry.find(L"|cs:") != std::wstring::npos) continue;
         if (entry.find(L"|wf:") != std::wstring::npos) continue;
         if (entry.find(L"|wg:") != std::wstring::npos) continue;
@@ -3927,4 +3945,299 @@ void Renderer::SaveSimulationData(uint32_t stepIndex) {
     // --------------------
 
     std::wcout << L"[IO] Captured Step " << stepIndex << std::endl;
+}
+
+
+void Renderer::FlushExecuteAndWait()
+{
+    ThrowIfFailed(m_commandList->Close());
+    ID3D12CommandList* lists[] = { m_commandList.Get() };
+    m_commandQueue->ExecuteCommandLists(1, lists);
+
+    const UINT64 fenceToWait = m_fenceValue;
+    ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), fenceToWait));
+    m_fenceValue++;
+
+    if (m_fence->GetCompletedValue() < fenceToWait) {
+        ThrowIfFailed(m_fence->SetEventOnCompletion(fenceToWait, m_fenceEvent));
+        WaitForSingleObject(m_fenceEvent, INFINITE);
+    }
+
+    // Reset allocator + command list for continued recording
+    auto* allocator = m_commandAllocators[m_frameIndex].Get();
+    ThrowIfFailed(allocator->Reset());
+    ThrowIfFailed(m_commandList->Reset(allocator, nullptr));
+
+    RebindAfterReset();
+}
+
+void Renderer::RebindAfterReset()
+{
+    // Rebind state that does NOT persist across Reset()
+    m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+    m_commandList->RSSetViewports(1, &m_viewport);
+    m_commandList->RSSetScissorRects(1, &m_scissorRect);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
+        m_rtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        m_frameIndex, m_rtvDescriptorSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
+    m_commandList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+
+    ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
+    m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+}
+
+
+static std::string WideToUtf8(const std::wstring& ws)
+{
+    if (ws.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, ws.data(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+    std::string s(len, 0);
+    WideCharToMultiByte(CP_UTF8, 0, ws.data(), (int)ws.size(), s.data(), len, nullptr, nullptr);
+    return s;
+}
+
+void Renderer::InitML_ONNX_DML(const wchar_t* onnxPath)
+{
+    // 1) Create a DirectML device (requested). Not strictly required for ORT-DML EP,
+    // but good sanity check that DirectML is available on this D3D12 device.
+    ThrowIfFailed(DMLCreateDevice(m_device.Get(), DML_CREATE_DEVICE_FLAG_NONE, IID_PPV_ARGS(&m_dmlDevice)));
+
+    // 2) ORT environment/session
+    m_ortEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "RendererML");
+
+    m_ortSessionOptions = Ort::SessionOptions();
+    m_ortSessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+    m_ortSessionOptions.SetIntraOpNumThreads(1);
+
+    // Append DML execution provider (device_id=0 is typical; choose adapter index if needed)
+    Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_DML(m_ortSessionOptions, /*device_id*/ 0));
+
+    // 3) Create session
+    // FIX: Pass 'onnxPath' (wchar_t*) directly. Do not convert to UTF-8 on Windows.
+    m_ortSession = std::make_unique<Ort::Session>(*m_ortEnv, onnxPath, m_ortSessionOptions);
+
+    // 4) Cache input/output names (using Allocator to fix memory safety error)
+    Ort::AllocatorWithDefaultOptions alloc;
+
+    {
+        // FIX: Use GetInputNameAllocated (returns smart pointer)
+        auto inputNamePtr = m_ortSession->GetInputNameAllocated(0, alloc);
+        m_mlInputNameStr = inputNamePtr.get();
+        m_mlInputName = m_mlInputNameStr.c_str();
+    }
+    {
+        // FIX: Use GetOutputNameAllocated (returns smart pointer)
+        auto outputNamePtr = m_ortSession->GetOutputNameAllocated(0, alloc);
+        m_mlOutputNameStr = outputNamePtr.get();
+        m_mlOutputName = m_mlOutputNameStr.c_str();
+    }
+
+    std::wcout << L"[ML] ORT session created. Input=" << std::wstring(m_mlInputNameStr.begin(), m_mlInputNameStr.end())
+               << L" Output=" << std::wstring(m_mlOutputNameStr.begin(), m_mlOutputNameStr.end()) << std::endl;
+}
+
+static UINT64 AlignUp(UINT64 v, UINT64 a) { return (v + (a - 1)) & ~(a - 1); }
+void Renderer::CreateMLBuffers()
+{
+    if (!m_scratchPing || !m_ortSession) return;
+
+    // --- CONFIG ---
+    m_mlInputSlices = { 7, 8, 9 };
+    m_mlOutputSlice = 10;
+    // --------------
+
+    const auto desc = m_scratchPing->GetDesc();
+    const UINT W = (UINT)desc.Width;
+    const UINT H = (UINT)desc.Height;
+
+    // 1. Calculate Readback Size
+    UINT numRows = 0;
+    UINT64 rowSizeInBytes = 0;
+    m_device->GetCopyableFootprints(&desc, 0, 1, 0, &m_mlFootprint, &numRows, &rowSizeInBytes, &m_mlSliceBytes);
+    m_mlRowPitch = m_mlFootprint.Footprint.RowPitch;
+    m_mlSliceBytesAligned = AlignUp(m_mlSliceBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+
+    // 2. Create Resources
+    auto readbackHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+    auto readbackBufDesc   = CD3DX12_RESOURCE_DESC::Buffer(m_mlSliceBytesAligned * m_mlInputSlices.size());
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &readbackHeapProps, D3D12_HEAP_FLAG_NONE, &readbackBufDesc,
+        D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_mlReadbackBuffer)));
+
+    auto uploadHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadBufDesc   = CD3DX12_RESOURCE_DESC::Buffer(m_mlSliceBytesAligned);
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufDesc,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_mlUploadBuffer)));
+
+    // 3. Define Shapes (FIXED: Output is 1 Channel)
+    // Input: [1, 8, H, W]
+    m_mlInputShape  = { 1, 8, (int64_t)H, (int64_t)W };
+
+    // Output: [1, 1, H, W]  <--- CHANGED FROM 2 TO 1
+    m_mlOutputShape = { 1, 1, (int64_t)H, (int64_t)W };
+
+    m_mlInputElems  = (size_t)(1 * 8 * H * W);
+    m_mlOutputElems = (size_t)(1 * 1 * H * W);
+
+    m_mlInputCPU.resize(m_mlInputElems);
+    m_mlOutputCPU.resize(m_mlOutputElems);
+
+    std::wcout << L"[ML] Buffers Ready. Input [1,8], Output [1,1]" << std::endl;
+}
+
+void Renderer::RunMLPass()
+{
+    if (!m_enableML || !m_scratchPing || !m_mlReadbackBuffer || !m_mlUploadBuffer || !m_ortSession) return;
+
+    const auto desc = m_scratchPing->GetDesc();
+    const UINT W = (UINT)desc.Width;
+    const UINT H = (UINT)desc.Height;
+
+    // --- STEP A: GPU -> CPU Copy ---
+    FlushExecuteAndWait();
+
+    {
+        auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        m_commandList->ResourceBarrier(1, &toSrc);
+    }
+
+    for (UINT i = 0; i < m_mlInputSlices.size(); ++i) {
+        UINT slice = m_mlInputSlices[i];
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = m_mlFootprint;
+        fp.Offset = i * m_mlSliceBytesAligned;
+
+        CD3DX12_TEXTURE_COPY_LOCATION dst(m_mlReadbackBuffer.Get(), fp);
+        CD3DX12_TEXTURE_COPY_LOCATION src(m_scratchPing.Get(), D3D12CalcSubresource(0, slice, 0, 1, desc.DepthOrArraySize));
+        m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    }
+
+    {
+        auto toUav = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        m_commandList->ResourceBarrier(1, &toUav);
+    }
+
+    FlushExecuteAndWait();
+
+    // --- STEP B: Inference ---
+    try {
+        uint8_t* mapped = nullptr;
+        ThrowIfFailed(m_mlReadbackBuffer->Map(0, nullptr, (void**)&mapped));
+
+        const uint8_t* pSlice7 = mapped + (0 * m_mlSliceBytesAligned);
+        const uint8_t* pSlice8 = mapped + (1 * m_mlSliceBytesAligned);
+        const uint8_t* pSlice9 = mapped + (2 * m_mlSliceBytesAligned);
+
+        const size_t stride = W * H;
+
+        // Pointers for 8 Input Channels
+        float* pCh0 = m_mlInputCPU.data() + (0 * stride);
+        float* pCh1 = m_mlInputCPU.data() + (1 * stride);
+        float* pCh2 = m_mlInputCPU.data() + (2 * stride);
+        float* pCh3 = m_mlInputCPU.data() + (3 * stride);
+        float* pCh4 = m_mlInputCPU.data() + (4 * stride);
+        float* pCh5 = m_mlInputCPU.data() + (5 * stride);
+        float* pCh6 = m_mlInputCPU.data() + (6 * stride);
+        float* pCh7 = m_mlInputCPU.data() + (7 * stride);
+
+        // 1. Pack Input
+        #pragma omp parallel for schedule(static)
+        for (int y = 0; y < (int)H; ++y)
+        {
+            const float* row7 = (const float*)(pSlice7 + y * m_mlRowPitch);
+            const float* row8 = (const float*)(pSlice8 + y * m_mlRowPitch);
+            const float* row9 = (const float*)(pSlice9 + y * m_mlRowPitch);
+
+            for (int x = 0; x < (int)W; ++x)
+            {
+                size_t pixelIdx = y * W + x;
+
+                pCh0[pixelIdx] = row7[x * 4 + 0]; // Restir
+                pCh1[pixelIdx] = row7[x * 4 + 2]; // Init
+                pCh2[pixelIdx] = row7[x * 4 + 3]; // Albedo
+
+                pCh3[pixelIdx] = row9[x * 4 + 0]; // Normal X
+                pCh4[pixelIdx] = row9[x * 4 + 1]; // Normal Y
+                pCh5[pixelIdx] = row9[x * 4 + 2]; // Normal Z
+
+                pCh6[pixelIdx] = 1.0f - row8[x * 4 + 0]; // Roughness
+                pCh7[pixelIdx] = row8[x * 4 + 1]; // Depth
+            }
+        }
+        m_mlReadbackBuffer->Unmap(0, nullptr);
+
+        // 2. Run ORT
+        Ort::MemoryInfo memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+        Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
+            memInfo, m_mlInputCPU.data(), m_mlInputCPU.size(), m_mlInputShape.data(), m_mlInputShape.size()
+        );
+
+        Ort::RunOptions runOpts;
+        auto outputs = m_ortSession->Run(runOpts, &m_mlInputName, &inputTensor, 1, &m_mlOutputName, 1);
+
+        // 3. Get Output (1 Channel)
+        float* outPtr = outputs[0].GetTensorMutableData<float>();
+        size_t outCount = outputs[0].GetTensorTypeAndShapeInfo().GetElementCount();
+
+        // Basic safety check
+        if (outCount != m_mlOutputCPU.size()) {
+             // If mismatch, clamp copy to avoid crash
+             if (outCount > m_mlOutputCPU.size()) outCount = m_mlOutputCPU.size();
+        }
+        memcpy(m_mlOutputCPU.data(), outPtr, outCount * sizeof(float));
+
+        // 4. Unpack Output (1 Channel -> Texture.R)
+        uint8_t* up = nullptr;
+        ThrowIfFailed(m_mlUploadBuffer->Map(0, nullptr, (void**)&up));
+
+        const float* pOut0 = m_mlOutputCPU.data(); // Only 1 channel base pointer
+
+        for (int y = 0; y < (int)H; ++y)
+        {
+            float* rowOut = (float*)(up + y * m_mlRowPitch);
+            for (int x = 0; x < (int)W; ++x)
+            {
+                size_t pixelIdx = y * W + x;
+
+                // Write Model Output to R
+                rowOut[x * 4 + 0] = pOut0[pixelIdx];
+
+                // Zero out G, B; Alpha = 1
+                rowOut[x * 4 + 1] = 0.0f;
+                rowOut[x * 4 + 2] = 0.0f;
+                rowOut[x * 4 + 3] = 1.0f;
+            }
+        }
+        m_mlUploadBuffer->Unmap(0, nullptr);
+
+    }
+    catch (const Ort::Exception& e) {
+        std::wcerr << L"[ML] ORT ERROR: " << e.what() << std::endl;
+        m_enableML = false;
+        return;
+    }
+    catch (const std::exception& e) {
+        std::wcerr << L"[ML] STD ERROR: " << e.what() << std::endl;
+        m_enableML = false;
+        return;
+    }
+
+    // --- STEP C: CPU -> GPU Copy ---
+    {
+        auto toDest = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+        m_commandList->ResourceBarrier(1, &toDest);
+    }
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = m_mlFootprint;
+    fp.Offset = 0;
+    CD3DX12_TEXTURE_COPY_LOCATION src(m_mlUploadBuffer.Get(), fp);
+    CD3DX12_TEXTURE_COPY_LOCATION dst(m_scratchPing.Get(), D3D12CalcSubresource(0, m_mlOutputSlice, 0, 1, desc.DepthOrArraySize));
+    m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    {
+        auto toUav = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        m_commandList->ResourceBarrier(1, &toUav);
+    }
 }

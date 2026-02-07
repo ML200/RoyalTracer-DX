@@ -104,7 +104,7 @@ void CameraPathSimulator::PromptUserConfiguration() {
         m_isActive = false;
         std::wcout << L">> Closing Console in 2 seconds...\n";
         Sleep(2000);
-        FreeConsole();
+        //FreeConsole();
         return;
     }
 
@@ -198,7 +198,7 @@ void CameraPathSimulator::PromptUserConfiguration() {
         Sleep(1000);
     }
 
-    FreeConsole();
+    //FreeConsole();
 }
 
 void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {

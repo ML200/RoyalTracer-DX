@@ -107,7 +107,8 @@ private:
         LoopEnd,
         PingSwap,
         ClearSort,
-        Callable
+        Callable,
+        ML
     };
 
     // 2. Update PassDesc to hold loop information
@@ -135,6 +136,7 @@ private:
         if (token == L"pingswap")  { p.stage = Stage::PingSwap;  return p; }
         if (token == L"endloop")   { p.stage = Stage::LoopEnd;   return p; }
         if (token == L"clearsort") { p.stage = Stage::ClearSort; return p; }
+        if (token == L"ml")        { p.stage = Stage::ML;        return p; }
 
         if (token.rfind(L"loop:", 0) == 0) {
             p.stage = Stage::LoopStart;
@@ -617,4 +619,53 @@ private:
 
     CameraRecorder m_recorder;
     CameraPathSimulator m_simulator;
+
+
+    // ---------------- ML / ONNX Runtime / DirectML ----------------
+    bool m_enableML = true;
+
+    // Configure which scratchPing slices become model input,
+    // and which slice receives the model output mask.
+    std::vector<UINT> m_mlInputSlices = { 7, 8, 9 }; // <-- set what you want
+    UINT m_mlOutputSlice = 10;                       // <-- set what you want (mask written to .x)
+
+    // DirectML sanity device (optional but requested)
+    Microsoft::WRL::ComPtr<IDMLDevice> m_dmlDevice;
+
+    // ONNX Runtime objects
+    std::unique_ptr<Ort::Env>     m_ortEnv;
+    std::unique_ptr<Ort::Session> m_ortSession;
+    Ort::SessionOptions           m_ortSessionOptions;
+
+    // Names cached from the model
+    std::string m_mlInputNameStr;
+    std::string m_mlOutputNameStr;
+    const char* m_mlInputName  = nullptr;
+    const char* m_mlOutputName = nullptr;
+
+    // Shapes and CPU staging
+    std::vector<int64_t> m_mlInputShape;   // e.g. {1, C, H, W}
+    std::vector<int64_t> m_mlOutputShape;  // e.g. {1, 1, H, W}
+    size_t m_mlInputElems  = 0;
+    size_t m_mlOutputElems = 0;
+    std::vector<float> m_mlInputCPU;
+    std::vector<float> m_mlOutputCPU;
+
+    // Readback/upload resources for scratchPing slices
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_mlFootprint = {};
+    UINT64  m_mlSliceBytes        = 0;
+    UINT64  m_mlSliceBytesAligned = 0;
+    UINT    m_mlRowPitch          = 0;
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_mlReadbackBuffer; // large enough for N input slices
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_mlUploadBuffer;   // one-slice upload for output
+
+    // ML helpers
+    void InitML_ONNX_DML(const wchar_t* onnxPath);
+    void CreateMLBuffers();                 // after scratchPing exists
+    void RunMLPass();                       // invoked from PopulateCommandList
+
+    void FlushExecuteAndWait();             // closes+executes current list and waits, then resets
+    void RebindAfterReset();                // rebinds RTV/DSV/viewport/heaps after reset
+
 };
