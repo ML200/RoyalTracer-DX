@@ -296,12 +296,8 @@ void CameraPathSimulator::GeneratePathPoints() {
             int rSteps = (int)std::fmax(1.0f, (float)m_configRollSteps);
 
             for (int r = 0; r < rSteps; ++r) {
-                float rollAngleDeg = 0.0f;
-
-                if (rSteps > 1) {
-                    // 0..360 exclusive of 360 (so last isn't identical to first)
-                    rollAngleDeg = 360.0f * ((float)r / (float)rSteps);
-                }
+                // Completely random roll for every variation frame
+                const float rollAngleDeg = m_rollDist(m_rng); // [0, 360)
 
                 glm::vec3 finalUp = glm::rotate(originalUp, glm::radians(rollAngleDeg), yawedForward);
 

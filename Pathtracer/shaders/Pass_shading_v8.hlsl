@@ -106,6 +106,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float depthVal = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-    gScratchPing[uint3(DTid.xy, 8)] = float4(rdi.localPr_gi, depthVal, 0.0f, 0.0f);
+    gScratchPing[uint3(DTid.xy, 8)] = float4(rdi.localPr_gi, length(rdi.x2_gi - sdata.x1), 0.0f, 0.0f);
     gScratchPing[uint3(DTid.xy, 9)] = float4(sdata.n1_s, 0.0f);
 }
