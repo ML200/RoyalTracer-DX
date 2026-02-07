@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.25.2)
+set(CMAKE_SYSTEM_VERSION "10.0.22621.0")
 project(Pathtracer)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -14,6 +15,33 @@ set(SL_ROOT        "${CMAKE_SOURCE_DIR}/streamline")
 set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
+
+# ───────────────────────── ONNX Runtime + DirectML ──────────────────────────
+# Your extracted layout is: third_party/onnxruntime-directml/ort/...
+set(ORT_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-directml/ort")
+
+set(ORT_INCLUDE_DIR "${ORT_ROOT}/build/native/include")
+set(ORT_BIN_DIR     "${ORT_ROOT}/runtimes/win-x64/native")
+set(ORT_LIB_DIR     "${ORT_BIN_DIR}")  # onnxruntime.lib is here in your package
+
+# Hard checks so you fail fast if the paths are wrong
+if(NOT EXISTS "${ORT_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+    message(FATAL_ERROR "ORT headers not found: ${ORT_INCLUDE_DIR} (expected onnxruntime_cxx_api.h)")
+endif()
+
+if(NOT EXISTS "${ORT_LIB_DIR}/onnxruntime.lib")
+    message(FATAL_ERROR "ORT import lib not found: ${ORT_LIB_DIR}/onnxruntime.lib")
+endif()
+
+if(NOT EXISTS "${ORT_BIN_DIR}/onnxruntime.dll")
+    message(FATAL_ERROR "ORT runtime DLL not found: ${ORT_BIN_DIR}/onnxruntime.dll")
+endif()
+
+message(STATUS "ORT include : ${ORT_INCLUDE_DIR}")
+message(STATUS "ORT lib dir : ${ORT_LIB_DIR}")
+message(STATUS "ORT bin dir : ${ORT_BIN_DIR}")
+
+
 
 # ────────────────────────── extra assets to copy ─────────────────────────────
 set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
@@ -70,7 +98,8 @@ add_executable(Pathtracer WIN32
 # ───────────────────────── include directories ───────────────────────────────
 target_include_directories(Pathtracer PRIVATE
         ${D3D12_AGILITY_INCLUDE}
-        ${SL_INCLUDE_DIR})
+        ${SL_INCLUDE_DIR}
+        ${ORT_INCLUDE_DIR})
 
 # ──────────────── Streamline import‐lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)
@@ -79,14 +108,22 @@ set_target_properties(sl_interposer PROPERTIES
         IMPORTED_LOCATION_DEBUG     "${SL_LIB_PATH}"
         IMPORTED_LOCATION_RELEASE   "${SL_LIB_PATH}"
 )
+# ────────────── ONNX Runtime imported library (DLL + import lib) ─────────────
+add_library(onnxruntime SHARED IMPORTED GLOBAL)
+set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_IMPLIB   "${ORT_LIB_DIR}/onnxruntime.lib"
+        IMPORTED_LOCATION "${ORT_BIN_DIR}/onnxruntime.dll"
+)
+
 
 # ───────────────────────── link libraries ────────────────────────────────────
 target_link_libraries(Pathtracer PRIVATE
         DirectXTex
         sl_interposer
+        onnxruntime
         d3d12.lib
         dxgi.lib dxguid.lib
-        dxcompiler.lib d3dcompiler.lib)
+        dxcompiler.lib d3dcompiler.lib windowsapp)
 
 
 # ────────────────── copy the contents of 'includes' on every build ─────────
@@ -134,3 +171,24 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )
+
+# ───────────────────────── copy ORT + DirectML DLLs ─────────────────────────
+set(ORT_DLLS
+        "${ORT_BIN_DIR}/onnxruntime.dll"
+        "${ORT_BIN_DIR}/onnxruntime_providers_shared.dll"
+        "${ORT_BIN_DIR}/onnxruntime_providers_directml.dll"  # optional (not in your screenshot)
+        "${ORT_BIN_DIR}/DirectML.dll"                        # optional (not in your screenshot)
+)
+
+foreach(dll_path IN LISTS ORT_DLLS)
+    if(EXISTS "${dll_path}")
+        add_custom_command(TARGET Pathtracer POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dll_path}"
+                "$<TARGET_FILE_DIR:Pathtracer>"
+                COMMENT "Copying ORT runtime: ${dll_path}"
+        )
+    else()
+        message(STATUS "ORT optional DLL missing (ok): ${dll_path}")
+    endif()
+endforeach()

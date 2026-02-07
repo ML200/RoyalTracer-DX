@@ -21,6 +21,9 @@
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 #include "../src/Components/Vertex.h"
+#include <DirectML.h>
+#include <onnxruntime_cxx_api.h>
+#include <dml_provider_factory.h>
 
 #include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
 #include <sl_consts.h>     // the sl::kFeature… enum values

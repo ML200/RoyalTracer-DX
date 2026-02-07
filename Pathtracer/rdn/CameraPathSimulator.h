@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <random>
+
 #include "glm/glm.hpp"
 #include "manipulator.h" // For accessing the camera
 
@@ -70,4 +72,7 @@ private:
 
     float m_currentWaitTimer = 0.0f;
     bool  m_isWaitingForConvergence = false; // false => next Update will move camera to currentStepIndex
+    std::mt19937 m_rng{ std::random_device{}() };
+    std::uniform_real_distribution<float> m_rollDist{ 0.0f, 360.0f };
+
 };
