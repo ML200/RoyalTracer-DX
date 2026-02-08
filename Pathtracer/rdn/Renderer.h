@@ -648,8 +648,8 @@ private:
     std::vector<int64_t> m_mlOutputShape;  // e.g. {1, 1, H, W}
     size_t m_mlInputElems  = 0;
     size_t m_mlOutputElems = 0;
-    std::vector<float> m_mlInputCPU;
-    std::vector<float> m_mlOutputCPU;
+    std::vector<uint16_t> m_mlInputCPU;
+    std::vector<uint16_t> m_mlOutputCPU;
 
     // Readback/upload resources for scratchPing slices
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_mlFootprint = {};
