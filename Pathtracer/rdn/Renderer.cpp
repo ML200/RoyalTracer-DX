@@ -380,7 +380,7 @@ void Renderer::LoadPipeline() {
   ThrowIfFailed(
       m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)));
 
-    InitML_ONNX_DML(L"./models/denoiser_model.onnx");
+    InitML_ONNX_DML(L"./models/denoiser_model_fp16.onnx");
 
   // Describe and create the swap chain.
   DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
@@ -4052,14 +4052,14 @@ void Renderer::CreateMLBuffers()
     const UINT W = (UINT)desc.Width;
     const UINT H = (UINT)desc.Height;
 
-    // 1. Calculate Readback Size
+    // 1. Calculate Readback Size (Keep this as is, we read Float32 from GPU)
     UINT numRows = 0;
     UINT64 rowSizeInBytes = 0;
     m_device->GetCopyableFootprints(&desc, 0, 1, 0, &m_mlFootprint, &numRows, &rowSizeInBytes, &m_mlSliceBytes);
     m_mlRowPitch = m_mlFootprint.Footprint.RowPitch;
     m_mlSliceBytesAligned = AlignUp(m_mlSliceBytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 
-    // 2. Create Resources
+    // 2. Create Resources (D3D12 Resources remain FP32 as the Texture is FP32)
     auto readbackHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
     auto readbackBufDesc   = CD3DX12_RESOURCE_DESC::Buffer(m_mlSliceBytesAligned * m_mlInputSlices.size());
     ThrowIfFailed(m_device->CreateCommittedResource(
@@ -4072,20 +4072,18 @@ void Renderer::CreateMLBuffers()
         &uploadHeapProps, D3D12_HEAP_FLAG_NONE, &uploadBufDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_mlUploadBuffer)));
 
-    // 3. Define Shapes (FIXED: Output is 1 Channel)
-    // Input: [1, 8, H, W]
+    // 3. Define Shapes
     m_mlInputShape  = { 1, 8, (int64_t)H, (int64_t)W };
-
-    // Output: [1, 1, H, W]  <--- CHANGED FROM 2 TO 1
     m_mlOutputShape = { 1, 1, (int64_t)H, (int64_t)W };
 
     m_mlInputElems  = (size_t)(1 * 8 * H * W);
     m_mlOutputElems = (size_t)(1 * 1 * H * W);
 
+    // [CHANGE] Resize to uint16_t size
     m_mlInputCPU.resize(m_mlInputElems);
     m_mlOutputCPU.resize(m_mlOutputElems);
 
-    std::wcout << L"[ML] Buffers Ready. Input [1,8], Output [1,1]" << std::endl;
+    std::wcout << L"[ML] Buffers Ready (FP16 Mode). Input [1,8], Output [1,1]" << std::endl;
 }
 
 void Renderer::RunMLPass()
@@ -4096,7 +4094,7 @@ void Renderer::RunMLPass()
     const UINT W = (UINT)desc.Width;
     const UINT H = (UINT)desc.Height;
 
-    // --- STEP A: GPU -> CPU Copy ---
+    // --- STEP A: GPU -> CPU Copy (Standard FP32 Readback) ---
     FlushExecuteAndWait();
 
     {
@@ -4121,7 +4119,7 @@ void Renderer::RunMLPass()
 
     FlushExecuteAndWait();
 
-    // --- STEP B: Inference ---
+    // --- STEP B: Inference (FP16 Conversion) ---
     try {
         uint8_t* mapped = nullptr;
         ThrowIfFailed(m_mlReadbackBuffer->Map(0, nullptr, (void**)&mapped));
@@ -4132,17 +4130,17 @@ void Renderer::RunMLPass()
 
         const size_t stride = W * H;
 
-        // Pointers for 8 Input Channels
-        float* pCh0 = m_mlInputCPU.data() + (0 * stride);
-        float* pCh1 = m_mlInputCPU.data() + (1 * stride);
-        float* pCh2 = m_mlInputCPU.data() + (2 * stride);
-        float* pCh3 = m_mlInputCPU.data() + (3 * stride);
-        float* pCh4 = m_mlInputCPU.data() + (4 * stride);
-        float* pCh5 = m_mlInputCPU.data() + (5 * stride);
-        float* pCh6 = m_mlInputCPU.data() + (6 * stride);
-        float* pCh7 = m_mlInputCPU.data() + (7 * stride);
+        // Pointers for 8 Input Channels (pointing to uint16_t now)
+        uint16_t* pCh0 = m_mlInputCPU.data() + (0 * stride);
+        uint16_t* pCh1 = m_mlInputCPU.data() + (1 * stride);
+        uint16_t* pCh2 = m_mlInputCPU.data() + (2 * stride);
+        uint16_t* pCh3 = m_mlInputCPU.data() + (3 * stride);
+        uint16_t* pCh4 = m_mlInputCPU.data() + (4 * stride);
+        uint16_t* pCh5 = m_mlInputCPU.data() + (5 * stride);
+        uint16_t* pCh6 = m_mlInputCPU.data() + (6 * stride);
+        uint16_t* pCh7 = m_mlInputCPU.data() + (7 * stride);
 
-        // 1. Pack Input
+        // 1. Pack Input (Float -> Half)
         #pragma omp parallel for schedule(static)
         for (int y = 0; y < (int)H; ++y)
         {
@@ -4154,45 +4152,54 @@ void Renderer::RunMLPass()
             {
                 size_t pixelIdx = y * W + x;
 
-                pCh0[pixelIdx] = row7[x * 4 + 0]; // Restir
-                pCh1[pixelIdx] = row7[x * 4 + 2]; // Init
-                pCh2[pixelIdx] = row7[x * 4 + 3]; // Albedo
+                // Helper to convert float to half
+                auto F2H = [](float f) { return DirectX::PackedVector::XMConvertFloatToHalf(f); };
 
-                pCh3[pixelIdx] = row9[x * 4 + 0]; // Normal X
-                pCh4[pixelIdx] = row9[x * 4 + 1]; // Normal Y
-                pCh5[pixelIdx] = row9[x * 4 + 2]; // Normal Z
+                pCh0[pixelIdx] = F2H(row7[x * 4 + 0]); // Restir
+                pCh1[pixelIdx] = F2H(row7[x * 4 + 2]); // Init
+                pCh2[pixelIdx] = F2H(row7[x * 4 + 3]); // Albedo
 
-                pCh6[pixelIdx] = 1.0f - row8[x * 4 + 0]; // Roughness
-                pCh7[pixelIdx] = row8[x * 4 + 1]; // Depth
+                pCh3[pixelIdx] = F2H(row9[x * 4 + 0]); // Normal X
+                pCh4[pixelIdx] = F2H(row9[x * 4 + 1]); // Normal Y
+                pCh5[pixelIdx] = F2H(row9[x * 4 + 2]); // Normal Z
+
+                pCh6[pixelIdx] = F2H(1.0f - row8[x * 4 + 0]); // Roughness
+                pCh7[pixelIdx] = F2H(row8[x * 4 + 1]); // Depth
             }
         }
         m_mlReadbackBuffer->Unmap(0, nullptr);
 
-        // 2. Run ORT
+        // 2. Run ORT with FP16 Type
         Ort::MemoryInfo memInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
-            memInfo, m_mlInputCPU.data(), m_mlInputCPU.size(), m_mlInputShape.data(), m_mlInputShape.size()
+
+        // [CHANGE] Create Tensor with FLOAT16 type using uint16_t data container
+        Ort::Value inputTensor = Ort::Value::CreateTensor(
+            memInfo,
+            m_mlInputCPU.data(),
+            m_mlInputCPU.size() * sizeof(uint16_t), // Size in bytes
+            m_mlInputShape.data(),
+            m_mlInputShape.size(),
+            ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16   // Explicitly define as FP16
         );
 
         Ort::RunOptions runOpts;
         auto outputs = m_ortSession->Run(runOpts, &m_mlInputName, &inputTensor, 1, &m_mlOutputName, 1);
 
-        // 3. Get Output (1 Channel)
-        float* outPtr = outputs[0].GetTensorMutableData<float>();
+        // 3. Get Output (FP16)
+        // Note: GetTensorMutableData returns a void* or typed pointer. For FP16, it effectively returns uint16_t*
+        uint16_t* outPtr = outputs[0].GetTensorMutableData<uint16_t>();
         size_t outCount = outputs[0].GetTensorTypeAndShapeInfo().GetElementCount();
 
-        // Basic safety check
         if (outCount != m_mlOutputCPU.size()) {
-             // If mismatch, clamp copy to avoid crash
              if (outCount > m_mlOutputCPU.size()) outCount = m_mlOutputCPU.size();
         }
-        memcpy(m_mlOutputCPU.data(), outPtr, outCount * sizeof(float));
+        memcpy(m_mlOutputCPU.data(), outPtr, outCount * sizeof(uint16_t));
 
-        // 4. Unpack Output (1 Channel -> Texture.R)
+        // 4. Unpack Output (Half -> Float -> Texture)
         uint8_t* up = nullptr;
         ThrowIfFailed(m_mlUploadBuffer->Map(0, nullptr, (void**)&up));
 
-        const float* pOut0 = m_mlOutputCPU.data(); // Only 1 channel base pointer
+        const uint16_t* pOut0 = m_mlOutputCPU.data();
 
         for (int y = 0; y < (int)H; ++y)
         {
@@ -4201,8 +4208,8 @@ void Renderer::RunMLPass()
             {
                 size_t pixelIdx = y * W + x;
 
-                // Write Model Output to R
-                rowOut[x * 4 + 0] = pOut0[pixelIdx];
+                // Write Model Output to R (Half to Float)
+                rowOut[x * 4 + 0] = DirectX::PackedVector::XMConvertHalfToFloat(pOut0[pixelIdx]);
 
                 // Zero out G, B; Alpha = 1
                 rowOut[x * 4 + 1] = 0.0f;
@@ -4218,13 +4225,8 @@ void Renderer::RunMLPass()
         m_enableML = false;
         return;
     }
-    catch (const std::exception& e) {
-        std::wcerr << L"[ML] STD ERROR: " << e.what() << std::endl;
-        m_enableML = false;
-        return;
-    }
 
-    // --- STEP C: CPU -> GPU Copy ---
+    // --- STEP C: CPU -> GPU Copy (Standard) ---
     {
         auto toDest = CD3DX12_RESOURCE_BARRIER::Transition(m_scratchPing.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
         m_commandList->ResourceBarrier(1, &toDest);
