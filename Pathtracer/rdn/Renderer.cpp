@@ -572,7 +572,7 @@ void Renderer::OnInitTransform() {
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
-    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 3.f);
 
     m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;
 }
