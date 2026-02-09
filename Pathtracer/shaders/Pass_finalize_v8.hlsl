@@ -63,8 +63,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if(confidence > prob){
         //InvalidateReservoirGI_ShadingNormal(g_Reservoirs_last_gi, pixelIdx);
         //store_W_gi(g_Reservoirs_last_gi, pixelIdx, 0.0f);
-        uint M = load_M_gi(g_Reservoirs_last_gi, pixelIdx);
-        store_M_gi(g_Reservoirs_last_gi, pixelIdx, 5u);
+        //uint M = load_M_gi(g_Reservoirs_last_gi, pixelIdx);
+        store_M_gi(g_Reservoirs_last_gi, pixelIdx, 1u);
     }
 
     // Apply Gamma and output
