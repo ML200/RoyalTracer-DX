@@ -93,7 +93,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
 
-    float2 dims = float2(IMG_W, IMG_H);
+    /*float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
     gScratchPing[uint3(DTid.xy, 7)].x = GetPHat(output_GI);
@@ -107,5 +107,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(DTid.xy, 9)] = float4(sdata.n1_s, 0.0f);
 
     gOutput[uint3(DTid.xy, 10)] = gScratchPing[uint3(DTid.xy, 7)].x;
-    gOutput[uint3(DTid.xy, 11)] = gScratchPing[uint3(DTid.xy, 7)].y;
+    gOutput[uint3(DTid.xy, 11)] = gScratchPing[uint3(DTid.xy, 7)].y;*/
 }

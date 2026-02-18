@@ -61,9 +61,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float  confidence    = saturate(abs(gScratchPing[uint3(DTid.xy, 10)].x));
 
     if(confidence > prob){
-        //InvalidateReservoirGI_ShadingNormal(g_Reservoirs_last_gi, pixelIdx);
-        //store_W_gi(g_Reservoirs_last_gi, pixelIdx, 0.0f);
-        //uint M = load_M_gi(g_Reservoirs_last_gi, pixelIdx);
         store_M_gi(g_Reservoirs_last_gi, pixelIdx, 1u);
     }
 
