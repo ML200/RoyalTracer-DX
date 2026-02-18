@@ -24,6 +24,7 @@
 #include <DirectML.h>
 #include <onnxruntime_cxx_api.h>
 #include <dml_provider_factory.h>
+#include "glm/gtc/matrix_transform.hpp"
 
 #include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
 #include <sl_consts.h>     // the sl::kFeature… enum values
@@ -87,7 +88,8 @@ public:
 
   Renderer(UINT width, UINT height, std::wstring name);
 
-  void DLSSRR_Init();
+    void CreateDLSSResources();
+    void RunDLSS_RR(ID3D12GraphicsCommandList* cmdList);
 
   virtual void OnInit();
   virtual void OnUpdate();
@@ -567,7 +569,7 @@ private:
   HINSTANCE__ *m_mod;
 
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0, 10, 11, /*12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
+  std::vector<UINT> m_displayLevels = {0,1, 10, 11, /*12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
   void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
 
 
@@ -668,4 +670,20 @@ private:
     void FlushExecuteAndWait();             // closes+executes current list and waits, then resets
     void RebindAfterReset();                // rebinds RTV/DSV/viewport/heaps after reset
 
+    // --- DLSS RESOURCES ---
+    ComPtr<ID3D12Resource> m_dlssDepth;             // u11: Linear Depth
+    ComPtr<ID3D12Resource> m_dlssMVec;              // u12: Motion Vectors (Screen Space)
+    ComPtr<ID3D12Resource> m_dlssNormals;           // u13: World Normals
+    ComPtr<ID3D12Resource> m_dlssDiffuseAlbedo;     // u14: Diffuse Albedo (Base Color)
+    ComPtr<ID3D12Resource> m_dlssOutput;            // u15: Denoised Output
+
+    // Additional Inputs for Ray Reconstruction
+    ComPtr<ID3D12Resource> m_dlssSpecularAlbedo;    // u16: Specular Albedo [cite: 12]
+    ComPtr<ID3D12Resource> m_dlssRoughness;         // u17: Linear Roughness [cite: 12]
+    ComPtr<ID3D12Resource> m_dlssSpecMVec;          // u18: Specular Motion Vectors [cite: 14]
+    ComPtr<ID3D12Resource> m_dlssSpecHitDist;       // u19: Specular Hit Distance [cite: 14]
+
+    // Optional Guides (Set to black/empty if unused)
+    ComPtr<ID3D12Resource> m_dlssTransparency;      // u20: Transparency Overlay [cite: 15]
+    ComPtr<ID3D12Resource> m_dlssColorBeforeTrans;  // u21: Color Before Transparency [cite: 15]
 };
