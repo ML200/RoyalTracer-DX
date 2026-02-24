@@ -205,7 +205,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
     }
 
     // Directional light
-    /*if (performNEE)
+    if (performNEE)
     {
         float3 hitPos = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
         {
@@ -286,7 +286,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 }
             }
         }
-    }*/
+    }
 
     // 7. Sample Next Direction (BSDF)
     SamplingP sp = CalculateStrategyProbabilities(

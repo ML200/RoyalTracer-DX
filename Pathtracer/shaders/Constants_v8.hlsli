@@ -5,6 +5,7 @@
 #define INV_PI 0.3183098861
 #define LUT_SIZE 16
 #define MIN_NORMAL_INT 0.33f
+#define kInvalidPixel -1u
 
 
 // TEXTURES & LUTs
@@ -40,4 +41,15 @@
 #define SPAT_BETA_GI 3.0f
 
 
-// camera_path_2026-01-27_17-43-13.txt
+// Denoiser settings spatial
+#define PLANE_DISTANCE_THRESHOLD 0.02f
+#define NORMAL_POWER 16.0f
+#define ALBEDO_SIGMA 0.2f
+#define SIGMA_SMOOTH   1.0f
+#define SIGMA_ROUGH    4.0f
+#define ROUGH_DIFF_SIGMA 0.15f
+#define ILLUM_SIGMA 0.2f
+#define COLOR_RANGE_REL  .07f
+
+// Denoiser settings temporal
+#define ROUGHNESS_DECAY 0.05f

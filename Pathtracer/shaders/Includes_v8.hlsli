@@ -101,6 +101,7 @@ cbuffer CameraParams : register(b0)
     float4x4 prevView;
     float4x4 prevProjection;
     float time;
+    float2 jitter;
 }
 // These includes need access to ALL previous buffers
 #include "Reservoir_DI_v8.hlsli"
@@ -112,3 +113,21 @@ cbuffer CameraParams : register(b0)
 #include "VolumeStackPacked_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "MIS_v8.hlsli"
+#include "Denoiser_helper_v8.hlsli"
+
+// Core DLSS Inputs
+RWTexture2D<float>  g_dlssDepth           : register(u11); // DXGI_FORMAT_R32_FLOAT
+RWTexture2D<float2> g_dlssMVec            : register(u12); // DXGI_FORMAT_R16G16_FLOAT
+RWTexture2D<float4> g_dlssNormals         : register(u13); // DXGI_FORMAT_R16G16B16A16_FLOAT
+RWTexture2D<float4> g_dlssDiffuseAlbedo   : register(u14); // DXGI_FORMAT_R16G16B16A16_FLOAT
+RWTexture2D<float4> g_dlssOutput          : register(u15); // DXGI_FORMAT_R16G16B16A16_FLOAT (The result buffer)
+
+// Ray Reconstruction (DLSS-RR) Specifics
+RWTexture2D<float4> g_dlssSpecularAlbedo  : register(u16); // DXGI_FORMAT_R16G16B16A16_FLOAT
+RWTexture2D<float>  g_dlssRoughness       : register(u17); // DXGI_FORMAT_R16_FLOAT
+RWTexture2D<float2> g_dlssSpecMVec        : register(u18); // DXGI_FORMAT_R16G16_FLOAT (Specular Motion Vectors)
+RWTexture2D<float>  g_dlssSpecHitDist     : register(u19); // DXGI_FORMAT_R16_FLOAT (Hit Distance)
+
+// Optional / Transparency
+RWTexture2D<float4> g_dlssTransparency    : register(u20); // DXGI_FORMAT_R16G16B16A16_FLOAT
+RWTexture2D<float4> g_dlssColorPreTrans   : register(u21); // DXGI_FORMAT_R16G16B16A16_FLOAT

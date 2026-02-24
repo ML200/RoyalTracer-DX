@@ -91,6 +91,7 @@ cbuffer CameraParams : register(b0)
     float4x4 prevView;
     float4x4 prevProjection;
     float time;
+    float2 jitter;
 }
 // These includes need access to ALL previous buffers
 #include "Reservoir_DI_v8.hlsli"

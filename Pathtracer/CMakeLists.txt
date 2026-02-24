@@ -93,6 +93,7 @@ add_executable(Pathtracer WIN32
         rdn/CameraRecorder.h
         rdn/CameraPathSimulator.cpp
         rdn/CameraPathSimulator.h
+        rdn/ResourceStateTracker.h
 )
 
 # ───────────────────────── include directories ───────────────────────────────

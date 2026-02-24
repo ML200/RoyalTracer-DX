@@ -30,6 +30,56 @@
 #include <string>
 #include <filesystem>
 
+static float Halton(uint32_t index, uint32_t base) {
+    float f = 1.0f;
+    float r = 0.0f;
+    while (index > 0) {
+        f = f / base;
+        r = r + f * (index % base);
+        index = index / base;
+    }
+    return r;
+}
+
+#define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
+std::wcout << L"[SL] " << L#x << L" failed: " << (int)r << std::endl; return; } \
+} while(0)
+
+void Renderer::EnsureSLViewportAllocated(ID3D12GraphicsCommandList* cmdList)
+{
+    if (m_viewportHandle) return;
+    if (!cmdList) return;
+
+    sl::Result r = slAllocateResources(cmdList, sl::kFeatureDLSS_RR, m_viewportHandle);
+    if (r != sl::Result::eOk)
+    {
+        std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
+    }
+}
+
+void PrintAdapterDetails() {
+    ComPtr<IDXGIFactory4> factory;
+    CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
+
+    ComPtr<IDXGIAdapter1> adapter;
+    std::wcout << L"\n--- System Adapters ---" << std::endl;
+
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc;
+        adapter->GetDesc1(&desc);
+
+        std::wcout << L"Adapter [" << i << L"]: " << desc.Description << std::endl;
+        std::wcout << L"  Vendor ID: 0x" << std::hex << desc.VendorId << std::dec << std::endl;
+        std::wcout << L"  LUID: " << desc.AdapterLuid.HighPart << L":" << desc.AdapterLuid.LowPart << std::endl;
+
+        if (desc.VendorId == 0x10DE) { // NVIDIA
+            std::wcout << L"  >>> MATCH FOUND (NVIDIA) <<<" << std::endl;
+        }
+        std::wcout << L"-----------------------" << std::endl;
+    }
+}
+
+
 void DumpD3D12Messages(ID3D12Device* device)
 {
     ComPtr<ID3D12InfoQueue> info;
@@ -47,7 +97,15 @@ void DumpD3D12Messages(ID3D12Device* device)
         auto* msg = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
         info->GetMessage(i, msg, &size);          // get the message
 
-        std::wcout << L"[D3D12] " << msg->pDescription << std::endl;
+        // --- NEW: Silently ignore Streamline's internal mvec barrier mismatch ---
+        if (msg->pDescription != nullptr &&
+            strstr(msg->pDescription, "sl.dlss_d.mvec") != nullptr &&
+            strstr(msg->pDescription, "RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH") != nullptr)
+        {
+            continue; // Skip printing this specific spam!
+        }
+
+        std::wcout << L"[DX] " << msg->pDescription << std::endl;
     }
     info->ClearStoredMessages();
 }
@@ -210,7 +268,6 @@ Renderer::Renderer(UINT width, UINT height,
                  static_cast<float>(height)),
       m_scissorRect(0, 0, static_cast<LONG>(width), static_cast<LONG>(height)),
       m_rtvDescriptorSize(0) {
-    m_mod = LoadLibrary("sl.interposer.dll");
 
     m_passSequence = {
         L"Pass_raygen_v8.hlsl|rg",
@@ -224,11 +281,22 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",
-        L"barrier",
+        L"barrier"
         /*L"ml",
         L"barrier",
         L"Pass_finalize_v8.hlsl|cs:16x16",
-        L"barrier",*/
+        L"barrier",*/,
+        L"Pass_denoiser_firefly_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_temp_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_blur_1_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_blur_2_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_blur_3_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_denoiser_copy_v8.hlsl|cs:8x4",
     };
 
     try {
@@ -244,7 +312,10 @@ Renderer::Renderer(UINT width, UINT height,
 }
 
 void Renderer::OnInit() {
-    //try {
+    //try :
+        m_mod = LoadLibrary("sl.interposer.dll");
+        LoadPipeline();
+
         m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
         nv_helpers_dx12::CameraManip.setWindowSize(GetWidth(), GetHeight());
@@ -254,7 +325,6 @@ void Renderer::OnInit() {
         nv_helpers_dx12::Manipulator::Fly);
         nv_helpers_dx12::CameraManip.setSpeed(0.0f);
 
-        LoadPipeline();
         try {
             LoadAssets();
         }
@@ -262,6 +332,9 @@ void Renderer::OnInit() {
             MessageBoxA(nullptr, e.what(), "An exception occurred", MB_OK | MB_ICONERROR);
             exit(1);
         }
+
+        EnsureSLViewportAllocated(m_commandList.Get());
+
         GenerateLutTextures();
         CheckRaytracingSupport();
 
@@ -308,19 +381,30 @@ void Renderer::OnInit() {
 
 // Load the rendering pipeline dependencies.
 void Renderer::LoadPipeline() {
-    #if ENABLE_D3D12_DIAGNOSTICS
-        dxdiag::EnableDebugLayerAndDred();
-    #endif
 
+    // 1. Initialize Streamline FIRST
     sl::Preferences pref{};
-    pref.flags  = sl::PreferenceFlags::eDisableCLStateTracking |
-              sl::PreferenceFlags::eLoadDownloadedPlugins;
-    static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
-    pref.featuresToLoad    = featList;
-    pref.numFeaturesToLoad = _countof(featList);
-    slInit(pref, sl::kSDKVersion);
+    // [FIX] Explicitly tell SL we are using D3D12. Without this, plugins may fail to identify the adapter.
+    pref.renderAPI = sl::RenderAPI::eD3D12;
+    pref.engine = sl::EngineType::eCustom;
+    pref.applicationId = 231313132;
 
-  UINT dxgiFactoryFlags = 0;
+    pref.showConsole = true;                            // Spawns a console window specifically for SL logs
+    pref.logLevel = sl::LogLevel::eVerbose;             // Maximum log detail
+
+    pref.flags = sl::PreferenceFlags::eLoadDownloadedPlugins
+           | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
+    static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR};
+    pref.featuresToLoad = featList;
+    pref.numFeaturesToLoad = _countof(featList);
+
+    // Check this result!
+    sl::Result res = slInit(pref, sl::kSDKVersion);
+    if (res != sl::Result::eOk) {
+        std::wcout << L"slInit failed! Error: " << (int)res << std::endl;
+    }
+
+    UINT dxgiFactoryFlags = 0;
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory1)(REFIID, void**);
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
@@ -347,6 +431,10 @@ void Renderer::LoadPipeline() {
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
 
+#if ENABLE_D3D12_DIAGNOSTICS
+    dxdiag::EnableDebugLayerAndDred();
+#endif
+
   if (m_useWarpDevice) {
     ComPtr<IDXGIAdapter> warpAdapter;
     ThrowIfFailed(factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)));
@@ -364,9 +452,29 @@ void Renderer::LoadPipeline() {
           dxdiag::HookDevice(m_device.Get());
     #endif
   }
-  if(SL_FAILED(res, slSetD3DDevice(m_device.Get())))
-    {
+    res = slSetD3DDevice(m_device.Get());
+    if (res != sl::Result::eOk) {
+        std::wcout << L"slSetD3DDevice failed! Code: " << (int)res << std::endl;
     }
+
+    // 1. Store the LUID in a local variable (an l-value)
+    LUID adapterLuid = m_device->GetAdapterLuid();
+
+    PrintAdapterDetails();
+
+    sl::AdapterInfo adapterInfo;
+    adapterInfo.deviceLUID = (uint8_t*)&adapterLuid;
+    adapterInfo.deviceLUIDSizeInBytes = sizeof(LUID);
+
+    // Log what we are sending to NVIDIA
+    std::wcout << L"[SL] Sending LUID to SL: " << adapterLuid.HighPart << L":" << adapterLuid.LowPart << std::endl;
+
+    sl::Result supportRes = slIsFeatureSupported(sl::kFeatureDLSS_RR, adapterInfo);
+    if (supportRes != sl::Result::eOk) {
+        std::wcout << L"[DLSS-RR] Check Failed! Error: " << (int)supportRes << std::endl;
+    }
+
+
     // Using helpers from sl_dlss.h
     sl::DLSSOptimalSettings dlssSettings;
     sl::DLSSOptions dlssOptions;
@@ -405,13 +513,6 @@ void Renderer::LoadPipeline() {
 
   ThrowIfFailed(swapChain.As(&m_swapChain));
   m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
-    if(!m_viewportHandle)
-    {
-        slAllocateResources(
-            /*cmdList*/  nullptr,
-            /*feature*/  sl::kFeatureDLSS,
-            /*out*/      m_viewportHandle);
-    }
 
   // Create descriptor heaps.
   {
@@ -462,8 +563,9 @@ void Renderer::LoadAssets() {
     std::vector<TextureData> rmaTextures;
 
     // Model loading
+    // Model loading
     {
-        std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./workshop/workshop.obj",*/ /*"./pot/pot.obj"*/};
+        std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -568,8 +670,8 @@ void Renderer::OnInitTransform() {
     m_instances[2].second = scale * selfRotation * translate;*/
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.3f, 0.3f, 0.3f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 1.0f, 3.f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.1f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-8.f, 1.0f, 3.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
 
@@ -675,6 +777,10 @@ void Renderer::OnUpdate() {
 
 void Renderer::OnRender()
 {
+    if (m_frameToken) {
+        slGetNewFrameToken(m_frameToken, nullptr);
+    }
+
     static auto s_lastTime = std::chrono::high_resolution_clock::now();
     static int  s_frameCount = 0;
 
@@ -1085,49 +1191,68 @@ void Renderer::PopulateCommandList()
         } // switch
     } // for
 
+
+    // Ensure all UAV writes to DLSS inputs are visible before Streamline reads them.
+    {
+        ID3D12Resource* uavs[] =
+        {
+            m_dlssDepth.Get(),
+            m_dlssMVec.Get(),
+            m_dlssNormals.Get(),
+            m_dlssDiffuseAlbedo.Get(),
+            m_dlssSpecularAlbedo.Get(),
+            m_dlssRoughness.Get(),
+            m_dlssSpecMVec.Get(),
+            m_dlssSpecHitDist.Get(),
+            m_dlssTransparency.Get(),
+            m_dlssColorBeforeTrans.Get(),
+            // (include others if you write them)
+        };
+
+        for (ID3D12Resource* r : uavs)
+        {
+            if (!r) continue;
+            auto b = CD3DX12_RESOURCE_BARRIER::UAV(r);
+            m_commandList->ResourceBarrier(1, &b);
+        }
+    }
+
     RunDLSS_RR(m_commandList.Get());
 
     // --- COPY DLSS RESULT TO OUTPUT BUFFER (SLICE 1) ---
     {
-        // 1. Transition Resources for Copy
         D3D12_RESOURCE_BARRIER preCopyBarriers[] = {
-                // DLSS Output: COMMON -> COPY_SOURCE
-                CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_dlssOutput.Get(),
-                        D3D12_RESOURCE_STATE_COMMON,
-                        D3D12_RESOURCE_STATE_COPY_SOURCE),
-                // Main Output Array: UNORDERED_ACCESS (returned from RunDLSS_RR) -> COPY_DEST
-                CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_outputResource.Get(),
-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                        D3D12_RESOURCE_STATE_COPY_DEST)
+            // DLSS Output: UAV -> COPY_SOURCE   (FIX)
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_dlssOutput.Get(),
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_SOURCE),
+
+            // Main Output Array: UAV -> COPY_DEST
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_outputResource.Get(),
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COPY_DEST)
         };
         m_commandList->ResourceBarrier(_countof(preCopyBarriers), preCopyBarriers);
 
-        // 2. Perform Copy
-        // Source: DLSS Result (Single Texture)
         CD3DX12_TEXTURE_COPY_LOCATION src(m_dlssOutput.Get(), 0);
-
-        // Destination: Output Buffer ARRAY, SLICE 1
-        // D3D12CalcSubresource(Mip, Slice, Plane, MipLevels, ArraySize)
-        // Assuming Mip 0, Slice 1
-        UINT destSubresource = 1;
+        UINT destSubresource = 2;
         CD3DX12_TEXTURE_COPY_LOCATION dst(m_outputResource.Get(), destSubresource);
-
         m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
-        // 3. Restore Resources for Next Frame
         D3D12_RESOURCE_BARRIER postCopyBarriers[] = {
-                // DLSS Output: COPY_SOURCE -> UNORDERED_ACCESS (Ready for next DLSS call)
-                CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_dlssOutput.Get(),
-                        D3D12_RESOURCE_STATE_COPY_SOURCE,
-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-                // Main Output Array: COPY_DEST -> UNORDERED_ACCESS (Ready for next RayGen)
-                CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_outputResource.Get(),
-                        D3D12_RESOURCE_STATE_COPY_DEST,
-                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+            // DLSS Output: COPY_SOURCE -> UAV
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_dlssOutput.Get(),
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+
+            // Main Output Array: COPY_DEST -> UAV
+            CD3DX12_RESOURCE_BARRIER::Transition(
+                m_outputResource.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
         };
         m_commandList->ResourceBarrier(_countof(postCopyBarriers), postCopyBarriers);
     }
@@ -2538,6 +2663,36 @@ void Renderer::CreateShaderResourceHeap() {
     // --- RANGE 36: Sort Buffers (u60, u61, u62) ---
     // [CRITICAL FIX] We create in Staging, Store Staging Handle, Copy to Main, Store Main Handle.
 
+    // [Inside CreateShaderResourceHeap, appending to the end]
+
+    // --- RANGE 37: DLSS Full Inputs (u11 - u21) ---
+    {
+        auto createUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+            uavDesc.Format = fmt;
+            m_device->CreateUnorderedAccessView(res, nullptr, &uavDesc, handle);
+            nextSlot();
+        };
+
+        // Core
+        createUAV(m_dlssDepth.Get(),          DXGI_FORMAT_R32_FLOAT);           // u11
+        createUAV(m_dlssMVec.Get(),           DXGI_FORMAT_R16G16_FLOAT);        // u12
+        createUAV(m_dlssNormals.Get(),        DXGI_FORMAT_R16G16B16A16_FLOAT);  // u13
+        createUAV(m_dlssDiffuseAlbedo.Get(),  DXGI_FORMAT_R16G16B16A16_FLOAT);  // u14
+        createUAV(m_dlssOutput.Get(),         DXGI_FORMAT_R16G16B16A16_FLOAT);  // u15
+
+        // Extra RR
+        createUAV(m_dlssSpecularAlbedo.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);  // u16
+        createUAV(m_dlssRoughness.Get(),      DXGI_FORMAT_R16_FLOAT);           // u17
+        createUAV(m_dlssSpecMVec.Get(),       DXGI_FORMAT_R16G16_FLOAT);        // u18
+        createUAV(m_dlssSpecHitDist.Get(),    DXGI_FORMAT_R16_FLOAT);           // u19
+
+        // Optional
+        createUAV(m_dlssTransparency.Get(),     DXGI_FORMAT_R16G16B16A16_FLOAT); // u20
+        createUAV(m_dlssColorBeforeTrans.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT); // u21
+    }
+
     // 1. Sort Count (u60)
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
@@ -2590,36 +2745,6 @@ void Renderer::CreateShaderResourceHeap() {
 
         nextSlot();
         nextStaging();
-    }
-
-    // [Inside CreateShaderResourceHeap, appending to the end]
-
-    // --- RANGE 37: DLSS Full Inputs (u11 - u21) ---
-    {
-        auto createUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-            uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-            uavDesc.Format = fmt;
-            m_device->CreateUnorderedAccessView(res, nullptr, &uavDesc, handle);
-            nextSlot();
-        };
-
-        // Core
-        createUAV(m_dlssDepth.Get(),          DXGI_FORMAT_R32_FLOAT);           // u11
-        createUAV(m_dlssMVec.Get(),           DXGI_FORMAT_R16G16_FLOAT);        // u12
-        createUAV(m_dlssNormals.Get(),        DXGI_FORMAT_R16G16B16A16_FLOAT);  // u13
-        createUAV(m_dlssDiffuseAlbedo.Get(),  DXGI_FORMAT_R16G16B16A16_FLOAT);  // u14
-        createUAV(m_dlssOutput.Get(),         DXGI_FORMAT_R16G16B16A16_FLOAT);  // u15
-
-        // Extra RR
-        createUAV(m_dlssSpecularAlbedo.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);  // u16
-        createUAV(m_dlssRoughness.Get(),      DXGI_FORMAT_R16_FLOAT);           // u17
-        createUAV(m_dlssSpecMVec.Get(),       DXGI_FORMAT_R16G16_FLOAT);        // u18
-        createUAV(m_dlssSpecHitDist.Get(),    DXGI_FORMAT_R16_FLOAT);           // u19
-
-        // Optional
-        createUAV(m_dlssTransparency.Get(),     DXGI_FORMAT_R16G16B16A16_FLOAT); // u20
-        createUAV(m_dlssColorBeforeTrans.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT); // u21
     }
 
     std::wcout << L"Heap recreated strictly matching Root Signature." << std::endl;
@@ -2725,7 +2850,7 @@ void Renderer::CreateCameraBuffer() {
     // 6 matrices + 1 float time + 8 planes of type XMFLOAT4
     uint32_t nbMatrix   = 6;                 // view, proj, viewInv, projInv, prevView, prevProj
     m_cameraBufferSize  = nbMatrix * sizeof(XMMATRIX)
-                        + sizeof(float);     // for time
+                        + sizeof(float) * 4;     // for time
     // Round up to 256 for constant‐buffer alignment
     m_cameraBufferSize = (m_cameraBufferSize + 255) & ~255;
 
@@ -2779,19 +2904,23 @@ void Renderer::UpdateCameraBuffer() {
     const glm::mat4 &viewMat = nv_helpers_dx12::CameraManip.getMatrix();
     memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(viewMat), 16 * sizeof(float));
 
-    // Current projection matrix
-    // FOV
+    // Current projection matrix (UNJITTERED - exactly as DLSS wants it)
     float fovAngleY = 60.0f * XM_PI / 180.0f;
-    matrices[1] = XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.1f, 1000.0f);
+    matrices[1] = XMMatrixPerspectiveFovRH(fovAngleY, m_aspectRatio, 0.00001f, 10000.0f);
 
     // Inverse matrices
     XMVECTOR det;
     matrices[2] = XMMatrixInverse(&det, matrices[0]);  // viewInv
     matrices[3] = XMMatrixInverse(&det, matrices[1]);  // projectionInv
 
-    // Previous frame matrices
+    // Previous frame matrices (For shaders)
     matrices[4] = m_prevViewMatrix;
     matrices[5] = m_prevProjMatrix;
+
+    // --- COMPUTE PIXEL-SCALE JITTER ---
+    m_jitterFrameIndex++;
+    m_jitterX = 0.0f;//Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
+    m_jitterY = 0.0f;//Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
 
     // Copy matrix contents to the buffer
     uint8_t *pData;
@@ -2804,19 +2933,18 @@ void Renderer::UpdateCameraBuffer() {
     // Copy the 6 matrices
     memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
 
-    // Add the current system time as float
+    // Add the current system time and jitter as a float4
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
-    //float currentTime = static_cast<float>(nanos % 1000);  // Convert milliseconds to seconds as float
     float currentTime = static_cast<uint32_t>(nanos);
 
-    memcpy(pData + (6 * sizeof(XMMATRIX)), &currentTime, sizeof(float));
-
+    float extraData[4] = { currentTime, m_jitterX, m_jitterY, 0.0f };
+    memcpy(pData + (6 * sizeof(XMMATRIX)), extraData, sizeof(extraData));
 
     m_cameraBuffer->Unmap(0, nullptr);
 
-    // Save the current matrices for use in the next frame
+    // Save the current matrices for use in the next frame (for shaders)
     m_prevViewMatrix = matrices[0];
     m_prevProjMatrix = matrices[1];
 }
@@ -4375,145 +4503,214 @@ void Renderer::CreateDLSSResources() {
     createTex(m_dlssTransparency,     DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Trans");
     createTex(m_dlssColorBeforeTrans, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_ColorPreTrans");
 
+    // After createTex(...) sets UAV initial state:
+    m_state.SetInitialState(m_dlssDepth.Get(),          D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssMVec.Get(),           D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssNormals.Get(),        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssDiffuseAlbedo.Get(),  D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssOutput.Get(),         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    m_state.SetInitialState(m_dlssSpecularAlbedo.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssRoughness.Get(),      D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssSpecMVec.Get(),       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssSpecHitDist.Get(),    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    m_state.SetInitialState(m_dlssTransparency.Get(),   D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    m_state.SetInitialState(m_dlssColorBeforeTrans.Get(),D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
     // Initialize Streamline Viewport
     if (!m_viewportHandle) {
         slAllocateResources(m_commandList.Get(), sl::kFeatureDLSS_RR, m_viewportHandle);
     }
 }
 
-void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList) {
-    // -----------------------------------------------------------------------------------------
-    // 1. CONSTANTS SETUP
-    // -----------------------------------------------------------------------------------------
-    sl::Constants constants = {};
 
-    // Get camera matrices from Manipulator (GLM)
-    glm::mat4 view = nv_helpers_dx12::CameraManip.getMatrix();
-    glm::mat4 proj = glm::perspective(glm::radians(60.0f), m_aspectRatio, 0.1f, 1000.0f);
+static inline void TransitionToUAV_AssumingSRV(
+    ID3D12GraphicsCommandList* cmd,
+    ID3D12Resource* res)
+{
+    if (!cmd || !res) return;
 
-    // --- Helper: Convert to SL Matrix ---
-    auto XmToSl = [](const XMMATRIX& m) {
-        sl::float4x4 r;
-        XMFLOAT4X4 tmp;
-        XMStoreFloat4x4(&tmp, m);
-        std::memcpy(&r, &tmp, sizeof(float) * 16);
-        return r;
+    constexpr D3D12_RESOURCE_STATES kSRV =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    auto b = CD3DX12_RESOURCE_BARRIER::Transition(
+        res, kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    cmd->ResourceBarrier(1, &b);
+}
+
+
+void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!cmdList || !m_frameToken) return;
+
+    if (!m_outputResource || !m_dlssOutput || !m_dlssDepth || !m_dlssMVec || !m_dlssNormals ||
+        !m_dlssDiffuseAlbedo || !m_dlssSpecularAlbedo || !m_dlssRoughness || !m_dlssSpecHitDist)
+        return;
+
+    // 1) DLSS-RR Guide: Inputs should be SRV, Output should be UAV.
+    // We explicitly transition them so Streamline doesn't inject incorrect batch barriers.
+    constexpr D3D12_RESOURCE_STATES stateUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    constexpr D3D12_RESOURCE_STATES stateSRV = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    ID3D12Resource* dlssInputs[] = {
+        m_dlssDepth.Get(),
+        m_dlssMVec.Get(),
+        m_dlssNormals.Get(),
+        m_dlssDiffuseAlbedo.Get(),
+        m_dlssSpecularAlbedo.Get(),
+        m_dlssRoughness.Get(),
+        m_dlssSpecHitDist.Get() // Crucial for Ray Reconstruction
     };
 
-    // Convert GLM to DirectX
-    XMMATRIX xmView = XMLoadFloat4x4(reinterpret_cast<XMFLOAT4X4*>(glm::value_ptr(view)));
-    XMMATRIX xmProj = XMMatrixPerspectiveFovRH(60.0f * XM_PI / 180.0f, m_aspectRatio, 0.1f, 1000.0f);
-    XMMATRIX xmViewProj = XMMatrixMultiply(xmView, xmProj);
-    XMMATRIX xmPrevViewProj = XMMatrixMultiply(m_prevViewMatrix, m_prevProjMatrix);
+    std::vector<D3D12_RESOURCE_BARRIER> preBarriers;
+    for (auto* res : dlssInputs) {
+        preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, stateUAV, stateSRV));
+    }
+    // The main color input also goes to SRV
+    preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), stateUAV, stateSRV));
 
-    // Populate SL Constants
-    constants.cameraViewToClip = XmToSl(xmViewProj);
-    constants.clipToCameraView = XmToSl(XMMatrixInverse(nullptr, xmViewProj));
-    constants.clipToPrevClip   = XmToSl(XMMatrixInverse(nullptr, xmPrevViewProj) * xmViewProj);
-    constants.prevClipToClip   = XmToSl(XMMatrixInverse(nullptr, xmViewProj) * xmPrevViewProj);
+    cmdList->ResourceBarrier(static_cast<UINT>(preBarriers.size()), preBarriers.data());
 
-    // --- NEW: Fix Validation Warnings ---
-    constants.cameraFOV = glm::radians(60.0f);
+    // 2) Set up Streamline Constants
+    sl::Constants constants{};
+
+    glm::mat4 viewGlm = nv_helpers_dx12::CameraManip.getMatrix();
+    glm::mat4 viewT   = glm::transpose(viewGlm);
+
+    DirectX::XMFLOAT4X4 viewF{};
+    std::memcpy(&viewF, glm::value_ptr(viewT), sizeof(viewF));
+    DirectX::XMMATRIX xmView = DirectX::XMLoadFloat4x4(&viewF);
+
+    DirectX::XMMATRIX xmProj = DirectX::XMMatrixPerspectiveFovRH(
+        DirectX::XMConvertToRadians(60.0f), m_aspectRatio, 0.00001f, 10000.0f);
+
+    // Use DLSS-specific previous matrices to bypass the timing bug
+    DirectX::XMMATRIX xmViewProj     = XMMatrixMultiply(xmView, xmProj);
+    DirectX::XMMATRIX xmPrevViewProj = XMMatrixMultiply(m_dlssPrevViewMatrix, m_dlssPrevProjMatrix);
+
+    auto XmToSl = [](const DirectX::XMMATRIX& m) -> sl::float4x4 {
+        DirectX::XMFLOAT4X4 tmp;
+        DirectX::XMStoreFloat4x4(&tmp, m);
+        sl::float4x4 out{};
+        std::memcpy(&out, &tmp, sizeof(out));
+        return out;
+    };
+
+    constants.cameraViewToClip = XmToSl(xmProj);
+    constants.clipToCameraView = XmToSl(XMMatrixInverse(nullptr, xmProj));
+    constants.clipToPrevClip   = XmToSl(XMMatrixMultiply(XMMatrixInverse(nullptr, xmViewProj), xmPrevViewProj));
+    constants.prevClipToClip   = XmToSl(XMMatrixMultiply(XMMatrixInverse(nullptr, xmPrevViewProj), xmViewProj));
+
+    constants.cameraFOV         = XMConvertToRadians(60.0f);
     constants.cameraAspectRatio = m_aspectRatio;
+    constants.cameraNear        = 0.00001f;
+    constants.cameraFar         = 10000.0f;
+    constants.cameraPinholeOffset = { 0.0f, 0.0f };
+
+    constants.jitterOffset = { -m_jitterX, -m_jitterY };
+
+    float w = (float)GetWidth();
+    float h = (float)GetHeight();
+    constants.mvecScale = { 1.0f / w, 1.0f / h };
+
     constants.motionVectorsInvalidValue = -1.0f;
+    constants.cameraMotionIncluded      = sl::Boolean::eTrue;
+    constants.depthInverted             = sl::Boolean::eFalse;
+    constants.motionVectors3D           = sl::Boolean::eFalse;
+    constants.motionVectorsJittered     = sl::Boolean::eFalse;
 
-    constants.jitterOffset = {0.0f, 0.0f};
-    constants.mvecScale = {1.0f, 1.0f};
-    constants.cameraPinholeOffset = {0.0f, 0.0f};
-    constants.cameraPos = {0,0,0};
-    constants.cameraUp = {0,1,0};
-    constants.cameraRight = {1,0,0};
-    constants.cameraFwd = {0,0,-1};
-    constants.cameraNear = 0.1f;
-    constants.cameraFar = 1000.0f;
-    constants.cameraMotionIncluded = sl::Boolean::eFalse;
-    constants.depthInverted = sl::Boolean::eFalse;
-    constants.motionVectors3D = sl::Boolean::eFalse;
-    constants.reset = (m_frameIndex == 0) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    constants.reset = (m_jitterFrameIndex <= 1) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
-    slSetConstants(constants, *m_frameToken, m_viewportHandle);
+    {
+        auto invView = XMMatrixInverse(nullptr, xmView);
+        DirectX::XMFLOAT4X4 invF{};
+        XMStoreFloat4x4(&invF, invView);
+        constants.cameraPos   = { invF._41, invF._42, invF._43 };
+        constants.cameraRight = { invF._11, invF._12, invF._13 };
+        constants.cameraUp    = { invF._21, invF._22, invF._23 };
+        constants.cameraFwd   = { -invF._31, -invF._32, -invF._33 };
+    }
 
-    // -----------------------------------------------------------------------------------------
-    // 2. RESOURCE BARRIERS & EXECUTION
-    // -----------------------------------------------------------------------------------------
+    SL_CHECK(slSetConstants(constants, *m_frameToken, m_viewportHandle));
 
-    std::vector<CD3DX12_RESOURCE_BARRIER> preBarriers;
-    auto toCommon = [&](ID3D12Resource* res) {
-        if(res) preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON));
+    // DLSS-RR requires World/Camera matrices in the options struct
+    sl::DLSSDOptions options{};
+    options.mode                = sl::DLSSMode::eDLAA;
+    options.outputWidth         = GetWidth();
+    options.outputHeight        = GetHeight();
+    options.colorBuffersHDR     = sl::Boolean::eTrue;
+    options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::eUnpacked;
+    options.worldToCameraView   = XmToSl(xmView);
+    options.cameraViewToWorld   = XmToSl(XMMatrixInverse(nullptr, xmView));
+
+    SL_CHECK(slDLSSDSetOptions(m_viewportHandle, options));
+
+    // 3) Create Tag Structures
+    // Explicitly pass (uint32_t)stateSRV so Streamline knows they are ALREADY in SRV.
+    sl::Resource slDepth   (sl::ResourceType::eTex2d, m_dlssDepth.Get(),          (uint32_t)stateSRV);
+    sl::Resource slMVec    (sl::ResourceType::eTex2d, m_dlssMVec.Get(),           (uint32_t)stateSRV);
+    sl::Resource slNormals (sl::ResourceType::eTex2d, m_dlssNormals.Get(),        (uint32_t)stateSRV);
+    sl::Resource slAlbedo  (sl::ResourceType::eTex2d, m_dlssDiffuseAlbedo.Get(),  (uint32_t)stateSRV);
+    sl::Resource slSpecAlb (sl::ResourceType::eTex2d, m_dlssSpecularAlbedo.Get(), (uint32_t)stateSRV);
+    sl::Resource slRough   (sl::ResourceType::eTex2d, m_dlssRoughness.Get(),      (uint32_t)stateSRV);
+    sl::Resource slSpecHit (sl::ResourceType::eTex2d, m_dlssSpecHitDist.Get(),    (uint32_t)stateSRV);
+    sl::Resource slInput   (sl::ResourceType::eTex2d, m_outputResource.Get(),     (uint32_t)stateSRV);
+    sl::Resource slOutput  (sl::ResourceType::eTex2d, m_dlssOutput.Get(),         (uint32_t)stateUAV);
+
+    sl::Extent extent { 0, 0, GetWidth(), GetHeight() };
+    auto life = sl::ResourceLifecycle::eValidUntilEvaluate;
+
+    std::vector<sl::ResourceTag> tags = {
+        {&slDepth,   sl::kBufferTypeLinearDepth,               life, &extent},
+        {&slMVec,    sl::kBufferTypeMotionVectors,       life, &extent},
+        {&slNormals, sl::kBufferTypeNormals,             life, &extent},
+        {&slRough,   sl::kBufferTypeRoughness,           life, &extent},
+        {&slAlbedo,  sl::kBufferTypeAlbedo,              life, &extent},
+        {&slSpecAlb, sl::kBufferTypeSpecularAlbedo,      life, &extent},
+        {&slSpecHit, sl::kBufferTypeSpecularHitDistance, life, &extent},
+        {&slInput,   sl::kBufferTypeScalingInputColor,   life, &extent},
+        {&slOutput,  sl::kBufferTypeScalingOutputColor,  life, &extent}
     };
 
-    toCommon(m_dlssDepth.Get());
-    toCommon(m_dlssMVec.Get());
-    toCommon(m_dlssNormals.Get());
-    toCommon(m_dlssDiffuseAlbedo.Get());
-    toCommon(m_dlssSpecularAlbedo.Get());
-    toCommon(m_dlssRoughness.Get());
-    toCommon(m_dlssSpecMVec.Get());
-    toCommon(m_dlssSpecHitDist.Get());
-    toCommon(m_dlssTransparency.Get());
-    toCommon(m_outputResource.Get());
-    toCommon(m_dlssOutput.Get());
+    SL_CHECK(slSetTagForFrame(*m_frameToken, m_viewportHandle, tags.data(), (uint32_t)tags.size(), cmdList));
 
-    if (!preBarriers.empty()) cmdList->ResourceBarrier((UINT)preBarriers.size(), preBarriers.data());
+    // 4) Evaluate DLSS
+    // Note: Due to your mid-frame queue execution (RunMLPass), D3D12 decays Streamline's internal buffers to COMMON.
+    // Streamline's tracker gets out of sync and fires an invalid barrier on `sl.dlss_d.mvec`.
+    // We MUST temporarily suppress D3D12 breaking on error here, otherwise Streamline catches the break,
+    // thinks the app crashed, and aborts evaluation (returning error 24).
+    ComPtr<ID3D12InfoQueue> infoQueue;
+    if (SUCCEEDED(m_device.As(&infoQueue))) {
+        infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+    }
 
-    std::vector<sl::ResourceTag> tags;
-    auto addTag = [&](sl::Resource* r, sl::BufferType t) {
-        if(r && r->native) {
-            sl::ResourceTag tag = {};
-            tag.resource = r;
-            tag.type = t;
-            tag.lifecycle = static_cast<sl::ResourceLifecycle>(0);
-            tags.push_back(tag);
-        }
-    };
+    const sl::BaseStructure* evalInputs[] = { &m_viewportHandle, &options };
+    sl::Result evalResult = slEvaluateFeature(sl::kFeatureDLSS_RR, *m_frameToken, evalInputs, _countof(evalInputs), cmdList);
 
-    sl::Resource resDepth(sl::ResourceType::eTex2d, m_dlssDepth.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resMVec(sl::ResourceType::eTex2d, m_dlssMVec.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resNormals(sl::ResourceType::eTex2d, m_dlssNormals.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resAlbedo(sl::ResourceType::eTex2d, m_dlssDiffuseAlbedo.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resSpecAlbedo(sl::ResourceType::eTex2d, m_dlssSpecularAlbedo.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resRoughness(sl::ResourceType::eTex2d, m_dlssRoughness.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resSpecMVec(sl::ResourceType::eTex2d, m_dlssSpecMVec.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resTrans(sl::ResourceType::eTex2d, m_dlssTransparency.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resColorPreTrans(sl::ResourceType::eTex2d, m_dlssColorBeforeTrans.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resInput(sl::ResourceType::eTex2d, m_outputResource.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
-    sl::Resource resOutput(sl::ResourceType::eTex2d, m_dlssOutput.Get(), nullptr, nullptr, D3D12_RESOURCE_STATE_COMMON);
+    // Re-enable strict debugging immediately after Streamline finishes.
+    if (infoQueue) {
+        infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+    }
 
-    addTag(&resDepth,         sl::kBufferTypeDepth);
-    addTag(&resMVec,          sl::kBufferTypeMotionVectors);
-    addTag(&resNormals,       sl::kBufferTypeNormals);
-    addTag(&resAlbedo,        sl::kBufferTypeAlbedo);
-    addTag(&resSpecAlbedo,    sl::kBufferTypeSpecularAlbedo);
-    addTag(&resRoughness,     sl::kBufferTypeRoughness);
-    addTag(&resSpecMVec,      sl::kBufferTypeSpecularMotionVectors);
-    addTag(&resTrans,         sl::kBufferTypeTransparencyLayer);
-    addTag(&resColorPreTrans, sl::kBufferTypeColorBeforeTransparency);
-    addTag(&resInput,         sl::kBufferTypeScalingInputColor);
-    addTag(&resOutput,        sl::kBufferTypeScalingOutputColor);
+    if (evalResult != sl::Result::eOk) {
+        std::wcout << L"[DLSS-RR] slEvaluateFeature failed: " << (int)evalResult << std::endl;
+        return;
+    }
 
-    slSetTag(m_viewportHandle, tags.data(), (uint32_t)tags.size(), cmdList);
+    // 5) POST-DLSS BARRIERS
+    // Streamline evaluated and read the inputs as SRVs.
+    // We MUST manually transition them back to UAVs so your Raytracing/Compute shaders
+    // can safely write to them at the beginning of the next frame.
+    std::vector<D3D12_RESOURCE_BARRIER> postBarriers;
+    for (auto* res : dlssInputs) {
+        postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, stateSRV, stateUAV));
+    }
+    postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), stateSRV, stateUAV));
 
-    sl::DLSSDOptions options = {};
-    options.mode = sl::DLSSMode::eDLAA;
-    slDLSSDSetOptions(m_viewportHandle, options);
+    cmdList->ResourceBarrier(static_cast<UINT>(postBarriers.size()), postBarriers.data());
 
-    slEvaluateFeature(sl::kFeatureDLSS_RR, *m_frameToken, nullptr, 0, cmdList);
-
-    std::vector<CD3DX12_RESOURCE_BARRIER> postBarriers;
-    auto toUA = [&](ID3D12Resource* res) {
-        if(res) postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS));
-    };
-
-    toUA(m_dlssDepth.Get());
-    toUA(m_dlssMVec.Get());
-    toUA(m_dlssNormals.Get());
-    toUA(m_dlssDiffuseAlbedo.Get());
-    toUA(m_dlssSpecularAlbedo.Get());
-    toUA(m_dlssRoughness.Get());
-    toUA(m_dlssSpecMVec.Get());
-    toUA(m_dlssSpecHitDist.Get());
-    toUA(m_dlssTransparency.Get());
-    toUA(m_outputResource.Get());
-
-    if (!postBarriers.empty()) cmdList->ResourceBarrier((UINT)postBarriers.size(), postBarriers.data());
+    m_dlssPrevViewMatrix = xmView;
+    m_dlssPrevProjMatrix = xmProj;
 }

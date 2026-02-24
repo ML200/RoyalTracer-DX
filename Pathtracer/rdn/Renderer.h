@@ -25,6 +25,7 @@
 #include <onnxruntime_cxx_api.h>
 #include <dml_provider_factory.h>
 #include "glm/gtc/matrix_transform.hpp"
+#include "ResourceStateTracker.h"
 
 #include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
 #include <sl_consts.h>     // the sl::kFeature… enum values
@@ -82,6 +83,8 @@ static const UINT MAX_INDIRECT_COMMANDS = MAX_STACKS;
 
 class Renderer : public DXSample {
 public:
+    void EnsureSLViewportAllocated(ID3D12GraphicsCommandList *cmdList);
+
     void BuildGlobalMeshBuffers();
 
     void CreateTriToLightIdBuffer();
@@ -480,6 +483,15 @@ private:
     XMMATRIX m_prevViewMatrix;
     XMMATRIX m_prevProjMatrix;
 
+    // DLSS-specific previous matrices to avoid timing bugs
+    XMMATRIX m_dlssPrevViewMatrix;
+    XMMATRIX m_dlssPrevProjMatrix;
+
+    // Global Jitter state
+    float m_jitterX = 0.0f;
+    float m_jitterY = 0.0f;
+    uint32_t m_jitterFrameIndex = 0;
+
   // #DXR Extra: Per-Instance Data
   ComPtr<ID3D12Resource> m_planeBuffer;
   D3D12_VERTEX_BUFFER_VIEW m_planeBufferView;
@@ -569,7 +581,7 @@ private:
   HINSTANCE__ *m_mod;
 
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0,1, 10, 11, /*12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
+  std::vector<UINT> m_displayLevels = {0, 1, 2, /*10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
   void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
 
 
@@ -624,7 +636,7 @@ private:
 
 
     // ---------------- ML / ONNX Runtime / DirectML ----------------
-    bool m_enableML = true;
+    bool m_enableML = false;
 
     // Configure which scratchPing slices become model input,
     // and which slice receives the model output mask.
@@ -686,4 +698,15 @@ private:
     // Optional Guides (Set to black/empty if unused)
     ComPtr<ID3D12Resource> m_dlssTransparency;      // u20: Transparency Overlay [cite: 15]
     ComPtr<ID3D12Resource> m_dlssColorBeforeTrans;  // u21: Color Before Transparency [cite: 15]
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_dlssInputExtracted2D;
+    D3D12_RESOURCE_STATES m_dlssInputExtracted2DState =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    ResourceStateTracker m_state;
+
+    // Convenience constants
+    static constexpr D3D12_RESOURCE_STATES kSRV =
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 };

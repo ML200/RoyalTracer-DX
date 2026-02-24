@@ -23,6 +23,7 @@
 #pragma once
 
 #include <limits.h>
+#include <vector>
 
 #include "sl_struct.h"
 #include "sl_consts.h"
@@ -47,7 +48,6 @@ using HRESULT = long;
 namespace sl {
 
 using CommandBuffer = void;
-
 using Device = void;
 
 //! Buffer types used for tagging
@@ -55,6 +55,12 @@ using Device = void;
 //! IMPORTANT: Each tag must use the unique id
 //! 
 using BufferType = uint32_t;
+
+// Friend function declaration to access private members for ABI validation static_asserts
+namespace test
+{
+constexpr void AbiValidation();
+}
 
 //! Depth buffer - IMPORTANT - Must be suitable to use with clipToPrevClip transformation (see Constants below)
 constexpr BufferType kBufferTypeDepth = 0;
@@ -511,10 +517,12 @@ enum class PreferenceFlags : uint64_t
     //! Optional - allow tagging of resources for frame. This helps distinguish whether slEvaluateFeature needs to do frame-based tagging
     //! of resources which wasn't the case earlier.
     eUseFrameBasedResourceTagging = 1 << 7,
+
+    //! All preference flags.  This isn't expected to be used directly by integrations, but may be useful for e.g. writing helpers.
+    eAll = eDisableCLStateTracking | eDisableDebugText | eUseManualHooking | eAllowOTA | eBypassOSVersionCheck | eUseDXGIFactoryProxy | eLoadDownloadedPlugins | eUseFrameBasedResourceTagging
 };
 
 SL_ENUM_OPERATORS_64(PreferenceFlags)
-
 
 //! Application preferences
 //!
@@ -560,7 +568,6 @@ SL_STRUCT_BEGIN(Preferences, StructType({ 0x1ca10965, 0xbf8e, 0x432b, { 0x8d, 0x
     //! IMPORTANT: New members go here or if optional can be chained in a new struct, see sl_struct.h for details
 SL_STRUCT_END()
 
-
 //! Frame tracking handle
 //! 
 //! IMPORTANT: Use slGetNewFrameToken to obtain unique instance
@@ -580,6 +587,7 @@ SL_STRUCT_BEGIN(ViewportHandle, StructType({ 0x171b6435, 0x9b3c, 0x4fc8, { 0x99,
     operator uint32_t() const { return value; }
 private:
     uint32_t value = UINT_MAX;
+    friend constexpr void sl::test::AbiValidation();
 SL_STRUCT_END()
 
 //! Specifies feature requirement flags
@@ -593,7 +601,10 @@ enum class FeatureRequirementFlags : uint32_t
     //! If set V-Sync must be disabled when feature is active
     eVSyncOffRequired = 1 << 3,
     //! If set GPU hardware scheduling OS feature must be turned on
-    eHardwareSchedulingRequired = 1 << 4
+    eHardwareSchedulingRequired = 1 << 4,
+
+    //! All feature requirement flags.  This isn't expected to be used directly by integrations, but may be useful for e.g. writing helpers.
+    eAll = eD3D11Supported | eD3D12Supported | eVulkanSupported | eVSyncOffRequired | eHardwareSchedulingRequired
 };
 
 SL_ENUM_OPERATORS_32(FeatureRequirementFlags);
@@ -675,5 +686,66 @@ SL_STRUCT_BEGIN(AdapterInfo, StructType({ 0x677315f, 0xa746, 0x4492, { 0x9f, 0x4
 
     //! IMPORTANT: New members go here or if optional can be chained in a new struct, see sl_struct.h for details
 SL_STRUCT_END()
+
+//! A simple array wrapper designed for safe use across DLL boundaries.
+//! Since different DLLs may use different memory allocators, this class
+//! relies on an IAllocator pointer to ensure that memory is allocated
+//! and freed consistently within the same runtime.
+struct IAllocator
+{
+    virtual ~IAllocator() = default;
+    virtual void *allocate(uint32_t nBytes) = 0;
+    virtual void free(void *p) = 0;
+};
+template <class T>
+struct Array
+{
+    inline Array() {}
+    inline ~Array() { destroy(); }
+    inline uint32_t size() const { return m_size; }
+    inline void copyFrom(IAllocator *pAllocator, const std::vector<T>& src)
+    {
+        // if they give us data - we need the allocator
+        assert(pAllocator || src.size() == 0);
+        destroy();
+        if (src.size() == 0) return;
+        m_pAllocator = pAllocator;
+        m_size = static_cast<uint32_t>(src.size());
+        m_pData = (T*)m_pAllocator->allocate(m_size * sizeof(T));
+        for (uint32_t i = 0; i < m_size; ++i)
+            m_pData[i] = src[i];
+    }
+    inline void copyTo(std::vector<T>& dst)
+    {
+        dst.resize(m_size);
+        for (uint32_t i = 0; i < m_size; ++i)
+            dst[i] = m_pData[i];
+    }
+    inline T& operator[](uint32_t index)
+    {
+        assert(index < m_size);
+        return m_pData[index];
+    }
+    inline const T& operator[](uint32_t index) const
+    {
+        assert(index < m_size);
+        return m_pData[index];
+    }
+    inline void destroy()
+    {
+        if (m_pData) m_pAllocator->free(m_pData);
+        m_pAllocator = nullptr;
+        m_pData = nullptr;
+        m_size = 0;
+    }
+    // Prevent copying
+    Array(const Array&) = delete;
+    Array& operator=(const Array&) = delete;
+  private:
+    T* m_pData{};
+    uint32_t m_size{};
+    // the allocator that was used to allocate memory
+    IAllocator *m_pAllocator{};
+};
 
 }
