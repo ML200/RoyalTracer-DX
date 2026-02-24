@@ -59,7 +59,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 accumulation = output_DI + output_GI;
     float3 gt = gScratchPing[uint3(DTid.xy, 3)];
 
-    bool cameraChanged = false;
+    /*bool cameraChanged = false;
     [unroll]
     for (uint i = 0; i < 4; ++i) {
         if (any(view[i] != prevView[i])) cameraChanged = true;
@@ -86,12 +86,65 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     // store back
-    gPermanentData[DTid.xy] = float4(newAvg, newSamples);
+    gPermanentData[DTid.xy] = float4(newAvg, newSamples);*/
 
     float3 sceneLinear = accumulation;
     float3 outSRGB     = sRGBGammaCorrection(saturate(sceneLinear));
 
-    gOutput[uint3(DTid.xy, 0)] = float4(outSRGB, 1.0f);
+    gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
+
+    // DLSS RR input data:
+    float2 dims = float2(IMG_W, IMG_H);
+    uint   pixelIdx  = MapPixelID(dims, DTid.xy);
+    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+
+
+    g_dlssDepth[DTid.xy] = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
+
+    g_dlssNormals[DTid.xy] = float4(sdata.n1_s, 0.0f);
+    g_dlssDiffuseAlbedo[DTid.xy] = float4(sdata.localKd, 1.0f);
+    g_dlssRoughness[DTid.xy] = sdata.localPr;
+
+    // ALWAYS write MV
+    int2 curPix = int2(DTid.xy);
+    int2 prevPix = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+
+    // Clamp or invalidate if outside
+    bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
+
+    // DLSS expects “current pixel maps to previous frame position”
+    float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
+
+    g_dlssMVec[curPix] = mvPixels;
+    gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels),0.0f, 1.0f);
+
+    // Specular albedo
+    float3 specularAlbedo = EnvBRDFApprox2(sdata.localKd, sdata.localPr, sdata.localPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
+    g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
+
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
+
+    // Denoiser
+    // Slice 0: Raw noisy signal
+    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
+
+    // Slice 2: Albedo (base color)
+    gScratchPing[uint3(DTid.xy, 2)] = float4(sdata.localKd, 1.0f);
+
+    // Slice 3: x = isEmissive, y = Roughness, z = ObjID
+    // Note: If you have an emissive material check in sdata (e.g. sdata.emission),
+    // set this to 1.0f so the denoiser skips blurring your lights. Defaulting to 0.0f.
+    float isEmissive = 0.0f;
+    gScratchPing[uint3(DTid.xy, 3)] = float4(isEmissive, sdata.localPr, asfloat((uint)sdata.objID), 0.0f);
+
+    // Slice 4: World-Space Normal
+    gScratchPing[uint3(DTid.xy, 4)] = float4(sdata.n1_s, 0.0f);
+
+    // Slice 5: xyz = World-Space Pos, w = current sample weight (M_cur)
+    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, 1.0f);
+
+
 
     /*float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);

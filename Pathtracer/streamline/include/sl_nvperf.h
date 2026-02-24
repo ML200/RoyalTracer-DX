@@ -45,7 +45,9 @@ namespace sl
 enum class NvPerfMode : uint32_t
 {
     eOff,
-    eOn
+    eOn,
+
+    eCount
 };
 
 //! IMPORTANT: Each structure must have a unique GUID assigned, change this as needed
