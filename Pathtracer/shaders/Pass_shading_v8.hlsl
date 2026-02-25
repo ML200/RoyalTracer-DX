@@ -96,9 +96,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
 
-    float3 safeAlbedo = sdata.localKd < 0.01f?1.0f:sdata.localKd;//max(sdata.localKd, 0.001f);
-    float3 irradiance = accumulation / safeAlbedo;
-    gOutput[uint3(DTid.xy, 0)] = float4(irradiance, 1.0f);
+    gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
 
     g_dlssDepth[DTid.xy] = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
@@ -108,8 +106,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     g_dlssRoughness[DTid.xy] = sdata.localPr;
 
     // ALWAYS write MV
-    int2 curPix = int2(DTid.xy);
-    int2 prevPix = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+    float2 curPix = DTid.xy;
+    float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID);
 
     // Clamp or invalidate if outside
     bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
@@ -129,7 +127,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // Denoiser__________________________________________________
     // Slice 0: Raw noisy signal
-    gScratchPing[uint3(DTid.xy, 0)] = float4(irradiance, 1.0f);
+    /*gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
     // Slice 2: Albedo (base color)
     gScratchPing[uint3(DTid.xy, 2)] = float4(sdata.localKd, 1.0f);
@@ -144,7 +142,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(DTid.xy, 4)] = float4(sdata.n1_s, 0.0f);
 
     // Slice 5: xyz = World-Space Pos, w = current sample weight (M_cur)
-    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, 1.0f);
+    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, 1.0f);*/
 
 
 

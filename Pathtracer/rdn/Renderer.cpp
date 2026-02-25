@@ -286,7 +286,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_finalize_v8.hlsl|cs:16x16",
         L"barrier",*/,
-        L"Pass_denoiser_firefly_v8.hlsl|cs:16x16",
+        /*L"Pass_denoiser_firefly_v8.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_temp_v8.hlsl|cs:16x16",
         L"barrier",
@@ -296,7 +296,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_denoiser_blur_3_v8.hlsl|cs:16x16",
         L"barrier",
-        L"Pass_denoiser_copy_v8.hlsl|cs:8x4",
+        L"Pass_denoiser_copy_v8.hlsl|cs:8x4",*/
     };
 
     try {
@@ -565,7 +565,7 @@ void Renderer::LoadAssets() {
     // Model loading
     // Model loading
     {
-        std::vector<std::string> models = {"./sponza_tex/sponza_tex.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
+        std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -2919,8 +2919,8 @@ void Renderer::UpdateCameraBuffer() {
 
     // --- COMPUTE PIXEL-SCALE JITTER ---
     m_jitterFrameIndex++;
-    m_jitterX = 0.0f;//Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
-    m_jitterY = 0.0f;//Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
+    m_jitterX = Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
+    m_jitterY = Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
 
     // Copy matrix contents to the buffer
     uint8_t *pData;
@@ -4619,7 +4619,7 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
     constants.cameraMotionIncluded      = sl::Boolean::eTrue;
     constants.depthInverted             = sl::Boolean::eFalse;
     constants.motionVectors3D           = sl::Boolean::eFalse;
-    constants.motionVectorsJittered     = sl::Boolean::eFalse;
+    constants.motionVectorsJittered     = sl::Boolean::eTrue;
 
     constants.reset = (m_jitterFrameIndex <= 1) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 

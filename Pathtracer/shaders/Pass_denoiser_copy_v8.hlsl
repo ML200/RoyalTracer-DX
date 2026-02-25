@@ -26,25 +26,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gScratchPing[uint3(DTid.xy, 10)] = gScratchPing[uint3(DTid.xy, 5)];
     gScratchPing[uint3(DTid.xy, 11)] = gScratchPing[uint3(DTid.xy, 6)];
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // REMODULATION
-    // ─────────────────────────────────────────────────────────────────────────────
-
-    float3 denoisedIrradiance = gScratchPing[uint3(DTid.xy, 1)].xyz;
-    float3 currentAlbedo = gScratchPing[uint3(DTid.xy, 2)].xyz;
-    float isEmissive = gScratchPing[uint3(DTid.xy, 3)].x;
-    float3 finalRadiance = denoisedIrradiance * currentAlbedo;
-    if (isEmissive > 0.0f) {
-        finalRadiance = denoisedIrradiance;
-    }
-
-    // Safety Clamps
-    if (any(isnan(finalRadiance))) finalRadiance = float3(0,0,0);
-    finalRadiance = max(0.0f, finalRadiance);
+    float3 denoisedRadiance = gScratchPing[uint3(DTid.xy, 1)].xyz;
 
     // Store temporal data for reprojection
     gPermanentData[DTid.xy] = gScratchPing[uint3(DTid.xy, 12)];
 
     // Write Final Image
-    gOutput[uint3(DTid.xy, 1)] = float4(finalRadiance, 1);
+    gOutput[uint3(DTid.xy, 1)] = float4(denoisedRadiance, 1);
 }
