@@ -12,7 +12,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     uint   pIdx   = MapPixelID(dims, launch);
 
     // Blur kernel
-    float3 output = AtrousKernel(launch, 8, 0);
+    float3 output = AtrousKernel(launch, 2, 0);
 
     // Store accumulated result
     //gPermanentData[DTid.xy] = float4(output, 1);
