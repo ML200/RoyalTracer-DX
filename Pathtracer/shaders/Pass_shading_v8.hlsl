@@ -89,14 +89,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);*/
 
     float3 sceneLinear = accumulation;
-    float3 outSRGB     = sRGBGammaCorrection(saturate(sceneLinear));
-
-    gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
+    //float3 outSRGB     = sRGBGammaCorrection(saturate(sceneLinear));
 
     // DLSS RR input data:
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
+
+    float3 safeAlbedo = sdata.localKd < 0.01f?1.0f:sdata.localKd;//max(sdata.localKd, 0.001f);
+    float3 irradiance = accumulation / safeAlbedo;
+    gOutput[uint3(DTid.xy, 0)] = float4(irradiance, 1.0f);
 
 
     g_dlssDepth[DTid.xy] = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
@@ -125,9 +127,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
     g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
 
-    // Denoiser
+    // Denoiser__________________________________________________
     // Slice 0: Raw noisy signal
-    gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
+    gScratchPing[uint3(DTid.xy, 0)] = float4(irradiance, 1.0f);
 
     // Slice 2: Albedo (base color)
     gScratchPing[uint3(DTid.xy, 2)] = float4(sdata.localKd, 1.0f);
@@ -135,7 +137,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Slice 3: x = isEmissive, y = Roughness, z = ObjID
     // Note: If you have an emissive material check in sdata (e.g. sdata.emission),
     // set this to 1.0f so the denoiser skips blurring your lights. Defaulting to 0.0f.
-    float isEmissive = 0.0f;
+    float isEmissive =  any(sdata.L1 > 0.0f)?1.0f:0.0f;
     gScratchPing[uint3(DTid.xy, 3)] = float4(isEmissive, sdata.localPr, asfloat((uint)sdata.objID), 0.0f);
 
     // Slice 4: World-Space Normal

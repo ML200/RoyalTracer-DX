@@ -565,7 +565,7 @@ void Renderer::LoadAssets() {
     // Model loading
     // Model loading
     {
-        std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
+        std::vector<std::string> models = {"./sponza_tex/sponza_tex.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
