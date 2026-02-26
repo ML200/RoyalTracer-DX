@@ -502,7 +502,7 @@ void Renderer::LoadPipeline() {
   swapChainDesc.BufferCount = FrameCount;
   swapChainDesc.Width = m_width;
   swapChainDesc.Height = m_height;
-  swapChainDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
   swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
   swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   swapChainDesc.SampleDesc.Count = 1;
@@ -1209,24 +1209,7 @@ void Renderer::PopulateCommandList()
                 // 2. Evaluate Streamline DLSS
                 RunDLSS_RR(m_commandList.Get());
 
-                // 3. COPY DLSS RESULT TO OUTPUT BUFFER (SLICE 1)
-                D3D12_RESOURCE_BARRIER preCopyBarriers[] = {
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_dlssOutput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST)
-                };
-                m_commandList->ResourceBarrier(_countof(preCopyBarriers), preCopyBarriers);
-
-                CD3DX12_TEXTURE_COPY_LOCATION src(m_dlssOutput.Get(), 0);
-                CD3DX12_TEXTURE_COPY_LOCATION dst(m_outputResource.Get(), 1);
-                m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-
-                D3D12_RESOURCE_BARRIER postCopyBarriers[] = {
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_dlssOutput.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-                        CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
-                };
-                m_commandList->ResourceBarrier(_countof(postCopyBarriers), postCopyBarriers);
-
-                // 4. Rebind Descriptor Heaps (Streamline sometimes unbinds/swaps heaps under the hood)
+                // 3. Rebind Descriptor Heaps (Streamline sometimes unbinds heaps)
                 ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
                 m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
 
@@ -2298,7 +2281,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
   D3D12_RESOURCE_DESC resDesc = {};
   resDesc.DepthOrArraySize = 30 * 2;
   resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-  resDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  resDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 
   resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
   resDesc.Width = GetWidth();
@@ -2458,7 +2441,7 @@ void Renderer::CreateShaderResourceHeap() {
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
         uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-        uavDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        uavDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         uavDesc.Texture2DArray.ArraySize = m_outputResource->GetDesc().DepthOrArraySize;
         m_device->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &uavDesc, handle);
         nextSlot();
