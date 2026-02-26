@@ -33,41 +33,65 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 3);
+        uint2 seedpermutation = GetSeed(1, time, 3);
 
         SampleData sdata_r;
         Reservoir_GI rdi_r;
 
-        int2 tempPixelCoordinate = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
-        if(tempPixelCoordinate.x == -1 && tempPixelCoordinate.y == -1)
-            tempPixelCoordinate = launchIndex;
+        // --- base reprojection (fallback) ---
+        int2 baseCoord = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+        if (baseCoord.x == -1 && baseCoord.y == -1)
+            baseCoord = (int2)launchIndex;
 
-        // Permutation sampling to break up correlations
-        /*{
-            float u = RandomFloatSingle(seed.x);
+        // --- permuted candidate ---
+        int2 permCoord = baseCoord;
+        bool permInBounds = false;
+        {
+            float u = RandomFloatSingle(seedpermutation.x);
             uint permRnd = (uint)min(u * 16.0f, 15.0f);
-            int2 permPrev = tempPixelCoordinate;
-            ApplyPermutationSampling(permPrev, permRnd);
 
-            // reject permuted coordinate if out of bounds
-            if (permPrev.x >= 0 && permPrev.y >= 0 && permPrev.x < (int)IMG_W && permPrev.y < (int)IMG_H)
-            {
-                tempPixelCoordinate = permPrev;
-            }
-        }*/
+            ApplyPermutationSampling(permCoord, permRnd);
 
-        uint tempPixelIdx = MapPixelID(dims, tempPixelCoordinate);
-        // Get the reprojected sample data
-        sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-        // Get the reprojected reservoir
-        rdi_r = loadReservoirGI(g_Reservoirs_last_gi, tempPixelIdx);
+            permInBounds =
+                (permCoord.x >= 0 && permCoord.y >= 0 &&
+                 permCoord.x < (int)IMG_W && permCoord.y < (int)IMG_H);
 
-        // Weight the current sample - is it valid? And select the one closest in world space
-        bool valid =
-            (all(sdata_r.L1 < EPSILON) &&
-            IsValidReservoir_GI(rdi_r) &&
-            !RejectNormal_GI(sdata.n1_s, sdata_r.n1_g, 0.9f)&&
-            (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.1f))&&
-            (sdata_r.matID == sdata.matID));
+            if (!permInBounds)
+                permCoord = baseCoord;
+        }
+
+        uint tempPixelIdx = 0xFFFFFFFF;
+        bool valid = false;
+
+        // --- try permuted first ---
+        if (permInBounds)
+        {
+            tempPixelIdx = MapPixelID(dims, permCoord);
+            sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+            rdi_r   = loadReservoirGI(g_Reservoirs_last_gi, tempPixelIdx);
+
+            valid =
+                (all(sdata_r.L1 < EPSILON) &&
+                 IsValidReservoir_GI(rdi_r) &&
+                 !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
+                 (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)) &&
+                 (sdata_r.matID == sdata.matID));
+        }
+
+        // --- fallback to base reprojection if permuted is not valid ---
+        if (!valid)
+        {
+            tempPixelIdx = MapPixelID(dims, baseCoord);
+            sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+            rdi_r   = loadReservoirGI(g_Reservoirs_last_gi, tempPixelIdx);
+
+            valid =
+                (all(sdata_r.L1 < EPSILON) &&
+                 IsValidReservoir_GI(rdi_r) &&
+                 !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
+                 (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)) &&
+                 (sdata_r.matID == sdata.matID));
+        }
 
 
         if(tempPixelIdx != 0xFFFFFFFF && valid){

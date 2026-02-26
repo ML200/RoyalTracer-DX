@@ -4,7 +4,7 @@
 // --- Config ---
 #define SUN_DIR_NORM        normalize(float3(0.3f, 1.0f, 0.1f)) // Matches your previous ddir
 #define SUN_ANGULAR_DEG     0.53f
-#define SUN_INTENSITY_VAL   10.0f
+#define SUN_INTENSITY_VAL   3.0f
 #define SUN_COLOR_VAL       float3(1.0f, 0.95f, 0.9f)
 #define SUN_DIST_INF        1e7f // Effectively infinity
 
