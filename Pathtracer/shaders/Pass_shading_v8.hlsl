@@ -1,48 +1,5 @@
 #include "Includes_v8.hlsli"
 
-inline float3 sRGBGammaCorrection(float3 color)
-{
-    float3 result;
-
-    // Red channel
-    if (color.r <= 0.0031308f)
-        result.r = 12.92f * color.r;
-    else
-        result.r = 1.055f * pow(color.r, 1.0f / 2.4f) - 0.055f;
-
-    // Green channel
-    if (color.g <= 0.0031308f)
-        result.g = 12.92f * color.g;
-    else
-        result.g = 1.055f * pow(color.g, 1.0f / 2.4f) - 0.055f;
-
-    // Blue channel
-    if (color.b <= 0.0031308f)
-        result.b = 12.92f * color.b;
-    else
-        result.b = 1.055f * pow(color.b, 1.0f / 2.4f) - 0.055f;
-
-    return result;
-}
-
-float3 PBRNeutral(float3 color) {
-    const float startCompression = 0.8f - 0.04f;
-    const float desaturation = 0.15f;
-
-    float x = min(color.r, min(color.g, color.b));
-    float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
-    color -= offset;
-
-    float peak = max(color.r, max(color.g, color.b));
-    if (peak < startCompression) return max(color, 0.0f);
-
-    float d = 1.0f - startCompression;
-    float newPeak = 1.0f - d * d / (peak + d - startCompression);
-    color *= newPeak / peak;
-
-    float g = 1.0f - 1.0f / (desaturation * (peak - newPeak) + 1.0f);
-    return lerp(color, newPeak.xxx, g);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  SHADING PASS
@@ -87,9 +44,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
-    gOutput[uint3(DTid.xy, 2)] = float4(/*sRGBGammaCorrection(saturate(*/newAvg/*))*/, 1.0f);
-
-    //float3 outSRGB     = sRGBGammaCorrection(saturate(accumulation));
+    gOutput[uint3(DTid.xy, 2)] = float4(newAvg, 1.0f);
 
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
@@ -147,26 +102,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
     }
-
-    // Denoiser__________________________________________________
-    // Slice 0: Raw noisy signal
-    /*gScratchPing[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
-
-    // Slice 2: Albedo (base color)
-    gScratchPing[uint3(DTid.xy, 2)] = float4(sdata.localKd, 1.0f);
-
-    // Slice 3: x = isEmissive, y = Roughness, z = ObjID
-    // Note: If you have an emissive material check in sdata (e.g. sdata.emission),
-    // set this to 1.0f so the denoiser skips blurring your lights. Defaulting to 0.0f.
-    float isEmissive =  any(sdata.L1 > 0.0f)?1.0f:0.0f;
-    gScratchPing[uint3(DTid.xy, 3)] = float4(isEmissive, sdata.localPr, asfloat((uint)sdata.objID), 0.0f);
-
-    // Slice 4: World-Space Normal
-    gScratchPing[uint3(DTid.xy, 4)] = float4(sdata.n1_s, 0.0f);
-
-    // Slice 5: xyz = World-Space Pos, w = current sample weight (M_cur)
-    gScratchPing[uint3(DTid.xy, 5)] = float4(sdata.x1, 1.0f);*/
-
 
 
     /*float2 dims = float2(IMG_W, IMG_H);

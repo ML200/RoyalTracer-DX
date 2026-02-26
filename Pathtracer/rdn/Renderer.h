@@ -113,7 +113,8 @@ private:
         PingSwap,
         ClearSort,
         Callable,
-        ML
+        ML,
+        DLSS
     };
 
     // 2. Update PassDesc to hold loop information
@@ -142,6 +143,7 @@ private:
         if (token == L"endloop")   { p.stage = Stage::LoopEnd;   return p; }
         if (token == L"clearsort") { p.stage = Stage::ClearSort; return p; }
         if (token == L"ml")        { p.stage = Stage::ML;        return p; }
+        if (token == L"dlss")      { p.stage = Stage::DLSS;      return p; }
 
         if (token.rfind(L"loop:", 0) == 0) {
             p.stage = Stage::LoopStart;
