@@ -281,11 +281,15 @@ Renderer::Renderer(UINT width, UINT height,
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",
         L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",
-        L"barrier"
+        L"barrier",
+        L"dlss",
+        L"barrier",
+        L"Pass_postprocess_v8.hlsl|cs:8x4",
+        L"barrier",
         /*L"ml",
         L"barrier",
         L"Pass_finalize_v8.hlsl|cs:16x16",
-        L"barrier",*/,
+        L"barrier",*/
         /*L"Pass_denoiser_firefly_v8.hlsl|cs:16x16",
         L"barrier",
         L"Pass_denoiser_temp_v8.hlsl|cs:16x16",
@@ -564,7 +568,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-        std::vector<std::string> models = {"./sponza_tex/sponza_tex.obj", /*"./workshop/workshop.obj",*/ "./buddha.obj"};
+        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ /*"./buddha.obj"*/};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -662,11 +666,11 @@ void Renderer::LoadAssets() {
 }
 
 void Renderer::OnInitTransform() {
-    XMMATRIX scale        = XMMatrixScaling(0.6f, 0.6f, 0.6f);
+    /*XMMATRIX scale        = XMMatrixScaling(0.6f, 0.6f, 0.6f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
     XMMATRIX translate    = XMMatrixTranslation(0.0f, 1.00f, 0.0f);
 
-    m_instances[1].second = scale * selfRotation * translate;
+    m_instances[1].second = scale * selfRotation * translate;*/
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.1f);
@@ -747,7 +751,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    float angle = static_cast<float>(m_time) * 0.004f;
+    /*float angle = static_cast<float>(m_time) * 0.004f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
@@ -757,7 +761,7 @@ void Renderer::OnUpdate() {
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 0.f, z);
 
-    m_instances[1].second = scale * selfRotation * translate;
+    m_instances[1].second = scale * selfRotation * translate;*/
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
@@ -1186,13 +1190,54 @@ void Renderer::PopulateCommandList()
 
                 break;
             }
+            case Stage::DLSS:
+            {
+                // 1. Ensure all prior UAV writes to DLSS inputs are visible
+                ID3D12Resource* uavs[] = {
+                        m_dlssDepth.Get(), m_dlssMVec.Get(), m_dlssNormals.Get(),
+                        m_dlssDiffuseAlbedo.Get(), m_dlssSpecularAlbedo.Get(),
+                        m_dlssRoughness.Get(), m_dlssSpecMVec.Get(), m_dlssSpecHitDist.Get(),
+                        m_dlssTransparency.Get(), m_dlssColorBeforeTrans.Get()
+                };
 
+                for (ID3D12Resource* r : uavs) {
+                    if (!r) continue;
+                    auto b = CD3DX12_RESOURCE_BARRIER::UAV(r);
+                    m_commandList->ResourceBarrier(1, &b);
+                }
+
+                // 2. Evaluate Streamline DLSS
+                RunDLSS_RR(m_commandList.Get());
+
+                // 3. COPY DLSS RESULT TO OUTPUT BUFFER (SLICE 1)
+                D3D12_RESOURCE_BARRIER preCopyBarriers[] = {
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_dlssOutput.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE),
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST)
+                };
+                m_commandList->ResourceBarrier(_countof(preCopyBarriers), preCopyBarriers);
+
+                CD3DX12_TEXTURE_COPY_LOCATION src(m_dlssOutput.Get(), 0);
+                CD3DX12_TEXTURE_COPY_LOCATION dst(m_outputResource.Get(), 1);
+                m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+                D3D12_RESOURCE_BARRIER postCopyBarriers[] = {
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_dlssOutput.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                };
+                m_commandList->ResourceBarrier(_countof(postCopyBarriers), postCopyBarriers);
+
+                // 4. Rebind Descriptor Heaps (Streamline sometimes unbinds/swaps heaps under the hood)
+                ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
+                m_commandList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+                break;
+            }
         } // switch
     } // for
 
 
     // Ensure all UAV writes to DLSS inputs are visible before Streamline reads them.
-    {
+    /*{
         ID3D12Resource* uavs[] =
         {
             m_dlssDepth.Get(),
@@ -1254,7 +1299,7 @@ void Renderer::PopulateCommandList()
                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
         };
         m_commandList->ResourceBarrier(_countof(postCopyBarriers), postCopyBarriers);
-    }
+    }*/
 
     // ------------------------------------------------------------------------
     // 4. FINAL OUTPUT COPY
@@ -2009,6 +2054,8 @@ void Renderer::CreateRaytracingPipeline()
         if (p.stage == Stage::ClearSort) continue;
 
         if (p.stage == Stage::ML) continue;
+
+        if (p.stage == Stage::DLSS) continue;
 
         if (p.isWorkGraph)
         {
@@ -2773,11 +2820,13 @@ void Renderer::CreateShaderBindingTable() {
         if (entry == L"pingswap") continue;
         if (entry == L"clearsort") continue;
         if (entry == L"ml") continue;
+        if (entry == L"dlss") continue;
         if (entry.find(L"|cs:") != std::wstring::npos) continue;
         if (entry.find(L"|wf:") != std::wstring::npos) continue;
         if (entry.find(L"|wg:") != std::wstring::npos) continue;
         if (entry.find(L"|fx:") != std::wstring::npos) continue;
         if (entry.find(L"|call") != std::wstring::npos) continue;
+
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));

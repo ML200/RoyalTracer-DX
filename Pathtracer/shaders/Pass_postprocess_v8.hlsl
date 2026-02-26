@@ -45,26 +45,29 @@ float3 PBRNeutral(float3 color) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  SHADING PASS
+//  GAMMA CORRECTION AND PP PASS
 // ─────────────────────────────────────────────────────────────────────────────
-[numthreads(16, 16, 1)]
+[numthreads(8, 4, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
 
-    float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
-    float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
+    // Load output slices
+    float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
+    float3 clean = gOutput[uint3(DTid.xy, 1)].xyz;
+    float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
 
-    float3 accumulation = output_DI + output_GI;
-    float3 gt = gScratchPing[uint3(DTid.xy, 3)];
+    // Apply tonemapping
+    noisy = PBRNeutral(noisy);
+    clean =  PBRNeutral(clean);
+    gt =  PBRNeutral(gt);
 
-    float3 sceneLinear = accumulation;
-    float3 outSRGB     = sRGBGammaCorrection(saturate(sceneLinear));
+    // Apply gamma sRGBGammaCorrection
+    noisy = sRGBGammaCorrection(noisy);
+    clean =  sRGBGammaCorrection(clean);
+    gt =  sRGBGammaCorrection(gt);
 
-    float2 dims = float2(IMG_W, IMG_H);
-    uint   pixelIdx  = MapPixelID(dims, DTid.xy);
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-
-    gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
+    gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
+    gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);
+    gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
 }
