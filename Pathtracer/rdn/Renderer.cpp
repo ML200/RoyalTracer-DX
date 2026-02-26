@@ -563,9 +563,8 @@ void Renderer::LoadAssets() {
     std::vector<TextureData> rmaTextures;
 
     // Model loading
-    // Model loading
     {
-        std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./workshop/workshop.obj",*/ /*"./chungmu/chungmu.obj"*/};
+        std::vector<std::string> models = {"./sponza_tex/sponza_tex.obj", /*"./workshop/workshop.obj",*/ "./buddha.obj"};
         for (const auto& modelName : models) {
 
             std::string material_search_path = "./";
@@ -663,13 +662,13 @@ void Renderer::LoadAssets() {
 }
 
 void Renderer::OnInitTransform() {
-    /*XMMATRIX scale        = XMMatrixScaling(1.0f, 1.0f, 1.0f);
+    XMMATRIX scale        = XMMatrixScaling(0.6f, 0.6f, 0.6f);
     XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(0.0f, 0.f, 0.0f);
+    XMMATRIX translate    = XMMatrixTranslation(0.0f, 1.00f, 0.0f);
 
-    m_instances[2].second = scale * selfRotation * translate;*/
+    m_instances[1].second = scale * selfRotation * translate;
 
-    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.3f, 0.3f, 0.3f);
+    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.1f);
     XMMATRIX translationMatrix_1 = XMMatrixTranslation(-8.f, 1.0f, 3.f);
 
@@ -677,7 +676,7 @@ void Renderer::OnInitTransform() {
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
-    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 3.f);
+    XMMATRIX translationMatrix_2 = XMMatrixTranslation(0.f, 0.f, 0.f);
 
     m_instances[0].second = scaleMatrix_2 * rotationMatrix_2 * translationMatrix_2;
 }
@@ -748,7 +747,7 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    /*float angle = static_cast<float>(m_time) * 0.00f;
+    float angle = static_cast<float>(m_time) * 0.004f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
@@ -758,7 +757,7 @@ void Renderer::OnUpdate() {
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
     XMMATRIX translate    = XMMatrixTranslation(x, 0.f, z);
 
-    m_instances[1].second = scale * selfRotation * translate;*/
+    m_instances[1].second = scale * selfRotation * translate;
 
     /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_1 = selfRotation;//XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.785f);
@@ -1237,7 +1236,7 @@ void Renderer::PopulateCommandList()
         m_commandList->ResourceBarrier(_countof(preCopyBarriers), preCopyBarriers);
 
         CD3DX12_TEXTURE_COPY_LOCATION src(m_dlssOutput.Get(), 0);
-        UINT destSubresource = 2;
+        UINT destSubresource = 1;
         CD3DX12_TEXTURE_COPY_LOCATION dst(m_outputResource.Get(), destSubresource);
         m_commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
@@ -4619,7 +4618,7 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
     constants.cameraMotionIncluded      = sl::Boolean::eTrue;
     constants.depthInverted             = sl::Boolean::eFalse;
     constants.motionVectors3D           = sl::Boolean::eFalse;
-    constants.motionVectorsJittered     = sl::Boolean::eTrue;
+    constants.motionVectorsJittered     = sl::Boolean::eFalse;
 
     constants.reset = (m_jitterFrameIndex <= 1) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
@@ -4644,6 +4643,14 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
     options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::eUnpacked;
     options.worldToCameraView   = XmToSl(xmView);
     options.cameraViewToWorld   = XmToSl(XMMatrixInverse(nullptr, xmView));
+
+    sl::DLSSDPreset p = sl::DLSSDPreset::ePresetE;
+    options.dlaaPreset             = p;
+    options.qualityPreset          = p;
+    options.balancedPreset         = p;
+    options.performancePreset      = p;
+    options.ultraPerformancePreset = p;
+    options.ultraQualityPreset     = p;
 
     SL_CHECK(slDLSSDSetOptions(m_viewportHandle, options));
 

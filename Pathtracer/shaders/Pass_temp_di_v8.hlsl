@@ -20,6 +20,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 2);
+        uint2 seedpermutation = GetSeed(1, time, 2);
         SampleData sdata_r;
         Reservoir_DI rdi_r;
         //uint tempPixelIdx = 0xFFFFFFFF;
@@ -29,8 +30,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             tempPixelCoordinate = launchIndex;
 
         // Permutation sampling to break up correlations
-        /*{
-            float u = RandomFloatSingle(seed.x);
+        {
+            float u = RandomFloatSingle(seedpermutation.x);
             uint permRnd = (uint)min(u * 16.0f, 15.0f);
             int2 permPrev = tempPixelCoordinate;
             ApplyPermutationSampling(permPrev, permRnd);
@@ -40,11 +41,11 @@ void main(uint3 tid : SV_DispatchThreadID)
             {
                 tempPixelCoordinate = permPrev;
             }
-        }*/
+        }
 
         uint tempPixelIdx = MapPixelID(dims, tempPixelCoordinate);
         sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-        rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
+        rdi_r   = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
         bool valid =
                 (all(sdata_r.L1 < EPSILON) &&
                 IsValidReservoir_DI(rdi_r) &&
