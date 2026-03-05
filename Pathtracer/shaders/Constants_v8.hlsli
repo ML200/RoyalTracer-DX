@@ -1,4 +1,4 @@
-#define EPSILON 0.000003
+#define EPSILON 0.00003
 #define ONE_MINUS_EPSILON 0x1.fffffep-1f // ~0.99999994
 #define SBIAS 0.0008
 #define PI 3.1415926535
@@ -13,33 +13,35 @@
 #define GGX_ESS_LUT_INDEX 1
 
 // ___ DI Reuse ___
-#define TEMP_MCAP_DI 4
+#define TEMP_MCAP_DI 8
 
 #define SPAT_MCAP_DI 32
 #define SPAT_EXP_DI 0.85f
 #define SPAT_RAD_MAX 48
 #define SPAT_RAD_MIN 32
 
-#define SPAT_COUNT_MAX_DI 2
+#define SPAT_COUNT_MAX_DI 1
 #define SPAT_COUNT_MIN_DI 1
 #define SPAT_TRIS_DI 1
 
 
 // ___ GI Reuse ___
-#define TEMP_MCAP_GI 4
+#define TEMP_MCAP_GI 8
 
 #define SPAT_MCAP_GI 32
-#define SPAT_EXP_GI 0.95f
-#define SPAT_RAD_MAX_GI 48
-#define SPAT_RAD_MIN_GI 48
+#define SPAT_EXP_GI 0.8f
+#define SPAT_RAD_MAX_GI 32
+#define SPAT_RAD_MIN_GI 32
 
-#define SPAT_COUNT_MAX_GI 2
+#define SPAT_COUNT_MAX_GI 1
 #define SPAT_COUNT_MIN_GI 1
 #define SPAT_TRIS_GI 1
 
 #define SPAT_MIN_M_GI 5
 #define SPAT_BETA_GI 3.0f
 
+#define REUSE_ROUGHNESS_MIN 0.3f
+#define REUSE_ROUGHNESS_MAX 0.6f
 
 // Denoiser settings spatial
 #define PLANE_DISTANCE_THRESHOLD 0.01f
@@ -53,3 +55,6 @@
 
 // Denoiser settings temporal
 #define ROUGHNESS_DECAY 0.05f
+
+#define GI_BOIL_STRENGTH_TEMP 0.2f
+#define GI_BOIL_MIN_AVG_TEMP  1e-8f

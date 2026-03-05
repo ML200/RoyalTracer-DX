@@ -28,6 +28,18 @@ RWByteAddressBuffer g_SortCount  : register(u60);
 RWByteAddressBuffer g_SortOffset : register(u61);
 RWByteAddressBuffer g_SortBounds : register(u62);
 
+cbuffer CameraParams : register(b0)
+{
+    float4x4 view;
+    float4x4 projection;
+    float4x4 viewI;
+    float4x4 projectionI;
+    float4x4 prevView;
+    float4x4 prevProjection;
+    float time;
+    float2 jitter;
+}
+
 
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
@@ -82,23 +94,12 @@ Buffer<uint>           gLT_LeafAliasIdx  : register(t17);
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
 
-cbuffer CameraParams : register(b0)
-{
-    float4x4 view;
-    float4x4 projection;
-    float4x4 viewI;
-    float4x4 projectionI;
-    float4x4 prevView;
-    float4x4 prevProjection;
-    float time;
-    float2 jitter;
-}
 // These includes need access to ALL previous buffers
+#include "Path_Sampler_v8.hlsli"
+#include "SunSampler_v8.hlsli"
 #include "Reservoir_DI_v8.hlsli"
 #include "Reservoir_GI_v8.hlsli"
+#include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Camera_ray_v8.hlsli"
-#include "Path_Sampler_v8.hlsli"
-#include "PayloadPath_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
-#include "SunSampler_v8.hlsli"

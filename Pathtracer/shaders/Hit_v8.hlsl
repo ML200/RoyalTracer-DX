@@ -5,9 +5,20 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 {
     // 1. Unpack Payload (Load state from RayGen)
     PathPayloadUncompressed data = UnpackPayload_payload(payload);
-
     // 3. Evaluate Surface
-    HitInfo hinfo = EvalSurfaceState(InstanceID(), PrimitiveIndex(), attr.barycentrics, WorldRayOrigin(), data.depth);
+    HitInfo hinfo = EvalSurfaceState(InstanceIndex(), PrimitiveIndex(), attr.barycentrics, WorldRayOrigin(), data.depth);
+
+    //gOutput[uint3(DispatchRaysIndex().xy, 3)] = float4(data.dir, 1.0f);
+    //return;
+gOutput[uint3(DispatchRaysIndex().xy, 3)] =
+    float4((payload.meta1 & 255u) / 255.0f,
+           (payload.seed  & 255u) / 255.0f,
+           (payload.iorsPacked & 255u) / 255.0f,
+           1.0f);
+//return;
+
+    /*float seeddebug = payload.seed % 10 / 10.0f;
+    gOutput[uint3(DispatchRaysIndex().xy, 3)] = (float4)seeddebug;*/
 
     // 4. Handle Absorption (Volume)
     // We calculate it here and apply it to the BSDF return value later so RayGen applies it to throughput
@@ -19,7 +30,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
     // 5. Emission (Direct Light) & MIS
     {
-        float3 emission = GetEmissionFast(InstanceID(), PrimitiveIndex());
+        float3 emission = GetEmissionFast(InstanceIndex(), PrimitiveIndex());
 
         // initialize the sample data structure here and store it.
         if(data.depth == 0){
@@ -45,7 +56,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
         {
             // MIS: Balance Heuristic
             // prev_x is rayOrigin, prev_n is data.normal (from previous bounce), prev_pdf is data.bsdfPdf
-            float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceID());
+            float lightPdfArea = LT_Pdf_LightTree_Area(WorldRayOrigin(), data.normal, hinfo.lightID, InstanceIndex());
 
             float cosLight = max(dot(hinfo.hitNormal, -WorldRayDirection()), 0.0f);
             float dist2 = max(RayTCurrent() * RayTCurrent(), EPSILON);
@@ -59,7 +70,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
             // TODO: UPDATE RESERVOIR HERE
             if(data.depth == 1){
-                //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(data.throughput * emission * misWeight, 0);
+                gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(data.throughput * emission * misWeight, 0);
                 uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
                 float p_hat = GetPHat(data.throughput * emission * prev_pdf); // We need to remove the previous pdf; Cancel it my multiplying with it
                 float wi = misWeight * p_hat / prev_pdf;//pdfAM;
@@ -174,7 +185,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                         float wi = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
                         bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, idx, wi, light.position, light.normal, light.emission, light.objID, data.seed);
                         if(update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
-                        //ScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(targetRadiance/ lightPdf,0);
+                        gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(targetRadiance/ lightPdf,0);
                     }
                     // GI init: prior sample at x2 (depth==1) via NEE
                     if (data.depth >= 1)
@@ -194,7 +205,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                         float  wi    = p_hat * misWeight;
 
                         float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
-                        if(data.depth > 1) tpostgi /= lightPdf / cosSurf;
+                        if(data.depth > 1) tpostgi *= bdataNEE.val * cosSurf / lightPdf;
 
                         bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,light.emission * tpostgi, J_new, V2_new,data.seed);
                         if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);
@@ -249,7 +260,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                     {
                         float3 contrib = data.throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
 
-                        //gScratchPing[uint3(DispatchRaysIndex().xy, 1)] += float4(contrib, 0);
+                        gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(contrib, 0);
                         // TODO: UPDATE RESERVOIR HERE
                         if (data.depth == 0)
                         {
@@ -257,7 +268,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                             float3 target = data.throughput * bdataNEE.val * NdotL * sun.radiance;
                             float  p_hat  = GetPHat(target);
                             float  wi = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
-                            bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFFu, data.seed);
+                            bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, idx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFEu, data.seed);
                             if (update) store_phat_di(g_Reservoirs_current_di, idx, p_hat);
                         }
                         // GI init: prior sample at x2 (depth==1) via sun NEE
@@ -272,12 +283,12 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
                             // If you want MIS against BSDF at the vertex, compute it here; otherwise keep as-is.
                             float3 contrib = data.throughput * bdataNEE.val * NdotL * sun.radiance / lightPdf;
-                            //gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(contrib,0);
+                            gScratchPing[uint3(DispatchRaysIndex().xy, 3)] += float4(contrib,0);
                             float  p_hat   = GetPHat(contrib);
                             float  wi      = p_hat;
 
                             float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, idx_gi);
-                            if(data.depth > 1) tpostgi /= lightPdf / NdotL;
+                            if(data.depth > 1) tpostgi *= bdataNEE.val * NdotL / lightPdf;
 
                             bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, idx_gi,wi,sun.radiance * tpostgi, J_new, V2_new, data.seed);
                             if (update) store_F_gi(g_Reservoirs_current_gi, idx_gi, p_hat);

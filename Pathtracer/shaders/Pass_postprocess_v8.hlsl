@@ -54,13 +54,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // Load output slices
     float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
-    float3 clean = gOutput[uint3(DTid.xy, 1)].xyz;
+    float3 clean = g_dlssOutput[DTid.xy].xyz;
     float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
 
     // Apply tonemapping
-    noisy = PBRNeutral(noisy);
+    /*noisy = PBRNeutral(noisy);
     clean =  PBRNeutral(clean);
-    gt =  PBRNeutral(gt);
+    gt =  PBRNeutral(gt);*/
 
     // Apply gamma sRGBGammaCorrection
     noisy = sRGBGammaCorrection(noisy);
