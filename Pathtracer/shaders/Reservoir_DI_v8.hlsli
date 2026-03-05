@@ -34,7 +34,7 @@ void storeReservoirDI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_DI
     float3 pStore;
     uint   nStore;
 
-    if (r.objID_di == 0xFFFFFFFFu)
+    if (r.objID_di == 0xFFFFFFFFu || r.objID_di == 0xFFFFFFFEu)
     {
         // Store direction directly (world space)
         pStore = r.x2_di;                      // already a direction
@@ -79,7 +79,7 @@ Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
     r.w_sum_di = asfloat(buf.Load(base + O_WSUM));
     r.L2_di    = UnpackRGB9E5(Lenc);
 
-    if (r.objID_di == 0xFFFFFFFFu)
+    if (r.objID_di == 0xFFFFFFFFu || r.objID_di == 0xFFFFFFFEu)
     {
         // Interpret payload as environment direction
         r.x2_di = pRaw;                 // direction in world space
@@ -101,7 +101,7 @@ float3 load_x2_di(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
     uint4 p1 = buf.Load4(pixelBaseAddr(pixelIdx) + O_PACK1);
     float3 pRaw = asfloat(p1.xyz);
-    return (objID == 0xFFFFFFFFu) ? pRaw : ObjectToWorldPos(objID, pRaw);
+    return (objID == 0xFFFFFFFFu|| objID == 0xFFFFFFFEu) ? pRaw : ObjectToWorldPos(objID, pRaw);
 }
 
 float3 load_n2_di(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
@@ -229,7 +229,7 @@ float PDF_term(
 // G term uses Geometric Normal
 float G_term(float3 n_g, float3 s)
 {
-    return max(1e-15, dot(n_g, s));
+    return abs(dot(n_g, s));
 }
 
 float J_term(
@@ -276,6 +276,23 @@ inline float3 ReconnectDI(
         if (any(isnan(r)))
             r = 0;
         return r;
+    }
+
+    // Sun
+    if (objID_di == 0xFFFFFFFEu)
+    {
+        // SUN SHIT
+        float3 wi = normalize(x2);
+        float3 Le = EvaluateSun(wi);
+
+        if (all(Le < EPSILON))
+            return 0;
+
+        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
+        float  c = max(1e-15f, dot(n1_s, wi));
+
+        float3 r = F * Le * c;
+        return any(isnan(r)) ? 0 : r;
     }
 
     // Geometric prep
@@ -413,7 +430,7 @@ float JacobianDeterminantDI(
     uint   objID
 )
 {
-    if (objID == 0xFFFFFFFFu)
+    if (objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu)
         return 1.0f;
 
     float3  v_c   = x1_c - x2_c;

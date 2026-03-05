@@ -365,15 +365,14 @@ inline float3 ReconnectGI(
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir); // direction from x1 to x2 (negated)
+    float3 ndirN = normalize(-dir); // direction from x2 to x1
 
-    // Terms (now require n_s + n_g + locals at both vertices)
     float3 F1 = BSDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
     float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     // Geometry term
-    float  G1  = max(G_term(n1_s, -ndirN),0);
-    float  G2  = max(G_term(n2_s, -V2), 0);
+    float  G1  = G_term(n1_s, -ndirN);
+    float  G2  = G_term(n2_s, -V2);
 
     // Missing pdfs:
     // PDF at x1 always recomputed
@@ -387,17 +386,24 @@ inline float3 ReconnectGI(
     if (PDF1 <= EPSILON || PDF2 <= EPSILON)
         return 0.0f;
 
+    // If the direction from x1 to x2 (-ndirN) points against the geometric normal, we are transmitting INTO the object.
+    float3 transmittance = float3(1.0f, 1.0f, 1.0f);
+    if (dot(n1_g, -ndirN) < 0.0f)
+    {
+        transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
+    }
+
     // Reconnection jacobian
     Jn = Jc;
     J  = 1.0f;
 
     // Throughput
-    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2;
+    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2 * transmittance;
 
     if (applyJ)
     {
-        // Apply reconnection jacobian (uses n2 geometric, as this is a geometric factor)
-        float Gj = max(dot(ndirN, n2_s),0) / (dist * dist);
+        // Apply reconnection jacobian
+        float Gj = abs(dot(ndirN, n2_s)) / (dist * dist);
 
         Jn = max(PDF1 * PDF2 * Gj, EPSILON);
         if(Jc < EPSILON) return 0.0f;
@@ -440,25 +446,23 @@ inline float PSSJacobian(
 {
     float3 dir   = x2 - x1;
     float  dist2 = dot(dir, dir);
-    float3 ndirN = normalize(-dir); // your convention (x1 -> x2)
+    float3 ndirN = normalize(-dir);
 
-    // PDFs in the same measure as your BSDF_term/PDF_term (PSS)
     float PDF1 = PDF_term(mID1, n1_s, n1_g, -ndirN, o,
                           localKd1, localPr1, localPm1, etai1, etat1);
     if (PDF1 <= EPSILON) return 0.0f;
 
-    // Keep logic identical: reuse pdfx2 if provided, else recompute.
-    // Note: the "o" parameter at x2 is the direction towards x1, i.e. -ndirN (same as ReconnectGI).
+    // reuse pdfx2 if provided, else recompute
     float PDF2 = (pdfx2 > 0.0f)
         ? pdfx2
         : PDF_term(mID2, n2_s, n2_g, -V2, ndirN,
                    localKd2, localPr2, localPm2, etai2, etat2);
     if (PDF2 <= EPSILON) return 0.0f;
 
-    // Pure geometric factor used in your reconnection Jacobian (use geometric normal at x2)
+    // Pure geometric factor
     float Gj = abs(dot(ndirN, n2_s)) / dist2;
 
-    return max(PDF1 * PDF2 * Gj, EPSILON);
+    return max(PDF1 * PDF2 * Gj, 1e-7);
 }
 
 

@@ -21,7 +21,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     for (uint i = 0; i < 4; ++i) {
         if (any(view[i] != prevView[i])) cameraChanged = true;
     }
-    static const float MAX_SAMPLES     = 1000000.0;
+    static const float MAX_SAMPLES     = 1000.0;
 
     float4 prev        = gPermanentData[DTid.xy];   // rgb = running avg, a = N
     float3 prevAvg     = prev.rgb;
@@ -55,6 +55,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     bool isSky = any(sdata.L1 > 0.0f);
     if (isSky)
     {
+        g_dlssDepth[DTid.xy] = 65504.0f;
+
         // GUIDE SECTION 3.4.3: Sky has no surface orientation.
         g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -73,10 +75,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         // Optional: Sky motion should usually be 0 or calculated via camera rotation only.
         g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
+
+        g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
     else{
         // DLSS RR input data:
-        g_dlssDepth[DTid.xy] = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
+        g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sdata.x1);
 
         g_dlssNormals[DTid.xy] = float4(sdata.n1_s, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(sdata.localKd, 1.0f);
@@ -101,6 +105,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
+
+        g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
 
 

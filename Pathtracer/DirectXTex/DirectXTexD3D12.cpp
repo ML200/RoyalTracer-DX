@@ -27,7 +27,7 @@
 #include "directx/d3dx12.h"
 #include "dxguids/dxguids.h"
 #else
-#include "../Microsoft.Direct3D.D3D12.1.717.1-preview/build/native/include/d3dx12/d3dx12.h"
+#include "../microsoft.direct3D.d3d12.1.619.0/build/native/include/d3dx12/d3dx12.h"
 #endif
 
 #ifdef __clang__

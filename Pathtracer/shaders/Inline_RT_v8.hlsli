@@ -44,11 +44,11 @@ float VisibilityCheck(
 float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
 {
     float3 dir = L - P;
-    if(objID == 0xFFFFFFFFu) dir = normalize(L);
+    if(objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) dir = normalize(L);
     if(length(dir)<EPSILON) return 0.0f;
     dir = normalize(dir);
     float  len = length(L - P);
-    if(objID == 0xFFFFFFFFu) len = 10000.0f;
+    if(objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) len = 10000.0f;
 
     if(dot(dir, N) < 0.0f)
             N = -N;
@@ -243,10 +243,10 @@ inline dx::HitObject TraceRay_Custom(
 }
 
 
-inline float3 EvalMissState()
+inline float3 EvalMissState(float3 rayDir)
 {
     // Miss shader
-    return float3(0.2f, 0.2f, 0.2f);
+    return EvaluateSky(rayDir);
 }
 
 HitInfo EvalSurfaceState(

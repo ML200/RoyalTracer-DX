@@ -128,7 +128,7 @@ static std::chrono::steady_clock::time_point g_lastRenderTime
 static const float FRAME_INTERVAL_SECONDS = 1.00f;
 
 extern "C" {
-    __declspec(dllexport) extern const UINT  D3D12SDKVersion = 717;
+    __declspec(dllexport) extern const UINT  D3D12SDKVersion = 719;
     __declspec(dllexport) extern const char* D3D12SDKPath    = ".\\";
 }
 
@@ -274,7 +274,7 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_temp_di_v8.hlsl|cs:16x8",
         L"barrier",
-        L"Pass_temp_gi_v8.hlsl|cs:16x8",
+        L"Pass_temp_gi_v8.hlsl|cs:8x8",
         L"barrier",
         L"Pass_spat_di_v8.hlsl|cs:16x16",
         L"barrier",
@@ -286,21 +286,6 @@ Renderer::Renderer(UINT width, UINT height,
         L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",
         L"barrier",
-        /*L"ml",
-        L"barrier",
-        L"Pass_finalize_v8.hlsl|cs:16x16",
-        L"barrier",*/
-        /*L"Pass_denoiser_firefly_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_temp_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_blur_1_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_blur_2_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_blur_3_v8.hlsl|cs:16x16",
-        L"barrier",
-        L"Pass_denoiser_copy_v8.hlsl|cs:8x4",*/
     };
 
     try {
@@ -316,7 +301,7 @@ Renderer::Renderer(UINT width, UINT height,
 }
 
 void Renderer::OnInit() {
-    //try :
+    try{
         m_mod = LoadLibrary("sl.interposer.dll");
         LoadPipeline();
 
@@ -372,14 +357,14 @@ void Renderer::OnInit() {
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
         slGetNewFrameToken(m_frameToken, nullptr);
-    /*}
+    }
     catch (const std::exception& e) {
         // THIS CATCHES THE CRASH AND SHOWS THE ERROR
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Initialization Error", MB_OK | MB_ICONERROR);
         exit(1);
-    }*/
+    }
 
 }
 
@@ -421,7 +406,7 @@ void Renderer::LoadPipeline() {
     auto slD3D12CreateDevice = reinterpret_cast<PFunD3D12CreateDevice>(GetProcAddress(m_mod, "D3D12CreateDevice"));
 
 
-    static const UUID D3D12ExperimentalShaderModels =
+    /*static const UUID D3D12ExperimentalShaderModels =
     { 0x76f5573e, 0xf13a, 0x40f5, { 0xb2, 0x97, 0x81, 0xce, 0x9e, 0x18, 0x93, 0x3f } };
 
 
@@ -430,7 +415,7 @@ void Renderer::LoadPipeline() {
         // CRITICAL FAILURE
         MessageBoxA(nullptr, "Failed to enable Experimental Shader Models.\nMake sure Windows Developer Mode is ON.", "Error", MB_OK | MB_ICONERROR);
         exit(1);
-    }
+    }*/
 
   ComPtr<IDXGIFactory4> factory;
   ThrowIfFailed(slCreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
@@ -568,9 +553,8 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-        std::vector<std::string> models = {"./bistro2/bistro2.obj", /*"./workshop/workshop.obj",*/ /*"./buddha.obj"*/};
+    std::vector<std::string> models = {"./salle_de_bain/salle_de_bain.obj", /*"./workshop/workshop.obj",*/ /*"./iowa.obj"*/};
         for (const auto& modelName : models) {
-
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
             if (std::string::npos != last_slash_idx) {
@@ -666,15 +650,15 @@ void Renderer::LoadAssets() {
 }
 
 void Renderer::OnInitTransform() {
-    /*XMMATRIX scale        = XMMatrixScaling(0.6f, 0.6f, 0.6f);
-    XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translate    = XMMatrixTranslation(0.0f, 1.00f, 0.0f);
+    /*XMMATRIX scale        = XMMatrixScaling(0.4f, 0.4f, 0.4f);
+    XMMATRIX selfRotation = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.6f);
+    XMMATRIX translate    = XMMatrixTranslation(-1.9f, -0.001f, 0.75f);
 
     m_instances[1].second = scale * selfRotation * translate;*/
 
-    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
-    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 1.1f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-8.f, 1.0f, 3.f);
+    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.8f, 0.8f, 0.8f);
+    XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 1.0f, 0.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
 
@@ -751,15 +735,15 @@ void Renderer::OnUpdate() {
                            //0.0f/*static_cast<float>(m_time) / 20000000.0f*/) *
       //XMMatrixTranslation(0.f, 0.f, 0.f);
 
-    /*float angle = static_cast<float>(m_time) * 0.004f;
+    /*float angle = static_cast<float>(m_time) * 0.001f;
     float r     = 4.0f;
 
     float x = 0.0f;//cosf(angle) * r + 1.0f;   // + centre.x
     float z = 0.0f;//sinf(angle) * r + 0.0f;   // + centre.z
 
-    XMMATRIX scale        = XMMatrixScaling(10.0f, 10.0f, 10.0f);
+    XMMATRIX scale        = XMMatrixScaling(0.6f, 0.6f, 0.6f);
     XMMATRIX selfRotation = XMMatrixRotationY(angle);
-    XMMATRIX translate    = XMMatrixTranslation(x, 0.f, z);
+    XMMATRIX translate    = XMMatrixTranslation(x, 2.f, z);
 
     m_instances[1].second = scale * selfRotation * translate;*/
 
@@ -866,6 +850,9 @@ void Renderer::PopulateCommandList()
 
     // Refit TLAS
     CreateTopLevelAS(m_instances, true);
+
+    auto tlasBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
+    m_commandList->ResourceBarrier(1, &tlasBarrier);
 
     // Bind SRV/UAV heap once
     {
@@ -1197,7 +1184,7 @@ void Renderer::PopulateCommandList()
                         m_dlssDepth.Get(), m_dlssMVec.Get(), m_dlssNormals.Get(),
                         m_dlssDiffuseAlbedo.Get(), m_dlssSpecularAlbedo.Get(),
                         m_dlssRoughness.Get(), m_dlssSpecMVec.Get(), m_dlssSpecHitDist.Get(),
-                        m_dlssTransparency.Get(), m_dlssColorBeforeTrans.Get()
+                        m_dlssTransparency.Get(), m_dlssColorBeforeTrans.Get(), m_dlssInput.Get()
                 };
 
                 for (ID3D12Resource* r : uavs) {
@@ -1688,7 +1675,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     // Flags
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    // Use STATIC_WHILE_SET_AT_EXECUTE. This tells the compiler the data changes between frames,
+    // but won't change while the shader is currently executing.
+    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 
 
     // Slot 0:  UAV u0 (Output)
@@ -1775,7 +1764,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     ranges.emplace_back().Init(
             D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-            11, // NumDescriptors
+            12, // NumDescriptors
             11, // BaseShaderRegister (u11)
             0,  // RegisterSpace
             VOLATILE,
@@ -1827,7 +1816,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
     // VOLATILE: The buffer content might change (UAVs)
     // STATIC: The descriptor/buffer won't change during execution
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC;
+    // Use STATIC_WHILE_SET_AT_EXECUTE. This tells the compiler the data changes between frames,
+    // but won't change while the shader is currently executing.
+    const auto STATIC   = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
 
 
     // Slot 0:  UAV u0 (Output)
@@ -1920,7 +1911,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
 
     ranges.emplace_back().Init(
             D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-            11, // NumDescriptors
+            12, // NumDescriptors
             11, // BaseShaderRegister (u11)
             0,  // RegisterSpace
             VOLATILE,
@@ -2229,7 +2220,7 @@ void Renderer::CreateRaytracingPipeline()
     pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
 
     // Payload / attribute / recursion depth (we dont use recursion)
-    pipeline.SetMaxPayloadSize( 19*sizeof(float) + 4*sizeof(UINT));
+    pipeline.SetMaxPayloadSize(128);
     pipeline.SetMaxAttributeSize( 2*sizeof(float) );       // barycentrics
     pipeline.SetMaxRecursionDepth(1);
 
@@ -2720,6 +2711,9 @@ void Renderer::CreateShaderResourceHeap() {
         // Optional
         createUAV(m_dlssTransparency.Get(),     DXGI_FORMAT_R16G16B16A16_FLOAT); // u20
         createUAV(m_dlssColorBeforeTrans.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT); // u21
+
+        // DLSS Noisy Input
+        createUAV(m_dlssInput.Get(),            DXGI_FORMAT_R16G16B16A16_FLOAT);
     }
 
     // 1. Sort Count (u60)
@@ -2970,7 +2964,7 @@ void Renderer::UpdateCameraBuffer() {
     auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
     float currentTime = static_cast<uint32_t>(nanos);
 
-    float extraData[4] = { currentTime, m_jitterX, m_jitterY, 0.0f };
+    float extraData[4] = { static_cast<float>(m_jitterFrameIndex), m_jitterX, m_jitterY, 0.0f };
     memcpy(pData + (6 * sizeof(XMMATRIX)), extraData, sizeof(extraData));
 
     m_cameraBuffer->Unmap(0, nullptr);
@@ -3441,6 +3435,11 @@ void Renderer::CollectEmissiveTriangles() {
         m_emissiveTriangles.back().cdf = 1.0f;
     }*/
 
+    if (m_emissiveTriangles.empty()) {
+        LightTriangle dummy = {};
+        m_emissiveTriangles.push_back(dummy);
+    }
+
     std::wcout << L"Emissive Triangles: " << m_emissiveTriangles.size() << std::endl;
 }
 
@@ -3491,6 +3490,8 @@ float Renderer::ComputeTriangleWeight(const XMFLOAT3& v0,
 
 
 void Renderer::CreateEmissiveTrianglesBuffer() {
+    //if (m_emissiveTriangles.empty()) return;
+
     size_t bufferSize = m_emissiveTriangles.size() * sizeof(LightTriangle);
 
     // Ensure triCount is set
@@ -4518,6 +4519,7 @@ void Renderer::CreateDLSSResources() {
     };
 
     // 1. Core Inputs
+    createTex(m_dlssInput,          DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Input");
     createTex(m_dlssDepth,          DXGI_FORMAT_R32_FLOAT,          L"DLSS_Depth");
     createTex(m_dlssMVec,           DXGI_FORMAT_R16G16_FLOAT,       L"DLSS_MVec");
     createTex(m_dlssNormals,        DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Normals");
@@ -4592,16 +4594,16 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
         m_dlssDiffuseAlbedo.Get(),
         m_dlssSpecularAlbedo.Get(),
         m_dlssRoughness.Get(),
-        m_dlssSpecHitDist.Get() // Crucial for Ray Reconstruction
+        m_dlssSpecHitDist.Get(),
+        m_dlssInput.Get()
     };
 
     std::vector<D3D12_RESOURCE_BARRIER> preBarriers;
     for (auto* res : dlssInputs) {
-        preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, stateUAV, stateSRV));
+        if (res) {
+            preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, stateUAV, stateSRV));
+        }
     }
-    // The main color input also goes to SRV
-    preBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), stateUAV, stateSRV));
-
     cmdList->ResourceBarrier(static_cast<UINT>(preBarriers.size()), preBarriers.data());
 
     // 2) Set up Streamline Constants
@@ -4695,7 +4697,7 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
     sl::Resource slSpecAlb (sl::ResourceType::eTex2d, m_dlssSpecularAlbedo.Get(), (uint32_t)stateSRV);
     sl::Resource slRough   (sl::ResourceType::eTex2d, m_dlssRoughness.Get(),      (uint32_t)stateSRV);
     sl::Resource slSpecHit (sl::ResourceType::eTex2d, m_dlssSpecHitDist.Get(),    (uint32_t)stateSRV);
-    sl::Resource slInput   (sl::ResourceType::eTex2d, m_outputResource.Get(),     (uint32_t)stateSRV);
+    sl::Resource slInput   (sl::ResourceType::eTex2d, m_dlssInput.Get(),     (uint32_t)stateSRV);
     sl::Resource slOutput  (sl::ResourceType::eTex2d, m_dlssOutput.Get(),         (uint32_t)stateUAV);
 
     sl::Extent extent { 0, 0, GetWidth(), GetHeight() };
@@ -4746,7 +4748,7 @@ void Renderer::RunDLSS_RR(ID3D12GraphicsCommandList* cmdList)
     for (auto* res : dlssInputs) {
         postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(res, stateSRV, stateUAV));
     }
-    postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), stateSRV, stateUAV));
+    //postBarriers.push_back(CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), stateSRV, stateUAV));
 
     cmdList->ResourceBarrier(static_cast<UINT>(postBarriers.size()), postBarriers.data());
 

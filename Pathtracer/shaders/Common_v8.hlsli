@@ -149,7 +149,6 @@ void ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber)
     prevPixelPos -= offset;
 }
 
-
 float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 {
     // Compute F0 (specular albedo) from metallic workflow inputs
@@ -194,4 +193,74 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
     bias *= saturate(SpecularColor.g * 50);
 
     return mad(SpecularColor, max(0, scale), max(0, bias));
+}
+
+
+
+#define BOIL_GROUP_X 8
+#define BOIL_GROUP_Y 8
+#define BOIL_THREAD_COUNT (BOIL_GROUP_X * BOIL_GROUP_Y)
+#define BOIL_MAX_WAVES 4
+
+groupshared float gBoilSum[BOIL_MAX_WAVES];
+groupshared uint  gBoilCnt[BOIL_MAX_WAVES];
+
+float BoilMultiplier(float strength)
+{
+    return 10.0f / clamp(strength, 1e-6f, 1.0f) - 9.0f;
+}
+
+bool BoilingFilter(
+    uint2 localIndex,
+    float filterStrength,
+    float v,
+    out float avgNonzero,
+    out float threshold)
+{
+    float waveSum = WaveActiveSum(v);
+    uint  waveCnt = WaveActiveCountBits(v > 0.0f);
+
+    uint linearThreadIndex = localIndex.x + localIndex.y * BOIL_GROUP_X;
+    uint waveIndex         = linearThreadIndex / WaveGetLaneCount();
+
+    if (WaveIsFirstLane())
+    {
+        if (waveIndex < BOIL_MAX_WAVES)
+        {
+            gBoilSum[waveIndex] = waveSum;
+            gBoilCnt[waveIndex] = waveCnt;
+        }
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    uint numWaves = (BOIL_THREAD_COUNT + WaveGetLaneCount() - 1) / WaveGetLaneCount();
+    numWaves = min(numWaves, (uint)BOIL_MAX_WAVES);
+
+    if (linearThreadIndex < numWaves)
+    {
+        float s = gBoilSum[linearThreadIndex];
+        uint  c = gBoilCnt[linearThreadIndex];
+
+        s = WaveActiveSum(s);
+        c = WaveActiveSum(c);
+
+        if (linearThreadIndex == 0)
+            gBoilSum[0] = (c > 0) ? (s / float(c)) : 0.0f;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+
+    avgNonzero = gBoilSum[0];
+    threshold  = avgNonzero * BoilMultiplier(filterStrength);
+
+    return (v > threshold);
+}
+
+
+float DLSS_LinearDepthFromWorldPos(float3 worldPos)
+{
+    // view is world->view. With RH projection (XMMatrixPerspectiveFovRH), forward is -Z.
+    float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
+    return max(0.0f, -viewPos.z);
 }

@@ -208,25 +208,19 @@ inline void ClearFlags_payload(inout uint meta1, uint flags10)
 // --------------------------------------------
 struct [raypayload] PathRayPayload
 {
-    // OUTPUT ONLY from CHS to caller (caller reads only on hit path)
-    float2 dir2             : read(caller) : write(closesthit);
+    float2 dir2             : read(caller, closesthit) : write(caller, closesthit);
 
-    // ClosestHit reads previous normal for MIS and writes current normal
-    uint   packedNs         : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   packedNs         : read(caller, closesthit) : write(caller, closesthit);
 
-    // ClosestHit reads incoming state and writes outgoing state
-    uint   meta0            : read(caller, closesthit) : write(caller, closesthit, miss);
-    uint   meta1            : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   meta0            : read(caller, closesthit) : write(caller, closesthit);
+    uint   meta1            : read(caller, closesthit) : write(caller, closesthit);
 
-    // RNG + IORs: ClosestHit reads and updates
-    uint   seed             : read(caller, closesthit) : write(caller, closesthit, miss);
-    uint   iorsPacked       : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   seed             : read(caller, closesthit) : write(caller, closesthit);
+    uint   iorsPacked       : read(caller, closesthit) : write(caller, closesthit);
 
-    // Throughput slot used as “weight”: ClosestHit writes, RayGen reads
-    uint   packedThroughput : read(caller, closesthit) : write(caller, closesthit, miss);
+    uint   packedThroughput : read(caller, closesthit) : write(caller, closesthit);
 
-    // PDF: ClosestHit reads (prev) and writes (new)
-    float  bsdfPdf          : read(caller, closesthit) : write(caller, closesthit, miss);
+    float  bsdfPdf          : read(caller, closesthit) : write(caller, closesthit);
 };
 
 // --------------------------------------------

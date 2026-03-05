@@ -583,7 +583,7 @@ private:
   HINSTANCE__ *m_mod;
 
   UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0, 1, 2, /*10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
+  std::vector<UINT> m_displayLevels = {0, 1, 2, 3, /*10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28*/}; // Levels to cycle through
   void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
 
 
@@ -685,6 +685,7 @@ private:
     void RebindAfterReset();                // rebinds RTV/DSV/viewport/heaps after reset
 
     // --- DLSS RESOURCES ---
+    ComPtr<ID3D12Resource> m_dlssInput;             // u22: Noisy Input Color
     ComPtr<ID3D12Resource> m_dlssDepth;             // u11: Linear Depth
     ComPtr<ID3D12Resource> m_dlssMVec;              // u12: Motion Vectors (Screen Space)
     ComPtr<ID3D12Resource> m_dlssNormals;           // u13: World Normals
@@ -711,4 +712,30 @@ private:
     static constexpr D3D12_RESOURCE_STATES kSRV =
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    std::vector<ComPtr<ID3D12Resource>> m_pendingUploads;
+    void KeepAliveUpload(Microsoft::WRL::ComPtr<ID3D12Resource> r)
+    {
+        if (r) m_pendingUploads.push_back(std::move(r));
+    }
+    void ClearPendingUploadsAfterGPUIdle()
+    {
+        // Call only AFTER a fence wait that guarantees init uploads are complete.
+        m_pendingUploads.clear();
+    }
+
+    void BindMainHeap(ID3D12GraphicsCommandList* cl)
+    {
+        if (!cl) return;
+        if (!m_srvUavHeap)
+        {
+            OutputDebugStringA("[BindMainHeap] m_srvUavHeap is NULL\n");
+            return;
+        }
+        ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
+        cl->SetDescriptorHeaps(1, heaps);
+    }
+
+    D3D12_GPU_DESCRIPTOR_HANDLE m_globalCountersGpuHandle{}; // UAV u34 in your RS
+    D3D12_GPU_DESCRIPTOR_HANDLE m_indirectArgsGpuHandle{};   // UAV u35 in your RS
 };

@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ───────────────────────── DirectX Agility SDK ─────────────────────────────
-set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/Microsoft.Direct3D.D3D12.1.717.1-preview/build/native")
+set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3D.d3d12.1.719.0-preview/build/native")
 set(D3D12_AGILITY_INCLUDE "${D3D12_AGILITY_ROOT}/include")
 set(D3D12_AGILITY_LIB "${D3D12_AGILITY_ROOT}/bin/x64")
 
@@ -169,6 +169,7 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${D3D12_AGILITY_LIB}/D3D12Core.dll"
         "${D3D12_AGILITY_LIB}/d3d12SDKLayers.dll"
+        "${D3D12_AGILITY_LIB}/D3D12StateObjectCompiler.dll"
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )
