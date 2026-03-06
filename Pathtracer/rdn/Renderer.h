@@ -391,9 +391,10 @@ private:
   /// \param     vVertexBuffers : pair of buffer and vertex count
   /// \return    AccelerationStructureBuffers for TLAS
   AccelerationStructureBuffers CreateBottomLevelAS(
-      std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
-      std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers =
-          {});
+    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
+    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers,
+    UINT opaqueTriCount,
+    UINT alphaTriCount);
 
   /// Create the main acceleration structure that holds
   /// all instances of the scene
@@ -423,6 +424,7 @@ private:
   ComPtr<IDxcBlob> m_rayGenLibrary3;
   ComPtr<IDxcBlob> m_hitLibrary;
   ComPtr<IDxcBlob> m_missLibrary;
+  ComPtr<IDxcBlob> m_anyHitLibrary;
 
   ComPtr<ID3D12RootSignature> m_rayGenSignature;
   ComPtr<ID3D12RootSignature> m_hitSignature;
@@ -555,10 +557,12 @@ private:
     XMMATRIX prevObjectToWorldInverse;
     XMMATRIX objectToWorldNormal;
     XMMATRIX prevObjectToWorldNormal;
-      UINT  indexBase;
-      UINT  vertexBase;
-      UINT  materialBase;
-      UINT  triToLightBase;
+    UINT  indexBase;
+    UINT  vertexBase;
+    UINT  materialBase;
+    UINT  triToLightBase;
+    UINT opaqueTriCount;
+    UINT _pad[3];
   };
 
     //Frametime
@@ -738,4 +742,7 @@ private:
 
     D3D12_GPU_DESCRIPTOR_HANDLE m_globalCountersGpuHandle{}; // UAV u34 in your RS
     D3D12_GPU_DESCRIPTOR_HANDLE m_indirectArgsGpuHandle{};   // UAV u35 in your RS
+
+    std::vector<UINT> m_opaqueTriCount;
+    std::vector<UINT> m_alphaTriCount;
 };
