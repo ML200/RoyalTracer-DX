@@ -90,3 +90,8 @@ inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint seed)
     // convert to world space and return H
     return normalize(Ne.x * T1 + Ne.y * T2 + Ne.z * N);
 }
+
+inline uint FlatPrimID(uint instID, uint geomIdx, uint primIdx)
+{
+    return (geomIdx == 0) ? primIdx : (instanceProps[instID].opaqueTriCount + primIdx);
+}

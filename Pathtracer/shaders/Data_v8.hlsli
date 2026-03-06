@@ -26,6 +26,8 @@ struct InstanceProperties
     uint  vertexBase;
     uint  materialBase;
     uint triToLightBase;
+    uint opaqueTriCount;
+    uint _pad[3];
 };
 
 struct LightTriangle {

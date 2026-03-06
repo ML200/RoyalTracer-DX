@@ -1,7 +1,7 @@
-// Minimal payload type (must be a user-defined struct)
-struct TracePayload
+// Minimal payload type
+struct [raypayload] TracePayload
 {
-    uint dummy;
+    uint dummy : read(caller) : write(caller);
 };
 
 // Optional: if you prefer your own wrapper instead of BuiltInTriangleIntersectionAttributes
@@ -235,7 +235,7 @@ inline dx::HitObject TraceRay_Custom(
 {
 
     TracePayload payload = (TracePayload)0; // Dummy payload
-    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
+    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 0, 0, ray, payload);
 
     uint hint = hitObj.IsHit()?1:0;
     dx::MaybeReorderThread(hitObj, hint, 1);

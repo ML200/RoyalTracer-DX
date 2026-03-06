@@ -128,7 +128,7 @@ void Pass_raygen_v8()
         float3 hitPos = rayOrigin + rayDir * hitT;
 
         const uint instID = hitObj.GetInstanceIndex();
-        const uint primID = hitObj.GetPrimitiveIndex();
+        const uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
         uint matID = GetMatIDFast(instID, primID);
 
         float2 iorsF = GetIORs_packed(viorP, aiorP, matID, instID);

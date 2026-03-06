@@ -150,6 +150,53 @@ static inline UINT EncodeNormalOct(const XMVECTOR& n)
     return (static_cast<uint16_t>(iy) << 16) | static_cast<uint16_t>(ix);
 }
 
+struct MeshSplitResult {
+    std::vector<UINT>  reorderedIndices;
+    std::vector<UINT>  reorderedMaterialIDs;
+    UINT               opaqueTriCount;
+    UINT               alphaTriCount;
+};
+
+static MeshSplitResult SplitOpaqueAlpha(
+    const std::vector<UINT>& indices,
+    const std::vector<UINT>& perTriMatIDs,
+    const std::vector<Material>& allMaterials)
+{
+    MeshSplitResult r;
+    const UINT triCount = static_cast<UINT>(indices.size()) / 3;
+
+    std::vector<UINT> opaqueIdx, alphaIdx;
+    std::vector<UINT> opaqueMatIDs, alphaMatIDs;
+
+    for (UINT t = 0; t < triCount; ++t)
+    {
+        const Material& mat = allMaterials[perTriMatIDs[t]];
+
+        // Alpha-tested = has an albedo texture (texture .a channel drives cutout)
+        // No texture = always opaque (Kd.w is refraction, not dissolve)
+        bool isAlpha = (mat.albedoTexID >= 0);
+
+        auto& dstIdx = isAlpha ? alphaIdx    : opaqueIdx;
+        auto& dstMat = isAlpha ? alphaMatIDs : opaqueMatIDs;
+
+        dstIdx.push_back(indices[t * 3 + 0]);
+        dstIdx.push_back(indices[t * 3 + 1]);
+        dstIdx.push_back(indices[t * 3 + 2]);
+        dstMat.push_back(perTriMatIDs[t]);
+    }
+
+    r.opaqueTriCount = static_cast<UINT>(opaqueIdx.size()) / 3;
+    r.alphaTriCount  = static_cast<UINT>(alphaIdx.size()) / 3;
+
+    r.reorderedIndices = std::move(opaqueIdx);
+    r.reorderedIndices.insert(r.reorderedIndices.end(), alphaIdx.begin(), alphaIdx.end());
+
+    r.reorderedMaterialIDs = std::move(opaqueMatIDs);
+    r.reorderedMaterialIDs.insert(r.reorderedMaterialIDs.end(), alphaMatIDs.begin(), alphaMatIDs.end());
+
+    return r;
+}
+
 void Renderer::BuildGlobalMeshBuffers()
 {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
@@ -553,7 +600,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./salle_de_bain/salle_de_bain.obj", /*"./workshop/workshop.obj",*/ /*"./iowa.obj"*/};
+    std::vector<std::string> models = {"./trulla/trulla.obj", /*"./workshop/workshop.obj",*/ /*"./iowa.obj"*/};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -572,9 +619,20 @@ void Renderer::LoadAssets() {
                 textureMap, albedoTextures, normalTextures, rmaTextures, material_search_path
             );
 
+            // 1. Insert materials first (needed by SplitOpaqueAlpha to check albedoTexID)
+            m_materials.insert(m_materials.end(), modelScopedMaterials.begin(), modelScopedMaterials.end());
+
+            // 2. Split — reorders both indices and per-tri material IDs in sync
+            MeshSplitResult split = SplitOpaqueAlpha(indices, modelMaterialIDs, m_materials);
+            indices          = std::move(split.reorderedIndices);
+            modelMaterialIDs = std::move(split.reorderedMaterialIDs);
+
+            m_opaqueTriCount.push_back(split.opaqueTriCount);
+            m_alphaTriCount.push_back(split.alphaTriCount);
+
+            // 3. NOW insert the reordered material IDs
             m_materialIDOffsets.push_back(static_cast<UINT>(m_materialIDs.size()));
             m_materialIDs.insert(m_materialIDs.end(), modelMaterialIDs.begin(), modelMaterialIDs.end());
-            m_materials.insert(m_materials.end(), modelScopedMaterials.begin(), modelScopedMaterials.end());
 
             // Create Vertex Buffer for this model
             const UINT vbSize = static_cast<UINT>(vertices.size()) * sizeof(Vertex);
@@ -1381,14 +1439,41 @@ constexpr bool kUseBlasCompaction = true;
 Renderer::AccelerationStructureBuffers
 Renderer::CreateBottomLevelAS(
     std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
-    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers)
+    std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers,
+    UINT opaqueTriCount,
+    UINT alphaTriCount)
 {
     nv_helpers_dx12::BottomLevelASGenerator bottomLevelAS;
 
     for (size_t i = 0; i < vVertexBuffers.size(); i++) {
-        bottomLevelAS.AddVertexBuffer(
-            vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second, sizeof(Vertex),
-            vIndexBuffers[i].first.Get(), 0, vIndexBuffers[i].second, nullptr, 0, true);
+        UINT opaqueIdxCount = opaqueTriCount * 3;
+        UINT alphaIdxCount  = alphaTriCount  * 3;
+
+        // Geometry 0: Opaque — AnyHit never fires
+        if (opaqueIdxCount > 0)
+        {
+            bottomLevelAS.AddVertexBuffer(
+                vVertexBuffers[i].first.Get(), 0,
+                vVertexBuffers[i].second, sizeof(Vertex),
+                vIndexBuffers[i].first.Get(),
+                0,                              // byte offset = 0
+                opaqueIdxCount,
+                nullptr, 0,
+                true);                          // isOpaque = true
+        }
+
+        // Geometry 1: Alpha-tested — AnyHit will fire
+        if (alphaIdxCount > 0)
+        {
+            bottomLevelAS.AddVertexBuffer(
+                vVertexBuffers[i].first.Get(), 0,
+                vVertexBuffers[i].second, sizeof(Vertex),
+                vIndexBuffers[i].first.Get(),
+                opaqueIdxCount * sizeof(UINT),  // byte offset past opaque
+                alphaIdxCount,
+                nullptr, 0,
+                false);                         // isOpaque = false
+        }
     }
 
     UINT64 scratchSizeInBytes = 0;
@@ -1605,8 +1690,10 @@ void Renderer::CreateAccelerationStructures() {
         // CreateBottomLevelAS now performs compaction and returns the final compacted buffer in pResult.
         // It also handles command list execution and reset internally.
         AccelerationStructureBuffers buffers = CreateBottomLevelAS(
-            {{m_VB[i].Get(), m_VertexCount[i]}},
-            {{m_IB[i].Get(), m_IndexCount[i]}}
+        {{m_VB[i].Get(), m_VertexCount[i]}},
+        {{m_IB[i].Get(), m_IndexCount[i]}},
+        m_opaqueTriCount[i],
+        m_alphaTriCount[i]
         );
 
         // We only need the final pResult for the TLAS.
@@ -2196,14 +2283,16 @@ void Renderer::CreateRaytracingPipeline()
     m_missLibrary   = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
     m_hitLibrary    = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
     m_shadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
+    m_anyHitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
 
     pipeline.AddLibrary(m_missLibrary.Get(),   { L"Miss" });
     pipeline.AddLibrary(m_shadowLibrary.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
     pipeline.AddLibrary(m_hitLibrary.Get(),    { L"ClosestHit" });
+    pipeline.AddLibrary(m_anyHitLibrary.Get(), { L"AlphaTestAnyHit" });
 
     // Hit-groups
-    pipeline.AddHitGroup(L"HitGroup",        L"ClosestHit");
-    pipeline.AddHitGroup(L"ShadowHitGroup",  L"ShadowClosestHit");
+    pipeline.AddHitGroup(L"HitGroup",        L"ClosestHit", L"AlphaTestAnyHit");
+    pipeline.AddHitGroup(L"ShadowHitGroup",  L"ShadowClosestHit", L"AlphaTestAnyHit");
 
     // Root-signature associations
     /*for (const PassDesc& p : m_passes)
@@ -2216,8 +2305,7 @@ void Renderer::CreateRaytracingPipeline()
     }*/
 
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(),  { L"Miss", L"ShadowMiss" });
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),   { L"HitGroup" });
-    pipeline.AddRootSignatureAssociation(m_shadowSignature.Get(),{ L"ShadowHitGroup" });
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(), { L"HitGroup", L"ShadowHitGroup" });
 
     // Payload / attribute / recursion depth (we dont use recursion)
     pipeline.SetMaxPayloadSize(128);
@@ -3331,6 +3419,7 @@ void Renderer::UpdateInstancePropertiesBuffer()
 
         // per‑geometry offsets
         UINT   modelIdx = m_instanceModelIndices[inst];   // which mesh?
+        dst->opaqueTriCount = m_opaqueTriCount[modelIdx];
         const GeometryOffsets& go = m_geoOffsets[modelIdx];
 
         dst->indexBase    = go.indexBase;     // first index of this mesh
