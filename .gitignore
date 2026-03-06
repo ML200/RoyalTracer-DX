@@ -33,6 +33,7 @@
 /Pathtracer/out
 /Pathtracer/.vs
 /Pathtracer/car
+/Pathtracer/candles
 *.idea
 
 sponza_big.mtl
