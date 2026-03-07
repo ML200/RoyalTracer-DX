@@ -1,4 +1,4 @@
-# Blender 4.3.2 MTL File: 'trulla.blend'
+# Blender 4.3.2 MTL File: 'None'
 # www.blender.org
 
 newmtl Boots
@@ -47,6 +47,7 @@ aniso 0.000000
 anisor 0.000000
 map_Kd Female_Brow_Base_Transparency_Diffuse.png
 map_d Female_Brow_Base_Transparency_Diffuse.png
+alpha_cutoff 0.75
 
 newmtl Female_Brow_Transparency
 Ke 0.000000 0.000000 0.000000
@@ -62,6 +63,7 @@ anisor 0.000000
 map_Kd Female_Brow_Transparency_Diffuse.png
 map_Ks Female_Brow_Transparency_Specular.png
 map_d Female_Brow_Transparency_Opacity.png
+alpha_cutoff 0.75
 
 newmtl Female_T_Shirt
 Ks 1.000000 1.000000 1.000000
@@ -93,6 +95,7 @@ anisor 0.000000
 map_Kd Hair_Transparency_Diffuse.png
 map_Ks Hair_Transparency_Specular.png
 map_d Hair_Transparency_Opacity.jpg
+alpha_cutoff 0.3
 
 newmtl Hair_Transparency.001
 Ke 0.000000 0.000000 0.000000
@@ -108,6 +111,7 @@ anisor 0.000000
 map_Kd Hair_Transparency_Diffuse_0001.png
 map_Ks Hair_Transparency_Specular_0001.png
 map_d Hair_Transparency_Opacity_0001.jpg
+alpha_cutoff 0.3
 
 newmtl Hair_Transparency.002
 Ke 0.000000 0.000000 0.000000
@@ -123,6 +127,7 @@ anisor 0.000000
 map_Kd Hair_Transparency_Diffuse_0002.png
 map_Ks Hair_Transparency_Specular_0002.png
 map_d Hair_Transparency_Opacity_0002.jpg
+alpha_cutoff 0.3
 
 newmtl Hair_Transparency.003
 Ke 0.000000 0.000000 0.000000
@@ -138,6 +143,7 @@ anisor 0.000000
 map_Kd Hair_Transparency_Diffuse_0003.png
 map_Ks Hair_Transparency_Specular_0003.png
 map_d Hair_Transparency_Opacity_0003.jpg
+alpha_cutoff 0.3
 
 newmtl Jeans
 Ke 0.000000 0.000000 0.000000
@@ -185,6 +191,7 @@ aniso 0.000000
 anisor 0.000000
 map_Kd Scalp_Transparency_Diffuse.jpg
 map_d Scalp_Transparency_Opacity.jpg
+alpha_cutoff 0.8
 
 newmtl Std_Cornea_L
 Ks 0.000000 0.000000 0.000000
@@ -222,45 +229,15 @@ Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 1
-Pr 0.900000
-Pm 0.000000
+Pr 0.100000
+Pm 1.000000
 Ps 0.000000
-Pc 0.000000
-Pcr 0.030000
+Pc 1.000000
+Pcr 0.10000
 aniso 0.000000
 anisor 0.000000
 map_Kd Std_Eye_L_Diffuse.jpg
 map_Bump -bm 1.000000 Std_Eye_L_Normal.jpg
-
-newmtl Std_Eye_Occlusion_L
-Kd 1.000000 1.000000 1.000000
-Ks 0.000000 0.000000 0.000000
-Ke 0.000000 0.000000 0.000000
-Ni 1.500000
-illum 1
-Pr 0.900000
-Pm 0.000000
-Ps 0.000000
-Pc 0.000000
-Pcr 0.030000
-aniso 0.000000
-anisor 0.000000
-map_d Std_Eye_Occlusion_L_Opacity.jpg
-
-newmtl Std_Eye_Occlusion_R
-Kd 1.000000 1.000000 1.000000
-Ks 0.000000 0.000000 0.000000
-Ke 0.000000 0.000000 0.000000
-Ni 1.500000
-illum 1
-Pr 0.900000
-Pm 0.000000
-Ps 0.000000
-Pc 0.000000
-Pcr 0.030000
-aniso 0.000000
-anisor 0.000000
-map_d Std_Eye_Occlusion_R_Opacity.jpg
 
 newmtl Std_Eye_R
 Ks 0.000000 0.000000 0.000000
@@ -268,11 +245,11 @@ Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 1
-Pr 0.900000
-Pm 0.000000
+Pr 0.100000
+Pm 1.000000
 Ps 0.000000
-Pc 0.000000
-Pcr 0.030000
+Pc 1.000000
+Pcr 0.10000
 aniso 0.000000
 anisor 0.000000
 map_Kd Std_Eye_R_Diffuse.jpg
@@ -293,6 +270,7 @@ anisor 0.000000
 map_Kd Std_Eyelash_Diffuse.jpg
 map_d Std_Eyelash_Opacity.jpg
 map_Bump -bm 1.000000 Std_Eyelash_Normal.png
+alpha_cutoff 0.4
 
 newmtl Std_Lower_Teeth
 Ks 0.000000 0.000000 0.000000
@@ -395,7 +373,7 @@ Ks 0.000000 0.000000 0.000000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 illum 1
-Pr 0.900000
+Pr 0.100000
 Pm 0.000000
 Ps 0.000000
 Pc 0.000000
@@ -404,13 +382,14 @@ aniso 0.000000
 anisor 0.000000
 map_Kd Std_Tearline_L_Diffuse.jpg
 map_d Std_Tearline_R_Opacity.jpg
+alpha_cutoff 0.8
 
 newmtl Std_Tearline_R
 Ks 0.000000 0.000000 0.000000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 illum 1
-Pr 0.900000
+Pr 0.100000
 Pm 0.000000
 Ps 0.000000
 Pc 0.000000
@@ -419,6 +398,7 @@ aniso 0.000000
 anisor 0.000000
 map_Kd Std_Tearline_R_Diffuse.jpg
 map_d Std_Tearline_R_Opacity.jpg
+alpha_cutoff 0.8
 
 newmtl Std_Tongue
 Ks 0.000000 0.000000 0.000000

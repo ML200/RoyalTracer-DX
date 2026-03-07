@@ -31,6 +31,6 @@ void AlphaTestAnyHit(inout TracePayload payload,
     float alpha = albedoTextures.SampleLevel(
         g_sampler, float3(uv * mat.albedoUVScale, mat.albedoTexID), 0).a;
 
-    if (alpha < 0.9f)
+    if (alpha < mat.alphaThreshold)
         IgnoreHit();
 }

@@ -11,7 +11,7 @@ struct TriAttrs
 };
 
 
-#ifndef ENABLE_RAY_QUERY_INLINE
+/*#ifndef ENABLE_RAY_QUERY_INLINE
 float VisibilityCheck(
     float3 x1,
     float3 x2,
@@ -38,7 +38,7 @@ float VisibilityCheck(
     V = shadowPayload.isHit ? 0.0f : 1.0f;
     return V;
 }
-#endif
+#endif*/
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
@@ -59,16 +59,50 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
     ray.TMin      = EPSILON * 2.0f;
     ray.TMax      = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
 
-    RayQuery< RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-              //|RAY_FLAG_CULL_BACK_FACING_TRIANGLES
-              > rq;
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> rq;
 
-    rq.TraceRayInline(SceneBVH,        // TLAS
-                      RAY_FLAG_NONE,   // dynamic flags
-                      0xFF,            // mask
-                      ray);
+    rq.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
-    rq.Proceed();
+    while (rq.Proceed())
+    {
+        if (rq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            uint instanceID  = rq.CandidateInstanceID();
+            uint primitiveID = rq.CandidatePrimitiveIndex();
+            float2 bary      = rq.CandidateTriangleBarycentrics();
+
+            InstanceProperties inst = instanceProps[instanceID];
+
+            uint primID = inst.opaqueTriCount + primitiveID;
+            uint baseI  = inst.indexBase;
+
+            uint i0 = indices[baseI + 3u * primID + 0u];
+            uint i1 = indices[baseI + 3u * primID + 1u];
+            uint i2 = indices[baseI + 3u * primID + 2u];
+
+            float2 uv0 = (float2)BTriVertex[i0].texCoord;
+            float2 uv1 = (float2)BTriVertex[i1].texCoord;
+            float2 uv2 = (float2)BTriVertex[i2].texCoord;
+
+            float2 uv = uv0 * (1.0 - bary.x - bary.y)
+                      + uv1 * bary.x
+                      + uv2 * bary.y;
+
+            uint matID = materialIDs[inst.materialBase + primID];
+            Material mat = materials[matID];
+
+            float alpha = mat.Kd.w;
+            if (mat.albedoTexID >= 0)
+            {
+                alpha = albedoTextures.SampleLevel(
+                    g_sampler, float3(uv, (float)mat.albedoTexID), 0).a;
+            }
+
+            if (alpha < mat.alphaThreshold)
+            continue;
+            rq.CommitNonOpaqueTriangleHit();
+        }
+    }
 
     return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
 }
