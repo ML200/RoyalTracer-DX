@@ -701,6 +701,110 @@ public:
             return static_cast<int>(textureID);
         };
 
+        auto processAlbedoWithOpacity = [&](
+            const std::string& diffuse_fname, const std::string& opacity_fname,
+            float constant_dissolve, const std::string& materialPath,
+            std::vector<TextureData>& albedoList) -> int
+        {
+            if (diffuse_fname.empty() && opacity_fname.empty()) return -1;
+
+            std::string cacheKey = materialPath + diffuse_fname + "+opacity_" + opacity_fname
+                                 + "_d" + std::to_string(constant_dissolve) + "_srgb";
+
+            if (textureMap.count(cacheKey)) {
+                std::cout << "[ObjLoader] Albedo+Opacity found in cache. Reusing ID " << textureMap[cacheKey] << std::endl;
+                return static_cast<int>(textureMap[cacheKey]);
+            }
+
+            // Load diffuse as RGBA
+            int dw = 1, dh = 1;
+            ScratchImage diffuseImage;
+            if (!diffuse_fname.empty()) {
+                int dc;
+                unsigned char* ddata = stbi_load((materialPath + diffuse_fname).c_str(), &dw, &dh, &dc, 4);
+                if (!ddata) {
+                    std::cerr << "  ERROR: Failed to load diffuse texture: " << diffuse_fname << std::endl;
+                    return -1;
+                }
+                diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, dw, dh, 1, 1);
+                memcpy(diffuseImage.GetPixels(), ddata, diffuseImage.GetPixelsSize());
+                stbi_image_free(ddata);
+            } else {
+                // No diffuse texture — create a white 1x1 placeholder
+                diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 1, 1, 1, 1);
+                uint8_t* px = diffuseImage.GetPixels();
+                px[0] = px[1] = px[2] = px[3] = 255;
+            }
+
+            // Load opacity map (single channel) and write into alpha
+            if (!opacity_fname.empty()) {
+                int ow, oh, oc;
+                unsigned char* odata = stbi_load((materialPath + opacity_fname).c_str(), &ow, &oh, &oc, 1);
+                if (!odata) {
+                    std::cerr << "  ERROR: Failed to load opacity texture: " << opacity_fname << std::endl;
+                    return -1;
+                }
+
+                // If dimensions mismatch, resize opacity to match diffuse
+                ScratchImage opacityImage;
+                opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
+                memcpy(opacityImage.GetPixels(), odata, opacityImage.GetPixelsSize());
+                stbi_image_free(odata);
+
+                if (ow != dw || oh != dh) {
+                    std::cout << "      - Resizing opacity map from " << ow << "x" << oh
+                              << " to " << dw << "x" << dh << " to match diffuse." << std::endl;
+                    ScratchImage resized;
+                    Resize(*opacityImage.GetImage(0, 0, 0), dw, dh, TEX_FILTER_DEFAULT, resized);
+                    opacityImage = std::move(resized);
+                }
+
+                uint8_t* diffuse_px = diffuseImage.GetPixels();
+                const uint8_t* opacity_px = opacityImage.GetPixels();
+                for (size_t i = 0; i < (size_t)dw * dh; ++i) {
+                    diffuse_px[i * 4 + 3] = opacity_px[i]; // Bake opacity into alpha
+                }
+                std::cout << "      - Baked opacity map into albedo alpha channel." << std::endl;
+            } else {
+                // No opacity texture but dissolve < 1.0 — apply constant alpha
+                uint8_t alpha_const = static_cast<uint8_t>(constant_dissolve * 255.0f);
+                uint8_t* diffuse_px = diffuseImage.GetPixels();
+                for (size_t i = 0; i < (size_t)dw * dh; ++i) {
+                    diffuse_px[i * 4 + 3] = alpha_const;
+                }
+                std::cout << "      - Applied constant dissolve (" << constant_dissolve << ") to albedo alpha." << std::endl;
+            }
+
+            // From here, same pipeline as processTexture: resize → mip → store
+            TextureData texData;
+            texData.original_width = dw;
+            texData.original_height = dh;
+
+            const TexMetadata& metadata = diffuseImage.GetMetadata();
+            if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
+                ScratchImage resizedImage;
+                HRESULT hr = Resize(*diffuseImage.GetImage(0, 0, 0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resizedImage);
+                if (FAILED(hr)) { std::cerr << "  ERROR: Failed to resize albedo+opacity." << std::endl; return -1; }
+                diffuseImage = std::move(resizedImage);
+            }
+
+            ScratchImage mipChain;
+            HRESULT hr = GenerateMipMaps(*diffuseImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
+            if (FAILED(hr)) { std::cerr << "  ERROR: Failed to generate mipmaps for albedo+opacity." << std::endl; return -1; }
+
+            const TexMetadata& finalMetadata = mipChain.GetMetadata();
+            texData.width = static_cast<int>(finalMetadata.width);
+            texData.height = static_cast<int>(finalMetadata.height);
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
+
+            uint32_t textureID = static_cast<uint32_t>(albedoList.size());
+            albedoList.push_back(std::move(texData));
+            textureMap[cacheKey] = textureID;
+            std::cout << "[ObjLoader] Finished albedo+opacity. New ID: " << textureID << std::endl;
+            return static_cast<int>(textureID);
+        };
+
         Material defaultMaterial;
         mats->push_back(defaultMaterial);
         (*materialOffset)++;
@@ -718,7 +822,25 @@ public:
 
             std::cout << "    - Albedo map: " << (mat.diffuse_texname.empty() ? "None" : mat.diffuse_texname) << std::endl;
             // CHANGED: Pass `true` for isSrgb for albedo textures
-            t_mat.albedoTexID = processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
+            bool has_opacity_tex = !mat.alpha_texname.empty();
+            bool has_partial_dissolve = mat.dissolve < 1.0f;
+
+            if (has_opacity_tex || has_partial_dissolve) {
+                std::cout << "    - Opacity map: " << (mat.alpha_texname.empty() ? "None (constant d=" + std::to_string(mat.dissolve) + ")" : mat.alpha_texname) << std::endl;
+                t_mat.albedoTexID = processAlbedoWithOpacity(
+                    mat.diffuse_texname, mat.alpha_texname, mat.dissolve,
+                    material_search_path, albedoTextures);
+
+                // Custom threshold from .mtl, otherwise default 0.5
+                if (mat.unknown_parameter.count("alpha_cutoff")) {
+                    t_mat.alphaThreshold = std::stof(mat.unknown_parameter.at("alpha_cutoff"));
+                } else {
+                    t_mat.alphaThreshold = 0.5f;
+                }
+            } else {
+                t_mat.albedoTexID = processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
+                t_mat.alphaThreshold = 1.0f; // opaque — no alpha test
+            }
 
             bool isBump = !mat.bump_texname.empty() && mat.normal_texname.empty();
             std::string normalTexName = !mat.normal_texname.empty() ? mat.normal_texname : mat.bump_texname;

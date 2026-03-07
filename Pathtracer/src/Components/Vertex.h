@@ -24,12 +24,12 @@ struct alignas(16) Material {
     int albedoTexID;
     int normalTexID;
     int rmaTexID;
-    int pad;
+    float alphaThreshold;
 
     Material() :
         Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
         Pr_Pm_Ps_Pc(0.5f, 0.0f, 0.0f, 0.0f), Pcr_aniso_anisor(0.0f, 0.0f, 0.0f), Tf(1.0f,1.0f,1.0f),
-        albedoTexID(-1), normalTexID(-1), rmaTexID(-1), pad(0)
+        albedoTexID(-1), normalTexID(-1), rmaTexID(-1), alphaThreshold(1.0f)
     {}
 };
 

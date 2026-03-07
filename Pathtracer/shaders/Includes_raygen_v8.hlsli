@@ -97,6 +97,7 @@ Buffer<uint>           gLT_LeafAliasIdx  : register(t17);
 // These includes need access to ALL previous buffers
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
+#include "Clouds_v8.hlsli"
 #include "Reservoir_DI_v8.hlsli"
 #include "Reservoir_GI_v8.hlsli"
 #include "PayloadPath_v8.hlsli"

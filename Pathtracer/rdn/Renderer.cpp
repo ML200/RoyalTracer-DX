@@ -172,9 +172,8 @@ static MeshSplitResult SplitOpaqueAlpha(
     {
         const Material& mat = allMaterials[perTriMatIDs[t]];
 
-        // Alpha-tested = has an albedo texture (texture .a channel drives cutout)
-        // No texture = always opaque (Kd.w is refraction, not dissolve)
-        bool isAlpha = (mat.albedoTexID >= 0);
+        // Only split out triangles that actually have opacity data baked in
+        bool isAlpha = (mat.alphaThreshold < 1.0f);
 
         auto& dstIdx = isAlpha ? alphaIdx    : opaqueIdx;
         auto& dstMat = isAlpha ? alphaMatIDs : opaqueMatIDs;
@@ -600,7 +599,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./trulla/trulla.obj", /*"./workshop/workshop.obj",*/ /*"./iowa.obj"*/};
+    std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./candles/candles.obj",*/ /*"./iowa.obj"*/};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -765,7 +764,7 @@ void Renderer::OnUpdate() {
         glm::vec3 fwd   = glm::normalize(center - eye);
         glm::vec3 right = glm::normalize(glm::cross(fwd, up));
         glm::vec3 move(0.0f);
-        float speed = 5.0f;
+        float speed = 1.0f;
 
         if (g_keys['W'])          move +=  fwd;
         if (g_keys['S'])          move -=  fwd;

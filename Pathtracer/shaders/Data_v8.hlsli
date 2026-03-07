@@ -59,7 +59,7 @@ struct Material
     int albedoTexID;
     int normalTexID;
     int rmaTexID;
-    int pad;
+    float alphaThreshold;
 };
 
 struct [[raypayload]] ShadowHitInfo {
