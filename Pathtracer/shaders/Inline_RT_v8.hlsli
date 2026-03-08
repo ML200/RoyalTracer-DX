@@ -277,10 +277,22 @@ inline dx::HitObject TraceRay_Custom(
 }
 
 
-inline float3 EvalMissState(float3 rayDir)
+inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
 {
-    // Miss shader
     return EvaluateSky(rayDir);
+    /*float3 sky = EvaluateSky(rayDir);
+
+    SunState sun = ComputeSunState();
+
+    CloudResult clouds = EvaluateClouds(
+        rayDir,
+        sun.dirWS,
+        sun.tint * SUN_INTENSITY_VAL,
+        EvaluateSky(float3(0, 1, 0)),
+        EvaluateSky(float3(0, 0.1f, 1)) * 0.5f
+    );
+
+    return clouds.color + (sky + sunDisk) * clouds.transmit;*/
 }
 
 HitInfo EvalSurfaceState(
