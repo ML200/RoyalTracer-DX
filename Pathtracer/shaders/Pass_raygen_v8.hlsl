@@ -22,8 +22,8 @@ void Pass_raygen_v8()
     gOutput[uint3(pix, 3)] = (float4)0;
 
     // Reset output texture and init reservoirs
-    gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
-    gScratchPing[uint3(pix, 3)] = float4(0, 0, 0, 0);
+    //gScratchPing[uint3(pix, 1)] = float4(0, 0, 0, 0);
+    //gScratchPing[uint3(pix, 3)] = float4(0, 0, 0, 0);
 
     // DI Reservoir init
     storeReservoirDI(g_Reservoirs_current_di, pixelIdx, (Reservoir_DI)0);
@@ -83,20 +83,20 @@ void Pass_raygen_v8()
             if (depth == 0)
             {
                 SampleData sdata = (SampleData)0;
-                sdata.L1 = EvalMissState(rayDir);
                 float3 sun = EvaluateSun(rayDir);
+                sdata.L1 = EvalMissState(rayDir, sun);
                 if (length(sun) > 0.0f)
                     sdata.L1 = sun;
 
-                gScratchPing[uint3(pix, 1)] += float4(sdata.L1, 0);
-                gScratchPing[uint3(pix, 3)] += float4(sdata.L1, 0);
+                //gScratchPing[uint3(pix, 1)] += float4(sdata.L1, 0);
+                //gScratchPing[uint3(pix, 3)] += float4(sdata.L1, 0);
                 storeSampleData(g_sample_current, pixelIdx, sdata);
                 break;
             }
 
-            float3 envL = EvalMissState(rayDir);
+            float3 envL = EvalMissState(rayDir, float3(0,0,0));
             float3 T_envL = throughput * envL;
-            gScratchPing[uint3(pix, 1)] += float4(T_envL, 0);
+            //gScratchPing[uint3(pix, 1)] += float4(T_envL, 0);
 
             if (depth == 1)
             {
@@ -108,7 +108,7 @@ void Pass_raygen_v8()
 
             if (depth >= 2)
             {
-                gScratchPing[uint3(pix, 3)] += float4(T_envL, 0);
+                //gScratchPing[uint3(pix, 3)] += float4(T_envL, 0);
                 float p_hat = GetPHat(T_envL);
                 float wi    = p_hat;
 
@@ -176,7 +176,7 @@ void Pass_raygen_v8()
             sdata.etai    = iorsF.x;
             sdata.etat    = iorsF.y;
 
-            gScratchPing[uint3(pix, 3)] += float4(emission, 0);
+            //gScratchPing[uint3(pix, 3)] += float4(emission, 0);
             storeSampleData(g_sample_current, pixelIdx, sdata);
         }
 
@@ -195,7 +195,7 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 float3 targetRadiance = throughput * emission;
-                gScratchPing[uint3(pix, 3)] += float4(targetRadiance * misWeight, 0);
+                //gScratchPing[uint3(pix, 3)] += float4(targetRadiance * misWeight, 0);
 
                 float p_hat = GetPHat(targetRadiance * prev_pdf);
                 float wi = misWeight * p_hat / prev_pdf;
@@ -212,7 +212,7 @@ void Pass_raygen_v8()
                 float  p_hat   = GetPHat(contrib);
                 float  wi      = p_hat * misWeight;
 
-                gScratchPing[uint3(pix, 3)] += float4(contrib * misWeight, 0);
+                //gScratchPing[uint3(pix, 3)] += float4(contrib * misWeight, 0);
                 float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
 
                 bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, emission * tpostgi, J_new, V2_new, seed);
@@ -280,7 +280,7 @@ void Pass_raygen_v8()
                                 float wi = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
                                 bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx, wi, light.position, light.normal, light.emission, light.objID, seed);
                                 if (update) store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
-                                gScratchPing[uint3(pix, 3)] += float4(targetRadiance / lightPdf, 0);
+                                //gScratchPing[uint3(pix, 3)] += float4(targetRadiance / lightPdf, 0);
                             }
                             if (depth >= 1)
                             {
@@ -288,7 +288,7 @@ void Pass_raygen_v8()
                                 float4 J_new  = (depth == 1) ? float4(lightPdf, 0.0f, 0.0f, 0.0f) : float4(0.0f, 0.0f, 0.0f, 0.0f);
 
                                 float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
-                                gScratchPing[uint3(pix, 3)] += float4(contrib * misWeight, 0);
+                                //gScratchPing[uint3(pix, 3)] += float4(contrib * misWeight, 0);
 
                                 float p_hat = GetPHat(contrib);
                                 float wi    = p_hat * misWeight;
@@ -333,7 +333,7 @@ void Pass_raygen_v8()
                         if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                         {
                             float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
-                            gScratchPing[uint3(pix, 3)] += float4(contrib, 0);
+                            //gScratchPing[uint3(pix, 3)] += float4(contrib, 0);
 
                             if (depth == 0)
                             {

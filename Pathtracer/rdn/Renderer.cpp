@@ -599,7 +599,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./testScene_2/testScene_2.obj", /*"./candles/candles.obj",*/ /*"./iowa.obj"*/};
+    std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./candles/candles.obj",*/ "./pot2/pot2.obj"};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -713,11 +713,11 @@ void Renderer::OnInitTransform() {
 
     m_instances[1].second = scale * selfRotation * translate;*/
 
-    /*XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.8f, 0.8f, 0.8f);
+    XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.4f, 0.4f, 0.4f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 1.0f, 0.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 0.65f, 3.f);
 
-    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;*/
+    m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
     XMMATRIX scaleMatrix_2 = XMMatrixScaling(1.0f, 1.0f, 1.0f);
     XMMATRIX rotationMatrix_2 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0);
@@ -764,7 +764,7 @@ void Renderer::OnUpdate() {
         glm::vec3 fwd   = glm::normalize(center - eye);
         glm::vec3 right = glm::normalize(glm::cross(fwd, up));
         glm::vec3 move(0.0f);
-        float speed = 1.0f;
+        float speed = 5.0f;
 
         if (g_keys['W'])          move +=  fwd;
         if (g_keys['S'])          move -=  fwd;
