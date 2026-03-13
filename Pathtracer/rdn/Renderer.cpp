@@ -599,7 +599,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./candles/candles.obj",*/ "./pot2/pot2.obj"};
+    std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./candles/candles.obj",*/ "./poop.obj"};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -715,7 +715,7 @@ void Renderer::OnInitTransform() {
 
     XMMATRIX scaleMatrix_1 = XMMatrixScaling(0.4f, 0.4f, 0.4f);
     XMMATRIX rotationMatrix_1 = XMMatrixRotationAxis({0.f, 1.f, 0.f}, 0.0f);
-    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 0.65f, 3.f);
+    XMMATRIX translationMatrix_1 = XMMatrixTranslation(-0.f, 1.65f, 3.f);
 
     m_instances[1].second = scaleMatrix_1 * rotationMatrix_1 * translationMatrix_1;
 
