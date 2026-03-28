@@ -85,6 +85,24 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
              (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
     }
 
+    // --- fallback to non-permuted temporal if permuted failed ---
+    if (!valid)
+    {
+        int2 fallback = baseCoord;
+        if (fallback.x >= 0 && fallback.y >= 0 &&
+            fallback.x < (int)IMG_W && fallback.y < (int)IMG_H)
+        {
+            tempPixelIdx = MapPixelID(dims_f, (uint2)fallback);
+            sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+
+            valid =
+                (all(sdata_r.L1 < EPSILON) &&
+                 (sdata_r.matID == sdata.matID) &&
+                 !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
+                 (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
+        }
+    }
+
     // --- heavy reuse path ---
     // Strongly isolate lifetime of rdi_r + all heavy temporaries.
     [branch]
