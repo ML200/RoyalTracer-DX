@@ -5,8 +5,11 @@
 #ifndef PATHTRACER_OBJLOADER_H
 #define PATHTRACER_OBJLOADER_H
 #define TINYOBJLOADER_IMPLEMENTATION
+#define TINYGLTF3_IMPLEMENTATION
+#define TINYGLTF3_ENABLE_STB_IMAGE
 //#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
+#include "../../lib/tiny_gltf_v3.h"
 #include <iostream>
 #include <unordered_map>
 
@@ -480,6 +483,156 @@ void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstri
 }
 
 class ObjLoader {
+private:
+    // Compare a tg3_str to a C string literal.
+    static bool tg3_str_eq(const tg3_str& s, const char* lit) {
+        size_t n = strlen(lit);
+        return s.len == (uint32_t)n && memcmp(s.data, lit, n) == 0;
+    }
+
+    // Convert a tg3_str to std::string.
+    static std::string tg3_to_string(const tg3_str& s) {
+        return (s.data && s.len > 0) ? std::string(s.data, s.len) : std::string();
+    }
+
+    // Look up a named extension in a tg3_extras_ext block.
+    // Returns nullptr if not found.
+    static const tg3_value* tg3_find_extension(const tg3_extras_ext& ext, const char* name) {
+        for (uint32_t i = 0; i < ext.extensions_count; ++i) {
+            if (tg3_str_eq(ext.extensions[i].name, name))
+                return &ext.extensions[i].value;
+        }
+        return nullptr;
+    }
+
+    // Get a named double field from a tg3_value of type OBJECT.
+    // Returns fallback if not found.
+    static double tg3_obj_get_double(const tg3_value* obj, const char* key, double fallback) {
+        if (!obj || obj->type != TG3_VALUE_OBJECT) return fallback;
+        for (uint32_t i = 0; i < obj->object_count; ++i) {
+            if (tg3_str_eq(obj->object_data[i].key, key)) {
+                const tg3_value& v = obj->object_data[i].value;
+                if (v.type == TG3_VALUE_REAL) return v.real_val;
+                if (v.type == TG3_VALUE_INT)  return (double)v.int_val;
+                return fallback;
+            }
+        }
+        return fallback;
+    }
+
+    // Read a typed accessor from the v3 model into a flat vector.
+    template <typename T>
+    static std::vector<T> ReadGltfAccessorV3(const tg3_model& model, int accessorIdx)
+    {
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors_count) return {};
+        const tg3_accessor& acc = model.accessors[accessorIdx];
+        if (acc.buffer_view < 0 || acc.buffer_view >= (int)model.buffer_views_count) return {};
+        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers_count) return {};
+        const tg3_buffer& buf = model.buffers[bv.buffer];
+
+        uint32_t componentCount = 1;
+        switch (acc.type) {
+            case TG3_TYPE_SCALAR: componentCount = 1; break;
+            case TG3_TYPE_VEC2:   componentCount = 2; break;
+            case TG3_TYPE_VEC3:   componentCount = 3; break;
+            case TG3_TYPE_VEC4:   componentCount = 4; break;
+            default: break;
+        }
+
+        size_t compSize = 0;
+        switch (acc.component_type) {
+            case TG3_COMPONENT_TYPE_BYTE:
+            case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:  compSize = 1; break;
+            case TG3_COMPONENT_TYPE_SHORT:
+            case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: compSize = 2; break;
+            case TG3_COMPONENT_TYPE_INT:
+            case TG3_COMPONENT_TYPE_UNSIGNED_INT:
+            case TG3_COMPONENT_TYPE_FLOAT:          compSize = 4; break;
+            default: break;
+        }
+
+        size_t stride = bv.byte_stride;
+        if (stride == 0) stride = compSize * componentCount;
+
+        std::vector<T> result;
+        result.reserve((size_t)acc.count * componentCount);
+        const uint8_t* base = buf.data.data + bv.byte_offset + acc.byte_offset;
+
+        for (uint64_t i = 0; i < acc.count; ++i) {
+            const uint8_t* elem = base + i * stride;
+            for (uint32_t c = 0; c < componentCount; ++c) {
+                T value{};
+                switch (acc.component_type) {
+                    case TG3_COMPONENT_TYPE_FLOAT: {
+                        float f; memcpy(&f, elem + c * sizeof(float), sizeof(float));
+                        value = static_cast<T>(f); break;
+                    }
+                    case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: {
+                        uint16_t u; memcpy(&u, elem + c * sizeof(uint16_t), sizeof(uint16_t));
+                        value = static_cast<T>(u); break;
+                    }
+                    case TG3_COMPONENT_TYPE_UNSIGNED_INT: {
+                        uint32_t u; memcpy(&u, elem + c * sizeof(uint32_t), sizeof(uint32_t));
+                        value = static_cast<T>(u); break;
+                    }
+                    case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: {
+                        value = static_cast<T>(elem[c]); break;
+                    }
+                    case TG3_COMPONENT_TYPE_SHORT: {
+                        int16_t s; memcpy(&s, elem + c * sizeof(int16_t), sizeof(int16_t));
+                        value = static_cast<T>(s); break;
+                    }
+                    case TG3_COMPONENT_TYPE_BYTE: {
+                        value = static_cast<T>(reinterpret_cast<const int8_t*>(elem)[c]); break;
+                    }
+                    default: break;
+                }
+                result.push_back(value);
+            }
+        }
+        return result;
+    }
+
+    // Recursively collect mesh instances with accumulated transforms (v3 structs).
+    static void CollectGltfNodesV3(
+        const tg3_model& model, int nodeIdx,
+        const XMMATRIX& parentTransform,
+        std::vector<std::pair<int, XMMATRIX>>& outMeshes)
+    {
+        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count) return;
+        const tg3_node& node = model.nodes[nodeIdx];
+        XMMATRIX local = XMMatrixIdentity();
+
+        if (node.has_matrix) {
+            // tg3_node::matrix is double[16], column-major per glTF spec
+            XMFLOAT4X4 m;
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    m.m[r][c] = (float)node.matrix[c * 4 + r];
+            local = XMLoadFloat4x4(&m);
+        } else {
+            XMMATRIX T = XMMatrixTranslation((float)node.translation[0], (float)node.translation[1], (float)node.translation[2]);
+            XMMATRIX R = XMMatrixRotationQuaternion(XMVectorSet((float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2], (float)node.rotation[3]));
+            XMMATRIX S = XMMatrixScaling((float)node.scale[0], (float)node.scale[1], (float)node.scale[2]);
+            local = S * R * T;
+        }
+
+        XMMATRIX world = local * parentTransform;
+        if (node.mesh >= 0) outMeshes.push_back({ node.mesh, world });
+        for (uint32_t i = 0; i < node.children_count; ++i)
+            CollectGltfNodesV3(model, node.children[i], world, outMeshes);
+    }
+
+    // Find a named attribute accessor index in a tg3_primitive.
+    static int tg3_find_attribute(const tg3_primitive& prim, const char* name) {
+        for (uint32_t i = 0; i < prim.attributes_count; ++i) {
+            if (tg3_str_eq(prim.attributes[i].key, name))
+                return prim.attributes[i].value;
+        }
+        return -1;
+    }
+
 public:
     static void loadObjFile(
         const std::string& inputfile,
@@ -917,6 +1070,467 @@ public:
         std::cout << "  - Total RMA textures loaded: " << rmaTextures.size() << std::endl;
         std::cout << "-----------------------------------------------------" << std::endl;
     }
+
+    static void loadGlbFile(
+        const std::string& inputfile,
+        std::vector<Vertex>* vertices,
+        std::vector<UINT>* indices,
+        std::vector<Material>* mats,
+        std::vector<UINT>* materialIDs,
+        UINT* materialOffset,
+        UINT* materialVertexOffset,
+        std::map<std::string, uint32_t>& textureMap,
+        std::vector<TextureData>& albedoTextures,
+        std::vector<TextureData>& normalTextures,
+        std::vector<TextureData>& rmaTextures,
+        const std::string& material_search_path = "./")
+    {
+        using namespace DirectX;
+
+        std::cout << "[GlbLoader] Starting to load GLB file: " << inputfile << std::endl;
+
+        // ---- 1. Read file into memory -------------------------------------------
+        std::ifstream file(inputfile, std::ios::binary | std::ios::ate);
+        if (!file.is_open()) {
+            std::cerr << "[GlbLoader] ERROR: Could not open file: " << inputfile << std::endl;
+            return;
+        }
+        size_t fileSize = (size_t)file.tellg();
+        file.seekg(0);
+        std::vector<uint8_t> fileData(fileSize);
+        file.read(reinterpret_cast<char*>(fileData.data()), fileSize);
+        file.close();
+
+        // ---- 2. Parse with v3 API -----------------------------------------------
+        tg3_model model{};
+        tg3_error_stack errors{};
+        tg3_error_stack_init(&errors);
+
+        tg3_parse_options opts{};
+        tg3_parse_options_init(&opts);
+        // Let v3 decode images via its built-in stbi (TINYGLTF3_ENABLE_STB_IMAGE)
+        opts.preserve_image_channels = 0; // widen to RGBA
+        opts.images_as_is = 0;
+
+        opts.image.load_image = [](tg3_image_result* result,
+                           const tg3_image_request* request,
+                           void* /*user_data*/) -> int32_t
+        {
+            std::cout << "    [ImageCallback] Decoding image " << request->image_index
+              << " (" << request->data_size << " bytes)" << std::endl;
+            int w, h, c;
+            unsigned char* data = stbi_load_from_memory(
+                request->data, (int)request->data_size,
+                &w, &h, &c, 4);  // force RGBA
+            if (!data) return 0;  // failure
+
+            result->pixels     = data;
+            result->width      = w;
+            result->height     = h;
+            result->component  = 4;
+            result->bits       = 8;
+            result->pixel_type = TG3_COMPONENT_TYPE_UNSIGNED_BYTE;
+            return 1;  // success
+        };
+
+        opts.image.free_image = [](uint8_t* pixels, void* /*user_data*/) {
+            stbi_image_free(pixels);
+        };
+
+        opts.image.user_data = nullptr;
+
+        tg3_error_code ec = tg3_parse_glb(
+            &model, &errors,
+            fileData.data(), (uint64_t)fileSize,
+            nullptr, 0,  // no base_dir needed for GLB
+            &opts);
+
+        struct DecodedImage {
+            std::vector<uint8_t> pixels;
+            int width, height, channels;
+        };
+        std::vector<DecodedImage> decodedImages(model.images_count);
+
+        for (uint32_t i = 0; i < model.images_count; ++i) {
+            const tg3_image& img = model.images[i];
+
+            // Try already-decoded pixels first (in case callback worked)
+            if (img.image.data && img.image.count > 0 && img.width > 0) {
+                decodedImages[i].pixels.assign(img.image.data, img.image.data + img.image.count);
+                decodedImages[i].width    = img.width;
+                decodedImages[i].height   = img.height;
+                decodedImages[i].channels = img.component;
+                continue;
+            }
+
+            // Otherwise, extract raw bytes from the buffer view and decode
+            if (img.buffer_view >= 0 && img.buffer_view < (int)model.buffer_views_count) {
+                const tg3_buffer_view& bv = model.buffer_views[img.buffer_view];
+                if (bv.buffer >= 0 && bv.buffer < (int)model.buffers_count) {
+                    const tg3_buffer& buf = model.buffers[bv.buffer];
+                    const uint8_t* rawData = buf.data.data + bv.byte_offset;
+                    uint64_t rawSize = bv.byte_length;
+
+                    int w, h, c;
+                    unsigned char* decoded = stbi_load_from_memory(rawData, (int)rawSize, &w, &h, &c, 4);
+                    if (decoded) {
+                        decodedImages[i].pixels.assign(decoded, decoded + w * h * 4);
+                        decodedImages[i].width    = w;
+                        decodedImages[i].height   = h;
+                        decodedImages[i].channels = 4;
+                        stbi_image_free(decoded);
+                        std::cout << "    [Image " << i << "] Decoded " << w << "x" << h << " from buffer view" << std::endl;
+                    } else {
+                        std::cerr << "    [Image " << i << "] stbi decode failed" << std::endl;
+                    }
+                }
+            }
+        }
+
+        if (ec != TG3_OK) {
+            std::cerr << "[GlbLoader] Failed to parse GLB (error code " << (int)ec << ")." << std::endl;
+            for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
+                const tg3_error_entry* e = tg3_errors_get(&errors, i);
+                if (e) std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
+            }
+            tg3_error_stack_free(&errors);
+            return;
+        }
+
+        // Print any warnings
+        for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
+            const tg3_error_entry* e = tg3_errors_get(&errors, i);
+            if (e && e->severity == TG3_SEVERITY_WARNING)
+                std::cout << "[GlbLoader] Warning: " << (e->message ? e->message : "?") << std::endl;
+        }
+
+        std::cout << "[GlbLoader] Parsed '" << inputfile << "':" << std::endl;
+        std::cout << "  - Meshes: "    << model.meshes_count    << std::endl;
+        std::cout << "  - Materials: " << model.materials_count << std::endl;
+        std::cout << "  - Images: "    << model.images_count    << std::endl;
+
+        // ---- 3. Texture helpers -------------------------------------------------
+        auto getImageIndex = [&](int textureIndex) -> int {
+            if (textureIndex < 0 || textureIndex >= (int)model.textures_count) return -1;
+            return model.textures[textureIndex].source;
+        };
+
+        // Process a tg3_image through the same pipeline as ObjLoader's processTexture
+        auto processEmbeddedTexture = [&](
+            int imageIndex, std::vector<TextureData>& textureList,
+            bool isSrgb, const std::string& label) -> int
+        {
+            if (imageIndex < 0 || imageIndex >= (int)decodedImages.size()) return -1;
+
+            std::string cacheKey = inputfile + "_img" + std::to_string(imageIndex)
+                                 + (isSrgb ? "_srgb" : "_linear");
+            if (textureMap.count(cacheKey)) {
+                std::cout << "    " << label << " (img " << imageIndex << ") cached as ID " << textureMap[cacheKey] << std::endl;
+                return (int)textureMap[cacheKey];
+            }
+
+            const DecodedImage& img = decodedImages[imageIndex];
+            if (img.pixels.empty()) {
+                std::cerr << "    ERROR: image " << imageIndex << " has no pixel data." << std::endl;
+                return -1;
+            }
+
+            int width  = img.width;
+            int height = img.height;
+            const uint8_t* pixelData = img.pixels.data();
+
+            std::cout << "    " << label << " (img " << imageIndex << ", "
+                      << width << "x" << height << ", " << img.channels << "ch)" << std::endl;
+
+            DXGI_FORMAT format = isSrgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+            ScratchImage scratch;
+            HRESULT hr = scratch.Initialize2D(format, width, height, 1, 1);
+            if (FAILED(hr)) return -1;
+            memcpy(scratch.GetPixels(), pixelData, (std::min)(scratch.GetPixelsSize(), (size_t)width * height * 4));
+
+            const TexMetadata& meta = scratch.GetMetadata();
+            if (meta.width != TARGET_TEXTURE_DIM || meta.height != TARGET_TEXTURE_DIM) {
+                ScratchImage resized;
+                hr = Resize(*scratch.GetImage(0,0,0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resized);
+                if (FAILED(hr)) return -1;
+                scratch = std::move(resized);
+            }
+
+            ScratchImage mipChain;
+            hr = GenerateMipMaps(*scratch.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
+            if (FAILED(hr)) return -1;
+
+            TextureData texData;
+            texData.original_width = width; texData.original_height = height;
+            const TexMetadata& fm = mipChain.GetMetadata();
+            texData.width = (int)fm.width; texData.height = (int)fm.height;
+            texData.channels = 4; texData.image = std::move(mipChain);
+
+            uint32_t id = (uint32_t)textureList.size();
+            textureList.push_back(std::move(texData));
+            textureMap[cacheKey] = id;
+            std::cout << "    " << label << " -> ID " << id << std::endl;
+            return (int)id;
+        };
+
+        // Build combined RMA from glTF metallicRoughness (G=rough, B=metal) + occlusion
+        auto processGltfRMA = [&](
+            int mrImgIdx, int aoImgIdx,
+            float constR, float constM,
+            std::vector<TextureData>& rmaList) -> int
+        {
+            if (mrImgIdx < 0 && aoImgIdx < 0) return -1;
+
+            std::string cacheKey = inputfile + "_rma_mr" + std::to_string(mrImgIdx)
+                                 + "_ao" + std::to_string(aoImgIdx);
+            if (textureMap.count(cacheKey)) return (int)textureMap[cacheKey];
+
+            const uint8_t* mrPx = (mrImgIdx >= 0 && !decodedImages[mrImgIdx].pixels.empty())
+                ? decodedImages[mrImgIdx].pixels.data() : nullptr;
+            const uint8_t* aoPx = (aoImgIdx >= 0 && !decodedImages[aoImgIdx].pixels.empty())
+                ? decodedImages[aoImgIdx].pixels.data() : nullptr;
+
+            int w = 0, h = 0;
+            if (mrPx) { w = decodedImages[mrImgIdx].width; h = decodedImages[mrImgIdx].height; }
+            else if (aoPx) { w = decodedImages[aoImgIdx].width; h = decodedImages[aoImgIdx].height; }
+            if (w == 0) return -1;
+
+            ScratchImage combined;
+            combined.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1);
+            uint8_t* dest = combined.GetPixels();
+            uint8_t rC = (uint8_t)(constR * 255.0f), mC = (uint8_t)(constM * 255.0f);
+
+            for (size_t i = 0; i < (size_t)w * h; ++i) {
+                dest[i*4+0] = aoPx ? aoPx[i*4+0] : 255;     // R = AO
+                dest[i*4+1] = mrPx ? mrPx[i*4+1] : rC;      // G = Roughness
+                dest[i*4+2] = mrPx ? mrPx[i*4+2] : mC;      // B = Metallic
+                dest[i*4+3] = 255;
+            }
+
+            const TexMetadata& meta = combined.GetMetadata();
+            if (meta.width != TARGET_TEXTURE_DIM || meta.height != TARGET_TEXTURE_DIM) {
+                ScratchImage resized;
+                if (FAILED(Resize(*combined.GetImage(0,0,0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resized))) return -1;
+                combined = std::move(resized);
+            }
+
+            ScratchImage mipChain;
+            GenerateMipMaps(*combined.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
+
+            TextureData texData;
+            texData.original_width = w; texData.original_height = h;
+            const TexMetadata& fm = mipChain.GetMetadata();
+            texData.width = (int)fm.width; texData.height = (int)fm.height;
+            texData.channels = 4; texData.image = std::move(mipChain);
+
+            uint32_t id = (uint32_t)rmaList.size();
+            rmaList.push_back(std::move(texData));
+            textureMap[cacheKey] = id;
+            return (int)id;
+        };
+
+        // ---- 4. Materials -------------------------------------------------------
+        Material defaultMaterial;
+        mats->push_back(defaultMaterial);
+        (*materialOffset)++;
+
+        for (uint32_t mi = 0; mi < model.materials_count; ++mi) {
+            const tg3_material& gmat = model.materials[mi];
+            const tg3_pbr_metallic_roughness& pbr = gmat.pbr_metallic_roughness;
+            std::cout << "  [Material] '" << tg3_to_string(gmat.name) << "'" << std::endl;
+
+            Material t_mat{};
+            t_mat.Kd = { (float)pbr.base_color_factor[0], (float)pbr.base_color_factor[1],
+                         (float)pbr.base_color_factor[2], (float)pbr.base_color_factor[3] };
+            t_mat.Ke = { (float)gmat.emissive_factor[0], (float)gmat.emissive_factor[1],
+                         (float)gmat.emissive_factor[2] };
+
+            // KHR_materials_emissive_strength — multiplier for emissive values > 1.0
+            const tg3_value* emStrExt = tg3_find_extension(gmat.ext, "KHR_materials_emissive_strength");
+            if (emStrExt) {
+                float strength = (float)tg3_obj_get_double(emStrExt, "emissiveStrength", 1.0);
+                t_mat.Ke.x *= strength;
+                t_mat.Ke.y *= strength;
+                t_mat.Ke.z *= strength;
+            }
+            t_mat.Ni = 1.5f;
+
+            // KHR_materials_ior
+            const tg3_value* iorExt = tg3_find_extension(gmat.ext, "KHR_materials_ior");
+            if (iorExt) t_mat.Ni = (float)tg3_obj_get_double(iorExt, "ior", 1.5);
+
+            float roughness = (float)pbr.roughness_factor;
+            float metallic  = (float)pbr.metallic_factor;
+            t_mat.Pr_Pm_Ps_Pc = { roughness, metallic, 0.0f, 0.0f };
+            t_mat.Pcr_aniso_anisor = { 0.0f, 0.0f, 0.0f };
+            t_mat.Tf = { 0.0f, 0.0f, 0.0f };
+
+            // KHR_materials_sheen
+            const tg3_value* sheenExt = tg3_find_extension(gmat.ext, "KHR_materials_sheen");
+            if (sheenExt)
+                t_mat.Pr_Pm_Ps_Pc.z = (float)tg3_obj_get_double(sheenExt, "sheenRoughnessFactor", 0.0);
+
+            // KHR_materials_clearcoat
+            const tg3_value* ccExt = tg3_find_extension(gmat.ext, "KHR_materials_clearcoat");
+            if (ccExt) {
+                t_mat.Pr_Pm_Ps_Pc.w    = (float)tg3_obj_get_double(ccExt, "clearcoatFactor", 0.0);
+                t_mat.Pcr_aniso_anisor.x = (float)tg3_obj_get_double(ccExt, "clearcoatRoughnessFactor", 0.0);
+            }
+
+            // KHR_materials_anisotropy
+            const tg3_value* anisoExt = tg3_find_extension(gmat.ext, "KHR_materials_anisotropy");
+            if (anisoExt) {
+                t_mat.Pcr_aniso_anisor.y = (float)tg3_obj_get_double(anisoExt, "anisotropyStrength", 0.0);
+                t_mat.Pcr_aniso_anisor.z = (float)tg3_obj_get_double(anisoExt, "anisotropyRotation", 0.0);
+            }
+
+            // KHR_materials_transmission
+            const tg3_value* transExt = tg3_find_extension(gmat.ext, "KHR_materials_transmission");
+            if (transExt) {
+                float tf = (float)tg3_obj_get_double(transExt, "transmissionFactor", 0.0);
+                t_mat.Tf = { tf, tf, tf };
+            }
+
+            // Albedo (sRGB)
+            int baseColorImg = getImageIndex(pbr.base_color_texture.index);
+            bool hasMask = tg3_str_eq(gmat.alpha_mode, "MASK");
+            if (tg3_str_eq(gmat.alpha_mode, "BLEND") || hasMask) {
+                t_mat.albedoTexID    = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo+alpha");
+                t_mat.alphaThreshold = hasMask ? (float)gmat.alpha_cutoff : 0.5f;
+            } else {
+                t_mat.albedoTexID    = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo");
+                t_mat.alphaThreshold = 1.0f;
+            }
+
+            // Normal (linear)
+            t_mat.normalTexID = processEmbeddedTexture(
+                getImageIndex(gmat.normal_texture.index), normalTextures, false, "normal");
+
+            // RMA (linear)
+            int mrImg = getImageIndex(pbr.metallic_roughness_texture.index);
+            int aoImg = getImageIndex(gmat.occlusion_texture.index);
+            t_mat.rmaTexID = (mrImg >= 0 || aoImg >= 0)
+                ? processGltfRMA(mrImg, aoImg, roughness, metallic, rmaTextures) : -1;
+
+            mats->push_back(t_mat);
+        }
+
+        // ---- 5. Collect mesh instances via scene graph --------------------------
+        std::vector<std::pair<int, XMMATRIX>> meshInstances;
+        int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
+        if (sceneIdx < (int)model.scenes_count) {
+            const tg3_scene& scene = model.scenes[sceneIdx];
+            for (uint32_t i = 0; i < scene.nodes_count; ++i)
+                CollectGltfNodesV3(model, scene.nodes[i], XMMatrixIdentity(), meshInstances);
+        }
+
+        // ---- 6. Geometry --------------------------------------------------------
+        std::cout << "[GlbLoader] Processing geometry (" << meshInstances.size() << " mesh instances)..." << std::endl;
+        std::unordered_map<Vertex, uint32_t> uniqueVertices;
+
+        for (const auto& [meshIdx, worldTransform] : meshInstances) {
+            if (meshIdx < 0 || meshIdx >= (int)model.meshes_count) continue;
+            const tg3_mesh& mesh = model.meshes[meshIdx];
+            XMMATRIX normalMatrix = XMMatrixTranspose(XMMatrixInverse(nullptr, worldTransform));
+
+            for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
+                const tg3_primitive& prim = mesh.primitives[pi];
+
+                // Only triangle lists (mode 4 or default -1)
+                if (prim.mode != TG3_MODE_TRIANGLES && prim.mode != -1) continue;
+
+                // Attributes — look up by name in the key-value pairs
+                int posAccessor  = tg3_find_attribute(prim, "POSITION");
+                int normAccessor = tg3_find_attribute(prim, "NORMAL");
+                int uvAccessor   = tg3_find_attribute(prim, "TEXCOORD_0");
+
+                if (posAccessor < 0) continue;
+                std::vector<float> positions = ReadGltfAccessorV3<float>(model, posAccessor);
+                std::vector<float> normals;
+                if (normAccessor >= 0) normals = ReadGltfAccessorV3<float>(model, normAccessor);
+                std::vector<float> texcoords;
+                if (uvAccessor >= 0) texcoords = ReadGltfAccessorV3<float>(model, uvAccessor);
+
+                size_t vertexCount = positions.size() / 3;
+
+                // Indices
+                std::vector<uint32_t> primIndices;
+                if (prim.indices >= 0) {
+                    primIndices = ReadGltfAccessorV3<uint32_t>(model, prim.indices);
+                } else {
+                    primIndices.resize(vertexCount);
+                    for (uint32_t i = 0; i < (uint32_t)vertexCount; ++i) primIndices[i] = i;
+                }
+
+                // Material
+                uint32_t matID = (prim.material >= 0)
+                    ? (uint32_t)(prim.material + *materialOffset) : 0u;
+
+                // Triangles
+                for (size_t t = 0; t + 2 < primIndices.size(); t += 3) {
+                    materialIDs->push_back(matID);
+
+                    uint32_t triIdx[3] = { primIndices[t], primIndices[t+1], primIndices[t+2] };
+                    XMFLOAT3 p[3], n[3]; XMFLOAT2 uv[3];
+
+                    for (int i = 0; i < 3; ++i) {
+                        uint32_t vi = triIdx[i];
+
+                        XMFLOAT3 lp = { positions[vi*3+0], positions[vi*3+1], positions[vi*3+2] };
+                        XMStoreFloat3(&p[i], XMVector3TransformCoord(XMLoadFloat3(&lp), worldTransform));
+
+                        if (!normals.empty()) {
+                            XMFLOAT3 ln = { normals[vi*3+0], normals[vi*3+1], normals[vi*3+2] };
+                            XMStoreFloat3(&n[i], XMVector3Normalize(XMVector3TransformNormal(XMLoadFloat3(&ln), normalMatrix)));
+                        } else {
+                            n[i] = { 0, 0, 0 };
+                        }
+
+                        // glTF UVs are top-left origin — no V-flip needed (unlike OBJ)
+                        uv[i] = !texcoords.empty()
+                            ? XMFLOAT2{ texcoords[vi*2+0], texcoords[vi*2+1] }
+                            : XMFLOAT2{ 0, 0 };
+                    }
+
+                    // Face normal fallback
+                    if (normals.empty()) {
+                        XMVECTOR fn = XMVector3Normalize(XMVector3Cross(
+                            XMLoadFloat3(&p[1]) - XMLoadFloat3(&p[0]),
+                            XMLoadFloat3(&p[2]) - XMLoadFloat3(&p[0])));
+                        XMStoreFloat3(&n[0], fn); n[1] = n[2] = n[0];
+                    }
+
+                    for (int i = 0; i < 3; ++i) {
+                        Vertex v({ p[i] }, { n[i].x, n[i].y, n[i].z, (float)matID }, { uv[i] });
+                        if (uniqueVertices.count(v)) {
+                            indices->push_back(uniqueVertices[v]);
+                        } else {
+                            uint32_t newIndex = (uint32_t)vertices->size();
+                            uniqueVertices[v] = newIndex;
+                            indices->push_back(newIndex);
+                            vertices->push_back(v);
+                        }
+                    }
+                }
+            }
+        }
+
+        *materialOffset += (UINT)model.materials_count;
+
+        std::cout << "[GlbLoader] COMPLETED '" << inputfile << "'." << std::endl;
+        std::cout << "  - Unique vertices: " << uniqueVertices.size() << std::endl;
+        std::cout << "  - Total indices:   " << indices->size()       << std::endl;
+        std::cout << "  - Materials:       " << mats->size()          << std::endl;
+        std::cout << "  - Albedo textures: " << albedoTextures.size() << std::endl;
+        std::cout << "  - Normal textures: " << normalTextures.size() << std::endl;
+        std::cout << "  - RMA textures:    " << rmaTextures.size()    << std::endl;
+        std::cout << "-----------------------------------------------------" << std::endl;
+
+        // ---- 7. Cleanup v3 model ------------------------------------------------
+        tg3_model_free(&model);
+        tg3_error_stack_free(&errors);
+    }
+
 };
 
 #endif //PATHTRACER_OBJLOADER_H

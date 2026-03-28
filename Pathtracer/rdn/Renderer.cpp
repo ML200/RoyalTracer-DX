@@ -599,7 +599,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./the-white-room/the-white-room.obj", /*"./candles/candles.obj",*/ "./poop.obj"};
+    std::vector<std::string> models = {"./twr.glb", /*"./candles/candles.obj",*/ /*"meshy/meshy.obj"*/};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -612,11 +612,23 @@ void Renderer::LoadAssets() {
             std::vector<Material> modelScopedMaterials;
             std::vector<UINT> modelMaterialIDs;
 
-            ObjLoader::loadObjFile(
-                modelName, &vertices, &indices, &modelScopedMaterials, &modelMaterialIDs,
-                &materialIDOffset, &materialVertexOffset,
-                textureMap, albedoTextures, normalTextures, rmaTextures, material_search_path
-            );
+            // --- Dispatch based on extension ---
+            std::string ext = modelName.substr(modelName.find_last_of('.') + 1);
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+            if (ext == "glb" || ext == "glb") {
+                ObjLoader::loadGlbFile(
+                    modelName, &vertices, &indices, &modelScopedMaterials, &modelMaterialIDs,
+                    &materialIDOffset, &materialVertexOffset,
+                    textureMap, albedoTextures, normalTextures, rmaTextures, material_search_path
+                );
+            } else {
+                ObjLoader::loadObjFile(
+                    modelName, &vertices, &indices, &modelScopedMaterials, &modelMaterialIDs,
+                    &materialIDOffset, &materialVertexOffset,
+                    textureMap, albedoTextures, normalTextures, rmaTextures, material_search_path
+                );
+            }
 
             // 1. Insert materials first (needed by SplitOpaqueAlpha to check albedoTexID)
             m_materials.insert(m_materials.end(), modelScopedMaterials.begin(), modelScopedMaterials.end());
