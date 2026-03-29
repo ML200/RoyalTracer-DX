@@ -53,3 +53,5 @@ trulla.obj
 
 /Pathtracer/Include/sponza_tex
 /Pathtracer/Include/bistro_tex
+
+*.glb
