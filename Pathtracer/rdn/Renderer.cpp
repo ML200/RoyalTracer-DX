@@ -383,6 +383,7 @@ void Renderer::OnInit() {
 
         m_textureUploadHeaps.clear();
         m_lutUploadHeaps.clear();
+        m_bindlessUploadHeaps.clear();
 
         CreateRaytracingPipeline();
 
@@ -599,7 +600,7 @@ void Renderer::LoadAssets() {
 
     // Model loading
     {
-    std::vector<std::string> models = {"./twr.glb", /*"./candles/candles.obj",*/ /*"meshy/meshy.obj"*/};
+    std::vector<std::string> models = {"./sp2.glb", /*"./candles/candles.obj",*/ /*"./car.glb"*/};
         for (const auto& modelName : models) {
             std::string material_search_path = "./";
             const auto last_slash_idx = modelName.find_last_of("/\\");
@@ -680,7 +681,26 @@ void Renderer::LoadAssets() {
         }
     }
 
-    // Upload material data
+    // Compute bindless heap layout
+    m_bindlessAlbedoBase = BINDLESS_HEAP_START;
+    m_bindlessNormalBase = m_bindlessAlbedoBase + static_cast<UINT>(albedoTextures.size());
+    m_bindlessRmaBase    = m_bindlessNormalBase + static_cast<UINT>(normalTextures.size());
+    m_totalBindlessTextures = static_cast<UINT>(
+        albedoTextures.size() + normalTextures.size() + rmaTextures.size());
+
+    std::wcout << L"[Bindless] Albedo base=" << m_bindlessAlbedoBase
+               << L" Normal base=" << m_bindlessNormalBase
+               << L" RMA base=" << m_bindlessRmaBase
+               << L" Total=" << m_totalBindlessTextures << std::endl;
+
+    // Remap material texture IDs from relative (0,1,2...) to absolute heap indices
+    for (auto& mat : m_materials) {
+        if (mat.albedoTexID >= 0) mat.albedoTexID += (int)m_bindlessAlbedoBase;
+        if (mat.normalTexID >= 0) mat.normalTexID += (int)m_bindlessNormalBase;
+        if (mat.rmaTexID >= 0)    mat.rmaTexID    += (int)m_bindlessRmaBase;
+    }
+
+    // Upload material data (with remapped IDs)
     {
         const UINT materialBufferSize = static_cast<UINT>(m_materials.size()) * sizeof(Material);
         CD3DX12_RESOURCE_DESC materialBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(materialBufferSize);
@@ -704,8 +724,10 @@ void Renderer::LoadAssets() {
         m_materialIndexBuffer->Unmap(0, nullptr);
     }
 
-    // Create and upload GPU texture arrays
-    CreateTextureArrays(albedoTextures, normalTextures, rmaTextures);
+    // Create individual GPU textures (bindless — no arrays, native resolution)
+    CreateBindlessTextures(albedoTextures, m_bindlessAlbedoBase, L"Albedo");
+    CreateBindlessTextures(normalTextures, m_bindlessNormalBase, L"Normal");
+    CreateBindlessTextures(rmaTextures,    m_bindlessRmaBase,    L"RMA");
 
     {
         ThrowIfFailed(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
@@ -1888,7 +1910,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     // Serialize and Create
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> signature;
     ComPtr<ID3DBlob> error;
@@ -2038,7 +2060,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateComputeSignature()
 
     // Serialize and Create
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
-    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+    rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers), staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> signature;
     ComPtr<ID3DBlob> error;
@@ -2474,7 +2496,7 @@ void Renderer::CreateShaderResourceHeap() {
     // ---------------------------------------------------------------------------
     // We need space for ~40 descriptors + buffers + sort buffers
     m_srvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-        m_device.Get(), 100, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+        m_device.Get(), 1000000, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
     m_srvUavHeap->SetName(L"Main SRV/UAV Heap");
 
     // ---------------------------------------------------------------------------
@@ -2737,9 +2759,21 @@ void Renderer::CreateShaderResourceHeap() {
         nextSlot();
     };
 
-    createTexSrv(m_albedoTextureArray);
-    createTexSrv(m_normalTextureArray);
-    createTexSrv(m_rmaTextureArray);
+    {
+        auto createNullTex2D = [&]() {
+            D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
+            desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            desc.Texture2D.MipLevels = 1;
+            m_device->CreateShaderResourceView(nullptr, &desc, handle);
+            nextSlot();
+        };
+        createNullTex2D(); // slot 28 (was albedo array)
+        createNullTex2D(); // slot 29 (was normal array)
+        createNullTex2D(); // slot 30 (was RMA array)
+    }
+    // Slot 31: LUT array stays as-is
     createTexSrv(m_lutTextureArray);
 
     // --- RANGE 32: UAV u10 (PathState) ---
@@ -2867,6 +2901,42 @@ void Renderer::CreateShaderResourceHeap() {
 
         nextSlot();
         nextStaging();
+    }
+
+    // --- Write Bindless Texture SRVs ---
+    {
+        UINT globalTexIdx = 0;  // index into m_bindlessGpuTextures
+
+        auto writeBindlessBatch = [&](UINT heapBase, UINT count) {
+            for (UINT i = 0; i < count; ++i) {
+                CD3DX12_CPU_DESCRIPTOR_HANDLE dst(
+                    m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                    heapBase + i, inc);
+
+                auto* res = m_bindlessGpuTextures[globalTexIdx].Get();
+                D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+                srv.Format                  = res->GetDesc().Format;
+                srv.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+                srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                srv.Texture2D.MipLevels     = res->GetDesc().MipLevels;
+
+                m_device->CreateShaderResourceView(res, &srv, dst);
+                globalTexIdx++;
+            }
+        };
+
+        UINT albedoCount = m_bindlessNormalBase - m_bindlessAlbedoBase;
+        UINT normalCount = m_bindlessRmaBase    - m_bindlessNormalBase;
+        UINT rmaCount    = m_totalBindlessTextures - albedoCount - normalCount;
+
+        writeBindlessBatch(m_bindlessAlbedoBase, albedoCount);
+        writeBindlessBatch(m_bindlessNormalBase, normalCount);
+        writeBindlessBatch(m_bindlessRmaBase,    rmaCount);
+
+        std::wcout << L"[Bindless] Wrote " << m_totalBindlessTextures
+                   << L" SRVs into heap slots [" << BINDLESS_HEAP_START
+                   << L".." << (BINDLESS_HEAP_START + m_totalBindlessTextures - 1)
+                   << L"]" << std::endl;
     }
 
     std::wcout << L"Heap recreated strictly matching Root Signature." << std::endl;
@@ -4109,6 +4179,80 @@ void Renderer::CompileSetupIndirectShader()
     // 2. Compile Both Variants
     CompileVariant("SetupIndirect_Clear",   true,  m_psoSetupIndirect);
     CompileVariant("SetupIndirect_NoClear", false, m_psoSetupIndirectNoClear);
+}
+
+void Renderer::CreateBindlessTextures(
+    std::vector<TextureData>& textures,
+    UINT heapBaseSlot,
+    const std::wstring& debugPrefix)
+{
+    for (size_t i = 0; i < textures.size(); ++i)
+    {
+        auto& tex = textures[i];
+        const auto& meta = tex.image.GetMetadata();
+
+        D3D12_RESOURCE_DESC desc = {};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width            = meta.width;
+        desc.Height           = (UINT)meta.height;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = (UINT16)meta.mipLevels;
+        desc.Format           = meta.format;
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+        ComPtr<ID3D12Resource> gpuTex;
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps,
+            D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&gpuTex)));
+
+        gpuTex->SetName(
+            (debugPrefix + L"_" + std::to_wstring(i)
+             + L"_" + std::to_wstring(meta.width)
+             + L"x" + std::to_wstring(meta.height)).c_str());
+
+        // Prepare subresource data for each mip level
+        const UINT subresourceCount = (UINT)meta.mipLevels;
+        std::vector<D3D12_SUBRESOURCE_DATA> subresources(subresourceCount);
+        for (UINT m = 0; m < subresourceCount; ++m) {
+            const auto* img = tex.image.GetImage(m, 0, 0);
+            subresources[m].pData      = img->pixels;
+            subresources[m].RowPitch   = (LONG_PTR)img->rowPitch;
+            subresources[m].SlicePitch = (LONG_PTR)img->slicePitch;
+        }
+
+        const UINT64 uploadSize = GetRequiredIntermediateSize(
+            gpuTex.Get(), 0, subresourceCount);
+
+        ComPtr<ID3D12Resource> upload;
+        auto uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &nv_helpers_dx12::kUploadHeapProps,
+            D3D12_HEAP_FLAG_NONE, &uploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&upload)));
+
+        UpdateSubresources(m_commandList.Get(),
+            gpuTex.Get(), upload.Get(),
+            0, 0, subresourceCount, subresources.data());
+
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+            gpuTex.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+            | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        m_commandList->ResourceBarrier(1, &barrier);
+
+        m_bindlessGpuTextures.push_back(gpuTex);
+        m_bindlessUploadHeaps.push_back(upload);
+
+        std::wcout << L"  [Bindless] " << debugPrefix << L"[" << i << L"] "
+                   << meta.width << L"x" << meta.height
+                   << L" mips=" << meta.mipLevels
+                   << L" -> heap slot " << (heapBaseSlot + i) << std::endl;
+    }
 }
 
 void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList)

@@ -727,7 +727,7 @@ public:
             }
 
             // --- RESIZING LOGIC TO ENSURE ARRAY CONSISTENCY ---
-            const TexMetadata& metadata = scratchImage.GetMetadata();
+            /*const TexMetadata& metadata = scratchImage.GetMetadata();
             if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
                 std::cout << "      - Note: Resizing texture from " << metadata.width << "x" << metadata.height
                           << " to " << TARGET_TEXTURE_DIM << "x" << TARGET_TEXTURE_DIM << " for array consistency." << std::endl;
@@ -738,7 +738,7 @@ public:
                     return -1;
                 }
                 scratchImage = std::move(resizedImage);
-            }
+            }*/
             // --- END RESIZING LOGIC ---
 
             ScratchImage mipChain;
@@ -825,7 +825,7 @@ public:
             texData.original_width = width;
             texData.original_height = height;
 
-            const TexMetadata& metadata = combinedImage.GetMetadata();
+            /*const TexMetadata& metadata = combinedImage.GetMetadata();
             if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
                 std::cout << "      - Note: Resizing combined RMA texture from " << metadata.width << "x" << metadata.height
                           << " to " << TARGET_TEXTURE_DIM << "x" << TARGET_TEXTURE_DIM << " for array consistency." << std::endl;
@@ -836,7 +836,7 @@ public:
                     return -1;
                 }
                 combinedImage = std::move(resizedImage);
-            }
+            }*/
 
             ScratchImage mipChain;
             GenerateMipMaps(*combinedImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
@@ -933,13 +933,13 @@ public:
             texData.original_width = dw;
             texData.original_height = dh;
 
-            const TexMetadata& metadata = diffuseImage.GetMetadata();
+            /*const TexMetadata& metadata = diffuseImage.GetMetadata();
             if (metadata.width != TARGET_TEXTURE_DIM || metadata.height != TARGET_TEXTURE_DIM) {
                 ScratchImage resizedImage;
                 HRESULT hr = Resize(*diffuseImage.GetImage(0, 0, 0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resizedImage);
                 if (FAILED(hr)) { std::cerr << "  ERROR: Failed to resize albedo+opacity." << std::endl; return -1; }
                 diffuseImage = std::move(resizedImage);
-            }
+            }*/
 
             ScratchImage mipChain;
             HRESULT hr = GenerateMipMaps(*diffuseImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
@@ -1111,6 +1111,7 @@ public:
         // Let v3 decode images via its built-in stbi (TINYGLTF3_ENABLE_STB_IMAGE)
         opts.preserve_image_channels = 0; // widen to RGBA
         opts.images_as_is = 0;
+        opts.memory.memory_budget = 4ULL * 1024 * 1024 * 1024;
 
         opts.image.load_image = [](tg3_image_result* result,
                            const tg3_image_request* request,
@@ -1144,6 +1145,24 @@ public:
             fileData.data(), (uint64_t)fileSize,
             nullptr, 0,  // no base_dir needed for GLB
             &opts);
+
+        if (ec != TG3_OK) {
+            std::cerr << "[GlbLoader] Failed to parse GLB (error code " << (int)ec << ")." << std::endl;
+            for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
+                const tg3_error_entry* e = tg3_errors_get(&errors, i);
+                if (e) std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
+            }
+            tg3_error_stack_free(&errors);
+            return;
+        }
+
+
+        // Print any warnings
+        for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
+            const tg3_error_entry* e = tg3_errors_get(&errors, i);
+            if (e && e->severity == TG3_SEVERITY_WARNING)
+                std::cout << "[GlbLoader] Warning: " << (e->message ? e->message : "?") << std::endl;
+        }
 
         struct DecodedImage {
             std::vector<uint8_t> pixels;
@@ -1185,23 +1204,6 @@ public:
                     }
                 }
             }
-        }
-
-        if (ec != TG3_OK) {
-            std::cerr << "[GlbLoader] Failed to parse GLB (error code " << (int)ec << ")." << std::endl;
-            for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
-                const tg3_error_entry* e = tg3_errors_get(&errors, i);
-                if (e) std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
-            }
-            tg3_error_stack_free(&errors);
-            return;
-        }
-
-        // Print any warnings
-        for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
-            const tg3_error_entry* e = tg3_errors_get(&errors, i);
-            if (e && e->severity == TG3_SEVERITY_WARNING)
-                std::cout << "[GlbLoader] Warning: " << (e->message ? e->message : "?") << std::endl;
         }
 
         std::cout << "[GlbLoader] Parsed '" << inputfile << "':" << std::endl;
@@ -1248,13 +1250,13 @@ public:
             if (FAILED(hr)) return -1;
             memcpy(scratch.GetPixels(), pixelData, (std::min)(scratch.GetPixelsSize(), (size_t)width * height * 4));
 
-            const TexMetadata& meta = scratch.GetMetadata();
+            /*const TexMetadata& meta = scratch.GetMetadata();
             if (meta.width != TARGET_TEXTURE_DIM || meta.height != TARGET_TEXTURE_DIM) {
                 ScratchImage resized;
                 hr = Resize(*scratch.GetImage(0,0,0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resized);
                 if (FAILED(hr)) return -1;
                 scratch = std::move(resized);
-            }
+            }*/
 
             ScratchImage mipChain;
             hr = GenerateMipMaps(*scratch.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
@@ -1307,12 +1309,12 @@ public:
                 dest[i*4+3] = 255;
             }
 
-            const TexMetadata& meta = combined.GetMetadata();
+            /*const TexMetadata& meta = combined.GetMetadata();
             if (meta.width != TARGET_TEXTURE_DIM || meta.height != TARGET_TEXTURE_DIM) {
                 ScratchImage resized;
                 if (FAILED(Resize(*combined.GetImage(0,0,0), TARGET_TEXTURE_DIM, TARGET_TEXTURE_DIM, TEX_FILTER_DEFAULT, resized))) return -1;
                 combined = std::move(resized);
-            }
+            }*/
 
             ScratchImage mipChain;
             GenerateMipMaps(*combined.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);

@@ -20,10 +20,6 @@ static uint3 gDispatchIdx;
 
 SamplerState g_sampler : register(s0);
 
-Texture2DArray albedoTextures : register(t30);
-Texture2DArray normalTextures : register(t31);
-Texture2DArray rmaTextures    : register(t32);
-
 SamplerState g_sampler_LUT : register(s1);
 
 Texture2DArray g_LUT : register(t33);

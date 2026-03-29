@@ -94,8 +94,8 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
             float alpha = mat.Kd.w;
             if (mat.albedoTexID >= 0)
             {
-                alpha = albedoTextures.SampleLevel(
-                    g_sampler, float3(uv, (float)mat.albedoTexID), 0).a;
+                Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
+                alpha = tex.SampleLevel(g_sampler, uv, 0).a;
             }
 
             if (alpha < mat.alphaThreshold)
@@ -238,7 +238,8 @@ float3 EvaluateAlbedo(in Material mat, float2 uv, uint level)
     if (mat.albedoTexID != -1)
     {
         float2 albedoUV = uv * mat.albedoUVScale;
-        albedo = albedoTextures.SampleLevel(g_sampler, float3(albedoUV, mat.albedoTexID), level).rgb;
+        Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
+        albedo = tex.SampleLevel(g_sampler, albedoUV, level).rgb;
     }
     return albedo;
 }
@@ -252,10 +253,11 @@ float2 EvaluatePBRProperties(in Material mat, float2 uv, uint level)
     if (mat.rmaTexID != -1)
     {
         float2 rmaUV = uv * mat.rmaUVScale;
-        float4 rmaSample = rmaTextures.SampleLevel(g_sampler, float3(rmaUV, mat.rmaTexID), level);
+        Texture2D<float4> tex = ResourceDescriptorHeap[mat.rmaTexID];
+        float4 rmaSample = tex.SampleLevel(g_sampler, rmaUV, level);
 
-        pbrProps.x = rmaSample.g; // Roughness
-        pbrProps.y = rmaSample.b; // Metallic
+        pbrProps.x = rmaSample.g;
+        pbrProps.y = rmaSample.b;
     }
     return pbrProps;
 }
@@ -440,8 +442,9 @@ HitInfo EvalSurfaceState(
 
         const float3 bitangentW = cross(normW, tangentW);
 
+        Texture2D<float4> nTex = ResourceDescriptorHeap[mat.normalTexID];
         const float3 n_tan =
-            normalTextures.SampleLevel(g_sampler, float3(normalUV, mat.normalTexID), level).xyz * 2.0f - 1.0f;
+            nTex.SampleLevel(g_sampler, normalUV, level).xyz * 2.0f - 1.0f;
 
         // Apply TBN without materializing float3x3
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;

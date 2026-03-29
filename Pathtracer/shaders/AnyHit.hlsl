@@ -27,9 +27,8 @@ void AlphaTestAnyHit(inout TracePayload payload,
     float b0 = 1.0f - attr.barycentrics.x - attr.barycentrics.y;
     float2 uv = uv0 * b0 + uv1 * attr.barycentrics.x + uv2 * attr.barycentrics.y;
 
-    // Sample texture alpha only
-    float alpha = albedoTextures.SampleLevel(
-        g_sampler, float3(uv * mat.albedoUVScale, mat.albedoTexID), 0).a;
+    Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
+    float alpha = tex.SampleLevel(g_sampler, uv * mat.albedoUVScale, 0).a;
 
     if (alpha < mat.alphaThreshold)
         IgnoreHit();
