@@ -113,7 +113,6 @@ private:
         PingSwap,
         ClearSort,
         Callable,
-        ML,
         DLSS
     };
 
@@ -142,7 +141,6 @@ private:
         if (token == L"pingswap")  { p.stage = Stage::PingSwap;  return p; }
         if (token == L"endloop")   { p.stage = Stage::LoopEnd;   return p; }
         if (token == L"clearsort") { p.stage = Stage::ClearSort; return p; }
-        if (token == L"ml")        { p.stage = Stage::ML;        return p; }
         if (token == L"dlss")      { p.stage = Stage::DLSS;      return p; }
 
         if (token.rfind(L"loop:", 0) == 0) {
@@ -258,8 +256,6 @@ private:
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
     std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
 
-    std::vector<ComPtr<ID3D12Resource>> m_textureUploadHeaps;
-
     std::vector<std::vector<Vertex>> m_cpuVertexData;
     std::vector<std::vector<UINT>> m_cpuIndexData;
 
@@ -330,16 +326,6 @@ private:
     // Map from instance index to model index
     std::vector<UINT> m_instanceModelIndices;
     std::vector<UINT> m_materialIDOffsets;
-
-    // alias table
-    std::vector<float> m_aliasProb;
-    // probability array
-    std::vector<uint32_t> m_aliasIdx;
-    // alias‑index array
-    ComPtr<ID3D12Resource> m_aliasProbBuffer;
-    // default‑heap GPU copies
-    ComPtr<ID3D12Resource> m_aliasIdxBuffer;
-    ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
 
     ComPtr<ID3D12Resource> m_pathStateBuffer;
     void CreatePathStateBuffer();
@@ -478,6 +464,7 @@ private:
   ComPtr<ID3D12Resource> m_reservoirBuffer_2;
   ComPtr<ID3D12Resource> m_reservoirBuffer_3;
   ComPtr<ID3D12Resource> m_reservoirBuffer_4;
+    ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
   ComPtr<ID3D12DescriptorHeap> m_constHeap;
   uint32_t m_cameraBufferSize = 0;
 
@@ -525,10 +512,6 @@ private:
   std::vector<Material> m_materials;
   UINT materialIDOffset = 0;
   UINT materialVertexOffset = 0;
-
-    ComPtr<ID3D12Resource> m_albedoTextureArray;
-    ComPtr<ID3D12Resource> m_normalTextureArray;
-    ComPtr<ID3D12Resource> m_rmaTextureArray;
 
   //Support for several objects (instanced optionally)
   std::vector<ComPtr<ID3D12Resource>> m_VB;
@@ -592,16 +575,7 @@ private:
 
 
     void CollectEmissiveTriangles();
-
     void CreateEmissiveTrianglesBuffer();
-
-  void BuildAliasTableSoA(const std::vector<LightTriangle> &tris);
-
-  void CreateAliasBuffers();
-    void CreateTextureArrays(
-    const std::vector<TextureData>& albedoTextures,
-    const std::vector<TextureData>& normalTextures,
-    const std::vector<TextureData>& rmaTextures);
 
   float ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
 
@@ -639,54 +613,6 @@ private:
 
     CameraRecorder m_recorder;
     CameraPathSimulator m_simulator;
-
-
-    // ---------------- ML / ONNX Runtime / DirectML ----------------
-    bool m_enableML = false;
-
-    // Configure which scratchPing slices become model input,
-    // and which slice receives the model output mask.
-    std::vector<UINT> m_mlInputSlices = { 7, 8, 9 }; // <-- set what you want
-    UINT m_mlOutputSlice = 10;                       // <-- set what you want (mask written to .x)
-
-    // DirectML sanity device (optional but requested)
-    Microsoft::WRL::ComPtr<IDMLDevice> m_dmlDevice;
-
-    // ONNX Runtime objects
-    std::unique_ptr<Ort::Env>     m_ortEnv;
-    std::unique_ptr<Ort::Session> m_ortSession;
-    Ort::SessionOptions           m_ortSessionOptions;
-
-    // Names cached from the model
-    std::string m_mlInputNameStr;
-    std::string m_mlOutputNameStr;
-    const char* m_mlInputName  = nullptr;
-    const char* m_mlOutputName = nullptr;
-
-    // Shapes and CPU staging
-    std::vector<int64_t> m_mlInputShape;   // e.g. {1, C, H, W}
-    std::vector<int64_t> m_mlOutputShape;  // e.g. {1, 1, H, W}
-    size_t m_mlInputElems  = 0;
-    size_t m_mlOutputElems = 0;
-    std::vector<uint16_t> m_mlInputCPU;
-    std::vector<uint16_t> m_mlOutputCPU;
-
-    // Readback/upload resources for scratchPing slices
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT m_mlFootprint = {};
-    UINT64  m_mlSliceBytes        = 0;
-    UINT64  m_mlSliceBytesAligned = 0;
-    UINT    m_mlRowPitch          = 0;
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_mlReadbackBuffer; // large enough for N input slices
-    Microsoft::WRL::ComPtr<ID3D12Resource> m_mlUploadBuffer;   // one-slice upload for output
-
-    // ML helpers
-    void InitML_ONNX_DML(const wchar_t* onnxPath);
-    void CreateMLBuffers();                 // after scratchPing exists
-    void RunMLPass();                       // invoked from PopulateCommandList
-
-    void FlushExecuteAndWait();             // closes+executes current list and waits, then resets
-    void RebindAfterReset();                // rebinds RTV/DSV/viewport/heaps after reset
 
     // --- DLSS RESOURCES ---
     ComPtr<ID3D12Resource> m_dlssInput;             // u22: Noisy Input Color
