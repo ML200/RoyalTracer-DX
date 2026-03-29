@@ -745,4 +745,19 @@ private:
 
     std::vector<UINT> m_opaqueTriCount;
     std::vector<UINT> m_alphaTriCount;
+
+    // --- Bindless texturing ---
+    static constexpr UINT BINDLESS_HEAP_START = 60;
+    UINT m_bindlessAlbedoBase = 0;
+    UINT m_bindlessNormalBase = 0;
+    UINT m_bindlessRmaBase    = 0;
+    UINT m_totalBindlessTextures = 0;
+    std::vector<ComPtr<ID3D12Resource>> m_bindlessGpuTextures;   // keep alive
+    std::vector<ComPtr<ID3D12Resource>> m_bindlessUploadHeaps;   // keep alive until first fence
+
+    // Add method declaration:
+    void CreateBindlessTextures(
+        std::vector<TextureData>& textures,
+        UINT heapBaseSlot,
+        const std::wstring& debugPrefix);
 };
