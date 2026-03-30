@@ -94,13 +94,43 @@ add_executable(Pathtracer WIN32
         rdn/CameraPathSimulator.cpp
         rdn/CameraPathSimulator.h
         rdn/ResourceStateTracker.h
+
+        rdn/Core/DeviceContext.h
+        rdn/Core/DeviceContext.cpp
+        rdn/Core/ResourceFactory.h
+        rdn/Camera/Camera.h
+        rdn/Camera/Camera.cpp
+        rdn/Editor/Editor.h
+        rdn/Editor/Editor.cpp
+        rdn/PostProcess/DLSSManager.h
+        rdn/PostProcess/DLSSManager.cpp
+        rdn/Raytracing/PassSystem.h
+        rdn/Raytracing/PassSystem.cpp
+        rdn/Scene/Scene.h
+        rdn/Scene/Scene.cpp
+        rdn/Scene/AssetLoader.h
+        rdn/Scene/AssetLoader.cpp
+        rdn/Renderer_Pipeline.cpp
+        rdn/Common.h
+
+        rdn/ThirdPartyImpl.cpp
+        rdn/Lighting/LightTreeRefit.h
+
+        # ImGui
+        lib/imgui/imgui.cpp
+        lib/imgui/imgui_draw.cpp
+        lib/imgui/imgui_tables.cpp
+        lib/imgui/imgui_widgets.cpp
+        lib/imgui/imgui_impl_dx12.cpp
+        lib/imgui/imgui_impl_win32.cpp
 )
 
 # ───────────────────────── include directories ───────────────────────────────
 target_include_directories(Pathtracer PRIVATE
         ${D3D12_AGILITY_INCLUDE}
         ${SL_INCLUDE_DIR}
-        ${ORT_INCLUDE_DIR})
+        ${ORT_INCLUDE_DIR}
+        ${CMAKE_SOURCE_DIR}/lib/imgui)
 
 # ──────────────── Streamline import‐lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)
