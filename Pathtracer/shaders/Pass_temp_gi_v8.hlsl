@@ -143,7 +143,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
                     );
 
                     float ph = GetPHat(c);
-                    float vis = VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1_g, 0u);
+                    float vis = VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1_s, 0u);
                     p_n = ph * vis;
                 }
 
@@ -159,7 +159,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
                     );
 
                     float ph = GetPHat(c);
-                    float vis = VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1_g, 0u);
+                    float vis = VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1_s, 0u);
                     n_c = ph * vis;
                 }
 

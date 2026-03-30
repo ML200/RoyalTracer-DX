@@ -146,6 +146,14 @@ void Renderer::OnUpdate() {
         m_scene.materialsDirty = false;
     }
 
+    // Check for DLSS mode change — flag for reallocation in PopulateCommandList
+    if (m_dlss.UpdateMode(m_ctx.Device())) {
+        m_dlssModeChanged = true;
+        RebuildDLSSDescriptors();
+        LOG(L"[DLSS] Mode changed → render res: "
+            << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
+    }
+
     // Kick async light tree TLAS refit when dirty and no refit in flight
     if (m_scene.lightTreeDirty && !m_lightTreeRefit.IsPending()) {
         // If emission values changed, recompute everything from CPU data
@@ -428,6 +436,36 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
     LOG(L"[Emissive] GPU buffers updated: " << tris.size() << L" tris, " << triMap.size() << L" triToLightId");
 }
 
+// ─────────────────────────────────────────────────────────────────
+void Renderer::RebuildDLSSDescriptors() {
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+        m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), DLSS_UAV_HEAP_START, inc);
+
+    auto dlssUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        ud.Format = fmt;
+        dev->CreateUnorderedAccessView(res, nullptr, &ud, handle);
+        handle.ptr += inc;
+    };
+
+    // Must match order in CreateShaderResourceHeap (slots 39-50)
+    dlssUAV(m_dlss.Depth(),            DXGI_FORMAT_R32_FLOAT);
+    dlssUAV(m_dlss.MVec(),             DXGI_FORMAT_R16G16_FLOAT);
+    dlssUAV(m_dlss.Normals(),          DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.DiffuseAlbedo(),    DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Output(),           DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.SpecularAlbedo(),   DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Roughness(),        DXGI_FORMAT_R16_FLOAT);
+    dlssUAV(m_dlss.SpecMVec(),         DXGI_FORMAT_R16G16_FLOAT);
+    dlssUAV(m_dlss.SpecHitDist(),      DXGI_FORMAT_R16_FLOAT);
+    dlssUAV(m_dlss.Transparency(),     DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Input(),            DXGI_FORMAT_R16G16B16A16_FLOAT);
+}
+
 // ═════════════════════════════════════════════════════════════════
 // Render
 // ═════════════════════════════════════════════════════════════════
@@ -468,6 +506,17 @@ void Renderer::OnDestroy() {
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 
+    // Reallocate Streamline DLSS feature if mode changed (needs open command list)
+    if (m_dlssModeChanged) {
+        m_dlssModeChanged = false;
+        sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
+        if (fr != sl::Result::eOk)
+            std::wcout << L"[SL] slFreeResources failed: " << (int)fr << std::endl;
+        sl::Result ar = slAllocateResources(cmdList, sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
+        if (ar != sl::Result::eOk)
+            std::wcout << L"[SL] slAllocateResources failed: " << (int)ar << std::endl;
+    }
+
     // Transition back buffer → render target
     {   auto b = CD3DX12_RESOURCE_BARRIER::Transition(
             m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_PRESENT,
@@ -478,9 +527,11 @@ void Renderer::PopulateCommandList() {
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // Rebuild TLAS only when instances have moved
+    // Full TLAS rebuild when dirty (not refit — refit preserves tree structure
+    // which causes massive AABB overlap and halved perf after large moves)
     if (m_scene.tlasDirty) {
-        CreateTopLevelAS(m_scene.tlasInstances, true);
+        m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
+        CreateTopLevelAS(m_scene.tlasInstances, false);
         m_scene.tlasDirty = false;
     }
     { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
@@ -491,8 +542,12 @@ void Renderer::PopulateCommandList() {
     cmdList->SetDescriptorHeaps(1, heaps);
 
     // ── Build ray dispatch descriptor ────────────────────────────
+    // Pre-DLSS passes render at internal resolution; post-DLSS at display res
+    const UINT renderW = m_dlss.RenderWidth();
+    const UINT renderH = m_dlss.RenderHeight();
+
     D3D12_DISPATCH_RAYS_DESC raysDesc{};
-    raysDesc.Width = GetWidth(); raysDesc.Height = GetHeight(); raysDesc.Depth = 1;
+    raysDesc.Width = renderW; raysDesc.Height = renderH; raysDesc.Depth = 1;
     const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
     const uint32_t rgSize   = m_sbtHelper.GetRayGenEntrySize();
 
@@ -533,6 +588,8 @@ void Renderer::PopulateCommandList() {
     // ── Execute pass pipeline ────────────────────────────────────
     uint32_t currentStack = 0, nextStack = 1;
     std::vector<std::pair<int, uint32_t>> loopStack;
+    // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
+    UINT dispW = renderW, dispH = renderH;
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
@@ -568,7 +625,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState1(m_rtStateObject.Get());
             cmdList->SetComputeRootSignature(m_rayGenSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT consts[6] = { GetWidth(), GetHeight(), 0, 0, 0, 0 };
+            UINT consts[6] = { dispW, dispH, 0, 0, 0, 0 };
             cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
 
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
@@ -581,11 +638,10 @@ void Renderer::PopulateCommandList() {
         case Stage::Compute:
         {
             if (p.isWorkGraph) {
-                // Work graph dispatch (same as original)
                 const auto& rt = m_wgRuntime[p.wgIdx];
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                UINT consts[6] = { GetWidth(), GetHeight(), currentStack, nextStack, 0, 0 };
+                UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
                 cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
                 D3D12_SET_PROGRAM_DESC sp{}; sp.Type = D3D12_PROGRAM_TYPE_WORK_GRAPH;
                 sp.WorkGraph.ProgramIdentifier = rt.id; sp.WorkGraph.BackingMemory = rt.backing;
@@ -600,11 +656,11 @@ void Renderer::PopulateCommandList() {
                 cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                UINT consts[6] = { GetWidth(), GetHeight(), currentStack, nextStack, 0, 0 };
+                UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
                 cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
                 cmdList->Dispatch(
-                    (GetWidth()  + p.groupX - 1) / p.groupX,
-                    (GetHeight() + p.groupY - 1) / p.groupY, 1);
+                    (dispW + p.groupX - 1) / p.groupX,
+                    (dispH + p.groupY - 1) / p.groupY, 1);
             }
             break;
         }
@@ -614,7 +670,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT consts[6] = { GetWidth(), GetHeight(), currentStack, nextStack, 0, 0 };
+            UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
             cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
             cmdList->Dispatch(p.groupX, p.groupY, 1);
             break;
@@ -642,7 +698,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT trC[6] = { GetWidth(), GetHeight(), currentStack, nextStack, 0, 0 };
+            UINT trC[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
             cmdList->SetComputeRoot32BitConstants(1, 6, trC, 0);
             cmdList->ExecuteIndirect(m_commandSignature.Get(), 1, m_indirectArgsBuffer.Get(), 0, nullptr, 0);
 
@@ -671,9 +727,13 @@ void Renderer::PopulateCommandList() {
 
             m_dlss.Evaluate(cmdList, m_ctx.Device(),
                 *m_ctx.frameToken, m_ctx.viewportHandle,
-                GetWidth(), GetHeight(), m_aspectRatio,
+                m_aspectRatio,
                 m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(),
                 m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame());
+
+            // After DLSS: post-process passes run at display resolution
+            dispW = GetWidth();
+            dispH = GetHeight();
 
             // Rebind our heap (DLSS may have changed it)
             ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };

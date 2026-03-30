@@ -1,7 +1,7 @@
 #pragma once
 // ═══════════════════════════════════════════════════════════════════
 // PostProcess/DLSSManager.h — Owns DLSS-RR resources and evaluation.
-//                             Completely self-contained.
+//                             Manages render vs display resolution.
 // ═══════════════════════════════════════════════════════════════════
 
 #include "../Common.h"
@@ -15,15 +15,16 @@
 
 class DLSSManager {
 public:
-    void CreateResources(ID3D12Device* device, UINT width, UINT height);
+    void CreateResources(ID3D12Device* device, UINT displayWidth, UINT displayHeight);
 
-    // Run DLSS-RR: transitions inputs to SRV, evaluates, transitions back
+    // Returns true if resources were recreated (caller should rebuild SRV heap entries)
+    bool UpdateMode(ID3D12Device* device);
+
     void Evaluate(
         ID3D12GraphicsCommandList* cmdList,
         ID3D12Device* device,
         sl::FrameToken& frameToken,
         sl::ViewportHandle viewport,
-        UINT width, UINT height,
         float aspectRatio,
         const XMMATRIX& viewMatrix,
         const XMMATRIX& prevViewMatrix,
@@ -31,7 +32,13 @@ public:
         float jitterX, float jitterY,
         uint32_t jitterFrameIndex);
 
-    // ── Accessors for SRV/UAV heap setup ─────────────────────────
+    // ── Resolution accessors ──────────────────────────────────────
+    UINT RenderWidth()  const { return m_renderWidth; }
+    UINT RenderHeight() const { return m_renderHeight; }
+    UINT DisplayWidth() const { return m_displayWidth; }
+    UINT DisplayHeight()const { return m_displayHeight; }
+
+    // ── Resource accessors for SRV/UAV heap setup ─────────────────
     ID3D12Resource* Input()            const { return m_input.Get(); }
     ID3D12Resource* Depth()            const { return m_depth.Get(); }
     ID3D12Resource* MVec()             const { return m_mvec.Get(); }
@@ -50,12 +57,19 @@ public:
     float fovDegrees  = 60.0f;
 
 private:
+    void CreateInputTextures(ID3D12Device* device);
+    void ComputeRenderResolution();
+
     ComPtr<ID3D12Resource> m_input, m_depth, m_mvec, m_normals;
     ComPtr<ID3D12Resource> m_diffuseAlbedo, m_output;
     ComPtr<ID3D12Resource> m_specAlbedo, m_roughness, m_specMvec, m_specHitDist;
     ComPtr<ID3D12Resource> m_transparency, m_colorBeforeTrans;
 
     ResourceStateTracker m_state;
+
+    UINT m_displayWidth  = 0, m_displayHeight = 0;
+    UINT m_renderWidth   = 0, m_renderHeight  = 0;
+    sl::DLSSMode m_activeMode = sl::DLSSMode::eOff;  // mode resources were built for
 
     XMMATRIX m_dlssPrevView = XMMatrixIdentity();
     XMMATRIX m_dlssPrevProj = XMMatrixIdentity();

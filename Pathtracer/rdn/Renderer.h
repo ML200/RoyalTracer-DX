@@ -161,8 +161,10 @@ private:
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
 
     // ── Editor ───────────────────────────────────────────────────
-    static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;  // last slot in the 1M heap
+    static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
+    static constexpr UINT DLSS_UAV_HEAP_START  = 39;     // slots 39-50
     float m_fps = 0.0f;
+    bool m_dlssModeChanged = false;
 
     // ── Frame dispatch ───────────────────────────────────────────
     uint32_t m_time = 0;
@@ -171,6 +173,7 @@ private:
     void UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList);
     void KickLightTreeRefit();
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
+    void RebuildDLSSDescriptors();
 
     // ── Readback / simulation ────────────────────────────────────
     ComPtr<ID3D12Resource> m_readbackBuffer;
