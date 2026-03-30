@@ -223,10 +223,29 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss) {
 
     if (!ImGui::Begin("DLSS-RR")) { ImGui::End(); return; }
 
-    const char* modes[] = { "Off", "DLAA", "Quality", "Balanced", "Performance", "Ultra Perf" };
-    int currentMode = static_cast<int>(dlss.mode);
-    if (ImGui::Combo("Mode", &currentMode, modes, IM_ARRAYSIZE(modes)))
-        dlss.mode = static_cast<sl::DLSSMode>(currentMode);
+    // DLSS-RR only supports Off, DLAA, Quality (MaxQuality), and Balanced.
+    // Map combo indices to actual sl::DLSSMode enum values (which may not be contiguous).
+    const char* modeLabels[] = { "Off", "DLAA", "Quality", "Balanced" };
+    const sl::DLSSMode modeValues[] = {
+        sl::DLSSMode::eOff,
+        sl::DLSSMode::eDLAA,
+        sl::DLSSMode::eMaxQuality,
+        sl::DLSSMode::eBalanced
+    };
+    constexpr int modeCount = IM_ARRAYSIZE(modeLabels);
+
+    // Find current combo index from active mode
+    int currentIdx = 1; // default to DLAA
+    for (int i = 0; i < modeCount; ++i) {
+        if (dlss.mode == modeValues[i]) { currentIdx = i; break; }
+    }
+
+    if (ImGui::Combo("Mode", &currentIdx, modeLabels, modeCount))
+        dlss.mode = modeValues[currentIdx];
+
+    ImGui::TextDisabled("Render: %ux%u -> Display: %ux%u",
+        dlss.RenderWidth(), dlss.RenderHeight(),
+        dlss.DisplayWidth(), dlss.DisplayHeight());
 
     ImGui::End();
 }
