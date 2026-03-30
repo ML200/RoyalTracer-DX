@@ -1,7 +1,6 @@
 #pragma once
 // ═══════════════════════════════════════════════════════════════════
-// PostProcess/DLSSManager.h — Owns DLSS-RR resources and evaluation.
-//                             Manages render vs display resolution.
+// PostProcess/DLSSManager.h
 // ═══════════════════════════════════════════════════════════════════
 
 #include "../Common.h"
