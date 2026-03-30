@@ -1,8 +1,6 @@
 #pragma once
 // ═══════════════════════════════════════════════════════════════════
-// Renderer.h — Slim orchestrator. Owns the modules, wires them
-//              together, and drives the frame loop. No business
-//              logic lives here — it's all delegated.
+// Renderer.h
 // ═══════════════════════════════════════════════════════════════════
 
 #include "Common.h"
@@ -54,11 +52,11 @@ private:
     static constexpr UINT LT_TLAS_SRV_SLOT        = 20;
     static constexpr UINT LT_BLASTOITEM_SRV_SLOT   = 27;
 
-    // Emissive triangle GPU re-upload (when emission values change)
+    // Emissive triangle GPU re-upload
     bool m_emissiveGpuDirty = false;
     ComPtr<ID3D12Resource> m_emissiveUploadStaging;
     ComPtr<ID3D12Resource> m_triToLightIdUploadStaging;
-    ComPtr<ID3D12Resource> m_ownedEmissiveGpu;       // replaces scene's after first re-upload
+    ComPtr<ID3D12Resource> m_ownedEmissiveGpu;
     ComPtr<ID3D12Resource> m_ownedTriToLightIdGpu;
     UINT m_emissiveGpuCapacity     = 0;
     UINT m_triToLightIdGpuCapacity = 0;
@@ -67,14 +65,14 @@ private:
     CameraRecorder      m_recorder;
     CameraPathSimulator m_simulator;
 
-    // ── Input ────────────────────────────────────────────────────
+    // input
     bool g_keys[256] = {};
     void OnKeyDown(UINT8 key) override;
     void OnKeyUp(UINT8 key)   override;
     void OnButtonDown(UINT32 lParam);
     void OnMouseMove(UINT8 wParam, UINT32 lParam);
 
-    // ── Acceleration structures ──────────────────────────────────
+    // AS
     struct AccelerationStructureBuffers {
         ComPtr<ID3D12Resource> pScratch, pResult, pResultUncompacted, pInstanceDesc;
     };
@@ -90,7 +88,7 @@ private:
         bool updateOnly = false);
     void CreateAccelerationStructures();
 
-    // ── Pipeline ─────────────────────────────────────────────────
+    // Pipeline
     ComPtr<ID3D12RootSignature>       m_rayGenSignature, m_computeSignature;
     ComPtr<ID3D12RootSignature>       m_hitSignature, m_missSignature;
     ComPtr<ID3D12StateObject>         m_rtStateObject;
@@ -114,7 +112,7 @@ private:
     void CreateRaytracingPipeline();
     void CreateShaderBindingTable();
 
-    // ── Render targets & UAV heap ────────────────────────────────
+    // Render targets and UAV heap
     ComPtr<ID3D12Resource>       m_outputResource;
     ComPtr<ID3D12Resource>       m_permanentDataTexture;
     ComPtr<ID3D12Resource>       m_scratchPing;
@@ -130,7 +128,7 @@ private:
     void CreateShaderResourceHeap();
     void CreatePathStateBuffer();
 
-    // ── Streaming compaction / indirect dispatch ─────────────────
+    // Streaming compaction / indirect dispatch (unused fn)
     ComPtr<ID3D12Resource>         m_stackBuffers[MAX_STACKS];
     ComPtr<ID3D12Resource>         m_globalCounterBuffer;
     ComPtr<ID3D12Resource>         m_indirectArgsBuffer;
@@ -149,24 +147,24 @@ private:
     void CompileSetupIndirectShader();
     void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
-    // ── LUT textures ─────────────────────────────────────────────
+    // LUT textures
     ComPtr<ID3D12Resource> m_lutTextureArray;
     std::vector<ComPtr<ID3D12Resource>> m_lutUploadHeaps;
     void GenerateLutTextures();
     void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
-    // ── Display ──────────────────────────────────────────────────
+    // Display
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
 
-    // ── Editor ───────────────────────────────────────────────────
+    // Editor
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;     // slots 39-50
     float m_fps = 0.0f;
     bool m_dlssModeChanged = false;
 
-    // ── Frame dispatch ───────────────────────────────────────────
+    // Frame dispatch
     uint32_t m_time = 0;
     void PopulateCommandList();
     void UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList);
@@ -175,7 +173,7 @@ private:
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
     void RebuildDLSSDescriptors();
 
-    // ── Readback / simulation ────────────────────────────────────
+    //Readback / simulation
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();
     void SaveSimulationData(uint32_t stepIndex);

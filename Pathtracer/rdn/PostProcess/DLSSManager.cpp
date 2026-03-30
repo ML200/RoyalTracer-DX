@@ -1,6 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
-// PostProcess/DLSSManager.cpp — DLSS-RR with proper render/display
-//                               resolution separation per mode.
+// PostProcess/DLSSManager.cpp
 // ═══════════════════════════════════════════════════════════════════
 
 #include "../stdafx.h"

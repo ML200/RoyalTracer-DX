@@ -41,7 +41,7 @@ void Renderer::OnInit() {
 
         // 4. Load scene assets
         AssetLoader::LoadModels({
-            { "./bistro2/bistro2.obj", XMMatrixIdentity() },
+            { "./twr.glb", XMMatrixIdentity() },
             // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
         }, m_scene, m_ctx.Device(), m_ctx.CmdList());
 
@@ -137,7 +137,6 @@ void Renderer::OnUpdate() {
     }
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
-    m_scene.UpdateInstanceProperties();
     m_time++;
 
     // ── Handle dirty flags ───────────────────────────────────────
@@ -176,8 +175,12 @@ void Renderer::OnUpdate() {
         LOG(L"[LightTree] Async TLAS refit ready: " << m_pendingTLASUpload.size() << L" nodes");
     }
 
-    // Build editor UI
+    // Build editor UI — must run before UpdateInstanceProperties so
+    // MarkModelMoved() changes are picked up in the same frame
     m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_fps);
+
+    // Upload instance transforms AFTER editor changes are applied
+    m_scene.UpdateInstanceProperties();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -533,6 +536,19 @@ void Renderer::PopulateCommandList() {
         m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
         CreateTopLevelAS(m_scene.tlasInstances, false);
         m_scene.tlasDirty = false;
+
+        // Full rebuild allocates a new pResult buffer → update SRV descriptor at slot 2
+        const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSrv(
+            m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.Format = DXGI_FORMAT_UNKNOWN;
+        sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.RaytracingAccelerationStructure.Location =
+            m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
+        m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
     }
     { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
       cmdList->ResourceBarrier(1, &b); }
