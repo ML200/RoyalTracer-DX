@@ -12,8 +12,12 @@
 #include "stdafx.h"
 
 #include "Win32Application.h"
+#include "../lib/imgui/imgui.h"
 
 HWND Win32Application::m_hwnd = nullptr;
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 int Win32Application::Run(DXSample *pSample, HINSTANCE hInstance,
                           int nCmdShow) {
@@ -71,6 +75,8 @@ int Win32Application::Run(DXSample *pSample, HINSTANCE hInstance,
 // Main message handler for the sample.
 LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
                                               WPARAM wParam, LPARAM lParam) {
+  if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam))
+    return true;
   DXSample *pSample =
       reinterpret_cast<DXSample *>(GetWindowLongPtr(hWnd, GWLP_USERDATA));
 

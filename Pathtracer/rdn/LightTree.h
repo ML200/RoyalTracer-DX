@@ -525,6 +525,10 @@ public:
 
     void ReleaseStaging(){ LT_TIME_SCOPE(L"ReleaseStaging()"); LT_LOG(L"ReleaseStaging: " << m_gpu.staging.size() << L" upload buffers freed"); m_gpu.staging.clear(); }
 
+    ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
+    ID3D12Resource* GetBLASToItemGpuBuffer() const { return m_gpu.BLASToItem.Get(); }
+    uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * sizeof(LightTLASNodeGpu)); }
+
     const GpuBuffers& GetGpu() const { return m_gpu; }
 
     uint32_t TLASNodeCount() const { return static_cast<uint32_t>(m_tlas.size()); }

@@ -195,9 +195,9 @@ Index of this file:
 #define IMGUI_DEFINE_MATH_OPERATORS
 #endif
 
-#include "../../../../../../../Downloads/imgui-master/imgui-master/imgui.h"
+#include "imgui.h"
 #ifndef IMGUI_DISABLE
-#include "../../../../../../../Downloads/imgui-master/imgui-master/imgui_internal.h"
+#include "imgui_internal.h"
 
 // System includes
 #include <stdint.h>     // intptr_t

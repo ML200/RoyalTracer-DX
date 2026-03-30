@@ -4,9 +4,6 @@
 
 #ifndef PATHTRACER_OBJLOADER_H
 #define PATHTRACER_OBJLOADER_H
-#define TINYOBJLOADER_IMPLEMENTATION
-#define TINYGLTF3_IMPLEMENTATION
-#define TINYGLTF3_ENABLE_STB_IMAGE
 //#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
 #include "../../lib/tiny_gltf_v3.h"
@@ -23,10 +20,7 @@
 
 #include <string>
 #include <map>
-
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize2.h"
 
 struct TextureData;
@@ -178,7 +172,7 @@ inline float G2_SmithGGX(float NdotV, float NdotL, float alpha) {
     return G1_SmithGGX(NdotV, alpha) * G1_SmithGGX(NdotL, alpha);
 }
 
-void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
+inline void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
     if (fabs(N.z) < 0.999f) {
         T1 = normalize(cross(XMFLOAT3(0.0f, 0.0f, 1.0f), N));
     } else {
@@ -187,7 +181,7 @@ void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
     T2 = cross(N, T1);
 }
 
-void SampleGGX(
+inline void SampleGGX(
     const Material& mat,
     const XMFLOAT3& outgoing,
     const XMFLOAT3& normal,
@@ -265,7 +259,7 @@ inline float BRDF_PDF_GGX(const float roughness,
     return (D * G1) / (4.0f * (std::fmax)(NdotV, 1e-7f));
 }
 
-float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V,
+inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V,
                  float roughness, XMFLOAT3 /*Ks*/, int numSamples, Material& mat)
 {
     float Ess = 0.0f;
@@ -364,7 +358,7 @@ inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N, const XMFLOAT3& V,
     return mean_f * PI;
 }
 
-void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title)
+inline void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title)
 {
     std::wcout << L"\n======================================================================================\n";
     std::wcout << L" Full 32x32 Matrix for: " << title << L"\n";
