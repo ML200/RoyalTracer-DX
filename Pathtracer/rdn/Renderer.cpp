@@ -41,7 +41,7 @@ void Renderer::OnInit() {
 
         // 4. Load scene assets
         AssetLoader::LoadModels({
-            { "./twr.glb", XMMatrixIdentity() },
+            { "./bistro2/bistro2.obj", XMMatrixIdentity() },
             // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
         }, m_scene, m_ctx.Device(), m_ctx.CmdList());
 
