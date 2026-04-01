@@ -16,12 +16,12 @@ struct SampleData{
     float etat;
 };
 
-// Pack1(16) + Pack2(16) + Pack3(8) = 40 bytes
-static const uint BYTES_SD = 40u;
+// Pack1(16) + Pack2(16) + Pack3(12) = 44 bytes
+static const uint BYTES_SD = 44u;
 
 static const uint O_PACK1_SD = 0u;     // float4: x1 + n1_s
 static const uint O_PACK2_SD = 16u;    // float4: L1 + o + n1_g + IDs
-static const uint O_PACK3_SD = 32u;    // uint2:  uv(half2) + etai_etat(half2)
+static const uint O_PACK3_SD = 32u;    // uint3:  uv.x(4) + uv.y(4) + etai_etat(half2=4)
 
 
 // helpers
@@ -50,9 +50,10 @@ void storeSampleData(RWByteAddressBuffer buf,
                      PackNormal(s.n1_g),
                      PackID16(s.objID, s.matID)));
 
-    // Pack 3: uv (half2) + etai/etat (half2)
-    buf.Store2(base + O_PACK3_SD,
-               uint2(PackFloat2x16(s.uv.x, s.uv.y),
+    // Pack 3: uv.x (float) + uv.y (float) + etai/etat (half2)
+    buf.Store3(base + O_PACK3_SD,
+               uint3(asuint(s.uv.x),
+                     asuint(s.uv.y),
                      PackFloat2x16(s.etai, s.etat)));
 }
 
@@ -74,9 +75,10 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
     UnpackID16(p2.w, s.objID, s.matID);
 
     // Load Pack 3
-    uint2 p3 = buf.Load2(base + O_PACK3_SD);
-    UnpackFloat2x16(p3.x, s.uv.x, s.uv.y);
-    UnpackFloat2x16(p3.y, s.etai, s.etat);
+    uint3 p3 = buf.Load3(base + O_PACK3_SD);
+    s.uv.x = asfloat(p3.x);
+    s.uv.y = asfloat(p3.y);
+    UnpackFloat2x16(p3.z, s.etai, s.etat);
 
     return s;
 }
@@ -89,9 +91,9 @@ float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pi
 float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
 uint   load_objID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) & 0xFFFFu;}
 uint   load_matID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) >> 16;}
-float2 load_uv   (RWByteAddressBuffer b, uint id){float2 r; UnpackFloat2x16(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD), r.x, r.y); return r;}
-float  load_etai (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) & 0xFFFFu);}
-float  load_etat (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) >> 16);}
+float2 load_uv   (RWByteAddressBuffer b, uint id){return float2(asfloat(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD)), asfloat(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u)));}
+float  load_etai (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) & 0xFFFFu);}
+float  load_etat (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) >> 16);}
 
 
 

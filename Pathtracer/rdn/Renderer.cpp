@@ -40,12 +40,19 @@ void Renderer::OnInit() {
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
 
         // 4. Load scene assets
-        AssetLoader::LoadModels({
-            { "./bistro2/bistro2.obj", XMMatrixIdentity() },
-            // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
-        }, m_scene, m_ctx.Device(), m_ctx.CmdList());
+        //    Pass a flush callback so the loader can submit batches
+        //    of texture uploads instead of one giant command list.
+        //    This prevents TDR on large scenes (e.g. 4K Sponza).
+        auto flushFn = [this]() { m_ctx.FlushAndReset(); };
 
-        // 5. Flush asset uploads, then release staging
+        AssetLoader::LoadModels({
+            { "./sponza_tex/sponza_tex.obj", XMMatrixIdentity() },
+            // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
+        }, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
+
+        // 5. Flush any remaining asset uploads, then release staging
+        //    (LoadModels now flushes internally per batch, but the
+        //    mesh VB/IB uploads still need a final flush here.)
         m_ctx.FlushAndReset();
 
         // 6. Pre-render GPU setup

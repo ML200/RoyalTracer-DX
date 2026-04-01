@@ -1,11 +1,19 @@
 // ═══════════════════════════════════════════════════════════════════
 // Scene/AssetLoader.cpp — Creates SceneModel + SceneInstance entries
+//                         Batched texture uploads to avoid TDR on
+//                         large scenes (e.g. 4K Sponza).
 // ═══════════════════════════════════════════════════════════════════
 
 #include "../stdafx.h"
 #include <fstream>
 #include "AssetLoader.h"
 #include "../DXRHelper.h"
+
+// How many textures to upload per command-list submission.
+// Each 4K RGBA mip chain is ~85 MB of upload + default-heap traffic.
+// 4 textures ≈ 340 MB per batch — well under the 2-second TDR window
+// on any modern GPU, and keeps peak staging memory around 340 MB.
+static constexpr UINT TEXTURE_BATCH_SIZE = 4;
 
 MeshSplitResult AssetLoader::SplitOpaqueAlpha(
     const std::vector<UINT>& indices,
@@ -40,11 +48,11 @@ void AssetLoader::LoadModels(
     const std::vector<ModelEntry>& modelEntries,
     Scene& scene,
     ID3D12Device* device,
-    ID3D12GraphicsCommandList* cmdList)
+    ID3D12GraphicsCommandList* cmdList,
+    const FlushFn& flushAndReset)
 {
     std::map<std::string, uint32_t> textureMap;
     std::vector<TextureData> albedoTextures, normalTextures, rmaTextures;
-    std::vector<ComPtr<ID3D12Resource>> uploadHeaps;
 
     for (const auto& entry : modelEntries) {
         const auto& modelPath      = entry.path;
@@ -59,12 +67,10 @@ void AssetLoader::LoadModels(
         model.instanceStart  = (UINT)scene.instances.size();
 
         // Decompose initial transform for editor
-        // (simple extraction — assumes no skew)
         XMVECTOR scaleV, rotQ, transV;
         XMMatrixDecompose(&scaleV, &rotQ, &transV, modelXform);
         XMStoreFloat3(&model.position, transV);
         XMStoreFloat3(&model.scale, scaleV);
-        // Euler from quaternion (approximate)
         XMFLOAT4 q; XMStoreFloat4(&q, rotQ);
         float sinr = 2.0f * (q.w * q.x + q.y * q.z);
         float cosr = 1.0f - 2.0f * (q.x * q.x + q.y * q.y);
@@ -148,7 +154,7 @@ void AssetLoader::LoadModels(
         for (const auto& [meshIdx, xform] : loaded.instances) {
             SceneInstance si{};
             si.meshIndex       = meshBaseIdx + meshIdx;
-            si.modelIndex      = (UINT)scene.models.size();  // will be set after push
+            si.modelIndex      = (UINT)scene.models.size();
             si.localTransform  = xform;
             si.worldTransform  = xform * modelXform;
             si.prevWorldTransform = si.worldTransform;
@@ -159,7 +165,6 @@ void AssetLoader::LoadModels(
         model.meshCount     = (UINT)scene.meshes.size() - model.meshStart;
         model.instanceCount = (UINT)scene.instances.size() - model.instanceStart;
 
-        // Fix modelIndex on newly created instances
         UINT modelIdx = (UINT)scene.models.size();
         for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i)
             scene.instances[i].modelIndex = modelIdx;
@@ -181,12 +186,14 @@ void AssetLoader::LoadModels(
 
     scene.UploadMaterials(device);
 
+    // Upload textures in batches — flushes every TEXTURE_BATCH_SIZE textures
+    // to keep each submission under the TDR window and limit peak staging memory.
     CreateBindlessTextures(albedoTextures, scene.bindlessAlbedoBase, L"Albedo",
-        device, cmdList, scene.bindlessGpuTextures, uploadHeaps);
+        device, cmdList, scene.bindlessGpuTextures, flushAndReset);
     CreateBindlessTextures(normalTextures, scene.bindlessNormalBase, L"Normal",
-        device, cmdList, scene.bindlessGpuTextures, uploadHeaps);
+        device, cmdList, scene.bindlessGpuTextures, flushAndReset);
     CreateBindlessTextures(rmaTextures,    scene.bindlessRmaBase,    L"RMA",
-        device, cmdList, scene.bindlessGpuTextures, uploadHeaps);
+        device, cmdList, scene.bindlessGpuTextures, flushAndReset);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -197,8 +204,12 @@ void AssetLoader::CreateBindlessTextures(
     ID3D12Device* device,
     ID3D12GraphicsCommandList* cmdList,
     std::vector<ComPtr<ID3D12Resource>>& outGpuTextures,
-    std::vector<ComPtr<ID3D12Resource>>& outUploadHeaps)
+    const FlushFn& flushAndReset)
 {
+    // Staging heaps for the current batch — released after each flush.
+    std::vector<ComPtr<ID3D12Resource>> batchUploadHeaps;
+    UINT batchCount = 0;
+
     for (size_t i = 0; i < textures.size(); ++i) {
         auto& tex = textures[i];
         const auto& meta = tex.image.GetMetadata();
@@ -240,6 +251,47 @@ void AssetLoader::CreateBindlessTextures(
         cmdList->ResourceBarrier(1, &b);
 
         outGpuTextures.push_back(gpuTex);
-        outUploadHeaps.push_back(upload);
+        batchUploadHeaps.push_back(std::move(upload));
+        ++batchCount;
+
+        // ── Flush batch ──────────────────────────────────────────
+        // Submit the current command list, GPU-wait, reset, and
+        // release staging heaps so the next batch starts clean.
+        if (batchCount >= TEXTURE_BATCH_SIZE) {
+            std::wcout << L"[AssetLoader] Flushing " << debugPrefix
+                       << L" texture batch (" << batchCount << L" textures, "
+                       << (i + 1) << L"/" << textures.size() << L")" << std::endl;
+
+            flushAndReset();           // close → execute → fence wait → reset
+            batchUploadHeaps.clear();  // release staging memory
+            batchCount = 0;
+
+            // Also release CPU-side mip data for already-uploaded textures
+            // in this batch to reduce peak memory.
+            for (size_t j = (i + 1 >= TEXTURE_BATCH_SIZE ? i + 1 - TEXTURE_BATCH_SIZE : 0);
+                 j <= i; ++j) {
+                textures[j].image.Release();
+            }
+        }
+    }
+
+    // Remaining textures (< TEXTURE_BATCH_SIZE) stay on the open command list.
+    // They'll be flushed by the caller's next FlushAndReset().
+    // But we still need to keep their upload heaps alive until that flush,
+    // so stash them in the gpu textures vector (they'll be released after
+    // the caller flushes).  Actually, we need a separate mechanism —
+    // let's just flush the remainder here too for consistency.
+    if (batchCount > 0) {
+        std::wcout << L"[AssetLoader] Flushing final " << debugPrefix
+                   << L" batch (" << batchCount << L" textures)" << std::endl;
+
+        flushAndReset();
+        batchUploadHeaps.clear();
+
+        // Release remaining CPU mip data
+        size_t start = textures.size() >= batchCount ? textures.size() - batchCount : 0;
+        for (size_t j = start; j < textures.size(); ++j) {
+            textures[j].image.Release();
+        }
     }
 }

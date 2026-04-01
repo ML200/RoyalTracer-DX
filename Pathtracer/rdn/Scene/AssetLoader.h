@@ -20,13 +20,16 @@ struct MeshSplitResult {
     UINT alphaTriCount;
 };
 
+using FlushFn = std::function<void()>;
+
 class AssetLoader {
 public:
     static void LoadModels(
-        const std::vector<ModelEntry>& models,
+        const std::vector<ModelEntry>& modelEntries,
         Scene& scene,
         ID3D12Device* device,
-        ID3D12GraphicsCommandList* cmdList);
+        ID3D12GraphicsCommandList* cmdList,
+        const FlushFn& flushAndReset);
 
     static void CreateBindlessTextures(
         std::vector<TextureData>& textures,
@@ -35,7 +38,7 @@ public:
         ID3D12Device* device,
         ID3D12GraphicsCommandList* cmdList,
         std::vector<ComPtr<ID3D12Resource>>& outGpuTextures,
-        std::vector<ComPtr<ID3D12Resource>>& outUploadHeaps);
+        const FlushFn& flushAndReset);
 
 private:
     static MeshSplitResult SplitOpaqueAlpha(
