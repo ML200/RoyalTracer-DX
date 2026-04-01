@@ -54,17 +54,23 @@ void main(uint3 tid : SV_DispatchThreadID)
                 (sdata_r.matID == sdata.matID));
 
         if(tempPixelIdx != 0xFFFFFFFF /*&& valid_history*/ && valid){
+            // Refetch materials for both vertices
+            float3 sKd; float sPr, sPm;
+            RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
+            float3 srKd; float srPr, srPm;
+            RefetchMaterial(sdata_r.matID, sdata_r.uv, srKd, srPr, srPm);
+
             // Calculate the canonical target function
             float visReuse_c = rdi.W_di > 0.0f ? 1.0f : 0.0f;
-            float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi.objID_di)) * visReuse_c;
-            float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, rdi.objID_di));
+            float p_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sKd, sPr, sPm, sdata.etai, sdata.etat, rdi.objID_di)) * visReuse_c;
+            float p_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, srKd, srPr, srPm, sdata_r.etai, sdata_r.etat, rdi.objID_di));
             p_n *= VisibilityCheckCP(sdata_r.x1, rdi.x2_di, sdata_r.n1_s, rdi.objID_di);
             p_n *= JacobianDeterminantDI(sdata.x1, rdi.x2_di, sdata_r.x1, rdi.n2_di, rdi.objID_di);
-            float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat, rdi_r.objID_di));
+            float n_c = GetPHat(ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sKd, sPr, sPm, sdata.etai, sdata.etat, rdi_r.objID_di));
             n_c *= VisibilityCheckCP(sdata.x1, rdi_r.x2_di, sdata.n1_g, rdi_r.objID_di);
             n_c *= JacobianDeterminantDI(sdata_r.x1, rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di);
             float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
-            float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat, rdi_r.objID_di)) * visReuse;
+            float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, srKd, srPr, srPm, sdata_r.etai, sdata_r.etat, rdi_r.objID_di)) * visReuse;
             float M_c = min(TEMP_MCAP_DI,rdi.M_di);
             float M_n = min(TEMP_MCAP_DI,rdi_r.M_di);
             float M_sum = M_c + M_n;

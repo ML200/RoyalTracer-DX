@@ -1,15 +1,12 @@
-#include "Includes_v8.hlsli"
+#include "Includes_raygen_v8.hlsli"
 
 //─────────────────────────────────────────────────────────────────────────────
-//  TEMPORAL  GI  (register-pressure optimized refactor)
+//  TEMPORAL  GI  (raygen shader)
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(8, 8, 1)]
-void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
+[shader("raygeneration")]
+void Pass_temp_gi_v8()
 {
-    // Optional bounds (left commented like yours)
-    // if (tid.x >= IMG_W || tid.y >= IMG_H) return;
-
-    const uint2 launchIndex = tid.xy;
+    const uint2 launchIndex = DispatchRaysIndex().xy;
     const float2 dims_f = float2(IMG_W, IMG_H);
     const uint pixelIdx = MapPixelID(dims_f, launchIndex);
 
@@ -26,18 +23,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
     // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
 
-    // --- Update canonical Jacobian cache for current stored GI sample ---
-    // Put in its own scope so temps die before reprojection / reuse path.
-    {
-        float Jc = PSSJacobian(
-            sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-            sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
-            rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi,
-            rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
-            rdi.J_gi.x
-        );
-        rdi.J_gi.y = Jc;
-    }
+    // J_gi.y is now computed in raygen, no need to recompute here
 
     // RNG (keep as small as possible; preserve your semantics)
     uint2 seed = GetSeed(pixelIdx, time, 3);
@@ -133,11 +119,16 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
 
                 // p_n = phat(ReconnectGI(sdata_r -> current rdi sample)) * visibility
                 {
+                    float3 srKd; float srPr, srPm;
+                    RefetchMaterial(sdata_r.matID, sdata_r.uv, srKd, srPr, srPm);
+                    float3 rcKd; float rcPr, rcPm;
+                    RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
+
                     float3 c = ReconnectGI(
                         sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID,
-                        sdata_r.localKd, sdata_r.localPr, sdata_r.localPm, sdata_r.etai, sdata_r.etat,
+                        srKd, srPr, srPm, sdata_r.etai, sdata_r.etat,
                         rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
-                        rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
+                        rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi,
                         rdi.J_gi.x, rdi.J_gi.y,
                         true, Jnc, J1
                     );
@@ -149,11 +140,16 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
 
                 // n_c = phat(ReconnectGI(sdata -> neighbour rdi_r sample)) * visibility
                 {
+                    float3 scKd; float scPr, scPm;
+                    RefetchMaterial(sdata.matID, sdata.uv, scKd, scPr, scPm);
+                    float3 rrKd; float rrPr, rrPm;
+                    RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
+
                     float3 c = ReconnectGI(
                         sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                        sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
+                        scKd, scPr, scPm, sdata.etai, sdata.etat,
                         rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                        rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi,
+                        rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi,
                         rdi_r.J_gi.x, rdi_r.J_gi.y,
                         true, Jn, J2
                     );
@@ -167,7 +163,10 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
                 const float n_n = rdi_r.F_gi * visReuse_n;
 
                 // Dynamic M caps
-                const float minRoughTemp  = min(sdata.localPr, rdi_r.localPr_gi);
+                // Refetch roughness for dynamic M cap
+                float sdata_Pr = EvaluatePBRProperties(materials[sdata.matID], sdata.uv, 0).x;
+                float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
+                const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(REUSE_ROUGHNESS_MIN, REUSE_ROUGHNESS_MAX, minRoughTemp);
                 const float dynTempMcap   = (minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
                                         : min(TEMP_MCAP_GI, TEMP_MCAP_GI * tempMcapScale);
@@ -196,7 +195,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
                         w_n,
                         rdi_r.M_gi,
                         rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                        rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi,
+                        rdi_r.uv_gi,
                         rdi_r.etai_gi, rdi_r.etat_gi,
                         rdi_r.matID_gi, rdi_r.objID_gi,
                         rdi_r.J_gi,
@@ -222,25 +221,17 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
 
                 boilValue = p_hat_final * rdi.W_gi;
 
-                // Recompute/update jacobian for the now-canonical stored sample (same as your code)
-                rdi.J_gi.y = PSSJacobian(
-                    sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                    sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
-                    rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi,
-                    rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
-                    rdi.J_gi.x
-                );
+                // J_gi.y already tracked: retained from load (canonical) or set to Jn (neighbor won)
 
                 rdi.F_gi = p_hat_final;
             }
         }
     }
 
-    // --- boiling filter ---
-    // Isolate to avoid carrying heavy temporaries into store.
+    // --- boiling filter (wave-only for raygen) ---
     {
         float avgV, thrV;
-        bool boil = BoilingFilter(ltid.xy, GI_BOIL_STRENGTH_TEMP, boilValue, avgV, thrV);
+        bool boil = BoilingFilter_Wave(GI_BOIL_STRENGTH_TEMP, boilValue, avgV, thrV);
 
         if (avgV < GI_BOIL_MIN_AVG_TEMP)
             boil = false;

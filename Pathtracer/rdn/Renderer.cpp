@@ -15,9 +15,9 @@ Renderer::Renderer(UINT width, UINT height, std::wstring name)
     m_passes.Build({
         L"Pass_raygen_v8.hlsl|rg",          L"barrier",
         L"Pass_temp_di_v8.hlsl|cs:16x8",    L"barrier",
-        L"Pass_temp_gi_v8.hlsl|cs:8x8",     L"barrier",
+        L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
         L"Pass_spat_di_v8.hlsl|cs:16x16",   L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16", L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|rg", L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
         L"dlss",                             L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",

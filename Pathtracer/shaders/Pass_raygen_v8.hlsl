@@ -1,5 +1,3 @@
-//using namespace dx;
-
 #include "Includes_raygen_v8.hlsli"
 
 #ifndef MAX_BOUNCES
@@ -13,52 +11,49 @@
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
-    // Evaluate ID once to save heavy ALU instructions throughout the loop
-    uint pixelIdx_1 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
+    const uint2 pixel    = DispatchRaysIndex().xy;
+    const uint2 imgSize  = DispatchRaysDimensions().xy;
+    const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    // DI Reservoir init
-    storeReservoirDI(g_Reservoirs_current_di, pixelIdx_1, (Reservoir_DI)0);
-    store_wsum_di(g_Reservoirs_current_di, pixelIdx_1, 0.0f);
-    store_W_di(g_Reservoirs_current_di, pixelIdx_1, 0.0f);
-    store_phat_di(g_Reservoirs_current_di, pixelIdx_1, 0.0f);
+    // ── Reservoir init ─────────────────────────────────────────────────
+    storeReservoirDI(g_Reservoirs_current_di, pixelIdx, (Reservoir_DI)0);
+    store_wsum_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
+    store_W_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
+    store_phat_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
 
-    // GI Reservoir init
-    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx_1, (Reservoir_GI)0);
-    store_wsum_gi(g_Reservoirs_current_gi, pixelIdx_1, 0.0f);
-    store_W_gi(g_Reservoirs_current_gi, pixelIdx_1, 0.0f);
-    store_F_gi(g_Reservoirs_current_gi, pixelIdx_1, 0.0f);
-    store_M_gi(g_Reservoirs_current_gi, pixelIdx_1, 0u);
-    store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_1, 1.0f);
+    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, (Reservoir_GI)0);
+    store_wsum_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
+    store_W_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
+    store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
+    store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
+    store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
 
-    uint seed = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
-
-    // Initialize raw path tracing state variables instead of packing
+    // ── Path state ─────────────────────────────────────────────────────
+    uint   seed       = initRandomData(pixel, uint2(8, 4), time, 1u);
     float3 rayOrigin  = InitOrigin();
-    float3 rayDir     = InitDirection(DispatchRaysIndex().xy, float2(DispatchRaysDimensions().xy), seed);
+    float3 rayDir     = InitDirection(pixel, float2(imgSize), seed);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
     float3 prevNormal = float3(0.0f, 1.0f, 0.0f);
     float  prev_pdf   = 1.0f;
 
-    // Initialize packed IOR stack (retained as some nested engine functions may rely on this)
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
     {
         VolumeIOR v0 = InitVolumeIOR();
         VolumeAux a0 = InitVolumeAux();
-
         viorP.raw   = PackIORStackAndPtr(v0.ior_stack, v0.pointer);
         aiorP.mat16 = PackMatStack16(a0.matID_stack);
         aiorP.obj8  = PackPrioStack8(a0.objID_stack);
     }
 
+    // ── Bounce loop ────────────────────────────────────────────────────
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
-        // Safety validation
-        float d2 = dot(rayDir, rayDir);
-        bool badDir = any(isnan(rayDir)) || any(isinf(rayDir)) || (d2 < 1e-12f);
-        bool badOrg = any(isnan(rayOrigin)) || any(isinf(rayOrigin));
-        if (badDir || badOrg) break;
+        // Validate ray state
+        if (any(isnan(rayDir)) || any(isinf(rayDir)) || dot(rayDir, rayDir) < 1e-12f ||
+            any(isnan(rayOrigin)) || any(isinf(rayOrigin)))
+            break;
 
         RayDesc ray;
         ray.Origin    = rayOrigin;
@@ -68,61 +63,56 @@ void Pass_raygen_v8()
 
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
+        // ── Miss ───────────────────────────────────────────────────────
         if (!hitObj.IsHit())
         {
-            uint pixelIdx_2 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-            // Store sample data miss case
             if (depth == 0)
             {
                 SampleData sdata = (SampleData)0;
                 float3 sun = EvaluateSun(rayDir);
                 sdata.L1 = EvalMissState(rayDir, sun);
-                if (length(sun) > 0.0f)
-                    sdata.L1 = sun;
-
-                storeSampleData(g_sample_current, pixelIdx_2, sdata);
+                if (length(sun) > 0.0f) sdata.L1 = sun;
+                storeSampleData(g_sample_current, pixelIdx, sdata);
                 break;
             }
 
-            float3 envL = EvalMissState(rayDir, float3(0,0,0));
+            float3 envL   = EvalMissState(rayDir, float3(0,0,0));
             float3 T_envL = throughput * envL;
 
+            // DI reservoir: env map hit at depth 1
             if (depth == 1)
             {
-                float p_hat = GetPHat(T_envL * prev_pdf); // Cancel previous pdf by multiplying with it
-                float wi = p_hat / prev_pdf;
-                bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, pixelIdx_2, wi, rayDir, envL, 0xFFFFFFFFu, seed);
-                if (update) store_phat_di(g_Reservoirs_current_di, pixelIdx_2, p_hat);
+                float p_hat = GetPHat(T_envL * prev_pdf);
+                float wi    = p_hat / prev_pdf;
+                if (UpdateReservoirDI_Infinite(g_Reservoirs_current_di, pixelIdx, wi, rayDir, envL, 0xFFFFFFFFu, seed))
+                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
             }
 
+            // GI reservoir: env map hit at depth >= 2
             if (depth >= 2)
             {
-                float p_hat = GetPHat(T_envL);
-                float wi    = p_hat;
+                float  p_hat  = GetPHat(T_envL);
+                float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx) : -rayDir;
+                float2 J_new  = float2(0.0f, (depth > 2) ? 0.0f : 1.0f);
+                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
 
-                float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx_2) : -rayDir;
-                float4 J_new  = float4(0.0f, (depth > 2) ? 0.0f : 1.0f, 0.0f, 0.0f);
-
-                float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_2);
-                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx_2, wi, envL * tpostgi, J_new, V2_new, seed);
-
-                if (update) store_F_gi(g_Reservoirs_current_gi, pixelIdx_2, p_hat);
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, p_hat, envL * tpost, J_new, V2_new, seed))
+                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
             }
             break;
         }
 
-        // --- Pre-invoke setup ---
-        float hitT = hitObj.GetRayTCurrent();
+        // ── Hit setup ──────────────────────────────────────────────────
+        float  hitT   = hitObj.GetRayTCurrent();
         float3 hitPos = rayOrigin + rayDir * hitT;
 
         const uint instID = hitObj.GetInstanceIndex();
         const uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
-        uint matID = GetMatIDFast(instID, primID);
+        uint matID  = GetMatIDFast(instID, primID);
+        float2 iors = GetIORs_packed(viorP, aiorP, matID, instID);
 
-        float2 iorsF = GetIORs_packed(viorP, aiorP, matID, instID);
-
-        // Phantom surface: advance and continue
-        if (iorsF.y == 0.0f)
+        // Phantom surface: advance through null interface
+        if (iors.y == 0.0f)
         {
             rayOrigin = hitPos;
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
@@ -132,22 +122,22 @@ void Pass_raygen_v8()
         uint mediumMatID = GetCurrentMediumMaterialID_packed(viorP, aiorP);
         if (mediumMatID == 0x0000FFFFu) mediumMatID = MEDIUM_INVALID_15;
 
-        // Fetch barycentrics and evaluate surface
         BuiltInTriangleIntersectionAttributes attr;
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
 
-        // --- Handle Absorption (Volume) ---
-        float3 absorptionTint = float3(1, 1, 1);
-        if (mediumMatID != MEDIUM_INVALID_15)
-        {
-            absorptionTint = CalculateAbsorptionThroughput(materials[mediumMatID].Tf, hitT);
-        }
+        // Refetch material from UV
+        float3 hitLocalKd; float hitLocalPr, hitLocalPm;
+        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
 
-        // --- Emission (Direct Light) & MIS ---
+        // Volume absorption
+        float3 absorptionTint = (mediumMatID != MEDIUM_INVALID_15)
+            ? CalculateAbsorptionThroughput(materials[mediumMatID].Tf, hitT)
+            : float3(1, 1, 1);
+
         float3 emission = GetEmissionFast(instID, primID);
 
-        // First bounce data storage
+        // ── Depth 0: store primary hit ─────────────────────────────────
         if (depth == 0)
         {
             SampleData sdata = (SampleData)0;
@@ -158,72 +148,63 @@ void Pass_raygen_v8()
             sdata.o       = -rayDir;
             sdata.objID   = instID;
             sdata.matID   = matID;
-            sdata.localKd = hinfo.localKd;
-            sdata.localPr = hinfo.localPr;
-            sdata.localPm = hinfo.localPm;
-            sdata.etai    = iorsF.x;
-            sdata.etat    = iorsF.y;
-            uint pixelIdx_3 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-            storeSampleData(g_sample_current, pixelIdx_3, sdata);
+            sdata.uv      = hinfo.uv;
+            sdata.etai    = iors.x;
+            sdata.etat    = iors.y;
+            storeSampleData(g_sample_current, pixelIdx, sdata);
         }
 
-        // Valid light hit evaluation via MIS
+        // ── Emitter hit: BSDF-sampled light with MIS ──────────────────
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
             float lightPdfArea = LT_Pdf_LightTree_Area(rayOrigin, prevNormal, hinfo.lightID, instID);
+            float cosLight     = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
+            float dist2        = max(hitT * hitT, EPSILON);
+            float lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
+            float misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
 
-            float cosLight = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
-            float dist2 = max(hitT * hitT, EPSILON);
-            float lightPdfSA = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
-
-            float jacobian = (dist2 > EPSILON) ? (cosLight / dist2) : 0.0f;
-            float misWeight = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
-
-            uint pixelIdx_4 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-
+            // DI: emitter at depth 1
             if (depth == 1)
             {
-                float3 targetRadiance = throughput * emission;
-                float p_hat = GetPHat(targetRadiance * prev_pdf);
-                float wi = misWeight * p_hat / prev_pdf;
-                bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx_4, wi, hitPos, hinfo.hitNormal, emission, instID, seed);
-                if (update) store_phat_di(g_Reservoirs_current_di, pixelIdx_4, p_hat);
+                float p_hat = GetPHat(throughput * emission * prev_pdf);
+                float wi    = misWeight * p_hat / prev_pdf;
+                if (UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx, wi, hitPos, hinfo.hitNormal, emission, instID, seed))
+                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
             }
 
+            // GI: emitter at depth >= 2
             if (depth >= 2)
             {
-                float3 V2_new = (depth == 2) ? (-rayDir) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx_4);
-                float4 J_new  = float4(0.0f, 0.0f, 0.0f, 0.0f);
+                float3 V2_new = (depth == 2) ? (-rayDir) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                float  p_hat  = GetPHat(throughput * emission);
+                float  wi     = p_hat * misWeight;
 
-                float3 contrib = throughput * emission;
-                float  p_hat   = GetPHat(contrib);
-                float  wi      = p_hat * misWeight;
-                float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_4);
-
-                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx_4, wi, emission * tpostgi, J_new, V2_new, seed);
-                if (update) store_F_gi(g_Reservoirs_current_gi, pixelIdx_4, p_hat);
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, emission * tpost, float2(0.0f, 0.0f), V2_new, seed))
+                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
             }
-            break; // Ends hit logic as path effectively terminates at emitter
+            break;
         }
 
-        // Store intermediate GI state
-        uint pixelIdx_5 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
+        // ── Depth 1: store GI reconnection vertex data ────────────────
         if (depth == 1)
         {
-            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, pixelIdx_5, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
-            SetReservoirGI_LocalMaterial(g_Reservoirs_current_gi, pixelIdx_5, hinfo.localKd, hinfo.localPr, hinfo.localPm, iorsF.x, iorsF.y);
-        }
-        if (depth == 2)
-        {
-            store_Vpost_gi(g_Reservoirs_current_gi, pixelIdx_5, -rayDir);
+            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, pixelIdx, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
+            SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, pixelIdx, hinfo.uv, iors.x, iors.y);
         }
 
-        // --- Next Event Estimation (NEE) ---
+        // ── Depth 2: store post-reconnection direction ────────────────
+        if (depth == 2)
+        {
+            store_Vpost_gi(g_Reservoirs_current_gi, pixelIdx, -rayDir);
+        }
+
+        // ── NEE (point lights + sun) ──────────────────────────────────
         bool performNEE = !(mediumMatID != MEDIUM_INVALID_15 || materials[matID].Kd.w < EPSILON);
 
         if (performNEE)
         {
-            // --- Point Light NEE ---
+            // Point light NEE
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
 
@@ -249,50 +230,48 @@ void Pass_raygen_v8()
 
                     if (q.CommittedStatus() == COMMITTED_NOTHING)
                     {
-                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iorsF.x, iorsF.y, hinfo.localKd, hinfo.localPm);
-                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir, hinfo.localKd, hinfo.localPr, hinfo.localPm, iorsF.x, iorsF.y);
+                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
                         float lightPdf = light.pdfSolidAngle;
                         float bsdfPdf  = bdataNEE.pdf;
 
                         if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                         {
-                            uint pixelIdx_6 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
                             float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
+                            // DI: NEE at depth 0
                             if (depth == 0)
                             {
-                                float3 targetRadiance = throughput * light.emission * bdataNEE.val * cosSurf;
-                                float p_hat = GetPHat(targetRadiance);
-                                float wi = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
-                                bool update = UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx_6, wi, light.position, light.normal, light.emission, light.objID, seed);
-                                if (update) store_phat_di(g_Reservoirs_current_di, pixelIdx_6, p_hat);
+                                float p_hat = GetPHat(throughput * light.emission * bdataNEE.val * cosSurf);
+                                float wi    = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
+                                if (UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx, wi, light.position, light.normal, light.emission, light.objID, seed))
+                                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
                             }
+
+                            // GI: NEE at depth >= 1
                             if (depth >= 1)
                             {
-                                float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx_6);
-                                float4 J_new  = (depth == 1) ? float4(lightPdf, 0.0f, 0.0f, 0.0f) : float4(0.0f, 0.0f, 0.0f, 0.0f);
-
+                                float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                                float2 J_new  = (depth == 1) ? float2(lightPdf, 0.0f) : float2(0.0f, 0.0f);
                                 float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
+                                float  p_hat   = GetPHat(contrib);
+                                float  wi      = p_hat * misWeight;
+                                float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                                if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
 
-                                float p_hat = GetPHat(contrib);
-                                float wi    = p_hat * misWeight;
-                                float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_6);
-                                if (depth > 1) tpostgi *= bdataNEE.val * cosSurf / lightPdf;
-
-                                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx_6, wi, light.emission * tpostgi, J_new, V2_new, seed);
-                                if (update) store_F_gi(g_Reservoirs_current_gi, pixelIdx_6, p_hat);
+                                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, light.emission * tpost, J_new, V2_new, seed))
+                                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
                             }
                         }
                     }
                 }
             }
 
-            // --- Sun NEE ---
+            // Sun NEE
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
-
                 float NdotL = dot(hinfo.hitNormal, sun.direction);
 
                 if (NdotL > 1e-6f)
@@ -301,7 +280,7 @@ void Pass_raygen_v8()
                     shadowRay.Origin    = hitPos;
                     shadowRay.Direction = sun.direction;
                     shadowRay.TMin      = 0.00001f;
-                    shadowRay.TMax      = 10000.0f; // Effectively infinite
+                    shadowRay.TMax      = 10000.0f;
 
                     RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
                     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
@@ -309,8 +288,8 @@ void Pass_raygen_v8()
 
                     if (q.CommittedStatus() == COMMITTED_NOTHING)
                     {
-                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iorsF.x, iorsF.y, hinfo.localKd, hinfo.localPm);
-                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -rayDir, hinfo.localKd, hinfo.localPr, hinfo.localPm, iorsF.x, iorsF.y);
+                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
                         float lightPdf = sun.pdf;
                         float bsdfPdf  = bdataNEE.pdf;
@@ -318,28 +297,28 @@ void Pass_raygen_v8()
                         if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                         {
                             float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
-                            uint pixelIdx_7 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
 
+                            // DI: sun at depth 0
                             if (depth == 0)
                             {
-                                float3 target = throughput * bdataNEE.val * NdotL * sun.radiance;
-                                float  p_hat  = GetPHat(target);
-                                float  wi = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
-                                bool update = UpdateReservoirDI_Infinite(g_Reservoirs_current_di, pixelIdx_7, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFEu, seed);
-                                if (update) store_phat_di(g_Reservoirs_current_di, pixelIdx_7, p_hat);
+                                float p_hat = GetPHat(throughput * bdataNEE.val * NdotL * sun.radiance);
+                                float wi    = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
+                                if (UpdateReservoirDI_Infinite(g_Reservoirs_current_di, pixelIdx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFEu, seed))
+                                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
                             }
+
+                            // GI: sun at depth >= 1
                             if (depth >= 1)
                             {
-                                float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx_7);
-                                float4 J_new  = (depth == 1) ? float4(lightPdf, 0.0f, 0.0f, 0.0f) : float4(0.0f, 0.0f, 0.0f, 0.0f);
+                                float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                                float2 J_new  = (depth == 1) ? float2(lightPdf, 0.0f) : float2(0.0f, 0.0f);
+                                float  p_hat  = GetPHat(contrib);
+                                float  wi     = p_hat;
+                                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                                if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
 
-                                float  p_hat   = GetPHat(contrib);
-                                float  wi      = p_hat;
-                                float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_7);
-                                if (depth > 1) tpostgi *= bdataNEE.val * NdotL / lightPdf;
-
-                                bool update = UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx_7, wi, sun.radiance * tpostgi, J_new, V2_new, seed);
-                                if (update) store_F_gi(g_Reservoirs_current_gi, pixelIdx_7, p_hat);
+                                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, sun.radiance * tpost, J_new, V2_new, seed))
+                                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
                             }
                         }
                     }
@@ -347,44 +326,39 @@ void Pass_raygen_v8()
             }
         }
 
-        // --- Sample Next Direction (BSDF) ---
-        SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iorsF.x, iorsF.y, hinfo.localKd, hinfo.localPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hinfo.localKd, hinfo.localPr, hinfo.localPm, seed, iorsF.x, iorsF.y, GetVolumePtrFast_packed(viorP));
-        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hinfo.localKd, hinfo.localPr, hinfo.localPm, iorsF.x, iorsF.y);
+        // ── Sample next direction (BSDF) ──────────────────────────────
+        SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
         float cosTheta = abs(dot(hinfo.hitNormal, s));
-        float3 updateWeight = float3(0, 0, 0);
-        if (bdata.pdf > 1e-6f)
-        {
-            updateWeight = (bdata.val * absorptionTint * cosTheta) / bdata.pdf;
-        }
+        float3 updateWeight = (bdata.pdf > 1e-6f)
+            ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
+            : float3(0, 0, 0);
 
+        // Update post-reconnection throughput for GI
         if (depth >= 1)
         {
-            uint pixelIdx_8 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-            float3 tpostgi = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_8);
-            tpostgi *= updateWeight;
-            store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx_8, tpostgi);
+            float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+            store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, tpost * updateWeight);
         }
 
-        // IOR Transmission validation
+        // IOR stack update on transmission
         if (dot(hinfo.hitGNormal, s) < 0.0f)
-        {
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
-        }
 
-        // Validate state before progressing path
+        // Validate before continuing
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
-        // Apply throughput updates natively
+        // Advance path state
         throughput *= updateWeight;
         prev_pdf    = bdata.pdf;
         rayDir      = s;
         prevNormal  = hinfo.hitNormal;
         rayOrigin   = hitPos;
 
-        // --- Russian Roulette ---
+        // Russian Roulette (skip depth 0 to ensure at least one bounce)
         if (depth > 0)
         {
             float survivalProb = min(1.0f, Luma(throughput));
@@ -393,34 +367,66 @@ void Pass_raygen_v8()
         }
     }
 
-    // --- Final Reservoir Weights Processing ---
-    uint pixelIdx_9 = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-
-    // DI Evaluate
-    float final_p_hat_di = load_phat_di(g_Reservoirs_current_di, pixelIdx_9);
-    float w_sum_di       = load_wsum_di(g_Reservoirs_current_di, pixelIdx_9);
-    float W_di           = 0.0f;
-    if (final_p_hat_di > 1e-6f && w_sum_di > 0.0f)
+    // ── Final reservoir weight computation ─────────────────────────────
+    // DI
     {
-        W_di = w_sum_di / final_p_hat_di;
+        float p_hat = load_phat_di(g_Reservoirs_current_di, pixelIdx);
+        float wsum  = load_wsum_di(g_Reservoirs_current_di, pixelIdx);
+        float W     = (p_hat > 1e-6f && wsum > 0.0f) ? (wsum / p_hat) : 0.0f;
+        store_W_di(g_Reservoirs_current_di, pixelIdx, W);
+        store_M_di(g_Reservoirs_current_di, pixelIdx, 1);
     }
 
-    store_W_di(g_Reservoirs_current_di, pixelIdx_9, W_di);
-    store_M_di(g_Reservoirs_current_di, pixelIdx_9, 1);
-
-    // GI Evaluate
-    float F_gi    = load_F_gi(g_Reservoirs_current_gi, pixelIdx_9);
-    float wsum_gi = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx_9);
-    float Wgi     = 0.0f;
-
-    if (F_gi > 1e-6f && wsum_gi > 0.0f)
+    // GI
     {
-        Wgi = wsum_gi / F_gi;
-        if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
+        float F_gi  = load_F_gi(g_Reservoirs_current_gi, pixelIdx);
+        float wsum  = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
+        float Wgi   = 0.0f;
+
+        if (F_gi > 1e-6f && wsum > 0.0f)
+        {
+            Wgi = wsum / F_gi;
+            if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
+        }
+
+        if (Wgi == 0.0f)
+            InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);
+
+        store_W_gi(g_Reservoirs_current_gi, pixelIdx, Wgi);
+        store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);
+
+        // Compute initial J_gi.y (PSS jacobian) so spatial/temporal get a valid Jc
+        if (Wgi > 0.0f)
+        {
+            SampleData sdata_final = loadSampleData(g_sample_current, pixelIdx);
+            Reservoir_GI rdi_final = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+
+            float3 dir   = rdi_final.x2_gi - sdata_final.x1;
+            float  dist2 = dot(dir, dir);
+            float3 ndirN = normalize(-dir);
+
+            // Refetch material for PDF evaluation
+            float3 kd1; float pr1, pm1;
+            RefetchMaterial(sdata_final.matID, sdata_final.uv, kd1, pr1, pm1);
+
+            float PDF1 = PDF_term(sdata_final.matID, sdata_final.n1_s, sdata_final.n1_g, -ndirN, sdata_final.o,
+                                  kd1, pr1, pm1,
+                                  sdata_final.etai, sdata_final.etat);
+
+            float PDF2 = rdi_final.J_gi.x;
+            if (rdi_final.J_gi.x <= 0.0f)
+            {
+                float3 kd2; float pr2, pm2;
+                RefetchMaterial(rdi_final.matID_gi, rdi_final.uv_gi, kd2, pr2, pm2);
+                PDF2 = PDF_term(rdi_final.matID_gi, rdi_final.n2_s_gi, rdi_final.n2_g_gi,
+                                -rdi_final.V2_gi, ndirN,
+                                kd2, pr2, pm2,
+                                rdi_final.etai_gi, rdi_final.etat_gi);
+            }
+
+            float Gj = abs(dot(ndirN, rdi_final.n2_s_gi)) / max(dist2, EPSILON);
+            float Jy = (PDF1 > EPSILON && PDF2 > EPSILON) ? max(PDF1 * PDF2 * Gj, EPSILON) : 0.0f;
+            store_Jy_gi(g_Reservoirs_current_gi, pixelIdx, Jy);
+        }
     }
-
-    if (Wgi == 0) InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx_9);
-
-    store_W_gi(g_Reservoirs_current_gi, pixelIdx_9, Wgi);
-    store_M_gi(g_Reservoirs_current_gi, pixelIdx_9, 1u);
 }

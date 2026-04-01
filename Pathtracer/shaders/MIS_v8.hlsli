@@ -94,7 +94,10 @@ float PairwiseMIS_Canonical_Spat_DI(
         if(nIds[i] != 0xFFFFFFFF){
             float3 x1 = load_x1(g_sample_current, nIds[i]);
             float3 n1 = load_n1_s(g_sample_current, nIds[i]);
-            float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_n1_g(g_sample_current, nIds[i]), load_o(g_sample_current, nIds[i]), load_matID(g_sample_current, nIds[i]), x2_c, n2_c, L2_c, load_localKd(g_sample_current, nIds[i]), load_localPr(g_sample_current, nIds[i]), load_localPm(g_sample_current, nIds[i]), load_etai(g_sample_current, nIds[i]), load_etat(g_sample_current, nIds[i]), objID_c)); // p_hat if the canonical sample as seen from the neighbor position
+            uint nMID = load_matID(g_sample_current, nIds[i]);
+            float3 nKd; float nPr, nPm;
+            RefetchMaterial(nMID, load_uv(g_sample_current, nIds[i]), nKd, nPr, nPm);
+            float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_n1_g(g_sample_current, nIds[i]), load_o(g_sample_current, nIds[i]), nMID, x2_c, n2_c, L2_c, nKd, nPr, nPm, load_etai(g_sample_current, nIds[i]), load_etat(g_sample_current, nIds[i]), objID_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, x1, n2_c, objID_c);
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1, objID_c); // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
@@ -126,7 +129,10 @@ float PairwiseMIS_Neighbor_Spat_DI(
 {
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_di(g_Reservoirs_current_di, nID) > 0.0f ? 1.0f : 0.0f;
-    float p_n = visReuse * GetPHat(ReconnectDI(load_x1(g_sample_current, nID), load_n1_s(g_sample_current, nID), load_n1_g(g_sample_current, nID), load_o(g_sample_current, nID), load_matID(g_sample_current, nID), x2_n, n2_n, L2_n, load_localKd(g_sample_current, nID), load_localPr(g_sample_current, nID), load_localPm(g_sample_current, nID), load_etai(g_sample_current, nID), load_etat(g_sample_current, nID), objID_n));
+    uint nMID = load_matID(g_sample_current, nID);
+    float3 nKd; float nPr, nPm;
+    RefetchMaterial(nMID, load_uv(g_sample_current, nID), nKd, nPr, nPm);
+    float p_n = visReuse * GetPHat(ReconnectDI(load_x1(g_sample_current, nID), load_n1_s(g_sample_current, nID), load_n1_g(g_sample_current, nID), load_o(g_sample_current, nID), nMID, x2_n, n2_n, L2_n, nKd, nPr, nPm, load_etai(g_sample_current, nID), load_etat(g_sample_current, nID), objID_n));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -173,15 +179,14 @@ float PairwiseMIS_Canonical_Spat_GI(
             float3 n1g = load_n1_g(g_sample_current, id);
             float3 o   = load_o(g_sample_current, id);
             uint   mID1 = load_matID(g_sample_current, id);
-            float3 kd1 = load_localKd(g_sample_current, id);
-            float  pr1 = load_localPr(g_sample_current, id);
-            float  pm1 = load_localPm(g_sample_current, id);
+            float3 nKd1; float nPr1, nPm1;
+            RefetchMaterial(mID1, load_uv(g_sample_current, id), nKd1, nPr1, nPm1);
             float  ei1 = load_etai(g_sample_current, id);
             float  et1 = load_etat(g_sample_current, id);
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, nKd1, nPr1, nPm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)
@@ -265,15 +270,14 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
             float3 n1g = load_n1_g(g_sample_current, id);
             float3 o   = load_o(g_sample_current, id);
             uint   mID1 = load_matID(g_sample_current, id);
-            float3 kd1 = load_localKd(g_sample_current, id);
-            float  pr1 = load_localPr(g_sample_current, id);
-            float  pm1 = load_localPm(g_sample_current, id);
+            float3 nKd1; float nPr1, nPm1;
+            RefetchMaterial(mID1, load_uv(g_sample_current, id), nKd1, nPr1, nPm1);
             float  ei1 = load_etai(g_sample_current, id);
             float  et1 = load_etat(g_sample_current, id);
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, kd1, pr1, pm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
+            float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, nKd1, nPr1, nPm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
 
             float D = SymRatio(p_c, p_hat_from, beta);

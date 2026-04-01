@@ -83,8 +83,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sdata.x1);
 
         g_dlssNormals[DTid.xy] = float4(sdata.n1_s, 0.0f);
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(sdata.localKd, 1.0f);
-        g_dlssRoughness[DTid.xy] = sdata.localPr;
+        // Refetch material for DLSS albedo/roughness
+        float3 shadingKd; float shadingPr, shadingPm;
+        RefetchMaterial(sdata.matID, sdata.uv, shadingKd, shadingPr, shadingPm);
+        g_dlssDiffuseAlbedo[DTid.xy] = float4(shadingKd, 1.0f);
+        g_dlssRoughness[DTid.xy] = shadingPr;
 
         // ALWAYS write MV
         float2 curPix = DTid.xy;
@@ -100,7 +103,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels),0.0f, 1.0f);
 
         // Specular albedo
-        float3 specularAlbedo = EnvBRDFApprox2(sdata.localKd, sdata.localPr, sdata.localPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
+        float3 specularAlbedo = EnvBRDFApprox2(shadingKd, shadingPr, shadingPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
@@ -108,21 +111,4 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
-
-
-    /*float2 dims = float2(IMG_W, IMG_H);
-    uint   pixelIdx  = MapPixelID(dims, DTid.xy);
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    gScratchPing[uint3(DTid.xy, 7)].x = GetPHat(output_GI);
-    gScratchPing[uint3(DTid.xy, 7)].y = GetPHat(newAvg);
-    gScratchPing[uint3(DTid.xy, 7)].z = GetPHat(gt);
-    gScratchPing[uint3(DTid.xy, 7)].w = GetPHat(sdata.localKd);
-
-    float depthVal = length(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz);
-    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-    gScratchPing[uint3(DTid.xy, 8)] = float4(rdi.localPr_gi, length(rdi.x2_gi - sdata.x1), 0.0f, 0.0f);
-    gScratchPing[uint3(DTid.xy, 9)] = float4(sdata.n1_s, 0.0f);
-
-    gOutput[uint3(DTid.xy, 10)] = gScratchPing[uint3(DTid.xy, 7)].x;
-    gOutput[uint3(DTid.xy, 11)] = gScratchPing[uint3(DTid.xy, 7)].y;*/
 }

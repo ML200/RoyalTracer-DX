@@ -281,7 +281,6 @@ inline float3 ReconnectDI(
     // Sun
     if (objID_di == 0xFFFFFFFEu)
     {
-        // SUN SHIT
         float3 wi = normalize(x2);
         float3 Le = EvaluateSun(wi);
 
@@ -303,10 +302,9 @@ inline float3 ReconnectDI(
     // Terms
     float3 F = BSDF_term(mID, n1_s, n1_g, -ndirN, o, localKd, localPr, localPm, etai, etat);
     float   G = G_term(n1_s, -ndirN);
-    //float   J = J_term(n2, ndirN, dist);
 
     // Throughput
-    float3 r = F * L * G; //* J;
+    float3 r = F * L * G;
 
     if (any(isnan(r)))
         r = 0;

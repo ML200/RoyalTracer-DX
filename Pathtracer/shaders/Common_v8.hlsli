@@ -257,6 +257,21 @@ bool BoilingFilter(
     return (v > threshold);
 }
 
+// Wave-only variant for raygen shaders (no groupshared memory)
+bool BoilingFilter_Wave(
+    float filterStrength,
+    float v,
+    out float avgNonzero,
+    out float threshold)
+{
+    float waveSum = WaveActiveSum(v);
+    uint  waveCnt = WaveActiveCountBits(v > 0.0f);
+
+    avgNonzero = (waveCnt > 0) ? (waveSum / float(waveCnt)) : 0.0f;
+    threshold  = avgNonzero * BoilMultiplier(filterStrength);
+
+    return (v > threshold);
+}
 
 float DLSS_LinearDepthFromWorldPos(float3 worldPos)
 {

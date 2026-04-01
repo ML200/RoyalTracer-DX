@@ -11,76 +11,18 @@ struct SampleData{
     float3 o;
     uint objID;
     uint matID;
-    float3 localKd;
-    float localPr;
-    float localPm;
+    float2 uv;
     float etai;
     float etat;
 };
 
-// Size remains 48 bytes (3 packs of 16 bytes).
-// Pack 3 uses 12 bytes now (uint3), leaving 4 bytes padding.
-static const uint BYTES_SD = 48u;
+// Pack1(16) + Pack2(16) + Pack3(8) = 40 bytes
+static const uint BYTES_SD = 40u;
 
-static const uint O_PACK1_SD = 0u;     // float4
-static const uint O_PACK2_SD = 16u;    // float4
-static const uint O_PACK3_SD = 32u;    // uint3 (localKd, PrPm, EtaIEtaT)
+static const uint O_PACK1_SD = 0u;     // float4: x1 + n1_s
+static const uint O_PACK2_SD = 16u;    // float4: L1 + o + n1_g + IDs
+static const uint O_PACK3_SD = 32u;    // uint2:  uv(half2) + etai_etat(half2)
 
-
-// --- Packing helpers for float <-> half ---
-uint f32tof16(float val)
-{
-    uint f32 = asuint(val);
-    uint sign = (f32 >> 31) & 0x1;
-    uint exp = (f32 >> 23) & 0xff;
-    uint mant = f32 & 0x7fffff;
-
-    if (exp == 0xff) // Inf / NaN
-        return (sign << 15) | 0x7c00 | (mant != 0 ? 0x200 : 0);
-    if (exp == 0) // Denorm
-        return (sign << 15);
-
-    int new_exp = exp - 127;
-    if (new_exp < -14) // Underflow to zero
-        return (sign << 15);
-    if (new_exp > 15) // Overflow to infinity
-        return (sign << 15) | 0x7c00;
-
-    return (sign << 15) | ((new_exp + 15) << 10) | (mant >> 13);
-}
-
-float f16tof32(uint val)
-{
-    uint sign = (val >> 15) & 0x1;
-    uint exp = (val >> 10) & 0x1f;
-    uint mant = val & 0x3ff;
-
-    if (exp == 0x1f) // Inf / NaN
-        return asfloat((sign << 31) | 0x7f800000 | (mant != 0 ? 0x400000 : 0));
-    if (exp == 0) // Denorm or zero
-    {
-        if (mant == 0) return asfloat(sign << 31);
-        while ((mant & 0x400) == 0) {
-            mant <<= 1;
-            exp--;
-        }
-        mant &= 0x3ff;
-        return asfloat((sign << 31) | ((exp + 127) << 23) | (mant << 13));
-    }
-
-    return asfloat((sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13));
-}
-
-uint PackFloat2x16(float u, float v)
-{
-    return f32tof16(u) | (f32tof16(v) << 16);
-}
-
-void UnpackFloat2x16(uint p, out float u, out float v)
-{
-    u = f16tof32(p & 0xFFFFu);
-    v = f16tof32(p >> 16);
-}
 
 // helpers
 uint pixelBaseAddr_SD(uint pixelIdx)
@@ -108,12 +50,10 @@ void storeSampleData(RWByteAddressBuffer buf,
                      PackNormal(s.n1_g),
                      PackID16(s.objID, s.matID)));
 
-    // Pack 3: localKd + localPr/Pm + etai/etat
-    // Using Store3 now (12 bytes)
-    buf.Store3(base + O_PACK3_SD,
-               uint3(PackRGB9E5(s.localKd),
-                     PackFloat2x16(s.localPr, s.localPm),
-                     PackFloat2x16(s.etai, s.etat))); // Added
+    // Pack 3: uv (half2) + etai/etat (half2)
+    buf.Store2(base + O_PACK3_SD,
+               uint2(PackFloat2x16(s.uv.x, s.uv.y),
+                     PackFloat2x16(s.etai, s.etat)));
 }
 
 SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
@@ -133,12 +73,10 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
     s.n1_g = UnpackNormal(p2.z);
     UnpackID16(p2.w, s.objID, s.matID);
 
-    // Load Pack 3 (Load3 for 12 bytes)
-    uint3 p3 = buf.Load3(base + O_PACK3_SD);
-
-    s.localKd = UnpackRGB9E5(p3.x);
-    UnpackFloat2x16(p3.y, s.localPr, s.localPm);
-    UnpackFloat2x16(p3.z, s.etai, s.etat); // Added
+    // Load Pack 3
+    uint2 p3 = buf.Load2(base + O_PACK3_SD);
+    UnpackFloat2x16(p3.x, s.uv.x, s.uv.y);
+    UnpackFloat2x16(p3.y, s.etai, s.etat);
 
     return s;
 }
@@ -146,16 +84,14 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
 // --- single loaders ---
 float3 load_x1   (RWByteAddressBuffer b, uint id){return asfloat(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).xyz);}
 float3 load_n1_s (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).w);}
-float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
+float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
 float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).x);}
-float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
+float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
 uint   load_objID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) & 0xFFFFu;}
 uint   load_matID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) >> 16;}
-float3 load_localKd(RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD));}
-float  load_localPr(RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) & 0xFFFFu);}
-float  load_localPm(RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) >> 16);}
-float  load_etai   (RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) & 0xFFFFu);}
-float  load_etat   (RWByteAddressBuffer b, uint id){return f16tof32(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) >> 16);}
+float2 load_uv   (RWByteAddressBuffer b, uint id){float2 r; UnpackFloat2x16(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD), r.x, r.y); return r;}
+float  load_etai (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) & 0xFFFFu);}
+float  load_etat (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u) >> 16);}
 
 
 

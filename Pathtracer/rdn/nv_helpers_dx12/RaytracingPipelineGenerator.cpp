@@ -202,7 +202,9 @@ ID3D12StateObject* RayTracingPipelineGenerator::Generate()
   HRESULT hr = m_device->CreateStateObject(&pipelineDesc, IID_PPV_ARGS(&rtStateObject));
   if (FAILED(hr))
   {
-    throw std::logic_error("Could not create the raytracing state object");
+    char buf[256];
+    sprintf_s(buf, "Could not create the raytracing state object (HRESULT 0x%08X)", (unsigned)hr);
+    throw std::logic_error(buf);
   }
   return rtStateObject;
 }
@@ -368,7 +370,9 @@ RayTracingPipelineGenerator::HitGroup::HitGroup(std::wstring hitGroupName,
     : m_hitGroupName(std::move(hitGroupName)), m_closestHitSymbol(std::move(closestHitSymbol)),
       m_anyHitSymbol(std::move(anyHitSymbol)), m_intersectionSymbol(std::move(intersectionSymbol))
 {
+  m_desc = {};
   m_desc.HitGroupExport = m_hitGroupName.c_str();
+  m_desc.Type = D3D12_HIT_GROUP_TYPE_TRIANGLES;
   m_desc.ClosestHitShaderImport = m_closestHitSymbol.empty() ? nullptr : m_closestHitSymbol.c_str();
   m_desc.AnyHitShaderImport = m_anyHitSymbol.empty() ? nullptr : m_anyHitSymbol.c_str();
   m_desc.IntersectionShaderImport =

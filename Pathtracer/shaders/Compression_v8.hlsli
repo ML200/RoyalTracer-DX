@@ -135,6 +135,61 @@ float3 UnpackNormal_INT(uint packed)
     return normalize(n);
 }
 
+// --- float16 packing helpers ---
+uint f32tof16_custom(float val)
+{
+    uint f32 = asuint(val);
+    uint sign = (f32 >> 31) & 0x1;
+    uint exp = (f32 >> 23) & 0xff;
+    uint mant = f32 & 0x7fffff;
+
+    if (exp == 0xff) // Inf / NaN
+        return (sign << 15) | 0x7c00 | (mant != 0 ? 0x200 : 0);
+    if (exp == 0) // Denorm
+        return (sign << 15);
+
+    int new_exp = exp - 127;
+    if (new_exp < -14) // Underflow to zero
+        return (sign << 15);
+    if (new_exp > 15) // Overflow to infinity
+        return (sign << 15) | 0x7c00;
+
+    return (sign << 15) | ((new_exp + 15) << 10) | (mant >> 13);
+}
+
+float f16tof32_custom(uint val)
+{
+    uint sign = (val >> 15) & 0x1;
+    uint exp = (val >> 10) & 0x1f;
+    uint mant = val & 0x3ff;
+
+    if (exp == 0x1f) // Inf / NaN
+        return asfloat((sign << 31) | 0x7f800000 | (mant != 0 ? 0x400000 : 0));
+    if (exp == 0) // Denorm or zero
+    {
+        if (mant == 0) return asfloat(sign << 31);
+        while ((mant & 0x400) == 0) {
+            mant <<= 1;
+            exp--;
+        }
+        mant &= 0x3ff;
+        return asfloat((sign << 31) | ((exp + 127) << 23) | (mant << 13));
+    }
+
+    return asfloat((sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13));
+}
+
+uint PackFloat2x16(float u, float v)
+{
+    return f32tof16_custom(u) | (f32tof16_custom(v) << 16);
+}
+
+void UnpackFloat2x16(uint p, out float u, out float v)
+{
+    u = f16tof32_custom(p & 0xFFFFu);
+    v = f16tof32_custom(p >> 16);
+}
+
 // Packs two [0..1] floats into one uint (16 bits each)
 uint PackScalars16(float a, float b)
 {

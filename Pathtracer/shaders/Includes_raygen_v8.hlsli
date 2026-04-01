@@ -78,6 +78,10 @@ Buffer<float>          gLT_LeafAliasProb : register(t16);
 Buffer<uint>           gLT_LeafAliasIdx  : register(t17);
 
 
+// Convenience macros (match Includes_v8 for shared code)
+#define IMG_W (gImageSize.x)
+#define IMG_H (gImageSize.y)
+
 // Needs access to all structured/random buffers
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
@@ -100,3 +104,4 @@ Buffer<uint>           gLT_LeafAliasIdx  : register(t17);
 #include "Inline_RT_v8.hlsli"
 #include "Camera_ray_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
+#include "MIS_v8.hlsli"
