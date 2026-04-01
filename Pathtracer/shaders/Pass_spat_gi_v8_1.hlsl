@@ -1,14 +1,12 @@
-#include "Includes_v8.hlsli"
+#include "Includes_raygen_v8.hlsli"
 
 //─────────────────────────────────────────────────────────────────────────────
-//  SPATIAL  GI  (register-pressure optimized refactor for NVIDIA)
+//  SPATIAL  GI  (raygen shader)
 //─────────────────────────────────────────────────────────────────────────────
-[numthreads(16, 16, 1)]
-void main(uint3 tid : SV_DispatchThreadID)
+[shader("raygeneration")]
+void Pass_spat_gi_v8_1()
 {
-    // if (tid.x >= IMG_W || tid.y >= IMG_H) return;
-
-    const uint2  launchIndex = tid.xy;
+    const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
@@ -19,7 +17,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Only do spatial GI when there is no L1
     if (!all(sdata.L1 < EPSILON))
     {
-        gScratchPing[uint3(tid.xy, 2)] = float4(sdata.L1, 0);
+        gScratchPing[uint3(launchIndex, 2)] = float4(sdata.L1, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
     }
@@ -121,19 +119,26 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     float3 contrib_final = 0.0.xxx;
     float  p_c           = 0.0f;
+    float  Jn_canonical  = 0.0f;
+
+    // Refetch material for canonical x1 and x2 vertices (needed for MIS too)
+    float3 sKd; float sPr, sPm;
+    RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
+    float3 rKd; float rPr, rPm;
+    RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
 
     {
-        float JdummyN = 0.0f;
-        float Jdummy  = 0.0f;
+        float Jdummy = 0.0f;
 
         // applyJ = false; Jc is irrelevant in that case (use 1.0f)
+        // Jn_canonical is always computed now and used to track J through merge
         float3 contrib_c = ReconnectGI(
             sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-            sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
+            sKd, sPr, sPm, sdata.etai, sdata.etat,
             rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
-            rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
+            rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
             rdi.J_gi.x, 1.0f, false,
-            JdummyN, Jdummy
+            Jn_canonical, Jdummy
         );
 
         contrib_c *= visReuse;
@@ -142,21 +147,18 @@ void main(uint3 tid : SV_DispatchThreadID)
         contrib_final = contrib_c;
     }
 
-    // MIS for canonical (keep your logic; ensure list tail is invalid)
+    // Set canonical jacobian (will be overwritten if neighbor wins in merge)
+    rdi.J_gi.y = Jn_canonical;
+
+    // MIS for canonical
     float mis_c = 0.0f;
     {
-        const float visReuse_c = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-        const float p_c_eff    = rdi.F_gi * visReuse_c; // matches your original “p_c” in temporal; here you use p_c computed from contrib
-        // NOTE: your original code uses p_c from contrib_c, not rdi.F_gi.
-        // We keep your exact spatial code behavior: mis uses p_c (from contrib).
-        (void)p_c_eff;
-
         if (rdi.M_gi <= SPAT_MIN_M_GI)
         {
             mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(
                 M_sum_sym, p_c, M_c, nIds,
                 rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-                rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
+                rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
                 rdi.J_gi.x, rdi.J_gi.y, SPAT_BETA_GI
             );
         }
@@ -165,7 +167,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             mis_c = PairwiseMIS_Canonical_Spat_GI(
                 M_sum, p_c, M_c, nIds,
                 rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-                rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
+                rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
                 rdi.J_gi.x, rdi.J_gi.y
             );
         }
@@ -193,11 +195,15 @@ void main(uint3 tid : SV_DispatchThreadID)
         float  Jnn = 1.0f;
 
         {
+            // Refetch neighbor x2 material
+            float3 rnKd; float rnPr, rnPm;
+            RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
+
             contrib_n = ReconnectGI(
                 sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
+                sKd, sPr, sPm, sdata.etai, sdata.etat,
                 rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi, rdi_r.etai_gi, rdi_r.etat_gi,
+                rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.J_gi.x, rdi_r.J_gi.y, true,
                 Jn, Jnn
             );
@@ -244,7 +250,7 @@ void main(uint3 tid : SV_DispatchThreadID)
                 w_n,
                 min(SPAT_MCAP_GI, rdi_r.M_gi),
                 rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rdi_r.localKd_gi, rdi_r.localPr_gi, rdi_r.localPm_gi,
+                rdi_r.uv_gi,
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.J_gi, rdi_r.F_gi,
@@ -275,16 +281,9 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         rdi.F_gi = p_hat_final;
 
-        // Recompute Jacobian for now-canonical stored sample
-        rdi.J_gi.y = PSSJacobian(
-            sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-            sdata.localKd, sdata.localPr, sdata.localPm, sdata.etai, sdata.etat,
-            rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rdi.matID_gi,
-            rdi.localKd_gi, rdi.localPr_gi, rdi.localPm_gi, rdi.etai_gi, rdi.etat_gi,
-            rdi.J_gi.x
-        );
+        // J_gi.y already tracked: set to Jn_canonical or overwritten by neighbor Jn in merge
 
-        gScratchPing[uint3(tid.xy, 2)] = float4(contrib_final * rdi.W_gi, 0);
+        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
     }
 
     // Store merged reservoir

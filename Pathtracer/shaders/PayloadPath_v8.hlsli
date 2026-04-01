@@ -21,12 +21,12 @@ static const uint MEDIUM_INVALID_15 = 0x7FFFu;
 // --------------------------------------------
 inline uint PackHalf2_payload(float2 v)
 {
-    return (uint(f32tof16(v.x)) & 0xFFFFu) | (uint(f32tof16(v.y)) << 16);
+    return (uint(f32tof16_custom(v.x)) & 0xFFFFu) | (uint(f32tof16_custom(v.y)) << 16);
 }
 
 inline float2 UnpackHalf2_payload(uint u)
 {
-    return float2(f16tof32(u & 0xFFFFu), f16tof32(u >> 16));
+    return float2(f16tof32_custom(u & 0xFFFFu), f16tof32_custom(u >> 16));
 }
 
 // --------------------------------------------

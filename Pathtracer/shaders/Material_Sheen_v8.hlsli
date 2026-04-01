@@ -2,60 +2,48 @@
 static const float  SHEEN_R      = 0.20f;
 static const float3 SHEEN_COLOR  = float3(1,1,1);
 
+// Precomputed constants derived from SHEEN_R (all compile-time)
+static const float SHEEN_INVR    = 1.0f / SHEEN_R;                          // 5.0
+static const float SHEEN_D_SCALE = (2.0f + SHEEN_INVR) * (0.5f * INV_PI);  // 7/(2pi)
+static const float SHEEN_SAMP_EXPO = (2.0f * SHEEN_R) / (2.0f * SHEEN_R + 1.0f); // 2/7
+
+// Lambda fit params: P = (1-r)^2 * P0 + (1-(1-r)^2) * P1
+static const float SHEEN_W0 = (1.0f - SHEEN_R) * (1.0f - SHEEN_R);         // 0.64
+static const float SHEEN_W1 = 1.0f - SHEEN_W0;                             // 0.36
+static const float SHEEN_FIT_A = SHEEN_W0 * 25.3245f + SHEEN_W1 * 21.5473f;
+static const float SHEEN_FIT_B = SHEEN_W0 *  3.32435f + SHEEN_W1 *  3.82987f;
+static const float SHEEN_FIT_C = SHEEN_W0 *  0.16801f + SHEEN_W1 *  0.19823f;
+static const float SHEEN_FIT_D = SHEEN_W0 * (-1.27393f) + SHEEN_W1 * (-1.97760f);
+static const float SHEEN_FIT_E = SHEEN_W0 * (-4.85967f) + SHEEN_W1 * (-4.32054f);
+
 // D term (Eq. 2): D(m) = (2 + 1/r) * sin(theta_h)^(1/r) / (2pi)
 inline float SHEEN_D_Charlie(float NdotH)
 {
-    float r      = SHEEN_R;
-    float invr   = 1.0f / max(1e-4f, r);
     float sinTh2 = saturate(1.0f - NdotH * NdotH);
     float sinTh  = sqrt(sinTh2);
-    float D      = (2.0f + invr) * pow(max(1e-8f, sinTh), invr) * (0.5f * INV_PI); // 1/(2pi)
-    return D;
+    return SHEEN_D_SCALE * pow(max(1e-8f, sinTh), SHEEN_INVR);
 }
 
-// A fit from the paper (Table 1 + Eq. 3), correlated Smith G = 1 / (1 + A(V) + A(L))
-inline float SHEEN_LambdaFit_params(out float a, out float b, out float c, out float d, out float e)
+inline float SHEEN_L_eval(float x)
 {
-    // interpolate between r=0.0 and r=1.0 fits: P = (1-r)^2 * P0 + (1-(1-r)^2) * P1
-    float r   = saturate(SHEEN_R);
-    float w0  = (1.0f - r); w0 *= w0;
-    float w1  = 1.0f - w0;
-
-    // r = 0.0   :  a=25.3245 b=3.32435 c=0.16801 d=-1.27393 e=-4.85967
-    // r = 1.0   :  a=21.5473 b=3.82987 c=0.19823 d=-1.97760 e=-4.32054
-    float a0=25.3245f, b0=3.32435f, c0=0.16801f, d0=-1.27393f, e0=-4.85967f;
-    float a1=21.5473f, b1=3.82987f, c1=0.19823f, d1=-1.97760f, e1=-4.32054f;
-
-    a = w0*a0 + w1*a1;
-    b = w0*b0 + w1*b1;
-    c = w0*c0 + w1*c1;
-    d = w0*d0 + w1*d1;
-    e = w0*e0 + w1*e1;
-
-    return r;
+    return SHEEN_FIT_A / (1.0f + SHEEN_FIT_B * pow(max(1e-4f, x), SHEEN_FIT_C))
+         + SHEEN_FIT_D * x + SHEEN_FIT_E;
 }
 
-inline float SHEEN_L_eval(float x, float a, float b, float c, float d, float e)
-{
-    return a / (1.0f + b * pow(max(1e-4f, x), c)) + d * x + e;
-}
+// Precomputed L(0.5) — used in every Lambda_Charlie call
+static const float SHEEN_L_HALF = SHEEN_FIT_A / (1.0f + SHEEN_FIT_B * pow(0.5f, SHEEN_FIT_C))
+                                + SHEEN_FIT_D * 0.5f + SHEEN_FIT_E;
 
 inline float SHEEN_Lambda_Charlie(float cosTheta)
 {
-    // piecewise A using L(x) = a/(1 + b x^c) + d x + e
-    float a, b, c, d, e;
-    (void)SHEEN_LambdaFit_params(a, b, c, d, e);
-
     float x = saturate(cosTheta);
 
-    float Lx      = SHEEN_L_eval(x,        a, b, c, d, e);
-    float L_half  = SHEEN_L_eval(0.5f,     a, b, c, d, e);
-    float L_1mx   = SHEEN_L_eval(1.0f - x, a, b, c, d, e);
+    float Lx    = SHEEN_L_eval(x);
+    float L_1mx = SHEEN_L_eval(1.0f - x);
 
     // piecewise definition
-    float val = (x < 0.5f) ? exp(Lx)
-                           : exp(2.0f * L_half - L_1mx);
-    return val;
+    return (x < 0.5f) ? exp(Lx)
+                      : exp(2.0f * SHEEN_L_HALF - L_1mx);
 }
 
 inline float SHEEN_G_Charlie(float NdotV, float NdotL)
@@ -72,9 +60,7 @@ inline float3 SHEEN_SampleHalfVector(uint seed, float3 N, out float NdotH, out f
     float u1  = RandomFloatSingle(seed);
     float u2  = RandomFloatSingle(seed);
 
-    float r        = SHEEN_R;
-    float expo     = (2.0f * r) / (2.0f * r + 1.0f);
-    float sin2Th   = pow(saturate(u1), expo);
+    float sin2Th   = pow(saturate(u1), SHEEN_SAMP_EXPO);
     float cosTh    = sqrt(saturate(1.0f - sin2Th));
     float sinTh    = sqrt(sin2Th);
     float phi      = 2.0f * PI * u2;
@@ -118,8 +104,8 @@ inline float3 EvaluateBRDF_SHEEN(
     float  G = SHEEN_G_Charlie(NdotV, NdotL);
     float  denom = max(1e-6f, 4.0f * NdotV * NdotL);
 
-    float3 F = 1.0.xxx;
-    return w * SHEEN_COLOR * (F * (G * D / denom));
+    // F~1, SHEEN_COLOR=white — both multiply to identity
+    return w * (G * D / denom);
 }
 
 
@@ -141,8 +127,7 @@ inline float Transmittance_SHEEN(
         return 1.0f;
 
     float aV = GetSheenLUT(SHEEN_R, NdotV);
-    float tintLum = saturate(Luma(SHEEN_COLOR));
-    aV *= tintLum;
+    // SHEEN_COLOR=white → Luma=1, tintLum=1
     return saturate(1.0f - w * aV);
 }
 
@@ -160,8 +145,8 @@ inline float Sampling_Weight_SHEEN(
     if (w <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
     float  aV = GetSheenLUT(SHEEN_R, NdotV);
-    float  tintLum = saturate(Luma(SHEEN_COLOR));
-    return saturate(w * tintLum * aV);
+    // SHEEN_COLOR=white → Luma=1, tintLum=1
+    return saturate(w * aV);
 }
 
 

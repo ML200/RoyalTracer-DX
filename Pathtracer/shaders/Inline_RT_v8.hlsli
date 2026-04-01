@@ -4,41 +4,6 @@ struct [raypayload] TracePayload
     uint dummy : read(caller) : write(caller);
 };
 
-// Optional: if you prefer your own wrapper instead of BuiltInTriangleIntersectionAttributes
-struct TriAttrs
-{
-    float2 bary; // numeric-only, OK
-};
-
-
-/*#ifndef ENABLE_RAY_QUERY_INLINE
-float VisibilityCheck(
-    float3 x1,
-    float3 x2,
-    float3 n1
-)
-{
-    float V = 0.0f;
-    float3 dir = x2-x1;
-    float dist = length(dir);
-    // Adjust normal offset based on ray direction (transmission reconnection requires negative offset)
-    if(dot(dir, n1) < 0.0f)
-        n1 = -n1;
-
-    RayDesc ray;
-    ray.Origin = x1 + normalize(n1) * EPSILON;
-    ray.Direction = normalize(dir);
-    ray.TMin = EPSILON;
-    ray.TMax = max(dist - 10.0f * EPSILON, 2.0f * EPSILON);
-    ShadowHitInfo shadowPayload;
-    shadowPayload.isHit = false;
-    const uint flags =
-        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
-    TraceRay(SceneBVH, flags, 0xFF, 1, 0, 1, ray, shadowPayload);
-    V = shadowPayload.isHit ? 0.0f : 1.0f;
-    return V;
-}
-#endif*/
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
@@ -261,6 +226,16 @@ float2 EvaluatePBRProperties(in Material mat, float2 uv, uint level)
     }
     return pbrProps;
 }
+// Refetch material properties from textures using matID + UV (level 0)
+inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm)
+{
+    Material mat = materials[matID];
+    localKd = EvaluateAlbedo(mat, uv, 0);
+    float2 pbr = EvaluatePBRProperties(mat, uv, 0);
+    localPr = pbr.x;
+    localPm = pbr.y;
+}
+
 // =====================================================================================================================
 
 inline dx::HitObject TraceRay_Custom(
@@ -282,19 +257,6 @@ inline dx::HitObject TraceRay_Custom(
 inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
 {
     return EvaluateSky(rayDir);
-    /*float3 sky = EvaluateSky(rayDir);
-
-    SunState sun = ComputeSunState();
-
-    CloudResult clouds = EvaluateClouds(
-        rayDir,
-        sun.dirWS,
-        sun.tint * SUN_INTENSITY_VAL,
-        EvaluateSky(float3(0, 1, 0)),
-        EvaluateSky(float3(0, 0.1f, 1)) * 0.5f
-    );
-
-    return clouds.color + (sky + sunDisk) * clouds.transmit;*/
 }
 
 HitInfo EvalSurfaceState(
@@ -422,13 +384,7 @@ HitInfo EvalSurfaceState(
     const Material mat = materials[materialID];
 
     HitInfo hit = (HitInfo)0.0f;
-    hit.localKd = EvaluateAlbedo(mat, uv, level);
-
-    {
-        const float2 pbr = EvaluatePBRProperties(mat, uv, level);
-        hit.localPr = (half)pbr.x;
-        hit.localPm = (half)pbr.y;
-    }
+    hit.uv = uv;
 
     // 5) NORMAL MAPPING (avoid TBN matrix; scope aggressively)
     [branch]

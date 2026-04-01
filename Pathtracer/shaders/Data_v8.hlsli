@@ -4,12 +4,6 @@ struct STriVertex {
     half2  texCoord;
 };
 
-cbuffer Colors : register(b0) {
-    float3 A;
-    float3 B;
-    float3 C;
-}
-
 struct Attributes {
     float2 bary;
 };
@@ -65,40 +59,6 @@ struct Material
 struct [[raypayload]] ShadowHitInfo {
     bool isHit: read(caller)
                          : write(anyhit,closesthit,miss);
-};
-
-struct SampleReturn
-{
-    float3 x2;
-    float3 n2;
-    float3 L2;
-    uint objID; // Of the light/x2 hit
-    uint matID; // Of the light/x2 hit
-    float pdf_bsdf;
-    float pdf_nee;
-};
-
-// Extended sample return for bdpt
-struct BDReturn
-{
-    float3 x2;
-    float3 n2;
-    float3 L2;
-    uint objID; // Of the light/x2 hit
-    uint matID; // Of the light/x2 hit
-    float pdf;
-    float pdf_seg;
-
-    float3 x3; // third vertex reconnection data
-    float3 n3;
-    uint triID;
-};
-
-
-struct WeightedPixel
-{
-    int2  pix;
-    float w;
 };
 
 
