@@ -169,8 +169,8 @@ void main(uint3 tid : SV_DispatchThreadID, uint3 ltid : SV_GroupThreadID)
                 // Dynamic M caps
                 const float minRoughTemp  = min(sdata.localPr, rdi_r.localPr_gi);
                 const float tempMcapScale = smoothstep(REUSE_ROUGHNESS_MIN, REUSE_ROUGHNESS_MAX, minRoughTemp);
-                const float dynTempMcap   = TEMP_MCAP_GI;//(minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
-                                        //: min(TEMP_MCAP_GI, TEMP_MCAP_GI * tempMcapScale);
+                const float dynTempMcap   = (minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
+                                        : min(TEMP_MCAP_GI, TEMP_MCAP_GI * tempMcapScale);
 
                 const float M_c   = min(TEMP_MCAP_GI, rdi.M_gi);
                 const float M_n   = min(dynTempMcap,  rdi_r.M_gi);

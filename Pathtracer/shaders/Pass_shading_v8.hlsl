@@ -13,7 +13,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 output_DI = gScratchPing[uint3(DTid.xy, 1)];
     float3 output_GI = gScratchPing[uint3(DTid.xy, 2)];
 
-    float3 accumulation = output_DI + output_GI;
+    float3 accumulation = /*output_DI +*/ output_GI;
     //float3 gt = gScratchPing[uint3(DTid.xy, 3)];
 
     bool cameraChanged = false;
