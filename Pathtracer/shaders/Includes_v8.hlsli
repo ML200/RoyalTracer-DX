@@ -111,7 +111,6 @@ Buffer<uint>           gLT_LeafAliasIdx  : register(t17);
 #include "Camera_ray_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
 #include "MIS_v8.hlsli"
-#include "Denoiser_helper_v8.hlsli"
 
 // Core DLSS Inputs
 RWTexture2D<float>  g_dlssDepth           : register(u11); // DXGI_FORMAT_R32_FLOAT
