@@ -58,15 +58,15 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     matrices[1] = XMMatrixPerspectiveFovRH(
         XMConvertToRadians(fovDegrees), aspectRatio, nearPlane, farPlane);
 
+    m_jitterFrameIndex++;
+    m_jitterX = Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
+    m_jitterY = Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
+
     XMVECTOR det;
     matrices[2] = XMMatrixInverse(&det, matrices[0]);
     matrices[3] = XMMatrixInverse(&det, matrices[1]);
     matrices[4] = m_prevView;
     matrices[5] = m_prevProj;
-
-    m_jitterFrameIndex++;
-    m_jitterX = Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
-    m_jitterY = Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
 
     uint8_t* pData;
     if (FAILED(m_buffer->Map(0, nullptr, (void**)&pData))) return;
@@ -75,15 +75,17 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
     m_buffer->Unmap(0, nullptr);
 
-    m_viewMatrix = matrices[0];
-    m_projMatrix = matrices[1];
+    m_viewMatrix           = matrices[0];
+    m_projMatrix           = matrices[1];
+    m_projMatrixUnjittered = matrices[1];
     // prev matrices are advanced in AdvanceFrame(), called after DLSS evaluates
 }
 
 // ─────────────────────────────────────────────────────────────────
 void Camera::AdvanceFrame() {
-    m_prevView = m_viewMatrix;
-    m_prevProj = m_projMatrix;
+    m_prevView            = m_viewMatrix;
+    m_prevProj            = m_projMatrix;
+    m_prevProjUnjittered  = m_projMatrixUnjittered;
 }
 
 // ─────────────────────────────────────────────────────────────────

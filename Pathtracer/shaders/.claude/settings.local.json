@@ -3,7 +3,8 @@
     "allow": [
       "Bash(xargs grep:*)",
       "Bash(grep -rn g_dlssSpecMVec[ C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders/)",
-      "Bash(find C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders -name *.hlsl)"
+      "Bash(find C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders -name *.hlsl)",
+      "Bash(find C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/streamline -type f \\\\\\(-iname *.md -o -iname *.txt -o -iname *.doc* -o -iname readme* \\\\\\))"
     ]
   }
 }

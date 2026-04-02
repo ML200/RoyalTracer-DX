@@ -73,7 +73,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // Since sky is "infinite" or has no primary surface hit, use a safe max value.
         g_dlssSpecHitDist[DTid.xy] = 65504.0f; // FP16 Max
 
-        // Optional: Sky motion should usually be 0 or calculated via camera rotation only.
         g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
@@ -89,18 +88,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssDiffuseAlbedo[DTid.xy] = float4(shadingKd, 1.0f);
         g_dlssRoughness[DTid.xy] = shadingPr;
 
-        // MV from jittered hit point — jitterOffset now correctly tells DLSS
-        // where the sample sits, so no manual jitter subtraction needed
         float2 curPix = DTid.xy;
-        float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+        float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID) - jitter;
 
-        // Clamp or invalidate if outside
         bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
 
         float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
 
         g_dlssMVec[curPix] = mvPixels;
-        gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels),0.0f, 1.0f);
+        gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels), 0.0f, 1.0f);
 
         // Specular albedo
         float3 specularAlbedo = EnvBRDFApprox2(shadingKd, shadingPr, shadingPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
