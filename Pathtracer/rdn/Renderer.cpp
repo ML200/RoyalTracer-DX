@@ -46,7 +46,7 @@ void Renderer::OnInit() {
         auto flushFn = [this]() { m_ctx.FlushAndReset(); };
 
         AssetLoader::LoadModels({
-            { "./sponza_tex/sponza_tex.obj", XMMatrixIdentity() },
+            { "./bistro2/bistro2.obj", XMMatrixIdentity() },
             // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
         }, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
 
