@@ -64,7 +64,7 @@ void main(uint3 tid : SV_DispatchThreadID)
              !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
     }
 
-    // --- fallback to non-permuted temporal if permuted failed ---
+    // --- fallback to non-permuted base coordinate ---
     if (!valid)
     {
         int2 fallback = baseCoord;
@@ -80,6 +80,52 @@ void main(uint3 tid : SV_DispatchThreadID)
                  !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
                  !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
         }
+    }
+
+    // --- fallback: 3x3 neighbourhood search around baseCoord (cheap loads) ---
+    if (!valid)
+    {
+        [unroll]
+        for (int dy = -1; dy <= 1 && !valid; ++dy)
+        {
+            [unroll]
+            for (int dx = -1; dx <= 1 && !valid; ++dx)
+            {
+                if (dx == 0 && dy == 0) continue; // already tried
+
+                int2 c = baseCoord + int2(dx, dy);
+                if (c.x < 0 || c.y < 0 || c.x >= (int)IMG_W || c.y >= (int)IMG_H)
+                    continue;
+
+                uint cIdx = MapPixelID(dims, (uint2)c);
+
+                // Cheap scalar loads only — no full SampleData
+                if (!all(load_L1(g_sample_last, cIdx) < EPSILON))   continue;
+                if (load_matID(g_sample_last, cIdx) != sdata.matID) continue;
+                float3 cn1s = load_n1_s(g_sample_last, cIdx);
+                if (RejectNormal_DI(sdata.n1_s, cn1s, 0.9f))       continue;
+                float3 cx1 = load_x1(g_sample_last, cIdx);
+                if (RejectDistance_DI(sdata.x1, cx1, sdata.n1_s, 0.05f)) continue;
+
+                // Passed all cheap checks — commit
+                tempPixelIdx = cIdx;
+                sdata_r = loadSampleData(g_sample_last, cIdx);
+                valid = true;
+            }
+        }
+    }
+
+    // --- last resort: current pixel (no reprojection) ---
+    if (!valid)
+    {
+        tempPixelIdx = pixelIdx;
+        sdata_r = loadSampleData(g_sample_last, pixelIdx);
+
+        valid =
+            (all(sdata_r.L1 < EPSILON) &&
+             (sdata_r.matID == sdata.matID) &&
+             !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
+             !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
     }
 
     // --- heavy reuse path ---
