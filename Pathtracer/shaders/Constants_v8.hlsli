@@ -20,8 +20,8 @@
 #define SPAT_RAD_MAX 48
 #define SPAT_RAD_MIN 32
 
-#define SPAT_COUNT_MAX_DI 1
-#define SPAT_COUNT_MIN_DI 1
+#define SPAT_COUNT_MAX_DI 8
+#define SPAT_COUNT_MIN_DI 8
 #define SPAT_TRIS_DI 1
 
 
@@ -33,8 +33,8 @@
 #define SPAT_RAD_MAX_GI 32
 #define SPAT_RAD_MIN_GI 32
 
-#define SPAT_COUNT_MAX_GI 1
-#define SPAT_COUNT_MIN_GI 1
+#define SPAT_COUNT_MAX_GI 8
+#define SPAT_COUNT_MIN_GI 8
 #define SPAT_TRIS_GI 1
 
 #define SPAT_MIN_M_GI 300

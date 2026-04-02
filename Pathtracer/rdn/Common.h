@@ -97,6 +97,31 @@ struct GeometryOffsets {
     UINT materialBase;
 };
 
+// ── ReSTIR runtime settings ─────────────────────────────────────
+struct ReSTIRSettings {
+    int   tempMcapDI       = 8;
+    int   tempMcapGI       = 8;
+    int   spatCountMaxDI   = 1;
+    int   spatCountMinDI   = 1;
+    int   spatRadMaxDI     = 48;
+    int   spatRadMinDI     = 32;
+    int   spatCountMaxGI   = 1;
+    int   spatCountMinGI   = 1;
+    int   spatRadMaxGI     = 32;
+    int   spatRadMinGI     = 32;
+    bool  enableTempDI     = true;
+    bool  enableTempGI     = true;
+    bool  enableSpatDI     = true;
+    bool  enableSpatGI     = true;
+    float reuseRoughnessMin = 0.15f;
+    float reuseRoughnessMax = 0.6f;
+
+    UINT Flags() const {
+        return (enableTempDI ? 1u : 0u) | (enableTempGI ? 2u : 0u)
+             | (enableSpatDI ? 4u : 0u) | (enableSpatGI ? 8u : 0u);
+    }
+};
+
 // ── Halton sequence for jitter ───────────────────────────────────
 inline float Halton(uint32_t index, uint32_t base) {
     float f = 1.0f, r = 0.0f;

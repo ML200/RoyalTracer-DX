@@ -21,6 +21,12 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load current reservoir
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
+    // Early-out if temporal DI is disabled
+    if (!(rs_flags & 1u)) {
+        storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
+        return;
+    }
+
     float boilValue = 0.0f;
 
     // RNG
@@ -162,11 +168,11 @@ void main(uint3 tid : SV_DispatchThreadID)
             float sdata_Pr = EvaluatePBRProperties(materials[sdata.matID], sdata.uv, 0).x;
             float rdi_r_Pr = EvaluatePBRProperties(materials[sdata_r.matID], sdata_r.uv, 0).x;
             const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
-            const float tempMcapScale = smoothstep(REUSE_ROUGHNESS_MIN, REUSE_ROUGHNESS_MAX, minRoughTemp);
-            const float dynTempMcap   = (minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
-                                    : min(TEMP_MCAP_DI, TEMP_MCAP_DI * tempMcapScale);
+            const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
+            const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
+                                    : min(rs_tempMcapDI, rs_tempMcapDI * tempMcapScale);
 
-            const float M_c   = min(TEMP_MCAP_DI, rdi.M_di);
+            const float M_c   = min(rs_tempMcapDI, rdi.M_di);
             const float M_n   = min(dynTempMcap,  rdi_r.M_di);
             const float M_sum = M_c + M_n;
 

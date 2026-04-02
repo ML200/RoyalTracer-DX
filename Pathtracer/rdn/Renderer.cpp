@@ -184,7 +184,7 @@ void Renderer::OnUpdate() {
 
     // Build editor UI — must run before UpdateInstanceProperties so
     // MarkModelMoved() changes are picked up in the same frame
-    m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_fps);
+    m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_restirSettings, m_fps);
 
     // Upload instance transforms AFTER editor changes are applied
     m_scene.UpdateInstanceProperties();
@@ -614,6 +614,27 @@ void Renderer::PopulateCommandList() {
     // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
     UINT dispW = renderW, dispH = renderH;
 
+    // Precompute ReSTIR root constants (slots 4-19, reused across all dispatches)
+    UINT rsConsts[20] = {};
+    rsConsts[4]  = (UINT)m_restirSettings.tempMcapDI;
+    rsConsts[5]  = (UINT)m_restirSettings.tempMcapGI;
+    rsConsts[6]  = (UINT)m_restirSettings.spatCountMaxDI;
+    rsConsts[7]  = (UINT)m_restirSettings.spatCountMinDI;
+    rsConsts[8]  = (UINT)m_restirSettings.spatRadMaxDI;
+    rsConsts[9]  = (UINT)m_restirSettings.spatRadMinDI;
+    rsConsts[10] = (UINT)m_restirSettings.spatCountMaxGI;
+    rsConsts[11] = (UINT)m_restirSettings.spatCountMinGI;
+    rsConsts[12] = (UINT)m_restirSettings.spatRadMaxGI;
+    rsConsts[13] = (UINT)m_restirSettings.spatRadMinGI;
+    rsConsts[14] = m_restirSettings.Flags();
+    memcpy(&rsConsts[15], &m_restirSettings.reuseRoughnessMin, 4);
+    memcpy(&rsConsts[16], &m_restirSettings.reuseRoughnessMax, 4);
+
+    auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
+        rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
+        cmdList->SetComputeRoot32BitConstants(1, 20, rsConsts, 0);
+    };
+
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
 
@@ -648,8 +669,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState1(m_rtStateObject.Get());
             cmdList->SetComputeRootSignature(m_rayGenSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT consts[6] = { dispW, dispH, 0, 0, 0, 0 };
-            cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
+            setConsts(dispW, dispH, 0, 0);
 
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
@@ -664,8 +684,7 @@ void Renderer::PopulateCommandList() {
                 const auto& rt = m_wgRuntime[p.wgIdx];
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
-                cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
+                setConsts(dispW, dispH, currentStack, nextStack);
                 D3D12_SET_PROGRAM_DESC sp{}; sp.Type = D3D12_PROGRAM_TYPE_WORK_GRAPH;
                 sp.WorkGraph.ProgramIdentifier = rt.id; sp.WorkGraph.BackingMemory = rt.backing;
                 static std::vector<bool> s_inited;
@@ -679,8 +698,7 @@ void Renderer::PopulateCommandList() {
                 cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-                UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
-                cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
+                setConsts(dispW, dispH, currentStack, nextStack);
                 cmdList->Dispatch(
                     (dispW + p.groupX - 1) / p.groupX,
                     (dispH + p.groupY - 1) / p.groupY, 1);
@@ -693,8 +711,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT consts[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
-            cmdList->SetComputeRoot32BitConstants(1, 6, consts, 0);
+            setConsts(dispW, dispH, currentStack, nextStack);
             cmdList->Dispatch(p.groupX, p.groupY, 1);
             break;
         }
@@ -721,8 +738,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
-            UINT trC[6] = { dispW, dispH, currentStack, nextStack, 0, 0 };
-            cmdList->SetComputeRoot32BitConstants(1, 6, trC, 0);
+            setConsts(dispW, dispH, currentStack, nextStack);
             cmdList->ExecuteIndirect(m_commandSignature.Get(), 1, m_indirectArgsBuffer.Get(), 0, nullptr, 0);
 
             CD3DX12_RESOURCE_BARRIER post[] = {

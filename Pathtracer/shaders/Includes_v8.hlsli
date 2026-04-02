@@ -1,9 +1,24 @@
 cbuffer Push : register(b1)
 {
-    uint2 gImageSize;       // [0,1] Width, Height (Legacy name)
-    uint  g_InputStackIdx;  // [2]   Current Stack to read from
-    uint  g_OutputStackIdx; // [3]   Next Stack to write to
-    uint2 _Padding;         // [4,5] Unused (Alignment)
+    uint2 gImageSize;          // [0-1]
+    uint  g_InputStackIdx;     // [2]
+    uint  g_OutputStackIdx;    // [3]
+    uint  rs_tempMcapDI;       // [4]
+    uint  rs_tempMcapGI;       // [5]
+    uint  rs_spatCountMaxDI;   // [6]
+    uint  rs_spatCountMinDI;   // [7]
+    uint  rs_spatRadMaxDI;     // [8]
+    uint  rs_spatRadMinDI;     // [9]
+    uint  rs_spatCountMaxGI;   // [10]
+    uint  rs_spatCountMinGI;   // [11]
+    uint  rs_spatRadMaxGI;     // [12]
+    uint  rs_spatRadMinGI;     // [13]
+    uint  rs_flags;            // [14] bit0=tempDI, bit1=tempGI, bit2=spatDI, bit3=spatGI
+    float rs_reuseRoughnessMin;// [15]
+    float rs_reuseRoughnessMax;// [16]
+    uint  _pad17;              // [17]
+    uint  _pad18;              // [18]
+    uint  _pad19;              // [19]
 };
 
 #define ENABLE_RAY_QUERY_INLINE // Activate support for inline ray tracing

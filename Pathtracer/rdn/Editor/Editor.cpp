@@ -36,7 +36,7 @@ void Editor::Shutdown() {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
-                  DLSSManager& dlss, float fps)
+                  DLSSManager& dlss, ReSTIRSettings& restir, float fps)
 {
     if (!m_visible) return;
 
@@ -63,6 +63,7 @@ void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
     DrawCameraPanel(camera);
     DrawPassPipelinePanel(passes);
     DrawDLSSPanel(dlss);
+    DrawReSTIRPanel(restir);
     if (m_showMaterials) DrawMaterialInspector(scene);
 
     // Material re-upload happens via dirty flag checked in Renderer
@@ -327,6 +328,41 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         ImGui::TextDisabled("Select a material.");
     }
     ImGui::EndChild();
+
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
+    ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("ReSTIR")) { ImGui::End(); return; }
+
+    if (ImGui::CollapsingHeader("Temporal DI", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##TempDI", &rs.enableTempDI);
+        ImGui::SliderInt("M-cap##TempDI", &rs.tempMcapDI, 0, 32);
+    }
+    if (ImGui::CollapsingHeader("Temporal GI", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##TempGI", &rs.enableTempGI);
+        ImGui::SliderInt("M-cap##TempGI", &rs.tempMcapGI, 0, 32);
+    }
+    if (ImGui::CollapsingHeader("Spatial DI", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##SpatDI", &rs.enableSpatDI);
+        ImGui::SliderInt("Count Max##SpatDI", &rs.spatCountMaxDI, 0, 8);
+        ImGui::SliderInt("Count Min##SpatDI", &rs.spatCountMinDI, 0, 8);
+        ImGui::SliderInt("Radius Max##SpatDI", &rs.spatRadMaxDI, 1, 96);
+        ImGui::SliderInt("Radius Min##SpatDI", &rs.spatRadMinDI, 1, 96);
+    }
+    if (ImGui::CollapsingHeader("Spatial GI", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##SpatGI", &rs.enableSpatGI);
+        ImGui::SliderInt("Count Max##SpatGI", &rs.spatCountMaxGI, 0, 8);
+        ImGui::SliderInt("Count Min##SpatGI", &rs.spatCountMinGI, 0, 8);
+        ImGui::SliderInt("Radius Max##SpatGI", &rs.spatRadMaxGI, 1, 96);
+        ImGui::SliderInt("Radius Min##SpatGI", &rs.spatRadMinGI, 1, 96);
+    }
+    if (ImGui::CollapsingHeader("Roughness Reuse")) {
+        ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
+        ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+    }
 
     ImGui::End();
 }
