@@ -15,45 +15,85 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // Load the sample data
     SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-    if(all(sdata.L1 < EPSILON)){
-        // Load current reservoir
-        Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
-        // Get a random seed
-        uint2 seed = GetSeed(pixelIdx, time, 2);
-        uint2 seedpermutation = GetSeed(1, time, 2);
-        SampleData sdata_r;
-        Reservoir_DI rdi_r;
-        //uint tempPixelIdx = 0xFFFFFFFF;
+    if (!all(sdata.L1 < EPSILON))
+        return;
 
-        int2 tempPixelCoordinate = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
-        if(tempPixelCoordinate.x == -1 && tempPixelCoordinate.y == -1)
-            tempPixelCoordinate = launchIndex;
+    // Load current reservoir
+    Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
-        // Permutation sampling to break up correlations
-        {
-            float u = RandomFloatSingle(seedpermutation.x);
-            uint permRnd = (uint)min(u * 16.0f, 15.0f);
-            int2 permPrev = tempPixelCoordinate;
-            ApplyPermutationSampling(permPrev, permRnd);
+    // RNG
+    uint2 seed = GetSeed(pixelIdx, time, 2);
+    uint  permSeed = GetSeed(1, time, 2).x;
 
-            // reject permuted coordinate if out of bounds
-            if (permPrev.x >= 0 && permPrev.y >= 0 && permPrev.x < (int)IMG_W && permPrev.y < (int)IMG_H)
-            {
-                tempPixelCoordinate = permPrev;
-            }
-        }
+    // --- base reprojection (fallback) ---
+    int2 baseCoord = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
+    if (baseCoord.x == -1 && baseCoord.y == -1)
+        baseCoord = (int2)launchIndex;
 
-        uint tempPixelIdx = MapPixelID(dims, tempPixelCoordinate);
+    // --- permuted candidate ---
+    int2 permCoord = baseCoord;
+    bool permInBounds = false;
+    {
+        float u = RandomFloatSingle(permSeed);
+        uint  permRnd = (uint)min(u * 16.0f, 15.0f);
+
+        ApplyPermutationSampling(permCoord, permRnd);
+
+        permInBounds =
+            (permCoord.x >= 0 && permCoord.y >= 0 &&
+             permCoord.x < (int)IMG_W && permCoord.y < (int)IMG_H);
+
+        if (!permInBounds)
+            permCoord = baseCoord;
+    }
+
+    bool valid = false;
+    uint tempPixelIdx = 0xFFFFFFFFu;
+    SampleData sdata_r = (SampleData)0;
+
+    // --- try permuted first ---
+    if (permInBounds)
+    {
+        tempPixelIdx = MapPixelID(dims, (uint2)permCoord);
         sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-        rdi_r   = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
-        bool valid =
-                (all(sdata_r.L1 < EPSILON) &&
-                IsValidReservoir_DI(rdi_r) &&
-                !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
-                (!RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f))  &&
-                (sdata_r.matID == sdata.matID));
 
-        if(tempPixelIdx != 0xFFFFFFFF /*&& valid_history*/ && valid){
+        valid =
+            (all(sdata_r.L1 < EPSILON) &&
+             (sdata_r.matID == sdata.matID) &&
+             !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
+             !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
+    }
+
+    // --- fallback to non-permuted temporal if permuted failed ---
+    if (!valid)
+    {
+        int2 fallback = baseCoord;
+        if (fallback.x >= 0 && fallback.y >= 0 &&
+            fallback.x < (int)IMG_W && fallback.y < (int)IMG_H)
+        {
+            tempPixelIdx = MapPixelID(dims, (uint2)fallback);
+            sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
+
+            valid =
+                (all(sdata_r.L1 < EPSILON) &&
+                 (sdata_r.matID == sdata.matID) &&
+                 !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
+                 !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
+        }
+    }
+
+    // --- heavy reuse path ---
+    [branch]
+    if (valid)
+    {
+        Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_last_di, tempPixelIdx);
+
+        if (!IsValidReservoir_DI(rdi_r))
+        {
+            valid = false;
+        }
+        else
+        {
             // Refetch materials for both vertices
             float3 sKd; float sPr, sPm;
             RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
@@ -71,9 +111,19 @@ void main(uint3 tid : SV_DispatchThreadID)
             n_c *= JacobianDeterminantDI(sdata_r.x1, rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di);
             float visReuse = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
             float n_n = GetPHat(ReconnectDI(sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, srKd, srPr, srPm, sdata_r.etai, sdata_r.etat, rdi_r.objID_di)) * visReuse;
-            float M_c = min(TEMP_MCAP_DI,rdi.M_di);
-            float M_n = min(TEMP_MCAP_DI,rdi_r.M_di);
-            float M_sum = M_c + M_n;
+
+            // Dynamic M caps (roughness-based, aligned with GI)
+            float sdata_Pr = EvaluatePBRProperties(materials[sdata.matID], sdata.uv, 0).x;
+            float rdi_r_Pr = EvaluatePBRProperties(materials[sdata_r.matID], sdata_r.uv, 0).x;
+            const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
+            const float tempMcapScale = smoothstep(REUSE_ROUGHNESS_MIN, REUSE_ROUGHNESS_MAX, minRoughTemp);
+            const float dynTempMcap   = (minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
+                                    : min(TEMP_MCAP_DI, TEMP_MCAP_DI * tempMcapScale);
+
+            const float M_c   = min(TEMP_MCAP_DI, rdi.M_di);
+            const float M_n   = min(dynTempMcap,  rdi_r.M_di);
+            const float M_sum = M_c + M_n;
+
             // Calculate the MIS weights
             float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_n, M_sum);
             float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_c, n_n, M_sum);
@@ -94,7 +144,6 @@ void main(uint3 tid : SV_DispatchThreadID)
             // Calculate new W
             if (p_hat_final > 1e-5 && rdi.w_sum_di > EPSILON && rdi.w_sum_di < 1e10f) {
                 float W = rdi.w_sum_di / p_hat_final;
-                // NaN/Inf protection
                 if (isnan(W) || isinf(W)) {
                     W = 0.0f;
                 }
@@ -102,9 +151,9 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
             else
                 rdi.W_di = 0.0f;
-
-            // Store the merged reservoir
-            storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
         }
     }
+
+    // Store the merged reservoir
+    storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
 }
