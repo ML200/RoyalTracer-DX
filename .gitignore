@@ -55,3 +55,4 @@ trulla.obj
 /Pathtracer/Include/bistro_tex
 
 *.glb
+/Pathtracer/shaders/.claude
