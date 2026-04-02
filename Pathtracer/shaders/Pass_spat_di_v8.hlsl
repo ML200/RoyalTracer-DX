@@ -21,16 +21,28 @@ void main(uint3 tid : SV_DispatchThreadID)
     if(all(sdata.L1 < EPSILON)){
         // Load current reservoir
         Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+
+        // If spatial DI is disabled, write output and store reservoir unchanged
+        if (!(rs_flags & 4u)) {
+            float3 sKd; float sPr, sPm;
+            RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
+            float visR = rdi.W_di > 0.0f ? 1.0f : 0.0f;
+            float3 c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sKd, sPr, sPm, sdata.etai, sdata.etat, rdi.objID_di) * visR;
+            gScratchPing[uint3(tid.xy, 1)] = float4(c * rdi.W_di, 0);
+            storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
+            return;
+        }
+
         // Get a random seed
         uint2 seed = GetSeed(pixelIdx, time, 2);
 
         // ########################################### NODE #############################################################
         // Based on the quality of the current canonical sample, reduce the number of spatial reuses.
-        float conf = min(60.0f, rdi.M_di) / TEMP_MCAP_DI;
-        uint nbrBudget = SPAT_COUNT_MIN_DI +
-                 uint((1.0f - conf) * float(SPAT_COUNT_MAX_DI - SPAT_COUNT_MIN_DI) + 0.5f);
-        uint radiusBudget = SPAT_RAD_MIN +
-                         uint((1.0f - conf) * float(SPAT_RAD_MAX - SPAT_RAD_MIN) + 0.5f);
+        float conf = min(60.0f, rdi.M_di) / max(1u, rs_tempMcapDI);
+        uint nbrBudget = min(rs_spatCountMinDI, SPAT_COUNT_MAX_DI) +
+                 uint((1.0f - conf) * float(min(rs_spatCountMaxDI, SPAT_COUNT_MAX_DI) - min(rs_spatCountMinDI, SPAT_COUNT_MAX_DI)) + 0.5f);
+        uint radiusBudget = rs_spatRadMinDI +
+                         uint((1.0f - conf) * float(rs_spatRadMaxDI - rs_spatRadMinDI) + 0.5f);
 
 
         // Array to hold valid neighbor IDs

@@ -235,7 +235,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    rootParameters[1].InitAsConstants(6, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    rootParameters[1].InitAsConstants(20, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,

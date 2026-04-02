@@ -20,6 +20,12 @@ void Pass_temp_gi_v8()
     // Load current reservoir (must stay alive until final store)
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
+    // Early-out if temporal GI is disabled
+    if (!(rs_flags & 2u)) {
+        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+        return;
+    }
+
     // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
 
@@ -213,11 +219,11 @@ void Pass_temp_gi_v8()
                 float sdata_Pr = EvaluatePBRProperties(materials[sdata.matID], sdata.uv, 0).x;
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
-                const float tempMcapScale = smoothstep(REUSE_ROUGHNESS_MIN, REUSE_ROUGHNESS_MAX, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= REUSE_ROUGHNESS_MIN) ? 0.0f
-                                        : min(TEMP_MCAP_GI, TEMP_MCAP_GI * tempMcapScale);
+                const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
+                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
+                                        : min(rs_tempMcapGI, rs_tempMcapGI * tempMcapScale);
 
-                const float M_c   = min(TEMP_MCAP_GI, rdi.M_gi);
+                const float M_c   = min(rs_tempMcapGI, rdi.M_gi);
                 const float M_n   = min(dynTempMcap,  rdi_r.M_gi);
                 const float M_sum = M_c + M_n;
 

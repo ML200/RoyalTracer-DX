@@ -22,7 +22,7 @@ public:
     void Shutdown();
 
     void Draw(Scene& scene, Camera& camera, PassSystem& passes,
-              DLSSManager& dlss, float fps);
+              DLSSManager& dlss, ReSTIRSettings& restir, float fps);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -34,6 +34,7 @@ private:
     void DrawPassPipelinePanel(PassSystem& passes);
     void DrawDLSSPanel(DLSSManager& dlss);
     void DrawMaterialInspector(Scene& scene);
+    void DrawReSTIRPanel(ReSTIRSettings& restir);
 
     bool m_visible        = true;
     int  m_selectedModel  = -1;

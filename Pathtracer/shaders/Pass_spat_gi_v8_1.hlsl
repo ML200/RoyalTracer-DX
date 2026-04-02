@@ -22,19 +22,39 @@ void Pass_spat_gi_v8_1()
         return;
     }
 
+    // If spatial GI is disabled, compute canonical output and store reservoir unchanged
+    if (!(rs_flags & 8u))
+    {
+        const float vis = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
+        float3 sKd0; float sPr0, sPm0;
+        RefetchMaterial(sdata.matID, sdata.uv, sKd0, sPr0, sPm0);
+        float3 rKd0; float rPr0, rPm0;
+        RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd0, rPr0, rPm0);
+        float Jd1 = 0.0f, Jd2 = 0.0f;
+        float3 c = ReconnectGI(
+            sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
+            sKd0, sPr0, sPm0, sdata.etai, sdata.etat,
+            rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
+            rKd0, rPr0, rPm0, rdi.etai_gi, rdi.etat_gi,
+            rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
+        gScratchPing[uint3(launchIndex, 2)] = float4(c * rdi.W_gi, 0);
+        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+        return;
+    }
+
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
     // Budgeting (keep semantics)
-    const float conf = min(60.0f, rdi.M_gi) / TEMP_MCAP_GI;
+    const float conf = min(60.0f, rdi.M_gi) / max(1u, rs_tempMcapGI);
 
     const uint nbrBudget =
-        SPAT_COUNT_MIN_GI +
-        uint((1.0f - conf) * float(SPAT_COUNT_MAX_GI - SPAT_COUNT_MIN_GI) + 0.5f);
+        min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI) +
+        uint((1.0f - conf) * float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI) - min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI)) + 0.5f);
 
     const uint radiusBudget =
-        SPAT_RAD_MIN_GI +
-        uint((1.0f - conf) * float(SPAT_RAD_MAX_GI - SPAT_RAD_MIN_GI) + 0.5f);
+        rs_spatRadMinGI +
+        uint((1.0f - conf) * float(rs_spatRadMaxGI - rs_spatRadMinGI) + 0.5f);
 
     // Neighbor ID list (kept compact: [0..validCount-1] valid)
     uint nIds[SPAT_COUNT_MAX_GI];

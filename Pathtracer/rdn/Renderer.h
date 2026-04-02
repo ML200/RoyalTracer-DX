@@ -38,6 +38,7 @@ private:
     PassSystem          m_passes;
     DLSSManager         m_dlss;
     Editor              m_editor;
+    ReSTIRSettings      m_restirSettings;
     lt::LightTreeBuilder m_lightTree;
     lt::LightTreeRefitManager m_lightTreeRefit;
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;
