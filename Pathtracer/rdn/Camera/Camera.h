@@ -29,6 +29,7 @@ public:
     XMMATRIX                  ProjMatrix()   const { return m_projMatrix; }
     XMMATRIX                  PrevView()     const { return m_prevView; }
     XMMATRIX                  PrevProj()     const { return m_prevProj; }
+    XMMATRIX                  PrevProjUnjittered() const { return m_prevProjUnjittered; }
     float                     JitterX()      const { return m_jitterX; }
     float                     JitterY()      const { return m_jitterY; }
     uint32_t                  JitterFrame()  const { return m_jitterFrameIndex; }
@@ -46,10 +47,12 @@ private:
     ComPtr<ID3D12DescriptorHeap>   m_constHeap;
     UINT                           m_bufferSize = 0;
 
-    XMMATRIX m_viewMatrix = XMMatrixIdentity();
-    XMMATRIX m_projMatrix = XMMatrixIdentity();
-    XMMATRIX m_prevView   = XMMatrixIdentity();
-    XMMATRIX m_prevProj   = XMMatrixIdentity();
+    XMMATRIX m_viewMatrix          = XMMatrixIdentity();
+    XMMATRIX m_projMatrix          = XMMatrixIdentity(); // jittered
+    XMMATRIX m_projMatrixUnjittered= XMMatrixIdentity();
+    XMMATRIX m_prevView            = XMMatrixIdentity();
+    XMMATRIX m_prevProj            = XMMatrixIdentity(); // jittered
+    XMMATRIX m_prevProjUnjittered  = XMMatrixIdentity();
 
     float    m_jitterX = 0.0f, m_jitterY = 0.0f;
     uint32_t m_jitterFrameIndex = 0;
