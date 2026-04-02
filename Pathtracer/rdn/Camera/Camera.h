@@ -16,6 +16,7 @@ public:
     // ── Per-frame ────────────────────────────────────────────────
     void Update(float dt, bool keysDown[256], float aspectRatio);
     void UploadGPUBuffer(float aspectRatio);
+    void AdvanceFrame();
 
     // ── Input ────────────────────────────────────────────────────
     void OnMouseButton(int x, int y);

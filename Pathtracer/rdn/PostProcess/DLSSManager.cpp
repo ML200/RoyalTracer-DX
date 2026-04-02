@@ -187,7 +187,7 @@ void DLSSManager::Evaluate(
     constants.cameraAspectRatio = renderAspect;
     constants.cameraNear        = 0.00001f;
     constants.cameraFar         = 10000.0f;
-    constants.jitterOffset      = { -jitterX, -jitterY };
+    constants.jitterOffset      = { jitterX, jitterY };
     constants.mvecScale         = { 1.0f / (float)m_renderWidth, 1.0f / (float)m_renderHeight };
     constants.motionVectorsInvalidValue = -1.0f;
     constants.cameraMotionIncluded      = sl::Boolean::eTrue;

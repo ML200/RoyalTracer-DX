@@ -89,14 +89,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssDiffuseAlbedo[DTid.xy] = float4(shadingKd, 1.0f);
         g_dlssRoughness[DTid.xy] = shadingPr;
 
-        // ALWAYS write MV
+        // MV from jittered hit point — jitterOffset now correctly tells DLSS
+        // where the sample sits, so no manual jitter subtraction needed
         float2 curPix = DTid.xy;
-        float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID) - jitter;
+        float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID);
 
         // Clamp or invalidate if outside
         bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
 
-        // DLSS expects “current pixel maps to previous frame position”
         float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
 
         g_dlssMVec[curPix] = mvPixels;
@@ -106,7 +106,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 specularAlbedo = EnvBRDFApprox2(shadingKd, shadingPr, shadingPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
-        Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+        // Post-spatial GI reservoir for stable hit distance
+        Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_last_gi, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);

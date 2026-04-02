@@ -41,7 +41,7 @@
 #define SPAT_BETA_GI 3.0f
 
 #define REUSE_ROUGHNESS_MIN 0.15f
-#define REUSE_ROUGHNESS_MAX 0.5f
+#define REUSE_ROUGHNESS_MAX 0.6f
 
 // Denoiser settings spatial
 #define PLANE_DISTANCE_THRESHOLD 0.01f
@@ -58,3 +58,6 @@
 
 #define GI_BOIL_STRENGTH_TEMP 0.2f
 #define GI_BOIL_MIN_AVG_TEMP  1e-8f
+
+#define DI_BOIL_STRENGTH_TEMP 0.2f
+#define DI_BOIL_MIN_AVG_TEMP  1e-8f

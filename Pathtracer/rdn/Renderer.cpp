@@ -754,6 +754,9 @@ void Renderer::PopulateCommandList() {
                 m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(),
                 m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame());
 
+            // Now safe to advance prev matrices for next frame
+            m_camera.AdvanceFrame();
+
             // After DLSS: post-process passes run at display resolution
             dispW = GetWidth();
             dispH = GetHeight();

@@ -77,8 +77,13 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
 
     m_viewMatrix = matrices[0];
     m_projMatrix = matrices[1];
-    m_prevView   = matrices[0];
-    m_prevProj   = matrices[1];
+    // prev matrices are advanced in AdvanceFrame(), called after DLSS evaluates
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Camera::AdvanceFrame() {
+    m_prevView = m_viewMatrix;
+    m_prevProj = m_projMatrix;
 }
 
 // ─────────────────────────────────────────────────────────────────
