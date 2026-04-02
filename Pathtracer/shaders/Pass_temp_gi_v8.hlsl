@@ -29,7 +29,7 @@ void Pass_temp_gi_v8()
     uint2 seed = GetSeed(pixelIdx, time, 3);
     uint  permSeed = GetSeed(1, time, 3).x;
 
-    // --- base reprojection (fallback) ---
+    // --- base reprojection ---
     int2 baseCoord = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims_f, sdata.objID);
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;

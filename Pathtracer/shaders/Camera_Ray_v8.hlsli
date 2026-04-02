@@ -57,7 +57,6 @@ inline int2 GetBestReprojectedPixel_d(
     float2 px = GetLastFramePixelCoordinates_Float(worldPos, prevView, prevProjection, resolution, objID);
     if (px.x < 0.0f) return int2(-1, -1);
 
-    // Nearest pixel center (less bias than round on non-centered coords)
     int2 p = int2(floor(px + 0.5f));
 
     int2 resi = int2(resolution);

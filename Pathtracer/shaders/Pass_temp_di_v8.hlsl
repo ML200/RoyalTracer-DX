@@ -21,11 +21,13 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load current reservoir
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
+    float boilValue = 0.0f;
+
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
     uint  permSeed = GetSeed(1, time, 2).x;
 
-    // --- base reprojection (fallback) ---
+    // --- base reprojection ---
     int2 baseCoord = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims, sdata.objID);
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
@@ -91,7 +93,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             [unroll]
             for (int dx = -1; dx <= 1 && !valid; ++dx)
             {
-                if (dx == 0 && dy == 0) continue; // already tried
+                if (dx == 0 && dy == 0) continue;
 
                 int2 c = baseCoord + int2(dx, dy);
                 if (c.x < 0 || c.y < 0 || c.x >= (int)IMG_W || c.y >= (int)IMG_H)
@@ -99,7 +101,6 @@ void main(uint3 tid : SV_DispatchThreadID)
 
                 uint cIdx = MapPixelID(dims, (uint2)c);
 
-                // Cheap scalar loads only — no full SampleData
                 if (!all(load_L1(g_sample_last, cIdx) < EPSILON))   continue;
                 if (load_matID(g_sample_last, cIdx) != sdata.matID) continue;
                 float3 cn1s = load_n1_s(g_sample_last, cIdx);
@@ -107,7 +108,6 @@ void main(uint3 tid : SV_DispatchThreadID)
                 float3 cx1 = load_x1(g_sample_last, cIdx);
                 if (RejectDistance_DI(sdata.x1, cx1, sdata.n1_s, 0.05f)) continue;
 
-                // Passed all cheap checks — commit
                 tempPixelIdx = cIdx;
                 sdata_r = loadSampleData(g_sample_last, cIdx);
                 valid = true;
@@ -197,6 +197,25 @@ void main(uint3 tid : SV_DispatchThreadID)
             }
             else
                 rdi.W_di = 0.0f;
+
+            boilValue = p_hat_final * rdi.W_di;
+        }
+    }
+
+    // --- boiling filter ---
+    {
+        float avgV, thrV;
+        bool boil = BoilingFilter_Wave(DI_BOIL_STRENGTH_TEMP, boilValue, avgV, thrV);
+
+        if (avgV < DI_BOIL_MIN_AVG_TEMP)
+            boil = false;
+
+        if (boil && boilValue > 0.0f)
+        {
+            float scale = thrV / boilValue;
+            rdi.W_di     *= scale;
+            rdi.w_sum_di *= scale;
+            rdi.M_di = min(rdi.M_di, 1u);
         }
     }
 
