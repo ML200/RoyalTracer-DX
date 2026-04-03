@@ -78,7 +78,7 @@ void Pass_temp_gi_v8()
     }
 
     // --- fallback to non-permuted base coordinate ---
-    if (!valid)
+    /*if (!valid)
     {
         int2 fallback = baseCoord;
         if (fallback.x >= 0 && fallback.y >= 0 &&
@@ -139,7 +139,7 @@ void Pass_temp_gi_v8()
              (sdata_r.matID == sdata.matID) &&
              !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
              (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
-    }
+    }*/
 
     // --- heavy reuse path ---
     // Strongly isolate lifetime of rdi_r + all heavy temporaries.

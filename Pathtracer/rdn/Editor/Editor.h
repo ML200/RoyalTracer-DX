@@ -35,8 +35,10 @@ private:
     void DrawDLSSPanel(DLSSManager& dlss);
     void DrawMaterialInspector(Scene& scene);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
+    void DrawSunPanel(Camera& camera);
 
     bool m_visible        = true;
+    bool m_showSun        = false;
     int  m_selectedModel  = -1;
     int  m_selectedMat    = -1;
     bool m_showMaterials  = false;

@@ -14,9 +14,9 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
     nv_helpers_dx12::CameraManip.setSpeed(0.0f);
 
-    // Create GPU constant buffer
+    // Create GPU constant buffer (6 matrices + extras + SunSettings)
     uint32_t matCount = 6;
-    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 4;
+    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 4 + sizeof(SunSettings);
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -73,6 +73,7 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
     float extra[4] = { (float)m_jitterFrameIndex, m_jitterX, m_jitterY, 0.0f };
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
+    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
     m_buffer->Unmap(0, nullptr);
 
     m_viewMatrix           = matrices[0];

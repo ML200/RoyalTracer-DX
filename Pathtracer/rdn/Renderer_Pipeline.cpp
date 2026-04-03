@@ -151,9 +151,10 @@ void Renderer::CreateTopLevelAS(
 }
 
 void Renderer::CreateAccelerationStructures() {
-    // One BLAS per unique mesh
+    // One BLAS per unique mesh (skip if already built, e.g. procedural meshes)
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
+        if (mesh.blas) continue;
         auto buffers = CreateBottomLevelAS(
             {{ mesh.vertexBuffer.Get(), mesh.vertexCount }},
             {{ mesh.indexBuffer.Get(),  mesh.indexCount  }},

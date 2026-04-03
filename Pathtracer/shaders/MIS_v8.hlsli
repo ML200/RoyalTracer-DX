@@ -1,10 +1,12 @@
 // Initial sampling
 float MIS_Initial_NEE(float pdf_nee, float pdf_bsdf, float M1, float M2){
-    return pdf_nee / (M1 * pdf_nee + M2 * pdf_bsdf);
+    float denom = M1 * pdf_nee + M2 * pdf_bsdf;
+    return denom > 0.0f ? pdf_nee / denom : 0.0f;
 }
 
 float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
-    return pdf_bsdf / (M1 * pdf_bsdf + M2 * pdf_nee);
+    float denom = M1 * pdf_bsdf + M2 * pdf_nee;
+    return denom > 0.0f ? pdf_bsdf / denom : 0.0f;
 }
 
 // defensive pair-wise MIS, canonical sample
@@ -15,6 +17,7 @@ inline float PairwiseMIS_Canonical_Temp(
     float p_n,
     float M_sum)
 {
+    M_sum = max(M_sum, 1.0f);
     float num   = M_c * p_c;
     float denom = num + M_n * p_n;
 
@@ -33,6 +36,7 @@ inline float PairwiseMIS_Neighbour_Temp(
     float n_n,
     float M_sum)
 {
+    M_sum = max(M_sum, 1.0f);
     float num   = M_n * n_n;
     float denom = num + M_c * p_c;
 
@@ -74,7 +78,7 @@ float PairwiseMIS_Neighbour_Temp_NonDef(
 #ifdef ENABLE_RAY_QUERY_INLINE
 // Algorithm 7 from the gentle intro
 float PairwiseMIS_Canonical_Spat_DI(
-    in float M_sum,
+    in float M_sum_in,
     in float p_c,
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_DI],// IDs of the candidates; early out if id is invalid
@@ -86,6 +90,7 @@ float PairwiseMIS_Canonical_Spat_DI(
     in uint objID_c
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     float m_c = M_c / M_sum;
     float m_num = M_c * p_c;
 
@@ -114,7 +119,7 @@ float PairwiseMIS_Canonical_Spat_DI(
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 float PairwiseMIS_Neighbor_Spat_DI(
-    in float M_sum,
+    in float M_sum_in,
     in float M_c,
     in float M_n,
     in float p_c,
@@ -127,6 +132,7 @@ float PairwiseMIS_Neighbor_Spat_DI(
     in uint objID_n
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = load_W_di(g_Reservoirs_current_di, nID) > 0.0f ? 1.0f : 0.0f;
     uint nMID = load_matID(g_sample_current, nID);
@@ -147,7 +153,7 @@ float PairwiseMIS_Neighbor_Spat_DI(
 #ifdef ENABLE_RAY_QUERY_INLINE
 // Algorithm 7 from the gentle intro
 float PairwiseMIS_Canonical_Spat_GI(
-    in float M_sum,
+    in float M_sum_in,
     in float p_c,
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
@@ -167,6 +173,7 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float  J_c
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     float m_c = M_c / M_sum;
     float m_num = M_c * p_c;
 
@@ -200,7 +207,7 @@ float PairwiseMIS_Canonical_Spat_GI(
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 float PairwiseMIS_Neighbor_Spat_GI(
-    in float M_sum,
+    in float M_sum_in,
     in float M_c,
     in float M_n,
     in float p_hat_from,
@@ -209,6 +216,7 @@ float PairwiseMIS_Neighbor_Spat_GI(
     in float F_n
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     // Reconstruct p_n from the neigbour reservoir
     float visReuse = W_n > 0.0f ? 1.0f : 0.0f;
     float p_n = visReuse * F_n;
@@ -234,7 +242,7 @@ inline float SymRatio(float pA, float pB, float beta)
 #ifdef ENABLE_RAY_QUERY_INLINE
 // Algorithm 7 from the gentle intro
 float PairwiseMIS_Canonical_Spat_GI_Sym(
-    in float M_sum,
+    in float M_sum_in,
     in float p_c,
     in float M_c,
     in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
@@ -255,9 +263,10 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
     in float  beta
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     float m_no_r = M_sum - 1.0f;
     // Fast path: no neighbours ⇒ weight must be 1
-    if (m_no_r == 0.0f)
+    if (m_no_r <= 0.0f)
         return 1.0f;
 
     float sum = 0.0f;
@@ -291,7 +300,7 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 float PairwiseMIS_Neighbor_Spat_GI_Sym(
-    in float M_sum,
+    in float M_sum_in,
     in float M_c,
     in float M_n,
     in float p_hat_from,
@@ -301,6 +310,7 @@ float PairwiseMIS_Neighbor_Spat_GI_Sym(
     in float  beta
     )
 {
+    float M_sum = max(M_sum_in, 1.0f);
     float m_no_r = M_sum - 1.0f;
 
     // Reconstruct p_n from the neigbour reservoir

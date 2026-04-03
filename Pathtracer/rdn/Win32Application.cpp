@@ -120,6 +120,13 @@ LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
       pSample->OnButtonDown(static_cast<UINT32>(lParam));
     }
     return 0;
+  case WM_LBUTTONUP:
+  case WM_RBUTTONUP:
+  case WM_MBUTTONUP:
+    if (pSample) {
+      pSample->OnButtonUp(message, static_cast<UINT32>(lParam));
+    }
+    return 0;
   case WM_MOUSEMOVE:
     if (pSample) {
       pSample->OnMouseMove(static_cast<UINT8>(wParam),
