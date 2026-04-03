@@ -1,6 +1,6 @@
 #pragma once
 // ═══════════════════════════════════════════════════════════════════
-// Renderer.h
+// Renderer.h — Low-level DXR rendering module. Owned by EngineApp.
 // ═══════════════════════════════════════════════════════════════════
 
 #include "Common.h"
@@ -22,15 +22,39 @@
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
-class Renderer : public DXSample {
+class Renderer {
 public:
-    Renderer(UINT width, UINT height, std::wstring name);
-    void OnInit()    override;
-    void OnUpdate()  override;
-    void OnRender()  override;
-    void OnDestroy() override;
+    Renderer(UINT width, UINT height);
+
+    // ── Public API (called by EngineApp) ────────────────────────
+    void InitDevice();
+    void LoadScene(const std::vector<ModelEntry>& models);
+    void InitSceneGPU();
+    void UpdateRenderer(float dt);
+    void RenderFrame();
+    void DestroyRenderer();
+
+    Scene&         GetScene()       { return m_scene; }
+    Camera&        GetCamera()      { return m_camera; }
+    DeviceContext& GetContext()      { return m_ctx; }
+    UINT           GetWidth() const { return m_width; }
+    UINT           GetHeight() const{ return m_height; }
+    float          GetAspectRatio() const { return m_aspectRatio; }
+
+    UINT CreateProceduralMesh(const std::vector<Vertex>& vertices,
+                              const std::vector<UINT>& indices,
+                              const Material& material);
+    void HandleSceneStructuralChange();
+
+    bool WantsKeyboard() const;
+    bool WantsMouse() const;
+    void HandleKeyUp(UINT8 key);
 
 private:
+    UINT  m_width;
+    UINT  m_height;
+    float m_aspectRatio;
+
     // ── Modules ──────────────────────────────────────────────────
     DeviceContext       m_ctx;
     Scene               m_scene;
@@ -53,7 +77,6 @@ private:
     static constexpr UINT LT_TLAS_SRV_SLOT        = 20;
     static constexpr UINT LT_BLASTOITEM_SRV_SLOT   = 27;
 
-    // Emissive triangle GPU re-upload
     bool m_emissiveGpuDirty = false;
     ComPtr<ID3D12Resource> m_emissiveUploadStaging;
     ComPtr<ID3D12Resource> m_triToLightIdUploadStaging;
@@ -63,15 +86,9 @@ private:
     UINT m_triToLightIdGpuCapacity = 0;
     static constexpr UINT EMISSIVE_TRI_SRV_SLOT    = 9;
     static constexpr UINT TRI_TO_LIGHTID_SRV_SLOT  = 24;
+    static constexpr UINT INSTANCE_PROPS_SRV_SLOT  = 6;
     CameraRecorder      m_recorder;
     CameraPathSimulator m_simulator;
-
-    // input
-    bool g_keys[256] = {};
-    void OnKeyDown(UINT8 key) override;
-    void OnKeyUp(UINT8 key)   override;
-    void OnButtonDown(UINT32 lParam);
-    void OnMouseMove(UINT8 wParam, UINT32 lParam);
 
     // AS
     struct AccelerationStructureBuffers {
@@ -89,7 +106,6 @@ private:
         bool updateOnly = false);
     void CreateAccelerationStructures();
 
-    // Pipeline
     ComPtr<ID3D12RootSignature>       m_rayGenSignature, m_computeSignature;
     ComPtr<ID3D12RootSignature>       m_hitSignature, m_missSignature;
     ComPtr<ID3D12StateObject>         m_rtStateObject;
@@ -100,7 +116,6 @@ private:
     nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
     ComPtr<ID3D12Resource>            m_sbtStorage;
 
-    // Work graphs
     struct WgRuntimeData { D3D12_PROGRAM_IDENTIFIER id; D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing; ComPtr<ID3D12Resource> backingRes; };
     std::vector<WgRuntimeData>        m_wgRuntime;
     std::vector<ComPtr<ID3D12StateObject>> m_wgStateObjects;
@@ -113,7 +128,6 @@ private:
     void CreateRaytracingPipeline();
     void CreateShaderBindingTable();
 
-    // Render targets and UAV heap
     ComPtr<ID3D12Resource>       m_outputResource;
     ComPtr<ID3D12Resource>       m_permanentDataTexture;
     ComPtr<ID3D12Resource>       m_scratchPing;
@@ -129,7 +143,6 @@ private:
     void CreateShaderResourceHeap();
     void CreatePathStateBuffer();
 
-    // Streaming compaction / indirect dispatch (unused fn)
     ComPtr<ID3D12Resource>         m_stackBuffers[MAX_STACKS];
     ComPtr<ID3D12Resource>         m_globalCounterBuffer;
     ComPtr<ID3D12Resource>         m_indirectArgsBuffer;
@@ -148,24 +161,20 @@ private:
     void CompileSetupIndirectShader();
     void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
-    // LUT textures
     ComPtr<ID3D12Resource> m_lutTextureArray;
     std::vector<ComPtr<ID3D12Resource>> m_lutUploadHeaps;
     void GenerateLutTextures();
     void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
-    // Display
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
 
-    // Editor
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
-    static constexpr UINT DLSS_UAV_HEAP_START  = 39;     // slots 39-50
+    static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
     bool m_dlssModeChanged = false;
 
-    // Frame dispatch
     uint32_t m_time = 0;
     void PopulateCommandList();
     void UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList);
@@ -174,7 +183,6 @@ private:
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
     void RebuildDLSSDescriptors();
 
-    //Readback / simulation
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();
     void SaveSimulationData(uint32_t stepIndex);

@@ -10,35 +10,37 @@
 //*********************************************************
 
 #include <iostream>
-
 #include "stdafx.h"
-#include "Renderer.h"
-
+#include "../engine/EngineApp.h"
+#include "../engine/Scene/EmissiveCubes.h"
 #include <comdef.h>
 
-
-class ScopedComInitializer
-{
+class BistroScene : public SceneDefinition {
 public:
-    ScopedComInitializer()
-    {
-        m_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    std::vector<MeshDefinition> GetMeshes() override {
+        return {{ "./sponza_tex/sponza_tex.obj", XMMatrixIdentity() }};
     }
-
-    ~ScopedComInitializer()
-    {
-        if (SUCCEEDED(m_hr))
-        {
-            CoUninitialize();
-        }
+    void Init(SceneManager& sm, Renderer& r) override {
+        EmissiveCubes::Params p;
+        p.count = 150; p.cubeSize = 0.1f;
+        p.emissionMin = 3; p.emissionMax = 80;
+        p.speedMin = 0.5f; p.speedMax = 2.5f;
+        p.spawnMin = {-12, 0.3f, -8}; p.spawnMax = {12, 4, 8};
+        m_cubes.Init(p, sm, r);
     }
-
-    // Eine kleine Hilfsfunktion, um den Status zu prüfen
-    operator HRESULT() const
-    {
-        return m_hr;
+    void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
+        flyCam.Update(dt);
+        m_cubes.Update(dt, sm);
     }
+private:
+    EmissiveCubes m_cubes;
+};
 
+class ScopedComInitializer {
+public:
+    ScopedComInitializer()  { m_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED); }
+    ~ScopedComInitializer() { if (SUCCEEDED(m_hr)) CoUninitialize(); }
+    operator HRESULT() const { return m_hr; }
 private:
     HRESULT m_hr;
 };
@@ -46,20 +48,18 @@ private:
 _Use_decl_annotations_
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
-    // Erstelle das Scoped-Objekt. COM wird im Konstruktor initialisiert.
     ScopedComInitializer comInitializer;
-    if (FAILED(comInitializer))
-    {
-        MessageBox(nullptr, reinterpret_cast<LPCSTR>(L"Failed to initialize COM."), reinterpret_cast<LPCSTR>(L"Error"), MB_OK | MB_ICONERROR);
+    if (FAILED(comInitializer)) {
+        MessageBox(nullptr, reinterpret_cast<LPCSTR>(L"Failed to initialize COM."),
+                   reinterpret_cast<LPCSTR>(L"Error"), MB_OK | MB_ICONERROR);
         return 1;
     }
-
     if (AllocConsole()) {
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
         std::wcout << L"Console initialized" << std::endl;
     }
-
-    Renderer sample(1920, 1080, L"DXR Pathtracer - experimental");
-    return Win32Application::Run(&sample, hInstance, nCmdShow);
+    auto scene = std::make_unique<BistroScene>();
+    EngineApp app(1920, 1080, L"DXR Pathtracer - Engine Layer", std::move(scene));
+    return Win32Application::Run(&app, hInstance, nCmdShow);
 }

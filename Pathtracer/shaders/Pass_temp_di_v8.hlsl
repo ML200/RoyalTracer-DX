@@ -73,7 +73,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
 
     // --- fallback to non-permuted base coordinate ---
-    if (!valid)
+    /*if (!valid)
     {
         int2 fallback = baseCoord;
         if (fallback.x >= 0 && fallback.y >= 0 &&
@@ -132,7 +132,7 @@ void main(uint3 tid : SV_DispatchThreadID)
              (sdata_r.matID == sdata.matID) &&
              !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
              !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
-    }
+    }*/
 
     // --- heavy reuse path ---
     [branch]

@@ -48,6 +48,7 @@ void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Scene",     nullptr, &m_visible);
             ImGui::MenuItem("Materials", nullptr, &m_showMaterials);
+            ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::EndMenu();
         }
         ImGui::Separator();
@@ -64,6 +65,7 @@ void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
     DrawPassPipelinePanel(passes);
     DrawDLSSPanel(dlss);
     DrawReSTIRPanel(restir);
+    if (m_showSun)       DrawSunPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene);
 
     // Material re-upload happens via dirty flag checked in Renderer
@@ -347,21 +349,46 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     }
     if (ImGui::CollapsingHeader("Spatial DI", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##SpatDI", &rs.enableSpatDI);
-        ImGui::SliderInt("Count Max##SpatDI", &rs.spatCountMaxDI, 0, 8);
-        ImGui::SliderInt("Count Min##SpatDI", &rs.spatCountMinDI, 0, 8);
+        ImGui::SliderInt("Count Max##SpatDI", &rs.spatCountMaxDI, 1, 8);
+        ImGui::SliderInt("Count Min##SpatDI", &rs.spatCountMinDI, 1, 8);
         ImGui::SliderInt("Radius Max##SpatDI", &rs.spatRadMaxDI, 1, 96);
         ImGui::SliderInt("Radius Min##SpatDI", &rs.spatRadMinDI, 1, 96);
     }
     if (ImGui::CollapsingHeader("Spatial GI", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##SpatGI", &rs.enableSpatGI);
-        ImGui::SliderInt("Count Max##SpatGI", &rs.spatCountMaxGI, 0, 8);
-        ImGui::SliderInt("Count Min##SpatGI", &rs.spatCountMinGI, 0, 8);
+        ImGui::SliderInt("Count Max##SpatGI", &rs.spatCountMaxGI, 1, 8);
+        ImGui::SliderInt("Count Min##SpatGI", &rs.spatCountMinGI, 1, 8);
         ImGui::SliderInt("Radius Max##SpatGI", &rs.spatRadMaxGI, 1, 96);
         ImGui::SliderInt("Radius Min##SpatGI", &rs.spatRadMinGI, 1, 96);
     }
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+    }
+
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Editor::DrawSunPanel(Camera& camera) {
+    ImGui::SetNextWindowSize(ImVec2(320, 300), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Sun / Time of Day")) { ImGui::End(); return; }
+
+    auto& s = camera.sunSettings;
+
+    if (ImGui::CollapsingHeader("Location / Date", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Latitude",    &s.latitude,  -90.0f, 90.0f, "%.2f deg");
+        ImGui::SliderFloat("Longitude",   &s.longitude, -180.0f, 180.0f, "%.2f deg");
+        ImGui::SliderFloat("Day of Year", &s.dayOfYear, 1.0f, 365.0f, "%.0f");
+    }
+    if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Sim Speed",       &s.simSpeed, 0.0f, 100.0f, "%.1fx");
+        ImGui::SliderFloat("Start UTC Hours", &s.startUTCHours, 0.0f, 24.0f, "%.1f h");
+        ImGui::SliderFloat("Night Speedup",   &s.nightSpeedup, 1.0f, 10.0f, "%.1fx");
+    }
+    if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Turbidity",      &s.turbidity, 1.0f, 10.0f, "%.1f");
+        ImGui::SliderFloat("Sun Intensity",  &s.sunIntensity, 0.0f, 20.0f, "%.1f");
     }
 
     ImGui::End();

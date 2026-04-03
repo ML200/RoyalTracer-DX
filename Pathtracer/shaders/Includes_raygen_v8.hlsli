@@ -49,8 +49,27 @@ cbuffer CameraParams : register(b0)
     float4x4 prevProjection;
     float time;
     float2 jitter;
+    float _cbpad0;
+    // SunSettings (runtime-editable)
+    float sunLatitude;
+    float sunLongitude;
+    float sunDayOfYear;
+    float sunSimSpeed;
+    float sunStartUTCHours;
+    float sunNightSpeedup;
+    float sunTurbidity;
+    float sunSunIntensity;
 }
 
+// Override sun #defines with cbuffer values (before SunSampler includes them)
+#define SUN_LATITUDE_DEG   sunLatitude
+#define SUN_LONGITUDE_DEG  sunLongitude
+#define SUN_DAY_OF_YEAR    sunDayOfYear
+#define SUN_SIM_SPEED      sunSimSpeed
+#define SUN_START_UTC_HOURS sunStartUTCHours
+#define SUN_NIGHT_SPEEDUP  sunNightSpeedup
+#define SUN_TURBIDITY      sunTurbidity
+#define SUN_INTENSITY_VAL  sunSunIntensity
 
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"

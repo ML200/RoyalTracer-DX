@@ -42,6 +42,8 @@ public:
     float   farPlane    = 10000.0f;
     float   moveSpeed   = 5.0f;
 
+    SunSettings sunSettings;
+
 private:
     ComPtr<ID3D12Resource>         m_buffer;
     ComPtr<ID3D12DescriptorHeap>   m_constHeap;

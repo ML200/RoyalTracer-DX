@@ -116,6 +116,21 @@ add_executable(Pathtracer WIN32
         rdn/ThirdPartyImpl.cpp
         rdn/Lighting/LightTreeRefit.h
 
+        # Engine layer
+        engine/Core/Transform.h
+        engine/Input/InputManager.h
+        engine/Input/InputManager.cpp
+        engine/Scene/GameObject.h
+        engine/Scene/SceneDefinition.h
+        engine/Scene/SceneManager.h
+        engine/Scene/SceneManager.cpp
+        engine/Scene/EmissiveCubes.h
+        engine/Scene/EmissiveCubes.cpp
+        engine/Camera/FlyCamController.h
+        engine/Camera/FlyCamController.cpp
+        engine/EngineApp.h
+        engine/EngineApp.cpp
+
         # ImGui
         lib/imgui/imgui.cpp
         lib/imgui/imgui_draw.cpp

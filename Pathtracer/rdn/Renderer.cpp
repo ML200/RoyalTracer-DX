@@ -8,8 +8,9 @@
 #include "Windowsx.h"
 
 // ─────────────────────────────────────────────────────────────────
-Renderer::Renderer(UINT width, UINT height, std::wstring name)
-    : DXSample(width, height, name)
+Renderer::Renderer(UINT width, UINT height)
+    : m_width(width), m_height(height),
+      m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
     // Define the rendering pass pipeline (data-driven)
     m_passes.Build({
@@ -27,58 +28,53 @@ Renderer::Renderer(UINT width, UINT height, std::wstring name)
 // ═════════════════════════════════════════════════════════════════
 // Init
 // ═════════════════════════════════════════════════════════════════
-void Renderer::OnInit() {
+void Renderer::InitDevice() {
     try {
-        // 1. Device & infrastructure
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
-
-        // 2. Simulation / recording
         m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
-
-        // 3. Camera
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
 
-        // 4. Load scene assets
-        //    Pass a flush callback so the loader can submit batches
-        //    of texture uploads instead of one giant command list.
-        //    This prevents TDR on large scenes (e.g. 4K Sponza).
-        auto flushFn = [this]() { m_ctx.FlushAndReset(); };
-
-        AssetLoader::LoadModels({
-            { "./bistro2/bistro2.obj", XMMatrixIdentity() },
-            // { "./car.glb", XMMatrixScaling(0.4f,0.4f,0.4f) * XMMatrixTranslation(2,0,0) },
-        }, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
-
-        // 5. Flush any remaining asset uploads, then release staging
-        //    (LoadModels now flushes internally per batch, but the
-        //    mesh VB/IB uploads still need a final flush here.)
-        m_ctx.FlushAndReset();
-
-        // 6. Pre-render GPU setup
-        // Allocate Streamline viewport (must be on open command list before first flush)
         if (!m_ctx.viewportHandle) {
             sl::Result r = slAllocateResources(m_ctx.CmdList(), sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
             if (r != sl::Result::eOk)
                 std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
         }
-
         GenerateLutTextures();
 
-        // Check raytracing support
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
             D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
         if (opts5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
             throw std::runtime_error("Raytracing not supported on device");
+    } catch (const std::exception& e) {
+        wchar_t wMsg[4096];
+        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
+        MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
+        exit(1);
+    }
+}
 
+void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
+    try {
+        auto flushFn = [this]() { m_ctx.FlushAndReset(); };
+        AssetLoader::LoadModels(models, m_scene, m_ctx.Device(), m_ctx.CmdList(), flushFn);
+        m_ctx.FlushAndReset();
+    } catch (const std::exception& e) {
+        wchar_t wMsg[4096];
+        MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
+        MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
+        exit(1);
+    }
+}
+
+void Renderer::InitSceneGPU() {
+    try {
         CreateAccelerationStructures();
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
-
         m_ctx.FlushAndReset();
         m_lutUploadHeaps.clear();
 
-        // 7. Pipeline & resources (CPU-only — no command list recording)
         CreateRaytracingPipeline();
         CreateStreamingCompactionBuffers();
         CreateIndirectCommandSignature();
@@ -87,19 +83,17 @@ void Renderer::OnInit() {
         CreateReadbackBuffer();
         m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
+        m_scene.UploadMaterials(m_ctx.Device());
         m_dlss.CreateResources(m_ctx.Device(), GetWidth(), GetHeight());
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
 
-        // Clear dirty flags — everything is freshly built
         m_scene.tlasDirty      = false;
         m_scene.lightTreeDirty = false;
         m_scene.materialsDirty = false;
 
-        // Pre-compute local-space BLAS roots for fast async TLAS refits
         m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
 
-        // 8. Editor — allocate one SRV heap slot for the ImGui font texture
         {
             const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
                 D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -110,11 +104,7 @@ void Renderer::OnInit() {
             m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), FRAME_COUNT,
                 m_srvUavHeap.Get(), fontCpu, fontGpu);
         }
-
-        // Close the command list so the first BeginFrame() can Reset() it.
-        // FlushAndReset() leaves it open, but nothing after step 7 records GPU work.
-        ThrowIfFailed(m_ctx.CmdList()->Close());
-
+        // Command list left open — EngineApp closes it.
     } catch (const std::exception& e) {
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
@@ -126,21 +116,13 @@ void Renderer::OnInit() {
 // ═════════════════════════════════════════════════════════════════
 // Update
 // ═════════════════════════════════════════════════════════════════
-void Renderer::OnUpdate() {
-    using clock = std::chrono::high_resolution_clock;
-    static auto tPrev = clock::now();
-    auto tCurr = clock::now();
-    float dt = std::chrono::duration<float>(tCurr - tPrev).count();
-    tPrev = tCurr;
-
+void Renderer::UpdateRenderer(float dt) {
     // Simulation path
     if (m_simulator.IsActive()) {
         bool shouldCapture = false;
         bool finished = m_simulator.Update(dt, m_camera.Manipulator(), shouldCapture);
         if (shouldCapture) SaveSimulationData(m_simulator.GetLastCaptureIndex());
         if (finished) { LOG(L"\n[Sim] Data Generation Complete."); PostQuitMessage(0); return; }
-    } else {
-        m_camera.Update(dt, g_keys, m_aspectRatio);
     }
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
@@ -479,7 +461,7 @@ void Renderer::RebuildDLSSDescriptors() {
 // ═════════════════════════════════════════════════════════════════
 // Render
 // ═════════════════════════════════════════════════════════════════
-void Renderer::OnRender() {
+void Renderer::RenderFrame() {
     static auto s_lastTime = std::chrono::high_resolution_clock::now();
     static int s_frameCount = 0;
 
@@ -505,9 +487,80 @@ void Renderer::OnRender() {
 // ═════════════════════════════════════════════════════════════════
 // Destroy
 // ═════════════════════════════════════════════════════════════════
-void Renderer::OnDestroy() {
+void Renderer::DestroyRenderer() {
     m_editor.Shutdown();
     m_ctx.Shutdown();
+}
+
+// ═════════════════════════════════════════════════════════════════
+UINT Renderer::CreateProceduralMesh(
+    const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
+    const Material& material)
+{
+    UINT matIdx = (UINT)m_scene.materials.size();
+    UINT triCount = (UINT)indices.size() / 3;
+    m_scene.materials.push_back(material);
+    for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
+
+    MeshGPU mesh;
+    mesh.cpuVertices = vertices; mesh.cpuIndices = indices;
+    mesh.cpuMaterialIDs = std::vector<UINT>(triCount, matIdx);
+    mesh.vertexCount = (UINT)vertices.size(); mesh.indexCount = (UINT)indices.size();
+    mesh.opaqueTriCount = triCount; mesh.alphaTriCount = 0; mesh.materialIDBase = matIdx;
+
+    { UINT bytes = mesh.vertexCount * sizeof(Vertex);
+      mesh.vertexBuffer = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes,
+          D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+      void* p = nullptr; mesh.vertexBuffer->Map(0, nullptr, &p);
+      memcpy(p, vertices.data(), bytes); mesh.vertexBuffer->Unmap(0, nullptr); }
+    { UINT bytes = mesh.indexCount * sizeof(UINT);
+      mesh.indexBuffer = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes,
+          D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+      void* p = nullptr; mesh.indexBuffer->Map(0, nullptr, &p);
+      memcpy(p, indices.data(), bytes); mesh.indexBuffer->Unmap(0, nullptr); }
+
+    auto blasBuf = CreateBottomLevelAS(
+        {{ mesh.vertexBuffer, mesh.vertexCount }}, {{ mesh.indexBuffer, mesh.indexCount }},
+        mesh.opaqueTriCount, mesh.alphaTriCount);
+    mesh.blas = blasBuf.pResult;
+    m_ctx.FlushAndReset();
+
+    UINT meshIndex = (UINT)m_scene.meshes.size();
+    m_scene.meshes.push_back(std::move(mesh));
+    LOG(L"[Engine] Created procedural mesh " << meshIndex << L" (mat " << matIdx << L")");
+    return meshIndex;
+}
+
+// ═════════════════════════════════════════════════════════════════
+void Renderer::HandleSceneStructuralChange() {
+    m_scene.RebuildTLASInstanceList();
+    m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
+
+    // Update SRV slot 6 → new instanceProperties buffer
+    { const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+      CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), INSTANCE_PROPS_SRV_SLOT, inc);
+      D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+      sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      sd.Format = DXGI_FORMAT_UNKNOWN; sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+      sd.Buffer.NumElements = (UINT)m_scene.instances.size();
+      sd.Buffer.StructureByteStride = sizeof(InstanceProperties);
+      m_ctx.Device()->CreateShaderResourceView(m_scene.instanceProperties.Get(), &sd, h); }
+
+    CreateShaderBindingTable();
+    m_scene.CollectEmissiveTriangles();
+    m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
+    m_emissiveGpuDirty = true;
+    m_scene.tlasDirty = true;
+    m_scene.lightTreeDirty = true;
+}
+
+// ═════════════════════════════════════════════════════════════════
+bool Renderer::WantsKeyboard() const { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard; }
+bool Renderer::WantsMouse() const    { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse; }
+void Renderer::HandleKeyUp(UINT8 key) {
+    if (key == 'C') m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
+    if (key == 'K') m_recorder.CaptureKeyframe(m_camera.Manipulator());
+    if (key == VK_F1) m_editor.ToggleVisibility();
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -615,20 +668,33 @@ void Renderer::PopulateCommandList() {
     UINT dispW = renderW, dispH = renderH;
 
     // Precompute ReSTIR root constants (slots 4-19, reused across all dispatches)
+    // Clamp to safe ranges: min <= max, all >= 1 to prevent uint wrap / div-by-zero
+    auto& rs = m_restirSettings;
+    rs.tempMcapDI     = std::max(rs.tempMcapDI, 1);
+    rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
+    rs.spatCountMaxDI = std::max(rs.spatCountMaxDI, 1);
+    rs.spatCountMinDI = std::clamp(rs.spatCountMinDI, 1, rs.spatCountMaxDI);
+    rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 1);
+    rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 1, rs.spatRadMaxDI);
+    rs.spatCountMaxGI = std::max(rs.spatCountMaxGI, 1);
+    rs.spatCountMinGI = std::clamp(rs.spatCountMinGI, 1, rs.spatCountMaxGI);
+    rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 1);
+    rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 1, rs.spatRadMaxGI);
+
     UINT rsConsts[20] = {};
-    rsConsts[4]  = (UINT)m_restirSettings.tempMcapDI;
-    rsConsts[5]  = (UINT)m_restirSettings.tempMcapGI;
-    rsConsts[6]  = (UINT)m_restirSettings.spatCountMaxDI;
-    rsConsts[7]  = (UINT)m_restirSettings.spatCountMinDI;
-    rsConsts[8]  = (UINT)m_restirSettings.spatRadMaxDI;
-    rsConsts[9]  = (UINT)m_restirSettings.spatRadMinDI;
-    rsConsts[10] = (UINT)m_restirSettings.spatCountMaxGI;
-    rsConsts[11] = (UINT)m_restirSettings.spatCountMinGI;
-    rsConsts[12] = (UINT)m_restirSettings.spatRadMaxGI;
-    rsConsts[13] = (UINT)m_restirSettings.spatRadMinGI;
-    rsConsts[14] = m_restirSettings.Flags();
-    memcpy(&rsConsts[15], &m_restirSettings.reuseRoughnessMin, 4);
-    memcpy(&rsConsts[16], &m_restirSettings.reuseRoughnessMax, 4);
+    rsConsts[4]  = (UINT)rs.tempMcapDI;
+    rsConsts[5]  = (UINT)rs.tempMcapGI;
+    rsConsts[6]  = (UINT)rs.spatCountMaxDI;
+    rsConsts[7]  = (UINT)rs.spatCountMinDI;
+    rsConsts[8]  = (UINT)rs.spatRadMaxDI;
+    rsConsts[9]  = (UINT)rs.spatRadMinDI;
+    rsConsts[10] = (UINT)rs.spatCountMaxGI;
+    rsConsts[11] = (UINT)rs.spatCountMinGI;
+    rsConsts[12] = (UINT)rs.spatRadMaxGI;
+    rsConsts[13] = (UINT)rs.spatRadMinGI;
+    rsConsts[14] = rs.Flags();
+    memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
+    memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
@@ -830,30 +896,4 @@ void Renderer::PopulateCommandList() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Input
-// ═════════════════════════════════════════════════════════════════
-void Renderer::OnKeyDown(UINT8 key) {
-    // Don't feed camera when ImGui wants keyboard
-    if (m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard) return;
-    g_keys[key] = true;
-}
-
-void Renderer::OnKeyUp(UINT8 key) {
-    g_keys[key] = false;
-    if (key == 'C') m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
-    if (key == 'K') m_recorder.CaptureKeyframe(m_camera.Manipulator());
-    if (key == VK_F1) m_editor.ToggleVisibility();
-}
-
-void Renderer::OnButtonDown(UINT32 lParam) {
-    if (m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse) return;
-    m_camera.OnMouseButton(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
-}
-
-void Renderer::OnMouseMove(UINT8 wParam, UINT32 lParam) {
-    if (m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse) return;
-    m_camera.OnMouseMove(
-        GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
-        wParam & MK_LBUTTON, wParam & MK_RBUTTON, wParam & MK_MBUTTON);
-}
+// Old input handlers removed — EngineApp handles input now.

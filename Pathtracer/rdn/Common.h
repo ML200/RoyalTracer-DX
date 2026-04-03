@@ -122,6 +122,18 @@ struct ReSTIRSettings {
     }
 };
 
+// ── Sun / time-of-day settings (uploaded to GPU via camera buffer) ──
+struct SunSettings {
+    float latitude      = 48.52f;    // degrees
+    float longitude     = 11.405f;   // degrees
+    float dayOfYear     = 172.0f;    // 1-365
+    float simSpeed      = 10.0f;     // simulation speed multiplier
+    float startUTCHours = 6.0f;      // start time in UTC hours
+    float nightSpeedup  = 2.0f;      // speed multiplier during night
+    float turbidity     = 2.0f;      // Mie turbidity (1=clear, 5+=hazy)
+    float sunIntensity  = 5.0f;      // sun disk intensity
+};
+
 // ── Halton sequence for jitter ───────────────────────────────────
 inline float Halton(uint32_t index, uint32_t base) {
     float f = 1.0f, r = 0.0f;
