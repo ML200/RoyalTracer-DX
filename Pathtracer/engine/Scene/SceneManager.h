@@ -2,7 +2,7 @@
 #include "GameObject.h"
 #include "../../rdn/Scene/Scene.h"
 #include <vector>
-#include <unordered_set>
+#include <unordered_map>
 #include <cstdint>
 
 class Renderer;
@@ -20,11 +20,13 @@ public:
     void SyncToRendererInitial(Scene& scene);
 
 private:
-    std::vector<GameObject>      m_objects;
-    std::vector<uint32_t>        m_freeList;
-    uint32_t                     m_nextId = 1;
-    bool                         m_structuralChange = false;
-    std::unordered_set<uint32_t> m_dirtyTransforms;
+    std::vector<GameObject>                m_objects;
+    std::vector<uint32_t>                  m_freeList;
+    std::unordered_map<uint32_t, uint32_t> m_idToIndex;   // id → m_objects index
+    std::vector<uint8_t>                   m_dirty;       // flat dirty flags (parallel to m_objects)
+    bool                                   m_anyDirty = false;
+    uint32_t                               m_nextId = 1;
+    bool                                   m_structuralChange = false;
     size_t m_engineInstanceBase = 0;
     bool   m_firstSync = true;
 };

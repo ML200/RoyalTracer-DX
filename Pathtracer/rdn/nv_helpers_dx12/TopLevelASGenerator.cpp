@@ -251,6 +251,95 @@ void TopLevelASGenerator::Generate(
 
 //--------------------------------------------------------------------------------------------------
 //
+// Partial update: only rewrite transforms for dirty instances, then refit.
+void TopLevelASGenerator::UpdateAndRefit(
+    ID3D12GraphicsCommandList4* commandList,
+    ID3D12Resource* scratchBuffer,
+    ID3D12Resource* resultBuffer,
+    ID3D12Resource* descriptorsBuffer,
+    const std::vector<uint32_t>& dirtyIndices)
+{
+  D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
+  descriptorsBuffer->Map(0, nullptr, reinterpret_cast<void**>(&instanceDescs));
+  if (!instanceDescs)
+    throw std::logic_error("Cannot map the instance descriptor buffer");
+
+  // Only update transforms for instances that actually moved
+  for (uint32_t i : dirtyIndices)
+  {
+    if (i >= m_instances.size()) continue;
+    DirectX::XMMATRIX m = XMMatrixTranspose(m_instances[i].transform);
+    memcpy(instanceDescs[i].Transform, &m, sizeof(instanceDescs[i].Transform));
+  }
+  descriptorsBuffer->Unmap(0, nullptr);
+
+  // Perform TLAS refit
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+  buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+  buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+  buildDesc.Inputs.InstanceDescs = descriptorsBuffer->GetGPUVirtualAddress();
+  buildDesc.Inputs.NumDescs = static_cast<UINT>(m_instances.size());
+  buildDesc.DestAccelerationStructureData = resultBuffer->GetGPUVirtualAddress();
+  buildDesc.ScratchAccelerationStructureData = scratchBuffer->GetGPUVirtualAddress();
+  buildDesc.SourceAccelerationStructureData = resultBuffer->GetGPUVirtualAddress();
+  buildDesc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+
+  commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+
+  D3D12_RESOURCE_BARRIER uavBarrier;
+  uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  uavBarrier.UAV.pResource = resultBuffer;
+  uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+  commandList->ResourceBarrier(1, &uavBarrier);
+}
+
+//--------------------------------------------------------------------------------------------------
+//
+// Full rebuild in-place: update dirty descriptors, then BUILD (not refit) to
+// get an optimal BVH.  Reuses existing buffers — no GPU heap allocations.
+void TopLevelASGenerator::RebuildInPlace(
+    ID3D12GraphicsCommandList4* commandList,
+    ID3D12Resource* scratchBuffer,
+    ID3D12Resource* resultBuffer,
+    ID3D12Resource* descriptorsBuffer,
+    const std::vector<uint32_t>& dirtyIndices)
+{
+  D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
+  descriptorsBuffer->Map(0, nullptr, reinterpret_cast<void**>(&instanceDescs));
+  if (!instanceDescs)
+    throw std::logic_error("Cannot map the instance descriptor buffer");
+
+  for (uint32_t i : dirtyIndices)
+  {
+    if (i >= m_instances.size()) continue;
+    DirectX::XMMATRIX m = XMMatrixTranspose(m_instances[i].transform);
+    memcpy(instanceDescs[i].Transform, &m, sizeof(instanceDescs[i].Transform));
+  }
+  descriptorsBuffer->Unmap(0, nullptr);
+
+  // Full build (not refit) — restructures the BVH for optimal traversal
+  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC buildDesc = {};
+  buildDesc.Inputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+  buildDesc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+  buildDesc.Inputs.InstanceDescs = descriptorsBuffer->GetGPUVirtualAddress();
+  buildDesc.Inputs.NumDescs = static_cast<UINT>(m_instances.size());
+  buildDesc.DestAccelerationStructureData = resultBuffer->GetGPUVirtualAddress();
+  buildDesc.ScratchAccelerationStructureData = scratchBuffer->GetGPUVirtualAddress();
+  buildDesc.SourceAccelerationStructureData = 0;  // no source — full build
+  buildDesc.Inputs.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE
+                         | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_BUILD;
+
+  commandList->BuildRaytracingAccelerationStructure(&buildDesc, 0, nullptr);
+
+  D3D12_RESOURCE_BARRIER uavBarrier;
+  uavBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+  uavBarrier.UAV.pResource = resultBuffer;
+  uavBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+  commandList->ResourceBarrier(1, &uavBarrier);
+}
+
+//--------------------------------------------------------------------------------------------------
+//
 //
 TopLevelASGenerator::Instance::Instance(ID3D12Resource* blAS, const DirectX::XMMATRIX& tr, UINT iID,
                                         UINT hgId)

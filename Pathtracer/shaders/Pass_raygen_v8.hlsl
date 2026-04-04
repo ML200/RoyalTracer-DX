@@ -61,7 +61,7 @@ void Pass_raygen_v8()
         RayDesc ray;
         ray.Origin    = rayOrigin;
         ray.Direction = rayDir;
-        ray.TMin      = 0.00001f;
+        ray.TMin      = 0.0f;
         ray.TMax      = 10000.0f;
 
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
@@ -222,10 +222,10 @@ void Pass_raygen_v8()
                 if (cosSurf > 1e-6f && cosLight > 1e-6f)
                 {
                     RayDesc shadowRay;
-                    shadowRay.Origin    = hitPos;
+                    shadowRay.Origin    = offset_ray(hitPos, hinfo.hitGNormal);
                     shadowRay.Direction = L;
-                    shadowRay.TMin      = 0.00001f;
-                    shadowRay.TMax      = dist - 0.001f;
+                    shadowRay.TMin      = 0.0f;
+                    shadowRay.TMax      = dist * 0.999f;
 
                     RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
                     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
@@ -280,9 +280,9 @@ void Pass_raygen_v8()
                 if (NdotL > 1e-6f)
                 {
                     RayDesc shadowRay;
-                    shadowRay.Origin    = hitPos;
+                    shadowRay.Origin    = offset_ray(hitPos, hinfo.hitGNormal);
                     shadowRay.Direction = sun.direction;
-                    shadowRay.TMin      = 0.00001f;
+                    shadowRay.TMin      = 0.0f;
                     shadowRay.TMax      = 10000.0f;
 
                     RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
@@ -357,7 +357,9 @@ void Pass_raygen_v8()
         prev_pdf    = bdata.pdf;
         rayDir      = s;
         prevNormal  = hinfo.hitNormal;
-        rayOrigin   = hitPos;
+        // Offset origin along geometric normal in the direction the ray exits
+        float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
+        rayOrigin   = offset_ray(hitPos, offsetN);
 
         // Russian Roulette (skip depth 0 to ensure at least one bounce)
         if (depth > 0)

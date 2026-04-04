@@ -108,6 +108,18 @@ struct Scene {
     UINT totalBindlessTextures = 0;
     std::vector<ComPtr<ID3D12Resource>> bindlessGpuTextures;
 
+    // CPU-side shadow of GPU instance properties (avoids WC upload-heap reads)
+    std::vector<InstanceProperties> cpuInstanceProps;
+
+    // Per-instance dirty flags (set when transform changes)
+    std::vector<uint8_t> instanceDirty;
+
+    // Per-instance initialized flags (false until first UpdateInstanceProperties)
+    std::vector<uint8_t> instanceInitialized;
+
+    // Indices of dirty instances (rebuilt each frame from instanceDirty)
+    std::vector<uint32_t> dirtyInstanceList;
+
     // ── Dirty flags ──────────────────────────────────────────────
     bool tlasDirty       = true;   // need DXR TLAS rebuild or refit
     bool tlasFullRebuild = true;   // true = full rebuild, false = refit only
@@ -127,9 +139,16 @@ struct Scene {
     // Mark materials changed (emission changes also set lightTreeDirty)
     void MarkMaterialsDirty(bool emissionChanged = false);
 
+    // Mark a specific instance as having a dirty transform
+    void MarkInstanceDirty(UINT instanceIndex);
+
+    // Mark all instances dirty (e.g. after structural change)
+    void MarkAllInstancesDirty();
+
     void BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
     void CreateInstancePropertiesBuffer(ID3D12Device* device);
-    void UpdateInstanceProperties();
+    void PrepareInstanceProperties();   // CPU math on shadow buffer (safe to overlap with GPU)
+    void UploadInstanceProperties();    // memcpy to GPU upload heap (must wait for GPU first)
     void RebuildTLASInstanceList();
     void CollectEmissiveTriangles();
     void CreateEmissiveTrianglesBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* queue, ID3D12CommandAllocator* alloc);

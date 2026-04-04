@@ -131,6 +131,26 @@ public:
                                                /// if an iterative update is requested
   );
 
+  /// Update only the transforms of specific instances in the descriptor buffer,
+  /// then perform a TLAS refit. Much faster than Generate() when few instances moved.
+  void UpdateAndRefit(
+      ID3D12GraphicsCommandList4* commandList,
+      ID3D12Resource* scratchBuffer,
+      ID3D12Resource* resultBuffer,
+      ID3D12Resource* descriptorsBuffer,
+      const std::vector<uint32_t>& dirtyIndices /// Indices of instances whose transforms changed
+  );
+
+  /// Full rebuild using existing buffers — updates all dirty descriptors then
+  /// builds (not refits) the TLAS.  Reuses allocations so no GPU heap churn.
+  void RebuildInPlace(
+      ID3D12GraphicsCommandList4* commandList,
+      ID3D12Resource* scratchBuffer,
+      ID3D12Resource* resultBuffer,
+      ID3D12Resource* descriptorsBuffer,
+      const std::vector<uint32_t>& dirtyIndices
+  );
+
 private:
   /// Helper struct storing the instance data
   struct Instance

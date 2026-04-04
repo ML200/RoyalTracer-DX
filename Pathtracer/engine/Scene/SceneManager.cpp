@@ -4,33 +4,54 @@
 uint32_t SceneManager::Instantiate(UINT meshIndex, const Transform& transform) {
     uint32_t id = m_nextId++;
     GameObject go; go.id = id; go.transform = transform; go.meshIndex = meshIndex; go.active = true;
-    if (!m_freeList.empty()) { uint32_t idx = m_freeList.back(); m_freeList.pop_back(); m_objects[idx] = go; }
-    else m_objects.push_back(go);
+    uint32_t idx;
+    if (!m_freeList.empty()) {
+        idx = m_freeList.back(); m_freeList.pop_back();
+        m_objects[idx] = go;
+        m_dirty[idx] = 1;
+    } else {
+        idx = static_cast<uint32_t>(m_objects.size());
+        m_objects.push_back(go);
+        m_dirty.push_back(1);
+    }
+    m_idToIndex[id] = idx;
     m_structuralChange = true;
     return id;
 }
 
 void SceneManager::Destroy(uint32_t id) {
-    for (size_t i = 0; i < m_objects.size(); ++i)
-        if (m_objects[i].id == id && m_objects[i].active) {
-            m_objects[i].active = false; m_freeList.push_back((uint32_t)i);
-            m_structuralChange = true; m_dirtyTransforms.erase(id); return;
-        }
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return;
+    uint32_t idx = it->second;
+    m_objects[idx].active = false;
+    m_dirty[idx] = 0;
+    m_freeList.push_back(idx);
+    m_idToIndex.erase(it);
+    m_structuralChange = true;
 }
 
 GameObject* SceneManager::Get(uint32_t id) {
-    for (auto& obj : m_objects) if (obj.id == id && obj.active) return &obj;
-    return nullptr;
+    auto it = m_idToIndex.find(id);
+    if (it == m_idToIndex.end()) return nullptr;
+    auto& obj = m_objects[it->second];
+    return obj.active ? &obj : nullptr;
 }
 
-void SceneManager::SetDirty(uint32_t id) { m_dirtyTransforms.insert(id); }
+void SceneManager::SetDirty(uint32_t id) {
+    auto it = m_idToIndex.find(id);
+    if (it != m_idToIndex.end()) {
+        m_dirty[it->second] = 1;
+        m_anyDirty = true;
+    }
+}
 
 void SceneManager::SetAllDirty() {
-    for (const auto& obj : m_objects) if (obj.active) m_dirtyTransforms.insert(obj.id);
+    std::fill(m_dirty.begin(), m_dirty.end(), 1);
+    m_anyDirty = true;
 }
 
 size_t SceneManager::ActiveCount() const {
-    size_t c = 0; for (const auto& o : m_objects) if (o.active) ++c; return c;
+    return m_idToIndex.size();
 }
 
 static void AppendEngineInstances(const std::vector<GameObject>& objects, Scene& scene) {
@@ -51,7 +72,8 @@ void SceneManager::SyncToRendererInitial(Scene& scene) {
     m_firstSync = false;
     AppendEngineInstances(m_objects, scene);
     m_structuralChange = false;
-    m_dirtyTransforms.clear();
+    m_anyDirty = false;
+    std::fill(m_dirty.begin(), m_dirty.end(), 0);
 }
 
 void SceneManager::SyncToRenderer(Renderer& renderer) {
@@ -63,19 +85,25 @@ void SceneManager::SyncToRenderer(Renderer& renderer) {
             scene.instances.resize(m_engineInstanceBase);
         AppendEngineInstances(m_objects, scene);
         renderer.HandleSceneStructuralChange();
-        m_structuralChange = false; m_dirtyTransforms.clear();
+        m_structuralChange = false;
+        m_anyDirty = false;
+        std::fill(m_dirty.begin(), m_dirty.end(), 0);
         return;
     }
 
-    if (!m_dirtyTransforms.empty()) {
+    if (m_anyDirty) {
         size_t engineIdx = m_engineInstanceBase;
-        for (const auto& obj : m_objects) {
+        for (size_t i = 0; i < m_objects.size(); ++i) {
+            const auto& obj = m_objects[i];
             if (!obj.active) continue;
-            if (m_dirtyTransforms.count(obj.id) && engineIdx < scene.instances.size())
+            if (m_dirty[i] && engineIdx < scene.instances.size()) {
                 scene.instances[engineIdx].worldTransform = obj.transform.GetMatrix();
+                scene.MarkInstanceDirty(static_cast<UINT>(engineIdx));
+                m_dirty[i] = 0;
+            }
             ++engineIdx;
         }
         scene.tlasDirty = true;
-        m_dirtyTransforms.clear();
+        m_anyDirty = false;
     }
 }
