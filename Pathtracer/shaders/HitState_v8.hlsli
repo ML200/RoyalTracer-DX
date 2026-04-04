@@ -11,6 +11,7 @@ struct [raypayload] HitBlobPayload
 
 // Logical struct
 struct HitInfo {
+    float3 hitPos;
     float3 hitNormal;
     float3 hitGNormal;
     uint   lightID;

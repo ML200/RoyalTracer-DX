@@ -213,7 +213,9 @@ private:
 
         auto& N0 = m_tlas[nodeIdx];
         N0.bmin = parent.a.mn; N0.bmax = parent.a.mx; N0.power = parent.E;
-        N0.axis = parent.cone.axis; N0.theta_o = parent.cone.theta_o; N0.theta_e = parent.cone.theta_e;
+        N0.axis = parent.cone.axis;
+        N0.cosTheta_o = std::cos(lt::clampf(parent.cone.theta_o, 0.f, lt::LT_PI));
+        N0.cosTheta_e = std::cos(lt::clampf(parent.cone.theta_e, 0.f, lt::LT_PI));
         N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
         N0.itemFirst = begin; N0.itemCount = end - begin;
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;

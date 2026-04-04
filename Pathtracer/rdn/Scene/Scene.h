@@ -109,7 +109,8 @@ struct Scene {
     std::vector<ComPtr<ID3D12Resource>> bindlessGpuTextures;
 
     // ── Dirty flags ──────────────────────────────────────────────
-    bool tlasDirty       = true;   // need DXR TLAS rebuild/refit
+    bool tlasDirty       = true;   // need DXR TLAS rebuild or refit
+    bool tlasFullRebuild = true;   // true = full rebuild, false = refit only
     bool lightTreeDirty  = true;   // need light tree TLAS refit
     bool materialsDirty  = false;  // need material buffer re-upload
     bool emissivesDirty  = false;  // emission values changed → recompute BLAS roots

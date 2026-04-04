@@ -38,10 +38,15 @@ private:
     void DrawSunPanel(Camera& camera);
 
     bool m_visible        = true;
+    bool m_showScene      = false;
+    bool m_showCamera     = false;
+    bool m_showPipeline   = false;
+    bool m_showDLSS       = false;
+    bool m_showReSTIR     = false;
     bool m_showSun        = false;
+    bool m_showMaterials  = false;
     int  m_selectedModel  = -1;
     int  m_selectedMat    = -1;
-    bool m_showMaterials  = false;
 
     // Cached per-model unique materials (recomputed only on selection change)
     int m_cachedMatModel = -1;

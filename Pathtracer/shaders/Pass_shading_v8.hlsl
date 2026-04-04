@@ -52,30 +52,40 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
-    bool isSky = any(sdata.L1 > 0.0f);
-    if (isSky)
+    bool isEmissiveOrSky = any(sdata.L1 > 0.0f);
+    if (isEmissiveOrSky)
     {
-        g_dlssDepth[DTid.xy] = 65504.0f;
+        // Emitters have a valid surface position (x1); sky does not (x1 == 0)
+        bool hasPosition = dot(sdata.x1, sdata.x1) > 0.0f;
 
-        // GUIDE SECTION 3.4.3: Sky has no surface orientation.
+        if (hasPosition)
+        {
+            // Emitter surface: compute depth + motion vectors like regular geometry
+            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sdata.x1);
+
+            float2 curPix = DTid.xy;
+            float2 prevPix = GetLastFramePixelCoordinates_Float(
+                sdata.x1, prevView, prevProjection, dims, sdata.objID) - jitter;
+            bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 &&
+                              prevPix.x < IMG_W && prevPix.y < IMG_H);
+            g_dlssMVec[curPix] = validPrev ? float2(prevPix - curPix) : float2(0, 0);
+        }
+        else
+        {
+            // Sky: no surface, infinite depth, no motion
+            g_dlssDepth[DTid.xy] = 65504.0f;
+            g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
+        }
+
         g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-
-        // GUIDE SECTION 3.4.2: Explicitly recommends (0.5) for Sky Specular Albedo
         g_dlssSpecularAlbedo[DTid.xy] = float4(0.5f, 0.5f, 0.5f, 0.0f);
-
-        // Sky is perfect emission, no diffuse shading.
         g_dlssDiffuseAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-
-        // Sky has no roughness.
         g_dlssRoughness[DTid.xy] = 0.0f;
+        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 65504.0f;
 
-        // GUIDE SECTION 3.4.9: Specular Hit Distance.
-        // Since sky is "infinite" or has no primary surface hit, use a safe max value.
-        g_dlssSpecHitDist[DTid.xy] = 65504.0f; // FP16 Max
-
-        g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
-
-        g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
+        // Tonemap bright emitters before DLSS-RR to prevent ghosting/ringing
+        float3 dlssColor = accumulation / (1.0f + accumulation);
+        g_dlssInput[DTid.xy] = float4(saturate(dlssColor), 1.0f);
     }
     else{
         // DLSS RR input data:

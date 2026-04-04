@@ -6,7 +6,9 @@
       "Bash(find C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders -name *.hlsl)",
       "Bash(find C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/streamline -type f \\\\\\(-iname *.md -o -iname *.txt -o -iname *.doc* -o -iname readme* \\\\\\))",
       "Read(//c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/**)",
-      "Bash(mkdir -p engine/Core engine/Input engine/Scene engine/Camera)"
+      "Bash(mkdir -p engine/Core engine/Input engine/Scene engine/Camera)",
+      "Bash(grep -r \"LoadScene\\\\|UploadMaterials\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer --include=*.cpp --include=*.h)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

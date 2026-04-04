@@ -184,7 +184,7 @@ void AssetLoader::LoadModels(
         if (mat.rmaTexID    >= 0) mat.rmaTexID    += (int)scene.bindlessRmaBase;
     }
 
-    scene.UploadMaterials(device);
+    // Materials uploaded later by InitSceneGPU (after procedural meshes may add more)
 
     // Upload textures in batches — flushes every TEXTURE_BATCH_SIZE textures
     // to keep each submission under the TDR window and limit peak staging memory.

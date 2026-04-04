@@ -217,7 +217,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 shadowRay.Origin    = hitPos;
                 shadowRay.Direction = sun.direction;
                 shadowRay.TMin      = 0.00001f;
-                shadowRay.TMax      = 10000.0f; // Effectively infinite
+                shadowRay.TMax      = 10000.0f;
 
                 RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
                 q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
