@@ -228,9 +228,12 @@ void Pass_spat_gi_v8_1()
                 Jn, Jnn
             );
 
-            // Visibility after reconnection (keep your normal choice: n1_s)
-            const float vis = VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1_s, 0u);
-            contrib_n *= vis;
+            // Visibility after reconnection
+            {
+                float3 _conn = rdi_r.x2_gi - sdata.x1; float _cd = length(_conn);
+                float vis = (_cd > EPSILON && IsVisible(sdata.x1, sdata.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                contrib_n *= vis;
+            }
 
             // Your code multiplies phat by Jnn
             p_hat_from = GetPHat(contrib_n) * Jnn;

@@ -207,13 +207,16 @@ void Scene::UploadInstanceProperties() {
         instanceProperties->Unmap(0, nullptr);
     }
 
-    // Clear dirty flags and prepare prev = current only for dirty instances
+    // Finalize prev = current and keep dirty for one settle frame so the
+    // GPU receives the zeroed-out motion (prev == current) on the next upload.
     for (uint32_t idx : dirtyInstanceList) {
         auto& p = cpuInstanceProps[idx];
+        bool alreadySettled = (memcmp(&p.prevObjectToWorld, &p.objectToWorld, sizeof(XMMATRIX)) == 0);
         p.prevObjectToWorld        = p.objectToWorld;
         p.prevObjectToWorldInverse = p.objectToWorldInverse;
         p.prevObjectToWorldNormal  = p.objectToWorldNormal;
-        instanceDirty[idx] = 0;
+        // Clear dirty only when prev already equaled current (settle frame uploaded)
+        instanceDirty[idx] = alreadySettled ? 0 : 1;
     }
 }
 

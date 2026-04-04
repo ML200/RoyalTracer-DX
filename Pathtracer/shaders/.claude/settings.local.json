@@ -22,7 +22,8 @@
       "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug)",
       "Bash(CMAKE=\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\")",
       "Bash(\"$CMAKE\" -S /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer -B /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug -G \"Visual Studio 17 2022\" -A x64)",
-      "Bash(\"$CMAKE\" --build /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug --config Debug)"
+      "Bash(\"$CMAKE\" --build /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug --config Debug)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DX -name *v8.hlsli -type f)"
     ]
   }
 }
