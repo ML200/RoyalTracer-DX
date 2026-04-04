@@ -38,6 +38,8 @@ void Pass_raygen_v8()
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
     float3 prevNormal = float3(0.0f, 1.0f, 0.0f);
     float  prev_pdf   = 1.0f;
+    float  partial_J  = 0.0f;   // PDF1 * G_x1_x2, computed at depth 1
+    float  pdf2_bsdf  = 0.0f;   // BSDF pdf at x2, computed after depth 1 BSDF sampling
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -96,7 +98,7 @@ void Pass_raygen_v8()
             {
                 float  p_hat  = GetPHat(T_envL);
                 float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx) : -rayDir;
-                float2 J_new  = float2(0.0f, (depth > 2) ? 0.0f : 1.0f);
+                float2 J_new  = float2(0.0f, partial_J * pdf2_bsdf);
                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
 
                 if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, p_hat, envL * tpost, J_new, V2_new, seed))
@@ -183,7 +185,7 @@ void Pass_raygen_v8()
                 float  p_hat  = GetPHat(throughput * emission);
                 float  wi     = p_hat * misWeight;
 
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, emission * tpost, float2(0.0f, 0.0f), V2_new, seed))
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, emission * tpost, float2(0.0f, partial_J * pdf2_bsdf), V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
             }
             break;
@@ -194,6 +196,10 @@ void Pass_raygen_v8()
         {
             SetReservoirGI_ConstHit(g_Reservoirs_current_gi, pixelIdx, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
             SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, pixelIdx, hinfo.uv, iors.x, iors.y);
+
+            float cos_x2 = abs(dot(-rayDir, hinfo.hitNormal));
+            float dist2   = max(hitT * hitT, EPSILON);
+            partial_J     = prev_pdf * cos_x2 / dist2;
         }
 
         // ── Depth 2: store post-reconnection direction ────────────────
@@ -256,7 +262,8 @@ void Pass_raygen_v8()
                             if (depth >= 1)
                             {
                                 float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                float2 J_new  = (depth == 1) ? float2(lightPdf, 0.0f) : float2(0.0f, 0.0f);
+                                float  Jy_nee = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
+                                float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
                                 float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
                                 float  p_hat   = GetPHat(contrib);
                                 float  wi      = p_hat * misWeight;
@@ -312,7 +319,8 @@ void Pass_raygen_v8()
                             if (depth >= 1)
                             {
                                 float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                float2 J_new  = (depth == 1) ? float2(lightPdf, 0.0f) : float2(0.0f, 0.0f);
+                                float  Jy_sun = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
+                                float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
                                 float  p_hat  = GetPHat(contrib);
                                 float  wi     = p_hat;
                                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
@@ -331,6 +339,9 @@ void Pass_raygen_v8()
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
         float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+
+        if (depth == 1)
+            pdf2_bsdf = bdata.pdf;
 
         float cosTheta = abs(dot(hinfo.hitNormal, s));
         float3 updateWeight = (bdata.pdf > 1e-6f)
@@ -397,40 +408,6 @@ void Pass_raygen_v8()
 
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, Wgi);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);
-
-        // Compute initial J_gi.y (PSS jacobian) so spatial/temporal get a valid Jc
-        if (Wgi > 0.0f)
-        {
-            SampleData sdata_final = loadSampleData(g_sample_current, pixelIdx);
-            Reservoir_GI rdi_final = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-
-            float3 dir   = rdi_final.x2_gi - sdata_final.x1;
-            float  dist2 = dot(dir, dir);
-            float3 ndirN = normalize(-dir);
-
-            // Refetch material for PDF evaluation
-            float3 kd1; float pr1, pm1;
-            RefetchMaterial(sdata_final.matID, sdata_final.uv, kd1, pr1, pm1);
-
-            float PDF1 = PDF_term(sdata_final.matID, sdata_final.n1_s, sdata_final.n1_g, -ndirN, sdata_final.o,
-                                  kd1, pr1, pm1,
-                                  sdata_final.etai, sdata_final.etat);
-
-            float PDF2 = rdi_final.J_gi.x;
-            if (rdi_final.J_gi.x <= 0.0f)
-            {
-                float3 kd2; float pr2, pm2;
-                RefetchMaterial(rdi_final.matID_gi, rdi_final.uv_gi, kd2, pr2, pm2);
-                PDF2 = PDF_term(rdi_final.matID_gi, rdi_final.n2_s_gi, rdi_final.n2_g_gi,
-                                -rdi_final.V2_gi, ndirN,
-                                kd2, pr2, pm2,
-                                rdi_final.etai_gi, rdi_final.etat_gi);
-            }
-
-            float Gj = abs(dot(ndirN, rdi_final.n2_s_gi)) / max(dist2, EPSILON);
-            float Jy = (PDF1 > EPSILON && PDF2 > EPSILON) ? max(PDF1 * PDF2 * Gj, EPSILON) : 0.0f;
-            store_Jy_gi(g_Reservoirs_current_gi, pixelIdx, Jy);
-        }
     }
 
     // Store sun direct contribution separately (not in ReSTIR DI)
