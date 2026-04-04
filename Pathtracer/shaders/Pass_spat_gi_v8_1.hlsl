@@ -231,7 +231,6 @@ void Pass_spat_gi_v8_1()
                 contrib_n *= vis;
             }
 
-            // Your code multiplies phat by Jnn
             p_hat_from = GetPHat(contrib_n) * Jnn;
         }
 

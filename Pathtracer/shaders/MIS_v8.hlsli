@@ -213,10 +213,10 @@ float PairwiseMIS_Canonical_Spat_GI(
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, true, Jn, J));
+            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, false, Jn, J));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
             }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)
@@ -312,10 +312,10 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, true, Jn, J));
+            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, false, Jn, J));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
             }
 
             float D = SymRatio(p_c, p_hat_from, beta);
