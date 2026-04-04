@@ -103,12 +103,12 @@ struct ReSTIRSettings {
     int   tempMcapGI       = 8;
     int   spatCountMaxDI   = 1;
     int   spatCountMinDI   = 1;
-    int   spatRadMaxDI     = 48;
-    int   spatRadMinDI     = 32;
-    int   spatCountMaxGI   = 1;
-    int   spatCountMinGI   = 1;
-    int   spatRadMaxGI     = 32;
-    int   spatRadMinGI     = 32;
+    int   spatRadMaxDI     = 50;
+    int   spatRadMinDI     = 50;
+    int   spatCountMaxGI   = 2;
+    int   spatCountMinGI   = 2;
+    int   spatRadMaxGI     = 50;
+    int   spatRadMinGI     = 50;
     bool  enableTempDI     = true;
     bool  enableTempGI     = true;
     bool  enableSpatDI     = true;
@@ -132,6 +132,8 @@ struct SunSettings {
     float nightSpeedup  = 2.0f;      // speed multiplier during night
     float turbidity     = 2.0f;      // Mie turbidity (1=clear, 5+=hazy)
     float sunIntensity  = 5.0f;      // sun disk intensity
+    float skyIntensity  = 8.5f;      // sky/atmosphere intensity multiplier
+    float _pad0 = 0, _pad1 = 0, _pad2 = 0; // pad to 48 bytes (12 floats)
 };
 
 // ── Halton sequence for jitter ───────────────────────────────────

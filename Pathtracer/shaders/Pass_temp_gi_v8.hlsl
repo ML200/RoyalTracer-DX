@@ -74,7 +74,7 @@ void Pass_temp_gi_v8()
             (all(sdata_r.L1 < EPSILON) &&
              (sdata_r.matID == sdata.matID) &&
              !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
-             (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
+             (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.4f)));
     }
 
     // --- fallback to non-permuted base coordinate ---

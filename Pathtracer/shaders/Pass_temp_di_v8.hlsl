@@ -68,8 +68,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         valid =
             (all(sdata_r.L1 < EPSILON) &&
              (sdata_r.matID == sdata.matID) &&
-             !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.9f) &&
-             !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f));
+             !RejectNormal_DI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
+             !RejectDistance_DI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.4f));
     }
 
     // --- fallback to non-permuted base coordinate ---

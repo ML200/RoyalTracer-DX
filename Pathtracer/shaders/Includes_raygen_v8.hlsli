@@ -59,17 +59,21 @@ cbuffer CameraParams : register(b0)
     float sunNightSpeedup;
     float sunTurbidity;
     float sunSunIntensity;
+    float sunSkyIntensity;
+    float _sunpad0, _sunpad1, _sunpad2;
 }
 
 // Override sun #defines with cbuffer values (before SunSampler includes them)
-#define SUN_LATITUDE_DEG   sunLatitude
-#define SUN_LONGITUDE_DEG  sunLongitude
-#define SUN_DAY_OF_YEAR    sunDayOfYear
-#define SUN_SIM_SPEED      sunSimSpeed
+#define SUN_LATITUDE_DEG    sunLatitude
+#define SUN_LONGITUDE_DEG   sunLongitude
+#define SUN_DAY_OF_YEAR     sunDayOfYear
+#define SUN_SIM_SPEED       sunSimSpeed
 #define SUN_START_UTC_HOURS sunStartUTCHours
-#define SUN_NIGHT_SPEEDUP  sunNightSpeedup
-#define SUN_TURBIDITY      sunTurbidity
-#define SUN_INTENSITY_VAL  sunSunIntensity
+#define SUN_NIGHT_SPEEDUP   sunNightSpeedup
+#define SUN_TURBIDITY       sunTurbidity
+#define SUN_INTENSITY_VAL   sunSunIntensity
+#define SKY_INTENSITY_VAL   sunSkyIntensity
+#define SKY_INTENSITY       sunSkyIntensity
 
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"

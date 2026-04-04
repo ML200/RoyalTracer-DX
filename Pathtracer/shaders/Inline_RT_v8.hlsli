@@ -6,6 +6,59 @@ struct [raypayload] TracePayload
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE
+
+// Generic shadow/visibility test with proper alpha testing
+inline bool IsVisible(float3 origin, float3 direction, float tMax)
+{
+    RayDesc ray;
+    ray.Origin    = origin;
+    ray.Direction = direction;
+    ray.TMin      = 0.0f;
+    ray.TMax      = tMax;
+
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+
+    while (q.Proceed())
+    {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            uint   instID = q.CandidateInstanceID();
+            uint   primID = FlatPrimID(instID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+            uint   matID  = materialIDs[instanceProps[instID].materialBase + primID];
+            Material mat  = materials[matID];
+
+            if (mat.albedoTexID < 0)
+            {
+                q.CommitNonOpaqueTriangleHit();
+                continue;
+            }
+
+            uint baseI = instanceProps[instID].indexBase;
+            uint i0 = indices[baseI + 3u * primID + 0u];
+            uint i1 = indices[baseI + 3u * primID + 1u];
+            uint i2 = indices[baseI + 3u * primID + 2u];
+
+            float2 uv0 = (float2)BTriVertex[i0].texCoord;
+            float2 uv1 = (float2)BTriVertex[i1].texCoord;
+            float2 uv2 = (float2)BTriVertex[i2].texCoord;
+
+            float2 bc  = q.CandidateTriangleBarycentrics();
+            float  b0  = 1.0f - bc.x - bc.y;
+            float2 uv  = uv0 * b0 + uv1 * bc.x + uv2 * bc.y;
+
+            Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
+            float alpha = tex.SampleLevel(g_sampler, uv * mat.albedoUVScale, 0).a;
+
+            if (alpha >= mat.alphaThreshold)
+                q.CommitNonOpaqueTriangleHit();
+        }
+    }
+
+    return (q.CommittedStatus() == COMMITTED_NOTHING);
+}
+
+// ReSTIR connection-point visibility: P → L (or directional for sun/env)
 float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
 {
     float3 dir = L - P;
@@ -15,61 +68,12 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
     float  len = length(L - P);
     if(objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) len = 10000.0f;
 
-    if(dot(dir, N) < 0.0f)
-            N = -N;
+    if(dot(dir, N) < 0.0f) N = -N;
 
-    RayDesc ray;
-    ray.Origin    = P + normalize(N) * SBIAS * 0.5f;
-    ray.Direction = dir;
-    ray.TMin      = EPSILON * 2.0f;
-    ray.TMax      = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
+    float3 origin = P + normalize(N) * SBIAS * 0.5f;
+    float  tMax   = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
 
-    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> rq;
-
-    rq.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-
-    while (rq.Proceed())
-    {
-        if (rq.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            uint instanceID  = rq.CandidateInstanceID();
-            uint primitiveID = rq.CandidatePrimitiveIndex();
-            float2 bary      = rq.CandidateTriangleBarycentrics();
-
-            InstanceProperties inst = instanceProps[instanceID];
-
-            uint primID = inst.opaqueTriCount + primitiveID;
-            uint baseI  = inst.indexBase;
-
-            uint i0 = indices[baseI + 3u * primID + 0u];
-            uint i1 = indices[baseI + 3u * primID + 1u];
-            uint i2 = indices[baseI + 3u * primID + 2u];
-
-            float2 uv0 = (float2)BTriVertex[i0].texCoord;
-            float2 uv1 = (float2)BTriVertex[i1].texCoord;
-            float2 uv2 = (float2)BTriVertex[i2].texCoord;
-
-            float2 uv = uv0 * (1.0 - bary.x - bary.y)
-                      + uv1 * bary.x
-                      + uv2 * bary.y;
-
-            uint matID = materialIDs[inst.materialBase + primID];
-            Material mat = materials[matID];
-
-            float alpha = mat.Kd.w;
-            if (mat.albedoTexID >= 0)
-            {
-                Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
-                alpha = tex.SampleLevel(g_sampler, uv, 0).a;
-            }
-
-            if (alpha < mat.alphaThreshold)
-            continue;
-            rq.CommitNonOpaqueTriangleHit();
-        }
-    }
-
-    return (rq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+    return IsVisible(origin, dir, tMax) ? 1.0f : 0.0f;
 }
 
 
@@ -413,6 +417,7 @@ HitInfo EvalSurfaceState(
 
     const bool isBackface = (dot(viewDir, geoNormW) > 0.0f);
 
+    hit.hitPos     = posW;
     hit.hitNormal  = isBackface ? -normW    : normW;
     hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
 

@@ -88,9 +88,10 @@ void Renderer::InitSceneGPU() {
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
 
-        m_scene.tlasDirty      = false;
-        m_scene.lightTreeDirty = false;
-        m_scene.materialsDirty = false;
+        m_scene.tlasDirty       = false;
+        m_scene.tlasFullRebuild = false;
+        m_scene.lightTreeDirty  = false;
+        m_scene.materialsDirty  = false;
 
         m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
 
@@ -550,8 +551,9 @@ void Renderer::HandleSceneStructuralChange() {
     m_scene.CollectEmissiveTriangles();
     m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
     m_emissiveGpuDirty = true;
-    m_scene.tlasDirty = true;
-    m_scene.lightTreeDirty = true;
+    m_scene.tlasDirty        = true;
+    m_scene.tlasFullRebuild  = true;
+    m_scene.lightTreeDirty   = true;
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -590,25 +592,31 @@ void Renderer::PopulateCommandList() {
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // Full TLAS rebuild when dirty (not refit — refit preserves tree structure
-    // which causes massive AABB overlap and halved perf after large moves)
+    // TLAS update: full rebuild on structural change, refit for transform-only
     if (m_scene.tlasDirty) {
-        m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
-        CreateTopLevelAS(m_scene.tlasInstances, false);
-        m_scene.tlasDirty = false;
+        if (m_scene.tlasFullRebuild) {
+            // Structural change: new buffers, new generator
+            m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
+            CreateTopLevelAS(m_scene.tlasInstances, false);
+            m_scene.tlasFullRebuild = false;
 
-        // Full rebuild allocates a new pResult buffer → update SRV descriptor at slot 2
-        const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
-            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSrv(
-            m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
-        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-        sd.Format = DXGI_FORMAT_UNKNOWN;
-        sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        sd.RaytracingAccelerationStructure.Location =
-            m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
-        m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
+            // Full rebuild allocates a new pResult buffer → update SRV
+            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSrv(
+                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
+            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+            sd.Format = DXGI_FORMAT_UNKNOWN;
+            sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            sd.RaytracingAccelerationStructure.Location =
+                m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
+            m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
+        } else {
+            // Transform-only: refit in-place (much faster, reuses buffers)
+            CreateTopLevelAS(m_scene.tlasInstances, true);
+        }
+        m_scene.tlasDirty = false;
     }
     { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
       cmdList->ResourceBarrier(1, &b); }
@@ -674,12 +682,12 @@ void Renderer::PopulateCommandList() {
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
     rs.spatCountMaxDI = std::max(rs.spatCountMaxDI, 1);
     rs.spatCountMinDI = std::clamp(rs.spatCountMinDI, 1, rs.spatCountMaxDI);
-    rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 1);
-    rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 1, rs.spatRadMaxDI);
+    rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 4);
+    rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 4, rs.spatRadMaxDI);
     rs.spatCountMaxGI = std::max(rs.spatCountMaxGI, 1);
     rs.spatCountMinGI = std::clamp(rs.spatCountMinGI, 1, rs.spatCountMaxGI);
-    rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 1);
-    rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 1, rs.spatRadMaxGI);
+    rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
+    rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
 
     UINT rsConsts[20] = {};
     rsConsts[4]  = (UINT)rs.tempMcapDI;

@@ -65,8 +65,8 @@ struct [[raypayload]] ShadowHitInfo {
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
-    float3 bmax;     float theta_o;
-    float3 axis;     float theta_e;
+    float3 bmax;     float cosTheta_o;
+    float3 axis;     float cosTheta_e;
 
     uint   firstChild;
     uint   childCount;
@@ -83,8 +83,8 @@ struct LightTLASNodeGpu
 struct LightBLASNodeGpu
 {
     float3 bmin;     float power;
-    float3 bmax;     float theta_o;
-    float3 axis;     float theta_e;
+    float3 bmax;     float cosTheta_o;
+    float3 axis;     float cosTheta_e;
 
     uint   firstChild;
     uint   childCount;
@@ -100,6 +100,7 @@ struct BlasRangeGpu {
     uint nodeCount;
     uint triIndexOffset;
     uint triIndexCount;
+    float4x4 worldToLocal;
 };
 
 
