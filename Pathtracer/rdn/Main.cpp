@@ -22,10 +22,10 @@ public:
     }
     void Init(SceneManager& sm, Renderer& r) override {
         EmissiveCubes::Params p;
-        p.count = 150; p.cubeSize = 0.1f;
-        p.emissionMin = 3; p.emissionMax = 80;
+        p.count = 50000; p.cubeSize = 0.5f;
+        p.emissionMin = 0; p.emissionMax = 0;
         p.speedMin = 0.5f; p.speedMax = 2.5f;
-        p.spawnMin = {-12, 0.3f, -8}; p.spawnMax = {12, 4, 8};
+        p.spawnMin = {-120, 0.3f, -80}; p.spawnMax = {120, 80, 80};
         m_cubes.Init(p, sm, r);
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {

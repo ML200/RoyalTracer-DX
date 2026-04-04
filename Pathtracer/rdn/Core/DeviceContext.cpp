@@ -38,7 +38,7 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
         cmdAllocators[frameIndex].Get(), nullptr, IID_PPV_ARGS(&cmdList)));
 
     ThrowIfFailed(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
-    fenceValue = 1;
+    for (UINT n = 0; n < FRAME_COUNT; ++n) fenceValues[n] = 0;
     fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!fenceEvent) ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
 }
@@ -50,6 +50,14 @@ void DeviceContext::Shutdown() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+void DeviceContext::WaitForPreviousFrame() {
+    const UINT64 prevFence = nextFenceValue - 1;
+    if (prevFence > 0 && fence->GetCompletedValue() < prevFence) {
+        ThrowIfFailed(fence->SetEventOnCompletion(prevFence, fenceEvent));
+        WaitForSingleObject(fenceEvent, INFINITE);
+    }
+}
+
 void DeviceContext::BeginFrame() {
     auto* allocator = cmdAllocators[frameIndex].Get();
     ThrowIfFailed(allocator->Reset());
@@ -62,8 +70,15 @@ void DeviceContext::ExecuteAndPresent() {
     ThrowIfFailed(cmdList->Close());
     ID3D12CommandList* lists[] = { cmdList.Get() };
     cmdQueue->ExecuteCommandLists(1, lists);
+
+    // Signal with a globally unique, monotonically increasing fence value
+    const UINT64 fv = nextFenceValue++;
+    fenceValues[frameIndex] = fv;
+    ThrowIfFailed(cmdQueue->Signal(fence.Get(), fv));
     ThrowIfFailed(swapChain->Present(0, 0));
-    WaitForGPU();
+
+    // Advance to next back buffer (non-blocking)
+    frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 #if ENABLE_D3D12_DIAGNOSTICS
     dxdiag::CheckDeviceRemoved(device.Get());
@@ -72,12 +87,14 @@ void DeviceContext::ExecuteAndPresent() {
 }
 
 void DeviceContext::WaitForGPU() {
-    const UINT64 f = fenceValue++;
-    ThrowIfFailed(cmdQueue->Signal(fence.Get(), f));
-    if (fence->GetCompletedValue() < f) {
-        ThrowIfFailed(fence->SetEventOnCompletion(f, fenceEvent));
+    // Drain all in-flight work — used for shutdown and FlushAndReset
+    const UINT64 fv = nextFenceValue++;
+    ThrowIfFailed(cmdQueue->Signal(fence.Get(), fv));
+    if (fence->GetCompletedValue() < fv) {
+        ThrowIfFailed(fence->SetEventOnCompletion(fv, fenceEvent));
         WaitForSingleObject(fenceEvent, INFINITE);
     }
+    frameIndex = swapChain->GetCurrentBackBufferIndex();
     frameIndex = swapChain->GetCurrentBackBufferIndex();
 }
 

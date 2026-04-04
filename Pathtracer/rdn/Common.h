@@ -136,6 +136,20 @@ struct SunSettings {
     float _pad0 = 0, _pad1 = 0, _pad2 = 0; // pad to 48 bytes (12 floats)
 };
 
+// ── Per-frame performance stats ─────────────────────────────────
+struct FrameStats {
+    float cpuFrameMs      = 0;   // total CPU frame time
+    float cpuUpdateMs     = 0;   // UpdateRenderer
+    float cpuInstanceMs   = 0;   // UpdateInstanceProperties
+    float cpuPopulateMs   = 0;   // PopulateCommandList (CPU side)
+    float tlasMs          = 0;   // TLAS rebuild/refit (CPU record time)
+    float gpuMs           = 0;   // GPU execution (present-to-present)
+    UINT  instanceCount   = 0;
+    UINT  meshCount       = 0;
+    bool  tlasWasRefit    = false;
+    bool  tlasWasRebuilt  = false;
+};
+
 // ── Halton sequence for jitter ───────────────────────────────────
 inline float Halton(uint32_t index, uint32_t base) {
     float f = 1.0f, r = 0.0f;

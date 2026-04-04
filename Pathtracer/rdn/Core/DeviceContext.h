@@ -20,7 +20,8 @@ struct DeviceContext {
 
     // ── Frame management ─────────────────────────────────────────
     void BeginFrame();                     // resets allocator, opens command list
-    void ExecuteAndPresent();              // closes list, executes, presents, waits
+    void ExecuteAndPresent();              // closes list, executes, presents, signals fence
+    void WaitForPreviousFrame();           // wait for last submitted frame (call before writing shared buffers)
     void WaitForGPU();                     // CPU stall until GPU is idle
     void FlushAndReset();                  // execute current list, wait, reopen
 
@@ -69,7 +70,8 @@ private:
 
     // Sync
     ComPtr<ID3D12Fence>            fence;
-    UINT64                         fenceValue = 0;
+    UINT64                         fenceValues[FRAME_COUNT] = {};  // per-slot: last fence value signaled
+    UINT64                         nextFenceValue = 1;             // monotonically increasing
     HANDLE                         fenceEvent = nullptr;
     UINT                           frameIndex = 0;
 };

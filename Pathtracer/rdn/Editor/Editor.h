@@ -22,7 +22,8 @@ public:
     void Shutdown();
 
     void Draw(Scene& scene, Camera& camera, PassSystem& passes,
-              DLSSManager& dlss, ReSTIRSettings& restir, float fps);
+              DLSSManager& dlss, ReSTIRSettings& restir, float fps,
+              const FrameStats& stats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }

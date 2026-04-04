@@ -118,6 +118,8 @@ void Renderer::InitSceneGPU() {
 // Update
 // ═════════════════════════════════════════════════════════════════
 void Renderer::UpdateRenderer(float dt) {
+    using hrc = std::chrono::high_resolution_clock;
+
     // Simulation path
     if (m_simulator.IsActive()) {
         bool shouldCapture = false;
@@ -126,14 +128,8 @@ void Renderer::UpdateRenderer(float dt) {
         if (finished) { LOG(L"\n[Sim] Data Generation Complete."); PostQuitMessage(0); return; }
     }
 
-    m_camera.UploadGPUBuffer(m_aspectRatio);
+    auto t_updateStart = hrc::now();
     m_time++;
-
-    // ── Handle dirty flags ───────────────────────────────────────
-    if (m_scene.materialsDirty) {
-        m_scene.UpdateMaterialBuffer();
-        m_scene.materialsDirty = false;
-    }
 
     // Check for DLSS mode change — flag for reallocation in PopulateCommandList
     if (m_dlss.UpdateMode(m_ctx.Device())) {
@@ -167,10 +163,17 @@ void Renderer::UpdateRenderer(float dt) {
 
     // Build editor UI — must run before UpdateInstanceProperties so
     // MarkModelMoved() changes are picked up in the same frame
-    m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_restirSettings, m_fps);
+    m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_restirSettings, m_fps, m_frameStats);
 
-    // Upload instance transforms AFTER editor changes are applied
-    m_scene.UpdateInstanceProperties();
+    // Prepare instance data on CPU shadow buffer (overlaps with GPU)
+    auto t_instStart = hrc::now();
+    m_scene.PrepareInstanceProperties();
+    auto t_instEnd = hrc::now();
+
+    m_frameStats.cpuInstanceMs = std::chrono::duration<float, std::milli>(t_instEnd - t_instStart).count();
+    m_frameStats.cpuUpdateMs   = std::chrono::duration<float, std::milli>(t_instEnd - t_updateStart).count();
+    m_frameStats.instanceCount = (UINT)m_scene.instances.size();
+    m_frameStats.meshCount     = (UINT)m_scene.meshes.size();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -463,16 +466,40 @@ void Renderer::RebuildDLSSDescriptors() {
 // Render
 // ═════════════════════════════════════════════════════════════════
 void Renderer::RenderFrame() {
-    static auto s_lastTime = std::chrono::high_resolution_clock::now();
+    using hrc = std::chrono::high_resolution_clock;
+    static auto s_lastTime = hrc::now();
     static int s_frameCount = 0;
+    auto t_frameStart = hrc::now();
+
+    // Wait for previous frame's GPU to finish, then upload shared buffers.
+    // PrepareInstanceProperties already ran in UpdateRenderer (overlapped with GPU).
+    auto t_waitStart = hrc::now();
+    m_ctx.WaitForPreviousFrame();
+    m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+
+    // Upload shared GPU buffers (must happen after GPU wait)
+    m_camera.UploadGPUBuffer(m_aspectRatio);
+    m_scene.UploadInstanceProperties();
+    if (m_scene.materialsDirty) {
+        m_scene.UpdateMaterialBuffer();
+        m_scene.materialsDirty = false;
+    }
 
     m_ctx.BeginFrame();
+
+    auto t_popStart = hrc::now();
     PopulateCommandList();
+    auto t_popEnd = hrc::now();
+    m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+
     m_ctx.ExecuteAndPresent();
+
+    // CPU = total CPU work across UpdateRenderer + PopulateCommandList
+    m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuPopulateMs;
 
     // FPS display
     s_frameCount++;
-    auto now = std::chrono::high_resolution_clock::now();
+    auto now = hrc::now();
     float elapsed = std::chrono::duration<float>(now - s_lastTime).count();
     if (elapsed >= 1.0f) {
         m_fps = s_frameCount / elapsed;
@@ -533,9 +560,44 @@ UINT Renderer::CreateProceduralMesh(
 }
 
 // ═════════════════════════════════════════════════════════════════
+UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material)
+{
+    const auto& src = m_scene.meshes[sourceMeshIndex];
+    UINT matIdx   = (UINT)m_scene.materials.size();
+    UINT triCount = src.indexCount / 3;
+
+    m_scene.materials.push_back(material);
+    for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
+
+    MeshGPU mesh;
+    mesh.cpuVertices    = src.cpuVertices;
+    mesh.cpuIndices     = src.cpuIndices;
+    mesh.cpuMaterialIDs = std::vector<UINT>(triCount, matIdx);
+    mesh.vertexCount    = src.vertexCount;
+    mesh.indexCount     = src.indexCount;
+    mesh.opaqueTriCount = src.opaqueTriCount;
+    mesh.alphaTriCount  = src.alphaTriCount;
+    mesh.materialIDBase = matIdx;
+
+    // Share geometry buffers and BLAS — no GPU work needed
+    mesh.vertexBuffer = src.vertexBuffer;
+    mesh.indexBuffer  = src.indexBuffer;
+    mesh.blas         = src.blas;
+
+    UINT meshIndex = (UINT)m_scene.meshes.size();
+    m_scene.meshes.push_back(std::move(mesh));
+    return meshIndex;
+}
+
+// ═════════════════════════════════════════════════════════════════
 void Renderer::HandleSceneStructuralChange() {
     m_scene.RebuildTLASInstanceList();
     m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
+
+    // Resize dirty tracking and mark all instances dirty (new layout)
+    m_scene.instanceDirty.assign(m_scene.instances.size(), 1);
+    m_scene.instanceInitialized.assign(m_scene.instances.size(), 0);
+    m_scene.cpuInstanceProps.clear();  // force re-init in UpdateInstanceProperties
 
     // Update SRV slot 6 → new instanceProperties buffer
     { const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -592,13 +654,22 @@ void Renderer::PopulateCommandList() {
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // TLAS update: full rebuild on structural change, refit for transform-only
+    // TLAS update: full rebuild on structural change, periodic in-place rebuild
+    // to prevent BVH degradation, or partial refit for transform-only changes.
+    static constexpr uint32_t TLAS_REBUILD_INTERVAL = 120;
+    bool periodicRebuild = m_scene.tlasDirty && !m_scene.tlasFullRebuild
+                        && (m_time % TLAS_REBUILD_INTERVAL) == 0;
+
+    auto t_tlasStart = std::chrono::high_resolution_clock::now();
+    m_frameStats.tlasWasRefit = false;
+    m_frameStats.tlasWasRebuilt = false;
     if (m_scene.tlasDirty) {
         if (m_scene.tlasFullRebuild) {
             // Structural change: new buffers, new generator
             m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
             CreateTopLevelAS(m_scene.tlasInstances, false);
             m_scene.tlasFullRebuild = false;
+            m_frameStats.tlasWasRebuilt = true;
 
             // Full rebuild allocates a new pResult buffer → update SRV
             const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
@@ -612,12 +683,31 @@ void Renderer::PopulateCommandList() {
             sd.RaytracingAccelerationStructure.Location =
                 m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
             m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
-        } else {
-            // Transform-only: refit in-place (much faster, reuses buffers)
-            CreateTopLevelAS(m_scene.tlasInstances, true);
+        } else if (!m_scene.dirtyInstanceList.empty()) {
+            if (periodicRebuild) {
+                // Periodic rebuild: reuse buffers, full BVH build (PREFER_FAST_BUILD)
+                m_topLevelASGenerator.RebuildInPlace(
+                    m_ctx.CmdList(),
+                    m_topLevelASBuffers.pScratch.Get(),
+                    m_topLevelASBuffers.pResult.Get(),
+                    m_topLevelASBuffers.pInstanceDesc.Get(),
+                    m_scene.dirtyInstanceList);
+                m_frameStats.tlasWasRebuilt = true;
+            } else {
+                // Transform-only: partial refit — only update dirty instance descriptors
+                m_topLevelASGenerator.UpdateAndRefit(
+                    m_ctx.CmdList(),
+                    m_topLevelASBuffers.pScratch.Get(),
+                    m_topLevelASBuffers.pResult.Get(),
+                    m_topLevelASBuffers.pInstanceDesc.Get(),
+                    m_scene.dirtyInstanceList);
+                m_frameStats.tlasWasRefit = true;
+            }
         }
         m_scene.tlasDirty = false;
     }
+    m_frameStats.tlasMs = std::chrono::duration<float, std::milli>(
+        std::chrono::high_resolution_clock::now() - t_tlasStart).count();
     { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
       cmdList->ResourceBarrier(1, &b); }
 

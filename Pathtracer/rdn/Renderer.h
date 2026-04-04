@@ -41,9 +41,14 @@ public:
     UINT           GetHeight() const{ return m_height; }
     float          GetAspectRatio() const { return m_aspectRatio; }
 
+    // Create a new procedural mesh with its own BLAS. Call between LoadScene/InitSceneGPU.
     UINT CreateProceduralMesh(const std::vector<Vertex>& vertices,
                               const std::vector<UINT>& indices,
                               const Material& material);
+
+    // Create a mesh entry that shares geometry (BLAS/VB/IB) with an existing mesh
+    // but has its own material. Much cheaper than CreateProceduralMesh.
+    UINT CreateMeshInstance(UINT sourceMeshIndex, const Material& material);
     void HandleSceneStructuralChange();
 
     bool WantsKeyboard() const;
@@ -174,6 +179,7 @@ private:
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
     bool m_dlssModeChanged = false;
+    FrameStats m_frameStats;
 
     uint32_t m_time = 0;
     void PopulateCommandList();

@@ -25,6 +25,7 @@ void Scene::MarkModelMoved(UINT modelIndex) {
     // Update only this model's instances
     for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i) {
         instances[i].worldTransform = instances[i].localTransform * model.worldTransform;
+        MarkInstanceDirty(i);
     }
 
     tlasDirty      = true;
@@ -37,6 +38,15 @@ void Scene::MarkMaterialsDirty(bool emissionChanged) {
         lightTreeDirty = true;
         emissivesDirty = true;  // need to recompute BLAS local roots
     }
+}
+
+void Scene::MarkInstanceDirty(UINT instanceIndex) {
+    if (instanceIndex < instanceDirty.size())
+        instanceDirty[instanceIndex] = 1;
+}
+
+void Scene::MarkAllInstancesDirty() {
+    std::fill(instanceDirty.begin(), instanceDirty.end(), 1);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -122,39 +132,89 @@ void Scene::CreateInstancePropertiesBuffer(ID3D12Device* device) {
         D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
 }
 
-void Scene::UpdateInstanceProperties() {
-    InstanceProperties* dst = nullptr;
-    CD3DX12_RANGE r(0, 0);
-    ThrowIfFailed(instanceProperties->Map(0, &r, reinterpret_cast<void**>(&dst)));
+void Scene::PrepareInstanceProperties() {
+    const size_t count = instances.size();
 
-    for (size_t i = 0; i < instances.size(); ++i, ++dst) {
-        auto& si = instances[i];
+    // Ensure shadow buffer and dirty flags are sized correctly
+    cpuInstanceProps.resize(count);
+    instanceDirty.resize(count, 1);       // default dirty on first frame
+    instanceInitialized.resize(count, 0); // new entries are uninitialized
+
+    // Build list of dirty indices and update only those
+    dirtyInstanceList.clear();
+    for (size_t i = 0; i < count; ++i) {
+        if (!instanceDirty[i]) continue;
+        dirtyInstanceList.push_back(static_cast<uint32_t>(i));
+    }
+
+    // Only process dirty instances — reads/writes go to CPU shadow buffer (fast),
+    // NOT the GPU upload heap (write-combined memory where reads are 10-100x slower)
+    for (uint32_t idx : dirtyInstanceList) {
+        auto& dst = cpuInstanceProps[idx];
+        auto& si  = instances[idx];
         const XMMATRIX& M = si.worldTransform;
         XMVECTOR det;
 
-        dst->prevObjectToWorld        = dst->objectToWorld;
-        dst->prevObjectToWorldInverse = XMMatrixInverse(&det, dst->objectToWorld);
-        dst->objectToWorld            = M;
-        dst->objectToWorldInverse     = XMMatrixInverse(&det, M);
+        bool isNew = !instanceInitialized[idx];
+
+        // Compute new current values (only 1 inverse + 1 normal inverse)
+        if (!isNew) {
+            // Shift current → prev (reuse cached inverses — no extra inversions)
+            dst.prevObjectToWorld        = dst.objectToWorld;
+            dst.prevObjectToWorldInverse = dst.objectToWorldInverse;
+            dst.prevObjectToWorldNormal  = dst.objectToWorldNormal;
+        }
+
+        dst.objectToWorld        = M;
+        dst.objectToWorldInverse = XMMatrixInverse(&det, M);
 
         XMMATRIX upper3x3 = M;
         upper3x3.r[0].m128_f32[3] = upper3x3.r[1].m128_f32[3] = upper3x3.r[2].m128_f32[3] = 0.f;
         upper3x3.r[3] = { 0, 0, 0, 1.f };
-        dst->prevObjectToWorldNormal = dst->objectToWorldNormal;
-        dst->objectToWorldNormal     = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
+        dst.objectToWorldNormal = XMMatrixTranspose(XMMatrixInverse(&det, upper3x3));
+
+        if (isNew) {
+            // First appearance: prev = current (no motion on first frame)
+            dst.prevObjectToWorld        = dst.objectToWorld;
+            dst.prevObjectToWorldInverse = dst.objectToWorldInverse;
+            dst.prevObjectToWorldNormal  = dst.objectToWorldNormal;
+            instanceInitialized[idx] = 1;
+        }
 
         const MeshGPU& mesh = meshes[si.meshIndex];
-        dst->opaqueTriCount = mesh.opaqueTriCount;
-        dst->indexBase      = mesh.globalIndexBase;
-        dst->vertexBase     = mesh.globalVertexBase;
-        dst->materialBase   = mesh.materialIDBase;
-        dst->triToLightBase = instTriOffset.empty() ? 0 : instTriOffset[i];
+        dst.opaqueTriCount = mesh.opaqueTriCount;
+        dst.indexBase      = mesh.globalIndexBase;
+        dst.vertexBase     = mesh.globalVertexBase;
+        dst.materialBase   = mesh.materialIDBase;
+        dst.triToLightBase = instTriOffset.empty() ? 0 : instTriOffset[idx];
 
         // Keep TLAS in sync
-        if (i < tlasInstances.size())
-            tlasInstances[i].second = M;
+        if (idx < tlasInstances.size())
+            tlasInstances[idx].second = M;
     }
-    instanceProperties->Unmap(0, nullptr);
+}
+
+void Scene::UploadInstanceProperties() {
+    // Write only dirty instances to GPU upload heap
+    if (!dirtyInstanceList.empty()) {
+        uint8_t* gpuDst = nullptr;
+        CD3DX12_RANGE readRange(0, 0);
+        ThrowIfFailed(instanceProperties->Map(0, &readRange, reinterpret_cast<void**>(&gpuDst)));
+        for (uint32_t idx : dirtyInstanceList) {
+            memcpy(gpuDst + idx * sizeof(InstanceProperties),
+                   &cpuInstanceProps[idx], sizeof(InstanceProperties));
+        }
+        instanceProperties->Unmap(0, nullptr);
+    }
+
+    // Clear dirty flags and prepare prev = current only for dirty instances
+    for (uint32_t idx : dirtyInstanceList) {
+        auto& p = cpuInstanceProps[idx];
+        p.prevObjectToWorld        = p.objectToWorld;
+        p.prevObjectToWorldInverse = p.objectToWorldInverse;
+        p.prevObjectToWorldNormal  = p.objectToWorldNormal;
+        instanceDirty[idx] = 0;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────

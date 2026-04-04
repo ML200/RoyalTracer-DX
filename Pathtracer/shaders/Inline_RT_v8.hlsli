@@ -5,6 +5,30 @@ struct [raypayload] TracePayload
 };
 
 
+// Robust ray origin offset (Ray Tracing Gems, Ch. 6).
+// Offsets the position along the geometric normal by an amount proportional
+// to the magnitude of each position component, avoiding self-intersection
+// at any distance from the origin.
+static const float RTG_ORIGIN = 1.0f / 32.0f;
+static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
+static const float RTG_INT_SCALE   = 256.0f;
+
+inline float3 offset_ray(float3 p, float3 n)
+{
+    int3 of_i = int3(RTG_INT_SCALE * n.x, RTG_INT_SCALE * n.y, RTG_INT_SCALE * n.z);
+
+    float3 p_i = float3(
+        asfloat(asint(p.x) + ((p.x < 0) ? -of_i.x : of_i.x)),
+        asfloat(asint(p.y) + ((p.y < 0) ? -of_i.y : of_i.y)),
+        asfloat(asint(p.z) + ((p.z < 0) ? -of_i.z : of_i.z)));
+
+    return float3(
+        abs(p.x) < RTG_ORIGIN ? p.x + RTG_FLOAT_SCALE * n.x : p_i.x,
+        abs(p.y) < RTG_ORIGIN ? p.y + RTG_FLOAT_SCALE * n.y : p_i.y,
+        abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
+}
+
+
 #ifdef ENABLE_RAY_QUERY_INLINE
 
 // Generic shadow/visibility test with proper alpha testing
@@ -70,8 +94,8 @@ float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
 
     if(dot(dir, N) < 0.0f) N = -N;
 
-    float3 origin = P + normalize(N) * SBIAS * 0.5f;
-    float  tMax   = max(len - SBIAS * 10.0f - EPSILON * 10.0f, 2.0f * EPSILON);
+    float3 origin = offset_ray(P, normalize(N));
+    float  tMax   = max(len - SBIAS * 10.0f, 2.0f * EPSILON);
 
     return IsVisible(origin, dir, tMax) ? 1.0f : 0.0f;
 }

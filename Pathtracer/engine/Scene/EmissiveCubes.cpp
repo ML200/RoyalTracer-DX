@@ -27,6 +27,13 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
     std::uniform_real_distribution<float> dS(params.speedMin,params.speedMax);
     std::uniform_real_distribution<float> dD(-1,1);
 
+    // Create ONE shared mesh+BLAS for the cube geometry
+    std::vector<Vertex> sharedVerts; std::vector<UINT> sharedIndices;
+    GenCube(params.cubeSize*0.5f, 0, sharedVerts, sharedIndices);
+
+    Material firstMat; firstMat.Kd={1,1,1,1}; firstMat.Ke={1,1,1}; firstMat.Pr_Pm_Ps_Pc={0.5f,0,0,0}; firstMat.Ni=1;
+    UINT baseMeshIdx = renderer.CreateProceduralMesh(sharedVerts, sharedIndices, firstMat);
+
     m_cubes.reserve(params.count);
     for (int i = 0; i < params.count; ++i) {
         float str = dEm(m_rng); float r=dH(m_rng),g=dH(m_rng),b=dH(m_rng);
@@ -34,9 +41,9 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
         r=(r/mx)*str; g=(g/mx)*str; b=(b/mx)*str;
 
         Material mat; mat.Kd={1,1,1,1}; mat.Ke={r,g,b}; mat.Pr_Pm_Ps_Pc={0.5f,0,0,0}; mat.Ni=1;
-        std::vector<Vertex> verts; std::vector<UINT> indices;
-        GenCube(params.cubeSize*0.5f, 0, verts, indices);
-        UINT meshIdx = renderer.CreateProceduralMesh(verts, indices, mat);
+
+        // Share BLAS with first cube — only creates a new material entry, no GPU work
+        UINT meshIdx = (i == 0) ? baseMeshIdx : renderer.CreateMeshInstance(baseMeshIdx, mat);
 
         Transform t; t.position = {dX(m_rng),dY(m_rng),dZ(m_rng)};
         uint32_t id = sm.Instantiate(meshIdx, t);

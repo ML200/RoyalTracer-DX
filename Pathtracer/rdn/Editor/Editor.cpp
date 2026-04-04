@@ -36,7 +36,8 @@ void Editor::Shutdown() {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
-                  DLSSManager& dlss, ReSTIRSettings& restir, float fps)
+                  DLSSManager& dlss, ReSTIRSettings& restir, float fps,
+                  const FrameStats& stats)
 {
     if (!m_visible) return;
 
@@ -57,10 +58,16 @@ void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
         }
         ImGui::Separator();
         ImGui::Text("%.1f fps | %.2f ms", fps, fps > 0 ? 1000.0f / fps : 0.0f);
-        ImGui::Text("  |  %zu models, %zu instances, %zu materials",
-            scene.models.size(), scene.instances.size(), scene.materials.size());
-        if (scene.tlasDirty)      { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.6f,0,1), "[TLAS dirty]"); }
-        if (scene.lightTreeDirty) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "[LightTree dirty]"); }
+        ImGui::Separator();
+        ImGui::Text("CPU: %.1f ms (upd %.1f | inst %.1f | pop %.1f | tlas %.2f)",
+            stats.cpuFrameMs, stats.cpuUpdateMs, stats.cpuInstanceMs,
+            stats.cpuPopulateMs, stats.tlasMs);
+        ImGui::Separator();
+        ImGui::Text("GPU: %.1f ms", stats.gpuMs);
+        ImGui::Separator();
+        ImGui::Text("%u inst | %u mesh", stats.instanceCount, stats.meshCount);
+        if (stats.tlasWasRebuilt) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "[TLAS REBUILD]"); }
+        else if (stats.tlasWasRefit) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1,0.8f,0,1), "[TLAS refit]"); }
         ImGui::EndMainMenuBar();
     }
 
