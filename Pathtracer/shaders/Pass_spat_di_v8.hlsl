@@ -13,30 +13,36 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    // Load current sample + reservoir
-    SampleData   sdata = loadSampleData(g_sample_current, pixelIdx);
-    Reservoir_DI rdi   = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
+    Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
-    // Copy SampleData for temporal reuse (must run for all pixels)
-    storeSampleData(g_sample_last, pixelIdx, sdata);
+    // Copy compact G-buffer for temporal reuse (must run for all pixels)
+    copySampleData(g_sample_last, g_sample_current, pixelIdx);
 
-    // Only do spatial DI when there is no L1
-    if (!all(sdata.L1 < EPSILON))
+    // Only do spatial DI when pixel is not an emitter
+    if (load_isEmitter(g_sample_current, pixelIdx))
     {
-        gScratchPing[uint3(tid.xy, 1)] = float4(sdata.L1, 0);
         storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
         return;
     }
 
+    // Lightweight loads
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
+    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
+
     // If spatial DI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 4u))
     {
-        float3 sKd0; float sPr0, sPm0;
-        RefetchMaterial(sdata.matID, sdata.uv, sKd0, sPr0, sPm0);
+        const float3 cameraPos = InitOrigin();
+        SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
+        sv_c.etai = load_etai(g_sample_current, pixelIdx);
+        sv_c.etat = load_etat(g_sample_current, pixelIdx);
         const float vis = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-        float3 c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                               rdi.x2_di, rdi.n2_di, rdi.L2_di,
-                               sKd0, sPr0, sPm0, sdata.etai, sdata.etat, rdi.objID_di) * vis;
+        float3 c = ReconnectDI_v2(sv_c, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di) * vis;
         gScratchPing[uint3(tid.xy, 1)] = float4(c * rdi.W_di, 0);
         storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
         return;
@@ -85,16 +91,21 @@ void main(uint3 tid : SV_DispatchThreadID)
             // Cheap sample-data checks first, before loading the reservoir
             bool ok = false;
             {
-                const float3 L1r = load_L1(g_sample_current, iID);
-                if (all(L1r < EPSILON) && (load_matID(g_sample_current, iID) == sdata.matID))
+                if (!load_isEmitter(g_sample_current, iID))
                 {
-                    const float3 n1s_r = load_n1_s(g_sample_current, iID);
-                    if (!RejectNormal_DI(sdata.n1_s, n1s_r, 0.9f))
+                    uint nInstID_t = load_instID(g_sample_current, iID);
+                    uint nPrimID_t = load_primID(g_sample_current, iID);
+                    if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
                     {
-                        const float3 x1_r = load_x1(g_sample_current, iID);
-                        if (!RejectDistance_DI(sdata.x1, x1_r, sdata.n1_s, 0.05f))
+                        const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
+                        if (!RejectNormal_DI(myN1g, n1g_r, 0.9f))
                         {
-                            ok = true;
+                            float2 nBary_t = load_bary(g_sample_current, iID);
+                            const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
+                            if (!RejectDistance_DI(myPos, x1_r, myN1g, 0.05f))
+                            {
+                                ok = true;
+                            }
                         }
                     }
                 }
@@ -128,19 +139,19 @@ void main(uint3 tid : SV_DispatchThreadID)
     //─────────────────────────────────────────────────────────────────────────
     // Canonical contribution
     //─────────────────────────────────────────────────────────────────────────
-    float3 sKd; float sPr, sPm;
-    RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
+    const float3 cameraPos2 = InitOrigin();
+    SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
+    sv_c.etai = load_etai(g_sample_current, pixelIdx);
+    sv_c.etat = load_etat(g_sample_current, pixelIdx);
 
     const float visReuse = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-    float3 contrib_c = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                                   rdi.x2_di, rdi.n2_di, rdi.L2_di,
-                                   sKd, sPr, sPm, sdata.etai, sdata.etat, rdi.objID_di) * visReuse;
+    float3 contrib_c = ReconnectDI_v2(sv_c, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di) * visReuse;
     float  p_c           = GetPHat(contrib_c);
     float3 contrib_final = contrib_c;
 
     // MIS for canonical
     float mis_c = PairwiseMIS_Canonical_Spat_DI(M_sum, p_c, M_c, nIds,
-                                                sdata.x1, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di);
+                                                sv_c.x, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di);
 
     // Adjust canonical weight
     rdi.w_sum_di = mis_c * p_c * rdi.W_di;
@@ -157,19 +168,18 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nID);
 
         // Reconnect neighbor sample at canonical position
-        float3 contrib_n = ReconnectDI(sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                                       rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di,
-                                       sKd, sPr, sPm, sdata.etai, sdata.etat, rdi_r.objID_di);
+        float3 contrib_n = ReconnectDI_v2(sv_c, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di);
         // Visibility check
         {
             float3 _vd; float _vt;
             if (rdi_r.objID_di >= 0xFFFFFFFEu) { _vd = normalize(rdi_r.x2_di); _vt = 10000.0f; }
-            else { float3 _c = rdi_r.x2_di - sdata.x1; float _d = length(_c); _vd = _c / max(_d, EPSILON); _vt = _d * 0.999f; }
-            contrib_n *= IsVisible(sdata.x1, sdata.n1_g, _vd, _vt) ? 1.0f : 0.0f;
+            else { float3 _c = rdi_r.x2_di - sv_c.x; float _d = length(_c); _vd = _c / max(_d, EPSILON); _vt = _d * 0.999f; }
+            contrib_n *= IsVisible(sv_c.x, sv_c.n_g, _vd, _vt) ? 1.0f : 0.0f;
         }
 
+        float3 x1_neighbor = ReconstructPosition(load_instID(g_sample_current, nID), load_primID(g_sample_current, nID), load_bary(g_sample_current, nID));
         float p_hat_from = GetPHat(contrib_n * JacobianDeterminantDI(
-            load_x1(g_sample_current, nID), rdi_r.x2_di, sdata.x1, rdi_r.n2_di, rdi_r.objID_di));
+            x1_neighbor, rdi_r.x2_di, sv_c.x, rdi_r.n2_di, rdi_r.objID_di));
 
         // MIS weight for neighbor
         float mis_n = PairwiseMIS_Neighbor_Spat_DI(M_sum, M_c, min(SPAT_MCAP_DI, rdi_r.M_di),

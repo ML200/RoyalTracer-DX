@@ -72,11 +72,14 @@ void Pass_raygen_v8()
         {
             if (depth == 0)
             {
-                SampleData sdata = (SampleData)0;
-                float3 sun = EvaluateSun(rayDir);
-                sdata.L1 = EvalMissState(rayDir, sun);
-                if (length(sun) > 0.0f) sdata.L1 = sun;
-                storeSampleData(g_sample_current, pixelIdx, sdata);
+                {
+                    float3 sun = EvaluateSun(rayDir);
+                    float3 skyL1 = EvalMissState(rayDir, sun);
+                    if (length(sun) > 0.0f) skyL1 = sun;
+                    gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
+                    gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
+                    store_sky(g_sample_current, pixelIdx);
+                }
                 break;
             }
 
@@ -144,18 +147,18 @@ void Pass_raygen_v8()
         // ── Depth 0: store primary hit ─────────────────────────────────
         if (depth == 0)
         {
-            SampleData sdata = (SampleData)0;
-            sdata.x1      = hitPos;
-            sdata.n1_s    = hinfo.hitNormal;
-            sdata.n1_g    = hinfo.hitGNormal;
-            sdata.L1      = emission;
-            sdata.o       = -rayDir;
-            sdata.objID   = instID;
-            sdata.matID   = matID;
-            sdata.uv      = hinfo.uv;
-            sdata.etai    = iors.x;
-            sdata.etat    = iors.y;
-            storeSampleData(g_sample_current, pixelIdx, sdata);
+            bool isEmitter = any(emission > 0.0f);
+            store_instID(g_sample_current, pixelIdx, instID, isEmitter);
+            store_primID(g_sample_current, pixelIdx, primID);
+            store_bary(g_sample_current, pixelIdx, attr.barycentrics);
+            store_etai_etat(g_sample_current, pixelIdx, iors.x, iors.y);
+            store_n1_g_world(g_sample_current, pixelIdx, hinfo.hitGNormal, instID);
+            store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
+            store_uv(g_sample_current, pixelIdx, hinfo.uv);
+            if (isEmitter) {
+                gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
+                gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
+            }
         }
 
         // ── Emitter hit: BSDF-sampled light with MIS ──────────────────
@@ -195,10 +198,9 @@ void Pass_raygen_v8()
         {
             SetReservoirGI_ConstHit(g_Reservoirs_current_gi, pixelIdx, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
             SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, pixelIdx, hinfo.uv, iors.x, iors.y);
-
-            float cos_x2 = abs(dot(-rayDir, hinfo.hitNormal));
-            float dist2   = max(hitT * hitT, EPSILON);
-            partial_J     = prev_pdf * cos_x2 / dist2;
+            float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
+            float dist2  = max(hitT * hitT, EPSILON);
+            partial_J    = prev_pdf * cos_x2 / dist2;
         }
 
         // ── Depth 2: store post-reconnection direction ────────────────
@@ -313,6 +315,7 @@ void Pass_raygen_v8()
         float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
+        // Track BSDF pdf at reconnection vertex for GI jacobian
         if (depth == 1)
             pdf2_bsdf = bdata.pdf;
 

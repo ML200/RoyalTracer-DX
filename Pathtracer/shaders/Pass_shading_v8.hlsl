@@ -48,24 +48,27 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
 
     gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
-    bool isEmissiveOrSky = any(sdata.L1 > 0.0f);
+    bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
-        // Emitters have a valid surface position (x1); sky does not (x1 == 0)
-        bool hasPosition = dot(sdata.x1, sdata.x1) > 0.0f;
+        // Emitters have a valid surface; sky sentinel (instID==0xFFFF) does not
+        uint emInstID = load_instID(g_sample_current, pixelIdx);
+        bool hasPosition = (emInstID != 0xFFFFu);
 
         if (hasPosition)
         {
             // Emitter surface: compute depth + motion vectors like regular geometry
-            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sdata.x1);
+            uint emPrimID = load_primID(g_sample_current, pixelIdx);
+            float2 emBary = load_bary(g_sample_current, pixelIdx);
+            float3 emPos  = ReconstructPosition(emInstID, emPrimID, emBary);
+            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
             float2 prevPix = GetLastFramePixelCoordinates_Float(
-                sdata.x1, prevView, prevProjection, dims, sdata.objID) - jitter;
+                emPos, prevView, prevProjection, dims, emInstID) - jitter;
             bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 &&
                               prevPix.x < IMG_W && prevPix.y < IMG_H);
             g_dlssMVec[curPix] = validPrev ? float2(prevPix - curPix) : float2(0, 0);
@@ -88,18 +91,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssInput[DTid.xy] = float4(saturate(dlssColor), 1.0f);
     }
     else{
-        // DLSS RR input data:
-        g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sdata.x1);
+        // Reconstruct surface for DLSS
+        uint sInstID = load_instID(g_sample_current, pixelIdx);
+        uint sPrimID = load_primID(g_sample_current, pixelIdx);
+        float2 sBary = load_bary(g_sample_current, pixelIdx);
+        SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, mul(viewI, float4(0, 0, 0, 1)).xyz);
+        sv.etai = load_etai(g_sample_current, pixelIdx);
+        sv.etat = load_etat(g_sample_current, pixelIdx);
 
-        g_dlssNormals[DTid.xy] = float4(sdata.n1_s, 0.0f);
-        // Refetch material for DLSS albedo/roughness
-        float3 shadingKd; float shadingPr, shadingPm;
-        RefetchMaterial(sdata.matID, sdata.uv, shadingKd, shadingPr, shadingPm);
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(shadingKd, 1.0f);
-        g_dlssRoughness[DTid.xy] = shadingPr;
+        // DLSS RR input data:
+        g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
+
+        g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
+        g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
+        g_dlssRoughness[DTid.xy] = sv.Pr;
 
         float2 curPix = DTid.xy;
-        float2 prevPix = GetLastFramePixelCoordinates_Float(sdata.x1, prevView, prevProjection, dims, sdata.objID) - jitter;
+        float2 prevPix = GetLastFramePixelCoordinates_Float(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
 
         bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
 
@@ -109,12 +117,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels), 0.0f, 1.0f);
 
         // Specular albedo
-        float3 specularAlbedo = EnvBRDFApprox2(shadingKd, shadingPr, shadingPm, dot(normalize(sdata.x1 - mul(viewI, float4(0, 0, 0, 1)).xyz), sdata.n1_s));
+        float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
         // Post-spatial GI reservoir for stable hit distance
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_last_gi, pixelIdx);
-        g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sdata.x1);
+        g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sv.x);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
