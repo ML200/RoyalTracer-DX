@@ -29,7 +29,6 @@ void Pass_temp_gi_v8()
     // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
 
-    // J_gi.y is now computed in raygen, no need to recompute here
 
     // RNG (keep as small as possible; preserve your semantics)
     uint2 seed = GetSeed(pixelIdx, time, 3);
@@ -60,8 +59,6 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    // --- try permuted first ---
-    // Note: delay reservoir load until sample-level rejects pass, to reduce pressure on invalid path.
     SampleData sdata_r = (SampleData)0;
 
     if (permInBounds)
@@ -77,74 +74,6 @@ void Pass_temp_gi_v8()
              (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.4f)));
     }
 
-    // --- fallback to non-permuted base coordinate ---
-    /*if (!valid)
-    {
-        int2 fallback = baseCoord;
-        if (fallback.x >= 0 && fallback.y >= 0 &&
-            fallback.x < (int)IMG_W && fallback.y < (int)IMG_H)
-        {
-            tempPixelIdx = MapPixelID(dims_f, (uint2)fallback);
-            sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
-
-            valid =
-                (all(sdata_r.L1 < EPSILON) &&
-                 (sdata_r.matID == sdata.matID) &&
-                 !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
-                 (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
-        }
-    }
-
-    // --- fallback: 3x3 neighbourhood search around baseCoord (cheap loads) ---
-    if (!valid)
-    {
-        [unroll]
-        for (int dy = -1; dy <= 1 && !valid; ++dy)
-        {
-            [unroll]
-            for (int dx = -1; dx <= 1 && !valid; ++dx)
-            {
-                if (dx == 0 && dy == 0) continue; // already tried
-
-                int2 c = baseCoord + int2(dx, dy);
-                if (c.x < 0 || c.y < 0 || c.x >= (int)IMG_W || c.y >= (int)IMG_H)
-                    continue;
-
-                uint cIdx = MapPixelID(dims_f, (uint2)c);
-
-                // Cheap scalar loads only — no full SampleData
-                if (!all(load_L1(g_sample_last, cIdx) < EPSILON))   continue;
-                if (load_matID(g_sample_last, cIdx) != sdata.matID) continue;
-                float3 cn1s = load_n1_s(g_sample_last, cIdx);
-                if (RejectNormal_GI(sdata.n1_s, cn1s, 0.36f))      continue;
-                float3 cx1 = load_x1(g_sample_last, cIdx);
-                if (RejectDistance_GI(sdata.x1, cx1, sdata.n1_s, 0.05f)) continue;
-
-                // Passed all cheap checks — commit
-                tempPixelIdx = cIdx;
-                sdata_r = loadSampleData(g_sample_last, cIdx);
-                valid = true;
-            }
-        }
-    }
-
-    // --- last resort: current pixel (no reprojection) ---
-    if (!valid)
-    {
-        tempPixelIdx = pixelIdx;
-        sdata_r = loadSampleData(g_sample_last, pixelIdx);
-
-        valid =
-            (all(sdata_r.L1 < EPSILON) &&
-             (sdata_r.matID == sdata.matID) &&
-             !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
-             (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
-    }*/
-
-    // sdata_r.x1/normals stored in object space → loaded with current transform.
-    // Positions track with moving surfaces automatically.
-
-    // --- heavy reuse path ---
     [branch]
     if (valid)
     {
@@ -188,8 +117,8 @@ void Pass_temp_gi_v8()
                     );
 
                     float ph = GetPHat(c);
-                    float vis = VisibilityCheckCP(sdata_r.x1, rdi.x2_gi, sdata_r.n1_s, 0u);
-                    p_n = ph * vis;
+                    { float3 _conn = rdi.x2_gi - sdata_r.x1; float _cd = length(_conn);
+                      p_n = ph * ((_cd > EPSILON && IsVisible(sdata_r.x1, sdata_r.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
                 // n_c = phat(ReconnectGI(sdata -> neighbour rdi_r sample)) * visibility
@@ -209,8 +138,8 @@ void Pass_temp_gi_v8()
                     );
 
                     float ph = GetPHat(c);
-                    float vis = VisibilityCheckCP(sdata.x1, rdi_r.x2_gi, sdata.n1_s, 0u);
-                    n_c = ph * vis;
+                    { float3 _conn = rdi_r.x2_gi - sdata.x1; float _cd = length(_conn);
+                      n_c = ph * ((_cd > EPSILON && IsVisible(sdata.x1, sdata.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;

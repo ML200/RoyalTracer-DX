@@ -104,7 +104,13 @@ float PairwiseMIS_Canonical_Spat_DI(
             RefetchMaterial(nMID, load_uv(g_sample_current, nIds[i]), nKd, nPr, nPm);
             float p_hat_from = GetPHat(ReconnectDI(x1, n1, load_n1_g(g_sample_current, nIds[i]), load_o(g_sample_current, nIds[i]), nMID, x2_c, n2_c, L2_c, nKd, nPr, nPm, load_etai(g_sample_current, nIds[i]), load_etat(g_sample_current, nIds[i]), objID_c)); // p_hat if the canonical sample as seen from the neighbor position
             p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, x1, n2_c, objID_c);
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1, objID_c); // visibility check
+            // Visibility check
+            {
+                float3 n1g = load_n1_g(g_sample_current, nIds[i]);
+                float3 _vd = (objID_c >= 0xFFFFFFFEu) ? normalize(x2_c) : ((x2_c - x1) / max(length(x2_c - x1), EPSILON));
+                float  _vt = (objID_c >= 0xFFFFFFFEu) ? 10000.0f : (length(x2_c - x1) * 0.999f);
+                p_hat_from *= IsVisible(x1, n1g, _vd, _vt) ? 1.0f : 0.0f;
+            }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 1e-4)
                 m_c += (min(SPAT_MCAP_DI,load_M_di(g_Reservoirs_current_di, nIds[i]))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
@@ -194,7 +200,10 @@ float PairwiseMIS_Canonical_Spat_GI(
             float Jn = 0.0f;
             float J = 0.0f;
             float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, nKd1, nPr1, nPm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
+            {
+                float3 _conn = x2_c - x1; float _cd = length(_conn);
+                p_hat_from *= (_cd > EPSILON && IsVisible(x1, n1g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+            }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)
                 m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, id))/M_sum) * (m_num / m_den); // Load M explicitly from vram/cache
@@ -287,7 +296,10 @@ float PairwiseMIS_Canonical_Spat_GI_Sym(
             float Jn = 0.0f;
             float J = 0.0f;
             float p_hat_from = GetPHat(ReconnectGI(x1, n1s, n1g, o, mID1, nKd1, nPr1, nPm1, ei1, et1, matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, pdfx2_c, J_c, true, Jn, J)); // p_hat if the canonical sample as seen from the neighbor position
-            p_hat_from *= VisibilityCheckCP(x1, x2_c, n1s, 0u) * J; // visibility check
+            {
+                float3 _conn = x2_c - x1; float _cd = length(_conn);
+                p_hat_from *= (_cd > EPSILON && IsVisible(x1, n1g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+            }
 
             float D = SymRatio(p_c, p_hat_from, beta);
             sum += 1.0f/(1.0f + m_no_r * D);

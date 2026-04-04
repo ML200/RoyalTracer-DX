@@ -36,7 +36,7 @@ void Pass_raygen_v8()
     float3 rayOrigin  = InitOrigin();
     float3 rayDir     = InitDirection(pixel, float2(imgSize), seed);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
-    float3 prevNormal = float3(0.0f, 1.0f, 0.0f);
+    float3 prevNormal    = float3(0.0f, 1.0f, 0.0f);
     float  prev_pdf   = 1.0f;
     float  partial_J  = 0.0f;   // PDF1 * G_x1_x2, computed at depth 1
     float  pdf2_bsdf  = 0.0f;   // BSDF pdf at x2, computed after depth 1 BSDF sampling
@@ -63,9 +63,8 @@ void Pass_raygen_v8()
         RayDesc ray;
         ray.Origin    = rayOrigin;
         ray.Direction = rayDir;
-        ray.TMin      = 0.0f;
+        ray.TMin      = 0.001f;
         ray.TMax      = 10000.0f;
-
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
         // ── Miss ───────────────────────────────────────────────────────
@@ -225,54 +224,41 @@ void Pass_raygen_v8()
                 float cosSurf  = dot(hinfo.hitNormal, L);
                 float cosLight = dot(light.normal, -L);
 
-                if (cosSurf > 1e-6f && cosLight > 1e-6f)
+                if (cosSurf > 1e-6f && cosLight > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, L, dist * 0.999f))
                 {
-                    RayDesc shadowRay;
-                    shadowRay.Origin    = offset_ray(hitPos, hinfo.hitGNormal);
-                    shadowRay.Direction = L;
-                    shadowRay.TMin      = 0.0f;
-                    shadowRay.TMax      = dist * 0.999f;
+                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
-                    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-                    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
-                    q.Proceed();
+                    float lightPdf = light.pdfSolidAngle;
+                    float bsdfPdf  = bdataNEE.pdf;
 
-                    if (q.CommittedStatus() == COMMITTED_NOTHING)
+                    if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                     {
-                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+                        float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
-                        float lightPdf = light.pdfSolidAngle;
-                        float bsdfPdf  = bdataNEE.pdf;
-
-                        if (lightPdf > 0.0f && bsdfPdf > 0.0f)
+                        // DI: NEE at depth 0
+                        if (depth == 0)
                         {
-                            float misWeight = lightPdf / (lightPdf + bsdfPdf);
+                            float p_hat = GetPHat(throughput * light.emission * bdataNEE.val * cosSurf);
+                            float wi    = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
+                            if (UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx, wi, light.position, light.normal, light.emission, light.objID, seed))
+                                store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
+                        }
 
-                            // DI: NEE at depth 0
-                            if (depth == 0)
-                            {
-                                float p_hat = GetPHat(throughput * light.emission * bdataNEE.val * cosSurf);
-                                float wi    = (lightPdf > 1e-20f) ? (misWeight * p_hat / lightPdf) : 0.0f;
-                                if (UpdateReservoirDI_Fast(g_Reservoirs_current_di, pixelIdx, wi, light.position, light.normal, light.emission, light.objID, seed))
-                                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
-                            }
+                        // GI: NEE at depth >= 1
+                        if (depth >= 1)
+                        {
+                            float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                            float  Jy_nee = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
+                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
+                            float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
+                            float  p_hat   = GetPHat(contrib);
+                            float  wi      = p_hat * misWeight;
+                            float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                            if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
 
-                            // GI: NEE at depth >= 1
-                            if (depth >= 1)
-                            {
-                                float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                float  Jy_nee = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
-                                float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
-                                float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
-                                float  p_hat   = GetPHat(contrib);
-                                float  wi      = p_hat * misWeight;
-                                float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
-
-                                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, light.emission * tpost, J_new, V2_new, seed))
-                                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
-                            }
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, light.emission * tpost, J_new, V2_new, seed))
+                                store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
                         }
                     }
                 }
@@ -284,51 +270,38 @@ void Pass_raygen_v8()
                 SunSampleResult sun = SampleSun(rSun);
                 float NdotL = dot(hinfo.hitNormal, sun.direction);
 
-                if (NdotL > 1e-6f)
+                if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, sun.direction, 10000.0f))
                 {
-                    RayDesc shadowRay;
-                    shadowRay.Origin    = offset_ray(hitPos, hinfo.hitGNormal);
-                    shadowRay.Direction = sun.direction;
-                    shadowRay.TMin      = 0.0f;
-                    shadowRay.TMax      = 10000.0f;
+                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
-                    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
-                    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
-                    q.Proceed();
+                    float lightPdf = sun.pdf;
+                    float bsdfPdf  = bdataNEE.pdf;
 
-                    if (q.CommittedStatus() == COMMITTED_NOTHING)
+                    if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                     {
-                        SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-                        BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+                        float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
+                        float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
-                        float lightPdf = sun.pdf;
-                        float bsdfPdf  = bdataNEE.pdf;
-
-                        if (lightPdf > 0.0f && bsdfPdf > 0.0f)
+                        // DI: sun at depth 0 — store directly, bypass ReSTIR
+                        if (depth == 0)
                         {
-                            float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
-                            float misWeight = lightPdf / (lightPdf + bsdfPdf);
+                            sunDirect += misWeight * contrib;
+                        }
 
-                            // DI: sun at depth 0 — store directly, bypass ReSTIR
-                            if (depth == 0)
-                            {
-                                sunDirect += misWeight * contrib;
-                            }
+                        // GI: sun at depth >= 1
+                        if (depth >= 1)
+                        {
+                            float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                            float  Jy_sun = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
+                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
+                            float  p_hat  = GetPHat(contrib);
+                            float  wi     = p_hat;
+                            float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
+                            if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
 
-                            // GI: sun at depth >= 1
-                            if (depth >= 1)
-                            {
-                                float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                float  Jy_sun = (depth == 1) ? (partial_J * lightPdf) : (partial_J * pdf2_bsdf);
-                                float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
-                                float  p_hat  = GetPHat(contrib);
-                                float  wi     = p_hat;
-                                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, pixelIdx);
-                                if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
-
-                                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, sun.radiance * tpost, J_new, V2_new, seed))
-                                    store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
-                            }
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, pixelIdx, wi, sun.radiance * tpost, J_new, V2_new, seed))
+                                store_F_gi(g_Reservoirs_current_gi, pixelIdx, p_hat);
                         }
                     }
                 }

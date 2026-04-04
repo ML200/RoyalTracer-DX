@@ -5,39 +5,35 @@ struct [raypayload] TracePayload
 };
 
 
-// Robust ray origin offset (Ray Tracing Gems, Ch. 6).
-// Offsets the position along the geometric normal by an amount proportional
-// to the magnitude of each position component, avoiding self-intersection
-// at any distance from the origin.
-static const float RTG_ORIGIN = 1.0f / 32.0f;
+#ifdef ENABLE_RAY_QUERY_INLINE
+
+// RTG Ch. 6 — ULP-aware origin offset for self-intersection avoidance
+static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
 static const float RTG_INT_SCALE   = 256.0f;
 
 inline float3 offset_ray(float3 p, float3 n)
 {
     int3 of_i = int3(RTG_INT_SCALE * n.x, RTG_INT_SCALE * n.y, RTG_INT_SCALE * n.z);
-
     float3 p_i = float3(
         asfloat(asint(p.x) + ((p.x < 0) ? -of_i.x : of_i.x)),
         asfloat(asint(p.y) + ((p.y < 0) ? -of_i.y : of_i.y)),
         asfloat(asint(p.z) + ((p.z < 0) ? -of_i.z : of_i.z)));
-
     return float3(
         abs(p.x) < RTG_ORIGIN ? p.x + RTG_FLOAT_SCALE * n.x : p_i.x,
         abs(p.y) < RTG_ORIGIN ? p.y + RTG_FLOAT_SCALE * n.y : p_i.y,
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-
-// Generic shadow/visibility test with proper alpha testing
-inline bool IsVisible(float3 origin, float3 direction, float tMax)
+// Shadow/visibility test with RTG origin offset and alpha testing
+inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
+    float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
+
     RayDesc ray;
     ray.Origin    = origin;
     ray.Direction = direction;
-    ray.TMin      = 0.0f;
+    ray.TMin      = 0.001f;
     ray.TMax      = tMax;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
@@ -81,25 +77,6 @@ inline bool IsVisible(float3 origin, float3 direction, float tMax)
 
     return (q.CommittedStatus() == COMMITTED_NOTHING);
 }
-
-// ReSTIR connection-point visibility: P → L (or directional for sun/env)
-float VisibilityCheckCP(float3 P, float3 L, float3 N, uint objID)
-{
-    float3 dir = L - P;
-    if(objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) dir = normalize(L);
-    if(length(dir)<EPSILON) return 0.0f;
-    dir = normalize(dir);
-    float  len = length(L - P);
-    if(objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) len = 10000.0f;
-
-    if(dot(dir, N) < 0.0f) N = -N;
-
-    float3 origin = offset_ray(P, normalize(N));
-    float  tMax   = max(len - SBIAS * 10.0f, 2.0f * EPSILON);
-
-    return IsVisible(origin, dir, tMax) ? 1.0f : 0.0f;
-}
-
 
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
@@ -189,42 +166,6 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-// Helpers for the surface eval
-// =====================================================================================================================
-void GetOrthonormalBasis(float3 N, out float3 T, out float3 B)
-{
-    float sign = (N.z >= 0.0) ? 1.0 : -1.0;
-    const float a = -1.0 / (sign + N.z);
-    const float b = N.x * N.y * a;
-    T = float3(1.0 + sign * N.x * N.x * a, sign * b, -sign * N.x);
-    B = float3(b, sign + N.y * N.y * a, -N.y);
-}
-
-float3 CalculateGeometricTangent(float3 p0, float3 p1, float3 p2, float2 uv0, float2 uv1, float2 uv2, float3 normal)
-{
-    float3 e1 = p1 - p0;
-    float3 e2 = p2 - p0;
-    float2 duv1 = uv1 - uv0;
-    float2 duv2 = uv2 - uv0;
-
-    float det = duv1.x * duv2.y - duv1.y * duv2.x;
-
-    float3 T;
-    if (abs(det) < 1e-6f)
-    {
-        // Fallback if UVs are degenerate
-        float3 B_unused;
-        GetOrthonormalBasis(normal, T, B_unused);
-    }
-    else
-    {
-        float invDet = 1.0f / det;
-        T = normalize((e1 * duv2.y - e2 * duv1.y) * invDet);
-    }
-
-    return T;
-}
-
 float3 EvaluateAlbedo(in Material mat, float2 uv, uint level)
 {
     float3 albedo = mat.Kd.rgb;
@@ -273,7 +214,7 @@ inline dx::HitObject TraceRay_Custom(
     uint instanceMask = 0xFF)
 {
 
-    TracePayload payload = (TracePayload)0; // Dummy payload
+    TracePayload payload = (TracePayload)0;
     dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 0, 0, ray, payload);
 
     uint hint = hitObj.IsHit()?1:0;
