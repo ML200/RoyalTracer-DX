@@ -37,9 +37,6 @@
 #define SPAT_COUNT_MIN_GI 8
 #define SPAT_TRIS_GI 1
 
-#define SPAT_MIN_M_GI 0
-#define SPAT_BETA_GI 3.0f
-
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 

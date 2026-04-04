@@ -70,7 +70,6 @@ void Pass_spat_gi_v8_1()
 
     uint  validCount = 0;
     float M_sum      = 0.0f;
-    float M_sum_sym  = 1.0f; // matches your original init
 
     //─────────────────────────────────────────────────────────────────────────
     // Candidate selection: compact list, delay expensive loads
@@ -125,7 +124,6 @@ void Pass_spat_gi_v8_1()
 
                     const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
                     M_sum     += Mn;
-                    M_sum_sym += 1.0f;
 
                     break;
                 }
@@ -173,27 +171,12 @@ void Pass_spat_gi_v8_1()
     rdi.J_gi.y = Jn_canonical;
 
     // MIS for canonical
-    float mis_c = 0.0f;
-    {
-        if (rdi.M_gi <= SPAT_MIN_M_GI)
-        {
-            mis_c = PairwiseMIS_Canonical_Spat_GI_Sym(
-                M_sum_sym, p_c, M_c, nIds,
-                rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-                rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-                rdi.J_gi.x, rdi.J_gi.y, SPAT_BETA_GI
-            );
-        }
-        else
-        {
-            mis_c = PairwiseMIS_Canonical_Spat_GI(
-                M_sum, p_c, M_c, nIds,
-                rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-                rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-                rdi.J_gi.x, rdi.J_gi.y
-            );
-        }
-    }
+    const float mis_c = PairwiseMIS_Canonical_Spat_GI(
+        M_sum, p_c, M_c, nIds,
+        rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+        rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
+        rdi.J_gi.x, rdi.J_gi.y
+    );
 
     // Adjust canonical weight
     rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
@@ -235,30 +218,13 @@ void Pass_spat_gi_v8_1()
         }
 
         // MIS weight for neighbor
-        float mis_n = 0.0f;
-        {
-            const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
-
-            if (rdi.M_gi <= SPAT_MIN_M_GI)
-            {
-                mis_n = PairwiseMIS_Neighbor_Spat_GI_Sym(
-                    M_sum_sym,
-                    M_c, Mn,
-                    p_hat_from,
-                    rdi_r.W_gi, rdi_r.F_gi,
-                    SPAT_BETA_GI
-                );
-            }
-            else
-            {
-                mis_n = PairwiseMIS_Neighbor_Spat_GI(
-                    M_sum,
-                    M_c, Mn,
-                    p_hat_from,
-                    rdi_r.W_gi, rdi_r.F_gi
-                );
-            }
-        }
+        const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
+        const float mis_n = PairwiseMIS_Neighbor_Spat_GI(
+            M_sum,
+            M_c, Mn,
+            p_hat_from,
+            rdi_r.W_gi, rdi_r.F_gi
+        );
 
         const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
 
