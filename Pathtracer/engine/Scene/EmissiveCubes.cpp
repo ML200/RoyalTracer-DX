@@ -27,6 +27,8 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
     std::uniform_real_distribution<float> dS(params.speedMin,params.speedMax);
     std::uniform_real_distribution<float> dD(-1,1);
 
+    int emissiveCount = (int)(params.count * std::clamp(params.emissiveFraction, 0.0f, 1.0f));
+
     // Create ONE shared mesh+BLAS for the cube geometry
     std::vector<Vertex> sharedVerts; std::vector<UINT> sharedIndices;
     GenCube(params.cubeSize*0.5f, 0, sharedVerts, sharedIndices);
@@ -36,13 +38,29 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
 
     m_cubes.reserve(params.count);
     for (int i = 0; i < params.count; ++i) {
-        float str = dEm(m_rng); float r=dH(m_rng),g=dH(m_rng),b=dH(m_rng);
-        float mx = std::max({r,g,b}); if(mx<0.3f){r+=0.5f; mx=std::max({r,g,b});}
-        r=(r/mx)*str; g=(g/mx)*str; b=(b/mx)*str;
+        bool isEmissive = (i < emissiveCount);
 
-        Material mat; mat.Kd={1,1,1,1}; mat.Ke={r,g,b}; mat.Pr_Pm_Ps_Pc={0.5f,0,0,0}; mat.Ni=1;
+        Material mat{};
+        mat.Ni = 1;
 
-        // Share BLAS with first cube — only creates a new material entry, no GPU work
+        if (isEmissive) {
+            // Emissive: random colored emission, white diffuse
+            float str = dEm(m_rng);
+            float r=dH(m_rng),g=dH(m_rng),b=dH(m_rng);
+            float mx = std::max({r,g,b}); if(mx<0.3f){r+=0.5f; mx=std::max({r,g,b});}
+            mat.Kd = {1,1,1,1};
+            mat.Ke = {(r/mx)*str, (g/mx)*str, (b/mx)*str};
+            mat.Pr_Pm_Ps_Pc = {0.5f,0,0,0};
+        } else {
+            // Non-emissive: random albedo, roughness, metalness
+            float r=dH(m_rng),g=dH(m_rng),b=dH(m_rng);
+            mat.Kd = {r, g, b, 1};
+            mat.Ke = {0,0,0};
+            float roughness = 0.05f + dH(m_rng) * 0.9f;   // 0.05 .. 0.95
+            float metalness = (dH(m_rng) < 0.3f) ? 1.0f : 0.0f;  // 30% metallic
+            mat.Pr_Pm_Ps_Pc = {roughness, metalness, 0, 0};
+        }
+
         UINT meshIdx = (i == 0) ? baseMeshIdx : renderer.CreateMeshInstance(baseMeshIdx, mat);
 
         Transform t; t.position = {dX(m_rng),dY(m_rng),dZ(m_rng)};
@@ -55,7 +73,7 @@ void EmissiveCubes::Init(const Params& params, SceneManager& sm, Renderer& rende
         ci.velocity={dir.x*spd,dir.y*spd,dir.z*spd}; ci.targetVelocity=ci.velocity;
         ci.changeTimer=dH(m_rng)*3; m_cubes.push_back(ci);
     }
-    LOG(L"[EmissiveCubes] Spawned " << params.count << L" cubes");
+    LOG(L"[EmissiveCubes] Spawned " << params.count << L" cubes (" << emissiveCount << L" emissive)");
 }
 
 void EmissiveCubes::Update(float dt, SceneManager& sm) {
