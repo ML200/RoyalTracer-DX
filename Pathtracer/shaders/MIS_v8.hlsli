@@ -213,10 +213,10 @@ float PairwiseMIS_Canonical_Spat_GI(
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, false, Jn, J));
+            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, true, Jn, J));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
             }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)
@@ -251,105 +251,4 @@ float PairwiseMIS_Neighbor_Spat_GI(
     return 0.0f;
 }
 #endif // ENABLE_RAY_QUERY_INLINE
-
-
-inline float SymRatio(float pA, float pB, float beta)
-{
-    if(pA == 0.0f || pB == 0.0f)
-        return 0.0f;
-    float r = pA / pB;
-    float D = min(r, 1.0f / r);
-    return pow(D, beta);
-}
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-// Algorithm 7 from the gentle intro
-float PairwiseMIS_Canonical_Spat_GI_Sym(
-    in float M_sum_in,
-    in float p_c,
-    in float M_c,
-    in uint nIds[SPAT_COUNT_MAX_GI],// IDs of the candidates; early out if id is invalid
-    // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x2_c,
-    in float3 n2s_c,
-    in float3 n2g_c,
-    in float3 L2_c,
-    in float3 V2_c,
-    in uint   matID_c,
-    in float3 localKd2_c,
-    in float  localPr2_c,
-    in float  localPm2_c,
-    in float  etai2_c,
-    in float  etat2_c,
-    in float  pdfx2_c,
-    in float  J_c,
-    in float  beta
-    )
-{
-    float M_sum = max(M_sum_in, 1.0f);
-    float m_no_r = M_sum - 1.0f;
-    // Fast path: no neighbours ⇒ weight must be 1
-    if (m_no_r <= 0.0f)
-        return 1.0f;
-
-    float sum = 0.0f;
-
-    for(int i = 0; i < SPAT_COUNT_MAX_GI; i++){ // Iterate over all spatial neighbor candidates, skip invalid entries
-        if(nIds[i] != 0xFFFFFFFF){
-            uint id = nIds[i];
-            uint nInstID = load_instID(g_sample_current, id);
-            uint nPrimID = load_primID(g_sample_current, id);
-            float2 nBary = load_bary(g_sample_current, id);
-            SurfaceVertex sv_n1 = BuildVertexLight(nInstID, nPrimID, nBary,
-                load_n1_s_with_instID(g_sample_current, id, nInstID),
-                load_n1_g_with_instID(g_sample_current, id, nInstID),
-                load_uv(g_sample_current, id),
-                load_etai(g_sample_current, id),
-                load_etat(g_sample_current, id),
-                InitOrigin());
-
-            SurfaceVertex sv_c2 = { x2_c, n2s_c, n2g_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, matID_c, float2(0,0) };
-
-            float Jn = 0.0f;
-            float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, false, Jn, J));
-            {
-                float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
-            }
-
-            float D = SymRatio(p_c, p_hat_from, beta);
-            sum += 1.0f/(1.0f + m_no_r * D);
-        }
-    }
-    return (1.0f / m_no_r) * sum;
-}
-#endif // ENABLE_RAY_QUERY_INLINE
-
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-float PairwiseMIS_Neighbor_Spat_GI_Sym(
-    in float M_sum_in,
-    in float M_c,
-    in float M_n,
-    in float p_hat_from,
-    // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float W_n,
-    in float F_n,
-    in float  beta
-    )
-{
-    float M_sum = max(M_sum_in, 1.0f);
-    float m_no_r = M_sum - 1.0f;
-
-    // Reconstruct p_n from the neigbour reservoir
-    float visReuse = W_n > 0.0f ? 1.0f : 0.0f;
-    float p_n = visReuse * F_n;
-    // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
-    float D = SymRatio(p_n, p_hat_from, beta);
-    return D / (1.0f + m_no_r * D);
-
-}
-#endif // ENABLE_RAY_QUERY_INLINE
-
 
