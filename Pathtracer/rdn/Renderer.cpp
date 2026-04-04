@@ -174,6 +174,19 @@ void Renderer::UpdateRenderer(float dt) {
     m_frameStats.cpuUpdateMs   = std::chrono::duration<float, std::milli>(t_instEnd - t_updateStart).count();
     m_frameStats.instanceCount = (UINT)m_scene.instances.size();
     m_frameStats.meshCount     = (UINT)m_scene.meshes.size();
+
+    // ── GPU sync + upload ────────────────────────────────────────
+    // Wait for previous frame, then write all shared upload-heap buffers.
+    auto t_waitStart = hrc::now();
+    m_ctx.WaitForPreviousFrame();
+    m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+
+    m_camera.UploadGPUBuffer(m_aspectRatio);
+    m_scene.UploadInstanceProperties();
+    if (m_scene.materialsDirty) {
+        m_scene.UpdateMaterialBuffer();
+        m_scene.materialsDirty = false;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -470,20 +483,6 @@ void Renderer::RenderFrame() {
     static auto s_lastTime = hrc::now();
     static int s_frameCount = 0;
     auto t_frameStart = hrc::now();
-
-    // Wait for previous frame's GPU to finish, then upload shared buffers.
-    // PrepareInstanceProperties already ran in UpdateRenderer (overlapped with GPU).
-    auto t_waitStart = hrc::now();
-    m_ctx.WaitForPreviousFrame();
-    m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
-
-    // Upload shared GPU buffers (must happen after GPU wait)
-    m_camera.UploadGPUBuffer(m_aspectRatio);
-    m_scene.UploadInstanceProperties();
-    if (m_scene.materialsDirty) {
-        m_scene.UpdateMaterialBuffer();
-        m_scene.materialsDirty = false;
-    }
 
     m_ctx.BeginFrame();
 
