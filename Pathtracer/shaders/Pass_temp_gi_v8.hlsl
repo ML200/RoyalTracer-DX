@@ -10,11 +10,8 @@ void Pass_temp_gi_v8()
     const float2 dims_f = float2(IMG_W, IMG_H);
     const uint pixelIdx = MapPixelID(dims_f, launchIndex);
 
-    // Load current sample
-    SampleData sdata = loadSampleData(g_sample_current, pixelIdx);
-
-    // Only do temporal GI when there's no L1 (same as your "if(all(L1<EPS)) { ... }")
-    if (!all(sdata.L1 < EPSILON))
+    // Emitter check
+    if (load_isEmitter(g_sample_current, pixelIdx))
         return;
 
     // Load current reservoir (must stay alive until final store)
@@ -35,7 +32,15 @@ void Pass_temp_gi_v8()
     uint  permSeed = GetSeed(1, time, 3).x;
 
     // --- base reprojection ---
-    int2 baseCoord = GetBestReprojectedPixel_d(sdata.x1, prevView, prevProjection, dims_f, sdata.objID);
+    // Lightweight loads for reprojection & rejection
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
+    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
+
+    int2 baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
 
@@ -59,19 +64,36 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    SampleData sdata_r = (SampleData)0;
+    // Lightweight neighbor identifiers (survive rejection -> merge)
+    uint   rInstID = 0;
+    uint   rPrimID = 0;
+    float2 rBary   = float2(0, 0);
 
     if (permInBounds)
     {
         tempPixelIdx = MapPixelID(dims_f, (uint2)permCoord);
-        sdata_r = loadSampleData(g_sample_last, tempPixelIdx);
 
-        // Cheap rejects first (avoid loading rdi_r when not needed)
-        valid =
-            (all(sdata_r.L1 < EPSILON) &&
-             (sdata_r.matID == sdata.matID) &&
-             !RejectNormal_GI(sdata.n1_s, sdata_r.n1_s, 0.36f) &&
-             (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.4f)));
+        // Tiered rejection against last-frame data
+        bool reject = load_isEmitter(g_sample_last, tempPixelIdx);
+        if (!reject)
+        {
+            rInstID = load_instID(g_sample_last, tempPixelIdx);
+            rPrimID = load_primID(g_sample_last, tempPixelIdx);
+            if (GetMatIDFast(rInstID, rPrimID) != myMatID) reject = true;
+        }
+        if (!reject)
+        {
+            float3 n1s_r = load_n1_s_with_instID(g_sample_last, tempPixelIdx, rInstID);
+            if (RejectNormal_GI(myN1s, n1s_r, 0.36f)) reject = true;
+        }
+        if (!reject)
+        {
+            rBary = load_bary(g_sample_last, tempPixelIdx);
+            float3 x1_r = ReconstructPosition(rInstID, rPrimID, rBary);
+            if (RejectDistance_GI(myPos, x1_r, myN1s, 0.4f)) reject = true;
+        }
+        if (!reject)
+            valid = true;
     }
 
     [branch]
@@ -86,11 +108,10 @@ void Pass_temp_gi_v8()
         }
         else
         {
-            // Everything below is scoped to minimize peak live values.
             float p_hat_final = 0.0f;
 
             {
-                // Canonical / neighbour target terms
+                const float3 cameraPos = InitOrigin();
                 float Jnc = 0.0f, Jn = 0.0f;
                 float J1  = 1.0f, J2 = 1.0f;
 
@@ -100,54 +121,45 @@ void Pass_temp_gi_v8()
                 float p_n = 0.0f;
                 float n_c = 0.0f;
 
-                // p_n = phat(ReconnectGI(sdata_r -> current rdi sample)) * visibility
+                // p_n: reconnect from neighbor vertex to current GI reservoir sample
                 {
-                    float3 srKd; float srPr, srPm;
-                    RefetchMaterial(sdata_r.matID, sdata_r.uv, srKd, srPr, srPm);
+                    SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
+                    sv_r.etai = load_etai(g_sample_last, tempPixelIdx);
+                    sv_r.etat = load_etat(g_sample_last, tempPixelIdx);
+
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
+                    SurfaceVertex sv_c2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
 
-                    float3 c = ReconnectGI(
-                        sdata_r.x1, sdata_r.n1_s, sdata_r.n1_g, sdata_r.o, sdata_r.matID,
-                        srKd, srPr, srPm, sdata_r.etai, sdata_r.etat,
-                        rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
-                        rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi,
-                        rdi.J_gi.x, rdi.J_gi.y,
-                        true, Jnc, J1
-                    );
+                    float3 c = ReconnectGI_v2(sv_r, sv_c2, rdi.L2_gi, rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
 
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi.x2_gi - sdata_r.x1; float _cd = length(_conn);
-                      p_n = ph * ((_cd > EPSILON && IsVisible(sdata_r.x1, sdata_r.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
+                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
-                // n_c = phat(ReconnectGI(sdata -> neighbour rdi_r sample)) * visibility
+                // n_c: reconnect from current vertex to neighbor GI reservoir sample
                 {
-                    float3 scKd; float scPr, scPm;
-                    RefetchMaterial(sdata.matID, sdata.uv, scKd, scPr, scPm);
+                    SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
+                    sv_c.etai = load_etai(g_sample_current, pixelIdx);
+                    sv_c.etat = load_etat(g_sample_current, pixelIdx);
+
                     float3 rrKd; float rrPr, rrPm;
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
+                    SurfaceVertex sv_r2 = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
-                    float3 c = ReconnectGI(
-                        sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                        scKd, scPr, scPm, sdata.etai, sdata.etat,
-                        rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                        rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi,
-                        rdi_r.J_gi.x, rdi_r.J_gi.y,
-                        true, Jn, J2
-                    );
+                    float3 c = ReconnectGI_v2(sv_c, sv_r2, rdi_r.L2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
 
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi_r.x2_gi - sdata.x1; float _cd = length(_conn);
-                      n_c = ph * ((_cd > EPSILON && IsVisible(sdata.x1, sdata.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
+                      n_c = ph * ((_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = rdi_r.F_gi * visReuse_n;
 
                 // Dynamic M caps
-                // Refetch roughness for dynamic M cap
-                float sdata_Pr = EvaluatePBRProperties(materials[sdata.matID], sdata.uv, 0).x;
+                float sdata_Pr = EvaluatePBRProperties(materials[myMatID], load_uv(g_sample_current, pixelIdx), 0).x;
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
@@ -158,7 +170,6 @@ void Pass_temp_gi_v8()
                 const float M_n   = min(dynTempMcap,  rdi_r.M_gi);
                 const float M_sum = M_c + M_n;
 
-                // Precompute reused products to reduce recompute and (often) live ranges
                 const float p_nJ1  = p_n * J1;
                 const float n_cJ2  = n_c * J2;
 
@@ -168,10 +179,8 @@ void Pass_temp_gi_v8()
                 const float w_c = mis_c * p_c * rdi.W_gi;
                 const float w_n = mis_n * n_cJ2 * rdi_r.W_gi;
 
-                // Adjust wsum of the existing reservoir
                 rdi.w_sum_gi = w_c;
 
-                // Update reservoir: if neighbour wins, canonical target becomes n_c (as in your code)
                 p_hat_final = p_c;
                 if (UpdateReservoirGI(
                         rdi,
@@ -190,7 +199,6 @@ void Pass_temp_gi_v8()
                     rdi.J_gi.y  = Jn;
                 }
 
-                // Compute new W (same logic)
                 if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f)
                 {
                     float W = rdi.w_sum_gi / p_hat_final;
@@ -203,8 +211,6 @@ void Pass_temp_gi_v8()
                 }
 
                 boilValue = p_hat_final * rdi.W_gi;
-
-                // J_gi.y already tracked: retained from load (canonical) or set to Jn (neighbor won)
 
                 rdi.F_gi = p_hat_final;
             }

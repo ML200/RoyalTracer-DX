@@ -26,19 +26,22 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
 
         // initialize the sample data structure here and store it.
         if(data.depth == 0){
-            SampleData sdata = (SampleData)0;
-            sdata.x1 = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
-            sdata.n1_s = hinfo.hitNormal;
-            sdata.n1_g = hinfo.hitGNormal;
-            sdata.L1 = emission;
-            sdata.o = -WorldRayDirection();
-            sdata.objID = InstanceIndex();
-            sdata.matID = data.matID;
-            sdata.uv = hinfo.uv;
-            sdata.etai = data.iors.x;
-            sdata.etat = data.iors.y;
             uint idx = MapPixelID(float2(DispatchRaysDimensions().xy), DispatchRaysIndex().xy);
-            storeSampleData(g_sample_current, idx, sdata);
+            uint instID_hit = InstanceIndex();
+            uint primID_hit = FlatPrimID(instID_hit, GeometryIndex(), PrimitiveIndex());
+            bool isEmitter = any(emission > 0.0f);
+            store_instID(g_sample_current, idx, instID_hit, isEmitter);
+            store_primID(g_sample_current, idx, primID_hit);
+            store_bary(g_sample_current, idx, attr.barycentrics);
+            store_etai_etat(g_sample_current, idx, data.iors.x, data.iors.y);
+            store_n1_g_world(g_sample_current, idx, hinfo.hitGNormal, instID_hit);
+            store_n1_s_world(g_sample_current, idx, hinfo.hitNormal, instID_hit);
+            store_uv(g_sample_current, idx, hinfo.uv);
+            if (isEmitter) {
+                uint2 px = DispatchRaysIndex().xy;
+                gScratchPing[uint3(px, 1)] = float4(emission, 0);
+                gScratchPing[uint3(px, 2)] = float4(emission, 0);
+            }
         }
 
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)

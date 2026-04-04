@@ -418,4 +418,94 @@ inline uint GetMatIDFast(in uint instID, in uint primID){
     return materialIDs[baseM + primID];
 }
 
+// =====================================================================================================================
+// SurfaceVertex: clean wrapper for reconnection functions
+// =====================================================================================================================
+
+struct SurfaceVertex {
+    float3 x;           // world position
+    float3 n_s;         // shading normal (world)
+    float3 n_g;         // geometric normal (world)
+    float3 o;           // outgoing/view direction (world, normalized)
+    float3 Kd;          // albedo (refetched from texture)
+    float  Pr;          // roughness
+    float  Pm;          // metallic
+    float  etai;        // IOR (incident side)
+    float  etat;        // IOR (transmitted side)
+    uint   matID;       // material ID
+    float2 uv;          // texture coordinates
+};
+
+// Lightweight position-only reconstruction (~6 loads + 20 ALU)
+inline float3 ReconstructPosition(uint instID, uint primID, float2 bary)
+{
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint i0 = indices[baseI + 3u * primID + 0u];
+    const uint i1 = indices[baseI + 3u * primID + 1u];
+    const uint i2 = indices[baseI + 3u * primID + 2u];
+    const float3 p0 = BTriVertex[i0].vertex;
+    const float3 p1 = BTriVertex[i1].vertex;
+    const float3 p2 = BTriVertex[i2].vertex;
+    const float b0 = 1.0f - bary.x - bary.y;
+    float3 pLocal = p0 * b0 + p1 * bary.x + p2 * bary.y;
+    return mul(instanceProps[instID].objectToWorld, float4(pLocal, 1.0f)).xyz;
+}
+
+// Full reconstruction via EvalSurfaceState + RefetchMaterial (~20 scattered loads)
+inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 viewOrigin)
+{
+    SurfaceVertex v;
+    HitInfo h = EvalSurfaceState(instID, primID, bary, viewOrigin, 0);
+    v.x     = h.hitPos;
+    v.n_s   = h.hitNormal;
+    v.n_g   = h.hitGNormal;
+    v.o     = normalize(viewOrigin - h.hitPos);
+    v.matID = GetMatIDFast(instID, primID);
+    v.uv    = h.uv;
+    RefetchMaterial(v.matID, h.uv, v.Kd, v.Pr, v.Pm);
+    v.etai  = 0.0f;
+    v.etat  = 0.0f;
+    return v;
+}
+
+// Lightweight reconstruction using cached G-buffer data (~8 loads vs 20)
+// Skips vertex normal/UV loads by using pre-cached values from the G-buffer
+inline SurfaceVertex BuildVertexLight(
+    uint instID, uint primID, float2 bary,
+    float3 n1s_world, float3 n1g_world, float2 uv,
+    float etai, float etat, float3 viewOrigin)
+{
+    SurfaceVertex v;
+    v.x     = ReconstructPosition(instID, primID, bary);
+    v.n_s   = n1s_world;
+    v.n_g   = n1g_world;
+    v.o     = normalize(viewOrigin - v.x);
+    v.matID = GetMatIDFast(instID, primID);
+    v.uv    = uv;
+    RefetchMaterial(v.matID, uv, v.Kd, v.Pr, v.Pm);
+    v.etai  = etai;
+    v.etat  = etat;
+    return v;
+}
+
+// v2 wrappers: clean API over old ReconnectDI/GI
+inline float3 ReconnectDI_v2(SurfaceVertex v1, float3 x2, float3 n2, float3 L2, uint objID_di)
+{
+    return ReconnectDI(v1.x, v1.n_s, v1.n_g, v1.o, v1.matID,
+                       x2, n2, L2, v1.Kd, v1.Pr, v1.Pm, v1.etai, v1.etat, objID_di);
+}
+
+inline float3 ReconnectGI_v2(
+    SurfaceVertex v1, SurfaceVertex v2,
+    float3 L2, float pdfx2_cached, float Jc,
+    bool applyJ, out float Jn_out, out float J_out)
+{
+    return ReconnectGI(
+        v1.x, v1.n_s, v1.n_g, v1.o, v1.matID,
+        v1.Kd, v1.Pr, v1.Pm, v1.etai, v1.etat,
+        v2.matID, v2.x, v2.n_s, v2.n_g, L2, v2.o,
+        v2.Kd, v2.Pr, v2.Pm, v2.etai, v2.etat,
+        pdfx2_cached, Jc, applyJ, Jn_out, J_out);
+}
+
 #endif

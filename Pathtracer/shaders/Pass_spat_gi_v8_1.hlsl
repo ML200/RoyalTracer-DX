@@ -10,33 +10,37 @@ void Pass_spat_gi_v8_1()
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    // Load current sample + reservoir
-    SampleData   sdata = loadSampleData(g_sample_current, pixelIdx);
-    Reservoir_GI rdi   = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
-    // Only do spatial GI when there is no L1
-    if (!all(sdata.L1 < EPSILON))
+    // Only do spatial GI when pixel is not an emitter
+    if (load_isEmitter(g_sample_current, pixelIdx))
     {
-        gScratchPing[uint3(launchIndex, 2)] = float4(sdata.L1, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
     }
+
+    // Lightweight loads
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
+    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
 
     // If spatial GI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 8u))
     {
         const float vis = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-        float3 sKd0; float sPr0, sPm0;
-        RefetchMaterial(sdata.matID, sdata.uv, sKd0, sPr0, sPm0);
+        const float3 cameraPos = InitOrigin();
+        SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
+        sv1.etai = load_etai(g_sample_current, pixelIdx);
+        sv1.etat = load_etat(g_sample_current, pixelIdx);
         float3 rKd0; float rPr0, rPm0;
         RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd0, rPr0, rPm0);
+        SurfaceVertex sv2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rKd0, rPr0, rPm0, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
         float Jd1 = 0.0f, Jd2 = 0.0f;
-        float3 c = ReconnectGI(
-            sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-            sKd0, sPr0, sPm0, sdata.etai, sdata.etat,
-            rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
-            rKd0, rPr0, rPm0, rdi.etai_gi, rdi.etat_gi,
-            rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
+        float3 c = ReconnectGI_v2(sv1, sv2, rdi.L2_gi, rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
         gScratchPing[uint3(launchIndex, 2)] = float4(c * rdi.W_gi, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
@@ -88,16 +92,21 @@ void Pass_spat_gi_v8_1()
             // Keep in tight scope to drop temps ASAP.
             bool ok = false;
             {
-                const float3 L1r = load_L1(g_sample_current, iID);
-                if (all(L1r < EPSILON) && (load_matID(g_sample_current, iID) == sdata.matID))
+                if (!load_isEmitter(g_sample_current, iID))
                 {
-                    const float3 n1s_r = load_n1_s(g_sample_current, iID);
-                    if (!RejectNormal_GI(sdata.n1_s, n1s_r, 0.36f))
+                    uint nInstID_t = load_instID(g_sample_current, iID);
+                    uint nPrimID_t = load_primID(g_sample_current, iID);
+                    if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
                     {
-                        const float3 x1_r = load_x1(g_sample_current, iID);
-                        if (!RejectDistance_GI(sdata.x1, x1_r, sdata.n1_s, 0.1f))
+                        const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
+                        if (!RejectNormal_GI(myN1g, n1g_r, 0.36f))
                         {
-                            ok = true;
+                            float2 nBary_t = load_bary(g_sample_current, iID);
+                            const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
+                            if (!RejectDistance_GI(myPos, x1_r, myN1g, 0.1f))
+                            {
+                                ok = true;
+                            }
                         }
                     }
                 }
@@ -141,28 +150,21 @@ void Pass_spat_gi_v8_1()
     float  p_c           = 0.0f;
     float  Jn_canonical  = 0.0f;
 
-    // Refetch material for canonical x1 and x2 vertices (needed for MIS too)
-    float3 sKd; float sPr, sPm;
-    RefetchMaterial(sdata.matID, sdata.uv, sKd, sPr, sPm);
+    // Build canonical vertex
+    const float3 cameraPos2 = InitOrigin();
+    SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
+    sv1.etai = load_etai(g_sample_current, pixelIdx);
+    sv1.etat = load_etat(g_sample_current, pixelIdx);
+
+    // Build canonical x2 vertex from reservoir
     float3 rKd; float rPr, rPm;
     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
+    SurfaceVertex sv2_c = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
 
     {
         float Jdummy = 0.0f;
-
-        // applyJ = false; Jc is irrelevant in that case (use 1.0f)
-        // Jn_canonical is always computed now and used to track J through merge
-        float3 contrib_c = ReconnectGI(
-            sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-            sKd, sPr, sPm, sdata.etai, sdata.etat,
-            rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
-            rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-            rdi.J_gi.x, 1.0f, false,
-            Jn_canonical, Jdummy
-        );
-
+        float3 contrib_c = ReconnectGI_v2(sv1, sv2_c, rdi.L2_gi, rdi.J_gi.x, 1.0f, false, Jn_canonical, Jdummy);
         contrib_c *= visReuse;
-
         p_c = GetPHat(contrib_c);
         contrib_final = contrib_c;
     }
@@ -218,20 +220,14 @@ void Pass_spat_gi_v8_1()
             // Refetch neighbor x2 material
             float3 rnKd; float rnPr, rnPm;
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
+            SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
-            contrib_n = ReconnectGI(
-                sdata.x1, sdata.n1_s, sdata.n1_g, sdata.o, sdata.matID,
-                sKd, sPr, sPm, sdata.etai, sdata.etat,
-                rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi,
-                rdi_r.J_gi.x, rdi_r.J_gi.y, true,
-                Jn, Jnn
-            );
+            contrib_n = ReconnectGI_v2(sv1, sv2_n, rdi_r.L2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
 
             // Visibility after reconnection
             {
-                float3 _conn = rdi_r.x2_gi - sdata.x1; float _cd = length(_conn);
-                float vis = (_cd > EPSILON && IsVisible(sdata.x1, sdata.n1_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
+                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
                 contrib_n *= vis;
             }
 
@@ -303,8 +299,6 @@ void Pass_spat_gi_v8_1()
         }
 
         rdi.F_gi = p_hat_final;
-
-        // J_gi.y already tracked: set to Jn_canonical or overwritten by neighbor Jn in merge
 
         gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
     }
