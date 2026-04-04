@@ -135,6 +135,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     }*/
 
     // --- heavy reuse path ---
+    // sdata_r.x1 and normals are stored in object space and loaded with the
+    // current frame's transform, so they automatically track with the surface
+    // when objects move — no rejection needed.
+
     [branch]
     if (valid)
     {
@@ -144,7 +148,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         {
             valid = false;
         }
-        else
+
+        if (valid)
         {
             // Refetch materials for both vertices
             float3 sKd; float sPr, sPm;

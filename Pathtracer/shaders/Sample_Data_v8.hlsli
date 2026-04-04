@@ -33,21 +33,55 @@ uint  PackID16(uint objID, uint matID) { return (objID & 0xFFFFu) | (matID << 16
 void  UnpackID16(uint v, out uint objID, out uint matID)
 { objID = v & 0xFFFFu;  matID = v >> 16; }
 
+// OtW / WtO helpers (must precede store/load which use them)
+float3 WorldToObjectPos(uint id, float3 Pw)
+{
+    return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
+}
+float3 ObjectToWorldPos(uint id, float3 Po)
+{
+    return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
+}
+float3 ObjectToWorldNrm(uint id, float3 No)
+{
+    return normalize( mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
+}
+float3 WorldToObjectNrm(uint id, float3 Nw)
+{
+    float3x3 MT = transpose( (float3x3)instanceProps[id].objectToWorld );
+    return normalize( mul( MT, Nw ) );
+}
+
 void storeSampleData(RWByteAddressBuffer buf,
                      uint               pixelIdx,
                      const SampleData   s)
 {
     const uint base = pixelBaseAddr_SD(pixelIdx);
 
-    // Pack 1: x1 (float3) + n1_s (packed)
-    buf.Store4(base + O_PACK1_SD,
-               uint4(asuint(s.x1), PackNormal(s.n1_s)));
+    // Store x1 and normals in OBJECT SPACE so they track with the surface.
+    // On load, they get transformed back to world space using the current transform.
+    float3 x1Store = s.x1;
+    float3 n1sStore = s.n1_s;
+    float3 n1gStore = s.n1_g;
+    float3 oStore   = s.o;
 
-    // Pack 2: L1 (packed) + o (packed) + n1_g (packed) + IDs (packed)
+    if (s.objID < 0xFFFEu) // valid surface hit (not sky/env)
+    {
+        x1Store  = WorldToObjectPos(s.objID, s.x1);
+        n1sStore = WorldToObjectNrm(s.objID, s.n1_s);
+        n1gStore = WorldToObjectNrm(s.objID, s.n1_g);
+        oStore   = WorldToObjectNrm(s.objID, s.o);
+    }
+
+    // Pack 1: x1 (float3, object space) + n1_s (packed, object space)
+    buf.Store4(base + O_PACK1_SD,
+               uint4(asuint(x1Store), PackNormal(n1sStore)));
+
+    // Pack 2: L1 (packed) + o (packed, object space) + n1_g (packed, object space) + IDs
     buf.Store4(base + O_PACK2_SD,
                uint4(PackRGB9E5(s.L1),
-                     PackNormal(s.o),
-                     PackNormal(s.n1_g),
+                     PackNormal(oStore),
+                     PackNormal(n1gStore),
                      PackID16(s.objID, s.matID)));
 
     // Pack 3: uv.x (float) + uv.y (float) + etai/etat (half2)
@@ -62,17 +96,34 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
     SampleData s;
     const uint base = pixelBaseAddr_SD(pixelIdx);
 
-    // Load Pack 1
-    uint4 p1 = buf.Load4(base + O_PACK1_SD);
-    s.x1 = asfloat(p1.xyz);
-    s.n1_s = UnpackNormal(p1.w);
-
-    // Load Pack 2
+    // Load Pack 2 first to get objID (needed for object→world transform)
     uint4 p2 = buf.Load4(base + O_PACK2_SD);
     s.L1 = UnpackRGB9E5(p2.x);
-    s.o  = UnpackNormal (p2.y);
-    s.n1_g = UnpackNormal(p2.z);
     UnpackID16(p2.w, s.objID, s.matID);
+
+    // Load Pack 1
+    uint4 p1 = buf.Load4(base + O_PACK1_SD);
+    float3 x1Raw   = asfloat(p1.xyz);
+    float3 n1sRaw  = UnpackNormal(p1.w);
+    float3 oRaw    = UnpackNormal(p2.y);
+    float3 n1gRaw  = UnpackNormal(p2.z);
+
+    // Transform from object space back to world space using CURRENT transform.
+    // This makes positions/normals track with the surface when objects move.
+    if (s.objID < 0xFFFEu)
+    {
+        s.x1   = ObjectToWorldPos(s.objID, x1Raw);
+        s.n1_s = ObjectToWorldNrm(s.objID, n1sRaw);
+        s.n1_g = ObjectToWorldNrm(s.objID, n1gRaw);
+        s.o    = ObjectToWorldNrm(s.objID, oRaw);
+    }
+    else
+    {
+        s.x1   = x1Raw;
+        s.n1_s = n1sRaw;
+        s.n1_g = n1gRaw;
+        s.o    = oRaw;
+    }
 
     // Load Pack 3
     uint3 p3 = buf.Load3(base + O_PACK3_SD);
@@ -83,39 +134,34 @@ SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
     return s;
 }
 
-// --- single loaders ---
-float3 load_x1   (RWByteAddressBuffer b, uint id){return asfloat(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).xyz);}
-float3 load_n1_s (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).w);}
-float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
-float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).x);}
-float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
+// --- single loaders (object space → world space) ---
+// objID must be loaded first for geometry fields; L1/matID/uv/ior don't need transform.
 uint   load_objID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) & 0xFFFFu;}
 uint   load_matID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) >> 16;}
+float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).x);}
 float2 load_uv   (RWByteAddressBuffer b, uint id){return float2(asfloat(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD)), asfloat(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+4u)));}
 float  load_etai (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) & 0xFFFFu);}
 float  load_etat (RWByteAddressBuffer b, uint id){return f16tof32_custom(b.Load(pixelBaseAddr_SD(id)+O_PACK3_SD+8u) >> 16);}
 
-
-
-// OtW / WtO helpers
-
-float3 WorldToObjectPos(uint id, float3 Pw)
-{
-    return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
+// Geometry loaders: stored in object space, returned in world space
+float3 load_x1(RWByteAddressBuffer b, uint id){
+    uint oid = load_objID(b, id);
+    float3 raw = asfloat(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).xyz);
+    return (oid < 0xFFFEu) ? ObjectToWorldPos(oid, raw) : raw;
+}
+float3 load_n1_s(RWByteAddressBuffer b, uint id){
+    uint oid = load_objID(b, id);
+    float3 raw = UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).w);
+    return (oid < 0xFFFEu) ? ObjectToWorldNrm(oid, raw) : raw;
+}
+float3 load_n1_g(RWByteAddressBuffer b, uint id){
+    uint oid = load_objID(b, id);
+    float3 raw = UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);
+    return (oid < 0xFFFEu) ? ObjectToWorldNrm(oid, raw) : raw;
+}
+float3 load_o(RWByteAddressBuffer b, uint id){
+    uint oid = load_objID(b, id);
+    float3 raw = UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);
+    return (oid < 0xFFFEu) ? ObjectToWorldNrm(oid, raw) : raw;
 }
 
-float3 ObjectToWorldPos(uint id, float3 Po)
-{
-    return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
-}
-
-float3 ObjectToWorldNrm(uint id, float3 No)
-{
-    return normalize( mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
-}
-
-float3 WorldToObjectNrm(uint id, float3 Nw)
-{
-    float3x3 MT = transpose( (float3x3)instanceProps[id].objectToWorld );
-    return normalize( mul( MT, Nw ) );
-}

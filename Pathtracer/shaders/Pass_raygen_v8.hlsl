@@ -15,6 +15,9 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
+    // ── Sun contribution (stored separately, not in DI reservoir) ──────
+    float3 sunDirect = float3(0, 0, 0);
+
     // ── Reservoir init ─────────────────────────────────────────────────
     storeReservoirDI(g_Reservoirs_current_di, pixelIdx, (Reservoir_DI)0);
     store_wsum_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
@@ -297,14 +300,12 @@ void Pass_raygen_v8()
                         if (lightPdf > 0.0f && bsdfPdf > 0.0f)
                         {
                             float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
+                            float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
-                            // DI: sun at depth 0
+                            // DI: sun at depth 0 — store directly, bypass ReSTIR
                             if (depth == 0)
                             {
-                                float p_hat = GetPHat(throughput * bdataNEE.val * NdotL * sun.radiance);
-                                float wi    = (lightPdf > 1e-20f) ? (p_hat / lightPdf) : 0.0f;
-                                if (UpdateReservoirDI_Infinite(g_Reservoirs_current_di, pixelIdx, wi, normalize(sun.direction), sun.radiance, 0xFFFFFFFEu, seed))
-                                    store_phat_di(g_Reservoirs_current_di, pixelIdx, p_hat);
+                                sunDirect += misWeight * contrib;
                             }
 
                             // GI: sun at depth >= 1
@@ -429,4 +430,7 @@ void Pass_raygen_v8()
             store_Jy_gi(g_Reservoirs_current_gi, pixelIdx, Jy);
         }
     }
+
+    // Store sun direct contribution separately (not in ReSTIR DI)
+    gScratchPing[uint3(pixel, 3)] = float4(sunDirect, 0);
 }

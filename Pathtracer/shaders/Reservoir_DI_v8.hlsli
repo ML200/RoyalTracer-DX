@@ -81,9 +81,8 @@ Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
 
     if (r.objID_di == 0xFFFFFFFFu || r.objID_di == 0xFFFFFFFEu)
     {
-        // Interpret payload as environment direction
-        r.x2_di = pRaw;                 // direction in world space
-        r.n2_di = UnpackNormal(nEnc);   // unused; keep for validity if you want
+        r.x2_di = pRaw;
+        r.n2_di = UnpackNormal(nEnc);
     }
     else
     {
@@ -278,7 +277,8 @@ inline float3 ReconnectDI(
         return r;
     }
 
-    // Sun
+    // Sun (should not appear in DI reservoirs anymore — sun is handled
+    // separately via scratch ping. Keep as fallback for safety.)
     if (objID_di == 0xFFFFFFFEu)
     {
         float3 wi = normalize(x2);

@@ -141,8 +141,10 @@ void Pass_temp_gi_v8()
              (!RejectDistance_GI(sdata.x1, sdata_r.x1, sdata.n1_s, 0.05f)));
     }*/
 
+    // sdata_r.x1/normals stored in object space → loaded with current transform.
+    // Positions track with moving surfaces automatically.
+
     // --- heavy reuse path ---
-    // Strongly isolate lifetime of rdi_r + all heavy temporaries.
     [branch]
     if (valid)
     {
