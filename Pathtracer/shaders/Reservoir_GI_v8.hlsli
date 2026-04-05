@@ -21,16 +21,19 @@ struct Reservoir_GI
     float  W_gi;
     float  w_sum_gi;
     uint   M_gi;
+
+    // Hybrid shift: RNG seed for path replay
+    uint   seed_gi;
 };
 
 
 // Data management
-// Pack1(16) + Pack2(16) + Pack3(12) + Pack4(16) + M+wsum(8) = 68
-static const uint BYTES_GI        = 68u;
+// Pack1(16) + Pack2(16) + Pack3(12) + Pack4(16) + M+wsum+seed(12) = 72
+static const uint BYTES_GI        = 72u;
 static const uint BYTES_GI_VPOST  = 4u;
 static const uint BYTES_GI_TPOST  = 4u;
 
-static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 76
+static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 80
 
 uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * STRIDE_GI; }
 
@@ -43,9 +46,10 @@ static const uint O_GI_W      = O_GI_PACK4 +  8u;
 static const uint O_GI_F      = O_GI_PACK4 + 12u;
 static const uint O_GI_M      = 60u;
 static const uint O_GI_WSUM   = 64u;
+static const uint O_GI_SEED   = 68u;
 
-static const uint O_GI_VPOST_BASE = BYTES_GI;                  // 68
-static const uint O_GI_TPOST_BASE = BYTES_GI + BYTES_GI_VPOST; // 72
+static const uint O_GI_VPOST_BASE = BYTES_GI;                  // 72
+static const uint O_GI_TPOST_BASE = BYTES_GI + BYTES_GI_VPOST; // 76
 
 uint addr_Vpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_VPOST_BASE; }
 uint addr_Tpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_TPOST_BASE; }
@@ -104,9 +108,10 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
                      asuint(r.W_gi),
                      asuint(r.F_gi)));
 
-    buf.Store2(base + O_GI_M,
-               uint2(r.M_gi,
-                     asuint(r.w_sum_gi)));
+    buf.Store3(base + O_GI_M,
+               uint3(r.M_gi,
+                     asuint(r.w_sum_gi),
+                     r.seed_gi));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -117,7 +122,7 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     uint4 p2 = buf.Load4(base + O_GI_PACK2);
     uint3 p3 = buf.Load3(base + O_GI_PACK3);
     uint4 p4 = buf.Load4(base + O_GI_PACK4);
-    uint2 p5 = buf.Load2(base + O_GI_M);
+    uint3 p5 = buf.Load3(base + O_GI_M);
 
     Reservoir_GI r;
 
@@ -140,6 +145,7 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.M_gi     = p5.x;
     r.w_sum_gi = asfloat(p5.y);
+    r.seed_gi  = p5.z;
 
     return r;
 }
@@ -257,6 +263,16 @@ void store_M_gi(RWByteAddressBuffer b, uint pixelIdx, uint M)
 void store_W_gi(RWByteAddressBuffer b, uint pixelIdx, float W)
 {
     b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_W, asuint(W));
+}
+
+uint load_seed_gi(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_SEED);
+}
+
+void store_seed_gi(RWByteAddressBuffer b, uint pixelIdx, uint s)
+{
+    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_SEED, s);
 }
 
 void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, float F)
@@ -428,6 +444,7 @@ bool UpdateReservoirGI(
 
     in float2 J,
     in float  F,
+    in uint   pathSeed,
 
     inout uint2 seed
 )
@@ -447,10 +464,11 @@ bool UpdateReservoirGI(
         reservoir.etai_gi    = etai;
         reservoir.etat_gi    = etat;
 
-        reservoir.L2_gi = L2;
-        reservoir.V2_gi = V2;
-        reservoir.J_gi  = J;
-        reservoir.F_gi  = F;
+        reservoir.L2_gi   = L2;
+        reservoir.V2_gi   = V2;
+        reservoir.J_gi    = J;
+        reservoir.F_gi    = F;
+        reservoir.seed_gi = pathSeed;
         return true;
     }
     return false;
