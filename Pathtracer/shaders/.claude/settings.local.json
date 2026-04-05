@@ -33,7 +33,12 @@
       "Bash(grep -r Evaluate C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
       "Bash(grep -r \"prevView\\\\|prevProjection\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
       "Bash(grep -r \"DLSSManager::Evaluate\\\\|dlss.*Evaluate\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
-      "Bash(grep -n g_dlss C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsl C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsli)"
+      "Bash(grep -n g_dlss C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsl C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsli)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DX -type f -name *material* -o -name *Material*)",
+      "Bash(find /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer -type f -name *.h -o -name *.hpp)",
+      "Bash(grep -r 'struct Material' /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer --include=*.h --include=*.hpp)",
+      "Bash(grep -r \"\\\\.Kd\\\\|\\\\.Ke\\\\|\\\\.Pr_Pm\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer --include=*.h --include=*.hpp --include=*.cpp)",
+      "Bash(grep -n \"materialsDirty\\\\|MarkMaterialsDirty\\\\|UpdateMaterialBuffer\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/rdn/Renderer*.cpp)"
     ]
   }
 }

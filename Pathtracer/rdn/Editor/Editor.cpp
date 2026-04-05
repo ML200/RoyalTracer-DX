@@ -269,7 +269,7 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss) {
 // ═════════════════════════════════════════════════════════════════
 void Editor::DrawMaterialInspector(Scene& scene) {
     ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(380, 550), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(420, 700), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Materials", &m_showMaterials)) { ImGui::End(); return; }
 
@@ -300,40 +300,79 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         bool changed = false;
         bool emissionChanged = false;
 
-        changed |= ImGui::ColorEdit3("Albedo", &mat.Kd.x, ImGuiColorEditFlags_Float);
+        // ── Surface ──────────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
+            changed |= ImGui::ColorEdit3("Albedo", &mat.Kd.x, ImGuiColorEditFlags_Float);
+            changed |= ImGui::SliderFloat("Opacity", &mat.Kd.w, 0.0f, 1.0f, "%.3f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("0 = fully transparent (glass)\n1 = fully opaque");
+            changed |= ImGui::DragFloat("IOR", &mat.Ni, 0.01f, 1.0f, 3.0f, "%.3f");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Index of Refraction\n1.0 = air, 1.33 = water, 1.5 = glass");
+        }
 
-        // Emission (track separately for light tree)
-        XMFLOAT3 prevKe = mat.Ke;
-        bool emEdit = ImGui::ColorEdit3("Emission", &mat.Ke.x,
-            ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-        if (emEdit) { changed = true; emissionChanged = true; }
+        // ── Emission ─────────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
+            XMFLOAT3 prevKe = mat.Ke;
+            bool emEdit = ImGui::ColorEdit3("Emission", &mat.Ke.x,
+                ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            if (emEdit) { changed = true; emissionChanged = true; }
 
-        if (mat.Ke.x > 0 || mat.Ke.y > 0 || mat.Ke.z > 0) {
-            float intensity = std::max({mat.Ke.x, mat.Ke.y, mat.Ke.z});
-            float prevIntensity = intensity;
-            if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f)) {
-                if (prevIntensity > 0.001f) {
-                    float s = intensity / prevIntensity;
-                    mat.Ke.x *= s; mat.Ke.y *= s; mat.Ke.z *= s;
-                    changed = true; emissionChanged = true;
+            if (mat.Ke.x > 0 || mat.Ke.y > 0 || mat.Ke.z > 0) {
+                float intensity = std::max({mat.Ke.x, mat.Ke.y, mat.Ke.z});
+                float prevIntensity = intensity;
+                if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f)) {
+                    if (prevIntensity > 0.001f) {
+                        float s = intensity / prevIntensity;
+                        mat.Ke.x *= s; mat.Ke.y *= s; mat.Ke.z *= s;
+                        changed = true; emissionChanged = true;
+                    }
                 }
             }
         }
 
-        ImGui::Separator();
-        changed |= ImGui::SliderFloat("Roughness", &mat.Pr_Pm_Ps_Pc.x, 0.0f, 1.0f);
-        changed |= ImGui::SliderFloat("Metallic",  &mat.Pr_Pm_Ps_Pc.y, 0.0f, 1.0f);
-        changed |= ImGui::SliderFloat("Specular",  &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
-        changed |= ImGui::SliderFloat("Clearcoat", &mat.Pr_Pm_Ps_Pc.w, 0.0f, 1.0f);
+        // ── PBR ──────────────────────────────────────────────────
+        if (ImGui::CollapsingHeader("PBR", ImGuiTreeNodeFlags_DefaultOpen)) {
+            changed |= ImGui::SliderFloat("Roughness", &mat.Pr_Pm_Ps_Pc.x, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Metallic",  &mat.Pr_Pm_Ps_Pc.y, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Specular",  &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
+        }
 
-        ImGui::Separator();
-        changed |= ImGui::SliderFloat("Alpha", &mat.alphaThreshold, 0.0f, 1.0f);
+        // ── Clearcoat ────────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Clearcoat")) {
+            ImGui::PushID("coat");
+            changed |= ImGui::SliderFloat("Strength",   &mat.Pr_Pm_Ps_Pc.w,      0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Roughness",  &mat.Pcr_aniso_anisor.x,  0.0f, 1.0f);
+            ImGui::PopID();
+        }
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Textures:");
-        ImGui::Text("  Albedo: %s", mat.albedoTexID >= 0 ? std::to_string(mat.albedoTexID).c_str() : "none");
-        ImGui::Text("  Normal: %s", mat.normalTexID >= 0 ? std::to_string(mat.normalTexID).c_str() : "none");
-        ImGui::Text("  RMA:    %s", mat.rmaTexID    >= 0 ? std::to_string(mat.rmaTexID).c_str()    : "none");
+        // ── Anisotropy ───────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Anisotropy")) {
+            ImGui::PushID("aniso");
+            changed |= ImGui::SliderFloat("Strength",   &mat.Pcr_aniso_anisor.y, -1.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Rotation",   &mat.Pcr_aniso_anisor.z,  0.0f, 1.0f);
+            ImGui::PopID();
+        }
+
+        // ── Transmission ─────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Transmission")) {
+            changed |= ImGui::ColorEdit3("Filter (Tf)", &mat.Tf.x, ImGuiColorEditFlags_Float);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Volume absorption color\nWhite = no absorption");
+        }
+
+        // ── Alpha ────────────────────────────────────────────────
+        if (ImGui::CollapsingHeader("Alpha Test")) {
+            changed |= ImGui::SliderFloat("Threshold", &mat.alphaThreshold, 0.0f, 1.0f);
+        }
+
+        // ── Textures (read-only info) ────────────────────────────
+        if (ImGui::CollapsingHeader("Textures")) {
+            ImGui::TextDisabled("Assigned texture IDs:");
+            ImGui::Text("  Albedo: %s", mat.albedoTexID >= 0 ? std::to_string(mat.albedoTexID).c_str() : "none");
+            ImGui::Text("  Normal: %s", mat.normalTexID >= 0 ? std::to_string(mat.normalTexID).c_str() : "none");
+            ImGui::Text("  RMA:    %s", mat.rmaTexID    >= 0 ? std::to_string(mat.rmaTexID).c_str()    : "none");
+        }
 
         if (changed)
             scene.MarkMaterialsDirty(emissionChanged);

@@ -58,6 +58,7 @@ void EngineApp::OnButtonUp(UINT message, UINT32 lParam) {
 void EngineApp::OnMouseMove(UINT8 wParam, UINT32 lParam) {
     int x = GET_X_LPARAM(lParam), y = GET_Y_LPARAM(lParam);
     InputManager::OnMouseMove(x, y);
+    if (m_renderer.WantsMouse()) return;
     bool lmb = wParam & MK_LBUTTON, rmb = wParam & MK_RBUTTON, mmb = wParam & MK_MBUTTON;
     if (lmb) InputManager::OnMouseButtonDown(0); else InputManager::OnMouseButtonUp(0);
     if (rmb) InputManager::OnMouseButtonDown(1); else InputManager::OnMouseButtonUp(1);

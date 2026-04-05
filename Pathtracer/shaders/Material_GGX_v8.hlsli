@@ -20,7 +20,7 @@ inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 // GGX BRDF/BXDF
 // -----------------------------------------------------------------------------
 
-// Evaluate the GGX BRDF/BTDF
+// Evaluate the GGX BRDF/BTDF (supports anisotropy)
 inline float3 EvaluateBRDF_GGX(
     uint mID, float3 normal, float3 flatNormal,
     float3 incoming, float3 outgoing,
@@ -31,27 +31,32 @@ inline float3 EvaluateBRDF_GGX(
     float3 V = normalize(outgoing);    // wo
     float3 L = normalize(-incoming);   // wi
 
-    float NdotV = abs(dot(N, V))+0.00001f;
+    float NdotV = abs(dot(N, V)) + 0.00001f;
     float NdotL = dot(N, L);
-    float fNdotL = dot(fN, L);
 
-    bool reflect = NdotL > 0.0f;
+    bool isReflect = NdotL > 0.0f;
 
     float r = Pr;
     float alpha = max(0.001f, r * r);
     float metalness = Pm;
 
+    // Anisotropy setup
+    float aniso    = materials[mID].Pcr_aniso_anisor.y;
+    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float ax, ay;
+    ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
+    float3 T, B;
+    BuildAnisotropicFrame(N, anisoRot, T, B);
+
     // --- Half-vector ---
     float3 H;
-    if (reflect) {
+    if (isReflect) {
         float3 Hun = V + L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun, Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
     } else {
-        // Correct transmission half-vector
-        float etaVL = etai / etat;
         float3 Hun = etai * V + etat * L;
-        if (dot(Hun,Hun) <= 1e-16f) return 0.0.xxx;
+        if (dot(Hun, Hun) <= 1e-16f) return 0.0.xxx;
         H = normalize(Hun);
         if (dot(V, H) < 0.0f) H = -H;
     }
@@ -60,12 +65,19 @@ inline float3 EvaluateBRDF_GGX(
     float VdotH = dot(V, H);
     float LdotH = dot(L, H);
 
-    float D = D_GGX(NdotH, alpha);
-    float G = G2_SmithGGX(NdotV, abs(NdotL), alpha);
+    // Anisotropic NDF and masking-shadowing
+    float TdotH = dot(T, H);
+    float BdotH = dot(B, H);
+    float TdotV = dot(T, V);
+    float BdotV = dot(B, V);
+    float TdotL = dot(T, L);
+    float BdotL = dot(B, L);
 
-    if (reflect)
+    float D = D_GGX_Aniso(NdotH, TdotH, BdotH, ax, ay);
+    float G = G2_SmithGGX_Aniso(NdotV, TdotV, BdotV, abs(NdotL), TdotL, BdotL, ax, ay);
+
+    if (isReflect)
     {
-        //if(etai == 1.0f) return 0.0f;
         float3 F0_d = ComputeF0Dielectric(etai, etat);
         float3 F0_c = Kd;
         float3 F_d  = FresnelDielectricTIR(V, H, etai, etat);
@@ -91,7 +103,6 @@ inline float3 EvaluateBRDF_GGX(
         float denom_bsdf = NdotV * abs(NdotL);
         float denom_jac = etai * VdotH + etat * LdotH;
 
-        // Walter transmission form
         float numer = (etat * etat) * abs(VdotH) * abs(LdotH);
 
         float btdf = (oneMinusF) * D * G * numer / (denom_bsdf * denom_jac * denom_jac);
@@ -182,8 +193,16 @@ inline float3 SampleBRDF_GGX(
     float3 N  = normalize(normal);
     float3 fN = normalize(flatNormal);
 
-    // 1) Sample visible normal H
-    float3 H = SampleVNDF_H(alpha, V, N, seed);
+    // Anisotropy setup
+    float aniso    = materials[mID].Pcr_aniso_anisor.y;
+    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float ax, ay;
+    ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
+    float3 T, B;
+    BuildAnisotropicFrame(N, anisoRot, T, B);
+
+    // 1) Sample visible normal H (anisotropic VNDF)
+    float3 H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
     // 2) Path probabilities for this H
@@ -250,8 +269,21 @@ inline float BRDF_PDF_GGX(
     float  metalness = Pm;
     float  trans_w   = 1.0f - materials[mID].Kd.w;
 
+    // Anisotropy setup
+    float aniso    = materials[mID].Pcr_aniso_anisor.y;
+    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float ax, ay;
+    ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
+    float3 T, B;
+    BuildAnisotropicFrame(N, anisoRot, T, B);
+
+    float TdotH = dot(T, H);
+    float BdotH = dot(B, H);
+    float TdotV = dot(T, V);
+    float BdotV = dot(B, V);
+
     float VdotH_abs = max(1e-6f, abs(dot(V, H)));
-    float pdf_H     = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH_abs) / max(1e-6f, NdotV);
+    float pdf_H     = (D_GGX_Aniso(NdotH, TdotH, BdotH, ax, ay) * G1_SmithGGX_Aniso(NdotV, TdotV, BdotV, ax, ay) * VdotH_abs) / max(1e-6f, NdotV);
 
     float F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float p_refl_H  = (1.0f - metalness) * F_diel + metalness;
@@ -285,7 +317,7 @@ inline float BRDF_PDF_GGX(
         // Signed denominator for refraction mapping (Walter 2007)
         float denom = etai * VdotH + etat * LdotH;
         float VdotH_pos = max(EPSILON, VdotH);
-        float pdf_H     = (D_GGX(NdotH, alpha) * G1_SmithGGX(max(NdotV, EPSILON), alpha) * VdotH_pos)
+        float pdf_H     = (D_GGX_Aniso(NdotH, TdotH, BdotH, ax, ay) * G1_SmithGGX_Aniso(max(NdotV, EPSILON), TdotV, BdotV, ax, ay) * VdotH_pos)
                         / max(NdotV, EPSILON);
 
         // Jacobian for refraction mapping
