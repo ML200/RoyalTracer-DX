@@ -214,9 +214,6 @@ void Pass_spat_gi_v8_1()
             float3 rnKd; float rnPr, rnPm;
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
-            // Reject specular-metal x2: reconnection to tight metallic lobes is unreliable
-            if (rnPr < 0.5f && rnPm > 0.5f) { contrib_n = 0.0.xxx; p_hat_from = 0.0f; }
-            else {
             SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
             contrib_n = ReconnectGI(
@@ -234,7 +231,6 @@ void Pass_spat_gi_v8_1()
             }
 
             p_hat_from = GetPHat(contrib_n) * Jnn;
-            }
         }
 
         // MIS weight for neighbor

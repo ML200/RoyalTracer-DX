@@ -64,7 +64,7 @@ void Pass_raygen_v8()
         RayDesc ray;
         ray.Origin    = rayOrigin;
         ray.Direction = rayDir;
-        ray.TMin      = 0.001f;
+        ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
