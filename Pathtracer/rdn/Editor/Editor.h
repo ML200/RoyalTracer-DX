@@ -8,6 +8,7 @@
 #include "../Camera/Camera.h"
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
+#include "../../engine/Camera/FlyCamController.h"
 
 #include "../lib/imgui/imgui.h"
 #include "../lib/imgui/imgui_impl_dx12.h"
@@ -21,9 +22,9 @@ public:
               D3D12_GPU_DESCRIPTOR_HANDLE fontGpuHandle);
     void Shutdown();
 
-    void Draw(Scene& scene, Camera& camera, PassSystem& passes,
-              DLSSManager& dlss, ReSTIRSettings& restir, float fps,
-              const FrameStats& stats);
+    void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
+              PassSystem& passes, DLSSManager& dlss, ReSTIRSettings& restir,
+              float fps, const FrameStats& stats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -31,7 +32,7 @@ public:
 
 private:
     void DrawScenePanel(Scene& scene);
-    void DrawCameraPanel(Camera& camera);
+    void DrawCameraPanel(Camera& camera, FlyCamController& flyCam);
     void DrawPassPipelinePanel(PassSystem& passes);
     void DrawDLSSPanel(DLSSManager& dlss);
     void DrawMaterialInspector(Scene& scene);

@@ -146,7 +146,8 @@ void DLSSManager::Evaluate(
     const XMMATRIX& prevViewMatrix,
     const XMMATRIX& prevProjMatrix,
     float jitterX, float jitterY,
-    uint32_t jitterFrameIndex)
+    uint32_t jitterFrameIndex,
+    float fovDegrees, float nearPlane, float farPlane)
 {
     if (!cmdList || !m_output || !m_depth || !m_mvec || !m_normals ||
         !m_diffuseAlbedo || !m_specAlbedo || !m_roughness || !m_specHitDist)
@@ -172,7 +173,7 @@ void DLSSManager::Evaluate(
     // Use render resolution for aspect ratio in the projection
     float renderAspect = (float)m_renderWidth / (float)m_renderHeight;
     XMMATRIX xmProj = XMMatrixPerspectiveFovRH(
-        XMConvertToRadians(fovDegrees), renderAspect, 0.00001f, 10000.0f);
+        XMConvertToRadians(fovDegrees), renderAspect, nearPlane, farPlane);
     XMMATRIX xmViewProj     = XMMatrixMultiply(viewMatrix, xmProj);
     // Use unjittered prev projection for clip-to-prev-clip (DLSS handles jitter separately)
     XMMATRIX xmPrevViewProj = XMMatrixMultiply(prevViewMatrix, prevProjMatrix);
@@ -189,8 +190,8 @@ void DLSSManager::Evaluate(
     constants.prevClipToClip    = XmToSl(XMMatrixMultiply(XMMatrixInverse(nullptr, xmPrevViewProj), xmViewProj));
     constants.cameraFOV         = XMConvertToRadians(fovDegrees);
     constants.cameraAspectRatio = renderAspect;
-    constants.cameraNear        = 0.00001f;
-    constants.cameraFar         = 10000.0f;
+    constants.cameraNear        = nearPlane;
+    constants.cameraFar         = farPlane;
     constants.jitterOffset      = { -jitterX, -jitterY };
     constants.mvecScale         = { 1.0f / (float)m_renderWidth, 1.0f / (float)m_renderHeight };
     constants.motionVectorsInvalidValue = -1.0f;

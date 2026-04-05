@@ -35,9 +35,9 @@ void Editor::Shutdown() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
-                  DLSSManager& dlss, ReSTIRSettings& restir, float fps,
-                  const FrameStats& stats)
+void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
+                  PassSystem& passes, DLSSManager& dlss, ReSTIRSettings& restir,
+                  float fps, const FrameStats& stats)
 {
     if (!m_visible) return;
 
@@ -72,7 +72,7 @@ void Editor::Draw(Scene& scene, Camera& camera, PassSystem& passes,
     }
 
     if (m_showScene)     DrawScenePanel(scene);
-    if (m_showCamera)    DrawCameraPanel(camera);
+    if (m_showCamera)    DrawCameraPanel(camera, flyCam);
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
@@ -170,16 +170,17 @@ void Editor::DrawScenePanel(Scene& scene) {
 }
 
 // ═════════════════════════════════════════════════════════════════
-void Editor::DrawCameraPanel(Camera& camera) {
+void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::SetNextWindowPos(ImVec2(10, 490), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360, 160), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360, 180), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Camera")) { ImGui::End(); return; }
 
-    ImGui::DragFloat("FOV",        &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
-    ImGui::DragFloat("Near Plane", &camera.nearPlane,  0.00001f, 0.00001f, 1.0f, "%.5f");
-    ImGui::DragFloat("Far Plane",  &camera.farPlane,   10.0f, 100.0f, 100000.0f);
-    ImGui::DragFloat("Move Speed", &camera.moveSpeed,  0.1f, 0.1f, 100.0f);
+    ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
+    ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.00001f, 0.00001f, 1.0f, "%.5f");
+    ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
+    ImGui::DragFloat("Move Speed",       &flyCam.moveSpeed,  0.1f, 0.1f, 100.0f);
+    ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
 
     ImGui::Separator();
     ImGui::Text("Jitter frame: %u", camera.JitterFrame());
@@ -274,7 +275,7 @@ void Editor::DrawMaterialInspector(Scene& scene) {
     if (!ImGui::Begin("Materials", &m_showMaterials)) { ImGui::End(); return; }
 
     // Material list (left)
-    ImGui::BeginChild("MatList", ImVec2(120, 0), true);
+    ImGui::BeginChild("MatList", ImVec2(180, 0), true);
     for (int i = 0; i < (int)scene.materials.size(); ++i) {
         auto& mat = scene.materials[i];
         ImVec4 preview(mat.Kd.x, mat.Kd.y, mat.Kd.z, 1.0f);
@@ -282,7 +283,13 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         ImGui::Text("\xe2\x96\xa0");
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        char label[32]; snprintf(label, sizeof(label), "%d##mat", i);
+        const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
+            ? scene.materialNames[i].c_str() : nullptr;
+        char label[128];
+        if (name)
+            snprintf(label, sizeof(label), "%d %s##mat", i, name);
+        else
+            snprintf(label, sizeof(label), "%d##mat", i);
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
     }
@@ -294,7 +301,12 @@ void Editor::DrawMaterialInspector(Scene& scene) {
     ImGui::BeginChild("MatProps", ImVec2(0, 0), false);
     if (m_selectedMat >= 0 && m_selectedMat < (int)scene.materials.size()) {
         auto& mat = scene.materials[m_selectedMat];
-        ImGui::Text("Material %d", m_selectedMat);
+        const char* matName = (m_selectedMat < (int)scene.materialNames.size() && !scene.materialNames[m_selectedMat].empty())
+            ? scene.materialNames[m_selectedMat].c_str() : nullptr;
+        if (matName)
+            ImGui::Text("Material %d: %s", m_selectedMat, matName);
+        else
+            ImGui::Text("Material %d", m_selectedMat);
         ImGui::Separator();
 
         bool changed = false;
