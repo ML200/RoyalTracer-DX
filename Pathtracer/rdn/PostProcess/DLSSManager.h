@@ -50,6 +50,7 @@ public:
     ID3D12Resource* SpecHitDist()      const { return m_specHitDist.Get(); }
     ID3D12Resource* Transparency()     const { return m_transparency.Get(); }
     ID3D12Resource* ColorBeforeTrans() const { return m_colorBeforeTrans.Get(); }
+    ID3D12Resource* BiasHint()         const { return m_biasHint.Get(); }
 
     // Editor-exposed settings
     sl::DLSSMode mode = sl::DLSSMode::eDLAA;
@@ -63,6 +64,7 @@ private:
     ComPtr<ID3D12Resource> m_diffuseAlbedo, m_output;
     ComPtr<ID3D12Resource> m_specAlbedo, m_roughness, m_specMvec, m_specHitDist;
     ComPtr<ID3D12Resource> m_transparency, m_colorBeforeTrans;
+    ComPtr<ID3D12Resource> m_biasHint;
 
     ResourceStateTracker m_state;
 

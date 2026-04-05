@@ -158,6 +158,15 @@ void Renderer::UpdateRenderer(float dt) {
     if (m_lightTreeRefit.PollResult(refitResult)) {
         m_pendingTLASUpload  = std::move(refitResult.nodes);
         m_pendingBLASToItem  = std::move(refitResult.blasToItem);
+
+        // Update worldToLocal in BLASRanges from refit result
+        auto& cpuRanges = m_lightTree.GetCpuBLASRanges();
+        if (!refitResult.blasWorldToLocal.empty() && !cpuRanges.empty()) {
+            m_pendingBLASRanges = cpuRanges;  // copy static fields
+            for (size_t i = 0; i < m_pendingBLASRanges.size() && i < refitResult.blasWorldToLocal.size(); ++i)
+                m_pendingBLASRanges[i].worldToLocal = refitResult.blasWorldToLocal[i];
+        }
+
         LOG(L"[LightTree] Async TLAS refit ready: " << m_pendingTLASUpload.size() << L" nodes");
     }
 
@@ -308,8 +317,30 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
         cmdList->ResourceBarrier(1, &b2);
     }
 
+    // ── BLASRanges (updated worldToLocal) ────────────────────────
+    const UINT rangeCount = (UINT)m_pendingBLASRanges.size();
+    if (rangeCount > 0) {
+        const UINT rangeBytes = rangeCount * sizeof(lt::BlasRangeGpu);
+
+        growBuffer(m_ltRangesGpu, m_rangesUploadStaging, m_ltRangesGpuCapacity,
+                  rangeCount, sizeof(lt::BlasRangeGpu), DXGI_FORMAT_UNKNOWN,
+                  LT_BLASRANGES_SRV_SLOT, L"LT_BLASRanges_Refit");
+
+        { void* p = nullptr;
+          ThrowIfFailed(m_rangesUploadStaging->Map(0, &readRange, &p));
+          memcpy(p, m_pendingBLASRanges.data(), rangeBytes);
+          m_rangesUploadStaging->Unmap(0, nullptr); }
+
+        cmdList->CopyBufferRegion(m_ltRangesGpu.Get(), 0, m_rangesUploadStaging.Get(), 0, rangeBytes);
+
+        auto b3 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltRangesGpu.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        cmdList->ResourceBarrier(1, &b3);
+    }
+
     m_pendingTLASUpload.clear();
     m_pendingBLASToItem.clear();
+    m_pendingBLASRanges.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -460,7 +491,7 @@ void Renderer::RebuildDLSSDescriptors() {
         handle.ptr += inc;
     };
 
-    // Must match order in CreateShaderResourceHeap (slots 39-50)
+    // Must match order in CreateShaderResourceHeap (slots 39-51)
     dlssUAV(m_dlss.Depth(),            DXGI_FORMAT_R32_FLOAT);
     dlssUAV(m_dlss.MVec(),             DXGI_FORMAT_R16G16_FLOAT);
     dlssUAV(m_dlss.Normals(),          DXGI_FORMAT_R16G16B16A16_FLOAT);
@@ -473,6 +504,7 @@ void Renderer::RebuildDLSSDescriptors() {
     dlssUAV(m_dlss.Transparency(),     DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.Input(),            DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.BiasHint(),         DXGI_FORMAT_R8_UNORM);
 }
 
 // ═════════════════════════════════════════════════════════════════

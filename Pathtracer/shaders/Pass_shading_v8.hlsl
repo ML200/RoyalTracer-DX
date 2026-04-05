@@ -51,6 +51,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
+    // Variables for bias hint (set in each branch, used after)
+    uint  biasInstID;
+    float2 biasMV = float2(0, 0);
+    bool  isEmitterSurface = false;
+
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
@@ -71,20 +76,32 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 emPos, prevView, prevProjection, dims, emInstID) - jitter;
             bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 &&
                               prevPix.x < IMG_W && prevPix.y < IMG_H);
-            g_dlssMVec[curPix] = validPrev ? float2(prevPix - curPix) : float2(0, 0);
+            float2 emMV = validPrev ? float2(prevPix - curPix) : float2(0, 0);
+            g_dlssMVec[curPix] = emMV;
+            biasMV = emMV;
+            isEmitterSurface = true;
+
+            // Provide real geometric normal so DLSS-RR can do proper edge detection
+            float3 emNormal = load_n1_g_with_instID(g_sample_current, pixelIdx, emInstID);
+            g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
         {
-            // Sky: no surface, infinite depth, no motion
-            g_dlssDepth[DTid.xy] = 65504.0f;
+            // Sky: no surface, clamped to cameraFar to stay within DLSS-RR's declared range
+            g_dlssDepth[DTid.xy] = 10000.0f;
             g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
+            g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
         }
 
-        g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-        g_dlssSpecularAlbedo[DTid.xy] = float4(0.5f, 0.5f, 0.5f, 0.0f);
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-        g_dlssRoughness[DTid.xy] = 0.0f;
-        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 65504.0f;
+        biasInstID = emInstID;
+
+        // Emitters are diffuse light sources — use roughness=1, diffuse albedo=1
+        // to route through DLSS-RR's diffuse denoiser (not the specular denoiser,
+        // which is view-dependent and causes direction-dependent trailing).
+        g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        g_dlssDiffuseAlbedo[DTid.xy] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        g_dlssRoughness[DTid.xy] = 1.0f;
+        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 10000.0f;
 
         // Tonemap bright emitters before DLSS-RR to prevent ghosting/ringing
         float3 dlssColor = accumulation / (1.0f + accumulation);
@@ -116,6 +133,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssMVec[curPix] = mvPixels;
         gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels), 0.0f, 1.0f);
 
+        biasInstID = sInstID;
+        biasMV = mvPixels;
+
         // Specular albedo
         float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
@@ -125,5 +145,38 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sv.x);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
+    }
+
+    // ── Bias hint: instance-ID-based disocclusion detection ──────────────────
+    // Compare current instID with the previous frame's instID at the reprojected
+    // pixel. Mismatch = different object = disocclusion → tell DLSS-RR to trust
+    // the current frame (bias=1). This provides exact object identity info that
+    // DLSS-RR cannot derive from depth/normals alone.
+    {
+        float disoccBias = 1.0f;  // default: trust current (off-screen, first frame)
+        float2 reprojPrev = float2(DTid.xy) + biasMV;
+        int2 prevPixI = int2(round(reprojPrev));
+        if (all(prevPixI >= 0) && all(prevPixI < int2(dims))) {
+            uint prevPixelIdx = MapPixelID(uint2(dims), prevPixI);
+            uint prevInstID = load_instID(g_sample_last, prevPixelIdx);
+            disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
+        }
+
+        // Emitter surfaces have deterministic direct emission — they don't benefit
+        // from temporal denoising. Always bias to current frame to prevent DLSS-RR
+        // from accumulating bright emitter color that persists as trails when the
+        // emitter moves.
+        float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
+
+        float bias = max(disoccBias, emitterBias);
+        g_dlssBiasHint[DTid.xy] = bias;
+
+        // For disoccluded non-emitter pixels, the GI reservoir is stale (it belonged
+        // to the previous frame's surface at this pixel). The specular hit distance
+        // from that reservoir is meaningless and can confuse DLSS-RR's temporal
+        // weighting. Fall back to primary ray depth as a safe substitute.
+        if (disoccBias > 0.5f && !isEmissiveOrSky) {
+            g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
+        }
     }
 }

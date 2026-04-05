@@ -126,8 +126,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                 sv.etai = load_etai(g_sample_current, pixelIdx);
                 sv.etat = load_etat(g_sample_current, pixelIdx);
 
-                p_c = GetPHat(ReconnectDI_v2(sv, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di)) * visReuse_c;
-                n_c = GetPHat(ReconnectDI_v2(sv, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di));
+                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di)) * visReuse_c;
+                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di));
                 x_c   = sv.x;
                 n_g_c = sv.n_g;
                 Pr_c  = sv.Pr;
@@ -145,8 +145,8 @@ void main(uint3 tid : SV_DispatchThreadID)
                 sv.etai = load_etai(g_sample_last, tempPixelIdx);
                 sv.etat = load_etat(g_sample_last, tempPixelIdx);
 
-                p_n = GetPHat(ReconnectDI_v2(sv, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di));
-                n_n = GetPHat(ReconnectDI_v2(sv, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di)) * visReuse_r;
+                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di));
+                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di)) * visReuse_r;
                 x_r   = sv.x;
                 n_g_r = sv.n_g;
                 Pr_r  = sv.Pr;

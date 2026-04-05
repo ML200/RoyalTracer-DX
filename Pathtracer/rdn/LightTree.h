@@ -310,6 +310,11 @@ public:
         std::vector<ComPtr<ID3D12Resource>> staging;
     };
 
+    // CPU-side copy of BLASRanges for dynamic worldToLocal updates
+    std::vector<BlasRangeGpu> m_cpuBlasRanges;
+
+    const std::vector<BlasRangeGpu>& GetCpuBLASRanges() const { return m_cpuBlasRanges; }
+
     // -------------------------- API -----------------------------------
 
     void Build(const std::vector<::LightTriangle>& tris, const Settings& cfg = {}) {
@@ -404,6 +409,9 @@ public:
                 triToLeafOff[tri] = j;
             }
         }
+
+        // Keep CPU copy of BLASRanges for dynamic worldToLocal updates
+        m_cpuBlasRanges = gpuRanges;
 
         // Upload everything (alias buffers removed)
         m_gpu = {};

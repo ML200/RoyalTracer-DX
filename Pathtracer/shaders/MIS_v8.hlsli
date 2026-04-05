@@ -107,7 +107,7 @@ float PairwiseMIS_Canonical_Spat_DI(
                 load_etai(g_sample_current, nIds[i]),
                 load_etat(g_sample_current, nIds[i]),
                 InitOrigin());
-            float p_hat_from = GetPHat(ReconnectDI_v2(sv_n, x2_c, n2_c, L2_c, objID_c));
+            float p_hat_from = GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.n_g, sv_n.o, sv_n.matID, x2_c, n2_c, L2_c, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, objID_c));
             p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, sv_n.x, n2_c, objID_c);
             // Visibility check
             {
@@ -155,7 +155,7 @@ float PairwiseMIS_Neighbor_Spat_DI(
         load_etai(g_sample_current, nID),
         load_etat(g_sample_current, nID),
         InitOrigin());
-    float p_n = visReuse * GetPHat(ReconnectDI_v2(sv_n, x2_n, n2_n, L2_n, objID_n));
+    float p_n = visReuse * GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.n_g, sv_n.o, sv_n.matID, x2_n, n2_n, L2_n, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, objID_n));
     // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
@@ -213,7 +213,12 @@ float PairwiseMIS_Canonical_Spat_GI(
 
             float Jn = 0.0f;
             float J = 0.0f;
-            float p_hat_from = GetPHat(ReconnectGI_v2(sv_n1, sv_c2, L2_c, pdfx2_c, J_c, true, Jn, J));
+            float p_hat_from = GetPHat(ReconnectGI(
+                sv_n1.x, sv_n1.n_s, sv_n1.n_g, sv_n1.o, sv_n1.matID,
+                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
+                sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, L2_c, sv_c2.o,
+                sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
+                pdfx2_c, J_c, true, Jn, J));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
                 p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;

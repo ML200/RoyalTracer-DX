@@ -131,7 +131,12 @@ void Pass_temp_gi_v8()
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
                     SurfaceVertex sv_c2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
 
-                    float3 c = ReconnectGI_v2(sv_r, sv_c2, rdi.L2_gi, rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
+                    float3 c = ReconnectGI(
+                        sv_r.x, sv_r.n_s, sv_r.n_g, sv_r.o, sv_r.matID,
+                        sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
+                        sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, rdi.L2_gi, sv_c2.o,
+                        sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
+                        rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
@@ -148,7 +153,12 @@ void Pass_temp_gi_v8()
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
                     SurfaceVertex sv_r2 = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
-                    float3 c = ReconnectGI_v2(sv_c, sv_r2, rdi_r.L2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
+                    float3 c = ReconnectGI(
+                        sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID,
+                        sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
+                        sv_r2.matID, sv_r2.x, sv_r2.n_s, sv_r2.n_g, rdi_r.L2_gi, sv_r2.o,
+                        sv_r2.Kd, sv_r2.Pr, sv_r2.Pm, sv_r2.etai, sv_r2.etat,
+                        rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);

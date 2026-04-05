@@ -34,6 +34,7 @@ struct BLASRootLocal {
 struct TLASRefitResult {
     std::vector<LightTLASNodeGpu> nodes;
     std::vector<uint32_t>         blasToItem;
+    std::vector<XMFLOAT4X4>      blasWorldToLocal;  // updated inverse transforms
 };
 
 // ═════════════════════════════════════════════════════════════════
@@ -174,7 +175,18 @@ public:
         for (uint32_t i = 0; i < (uint32_t)items.size(); ++i)
             blasToItem[items[i].idx] = i;
 
-        return { std::move(m_tlas), std::move(blasToItem) };
+        // Compute inverse world transforms (worldToLocal) for each BLAS
+        std::vector<XMFLOAT4X4> blasWorldToLocal(blasRoots.size());
+        for (uint32_t i = 0; i < (uint32_t)blasRoots.size(); ++i) {
+            XMFLOAT4X4 world = (blasRoots[i].instanceID < xforms.size())
+                ? xforms[blasRoots[i].instanceID].objectToWorld
+                : LT_IDENTITY_4X4;
+            XMVECTOR det;
+            XMMATRIX Winv = XMMatrixInverse(&det, XMLoadFloat4x4(&world));
+            XMStoreFloat4x4(&blasWorldToLocal[i], Winv);
+        }
+
+        return { std::move(m_tlas), std::move(blasToItem), std::move(blasWorldToLocal) };
     }
 
 private:

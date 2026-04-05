@@ -40,7 +40,12 @@ void Pass_spat_gi_v8_1()
         RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd0, rPr0, rPm0);
         SurfaceVertex sv2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rKd0, rPr0, rPm0, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
         float Jd1 = 0.0f, Jd2 = 0.0f;
-        float3 c = ReconnectGI_v2(sv1, sv2, rdi.L2_gi, rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
+        float3 c = ReconnectGI(
+            sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
+            sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
+            sv2.matID, sv2.x, sv2.n_s, sv2.n_g, rdi.L2_gi, sv2.o,
+            sv2.Kd, sv2.Pr, sv2.Pm, sv2.etai, sv2.etat,
+            rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
         gScratchPing[uint3(launchIndex, 2)] = float4(c * rdi.W_gi, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
@@ -161,7 +166,12 @@ void Pass_spat_gi_v8_1()
 
     {
         float Jdummy = 0.0f;
-        float3 contrib_c = ReconnectGI_v2(sv1, sv2_c, rdi.L2_gi, rdi.J_gi.x, 1.0f, false, Jn_canonical, Jdummy);
+        float3 contrib_c = ReconnectGI(
+            sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
+            sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
+            sv2_c.matID, sv2_c.x, sv2_c.n_s, sv2_c.n_g, rdi.L2_gi, sv2_c.o,
+            sv2_c.Kd, sv2_c.Pr, sv2_c.Pm, sv2_c.etai, sv2_c.etat,
+            rdi.J_gi.x, 1.0f, false, Jn_canonical, Jdummy);
         contrib_c *= visReuse;
         p_c = GetPHat(contrib_c);
         contrib_final = contrib_c;
@@ -205,7 +215,12 @@ void Pass_spat_gi_v8_1()
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
             SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
-            contrib_n = ReconnectGI_v2(sv1, sv2_n, rdi_r.L2_gi, rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
+            contrib_n = ReconnectGI(
+                sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
+                sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
+                sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
+                sv2_n.Kd, sv2_n.Pr, sv2_n.Pm, sv2_n.etai, sv2_n.etat,
+                rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
 
             // Visibility after reconnection
             {
