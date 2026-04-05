@@ -102,6 +102,8 @@ void AssetLoader::LoadModels(
         const UINT globalMatBase = (UINT)scene.materials.size();
         scene.materials.insert(scene.materials.end(),
             loaded.materials.begin(), loaded.materials.end());
+        scene.materialNames.insert(scene.materialNames.end(),
+            loaded.materialNames.begin(), loaded.materialNames.end());
 
         const UINT meshBaseIdx = (UINT)scene.meshes.size();
 

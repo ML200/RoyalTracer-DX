@@ -14,6 +14,7 @@
 #include "Raytracing/PassSystem.h"
 #include "PostProcess/DLSSManager.h"
 #include "Editor/Editor.h"
+#include "../engine/Camera/FlyCamController.h"
 #include "LightTree.h"
 #include "Lighting/LightTreeRefit.h"
 #include "CameraRecorder.h"
@@ -37,6 +38,7 @@ public:
     Scene&         GetScene()       { return m_scene; }
     Camera&        GetCamera()      { return m_camera; }
     DeviceContext& GetContext()      { return m_ctx; }
+    void           SetFlyCam(FlyCamController* fc) { m_flyCam = fc; }
     UINT           GetWidth() const { return m_width; }
     UINT           GetHeight() const{ return m_height; }
     float          GetAspectRatio() const { return m_aspectRatio; }
@@ -67,6 +69,7 @@ private:
     PassSystem          m_passes;
     DLSSManager         m_dlss;
     Editor              m_editor;
+    FlyCamController*   m_flyCam = nullptr;
     ReSTIRSettings      m_restirSettings;
     lt::LightTreeBuilder m_lightTree;
     lt::LightTreeRefitManager m_lightTreeRefit;

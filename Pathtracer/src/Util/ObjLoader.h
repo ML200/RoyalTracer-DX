@@ -25,6 +25,70 @@
 
 struct TextureData;
 constexpr float PI = 3.14159265359f;
+
+// ============================================================================
+// DDS texture loading helpers (using DirectXTex)
+// ============================================================================
+
+inline bool isDDSExtension(const std::string& filename) {
+    if (filename.size() < 4) return false;
+    std::string ext = filename.substr(filename.size() - 4);
+    return (ext == ".dds" || ext == ".DDS" || ext == ".Dds");
+}
+
+inline bool isDDSMemory(const uint8_t* data, size_t size) {
+    return size >= 4 && data[0] == 'D' && data[1] == 'D' && data[2] == 'S' && data[3] == ' ';
+}
+
+inline bool LoadDDSFileToRGBA8(const std::string& path, DXGI_FORMAT targetFormat, DirectX::ScratchImage& outImage) {
+    using namespace DirectX;
+    std::wstring wpath(path.begin(), path.end());
+    ScratchImage ddsImage;
+    TexMetadata meta;
+    HRESULT hr = LoadFromDDSFile(wpath.c_str(), DDS_FLAGS_NONE, &meta, ddsImage);
+    if (FAILED(hr)) return false;
+    if (meta.format == targetFormat) { outImage = std::move(ddsImage); return true; }
+    if (IsCompressed(meta.format)) {
+        ScratchImage decompressed;
+        hr = Decompress(*ddsImage.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+        if (FAILED(hr)) return false;
+        ddsImage = std::move(decompressed);
+        meta = ddsImage.GetMetadata();
+    }
+    if (meta.format != targetFormat) {
+        ScratchImage converted;
+        hr = Convert(*ddsImage.GetImage(0, 0, 0), targetFormat, TEX_FILTER_DEFAULT, 0.5f, converted);
+        if (FAILED(hr)) return false;
+        ddsImage = std::move(converted);
+    }
+    outImage = std::move(ddsImage);
+    return true;
+}
+
+inline bool LoadDDSMemoryToRGBA8(const uint8_t* data, size_t size, DXGI_FORMAT targetFormat, DirectX::ScratchImage& outImage) {
+    using namespace DirectX;
+    ScratchImage ddsImage;
+    TexMetadata meta;
+    HRESULT hr = LoadFromDDSMemory(data, size, DDS_FLAGS_NONE, &meta, ddsImage);
+    if (FAILED(hr)) return false;
+    if (meta.format == targetFormat) { outImage = std::move(ddsImage); return true; }
+    if (IsCompressed(meta.format)) {
+        ScratchImage decompressed;
+        hr = Decompress(*ddsImage.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
+        if (FAILED(hr)) return false;
+        ddsImage = std::move(decompressed);
+        meta = ddsImage.GetMetadata();
+    }
+    if (meta.format != targetFormat) {
+        ScratchImage converted;
+        hr = Convert(*ddsImage.GetImage(0, 0, 0), targetFormat, TEX_FILTER_DEFAULT, 0.5f, converted);
+        if (FAILED(hr)) return false;
+        ddsImage = std::move(converted);
+    }
+    outImage = std::move(ddsImage);
+    return true;
+}
+
 // Texture packing
 constexpr int TARGET_TEXTURE_DIM = 2048;
 
@@ -47,6 +111,7 @@ struct LoadedMesh {
 struct LoadedScene {
     std::vector<LoadedMesh>  meshes;      // unique geometries (local-space vertices)
     std::vector<Material>    materials;   // all materials for this scene (0-based)
+    std::vector<std::string> materialNames; // parallel to materials (for editor display)
     // Per-instance: which mesh + what transform
     std::vector<std::pair<UINT, XMMATRIX>> instances; // (meshIndex into meshes[], worldTransform)
 };
@@ -584,15 +649,25 @@ public:
             std::string fullPath = materialPath + filename;
             std::string cacheKey = fullPath + (isBumpMap ? "_bump_v2_uncompressed" : "_uncompressed") + srgb_suffix;
             if (textureMap.count(cacheKey)) return static_cast<int>(textureMap[cacheKey]);
-            int width, height, channels;
-            unsigned char* data = stbi_load(fullPath.c_str(), &width, &height, &channels, 4);
-            if (!data) { std::cerr << "  ERROR: Failed to load texture: " << fullPath << std::endl; return -1; }
             DXGI_FORMAT format = isSrgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
+            int width, height, channels;
             ScratchImage scratchImage;
-            HRESULT hr = scratchImage.Initialize2D(format, width, height, 1, 1);
-            if (FAILED(hr)) { stbi_image_free(data); return -1; }
-            memcpy(scratchImage.GetPixels(), data, scratchImage.GetPixelsSize());
-            stbi_image_free(data);
+            HRESULT hr;
+            if (isDDSExtension(filename)) {
+                if (!LoadDDSFileToRGBA8(fullPath, format, scratchImage)) {
+                    std::cerr << "  ERROR: Failed to load DDS texture: " << fullPath << std::endl; return -1;
+                }
+                width = (int)scratchImage.GetMetadata().width;
+                height = (int)scratchImage.GetMetadata().height;
+                channels = 4;
+            } else {
+                unsigned char* data = stbi_load(fullPath.c_str(), &width, &height, &channels, 4);
+                if (!data) { std::cerr << "  ERROR: Failed to load texture: " << fullPath << std::endl; return -1; }
+                hr = scratchImage.Initialize2D(format, width, height, 1, 1);
+                if (FAILED(hr)) { stbi_image_free(data); return -1; }
+                memcpy(scratchImage.GetPixels(), data, scratchImage.GetPixelsSize());
+                stbi_image_free(data);
+            }
             TextureData texData;
             texData.original_width = width; texData.original_height = height;
             if (isBumpMap && channels < 3) {
@@ -623,8 +698,19 @@ public:
             if (textureMap.count(combinedKey)) return (int)textureMap[combinedKey];
             auto load_single_channel = [&](const std::string& fname, ScratchImage& out) -> bool {
                 if (fname.empty()) return false;
+                std::string fpath = materialPath + fname;
+                if (isDDSExtension(fname)) {
+                    ScratchImage rgba;
+                    if (!LoadDDSFileToRGBA8(fpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba)) return false;
+                    int w = (int)rgba.GetMetadata().width, h = (int)rgba.GetMetadata().height;
+                    out.Initialize2D(DXGI_FORMAT_R8_UNORM, w, h, 1, 1);
+                    const uint8_t* src = rgba.GetPixels();
+                    uint8_t* dst = out.GetPixels();
+                    for (size_t i = 0; i < (size_t)w * h; ++i) dst[i] = src[i * 4];
+                    return true;
+                }
                 int w, h, c;
-                unsigned char* img_data = stbi_load((materialPath + fname).c_str(), &w, &h, &c, 1);
+                unsigned char* img_data = stbi_load(fpath.c_str(), &w, &h, &c, 1);
                 if (!img_data) return false;
                 out.Initialize2D(DXGI_FORMAT_R8_UNORM, w, h, 1, 1);
                 memcpy(out.GetPixels(), img_data, out.GetPixelsSize());
@@ -682,24 +768,44 @@ public:
             int dw = 1, dh = 1;
             ScratchImage diffuseImage;
             if (!diffuse_fname.empty()) {
-                int dc;
-                unsigned char* ddata = stbi_load((materialPath + diffuse_fname).c_str(), &dw, &dh, &dc, 4);
-                if (!ddata) { std::cerr << "  ERROR: Failed to load diffuse: " << diffuse_fname << std::endl; return -1; }
-                diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, dw, dh, 1, 1);
-                memcpy(diffuseImage.GetPixels(), ddata, diffuseImage.GetPixelsSize());
-                stbi_image_free(ddata);
+                std::string dfpath = materialPath + diffuse_fname;
+                if (isDDSExtension(diffuse_fname)) {
+                    if (!LoadDDSFileToRGBA8(dfpath, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, diffuseImage)) {
+                        std::cerr << "  ERROR: Failed to load DDS diffuse: " << diffuse_fname << std::endl; return -1;
+                    }
+                    dw = (int)diffuseImage.GetMetadata().width; dh = (int)diffuseImage.GetMetadata().height;
+                } else {
+                    int dc;
+                    unsigned char* ddata = stbi_load(dfpath.c_str(), &dw, &dh, &dc, 4);
+                    if (!ddata) { std::cerr << "  ERROR: Failed to load diffuse: " << diffuse_fname << std::endl; return -1; }
+                    diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, dw, dh, 1, 1);
+                    memcpy(diffuseImage.GetPixels(), ddata, diffuseImage.GetPixelsSize());
+                    stbi_image_free(ddata);
+                }
             } else {
                 diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 1, 1, 1, 1);
                 uint8_t* px = diffuseImage.GetPixels(); px[0]=px[1]=px[2]=px[3]=255;
             }
             if (!opacity_fname.empty()) {
-                int ow, oh, oc;
-                unsigned char* odata = stbi_load((materialPath + opacity_fname).c_str(), &ow, &oh, &oc, 1);
-                if (!odata) return -1;
+                std::string ofpath = materialPath + opacity_fname;
                 ScratchImage opacityImage;
-                opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
-                memcpy(opacityImage.GetPixels(), odata, opacityImage.GetPixelsSize());
-                stbi_image_free(odata);
+                int ow, oh;
+                if (isDDSExtension(opacity_fname)) {
+                    ScratchImage rgba;
+                    if (!LoadDDSFileToRGBA8(ofpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba)) return -1;
+                    ow = (int)rgba.GetMetadata().width; oh = (int)rgba.GetMetadata().height;
+                    opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
+                    const uint8_t* src = rgba.GetPixels();
+                    uint8_t* dst = opacityImage.GetPixels();
+                    for (size_t i = 0; i < (size_t)ow * oh; ++i) dst[i] = src[i * 4];
+                } else {
+                    int oc;
+                    unsigned char* odata = stbi_load(ofpath.c_str(), &ow, &oh, &oc, 1);
+                    if (!odata) return -1;
+                    opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
+                    memcpy(opacityImage.GetPixels(), odata, opacityImage.GetPixelsSize());
+                    stbi_image_free(odata);
+                }
                 if (ow != dw || oh != dh) {
                     ScratchImage resized;
                     Resize(*opacityImage.GetImage(0,0,0), dw, dh, TEX_FILTER_DEFAULT, resized);
@@ -731,6 +837,7 @@ public:
         // Index 0 = default material
         Material defaultMaterial;
         scene.materials.push_back(defaultMaterial);
+        scene.materialNames.push_back("(default)");
 
         for (const auto& mat : materials) {
             Material t_mat;
@@ -761,6 +868,7 @@ public:
                 t_mat.rmaTexID = -1;
             }
             scene.materials.push_back(t_mat);
+            scene.materialNames.push_back(mat.name);
         }
 
         // ---- Geometry: single LoadedMesh for the whole OBJ ----
@@ -865,6 +973,21 @@ public:
                            const tg3_image_request* request,
                            void* /*user_data*/) -> int32_t
         {
+            if (isDDSMemory(request->data, request->data_size)) {
+                DirectX::ScratchImage ddsImage;
+                if (LoadDDSMemoryToRGBA8(request->data, request->data_size, DXGI_FORMAT_R8G8B8A8_UNORM, ddsImage)) {
+                    const auto& meta = ddsImage.GetMetadata();
+                    size_t pixelSize = meta.width * meta.height * 4;
+                    uint8_t* pixels = (uint8_t*)malloc(pixelSize);
+                    if (pixels) {
+                        memcpy(pixels, ddsImage.GetPixels(), pixelSize);
+                        result->pixels = pixels; result->width = (int)meta.width; result->height = (int)meta.height;
+                        result->component = 4; result->bits = 8;
+                        result->pixel_type = TG3_COMPONENT_TYPE_UNSIGNED_BYTE;
+                        return 1;
+                    }
+                }
+            }
             int w, h, c;
             unsigned char* data = stbi_load_from_memory(request->data, (int)request->data_size, &w, &h, &c, 4);
             if (!data) return 0;
@@ -873,7 +996,7 @@ public:
             result->pixel_type = TG3_COMPONENT_TYPE_UNSIGNED_BYTE;
             return 1;
         };
-        opts.image.free_image = [](uint8_t* pixels, void*) { stbi_image_free(pixels); };
+        opts.image.free_image = [](uint8_t* pixels, void*) { free(pixels); };
         opts.image.user_data = nullptr;
 
         tg3_error_code ec = tg3_parse_glb(&model, &errors, fileData.data(), (uint64_t)fileSize, nullptr, 0, &opts);
@@ -903,8 +1026,21 @@ public:
                 const tg3_buffer_view& bv = model.buffer_views[img.buffer_view];
                 if (bv.buffer >= 0 && bv.buffer < (int)model.buffers_count) {
                     const tg3_buffer& buf = model.buffers[bv.buffer];
+                    const uint8_t* bvData = buf.data.data + bv.byte_offset;
+                    size_t bvSize = bv.byte_length;
+                    if (isDDSMemory(bvData, bvSize)) {
+                        DirectX::ScratchImage ddsImage;
+                        if (LoadDDSMemoryToRGBA8(bvData, bvSize, DXGI_FORMAT_R8G8B8A8_UNORM, ddsImage)) {
+                            const auto& meta = ddsImage.GetMetadata();
+                            size_t pixelSize = meta.width * meta.height * 4;
+                            decodedImages[i].pixels.assign(ddsImage.GetPixels(), ddsImage.GetPixels() + pixelSize);
+                            decodedImages[i].width = (int)meta.width; decodedImages[i].height = (int)meta.height;
+                            decodedImages[i].channels = 4;
+                            continue;
+                        }
+                    }
                     int w, h, c;
-                    unsigned char* decoded = stbi_load_from_memory(buf.data.data + bv.byte_offset, (int)bv.byte_length, &w, &h, &c, 4);
+                    unsigned char* decoded = stbi_load_from_memory(bvData, (int)bvSize, &w, &h, &c, 4);
                     if (decoded) {
                         decodedImages[i].pixels.assign(decoded, decoded + w*h*4);
                         decodedImages[i].width = w; decodedImages[i].height = h; decodedImages[i].channels = 4;
@@ -985,7 +1121,8 @@ public:
 
         // ---- 4. Materials (scene-local, 0-based) --------------------------------
         Material defaultMaterial;
-        scene.materials.push_back(defaultMaterial);  // index 0 = default
+        scene.materials.push_back(defaultMaterial);
+        scene.materialNames.push_back("(default)");
 
         for (uint32_t mi = 0; mi < model.materials_count; ++mi) {
             const tg3_material& gmat = model.materials[mi];
@@ -1053,6 +1190,7 @@ public:
             t_mat.rmaTexID = (mrImg >= 0 || aoImg >= 0) ? processGltfRMA(mrImg, aoImg, roughness, metallic, rmaTextures) : -1;
 
             scene.materials.push_back(t_mat);
+            scene.materialNames.push_back(tg3_to_string(gmat.name));
         }
 
         // ---- 5. Collect mesh instances via scene graph --------------------------

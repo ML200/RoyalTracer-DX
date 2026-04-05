@@ -29,7 +29,8 @@ public:
         const XMMATRIX& prevViewMatrix,
         const XMMATRIX& prevProjMatrix,
         float jitterX, float jitterY,
-        uint32_t jitterFrameIndex);
+        uint32_t jitterFrameIndex,
+        float fov, float nearZ, float farZ);
 
     // ── Resolution accessors ──────────────────────────────────────
     UINT RenderWidth()  const { return m_renderWidth; }
@@ -54,7 +55,6 @@ public:
 
     // Editor-exposed settings
     sl::DLSSMode mode = sl::DLSSMode::eDLAA;
-    float fovDegrees  = 60.0f;
 
 private:
     void CreateInputTextures(ID3D12Device* device);

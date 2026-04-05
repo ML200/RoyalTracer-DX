@@ -172,7 +172,9 @@ void Renderer::UpdateRenderer(float dt) {
 
     // Build editor UI — must run before UpdateInstanceProperties so
     // MarkModelMoved() changes are picked up in the same frame
-    m_editor.Draw(m_scene, m_camera, m_passes, m_dlss, m_restirSettings, m_fps, m_frameStats);
+    static FlyCamController dummyFlyCam;
+    m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
+                  m_passes, m_dlss, m_restirSettings, m_fps, m_frameStats);
 
     // Prepare instance data on CPU shadow buffer (overlaps with GPU)
     auto t_instStart = hrc::now();
@@ -963,7 +965,8 @@ void Renderer::PopulateCommandList() {
                 *m_ctx.frameToken, m_ctx.viewportHandle,
                 m_aspectRatio,
                 m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(),
-                m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame());
+                m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame(),
+                m_camera.fovDegrees, m_camera.nearPlane, m_camera.farPlane);
 
             // Now safe to advance prev matrices for next frame
             m_camera.AdvanceFrame();

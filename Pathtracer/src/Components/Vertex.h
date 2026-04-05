@@ -1,6 +1,7 @@
 #pragma once
 #include <DirectXMath.h>
 #include <DirectXTex.h>
+#include <string>
 
 struct TextureData {
     DirectX::ScratchImage image;

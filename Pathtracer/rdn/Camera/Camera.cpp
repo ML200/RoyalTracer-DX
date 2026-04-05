@@ -12,7 +12,7 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setLookat(
         glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
-    nv_helpers_dx12::CameraManip.setSpeed(0.0f);
+    nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
     // Create GPU constant buffer (6 matrices + extras + SunSettings)
     uint32_t matCount = 6;

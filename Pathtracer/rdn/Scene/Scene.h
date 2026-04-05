@@ -73,6 +73,7 @@ struct Scene {
     std::vector<SceneInstance>  instances;
     std::vector<SceneModel>     models;
     std::vector<Material>       materials;
+    std::vector<std::string>    materialNames;  // parallel to materials (CPU-only, for editor)
     std::vector<UINT>           materialIDs;
 
     // TLAS instance pairs (BLAS resource + transform)
