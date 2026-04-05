@@ -18,7 +18,7 @@
 class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
-        return {{ "./car/car.obj", XMMatrixIdentity() }};
+        return {{ "./testScene_2/testScene_2.obj", XMMatrixIdentity() }};
     }
     void Init(SceneManager& sm, Renderer& r) override {
         /*EmissiveCubes::Params p;
