@@ -129,6 +129,10 @@ void Pass_temp_gi_v8()
 
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
+
+                    // Reject specular-metal x2: reconnection to tight metallic lobes is unreliable
+                    if (rcPr < 0.5f && rcPm > 0.5f) { p_n = 0.0f; }
+                    else {
                     SurfaceVertex sv_c2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
 
                     float3 c = ReconnectGI(
@@ -141,6 +145,7 @@ void Pass_temp_gi_v8()
                     float ph = GetPHat(c);
                     { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
                       p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    }
                 }
 
                 // n_c: reconnect from current vertex to neighbor GI reservoir sample
@@ -151,6 +156,10 @@ void Pass_temp_gi_v8()
 
                     float3 rrKd; float rrPr, rrPm;
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
+
+                    // Reject specular-metal x2: reconnection to tight metallic lobes is unreliable
+                    if (rrPr < 0.5f && rrPm > 0.5f) { n_c = 0.0f; }
+                    else {
                     SurfaceVertex sv_r2 = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
 
                     float3 c = ReconnectGI(
@@ -163,6 +172,7 @@ void Pass_temp_gi_v8()
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
                       n_c = ph * ((_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    }
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;

@@ -335,7 +335,7 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         if (ImGui::CollapsingHeader("PBR", ImGuiTreeNodeFlags_DefaultOpen)) {
             changed |= ImGui::SliderFloat("Roughness", &mat.Pr_Pm_Ps_Pc.x, 0.0f, 1.0f);
             changed |= ImGui::SliderFloat("Metallic",  &mat.Pr_Pm_Ps_Pc.y, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Specular",  &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Sheen",     &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
         }
 
         // ── Clearcoat ────────────────────────────────────────────
