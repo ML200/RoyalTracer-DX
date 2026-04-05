@@ -38,7 +38,8 @@
       "Bash(find /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer -type f -name *.h -o -name *.hpp)",
       "Bash(grep -r 'struct Material' /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer --include=*.h --include=*.hpp)",
       "Bash(grep -r \"\\\\.Kd\\\\|\\\\.Ke\\\\|\\\\.Pr_Pm\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer --include=*.h --include=*.hpp --include=*.cpp)",
-      "Bash(grep -n \"materialsDirty\\\\|MarkMaterialsDirty\\\\|UpdateMaterialBuffer\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/rdn/Renderer*.cpp)"
+      "Bash(grep -n \"materialsDirty\\\\|MarkMaterialsDirty\\\\|UpdateMaterialBuffer\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/rdn/Renderer*.cpp)",
+      "Bash(grep -n \"BSDF_term\\\\|G_term\\\\|PDF_term\\\\|GetPHat\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders/*.hlsli)"
     ]
   }
 }
