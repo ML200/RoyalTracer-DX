@@ -529,10 +529,11 @@ void SetReservoirGI_ConstHit(
     p2.w = objID;
     buf.Store4(base + O_GI_PACK2, p2);
 
-    // Pack3: matID (preserve local material packed fields)
-    uint4 p3 = buf.Load4(base + O_GI_PACK3);
-    p3.w = matID;
-    buf.Store4(base + O_GI_PACK3, p3);
+    // Pack3: matID (preserve uv + etai_etat, update matID only)
+    // Pack3 is 12 bytes (3 uints): [uv_packed, etai_etat_packed, matID]
+    uint3 p3 = buf.Load3(base + O_GI_PACK3);
+    p3.z = matID;
+    buf.Store3(base + O_GI_PACK3, p3);
 }
 
 void SetReservoirGI_UVAndIOR(

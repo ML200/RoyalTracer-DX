@@ -103,7 +103,8 @@ void SceneManager::SyncToRenderer(Renderer& renderer) {
             }
             ++engineIdx;
         }
-        scene.tlasDirty = true;
+        scene.tlasDirty      = true;
+        scene.lightTreeDirty = true;
         m_anyDirty = false;
     }
 }

@@ -73,13 +73,18 @@ private:
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;
     std::vector<lt::LightTLASNodeGpu> m_pendingTLASUpload;
     std::vector<uint32_t> m_pendingBLASToItem;
+    std::vector<lt::BlasRangeGpu> m_pendingBLASRanges;
     ComPtr<ID3D12Resource> m_tlasUploadStaging;
     ComPtr<ID3D12Resource> m_blasToItemUploadStaging;
+    ComPtr<ID3D12Resource> m_rangesUploadStaging;
     ComPtr<ID3D12Resource> m_ltTlasGpu;
     ComPtr<ID3D12Resource> m_ltBtIGpu;
-    UINT m_ltTlasGpuCapacity  = 0;
-    UINT m_ltBtIGpuCapacity   = 0;
+    ComPtr<ID3D12Resource> m_ltRangesGpu;
+    UINT m_ltTlasGpuCapacity   = 0;
+    UINT m_ltBtIGpuCapacity    = 0;
+    UINT m_ltRangesGpuCapacity = 0;
     static constexpr UINT LT_TLAS_SRV_SLOT        = 20;
+    static constexpr UINT LT_BLASRANGES_SRV_SLOT   = 22;
     static constexpr UINT LT_BLASTOITEM_SRV_SLOT   = 27;
 
     bool m_emissiveGpuDirty = false;

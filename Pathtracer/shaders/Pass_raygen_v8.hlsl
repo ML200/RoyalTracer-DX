@@ -52,6 +52,7 @@ void Pass_raygen_v8()
     }
 
     // ── Bounce loop ────────────────────────────────────────────────────
+    int phantomBudget = 8; // safety cap: max phantom surfaces before they consume depth
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
@@ -123,6 +124,7 @@ void Pass_raygen_v8()
         {
             rayOrigin = hitPos;
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
+            if (phantomBudget-- > 0) --depth; // don't consume depth for phantoms (capped to prevent GPU hang)
             continue;
         }
 

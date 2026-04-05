@@ -91,6 +91,7 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
     createRenderTex(m_specHitDist,      DXGI_FORMAT_R16_FLOAT,          L"DLSS_HitDist");
     createRenderTex(m_transparency,     DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Trans");
     createRenderTex(m_colorBeforeTrans, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_ColorPreTrans");
+    createRenderTex(m_biasHint,         DXGI_FORMAT_R8_UNORM,           L"DLSS_BiasHint");
 
     // Output (at display resolution — DLSS upscales to this)
     createDisplayTex(m_output,          DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Output");
@@ -99,7 +100,8 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
     ID3D12Resource* allRes[] = {
         m_depth.Get(), m_mvec.Get(), m_normals.Get(), m_diffuseAlbedo.Get(),
         m_output.Get(), m_specAlbedo.Get(), m_roughness.Get(), m_specMvec.Get(),
-        m_specHitDist.Get(), m_transparency.Get(), m_colorBeforeTrans.Get()
+        m_specHitDist.Get(), m_transparency.Get(), m_colorBeforeTrans.Get(),
+        m_biasHint.Get()
     };
     for (auto* r : allRes)
         m_state.SetInitialState(r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -158,7 +160,8 @@ void DLSSManager::Evaluate(
     // Transition inputs UAV → SRV
     ID3D12Resource* dlssInputs[] = {
         m_depth.Get(), m_mvec.Get(), m_normals.Get(), m_diffuseAlbedo.Get(),
-        m_specAlbedo.Get(), m_roughness.Get(), m_specHitDist.Get(), m_input.Get()
+        m_specAlbedo.Get(), m_roughness.Get(), m_specHitDist.Get(), m_input.Get(),
+        m_biasHint.Get()
     };
     std::vector<D3D12_RESOURCE_BARRIER> preB;
     for (auto* r : dlssInputs)
@@ -232,6 +235,7 @@ void DLSSManager::Evaluate(
     sl::Resource slRough   (sl::ResourceType::eTex2d, m_roughness.Get(),     (uint32_t)stateSRV);
     sl::Resource slSpecHit (sl::ResourceType::eTex2d, m_specHitDist.Get(),   (uint32_t)stateSRV);
     sl::Resource slInput   (sl::ResourceType::eTex2d, m_input.Get(),         (uint32_t)stateSRV);
+    sl::Resource slBias    (sl::ResourceType::eTex2d, m_biasHint.Get(),      (uint32_t)stateSRV);
     sl::Resource slOutput  (sl::ResourceType::eTex2d, m_output.Get(),        (uint32_t)stateUAV);
 
     // Inputs use render extent, output uses display extent
@@ -248,6 +252,7 @@ void DLSSManager::Evaluate(
         { &slSpecAlb, sl::kBufferTypeSpecularAlbedo,       life, &renderExtent  },
         { &slSpecHit, sl::kBufferTypeSpecularHitDistance,   life, &renderExtent  },
         { &slInput,   sl::kBufferTypeScalingInputColor,    life, &renderExtent  },
+        { &slBias,    sl::kBufferTypeBiasCurrentColorHint, life, &renderExtent  },
         { &slOutput,  sl::kBufferTypeScalingOutputColor,   life, &displayExtent },
     };
     SL_CHECK(slSetTagForFrame(frameToken, viewport, tags.data(), (uint32_t)tags.size(), cmdList));

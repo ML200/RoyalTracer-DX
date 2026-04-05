@@ -42,7 +42,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         sv_c.etai = load_etai(g_sample_current, pixelIdx);
         sv_c.etat = load_etat(g_sample_current, pixelIdx);
         const float vis = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-        float3 c = ReconnectDI_v2(sv_c, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di) * vis;
+        float3 c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi.objID_di) * vis;
         gScratchPing[uint3(tid.xy, 1)] = float4(c * rdi.W_di, 0);
         storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
         return;
@@ -145,7 +145,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     sv_c.etat = load_etat(g_sample_current, pixelIdx);
 
     const float visReuse = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-    float3 contrib_c = ReconnectDI_v2(sv_c, rdi.x2_di, rdi.n2_di, rdi.L2_di, rdi.objID_di) * visReuse;
+    float3 contrib_c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi.objID_di) * visReuse;
     float  p_c           = GetPHat(contrib_c);
     float3 contrib_final = contrib_c;
 
@@ -168,7 +168,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nID);
 
         // Reconnect neighbor sample at canonical position
-        float3 contrib_n = ReconnectDI_v2(sv_c, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, rdi_r.objID_di);
+        float3 contrib_n = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi_r.objID_di);
         // Visibility check
         {
             float3 _vd; float _vt;

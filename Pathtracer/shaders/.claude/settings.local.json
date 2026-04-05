@@ -23,7 +23,17 @@
       "Bash(CMAKE=\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\")",
       "Bash(\"$CMAKE\" -S /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer -B /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug -G \"Visual Studio 17 2022\" -A x64)",
       "Bash(\"$CMAKE\" --build /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/out/build/x64-Debug --config Debug)",
-      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DX -name *v8.hlsli -type f)"
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DX -name *v8.hlsli -type f)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer -type f -name *.hlsl -o -name *.slang)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer -name Renderer.cpp -o -name DLSSManager*)",
+      "Bash(grep -rn \"InitDirection\\\\|jitter\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders/*.hlsli)",
+      "Bash(grep -r \"prevView\\\\|prevProjection\\\\|prevProj\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer --include=*.cpp --include=*.h)",
+      "Bash(grep -r kBufferType C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerstreamline --include=*.h)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer -name *.cpp -o -name *.h)",
+      "Bash(grep -r Evaluate C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
+      "Bash(grep -r \"prevView\\\\|prevProjection\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
+      "Bash(grep -r \"DLSSManager::Evaluate\\\\|dlss.*Evaluate\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.cpp)",
+      "Bash(grep -n g_dlss C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsl C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders*.hlsli)"
     ]
   }
 }

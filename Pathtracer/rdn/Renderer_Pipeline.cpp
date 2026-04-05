@@ -232,7 +232,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 34, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 35, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 12, 11, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
@@ -704,7 +704,7 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateUnorderedAccessView(m_stackBuffers[s].Get(), nullptr, &ud, handle); next();
     }
 
-    // Slots 39-50: DLSS UAVs
+    // Slots 39-51: DLSS UAVs
     auto dlssUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -723,6 +723,7 @@ void Renderer::CreateShaderResourceHeap() {
     dlssUAV(m_dlss.Transparency(),     DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.Input(),            DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.BiasHint(),         DXGI_FORMAT_R8_UNORM);
 
     // Sort buffer UAVs (staging + main heap)
     auto sortUAV = [&](ComPtr<ID3D12Resource>& buf, UINT numElements) {

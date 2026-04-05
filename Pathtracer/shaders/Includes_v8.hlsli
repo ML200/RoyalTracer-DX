@@ -167,3 +167,6 @@ RWTexture2D<float4> g_dlssTransparency    : register(u20); // DXGI_FORMAT_R16G16
 RWTexture2D<float4> g_dlssColorPreTrans   : register(u21); // DXGI_FORMAT_R16G16B16A16_FLOAT
 
 RWTexture2D<float4> g_dlssInput : register(u22);
+
+// Disocclusion bias hint — tells DLSS-RR to trust current frame (1.0 = reset temporal history)
+RWTexture2D<float>  g_dlssBiasHint       : register(u23); // DXGI_FORMAT_R8_UNORM
