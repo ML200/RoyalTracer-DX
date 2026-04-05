@@ -254,6 +254,7 @@ void Pass_spat_gi_v8_1()
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.J_gi, rdi_r.F_gi,
+                rdi_r.seed_gi,
                 seed
             ))
         {

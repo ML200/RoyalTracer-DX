@@ -29,10 +29,12 @@ void Pass_raygen_v8()
     store_W_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
     store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
     store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
+    store_seed_gi(g_Reservoirs_current_gi, pixelIdx, initRandomData(pixel, uint2(8, 4), time, 7u));
     store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
 
     // ── Path state ─────────────────────────────────────────────────────
     uint   seed       = initRandomData(pixel, uint2(8, 4), time, 1u);
+    uint   seedBSDF   = initRandomData(pixel, uint2(8, 4), time, 7u);
     float3 rayOrigin  = InitOrigin();
     float3 rayDir     = InitDirection(pixel, float2(imgSize), seed);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
@@ -314,7 +316,7 @@ void Pass_raygen_v8()
 
         // ── Sample next direction (BSDF) ──────────────────────────────
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seedBSDF, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
         // Track BSDF pdf at reconnection vertex for GI jacobian
