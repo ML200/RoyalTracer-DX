@@ -19,8 +19,8 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./sponza_tex/sponza_tex.obj", XMMatrixIdentity() },
-            { "./car/car.obj", XMMatrixIdentity() }
+            { "./salle_de_bain/salle_de_bain.obj", XMMatrixIdentity() },
+            //{ "./car/car.obj", XMMatrixIdentity() }
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {
