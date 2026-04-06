@@ -54,7 +54,7 @@ struct ScopedTimer {
 #define SCOPE_TIMER(label) ScopedTimer _scopedTimer_##__LINE__(label)
 
 // ── Constants ────────────────────────────────────────────────────
-static constexpr UINT  FRAME_COUNT          = 2;
+static constexpr UINT  FRAME_COUNT          = 3;
 static constexpr UINT  MAX_STACKS           = 4;
 static constexpr UINT  MAX_INDIRECT_COMMANDS = MAX_STACKS;
 static constexpr UINT  SORT_BUCKETS         = 65536;
