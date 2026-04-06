@@ -36,7 +36,7 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     ray.TMin      = 0.001f;
     ray.TMax      = tMax;
 
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
     while (q.Proceed())

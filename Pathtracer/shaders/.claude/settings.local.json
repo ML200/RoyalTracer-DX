@@ -44,7 +44,32 @@
       "WebFetch(domain:devblogs.microsoft.com)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:microsoft.github.io)",
-      "WebFetch(domain:developer.nvidia.com)"
+      "WebFetch(domain:developer.nvidia.com)",
+      "Bash(find C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracershaders -type f \\\\\\(-name *.hlsl -o -name *.hlsli \\\\\\))",
+      "Bash(grep -l \"TraceRay\\\\|RayQuery\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)",
+      "WebFetch(domain:docs.vulkan.org)",
+      "WebFetch(domain:raytracing-docs.nvidia.com)",
+      "WebFetch(domain:gustafwaldemarson.com)",
+      "WebFetch(domain:blog.42yeah.is)",
+      "WebFetch(domain:developer.download.nvidia.com)",
+      "WebFetch(domain:patents.google.com)",
+      "Bash(cat:*)",
+      "Read(//c/tmp/**)",
+      "Bash(g++ -o verify_bird verify_bird.cpp -std=c++17 -O2)",
+      "Bash(./verify_bird)",
+      "Bash(where cl:*)",
+      "Bash(where gcc:*)",
+      "Bash(where g++)",
+      "Bash(where clang++)",
+      "Read(//c/msys64/mingw64/bin/**)",
+      "Bash(cp /tmp/verify_bird.cpp /c/tmp/verify_bird.cpp)",
+      "Bash(mkdir -p /c/tmp)",
+      "Bash(cmd.exe //c \"call \"\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\"\" >NUL 2>&1 && cl /EHsc /O2 /std:c++17 C:\\\\tmp\\\\verify_bird.cpp /Fe:C:\\\\tmp\\\\verify_bird.exe >NUL 2>&1 && C:\\\\tmp\\\\verify_bird.exe\")",
+      "Bash(where python:*)",
+      "Bash(\"C:/Users/Malte/AppData/Local/Microsoft/WindowsApps/python.exe\" --version)",
+      "Bash(\"C:/Users/Malte/AppData/Local/Microsoft/WindowsApps/python3.exe\" --version)",
+      "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\tmp\\\\build_and_run.ps1\")",
+      "Bash(ls -la /c/tmp/verify_bird*.cpp)"
     ]
   }
 }

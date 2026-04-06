@@ -7,6 +7,7 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
+#include "Scene/OmmBuilder.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
 #include "nv_helpers_dx12/RootSignatureGenerator.h"
@@ -25,7 +26,8 @@ Renderer::AccelerationStructureBuffers
 Renderer::CreateBottomLevelAS(
     std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
     std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers,
-    UINT opaqueTriCount, UINT alphaTriCount)
+    UINT opaqueTriCount, UINT alphaTriCount,
+    MeshGPU* meshOmm)
 {
     nv_helpers_dx12::BottomLevelASGenerator blasGen;
 
@@ -38,11 +40,26 @@ Renderer::CreateBottomLevelAS(
                 vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second,
                 sizeof(Vertex), vIndexBuffers[i].first.Get(), 0,
                 opaqueIdxCount, nullptr, 0, true);
-        if (alphaIdxCount > 0)
-            blasGen.AddVertexBuffer(
-                vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second,
-                sizeof(Vertex), vIndexBuffers[i].first.Get(),
-                opaqueIdxCount * sizeof(UINT), alphaIdxCount, nullptr, 0, false);
+
+        if (alphaIdxCount > 0) {
+            if (meshOmm && meshOmm->hasOmm) {
+                // Use OMM-linked geometry for alpha triangles
+                blasGen.AddVertexBufferWithOMM(
+                    vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second,
+                    sizeof(Vertex), vIndexBuffers[i].first.Get(),
+                    opaqueIdxCount * sizeof(UINT), alphaIdxCount,
+                    nullptr, 0,
+                    meshOmm->ommArray ? meshOmm->ommArray->GetGPUVirtualAddress() : 0,
+                    meshOmm->ommIndexBuffer->GetGPUVirtualAddress(),
+                    meshOmm->ommBake.alphaTriCount);
+            } else {
+                // Fallback: regular non-opaque geometry (any-hit shader for all)
+                blasGen.AddVertexBuffer(
+                    vVertexBuffers[i].first.Get(), 0, vVertexBuffers[i].second,
+                    sizeof(Vertex), vIndexBuffers[i].first.Get(),
+                    opaqueIdxCount * sizeof(UINT), alphaIdxCount, nullptr, 0, false);
+            }
+        }
     }
 
     UINT64 scratchSize = 0, resultSize = 0;
@@ -155,10 +172,25 @@ void Renderer::CreateAccelerationStructures() {
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
         if (mesh.blas) continue;
+
+        // Build OMM array on GPU if bake data exists.
+        // ommGpu must outlive CreateBottomLevelAS (which flushes the cmd list).
+        OmmGpuData ommGpu;
+        if (!mesh.ommBake.triOmmIndices.empty()) {
+            ommGpu = OmmBuilder::BuildGPU(
+                mesh.ommBake, m_ctx.Device(), m_ctx.CmdList());
+            if (ommGpu.valid) {
+                mesh.ommArray       = ommGpu.ommArray;
+                mesh.ommIndexBuffer = ommGpu.ommIndexBuffer;
+                mesh.hasOmm         = true;
+            }
+        }
+
+        MeshGPU* ommPtr = mesh.hasOmm ? &mesh : nullptr;
         auto buffers = CreateBottomLevelAS(
             {{ mesh.vertexBuffer.Get(), mesh.vertexCount }},
             {{ mesh.indexBuffer.Get(),  mesh.indexCount  }},
-            mesh.opaqueTriCount, mesh.alphaTriCount);
+            mesh.opaqueTriCount, mesh.alphaTriCount, ommPtr);
         mesh.blas = buffers.pResult;
     }
 
@@ -410,6 +442,7 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.SetMaxPayloadSize(128);
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
+    pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);
 
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));

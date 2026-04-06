@@ -139,7 +139,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
             shadowRay.TMin      = 0.00001f;
             shadowRay.TMax      = dist - 0.001f;
 
-            RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+            RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
             q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
             q.Proceed();
 
@@ -222,7 +222,7 @@ void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttr
                 shadowRay.TMin      = 0.00001f;
                 shadowRay.TMax      = 10000.0f;
 
-                RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+                RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
                 q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, shadowRay);
                 q.Proceed();
 

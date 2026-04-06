@@ -30,6 +30,7 @@ Contacts for feedback:
 */
 
 #include <stdexcept>
+#include <memory>
 #include "BottomLevelASGenerator.h"
 
 // Helper to compute aligned buffer sizes
@@ -114,6 +115,53 @@ void BottomLevelASGenerator::AddVertexBuffer(
   descriptor.Flags = isOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE
                               : D3D12_RAYTRACING_GEOMETRY_FLAG_NONE;
 
+  m_vertexBuffers.push_back(descriptor);
+}
+
+//--------------------------------------------------------------------------------------------------
+// Add a vertex buffer with Opacity Micro-Map linkage.
+void BottomLevelASGenerator::AddVertexBufferWithOMM(
+    ID3D12Resource *vertexBuffer, UINT64 vertexOffsetInBytes,
+    uint32_t vertexCount, UINT vertexSizeInBytes,
+    ID3D12Resource *indexBuffer, UINT64 indexOffsetInBytes, uint32_t indexCount,
+    ID3D12Resource *transformBuffer, UINT64 transformOffsetInBytes,
+    D3D12_GPU_VIRTUAL_ADDRESS ommArray,
+    D3D12_GPU_VIRTUAL_ADDRESS ommIndexBuffer,
+    uint32_t ommIndexCount)
+{
+  // Allocate stable storage for the triangle + linkage descriptors
+  auto storage = std::make_unique<OmmLinkageStorage>();
+
+  // Fill the triangles descriptor (same as regular triangles)
+  auto& tri = storage->triangles;
+  tri = {};
+  tri.VertexBuffer.StartAddress  = vertexBuffer->GetGPUVirtualAddress() + vertexOffsetInBytes;
+  tri.VertexBuffer.StrideInBytes = vertexSizeInBytes;
+  tri.VertexCount  = vertexCount;
+  tri.VertexFormat  = DXGI_FORMAT_R32G32B32_FLOAT;
+  tri.IndexBuffer   = indexBuffer ? (indexBuffer->GetGPUVirtualAddress() + indexOffsetInBytes) : 0;
+  tri.IndexFormat   = indexBuffer ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_UNKNOWN;
+  tri.IndexCount    = indexCount;
+  tri.Transform3x4  = transformBuffer
+      ? (transformBuffer->GetGPUVirtualAddress() + transformOffsetInBytes) : 0;
+
+  // Fill the OMM linkage descriptor
+  auto& link = storage->linkage;
+  link = {};
+  link.OpacityMicromapIndexBuffer.StartAddress  = ommIndexBuffer;
+  link.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
+  link.OpacityMicromapIndexFormat  = DXGI_FORMAT_R32_UINT;
+  link.OpacityMicromapBaseLocation = 0;
+  link.OpacityMicromapArray        = ommArray;
+
+  // Build the geometry descriptor pointing to the stable storage
+  D3D12_RAYTRACING_GEOMETRY_DESC descriptor = {};
+  descriptor.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES;
+  descriptor.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE; // not opaque — OMM decides
+  descriptor.OmmTriangles.pTriangles  = &storage->triangles;
+  descriptor.OmmTriangles.pOmmLinkage = &storage->linkage;
+
+  m_ommStorage.push_back(std::move(storage));
   m_vertexBuffers.push_back(descriptor);
 }
 

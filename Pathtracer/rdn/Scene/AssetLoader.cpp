@@ -7,6 +7,7 @@
 #include "../stdafx.h"
 #include <fstream>
 #include "AssetLoader.h"
+#include "OmmBuilder.h"
 #include "../DXRHelper.h"
 
 // How many textures to upload per command-list submission.
@@ -172,6 +173,33 @@ void AssetLoader::LoadModels(
             scene.instances[i].modelIndex = modelIdx;
 
         scene.models.push_back(std::move(model));
+    }
+
+    // ── OMM bake (before bindless offsets and texture release) ──
+    // At this point, materials' albedoTexID is the local index into
+    // albedoTextures, and the ScratchImage data is still in memory.
+    {
+        SCOPE_TIMER("OMM Bake");
+
+        // Build pointers to albedo ScratchImages (mip level 0 used for sampling)
+        std::vector<DirectX::ScratchImage*> albedoImgPtrs(albedoTextures.size(), nullptr);
+        std::vector<DirectX::XMFLOAT2> albedoScales(albedoTextures.size(), { 1.0f, 1.0f });
+        for (size_t i = 0; i < albedoTextures.size(); ++i) {
+            if (albedoTextures[i].image.GetImageCount() > 0)
+                albedoImgPtrs[i] = &albedoTextures[i].image;
+        }
+
+        // Collect UV scales from materials that reference each texture
+        for (const auto& mat : scene.materials) {
+            if (mat.albedoTexID >= 0 && (uint32_t)mat.albedoTexID < albedoScales.size())
+                albedoScales[mat.albedoTexID] = mat.albedoUVScale;
+        }
+
+        for (auto& mesh : scene.meshes) {
+            if (mesh.alphaTriCount == 0) continue;
+            mesh.ommBake = OmmBuilder::BakeMesh(mesh, scene.materials,
+                                                albedoImgPtrs, albedoScales);
+        }
     }
 
     // ── Bindless texture setup ───────────────────────────────────
