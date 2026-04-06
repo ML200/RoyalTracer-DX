@@ -15,9 +15,9 @@
 #include <DirectXTex.h>
 
 // ── Configuration ────────────────────────────────���──────────────
-static constexpr uint32_t OMM_SUBDIV_LEVEL       = 4;   // 4^4 = 256 micro-tris per triangle
-static constexpr uint32_t OMM_MICROTRIS_PER_TRI  = 256; // 1 << (2 * OMM_SUBDIV_LEVEL)
-static constexpr uint32_t OMM_BYTES_PER_OMM      = OMM_MICROTRIS_PER_TRI * 2 / 8; // 64 bytes (4-state = 2 bits)
+static constexpr uint32_t OMM_SUBDIV_LEVEL       = 5;   // 4^5 = 1024 micro-tris per triangle
+static constexpr uint32_t OMM_MICROTRIS_PER_TRI  = 1024; // 1 << (2 * OMM_SUBDIV_LEVEL)
+static constexpr uint32_t OMM_BYTES_PER_OMM      = OMM_MICROTRIS_PER_TRI * 2 / 8; // 256 bytes (4-state = 2 bits)
 
 // ── CPU bake result (one per mesh that has alpha triangles) ─────
 struct OmmBakeResult {
@@ -79,6 +79,12 @@ private:
     // at the given subdivision level using recursive midpoint splitting.
     static void MicroTriCentroid(uint32_t index, uint32_t level,
                                  float& outU, float& outV);
+
+    // Compute all 3 vertex barycentrics of micro-triangle `index`.
+    static void MicroTriVertices(uint32_t index, uint32_t level,
+                                 float& v0u, float& v0v,
+                                 float& v1u, float& v1v,
+                                 float& v2u, float& v2v);
 
     // Bilinear sample of the alpha channel from an RGBA8 image.
     // Returns alpha in [0,1].  UVs are wrapped to [0,1).

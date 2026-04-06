@@ -66,6 +66,38 @@ void OmmBuilder::MicroTriCentroid(uint32_t index, uint32_t level,
 }
 
 // ─────────────────────────────────────────────────────────────────
+// MicroTriVertices — same subdivision as MicroTriCentroid but returns
+// all 3 vertex barycentrics instead of just the centroid.
+// ─────────────────────────────────────────────────────────────────
+void OmmBuilder::MicroTriVertices(uint32_t index, uint32_t level,
+                                  float& v0u, float& v0v,
+                                  float& v1u, float& v1v,
+                                  float& v2u, float& v2v)
+{
+    float ax = 0, ay = 0;
+    float bx = 1, by = 0;
+    float cx = 0, cy = 1;
+
+    for (int32_t l = (int32_t)level - 1; l >= 0; --l) {
+        uint32_t child = (index >> (2 * l)) & 3;
+        float abx = (ax + bx) * 0.5f, aby = (ay + by) * 0.5f;
+        float bcx = (bx + cx) * 0.5f, bcy = (by + cy) * 0.5f;
+        float acx = (ax + cx) * 0.5f, acy = (ay + cy) * 0.5f;
+
+        switch (child) {
+            case 0: bx = abx; by = aby; cx = acx; cy = acy; break;
+            case 1: { float ta = acx, tb = acy; ax = ta; ay = tb;
+                      bx = bcx; by = bcy; cx = abx; cy = aby; break; }
+            case 2: ax = abx; ay = aby; cx = bcx; cy = bcy; break;
+            case 3: { ax = bcx; ay = bcy; bx = acx; by = acy; break; }
+        }
+    }
+    v0u = ax; v0v = ay;
+    v1u = bx; v1v = by;
+    v2u = cx; v2v = cy;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // SampleAlpha — bilinear sample of alpha channel from RGBA8 image.
 // UVs are wrapped to [0,1).
 // ─────────────────────────────────────────────────────────────────
@@ -80,8 +112,8 @@ float OmmBuilder::SampleAlpha(const Image& img, float u, float v)
 
     int x0 = (int)fx;
     int y0 = (int)fy;
-    int x1 = glm::min(x0 + 1, (int)img.width  - 1);
-    int y1 = glm::min(y0 + 1, (int)img.height - 1);
+    int x1 = (x0 + 1) % (int)img.width;   // wrap for tiling textures
+    int y1 = (y0 + 1) % (int)img.height;
 
     float sx = fx - x0;
     float sy = fy - y0;
@@ -158,20 +190,29 @@ OmmBakeResult OmmBuilder::BakeMesh(
         float threshold = mat.alphaThreshold;
 
         // ── Phase 1: quick whole-triangle classification ────────
-        // Sample a few points; if all agree, use a special index.
+        // Sample vertices of coarse subdivision level 2 (16 micro-tris,
+        // ~15 unique vertices × 3 corners each = up to 48 samples).
+        // Much better coverage than the previous 7-point heuristic.
         bool allOpaque = true, allTransparent = true;
-        static const float kTestBary[][2] = {
-            {1.f/3, 1.f/3}, {0.1f, 0.1f}, {0.8f, 0.1f}, {0.1f, 0.8f},
-            {0.5f, 0.25f}, {0.25f, 0.5f}, {0.5f, 0.5f}
-        };
-        for (auto& [bu, bv] : kTestBary) {
-            float bw = 1.0f - bu - bv;
-            float su = uv0.x * bw + uv1.x * bu + uv2.x * bv;
-            float sv = uv0.y * bw + uv1.y * bu + uv2.y * bv;
-            float a = SampleAlpha(*alphaImg, su, sv);
-            if (a >= threshold) allTransparent = false;
-            else                allOpaque = false;
-            if (!allOpaque && !allTransparent) break;
+        {
+            static constexpr uint32_t kCoarseLevel = 2;
+            static constexpr uint32_t kCoarseCount = 16; // 4^2
+            bool sawOpaque = false, sawTransparent = false;
+            for (uint32_t ci = 0; ci < kCoarseCount && !(sawOpaque && sawTransparent); ++ci) {
+                float va0, vb0, va1, vb1, va2, vb2;
+                MicroTriVertices(ci, kCoarseLevel, va0, vb0, va1, vb1, va2, vb2);
+                float pts[][2] = { {va0,vb0}, {va1,vb1}, {va2,vb2} };
+                for (auto& [bu, bv] : pts) {
+                    float bw = 1.0f - bu - bv;
+                    float su = uv0.x * bw + uv1.x * bu + uv2.x * bv;
+                    float sv = uv0.y * bw + uv1.y * bu + uv2.y * bv;
+                    float a = SampleAlpha(*alphaImg, su, sv);
+                    if (a >= threshold) sawOpaque = true;
+                    else                sawTransparent = true;
+                }
+            }
+            allOpaque      = sawOpaque && !sawTransparent;
+            allTransparent = !sawOpaque && sawTransparent;
         }
 
         if (allOpaque) {
@@ -185,7 +226,9 @@ OmmBakeResult OmmBuilder::BakeMesh(
             continue;
         }
 
-        // ── Phase 2: per-microtriangle classification ───────────
+        // ── Phase 2: per-microtriangle conservative classification ──
+        // Sample at all 3 corners + centroid of each micro-tri.
+        // If samples disagree across the threshold → UNKNOWN.
         uint32_t ommIdx = bakedOmmCount++;
         result.triOmmIndices[t] = (int32_t)ommIdx;
 
@@ -200,27 +243,53 @@ OmmBakeResult OmmBuilder::BakeMesh(
         result.rawData.resize(dataStart + OMM_BYTES_PER_OMM, 0);
 
         for (uint32_t mi = 0; mi < OMM_MICROTRIS_PER_TRI; ++mi) {
-            float bu, bv;
-            MicroTriCentroid(mi, OMM_SUBDIV_LEVEL, bu, bv);
-            float bw = 1.0f - bu - bv;
+            float va0, vb0, va1, vb1, va2, vb2;
+            MicroTriVertices(mi, OMM_SUBDIV_LEVEL, va0, vb0, va1, vb1, va2, vb2);
+            float cu = (va0 + va1 + va2) * (1.0f / 3.0f);
+            float cv = (vb0 + vb1 + vb2) * (1.0f / 3.0f);
 
-            // Interpolate UV
-            float su = uv0.x * bw + uv1.x * bu + uv2.x * bv;
-            float sv = uv0.y * bw + uv1.y * bu + uv2.y * bv;
+            // Sample at 3 corners + 3 edge midpoints + centroid (7 points)
+            float e01u = (va0+va1)*0.5f, e01v = (vb0+vb1)*0.5f;
+            float e12u = (va1+va2)*0.5f, e12v = (vb1+vb2)*0.5f;
+            float e20u = (va2+va0)*0.5f, e20v = (vb2+vb0)*0.5f;
+            float pts[][2] = {
+                {va0,vb0}, {va1,vb1}, {va2,vb2},
+                {e01u,e01v}, {e12u,e12v}, {e20u,e20v},
+                {cu,cv}
+            };
+            float minA = 1.0f, maxA = 0.0f;
+            for (auto& [bu, bv] : pts) {
+                float bw = 1.0f - bu - bv;
+                float su = uv0.x * bw + uv1.x * bu + uv2.x * bv;
+                float sv = uv0.y * bw + uv1.y * bu + uv2.y * bv;
+                float a = SampleAlpha(*alphaImg, su, sv);
+                minA = (std::min)(minA, a);
+                maxA = (std::max)(maxA, a);
+            }
 
-            float alpha = SampleAlpha(*alphaImg, su, sv);
-
-            // Classify: use UNKNOWN near the boundary for safety
+            // Conservative classify
             uint8_t state;
+            bool anyAbove = (maxA >= threshold);
+            bool anyBelow = (minA <  threshold);
             float margin = 0.05f;
-            if (alpha >= threshold + margin)
-                state = D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_OPAQUE;
-            else if (alpha < threshold - margin)
-                state = D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_TRANSPARENT;
-            else if (alpha >= threshold)
-                state = D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_OPAQUE;
-            else
-                state = D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_TRANSPARENT;
+
+            if (anyAbove && anyBelow) {
+                // Mixed: samples straddle threshold → UNKNOWN
+                float mid = (minA + maxA) * 0.5f;
+                state = (mid >= threshold)
+                    ? D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_OPAQUE
+                    : D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_TRANSPARENT;
+            } else if (!anyBelow) {
+                // All >= threshold; use margin for extra safety
+                state = (minA >= threshold + margin)
+                    ? D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_OPAQUE
+                    : D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_OPAQUE;
+            } else {
+                // All < threshold
+                state = (maxA < threshold - margin)
+                    ? D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_TRANSPARENT
+                    : D3D12_RAYTRACING_OPACITY_MICROMAP_STATE_UNKNOWN_TRANSPARENT;
+            }
 
             // Pack 2-bit state into the byte array (4 microtris per byte)
             uint32_t byteIdx = mi / 4;
