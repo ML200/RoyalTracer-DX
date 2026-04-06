@@ -6,6 +6,7 @@
 
 #include "../Common.h"
 #include "../LightTree.h"
+#include "OmmBuilder.h"
 
 // ── One unique piece of geometry (one BLAS) ──────────────────────
 struct MeshGPU {
@@ -25,6 +26,12 @@ struct MeshGPU {
     std::vector<Vertex>  cpuVertices;
     std::vector<UINT>    cpuIndices;
     std::vector<UINT>    cpuMaterialIDs;
+
+    // Opacity Micro-Maps
+    OmmBakeResult          ommBake;
+    ComPtr<ID3D12Resource> ommArray;
+    ComPtr<ID3D12Resource> ommIndexBuffer;
+    bool                   hasOmm = false;
 };
 
 // ── One placed sub-object (from the GLB scene graph) ─────────────

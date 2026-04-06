@@ -180,13 +180,15 @@ ID3D12StateObject* RayTracingPipelineGenerator::Generate()
   dummyLocalRootSig.pDesc = &dlSig;
   subobjects[currentIndex++] = dummyLocalRootSig;
 
-  // Add a subobject for the ray tracing pipeline configuration
-  D3D12_RAYTRACING_PIPELINE_CONFIG pipelineConfig = {};
-  pipelineConfig.MaxTraceRecursionDepth = m_maxRecursionDepth;
+  // Add a subobject for the ray tracing pipeline configuration.
+  // Use PIPELINE_CONFIG1 when pipeline flags are set (e.g. for OMM support).
+  D3D12_RAYTRACING_PIPELINE_CONFIG1 pipelineConfig1 = {};
+  pipelineConfig1.MaxTraceRecursionDepth = m_maxRecursionDepth;
+  pipelineConfig1.Flags = m_pipelineFlags;
 
   D3D12_STATE_SUBOBJECT pipelineConfigObject = {};
-  pipelineConfigObject.Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG;
-  pipelineConfigObject.pDesc = &pipelineConfig;
+  pipelineConfigObject.Type = D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1;
+  pipelineConfigObject.pDesc = &pipelineConfig1;
 
   subobjects[currentIndex++] = pipelineConfigObject;
 
@@ -398,6 +400,11 @@ RayTracingPipelineGenerator::RootSignatureAssociation::RootSignatureAssociation(
     const RootSignatureAssociation& source)
     : RootSignatureAssociation(source.m_rootSignature, source.m_symbols)
 {
+}
+
+void RayTracingPipelineGenerator::SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAGS flags)
+{
+  m_pipelineFlags = flags;
 }
 
 void RayTracingPipelineGenerator::SetGlobalRootSignature(ID3D12RootSignature* rootSig)

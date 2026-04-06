@@ -113,7 +113,8 @@ private:
     AccelerationStructureBuffers CreateBottomLevelAS(
         std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vb,
         std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> ib,
-        UINT opaqueTriCount, UINT alphaTriCount);
+        UINT opaqueTriCount, UINT alphaTriCount,
+        MeshGPU* meshOmm = nullptr);
     void CreateTopLevelAS(
         const std::vector<std::pair<ComPtr<ID3D12Resource>, XMMATRIX>>& instances,
         bool updateOnly = false);
