@@ -195,11 +195,7 @@ void AssetLoader::LoadModels(
                 albedoScales[mat.albedoTexID] = mat.albedoUVScale;
         }
 
-        for (auto& mesh : scene.meshes) {
-            if (mesh.alphaTriCount == 0) continue;
-            mesh.ommBake = OmmBuilder::BakeMesh(mesh, scene.materials,
-                                                albedoImgPtrs, albedoScales);
-        }
+        OmmBuilder::BakeAll(scene.meshes, scene.materials, albedoImgPtrs);
     }
 
     // ── Bindless texture setup ───────────────────────────────────

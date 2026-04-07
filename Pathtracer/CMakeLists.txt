@@ -16,6 +16,9 @@ set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 
+# ───────────────────────── NVIDIA OMM SDK ───────────────────────────────────
+set(OMM_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/omm-sdk")
+
 # ───────────────────────── ONNX Runtime + DirectML ──────────────────────────
 # Your extracted layout is: third_party/onnxruntime-directml/ort/...
 set(ORT_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-directml/ort")
@@ -147,6 +150,7 @@ target_include_directories(Pathtracer PRIVATE
         ${D3D12_AGILITY_INCLUDE}
         ${SL_INCLUDE_DIR}
         ${ORT_INCLUDE_DIR}
+        ${OMM_SDK_ROOT}/include
         ${CMAKE_SOURCE_DIR}/lib/imgui)
 
 # ──────────────── Streamline import‐lib as an IMPORTED static library ────────
@@ -163,15 +167,34 @@ set_target_properties(onnxruntime PROPERTIES
         IMPORTED_LOCATION "${ORT_BIN_DIR}/onnxruntime.dll"
 )
 
+# ────────────── NVIDIA OMM SDK imported library + deps ───────────────────────
+add_library(omm_sdk STATIC IMPORTED GLOBAL)
+set_target_properties(omm_sdk PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/omm-lib.lib"
+)
+add_library(omm_lz4 STATIC IMPORTED GLOBAL)
+set_target_properties(omm_lz4 PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/lz4.lib"
+)
+add_library(omm_xxhash STATIC IMPORTED GLOBAL)
+set_target_properties(omm_xxhash PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/xxhash.lib"
+)
+
 
 # ───────────────────────── link libraries ────────────────────────────────────
 target_link_libraries(Pathtracer PRIVATE
         DirectXTex
         sl_interposer
         onnxruntime
+        omm_sdk omm_lz4 omm_xxhash
         d3d12.lib
         dxgi.lib dxguid.lib
         dxcompiler.lib d3dcompiler.lib windowsapp)
+
+# OMM SDK's static lib includes stb_image which also lives in ThirdPartyImpl.cpp.
+# Allow duplicate symbols — the linker picks one copy.
+target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
 
 
 # ────────────────── copy the contents of 'includes' on every build ─────────

@@ -69,7 +69,15 @@
       "Bash(\"C:/Users/Malte/AppData/Local/Microsoft/WindowsApps/python.exe\" --version)",
       "Bash(\"C:/Users/Malte/AppData/Local/Microsoft/WindowsApps/python3.exe\" --version)",
       "Bash(powershell.exe -ExecutionPolicy Bypass -File \"C:\\\\tmp\\\\build_and_run.ps1\")",
-      "Bash(ls -la /c/tmp/verify_bird*.cpp)"
+      "Bash(ls -la /c/tmp/verify_bird*.cpp)",
+      "Bash(grep -r \"D3D12_RAYTRACING_OPACITY_MICROMAP\\\\|D3D12_RAYTRACING_GEOMETRY_TYPE_OMM\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracer --include=*.h --include=*.cpp)",
+      "Bash(grep -r \"OMM_SUBDIV\\\\|OMM_MICROTRIS\\\\|OMM_BYTES\\\\|FULLY_OPAQUE\\\\|FULLY_TRANSPARENT\\\\|UNKNOWN\" C:UsersMalteDocumentsGitHubRoyalTracer-DXPathtracerrdn --include=*.h --include=*.cpp)",
+      "Bash(cmake -S . -B build -G \"Visual Studio 17 2022\" -DOMM_ENABLE_PRECOMPILED_SHADERS_DXIL=OFF -DOMM_ENABLE_PRECOMPILED_SHADERS_SPIRV=OFF -DOMM_STATIC_LIBRARY=ON -DOMM_ENABLE_TESTS=OFF -DOMM_ENABLE_GPU_TESTS=OFF -DOMM_ENABLE_SAMPLES=OFF)",
+      "Bash(where cmake:*)",
+      "Read(//c/Program Files/CMake/bin/**)",
+      "Bash(ls \"/c/Program Files/Microsoft Visual Studio/2022/\"*/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe)",
+      "Bash(\"$CMAKE\" -S . -B build -G \"Visual Studio 17 2022\" -DOMM_ENABLE_PRECOMPILED_SHADERS_DXIL=OFF -DOMM_ENABLE_PRECOMPILED_SHADERS_SPIRV=OFF -DOMM_STATIC_LIBRARY=ON -DOMM_ENABLE_TESTS=OFF -DOMM_ENABLE_GPU_TESTS=OFF -DOMM_ENABLE_SAMPLES=OFF)",
+      "Bash(\"$CMAKE\" --build \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\third_party\\\\omm-sdk-src\\\\build\" --config Release --target omm-lib)"
     ]
   }
 }

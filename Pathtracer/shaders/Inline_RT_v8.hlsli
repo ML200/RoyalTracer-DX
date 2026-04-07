@@ -36,13 +36,17 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     ray.TMin      = 0.001f;
     ray.TMax      = tMax;
 
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+           | RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
 
     while (q.Proceed())
     {
         if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
         {
+            // With FORCE_OMM_2_STATE, OMM geometry never reaches here (all micro-tris
+            // are resolved to OPAQUE/TRANSPARENT by hardware). Only non-OMM non-opaque
+            // geometry (e.g. glass/transparent materials) generates candidates.
             uint   instID = q.CandidateInstanceID();
             uint   primID = FlatPrimID(instID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
             uint   matID  = materialIDs[instanceProps[instID].materialBase + primID];
