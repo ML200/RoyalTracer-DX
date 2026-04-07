@@ -169,6 +169,7 @@ void Renderer::CreateTopLevelAS(
 
 void Renderer::CreateAccelerationStructures() {
     // One BLAS per unique mesh (skip if already built, e.g. procedural meshes)
+    LOG(L"[AS] Building BLAS for " << m_scene.meshes.size() << L" meshes...");
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
         if (mesh.blas) continue;
@@ -192,7 +193,11 @@ void Renderer::CreateAccelerationStructures() {
             {{ mesh.indexBuffer.Get(),  mesh.indexCount  }},
             mesh.opaqueTriCount, mesh.alphaTriCount, ommPtr);
         mesh.blas = buffers.pResult;
+
+        if ((m + 1) % 500 == 0)
+            LOG(L"[AS] BLAS " << (m + 1) << L"/" << m_scene.meshes.size());
     }
+    LOG(L"[AS] All BLAS built. Building TLAS...");
 
     // TLAS from scene instances
     m_scene.RebuildTLASInstanceList();
