@@ -201,8 +201,13 @@ inline float3 SampleBRDF_GGX(
     float3 T, B;
     BuildAnisotropicFrame(N, anisoRot, T, B);
 
-    // 1) Sample visible normal H (anisotropic VNDF)
-    float3 H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
+    // 1) Sample visible normal H
+    //    For very smooth surfaces, fall back to perfect reflection/refraction
+    float3 H;
+    if (r < SMOOTH_SPECULAR_THRESHOLD)
+        H = N;
+    else
+        H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
     // 2) Path probabilities for this H
