@@ -47,6 +47,28 @@ inline float2 GetLastFramePixelCoordinates_Float(
     return px;
 }
 
+// Unclamped variant for motion vectors: allows off-screen previous positions.
+// Only rejects behind-camera (w <= 0) where projection is undefined.
+inline float2 GetLastFramePixelCoordinates_Unclamped(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution,
+    uint objID)
+{
+    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
+    float4 clipPos      = mul(prevProjection, mul(prevView, prevWorldPos));
+
+    if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
+
+    float2 ndc = clipPos.xy / clipPos.w;
+    float2 uv  = ndc * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+
+    return uv * resolution - 0.5f;
+}
+
 inline int2 GetBestReprojectedPixel_d(
     float3 worldPos,
     float4x4 prevView,

@@ -72,10 +72,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
-            float2 prevPix = GetLastFramePixelCoordinates_Float(
+            float2 prevPix = GetLastFramePixelCoordinates_Unclamped(
                 emPos, prevView, prevProjection, dims, emInstID) - jitter;
-            bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 &&
-                              prevPix.x < IMG_W && prevPix.y < IMG_H);
+            bool validPrev = (prevPix.x > -1e8f);
             float2 emMV = validPrev ? float2(prevPix - curPix) : float2(0, 0);
             g_dlssMVec[curPix] = emMV;
             biasMV = emMV;
@@ -127,9 +126,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssRoughness[DTid.xy] = sv.Pr;
 
         float2 curPix = DTid.xy;
-        float2 prevPix = GetLastFramePixelCoordinates_Float(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
+        float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
 
-        bool validPrev = (prevPix.x >= 0 && prevPix.y >= 0 && prevPix.x < IMG_W && prevPix.y < IMG_H);
+        bool validPrev = (prevPix.x > -1e8f);
 
         float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
 
@@ -157,10 +156,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint   reflInstID = asuint(reflData.w);
             if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
             {
-                float2 prevRefl = GetLastFramePixelCoordinates_Float(
+                float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
                     reflData.xyz, prevView, prevProjection, dims, reflInstID) - jitter;
-                bool validRefl = (prevRefl.x >= 0 && prevRefl.y >= 0 &&
-                                  prevRefl.x < IMG_W && prevRefl.y < IMG_H);
+                bool validRefl = (prevRefl.x > -1e8f);
                 if (validRefl)
                 {
                     specMV = prevRefl - curPix;
