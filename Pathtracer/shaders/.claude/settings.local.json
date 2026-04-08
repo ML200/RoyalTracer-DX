@@ -77,7 +77,14 @@
       "Read(//c/Program Files/CMake/bin/**)",
       "Bash(ls \"/c/Program Files/Microsoft Visual Studio/2022/\"*/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe)",
       "Bash(\"$CMAKE\" -S . -B build -G \"Visual Studio 17 2022\" -DOMM_ENABLE_PRECOMPILED_SHADERS_DXIL=OFF -DOMM_ENABLE_PRECOMPILED_SHADERS_SPIRV=OFF -DOMM_STATIC_LIBRARY=ON -DOMM_ENABLE_TESTS=OFF -DOMM_ENABLE_GPU_TESTS=OFF -DOMM_ENABLE_SAMPLES=OFF)",
-      "Bash(\"$CMAKE\" --build \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\third_party\\\\omm-sdk-src\\\\build\" --config Release --target omm-lib)"
+      "Bash(\"$CMAKE\" --build \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\third_party\\\\omm-sdk-src\\\\build\" --config Release --target omm-lib)",
+      "Bash(grep -rn \"SpecMVec\\\\|specMvec\\\\|specular motion\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\\\\\" --include=\"*.hlsl\" --include=\"*.hlsli\")",
+      "Bash(grep -n \"g_dlssSpecMVec\\\\[\" \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders\"/*.hlsl \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders\"/*.hlsli)",
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" branch -a)",
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" log --oneline -20)",
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" log --oneline -1 0ecd010)",
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010 --stat)",
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010)"
     ]
   }
 }

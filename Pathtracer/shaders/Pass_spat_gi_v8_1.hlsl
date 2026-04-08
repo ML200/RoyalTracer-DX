@@ -27,6 +27,14 @@ void Pass_spat_gi_v8_1()
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
     const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float2 myUV     = load_uv(g_sample_current, pixelIdx);
+    float3 myKd; float myPr, myPm;
+    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
+
+    // Specularity: reduce spatial samples for reflective surfaces
+    const float3 camPos     = InitOrigin();
+    const float  NoV        = saturate(dot(normalize(camPos - myPos), myN1s));
+    const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
 
     // If spatial GI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 8u))
@@ -57,9 +65,10 @@ void Pass_spat_gi_v8_1()
     // Budgeting (keep semantics)
     const float conf = min(60.0f, rdi.M_gi) / max(1u, rs_tempMcapGI);
 
-    const uint nbrBudget =
+    const uint baseBudget =
         min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI) +
         uint((1.0f - conf) * float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI) - min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI)) + 0.5f);
+    const uint nbrBudget = uint(float(baseBudget) * (1.0f - specularity) + 0.5f);
 
     const uint radiusBudget =
         rs_spatRadMinGI +
