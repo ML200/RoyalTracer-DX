@@ -84,7 +84,8 @@
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" log --oneline -20)",
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" log --oneline -1 0ecd010)",
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010 --stat)",
-      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010)"
+      "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010)",
+      "Bash(grep -rn \"mvec\\\\|mvPixels\\\\|emMV\\\\|specMV\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders/*.hlsl)"
     ]
   }
 }
