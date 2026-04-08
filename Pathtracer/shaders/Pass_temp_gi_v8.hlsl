@@ -12,13 +12,17 @@ void Pass_temp_gi_v8()
 
     // Emitter check
     if (load_isEmitter(g_sample_current, pixelIdx))
+    {
+        gScratchPing[uint3(launchIndex, 5)] = 0;
         return;
+    }
 
     // Load current reservoir (must stay alive until final store)
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
     // Early-out if temporal GI is disabled
     if (!(rs_flags & 2u)) {
+        gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
         return;
     }
@@ -260,22 +264,8 @@ void Pass_temp_gi_v8()
         }
     }
 
-    // --- boiling filter (wave-only for raygen) ---
-    {
-        float avgV, thrV;
-        bool boil = BoilingFilter_Wave(GI_BOIL_STRENGTH_TEMP, boilValue, avgV, thrV);
-
-        if (avgV < GI_BOIL_MIN_AVG_TEMP)
-            boil = false;
-
-        if (boil && boilValue > 0.0f)
-        {
-            float scale = thrV / boilValue;
-            rdi.W_gi *= scale;
-            rdi.w_sum_gi = rdi.W_gi * max(rdi.F_gi, EPSILON);
-            rdi.M_gi = min(rdi.M_gi, 1.0f);
-        }
-    }
+    // Write boilValue to scratch for the groupshared boiling post-pass
+    gScratchPing[uint3(launchIndex, 5)] = float4(boilValue, 0, 0, 0);
 
     // Store merged reservoir
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
