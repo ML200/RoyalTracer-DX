@@ -101,8 +101,12 @@ inline float3 SampleBRDF_COAT(
     float rough = saturate(materials[mID].Pcr_aniso_anisor.x);
     float alpha = max(EPSILON, rough * rough);
 
-    // Visible normal sampling
-    float3 H = SampleVNDF_H(alpha, V, N, seed);
+    // Visible normal sampling; perfect reflection for very smooth coats
+    float3 H;
+    if (rough < SMOOTH_SPECULAR_THRESHOLD)
+        H = N;
+    else
+        H = SampleVNDF_H(alpha, V, N, seed);
 
     // Reflect
     float3 L = reflect(-V, H);

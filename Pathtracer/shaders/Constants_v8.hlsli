@@ -5,6 +5,7 @@
 #define INV_PI 0.3183098861
 #define LUT_SIZE 16
 #define MIN_NORMAL_INT 0.33f
+#define SMOOTH_SPECULAR_THRESHOLD 0.06f
 #define kInvalidPixel -1u
 
 
