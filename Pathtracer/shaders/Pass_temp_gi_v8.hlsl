@@ -39,10 +39,40 @@ void Pass_temp_gi_v8()
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float2 myUV = load_uv(g_sample_current, pixelIdx);
+    float3 myKd; float myPr, myPm;
+    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
-    int2 baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+    // Specularity (same computation DLSS-RR gets via EnvBRDFApprox2)
+    const float3 camPos = InitOrigin();
+    const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
+    const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
+
+    // Stochastic reprojection: randomly choose specular vs diffuse MV
+    // weighted by specularity. Over many frames this converges naturally.
+    float4 reflData = gScratchPing[uint3(launchIndex, 4)];
+    uint   reflInstID = asuint(reflData.w);
+    bool   reflValid = (reflInstID < 0xFFFFFFFEu);
+    float  rSpec = RandomFloatSingle(seed.x);
+    bool   useSpecReproj = (rSpec < specularity) && reflValid;
+
+    int2 baseCoord;
+    if (useSpecReproj)
+    {
+        baseCoord = GetBestReprojectedPixel_d(reflData.xyz, prevView, prevProjection, dims_f, reflInstID);
+        if (baseCoord.x == -1)
+            baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+    }
+    else
+    {
+        baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+    }
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
+
+    // Debug: slice 6 = specular reprojection (blue=spec, red=diff), slice 7 = specularity
+    gOutput[uint3(launchIndex, 6)] = float4(useSpecReproj ? 0.0f : 1.0f, 0.0f, useSpecReproj ? 1.0f : 0.0f, 1.0f);
+    gOutput[uint3(launchIndex, 7)] = float4(specularity, specularity, specularity, 1.0f);
 
     // --- permuted candidate ---
     int2 permCoord = baseCoord;
@@ -171,7 +201,7 @@ void Pass_temp_gi_v8()
                 const float n_n = rdi_r.F_gi * visReuse_n;
 
                 // Dynamic M caps
-                float sdata_Pr = EvaluatePBRProperties(materials[myMatID], load_uv(g_sample_current, pixelIdx), 0).x;
+                float sdata_Pr = myPr;
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);

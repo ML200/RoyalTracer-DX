@@ -102,6 +102,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssDiffuseAlbedo[DTid.xy] = float4(1.0f, 1.0f, 1.0f, 0.0f);
         g_dlssRoughness[DTid.xy] = 1.0f;
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 10000.0f;
+        g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
+        gOutput[uint3(DTid.xy, 4)] = float4(0, 0, 0, 1);
+        gOutput[uint3(DTid.xy, 5)] = float4(0, 0, 0, 1);
 
         // Tonemap bright emitters before DLSS-RR to prevent ghosting/ringing
         float3 dlssColor = accumulation / (1.0f + accumulation);
@@ -143,6 +146,34 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // Post-spatial GI reservoir for stable hit distance
         Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_last_gi, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sv.x);
+
+        // ── Specular motion vector ───────────────────────────────────────
+        // Uses the deterministic perfect-reflection ray traced in raygen (scratch slice 4).
+        float specularity = Luma(specularAlbedo);
+        float2 specMV = mvPixels; // default: surface motion vector
+        bool validSpecReproj = false;
+        {
+            float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
+            uint   reflInstID = asuint(reflData.w);
+            if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
+            {
+                float2 prevRefl = GetLastFramePixelCoordinates_Float(
+                    reflData.xyz, prevView, prevProjection, dims, reflInstID) - jitter;
+                bool validRefl = (prevRefl.x >= 0 && prevRefl.y >= 0 &&
+                                  prevRefl.x < IMG_W && prevRefl.y < IMG_H);
+                if (validRefl)
+                {
+                    specMV = prevRefl - curPix;
+                    validSpecReproj = true;
+                }
+            }
+        }
+        g_dlssSpecMVec[DTid.xy] = specMV;
+
+        // Debug: slice 5 = spec MV divergence from surface MV
+        gOutput[uint3(DTid.xy, 4)] = float4(specularity, specularity, specularity, 1.0f);
+        float2 mvDiff = abs(specMV - mvPixels);
+        gOutput[uint3(DTid.xy, 5)] = float4(saturate(mvDiff * 0.1f), validSpecReproj ? 1.0f : 0.0f, 1.0f);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }

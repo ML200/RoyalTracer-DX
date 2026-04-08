@@ -162,7 +162,7 @@ void DLSSManager::Evaluate(
     ID3D12Resource* dlssInputs[] = {
         m_depth.Get(), m_mvec.Get(), m_normals.Get(), m_diffuseAlbedo.Get(),
         m_specAlbedo.Get(), m_roughness.Get(), m_specHitDist.Get(), m_input.Get(),
-        m_biasHint.Get()
+        m_biasHint.Get(), m_specMvec.Get()
     };
     std::vector<D3D12_RESOURCE_BARRIER> preB;
     for (auto* r : dlssInputs)
@@ -237,6 +237,7 @@ void DLSSManager::Evaluate(
     sl::Resource slSpecHit (sl::ResourceType::eTex2d, m_specHitDist.Get(),   (uint32_t)stateSRV);
     sl::Resource slInput   (sl::ResourceType::eTex2d, m_input.Get(),         (uint32_t)stateSRV);
     sl::Resource slBias    (sl::ResourceType::eTex2d, m_biasHint.Get(),      (uint32_t)stateSRV);
+    sl::Resource slSpecMV  (sl::ResourceType::eTex2d, m_specMvec.Get(),     (uint32_t)stateSRV);
     sl::Resource slOutput  (sl::ResourceType::eTex2d, m_output.Get(),        (uint32_t)stateUAV);
 
     // Inputs use render extent, output uses display extent
@@ -254,6 +255,7 @@ void DLSSManager::Evaluate(
         { &slSpecHit, sl::kBufferTypeSpecularHitDistance,   life, &renderExtent  },
         { &slInput,   sl::kBufferTypeScalingInputColor,    life, &renderExtent  },
         { &slBias,    sl::kBufferTypeBiasCurrentColorHint, life, &renderExtent  },
+        { &slSpecMV,  sl::kBufferTypeSpecularMotionVectors, life, &renderExtent },
         { &slOutput,  sl::kBufferTypeScalingOutputColor,   life, &displayExtent },
     };
     SL_CHECK(slSetTagForFrame(frameToken, viewport, tags.data(), (uint32_t)tags.size(), cmdList));

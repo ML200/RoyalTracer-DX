@@ -163,6 +163,30 @@ void Pass_raygen_v8()
                 gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
             }
+
+            // ── Trace perfect reflection ray for specular motion vectors ──
+            // Deterministic: same geometry + camera = same hit every frame.
+            {
+                float3 reflDir = reflect(rayDir, hinfo.hitNormal);
+                float3 reflOrigin = offset_ray(hitPos, hinfo.hitGNormal);
+                RayDesc reflRay;
+                reflRay.Origin    = reflOrigin;
+                reflRay.Direction = reflDir;
+                reflRay.TMin      = 0.00001f;
+                reflRay.TMax      = 10000.0f;
+                dx::HitObject reflHit = TraceRay_Custom(SceneBVH, reflRay, RAY_FLAG_NONE, 0xFF);
+
+                if (reflHit.IsHit())
+                {
+                    float3 reflPos = reflOrigin + reflDir * reflHit.GetRayTCurrent();
+                    float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
+                    gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
+                }
+                else
+                {
+                    gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
+                }
+            }
         }
 
         // ── Emitter hit: BSDF-sampled light with MIS ──────────────────
