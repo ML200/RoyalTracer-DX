@@ -197,10 +197,10 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 
 
 
-#define BOIL_GROUP_X 8
-#define BOIL_GROUP_Y 8
+#define BOIL_GROUP_X 16
+#define BOIL_GROUP_Y 16
 #define BOIL_THREAD_COUNT (BOIL_GROUP_X * BOIL_GROUP_Y)
-#define BOIL_MAX_WAVES 4
+#define BOIL_MAX_WAVES 8
 
 groupshared float gBoilSum[BOIL_MAX_WAVES];
 groupshared uint  gBoilCnt[BOIL_MAX_WAVES];

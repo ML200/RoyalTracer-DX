@@ -15,13 +15,17 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // Emitter check
     if (load_isEmitter(g_sample_current, pixelIdx))
+    {
+        gScratchPing[uint3(launchIndex, 0)] = 0;
         return;
+    }
 
     // Load current reservoir
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
     // Early-out if temporal DI is disabled
     if (!(rs_flags & 1u)) {
+        gScratchPing[uint3(launchIndex, 0)] = 0;
         storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
         return;
     }
@@ -206,22 +210,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
     }
 
-    // --- boiling filter ---
-    {
-        float avgV, thrV;
-        bool boil = BoilingFilter_Wave(DI_BOIL_STRENGTH_TEMP, boilValue, avgV, thrV);
-
-        if (avgV < DI_BOIL_MIN_AVG_TEMP)
-            boil = false;
-
-        if (boil && boilValue > 0.0f)
-        {
-            float scale = thrV / boilValue;
-            rdi.W_di     *= scale;
-            rdi.w_sum_di *= scale;
-            rdi.M_di = min(rdi.M_di, 1u);
-        }
-    }
+    // Write boilValue to scratch for the groupshared boiling post-pass
+    gScratchPing[uint3(launchIndex, 0)] = float4(boilValue, 0, 0, 0);
 
     // Store the merged reservoir
     storeReservoirDI(g_Reservoirs_current_di, pixelIdx, rdi);
