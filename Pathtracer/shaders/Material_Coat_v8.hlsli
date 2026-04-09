@@ -88,6 +88,72 @@ inline float Sampling_Weight_COAT(
     return saturate(pc * Fv);
 }
 
+// Fused eval+pdf+transmittance for Coat — computes all shared work once
+struct CoatResult {
+    float3 f;
+    float  pdf;
+    float  t;
+};
+
+inline CoatResult EvalCoatAll(
+    Material mat, float3 N, float3 V, float3 L,
+    float etai, float etat)
+{
+    CoatResult r;
+    r.f = 0.0f;
+    r.pdf = 0.0f;
+    r.t = 1.0f;
+
+    float NdotV = max(0.0f, dot(N, V));
+    float NdotL = max(0.0f, dot(N, L));
+
+    float pc = saturate(mat.Pr_Pm_Ps_Pc.w);
+    if (pc <= 0.0f) return r;
+
+    float Pr_coat = mat.Pcr_aniso_anisor.x;
+
+    // --- Transmittance (uses N, not H) ---
+    if (NdotV > 0.0f && NdotL > 0.0f)
+    {
+        float Fo = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr_coat * 0.7f) * (1.0f - Pr_coat * 0.7f);
+        float Fi = FresnelDielectric(L, N, etai, etat).x;
+        r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
+    }
+
+    // --- Eval + PDF (need valid geometry) ---
+    if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
+
+    float3 H     = normalize(V + L);
+    float  NdotH = max(0.0f, dot(N, H));
+    float  VdotH = max(EPSILON, dot(V, H));
+
+    float rough = saturate(Pr_coat);
+    float alpha = max(EPSILON, rough * rough);
+
+    float D   = D_GGX(NdotH, alpha);
+    float G1V = G1_SmithGGX(NdotV, alpha);
+
+    // Eval
+    {
+        float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
+        float  denom = max(4.0f * NdotV * NdotL, EPSILON);
+        float3 F     = FresnelDielectricTIR(V, H, etai, etat);
+
+        float3 spec = pc * (F * D * G2) / denom;
+
+        float Ess = GetEssLUT(Pr_coat, NdotV);
+        float kms = (1.0f - Ess) / max(Ess, 1e-6f);
+        spec = spec * (1.0f + F * kms);
+
+        r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
+    }
+
+    // PDF: p(wi) = D * G1V / (4 * NdotV)  (VdotH cancels in VNDF reflection Jacobian)
+    r.pdf = (D * G1V) / (4.0f * NdotV);
+
+    return r;
+}
+
 inline float3 SampleBRDF_COAT(
     uint    mID,
     float3  outgoing,
