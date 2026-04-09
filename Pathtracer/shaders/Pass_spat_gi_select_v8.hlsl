@@ -59,10 +59,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float M_c_raw = load_M_gi(g_Reservoirs_current_gi, pixelIdx);
     const float conf = min(60.0f, M_c_raw) / max(1u, rs_tempMcapGI);
 
-    const uint baseBudget =
-        min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI) +
-        uint((1.0f - conf) * float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI) - min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI)) + 0.5f);
-    const uint nbrBudget = uint(float(baseBudget) * (1.0f - specularity) + 0.5f);
+    const uint nbrBudget = uint(float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI)) * (1.0f - specularity) + 0.5f);
 
     const uint radiusBudget =
         rs_spatRadMinGI +
@@ -76,58 +73,42 @@ void main(uint3 tid : SV_DispatchThreadID)
     [loop]
     for (uint i = 0; i < nbrBudget; ++i)
     {
-        uint chosen = 0xFFFFFFFFu;
+        const uint iID = GetRandomPixelCircleWeighted(
+            radiusBudget, dims.x, dims.y,
+            launchIndex.x, launchIndex.y,
+            seed);
 
-        [loop]
-        for (uint j = 0; j < SPAT_TRIS_GI; ++j)
+        bool ok = false;
+        if (!load_isEmitter(g_sample_current, iID))
         {
-            const uint iID = GetRandomPixelCircleWeighted(
-                radiusBudget, dims.x, dims.y,
-                launchIndex.x, launchIndex.y,
-                seed);
-
-            bool ok = false;
+            uint nInstID_t = load_instID(g_sample_current, iID);
+            uint nPrimID_t = load_primID(g_sample_current, iID);
+            if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
             {
-                if (!load_isEmitter(g_sample_current, iID))
+                const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
+                if (!RejectNormal_GI(myN1g, n1g_r, 0.36f))
                 {
-                    uint nInstID_t = load_instID(g_sample_current, iID);
-                    uint nPrimID_t = load_primID(g_sample_current, iID);
-                    if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
-                    {
-                        const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
-                        if (!RejectNormal_GI(myN1g, n1g_r, 0.36f))
-                        {
-                            float2 nBary_t = load_bary(g_sample_current, iID);
-                            const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
-                            if (!RejectDistance_GI(myPos, x1_r, myN1g, 0.1f))
-                            {
-                                ok = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!ok)
-                continue;
-
-            // Load reservoir only for plausible candidates
-            {
-                uint  rM   = load_M_gi(g_Reservoirs_current_gi, iID);
-                uint  rObj = load_objID_gi(g_Reservoirs_current_gi, iID);
-                float3 rN  = load_n2_s_gi(g_Reservoirs_current_gi, iID, rObj);
-
-                if (IsValidReservoir_GI_opt(rN, rM))
-                {
-                    chosen = iID;
-                    M_sum += min(SPAT_MCAP_GI, rM);
-                    break;
+                    float2 nBary_t = load_bary(g_sample_current, iID);
+                    const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
+                    if (!RejectDistance_GI(myPos, x1_r, myN1g, 0.1f))
+                        ok = true;
                 }
             }
         }
 
-        if (chosen != 0xFFFFFFFFu)
-            nIds[validCount++] = chosen;
+        if (!ok)
+            continue;
+
+        // Load reservoir only for plausible candidates
+        uint  rM   = load_M_gi(g_Reservoirs_current_gi, iID);
+        uint  rObj = load_objID_gi(g_Reservoirs_current_gi, iID);
+        float3 rN  = load_n2_s_gi(g_Reservoirs_current_gi, iID, rObj);
+
+        if (IsValidReservoir_GI_opt(rN, rM))
+        {
+            nIds[validCount++] = iID;
+            M_sum += min(SPAT_MCAP_GI, rM);
+        }
     }
 
     // Write results: validCount, M_sum, and neighbor IDs

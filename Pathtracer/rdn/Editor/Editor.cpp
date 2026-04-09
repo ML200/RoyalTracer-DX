@@ -411,15 +411,12 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     }
     if (ImGui::CollapsingHeader("Spatial DI", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##SpatDI", &rs.enableSpatDI);
-        ImGui::SliderInt("Count Max##SpatDI", &rs.spatCountMaxDI, 1, 8);
-        ImGui::SliderInt("Count Min##SpatDI", &rs.spatCountMinDI, 1, 8);
         ImGui::SliderInt("Radius Max##SpatDI", &rs.spatRadMaxDI, 4, 128);
         ImGui::SliderInt("Radius Min##SpatDI", &rs.spatRadMinDI, 4, 128);
     }
     if (ImGui::CollapsingHeader("Spatial GI", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##SpatGI", &rs.enableSpatGI);
-        ImGui::SliderInt("Count Max##SpatGI", &rs.spatCountMaxGI, 1, 8);
-        ImGui::SliderInt("Count Min##SpatGI", &rs.spatCountMinGI, 1, 8);
+        ImGui::SliderInt("Count##SpatGI", &rs.spatCountMaxGI, 1, 2);
         ImGui::SliderInt("Radius Max##SpatGI", &rs.spatRadMaxGI, 4, 128);
         ImGui::SliderInt("Radius Min##SpatGI", &rs.spatRadMinGI, 4, 128);
     }
