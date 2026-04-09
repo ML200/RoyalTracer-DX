@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./newportnews.glb", XMMatrixIdentity() },
+            { "./twr.glb", XMMatrixIdentity() },
             //{ "./giga_sphere.obj", XMMatrixIdentity()*XMMatrixTranslation(0,2,0) },
             //{ "./car/car.obj", XMMatrixIdentity() }
         };
