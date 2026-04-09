@@ -41,19 +41,7 @@
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
-// Denoiser settings spatial
-#define PLANE_DISTANCE_THRESHOLD 0.01f
-#define NORMAL_POWER 16.0f
-#define ALBEDO_SIGMA 0.2f
-#define SIGMA_SMOOTH   0.1f
-#define SIGMA_ROUGH    4.0f
-#define ROUGH_DIFF_SIGMA 0.15f
-#define ILLUM_SIGMA 0.2f
-#define COLOR_RANGE_REL  .07f
-
-// Denoiser settings temporal
-#define ROUGHNESS_DECAY 0.05f
-
+// Boiling filter
 #define GI_BOIL_STRENGTH_TEMP 0.2f
 #define GI_BOIL_MIN_AVG_TEMP  1e-8f
 

@@ -85,7 +85,20 @@
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" log --oneline -1 0ecd010)",
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010 --stat)",
       "Bash(git -C \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX\" show 0ecd010)",
-      "Bash(grep -rn \"mvec\\\\|mvPixels\\\\|emMV\\\\|specMV\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders/*.hlsl)"
+      "Bash(grep -rn \"mvec\\\\|mvPixels\\\\|emMV\\\\|specMV\" /c/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/shaders/*.hlsl)",
+      "Bash(find \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\" -type f -exec ls -lh {} \\\\;)",
+      "Bash(find \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\" -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" -o -name \"*.cpp\" -o -name \"*.h\" \\\\\\) -exec grep -l \"svgf\\\\|SVGF\\\\|atrous\\\\|ATROUS\\\\|bilateral\\\\|BILATERAL\\\\|wavelet\\\\|WAVELET\\\\|NLM\\\\|non.local\" {} \\\\;)",
+      "Bash(find \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\" -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" -o -name \"*.cpp\" -o -name \"*.h\" \\\\\\) -exec grep -l \"legacy.*denoise\\\\|old.*filter\\\\|deprecated.*denoise\" {} \\\\;)",
+      "Bash(grep -l \"Path_State_v8\\\\|PayloadPath_v8\\\\|VolumeStackPacked\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl)",
+      "Bash(grep -l \"Includes_v8\\\\|Includes_raygen_v8\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl)",
+      "Bash(grep -l \"PayloadPath_v8.hlsli\\\\|Path_State_v8.hlsli\" C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\\\\*.hlsl*)",
+      "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) -exec grep -l \"PayloadPath_v8\\\\|Path_State_v8\" {} \\\\;)",
+      "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) -exec grep -l \"InitPayload_Raygen_payload\\\\|InitPayload_Raygen_packed_payload\\\\|UnpackPayload_payload\\\\|PackPayload_payload\" {} \\\\;)",
+      "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) -exec grep -l \"LoadTransmissionFlag\\\\|LoadShadingNormal\\\\|LoadPDF\\\\|LoadDirection\\\\|LoadBSDFEval\" {} \\\\;)",
+      "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) ! -name \"Path_State_v8.hlsli\" -exec grep -l \"LoadRayGeometry\\\\|StoreRayGeometry\\\\|LoadPathPayload\\\\|StorePathPayload\\\\|LoadVolumeIOR\\\\|StoreVolumeIOR\\\\|LoadVolumeAux\\\\|StoreVolumeAux\\\\|LoadHitState\\\\|StoreHitState\" {} \\\\;)",
+      "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) -exec grep \"LoadPathThroughput\\\\|LoadRayOrigin\\\\|PackIORStackAndPtr\\\\|UnpackIORStackAndPtr\\\\|PackMatStack16\\\\|UnpackMatStack16\\\\|PackPrioStack8\\\\|UnpackPrioStack8\" {} +)",
+      "Bash(xargs wc:*)",
+      "Bash(ls -la *.hlsl *.hlsli)"
     ]
   }
 }

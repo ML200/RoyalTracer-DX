@@ -190,20 +190,4 @@ void UnpackFloat2x16(uint p, out float u, out float v)
     v = f16tof32_custom(p >> 16);
 }
 
-// Packs two [0..1] floats into one uint (16 bits each)
-uint PackScalars16(float a, float b)
-{
-    uint ua = (uint)(saturate(a) * 65535.0f);
-    uint ub = (uint)(saturate(b) * 65535.0f);
-    return ua | (ub << 16);
-}
-
-float2 UnpackScalars16(uint p)
-{
-    float a = float(p & 0xFFFF) / 65535.0f;
-    float b = float(p >> 16) / 65535.0f;
-    return float2(a, b);
-}
-
-
 

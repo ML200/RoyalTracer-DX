@@ -6,32 +6,6 @@ Buffer<uint> gLT_BLASToItem      : register(t18);
 static const uint  LT_SENTINEL = 0xFFFFFFFFu;
 static const float LT_PI = 3.14159265358979323846;
 
-inline float3 LT_AabbCenter(float3 mn, float3 mx) { return 0.5*(mn+mx); }
-inline float  LT_AabbRadius(float3 mn, float3 mx) { float3 e = 0.5*(mx-mn); return length(e); }
-inline float  LT_SafeAcos(float x){ return acos(clamp(x, -1.0, 1.0)); }
-inline float  LT_SafeAsin(float x){ return asin(clamp(x, -1.0, 1.0)); }
-
-// Categorical pick (for 4-ary tree)
-inline uint LT_CategoricalPick(in float w[4], uint n, float u, out float pChosen)
-{
-    float sum = 0.0;
-    [unroll] for (uint i=0;i<4;i++) if (i<n) sum += max(w[i], 0.0);
-    if (sum > 0.0) {
-        float acc = 0.0;
-        [unroll] for (uint i=0;i<4;i++){
-            if (i>=n) break;
-            float p = w[i] / sum;
-            acc += p;
-            if (u <= acc) { pChosen = p; return i; }
-        }
-        pChosen = w[n-1]/sum; return n-1; // numeric tail
-    } else {
-        uint idx = min((uint)floor(u * n), n-1);
-        pChosen = 1.0 / float(n);
-        return idx;
-    }
-}
-
 inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
                               out float p_chosen, out float xi_out)
 {
