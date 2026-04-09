@@ -295,14 +295,6 @@ inline bool RejectDistance_GI(float3 x1, float3 x2, float3 normal, float thresho
     return dist > threshold;
 }
 
-inline bool RejectLength_GI(float3 x2_c, float3 n2_c,
-                            float3 x1_c, float3 x1_n,
-                            float  threshold)
-{
-    float J = JacobianDeterminantDI(x1_c, x2_c, x1_n, n2_c, 0u);
-    return J <= threshold || J >= 1.0f/threshold;
-}
-
 inline bool IsValidReservoir_GI(Reservoir_GI r){
     bool valid =
         any(abs(r.n2_s_gi) > 0.0f) &&

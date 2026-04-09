@@ -1,3 +1,4 @@
+#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
 inline float3 sRGBGammaCorrection(float3 color)
@@ -57,12 +58,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 clean = g_dlssOutput[DTid.xy].xyz;
     float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
 
-    // Apply tonemapping
-    /*noisy = PBRNeutral(noisy);
-    clean =  PBRNeutral(clean);
-    gt =  PBRNeutral(gt);*/
-
-    // Apply gamma sRGBGammaCorrection
+    // Apply gamma correction
     noisy = sRGBGammaCorrection(noisy);
     clean =  sRGBGammaCorrection(clean);
     gt =  sRGBGammaCorrection(gt);

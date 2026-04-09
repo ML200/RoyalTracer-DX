@@ -154,24 +154,8 @@ inline float3 CalculateAbsorptionThroughput(
 }
 
 // =================================================================================
-// INITIALIZERS (Updated for Split Structs)
+// INITIALIZERS
 // =================================================================================
-
-RayGeometry InitRayGeometry(float3 origin, float3 dir)
-{
-    RayGeometry geom;
-    geom.origin = origin;
-    geom.dir    = dir;
-    return geom;
-}
-
-PathPayload InitPathPayload(uint seed)
-{
-    PathPayload payload;
-    payload.throughput = float3(1.0f, 1.0f, 1.0f); // Init throughput to 1 (White)
-    payload.seed       = seed;
-    return payload;
-}
 
 VolumeIOR InitVolumeIOR()
 {
