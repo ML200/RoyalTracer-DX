@@ -22,130 +22,142 @@ struct Reservoir_GI
     float  w_sum_gi;
     uint   M_gi;
 
-    // Hybrid shift: RNG seed for path replay
-    uint   seed_gi;
 };
 
 
-// Data management
-// Pack1(16) + Pack2(16) + Pack3(12) + Pack4(16) + M+wsum+seed(12) = 72
-static const uint BYTES_GI        = 72u;
-static const uint BYTES_GI_VPOST  = 4u;
-static const uint BYTES_GI_TPOST  = 4u;
+// SoA layout — each field is a contiguous plane across all pixels.
+// Total buffer size per pixel is unchanged (80 bytes).
+// Layout: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | IOR(4) | MATID(4) |
+//         J(8) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) = 76
 
-static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 80
+static const uint BYTES_GI       = 68u;
+static const uint BYTES_GI_VPOST =  4u;
+static const uint BYTES_GI_TPOST =  4u;
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 76
 
-uint pixelBaseAddrGI(uint pixelIdx) { return pixelIdx * STRIDE_GI; }
+// Per-field sizes
+static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
+static const uint GI_SZ_L2    =  4u;
+static const uint GI_SZ_V2    =  4u;
+static const uint GI_SZ_N2G   =  4u;
+static const uint GI_SZ_OBJID =  4u;
+static const uint GI_SZ_UV    =  4u;
+static const uint GI_SZ_IOR   =  4u;  // etai(fp16) + etat(fp16)
+static const uint GI_SZ_MATID =  4u;
+static const uint GI_SZ_J     =  8u;  // J.x(4) + J.y(4)
+static const uint GI_SZ_W     =  4u;
+static const uint GI_SZ_F     =  4u;
+static const uint GI_SZ_M     =  4u;
+static const uint GI_SZ_WSUM  =  4u;
+static const uint GI_SZ_VPOST =  4u;
+static const uint GI_SZ_TPOST =  4u;
 
-static const uint O_GI_PACK1  =  0u;   // x2(12) + n2_s(4)
-static const uint O_GI_PACK2  = 16u;   // L2(4) + V2(4) + n2_g(4) + objID(4)
-static const uint O_GI_PACK3  = 32u;   // uv(4) + etai_etat(4) + matID(4) = 12 bytes
-static const uint O_GI_PACK4  = 44u;   // J.x(4) + J.y(4) + W(4) + F(4)
+// Plane cumulative offsets (per-pixel contribution to base address)
+static const uint GI_PLANE_PACK1 =  0u;
+static const uint GI_PLANE_L2    = 16u;
+static const uint GI_PLANE_V2    = 20u;
+static const uint GI_PLANE_N2G   = 24u;
+static const uint GI_PLANE_OBJID = 28u;
+static const uint GI_PLANE_UV    = 32u;
+static const uint GI_PLANE_IOR   = 36u;
+static const uint GI_PLANE_MATID = 40u;
+static const uint GI_PLANE_J     = 44u;
+static const uint GI_PLANE_W     = 52u;
+static const uint GI_PLANE_F     = 56u;
+static const uint GI_PLANE_M     = 60u;
+static const uint GI_PLANE_WSUM  = 64u;
+static const uint GI_PLANE_VPOST = 68u;
+static const uint GI_PLANE_TPOST = 72u;
 
-static const uint O_GI_W      = O_GI_PACK4 +  8u;
-static const uint O_GI_F      = O_GI_PACK4 + 12u;
-static const uint O_GI_M      = 60u;
-static const uint O_GI_WSUM   = 64u;
-static const uint O_GI_SEED   = 68u;
-
-static const uint O_GI_VPOST_BASE = BYTES_GI;                  // 72
-static const uint O_GI_TPOST_BASE = BYTES_GI + BYTES_GI_VPOST; // 76
-
-uint addr_Vpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_VPOST_BASE; }
-uint addr_Tpost(uint pixelIdx) { return pixelBaseAddrGI(pixelIdx) + O_GI_TPOST_BASE; }
+// SoA address helpers
+uint gi_numPx()                       { return IMG_W * IMG_H; }
+uint gi_addr_pack1(uint px)           { return px * GI_SZ_PACK1; }
+uint gi_addr_l2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_L2    + px * GI_SZ_L2; }
+uint gi_addr_v2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_V2    + px * GI_SZ_V2; }
+uint gi_addr_n2g(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_N2G   + px * GI_SZ_N2G; }
+uint gi_addr_objid(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_OBJID + px * GI_SZ_OBJID; }
+uint gi_addr_uv(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_UV    + px * GI_SZ_UV; }
+uint gi_addr_ior(uint px)            { uint N = gi_numPx(); return N * GI_PLANE_IOR   + px * GI_SZ_IOR; }
+uint gi_addr_matid(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_MATID + px * GI_SZ_MATID; }
+uint gi_addr_j(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_J     + px * GI_SZ_J; }
+uint gi_addr_w(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_W     + px * GI_SZ_W; }
+uint gi_addr_f(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_F     + px * GI_SZ_F; }
+uint gi_addr_m(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_M     + px * GI_SZ_M; }
+uint gi_addr_wsum(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_WSUM  + px * GI_SZ_WSUM; }
+uint gi_addr_vpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_VPOST + px * GI_SZ_VPOST; }
+uint gi_addr_tpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_TPOST + px * GI_SZ_TPOST; }
 
 // Store/load packed V_post (world-space)
 void store_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
 {
-    b.Store(addr_Vpost(pixelIdx), PackNormal(normalize(Vpost_world)));
+    b.Store(gi_addr_vpost(pixelIdx), PackNormal(normalize(Vpost_world)));
 }
 
 float3 load_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return UnpackNormal(b.Load(addr_Vpost(pixelIdx)));
+    return UnpackNormal(b.Load(gi_addr_vpost(pixelIdx)));
 }
 
 void store_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Tpost)
 {
-    // Throughput is non-negative; RGB9E5 is fine.
-    b.Store(addr_Tpost(pixelIdx), PackRGB9E5(max(Tpost, 0.0f)));
+    b.Store(gi_addr_tpost(pixelIdx), PackRGB9E5(max(Tpost, 0.0f)));
 }
 
 float3 load_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return UnpackRGB9E5(b.Load(addr_Tpost(pixelIdx)));
+    return UnpackRGB9E5(b.Load(gi_addr_tpost(pixelIdx)));
 }
-
-
-
 
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
-    const uint base = pixelBaseAddrGI(pixelIdx);
-
     float3 xO  = WorldToObjectPos (r.objID_gi, r.x2_gi);
     float3 nSO = WorldToObjectNrm(r.objID_gi, r.n2_s_gi);
     float3 nGO = WorldToObjectNrm(r.objID_gi, r.n2_g_gi);
 
-    buf.Store4(base + O_GI_PACK1,
-               uint4(asuint(xO), PackNormal(normalize(nSO))));
-
-    buf.Store4(base + O_GI_PACK2,
-               uint4(PackRGB9E5(r.L2_gi),
-                     PackNormal(normalize(r.V2_gi)),
-                     PackNormal(normalize(nGO)),
-                     r.objID_gi));
-
-    buf.Store3(base + O_GI_PACK3,
-               uint3(PackFloat2x16(r.uv_gi.x, r.uv_gi.y),
-                     PackFloat2x16(r.etai_gi,  r.etat_gi),
-                     r.matID_gi));
-
-    buf.Store4(base + O_GI_PACK4,
-               uint4(asuint(r.J_gi.x),
-                     asuint(r.J_gi.y),
-                     asuint(r.W_gi),
-                     asuint(r.F_gi)));
-
-    buf.Store3(base + O_GI_M,
-               uint3(r.M_gi,
-                     asuint(r.w_sum_gi),
-                     r.seed_gi));
+    buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
+    buf.Store (gi_addr_l2(pixelIdx),    PackRGB9E5(r.L2_gi));
+    buf.Store (gi_addr_v2(pixelIdx),    PackNormal(normalize(r.V2_gi)));
+    buf.Store (gi_addr_n2g(pixelIdx),   PackNormal(normalize(nGO)));
+    buf.Store (gi_addr_objid(pixelIdx), r.objID_gi);
+    buf.Store (gi_addr_uv(pixelIdx),    PackFloat2x16(r.uv_gi.x, r.uv_gi.y));
+    buf.Store (gi_addr_ior(pixelIdx),   PackFloat2x16(r.etai_gi, r.etat_gi));
+    buf.Store (gi_addr_matid(pixelIdx), r.matID_gi);
+    buf.Store2(gi_addr_j(pixelIdx),     uint2(asuint(r.J_gi.x), asuint(r.J_gi.y)));
+    buf.Store (gi_addr_w(pixelIdx),     asuint(r.W_gi));
+    buf.Store (gi_addr_f(pixelIdx),     asuint(r.F_gi));
+    buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
+    buf.Store (gi_addr_wsum(pixelIdx),  asuint(r.w_sum_gi));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    const uint base = pixelBaseAddrGI(pixelIdx);
-
-    uint4 p1 = buf.Load4(base + O_GI_PACK1);
-    uint4 p2 = buf.Load4(base + O_GI_PACK2);
-    uint3 p3 = buf.Load3(base + O_GI_PACK3);
-    uint4 p4 = buf.Load4(base + O_GI_PACK4);
-    uint3 p5 = buf.Load3(base + O_GI_M);
-
     Reservoir_GI r;
 
-    r.objID_gi = p2.w;
-    r.matID_gi = p3.z;
+    uint4 p1 = buf.Load4(gi_addr_pack1(pixelIdx));
+
+    r.objID_gi = buf.Load(gi_addr_objid(pixelIdx));
+    r.matID_gi = buf.Load(gi_addr_matid(pixelIdx));
 
     r.x2_gi    = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
     r.n2_s_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
-    r.n2_g_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p2.z));
+    r.n2_g_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(buf.Load(gi_addr_n2g(pixelIdx))));
 
-    r.L2_gi    = UnpackRGB9E5(p2.x);
-    r.V2_gi    = UnpackNormal(p2.y);
+    r.L2_gi    = UnpackRGB9E5(buf.Load(gi_addr_l2(pixelIdx)));
+    r.V2_gi    = UnpackNormal(buf.Load(gi_addr_v2(pixelIdx)));
 
-    UnpackFloat2x16(p3.x, r.uv_gi.x, r.uv_gi.y);
-    UnpackFloat2x16(p3.y, r.etai_gi,  r.etat_gi);
+    uint ior_packed = buf.Load(gi_addr_ior(pixelIdx));
+    uint uv_packed  = buf.Load(gi_addr_uv(pixelIdx));
+    UnpackFloat2x16(uv_packed,  r.uv_gi.x,   r.uv_gi.y);
+    UnpackFloat2x16(ior_packed, r.etai_gi,    r.etat_gi);
 
-    r.J_gi     = asfloat(p4.xy);
-    r.W_gi     = asfloat(p4.z);
-    r.F_gi     = asfloat(p4.w);
+    uint2 j_raw = buf.Load2(gi_addr_j(pixelIdx));
+    r.J_gi     = asfloat(j_raw);
+    r.W_gi     = asfloat(buf.Load(gi_addr_w(pixelIdx)));
+    r.F_gi     = asfloat(buf.Load(gi_addr_f(pixelIdx)));
 
-    r.M_gi     = p5.x;
-    r.w_sum_gi = asfloat(p5.y);
-    r.seed_gi  = p5.z;
+    r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
+    r.w_sum_gi = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
 
     return r;
 }
@@ -155,84 +167,81 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 // Fast loaders (DI-style usage)
 // -------------------------------
 
-// Typically: obj = load_objID_gi(buf,id); then call load_x2/n2... with obj.
 uint  load_objID_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK2).w;
+    return b.Load(gi_addr_objid(pixelIdx));
 }
 
 uint  load_matID_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return b.Load3(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3).z;
+    return b.Load(gi_addr_matid(pixelIdx));
 }
 
 float3 load_x2_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
-    float3 xO = asfloat(b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK1).xyz);
+    float3 xO = asfloat(b.Load4(gi_addr_pack1(pixelIdx)).xyz);
     return ObjectToWorldPos(objID, xO);
 }
 
 float3 load_n2_s_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
-    uint enc = b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK1).w;
+    uint enc = b.Load4(gi_addr_pack1(pixelIdx)).w;
     return ObjectToWorldNrm(objID, UnpackNormal(enc));
 }
 
 float3 load_n2_g_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
-    uint enc = b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK2).z;
+    uint enc = b.Load(gi_addr_n2g(pixelIdx));
     return ObjectToWorldNrm(objID, UnpackNormal(enc));
 }
 
 float3 load_L2_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    uint enc = b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK2).x;
-    return UnpackRGB9E5(enc);
+    return UnpackRGB9E5(b.Load(gi_addr_l2(pixelIdx)));
 }
 
 float3 load_V2_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    uint enc = b.Load4(pixelBaseAddrGI(pixelIdx) + O_GI_PACK2).y;
-    return UnpackNormal(enc);
+    return UnpackNormal(b.Load(gi_addr_v2(pixelIdx)));
 }
 
 float2 load_uv_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
     float2 r;
-    UnpackFloat2x16(b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3), r.x, r.y);
+    UnpackFloat2x16(b.Load(gi_addr_uv(pixelIdx)), r.x, r.y);
     return r;
 }
 
 float  load_etai_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    uint p = b.Load3(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3).y;
+    uint p = b.Load(gi_addr_ior(pixelIdx));
     return f16tof32_custom(p & 0xFFFFu);
 }
 
 float  load_etat_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    uint p = b.Load3(pixelBaseAddrGI(pixelIdx) + O_GI_PACK3).y;
+    uint p = b.Load(gi_addr_ior(pixelIdx));
     return f16tof32_custom(p >> 16);
 }
 
 float2 load_J_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load2(pixelBaseAddrGI(pixelIdx) + O_GI_PACK4));
+    return asfloat(b.Load2(gi_addr_j(pixelIdx)));
 }
 
 void store_Jy_gi(RWByteAddressBuffer b, uint pixelIdx, float Jy)
 {
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_PACK4 + 4u, asuint(Jy));
+    b.Store(gi_addr_j(pixelIdx) + 4u, asuint(Jy));
 }
 
 float  load_W_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_W));
+    return asfloat(b.Load(gi_addr_w(pixelIdx)));
 }
 
 float  load_F_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_F));
+    return asfloat(b.Load(gi_addr_f(pixelIdx)));
 }
 
 
@@ -242,42 +251,32 @@ float  load_F_gi(RWByteAddressBuffer b, uint pixelIdx)
 
 float load_wsum_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_WSUM));
+    return asfloat(b.Load(gi_addr_wsum(pixelIdx)));
 }
 
 void store_wsum_gi(RWByteAddressBuffer b, uint pixelIdx, float wsum)
 {
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_WSUM, asuint(wsum));
+    b.Store(gi_addr_wsum(pixelIdx), asuint(wsum));
 }
 
 uint load_M_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_M);
+    return b.Load(gi_addr_m(pixelIdx));
 }
 
 void store_M_gi(RWByteAddressBuffer b, uint pixelIdx, uint M)
 {
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_M, M);
+    b.Store(gi_addr_m(pixelIdx), M);
 }
 
 void store_W_gi(RWByteAddressBuffer b, uint pixelIdx, float W)
 {
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_W, asuint(W));
-}
-
-uint load_seed_gi(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return b.Load(pixelBaseAddrGI(pixelIdx) + O_GI_SEED);
-}
-
-void store_seed_gi(RWByteAddressBuffer b, uint pixelIdx, uint s)
-{
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_SEED, s);
+    b.Store(gi_addr_w(pixelIdx), asuint(W));
 }
 
 void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, float F)
 {
-    b.Store(pixelBaseAddrGI(pixelIdx) + O_GI_F, asuint(F));
+    b.Store(gi_addr_f(pixelIdx), asuint(F));
 }
 
 
@@ -316,10 +315,7 @@ inline void InvalidateReservoirGI_ShadingNormal(
 )
 {
     // n2_s_gi is stored in PACK1.w
-    buf.Store(
-        pixelBaseAddrGI(pixelIdx) + O_GI_PACK1 + 12u,
-        0u
-    );
+    buf.Store(gi_addr_pack1(pixelIdx) + 12u, 0u);
 }
 
 
@@ -436,7 +432,6 @@ bool UpdateReservoirGI(
 
     in float2 J,
     in float  F,
-    in uint   pathSeed,
 
     inout uint2 seed
 )
@@ -460,7 +455,6 @@ bool UpdateReservoirGI(
         reservoir.V2_gi   = V2;
         reservoir.J_gi    = J;
         reservoir.F_gi    = F;
-        reservoir.seed_gi = pathSeed;
         return true;
     }
     return false;
@@ -481,12 +475,10 @@ bool UpdateReservoirGI_Fast(
     inout uint2 seed
 )
 {
-    const uint base = pixelBaseAddrGI(pixelIdx);
-
     // w_sum accumulates
-    float currentWSum = asfloat(buf.Load(base + O_GI_WSUM));
+    float currentWSum = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
     float newWSum     = currentWSum + wi;
-    buf.Store(base + O_GI_WSUM, asuint(newWSum));
+    buf.Store(gi_addr_wsum(pixelIdx), asuint(newWSum));
 
     bool isAccepted = false;
 
@@ -494,14 +486,9 @@ bool UpdateReservoirGI_Fast(
     {
         isAccepted = true;
 
-        // Pack2: always update L2 + V2 (world packed normal)
-        uint4 p2 = buf.Load4(base + O_GI_PACK2);
-        p2.x = PackRGB9E5(L2_new);
-        p2.y = PackNormal(normalize(V2_new));
-        buf.Store4(base + O_GI_PACK2, p2);
-
-        // J_gi: overwrite .x and .y (first 8 bytes of PACK4)
-        buf.Store2(base + O_GI_PACK4, uint2(asuint(J_new.x), asuint(J_new.y)));
+        buf.Store(gi_addr_l2(pixelIdx), PackRGB9E5(L2_new));
+        buf.Store(gi_addr_v2(pixelIdx), PackNormal(normalize(V2_new)));
+        buf.Store2(gi_addr_j(pixelIdx), uint2(asuint(J_new.x), asuint(J_new.y)));
     }
 
     return isAccepted;
@@ -523,27 +510,14 @@ void SetReservoirGI_ConstHit(
     uint   objID
 )
 {
-    const uint base = pixelBaseAddrGI(pixelIdx);
-
     float3 xO  = WorldToObjectPos (objID, x2_world);
     float3 nSO = WorldToObjectNrm(objID, n2s_world);
     float3 nGO = WorldToObjectNrm(objID, n2g_world);
 
-    // Pack1: x2 + n2_s
-    buf.Store4(base + O_GI_PACK1,
-               uint4(asuint(xO), PackNormal(normalize(nSO))));
-
-    // Pack2: update only n2_g + objID (preserve L2/V2)
-    uint4 p2 = buf.Load4(base + O_GI_PACK2);
-    p2.z = PackNormal(normalize(nGO));
-    p2.w = objID;
-    buf.Store4(base + O_GI_PACK2, p2);
-
-    // Pack3: matID (preserve uv + etai_etat, update matID only)
-    // Pack3 is 12 bytes (3 uints): [uv_packed, etai_etat_packed, matID]
-    uint3 p3 = buf.Load3(base + O_GI_PACK3);
-    p3.z = matID;
-    buf.Store3(base + O_GI_PACK3, p3);
+    buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
+    buf.Store (gi_addr_n2g(pixelIdx),   PackNormal(normalize(nGO)));
+    buf.Store (gi_addr_objid(pixelIdx), objID);
+    buf.Store (gi_addr_matid(pixelIdx), matID);
 }
 
 void SetReservoirGI_UVAndIOR(
@@ -554,13 +528,6 @@ void SetReservoirGI_UVAndIOR(
     float  etat
 )
 {
-    const uint base = pixelBaseAddrGI(pixelIdx);
-    // Pack3 is now 12 bytes: uv(4) + etai_etat(4) + matID(4)
-    // Only update uv + etai_etat (first 8 bytes), preserve matID
-    uint matID = buf.Load(base + O_GI_PACK3 + 8u);
-    buf.Store3(base + O_GI_PACK3,
-               uint3(PackFloat2x16(uv.x, uv.y),
-                     PackFloat2x16(etai, etat),
-                     matID));
+    buf.Store(gi_addr_uv(pixelIdx),  PackFloat2x16(uv.x, uv.y));
+    buf.Store(gi_addr_ior(pixelIdx), PackFloat2x16(etai, etat));
 }
-
