@@ -72,9 +72,6 @@ void Pass_raygen_v8()
         const uint2 pixel   = DispatchRaysIndex().xy;
         const uint2 imgSize = DispatchRaysDimensions().xy;
 
-        // Decompress path state after trace (compressed to reduce live regs across trace)
-        float3 throughput = UnpackRGB9E5(throughputPk);
-
         // ── Miss ───────────────────────────────────────────────────────
         if (!hitObj.IsHit())
         {
@@ -91,6 +88,7 @@ void Pass_raygen_v8()
                 break;
             }
 
+            float3 throughput = UnpackRGB9E5(throughputPk);
             float3 envL   = EvalMissState(rayDir, float3(0,0,0));
             float3 T_envL = throughput * envL;
 
@@ -214,6 +212,7 @@ void Pass_raygen_v8()
         // ── Emitter hit: BSDF-sampled light with MIS ──────────────────
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
+            float3 throughput = UnpackRGB9E5(throughputPk);
             float3 prevNormal = UnpackNormal(prevNormalPk);
             float lightPdfArea = LT_Pdf_LightTree_Area(rayOrigin, prevNormal, hinfo.lightID, instID);
             float cosLight     = max(dot(hinfo.hitNormal, -rayDir), 0.0f);
@@ -265,10 +264,19 @@ void Pass_raygen_v8()
         }
 
         // ── NEE (point lights + sun) ──────────────────────────────────
+        // Pack caller state to reduce live regs across IsVisible calls:
+        //   hitLocalKd(3)+hitLocalPr(1)+hitLocalPm(1) → matPk(2 uints)
+        //   hinfo.hitNormal(3) → hitNormalPk(1 uint) — IsVisible only needs hitGNormal
+        //   throughput stays packed as throughputPk — decompress only after IsVisible
         bool performNEE = !(mediumMatID != MEDIUM_INVALID_15 || materials[matID].Kd.w < EPSILON);
 
+        uint matKdPk, matPrPmPk, hitNormalPk;
         if (performNEE)
         {
+            matKdPk     = PackRGB9E5(hitLocalKd);
+            matPrPmPk   = f32tof16_custom(hitLocalPr) | (f32tof16_custom(hitLocalPm) << 16u);
+            hitNormalPk = PackNormal(hinfo.hitNormal);
+
             // Point light NEE
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
@@ -283,8 +291,15 @@ void Pass_raygen_v8()
 
                 if (cosSurf > 1e-6f && cosLight > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, L, dist * 0.999f))
                 {
-                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, L, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+                    // Decompress after IsVisible — these were dead across the call
+                    float3 lKd = UnpackRGB9E5(matKdPk);
+                    float  lPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
+                    float  lPm = f16tof32_custom(matPrPmPk >> 16u);
+                    float3 hitN = UnpackNormal(hitNormalPk);
+                    float3 throughput = UnpackRGB9E5(throughputPk);
+
+                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hitN, iors.x, iors.y, lKd, lPm);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitGNormal, L, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
 
                     float lightPdf = light.pdfSolidAngle;
                     float bsdfPdf  = bdataNEE.pdf;
@@ -328,12 +343,20 @@ void Pass_raygen_v8()
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
-                float NdotL = dot(hinfo.hitNormal, sun.direction);
+                float3 hitN_sun = UnpackNormal(hitNormalPk);
+                float NdotL = dot(hitN_sun, sun.direction);
 
                 if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, sun.direction, 10000.0f))
                 {
-                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hinfo.hitNormal, hinfo.hitGNormal, sun.direction, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+                    // Decompress after IsVisible
+                    float3 lKd = UnpackRGB9E5(matKdPk);
+                    float  lPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
+                    float  lPm = f16tof32_custom(matPrPmPk >> 16u);
+                    float3 hitN = UnpackNormal(hitNormalPk);
+                    float3 throughput = UnpackRGB9E5(throughputPk);
+
+                    SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hitN, iors.x, iors.y, lKd, lPm);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitGNormal, sun.direction, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
 
                     float lightPdf = sun.pdf;
                     float bsdfPdf  = bdataNEE.pdf;
@@ -368,6 +391,12 @@ void Pass_raygen_v8()
                     }
                 }
             }
+
+            // Unpack for BSDF sampling below
+            hitLocalKd = UnpackRGB9E5(matKdPk);
+            hitLocalPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
+            hitLocalPm = f16tof32_custom(matPrPmPk >> 16u);
+            hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
         // ── Sample next direction (BSDF) ──────────────────────────────
@@ -401,23 +430,25 @@ void Pass_raygen_v8()
             break;
 
         // Advance path state
-        throughput *= updateWeight;
         prev_pdf    = bdata.pdf;
         rayDir      = s;
-        // Offset origin along geometric normal in the direction the ray exits
         float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);
 
-        // Russian Roulette (skip depth 0 to ensure at least one bounce)
-        if (depth > 0)
+        // Update throughput: decompress → multiply → RR → recompress
         {
-            float survivalProb = min(1.0f, Luma(throughput));
-            if (RandomFloatSingle(seed) >= survivalProb) break;
-            throughput /= max(survivalProb, 0.1f);
-        }
+            float3 throughput = UnpackRGB9E5(throughputPk) * updateWeight;
 
-        // Recompress path state for next iteration's trace
-        throughputPk = PackRGB9E5(throughput);
+            // Russian Roulette (skip depth 0 to ensure at least one bounce)
+            if (depth > 0)
+            {
+                float survivalProb = min(1.0f, Luma(throughput));
+                if (RandomFloatSingle(seed) >= survivalProb) break;
+                throughput /= max(survivalProb, 0.1f);
+            }
+
+            throughputPk = PackRGB9E5(throughput);
+        }
         prevNormalPk = PackNormal(hinfo.hitNormal);
     }
 
