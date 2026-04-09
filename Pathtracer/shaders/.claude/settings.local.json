@@ -98,7 +98,9 @@
       "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) ! -name \"Path_State_v8.hlsli\" -exec grep -l \"LoadRayGeometry\\\\|StoreRayGeometry\\\\|LoadPathPayload\\\\|StorePathPayload\\\\|LoadVolumeIOR\\\\|StoreVolumeIOR\\\\|LoadVolumeAux\\\\|StoreVolumeAux\\\\|LoadHitState\\\\|StoreHitState\" {} \\\\;)",
       "Bash(find . -type f \\\\\\( -name \"*.hlsl\" -o -name \"*.hlsli\" \\\\\\) -exec grep \"LoadPathThroughput\\\\|LoadRayOrigin\\\\|PackIORStackAndPtr\\\\|UnpackIORStackAndPtr\\\\|PackMatStack16\\\\|UnpackMatStack16\\\\|PackPrioStack8\\\\|UnpackPrioStack8\" {} +)",
       "Bash(xargs wc:*)",
-      "Bash(ls -la *.hlsl *.hlsli)"
+      "Bash(ls -la *.hlsl *.hlsli)",
+      "Bash(grep -n \"TraceRay\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)",
+      "Bash(grep -l \"ShadowHitInfo\\\\|shadow\\\\|Shadow\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)"
     ]
   }
 }
