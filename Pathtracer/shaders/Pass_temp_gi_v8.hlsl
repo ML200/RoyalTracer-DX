@@ -238,7 +238,6 @@ void Pass_temp_gi_v8()
                         rdi_r.matID_gi, rdi_r.objID_gi,
                         rdi_r.J_gi,
                         rdi_r.F_gi,
-                        rdi_r.seed_gi,
                         seed
                     ))
                 {

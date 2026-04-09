@@ -10,51 +10,67 @@ struct Reservoir_DI
     uint objID_di;
 };
 
-static const uint BYTES_DI   = 40u;
+// SoA layout — each field is a contiguous plane across all pixels.
+// Total buffer size per pixel is unchanged (40 bytes).
+static const uint BYTES_DI = 40u;
 
-static const uint O_PACK1 = 0u;    // float4 (Position + Normal)
-static const uint O_PACK2 = 16u;   // uint2  (Radiance + W)
-static const uint O_OBJID = 24u;   // uint   (objID)
-static const uint O_M     = 28u;   // uint   (M)
-static const uint O_WSUM  = 32u;   // float  (w_sum)
-static const uint O_PHAT  = 36u;   // float  (p_hat)
+// Per-pixel field sizes (bytes)
+static const uint DI_SZ_PACK1 = 16u;  // position(12) + packed normal(4)
+static const uint DI_SZ_L2    =  4u;  // PackRGB9E5
+static const uint DI_SZ_W     =  4u;
+static const uint DI_SZ_OBJID =  4u;
+static const uint DI_SZ_M     =  4u;
+static const uint DI_SZ_WSUM  =  4u;
+static const uint DI_SZ_PHAT  =  4u;
 
-// helpers
-uint pixelBaseAddr(uint pixelIdx) { return pixelIdx * BYTES_DI; }
+// Plane base offsets (multiply by totalPixels to get byte offset)
+// Layout: PACK1 | L2 | W | OBJID | M | WSUM | PHAT
+static const uint DI_PLANE_PACK1 =  0u;
+static const uint DI_PLANE_L2    = 16u;
+static const uint DI_PLANE_W     = 20u;
+static const uint DI_PLANE_OBJID = 24u;
+static const uint DI_PLANE_M     = 28u;
+static const uint DI_PLANE_WSUM  = 32u;
+static const uint DI_PLANE_PHAT  = 36u;
+
+// SoA address helpers
+uint di_numPx()                      { return IMG_W * IMG_H; }
+uint di_addr_pack1(uint px)          { return px * DI_SZ_PACK1; }
+uint di_addr_l2(uint px)             { uint N = di_numPx(); return N * DI_PLANE_L2    + px * DI_SZ_L2; }
+uint di_addr_w(uint px)              { uint N = di_numPx(); return N * DI_PLANE_W     + px * DI_SZ_W; }
+uint di_addr_objid(uint px)          { uint N = di_numPx(); return N * DI_PLANE_OBJID + px * DI_SZ_OBJID; }
+uint di_addr_m(uint px)              { uint N = di_numPx(); return N * DI_PLANE_M     + px * DI_SZ_M; }
+uint di_addr_wsum(uint px)           { uint N = di_numPx(); return N * DI_PLANE_WSUM  + px * DI_SZ_WSUM; }
+uint di_addr_phat(uint px)           { uint N = di_numPx(); return N * DI_PLANE_PHAT  + px * DI_SZ_PHAT; }
 
 // ------------------------------------------------------------------
 // Store Functions
 // ------------------------------------------------------------------
 
-
 void storeReservoirDI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_DI r)
 {
-    uint base = pixelBaseAddr(pixelIdx);
-
     float3 pStore;
     uint   nStore;
 
     if (r.objID_di == 0xFFFFFFFFu || r.objID_di == 0xFFFFFFFEu)
     {
-        // Store direction directly (world space)
-        pStore = r.x2_di;                      // already a direction
-        nStore = PackNormal(normalize(r.n2_di)); // can be dummy; keep stable
+        pStore = r.x2_di;
+        nStore = PackNormal(normalize(r.n2_di));
     }
     else
     {
-        // Store surface position/normal in object space
         float3 xO = WorldToObjectPos (r.objID_di, r.x2_di);
         float3 nO = WorldToObjectNrm(r.objID_di, r.n2_di);
         pStore = xO;
         nStore = PackNormal(nO);
     }
 
-    buf.Store4(base + O_PACK1, uint4(asuint(pStore), nStore));
-    buf.Store2(base + O_PACK2, uint2(PackRGB9E5(r.L2_di), asuint(r.W_di)));
-
-    buf.Store(base + O_OBJID, r.objID_di);
-    buf.Store(base + O_M,     r.M_di);
-    buf.Store(base + O_WSUM,  asuint(r.w_sum_di));
+    buf.Store4(di_addr_pack1(pixelIdx), uint4(asuint(pStore), nStore));
+    buf.Store (di_addr_l2(pixelIdx),    PackRGB9E5(r.L2_di));
+    buf.Store (di_addr_w(pixelIdx),     asuint(r.W_di));
+    buf.Store (di_addr_objid(pixelIdx), r.objID_di);
+    buf.Store (di_addr_m(pixelIdx),     r.M_di);
+    buf.Store (di_addr_wsum(pixelIdx),  asuint(r.w_sum_di));
 }
 
 // ------------------------------------------------------------------
@@ -64,20 +80,16 @@ void storeReservoirDI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_DI
 Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
 {
     Reservoir_DI r;
-    uint base = pixelBaseAddr(pixelIdx);
 
-    uint4 p1 = buf.Load4(base + O_PACK1);
+    uint4  p1   = buf.Load4(di_addr_pack1(pixelIdx));
     float3 pRaw = asfloat(p1.xyz);
     uint   nEnc = p1.w;
 
-    uint2 p2 = buf.Load2(base + O_PACK2);
-    uint  Lenc = p2.x;
-
-    r.W_di     = asfloat(p2.y);
-    r.objID_di = buf.Load(base + O_OBJID);
-    r.M_di     = buf.Load(base + O_M);
-    r.w_sum_di = asfloat(buf.Load(base + O_WSUM));
-    r.L2_di    = UnpackRGB9E5(Lenc);
+    r.W_di     = asfloat(buf.Load(di_addr_w(pixelIdx)));
+    r.objID_di = buf.Load(di_addr_objid(pixelIdx));
+    r.M_di     = buf.Load(di_addr_m(pixelIdx));
+    r.w_sum_di = asfloat(buf.Load(di_addr_wsum(pixelIdx)));
+    r.L2_di    = UnpackRGB9E5(buf.Load(di_addr_l2(pixelIdx)));
 
     if (r.objID_di == 0xFFFFFFFFu || r.objID_di == 0xFFFFFFFEu)
     {
@@ -86,7 +98,6 @@ Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
     }
     else
     {
-        // Interpret payload as surface point in object space
         r.x2_di = ObjectToWorldPos (r.objID_di, pRaw);
         r.n2_di = ObjectToWorldNrm(r.objID_di, UnpackNormal(nEnc));
     }
@@ -98,69 +109,67 @@ Reservoir_DI loadReservoirDI(RWByteAddressBuffer buf, uint pixelIdx)
 // Single loaders
 float3 load_x2_di(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
-    uint4 p1 = buf.Load4(pixelBaseAddr(pixelIdx) + O_PACK1);
+    uint4 p1 = buf.Load4(di_addr_pack1(pixelIdx));
     float3 pRaw = asfloat(p1.xyz);
     return (objID == 0xFFFFFFFFu|| objID == 0xFFFFFFFEu) ? pRaw : ObjectToWorldPos(objID, pRaw);
 }
 
 float3 load_n2_di(RWByteAddressBuffer buf, uint pixelIdx, uint objID)
 {
-    uint  nEnc = buf.Load4(pixelBaseAddr(pixelIdx) + O_PACK1).w;
+    uint  nEnc = buf.Load4(di_addr_pack1(pixelIdx)).w;
     return ObjectToWorldNrm(objID, UnpackNormal(nEnc));
 }
 
 float3 load_L2_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    uint Lenc = buf.Load2(pixelBaseAddr(pixelIdx) + O_PACK2).x;
-    return UnpackRGB9E5(Lenc);
+    return UnpackRGB9E5(buf.Load(di_addr_l2(pixelIdx)));
 }
 
 float  load_W_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load2(pixelBaseAddr(pixelIdx) + O_PACK2).y);
+    return asfloat(buf.Load(di_addr_w(pixelIdx)));
 }
 
 uint load_M_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(pixelBaseAddr(pixelIdx) + O_M);
+    return buf.Load(di_addr_m(pixelIdx));
 }
 
 uint load_objID_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(pixelBaseAddr(pixelIdx) + O_OBJID);
+    return buf.Load(di_addr_objid(pixelIdx));
 }
 
 void store_W_di(RWByteAddressBuffer buf, uint pixelIdx, float W)
 {
-    buf.Store(pixelBaseAddr(pixelIdx) + O_PACK2 + 4, asuint(W));
+    buf.Store(di_addr_w(pixelIdx), asuint(W));
 }
 
 void store_M_di(RWByteAddressBuffer buf, uint pixelIdx, uint M)
 {
-    buf.Store(pixelBaseAddr(pixelIdx) + O_M, M);
+    buf.Store(di_addr_m(pixelIdx), M);
 }
 
 // Load and store for p_hat caching
 void store_phat_di(RWByteAddressBuffer buf, uint pixelIdx, float p_hat)
 {
-    buf.Store(pixelBaseAddr(pixelIdx) + O_PHAT, asuint(p_hat));
+    buf.Store(di_addr_phat(pixelIdx), asuint(p_hat));
 }
 
 float load_phat_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load(pixelBaseAddr(pixelIdx) + O_PHAT));
+    return asfloat(buf.Load(di_addr_phat(pixelIdx)));
 }
 
 // Load and store w sum
 void store_wsum_di(RWByteAddressBuffer buf, uint pixelIdx, float w_sum)
 {
-    uint base = pixelBaseAddr(pixelIdx);
-    buf.Store(base + O_WSUM, asuint(w_sum));
+    buf.Store(di_addr_wsum(pixelIdx), asuint(w_sum));
 }
 
 float load_wsum_di(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load(pixelBaseAddr(pixelIdx) + O_WSUM));
+    return asfloat(buf.Load(di_addr_wsum(pixelIdx)));
 }
 
 
@@ -351,13 +360,9 @@ bool UpdateReservoirDI_Fast(
     inout uint2 seed
 )
 {
-    uint base = pixelBaseAddr(pixelIdx);
-    uint wSumAddr = base + O_WSUM;
-    float currentWSum = asfloat(buf.Load(wSumAddr));
-
+    float currentWSum = asfloat(buf.Load(di_addr_wsum(pixelIdx)));
     float newWSum = currentWSum + wi;
-
-    buf.Store(wSumAddr, asuint(newWSum));
+    buf.Store(di_addr_wsum(pixelIdx), asuint(newWSum));
 
     bool isAccepted = false;
 
@@ -367,12 +372,11 @@ bool UpdateReservoirDI_Fast(
 
         float3 xO = WorldToObjectPos(objID, x2);
         float3 nO = WorldToObjectNrm(objID, n2);
-        buf.Store4(base + O_PACK1, uint4(asuint(xO), PackNormal(nO)));
-
-        buf.Store2(base + O_PACK2, uint2(PackRGB9E5(L2), asuint(0.0f)));
-
-        buf.Store(base + O_OBJID, objID);
-        buf.Store(base + O_M,     1);
+        buf.Store4(di_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(nO)));
+        buf.Store (di_addr_l2(pixelIdx),    PackRGB9E5(L2));
+        buf.Store (di_addr_w(pixelIdx),     asuint(0.0f));
+        buf.Store (di_addr_objid(pixelIdx), objID);
+        buf.Store (di_addr_m(pixelIdx),     1);
     }
 
     return isAccepted;
@@ -388,14 +392,9 @@ bool UpdateReservoirDI_Infinite(
     inout uint2 seed
 )
 {
-    uint base = pixelBaseAddr(pixelIdx);
-
-    uint wSumAddr = base + O_WSUM;
-    float currentWSum = asfloat(buf.Load(wSumAddr));
-
+    float currentWSum = asfloat(buf.Load(di_addr_wsum(pixelIdx)));
     float newWSum = currentWSum + wi;
-
-    buf.Store(wSumAddr, asuint(newWSum));
+    buf.Store(di_addr_wsum(pixelIdx), asuint(newWSum));
 
     bool isAccepted = false;
 
@@ -403,12 +402,11 @@ bool UpdateReservoirDI_Infinite(
     {
         isAccepted = true;
 
-        buf.Store4(base + O_PACK1, uint4(asuint(dir), PackNormal(normalize(float3(1,1,0.5f)))));
-
-        buf.Store2(base + O_PACK2, uint2(PackRGB9E5(L2), asuint(0.0f)));
-
-        buf.Store(base + O_OBJID, objID);   // 0xFFFFFFFFu now preserved
-        buf.Store(base + O_M,     1);
+        buf.Store4(di_addr_pack1(pixelIdx), uint4(asuint(dir), PackNormal(normalize(float3(1,1,0.5f)))));
+        buf.Store (di_addr_l2(pixelIdx),    PackRGB9E5(L2));
+        buf.Store (di_addr_w(pixelIdx),     asuint(0.0f));
+        buf.Store (di_addr_objid(pixelIdx), objID);   // 0xFFFFFFFFu now preserved
+        buf.Store (di_addr_m(pixelIdx),     1);
     }
 
     return isAccepted;

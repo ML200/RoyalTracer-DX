@@ -1,7 +1,7 @@
 #include "Includes_raygen_v8.hlsli"
 
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 30
+#define MAX_BOUNCES 10
 #endif
 
 #ifndef MEDIUM_INVALID_15
@@ -26,7 +26,6 @@ void Pass_raygen_v8()
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
         store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
-        store_seed_gi(g_Reservoirs_current_gi, pixelIdx, initRandomData(pixel, uint2(8, 4), time, 7u));
         store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
 
         gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);

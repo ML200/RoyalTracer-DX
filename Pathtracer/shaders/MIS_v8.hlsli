@@ -94,7 +94,7 @@ float PairwiseMIS_Canonical_Spat_DI(
     float m_c = M_c / M_sum;
     float m_num = M_c * p_c;
 
-    [unroll]
+    [loop]
     for(int i = 0; i < SPAT_COUNT_MAX_DI; i++){ // Iterate over all spatial neighbor candidates, skip invalid entries
         if(nIds[i] != 0xFFFFFFFF){
             uint nInstID = load_instID(g_sample_current, nIds[i]);

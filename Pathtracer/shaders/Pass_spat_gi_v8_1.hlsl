@@ -1,8 +1,13 @@
 #include "Includes_raygen_v8.hlsli"
 
 //─────────────────────────────────────────────────────────────────────────────
-//  SPATIAL  GI  (raygen shader)
+//  SPATIAL  GI  (raygen shader — merge only, neighbor selection done in pre-pass)
 //─────────────────────────────────────────────────────────────────────────────
+
+// Must match layout in Pass_spat_gi_select_v8.hlsl
+static const uint GI_SEL_STRIDE = 40u;
+uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
+
 [shader("raygeneration")]
 void Pass_spat_gi_v8_1()
 {
@@ -24,17 +29,6 @@ void Pass_spat_gi_v8_1()
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float2 myUV     = load_uv(g_sample_current, pixelIdx);
-    float3 myKd; float myPr, myPm;
-    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
-
-    // Specularity: reduce spatial samples for reflective surfaces
-    const float3 camPos     = InitOrigin();
-    const float  NoV        = saturate(dot(normalize(camPos - myPos), myN1s));
-    const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
 
     // If spatial GI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 8u))
@@ -59,102 +53,30 @@ void Pass_spat_gi_v8_1()
         return;
     }
 
-    // RNG
-    uint2 seed = GetSeed(pixelIdx, time, 2);
+    //─────────────────────────────────────────────────────────────────────────
+    // Read pre-computed neighbor selection from g_pathStateBuffer
+    //─────────────────────────────────────────────────────────────────────────
+    const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
+    const uint selBase   = gi_sel_addr(linearIdx);
+    uint2 header         = g_pathStateBuffer.Load2(selBase);
+    const uint  validCount = header.x;
+    const float M_sum_nbr  = asfloat(header.y);
 
-    // Budgeting (keep semantics)
-    const float conf = min(60.0f, rdi.M_gi) / max(1u, rs_tempMcapGI);
-
-    const uint baseBudget =
-        min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI) +
-        uint((1.0f - conf) * float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI) - min(rs_spatCountMinGI, SPAT_COUNT_MAX_GI)) + 0.5f);
-    const uint nbrBudget = uint(float(baseBudget) * (1.0f - specularity) + 0.5f);
-
-    const uint radiusBudget =
-        rs_spatRadMinGI +
-        uint((1.0f - conf) * float(rs_spatRadMaxGI - rs_spatRadMinGI) + 0.5f);
-
-    // Neighbor ID list (kept compact: [0..validCount-1] valid)
     uint nIds[SPAT_COUNT_MAX_GI];
-
-    // Initialize to invalid (non-unrolled to avoid code bloat)
-    [loop]
+    [unroll]
     for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
-        nIds[i] = 0xFFFFFFFFu;
+        nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
 
-    uint  validCount = 0;
-    float M_sum      = 0.0f;
-
-    //─────────────────────────────────────────────────────────────────────────
-    // Candidate selection: compact list, delay expensive loads
-    //─────────────────────────────────────────────────────────────────────────
-    [loop]
-    for (uint i = 0; i < nbrBudget; ++i)
-    {
-        uint chosen = 0xFFFFFFFFu;
-
-        [loop]
-        for (uint j = 0; j < SPAT_TRIS_GI; ++j)
-        {
-            const uint iID = GetRandomPixelCircleWeighted(
-                radiusBudget, dims.x, dims.y,
-                launchIndex.x, launchIndex.y,
-                seed);
-
-            // Cheap checks first (sample fetches) before reservoir fetch
-            // Keep in tight scope to drop temps ASAP.
-            bool ok = false;
-            {
-                if (!load_isEmitter(g_sample_current, iID))
-                {
-                    uint nInstID_t = load_instID(g_sample_current, iID);
-                    uint nPrimID_t = load_primID(g_sample_current, iID);
-                    if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
-                    {
-                        const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
-                        if (!RejectNormal_GI(myN1g, n1g_r, 0.36f))
-                        {
-                            float2 nBary_t = load_bary(g_sample_current, iID);
-                            const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
-                            if (!RejectDistance_GI(myPos, x1_r, myN1g, 0.1f))
-                            {
-                                ok = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!ok)
-                continue;
-
-            // Now load the reservoir only for plausible candidates
-            {
-                Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, iID);
-
-                if (IsValidReservoir_GI_opt(rdi_r.n2_g_gi, rdi_r.M_gi))
-                {
-                    chosen = iID;
-
-                    const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
-                    M_sum     += Mn;
-
-                    break;
-                }
-            }
-        }
-
-        if (chosen != 0xFFFFFFFFu)
-            nIds[validCount++] = chosen;
-    }
-
-    // Canonical M cap + include in M_sum (same as your original intent)
+    // Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
     rdi.M_gi = M_c;
-    M_sum += M_c;
+    const float M_sum = M_sum_nbr + M_c;
+
+    // RNG (for reservoir update only — neighbor selection already consumed its own)
+    uint2 seed = GetSeed(pixelIdx, time, 2);
 
     //─────────────────────────────────────────────────────────────────────────
-    // Canonical contribution (stage everything to reduce live ranges)
+    // Canonical contribution
     //─────────────────────────────────────────────────────────────────────────
     const float visReuse = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
 
@@ -207,12 +129,11 @@ void Pass_spat_gi_v8_1()
     for (uint k = 0; k < validCount; ++k)
     {
         const uint nID = nIds[k];
-        // (nID is guaranteed valid here)
 
         // Load neighbor reservoir only for this iteration
         Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
 
-        // Compute neighbor reconnection contribution, staged
+        // Compute neighbor reconnection contribution
         float3 contrib_n = 0.0.xxx;
         float  p_hat_from = 0.0f;
         float  Jn = 0.0f;
@@ -253,7 +174,7 @@ void Pass_spat_gi_v8_1()
 
         const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
 
-        // Update reservoir (preserve your behavior)
+        // Update reservoir
         if (UpdateReservoirGI(
                 rdi,
                 w_n,
@@ -263,7 +184,6 @@ void Pass_spat_gi_v8_1()
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.J_gi, rdi_r.F_gi,
-                rdi_r.seed_gi,
                 seed
             ))
         {
