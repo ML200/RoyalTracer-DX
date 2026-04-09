@@ -58,81 +58,53 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Budgeting
     const float conf = min(60.0f, rdi.M_di) / max(1u, rs_tempMcapDI);
 
-    const uint nbrBudget =
-        min(rs_spatCountMinDI, SPAT_COUNT_MAX_DI) +
-        uint((1.0f - conf) * float(min(rs_spatCountMaxDI, SPAT_COUNT_MAX_DI) -
-                                   min(rs_spatCountMinDI, SPAT_COUNT_MAX_DI)) + 0.5f);
-
     const uint radiusBudget =
         rs_spatRadMinDI +
         uint((1.0f - conf) * float(rs_spatRadMaxDI - rs_spatRadMinDI) + 0.5f);
 
-    // Neighbor ID list (compact: [0..validCount-1] valid)
-    uint nIds[SPAT_COUNT_MAX_DI];
-
-    [loop]
-    for (uint i = 0; i < SPAT_COUNT_MAX_DI; ++i)
-        nIds[i] = 0xFFFFFFFFu;
+    // Single neighbor selection (SPAT_COUNT_MAX_DI == 1)
+    uint  nIds[SPAT_COUNT_MAX_DI];
+    nIds[0] = 0xFFFFFFFFu;
 
     uint  validCount = 0;
     float M_sum      = 0.0f;
 
     //─────────────────────────────────────────────────────────────────────────
-    // Candidate selection: compact list, cheap checks before reservoir load
+    // Candidate selection: single neighbor
     //─────────────────────────────────────────────────────────────────────────
-    [loop]
-    for (uint i = 0; i < nbrBudget; ++i)
     {
-        uint chosen = 0xFFFFFFFFu;
+        const uint iID = GetRandomPixelCircleWeighted(
+            radiusBudget, dims.x, dims.y,
+            launchIndex.x, launchIndex.y, seed);
 
-        [loop]
-        for (uint j = 0; j < SPAT_TRIS_DI; ++j)
+        bool ok = false;
+        if (!load_isEmitter(g_sample_current, iID))
         {
-            const uint iID = GetRandomPixelCircleWeighted(
-                radiusBudget, dims.x, dims.y,
-                launchIndex.x, launchIndex.y, seed);
-
-            // Cheap sample-data checks first, before loading the reservoir
-            bool ok = false;
+            uint nInstID_t = load_instID(g_sample_current, iID);
+            uint nPrimID_t = load_primID(g_sample_current, iID);
+            if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
             {
-                if (!load_isEmitter(g_sample_current, iID))
+                const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
+                if (!RejectNormal_DI(myN1g, n1g_r, 0.9f))
                 {
-                    uint nInstID_t = load_instID(g_sample_current, iID);
-                    uint nPrimID_t = load_primID(g_sample_current, iID);
-                    if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
-                    {
-                        const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
-                        if (!RejectNormal_DI(myN1g, n1g_r, 0.9f))
-                        {
-                            float2 nBary_t = load_bary(g_sample_current, iID);
-                            const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
-                            if (!RejectDistance_DI(myPos, x1_r, myN1g, 0.05f))
-                            {
-                                ok = true;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!ok)
-                continue;
-
-            // Now load the reservoir only for plausible candidates
-            {
-                Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, iID);
-
-                if (IsValidReservoir_DI_opt(rdi_r.n2_di, rdi_r.M_di))
-                {
-                    chosen = iID;
-                    M_sum += min(SPAT_MCAP_DI, rdi_r.M_di);
-                    break;
+                    float2 nBary_t = load_bary(g_sample_current, iID);
+                    const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
+                    if (!RejectDistance_DI(myPos, x1_r, myN1g, 0.05f))
+                        ok = true;
                 }
             }
         }
 
-        if (chosen != 0xFFFFFFFFu)
-            nIds[validCount++] = chosen;
+        if (ok)
+        {
+            Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, iID);
+            if (IsValidReservoir_DI_opt(rdi_r.n2_di, rdi_r.M_di))
+            {
+                nIds[0] = iID;
+                validCount = 1;
+                M_sum = min(SPAT_MCAP_DI, rdi_r.M_di);
+            }
+        }
     }
 
     // Canonical M cap + include in M_sum

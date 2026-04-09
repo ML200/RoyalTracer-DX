@@ -806,12 +806,12 @@ void Renderer::PopulateCommandList() {
     auto& rs = m_restirSettings;
     rs.tempMcapDI     = std::max(rs.tempMcapDI, 1);
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
-    rs.spatCountMaxDI = std::max(rs.spatCountMaxDI, 1);
-    rs.spatCountMinDI = std::clamp(rs.spatCountMinDI, 1, rs.spatCountMaxDI);
+    rs.spatCountMaxDI = 1;
+    rs.spatCountMinDI = 1;
     rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 4);
     rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 4, rs.spatRadMaxDI);
-    rs.spatCountMaxGI = std::max(rs.spatCountMaxGI, 1);
-    rs.spatCountMinGI = std::clamp(rs.spatCountMinGI, 1, rs.spatCountMaxGI);
+    rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
+    rs.spatCountMinGI = rs.spatCountMaxGI;
     rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
     rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
 
