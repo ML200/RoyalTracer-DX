@@ -116,12 +116,17 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
 }
 
 
-// Evaluation and pdf for the complete material model
+// Evaluation for the complete material model
 inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s, float3 o, float3 localKd, float localPr, float localPm, float etai, float etat)
 {
-    float gate = 1.0f;
-    float T = 1.0f;
+    // Read material once, normalize directions once
+    Material mat = materials[matID];
+    float3 N  = normalize(n_s);
+    float3 fN = normalize(n_g);
+    float3 V  = normalize(o);
+    float3 L  = normalize(s);
 
+    float gate = 1.0f;
     float3 f = 0.0.xxx;
 
     // Base SHEEN
@@ -129,18 +134,22 @@ inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s
     f += gate * f_sheen;
     gate *= Transmittance_SHEEN(matID, n_s, -s, o);
 
-    // Base COAT
-    float3 f_coat = EvaluateBRDF_COAT(matID, n_s, -s, o, etai, etat);    // coat
-    f += gate * f_coat;
-    gate *= Transmittance_COAT(matID, n_s, -s, o, etai, etat);
+    // Base COAT (fused: eval+transmittance, pdf is DCE'd)
+    {
+        CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+        f += gate * cr.f;
+        gate *= cr.t;
+    }
 
-    // Base SPECULAR
-    float3 f_spec = EvaluateBRDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);    // spec
-    f += gate * f_spec;
-    gate *= Transmittance_GGX(matID, n_s, -s, o, etai, etat, localKd, localPr, localPm);
+    // Base SPECULAR (fused: eval+transmittance, pdf is DCE'd)
+    {
+        GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        f += gate * gr.f;
+        gate *= gr.t;
+    }
 
     // Base DIFFUSE
-    float3 f_diff = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd); // diff
+    float3 f_diff = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
     f += gate * f_diff;
 
     return f;
@@ -172,10 +181,16 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     res.val = 0.0f;
     res.pdf = 0.0f;
 
+    // Read material once, normalize directions once
+    Material mat = materials[matID];
+    float3 N  = normalize(n_s);
+    float3 fN = normalize(n_g);
+    float3 V  = normalize(o);
+    float3 L  = normalize(s);
+
     float gate = 1.0f; // Energy conservation gate
 
     // --- SHEEN ---
-    // Calculate Eval and PDF together, then discard vars
     {
         float3 f = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
         float prob = BRDF_PDF_SHEEN(matID, n_s, -s, o);
@@ -183,30 +198,23 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         res.val += gate * f;
         res.pdf += p.Psheen * prob;
 
-        // Update gate for next layer
         gate *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
 
-    // --- COAT ---
+    // --- COAT (fused: eval+pdf+transmittance computed once) ---
     {
-        float3 f = EvaluateBRDF_COAT(matID, n_s, -s, o, etai, etat);
-        float prob = BRDF_PDF_COAT(matID, n_s, -s, o, etai, etat);
-
-        res.val += gate * f;
-        res.pdf += p.Pcoat * prob;
-
-        gate *= Transmittance_COAT(matID, n_s, -s, o, etai, etat);
+        CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+        res.val += gate * cr.f;
+        res.pdf += p.Pcoat * cr.pdf;
+        gate *= cr.t;
     }
 
-    // --- SPECULAR (GGX) ---
+    // --- SPECULAR GGX (fused: eval+pdf+transmittance computed once) ---
     {
-        float3 f = EvaluateBRDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);
-        float prob = BRDF_PDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);
-
-        res.val += gate * f;
-        res.pdf += p.Pspec * prob;
-
-        gate *= Transmittance_GGX(matID, n_s, -s, o, etai, etat, localKd, localPr, localPm);
+        GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        res.val += gate * gr.f;
+        res.pdf += p.Pspec * gr.pdf;
+        gate *= gr.t;
     }
 
     // --- DIFFUSE ---
