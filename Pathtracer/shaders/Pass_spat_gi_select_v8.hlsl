@@ -41,16 +41,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
     const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float2 myUV     = load_uv(g_sample_current, pixelIdx);
-    float3 myKd; float myPr, myPm;
-    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
-
-    // Specularity: reduce spatial samples for reflective surfaces
-    const float3 camPos      = InitOrigin();
-    const float  NoV         = saturate(dot(normalize(camPos - myPos), myN1s));
-    const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
 
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
@@ -59,7 +50,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float M_c_raw = load_M_gi(g_Reservoirs_current_gi, pixelIdx);
     const float conf = min(60.0f, M_c_raw) / max(1u, rs_tempMcapGI);
 
-    const uint nbrBudget = uint(float(min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI)) * (1.0f - specularity) + 0.5f);
+    const uint nbrBudget = min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI);
 
     const uint radiusBudget =
         rs_spatRadMinGI +
@@ -99,12 +90,9 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (!ok)
             continue;
 
-        // Load reservoir only for plausible candidates
-        uint  rM   = load_M_gi(g_Reservoirs_current_gi, iID);
-        uint  rObj = load_objID_gi(g_Reservoirs_current_gi, iID);
-        float3 rN  = load_n2_s_gi(g_Reservoirs_current_gi, iID, rObj);
-
-        if (IsValidReservoir_GI_opt(rN, rM))
+        // Lightweight validity: M > 0 is sufficient for pre-selection
+        uint rM = load_M_gi(g_Reservoirs_current_gi, iID);
+        if (rM > 0)
         {
             nIds[validCount++] = iID;
             M_sum += min(SPAT_MCAP_GI, rM);
