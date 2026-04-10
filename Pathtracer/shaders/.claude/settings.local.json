@@ -105,7 +105,10 @@
       "Bash(ls *.sln)",
       "Bash(cmake --build out/build/x64-Debug --target Pathtracer)",
       "Bash(ls \"C:/Program Files/Microsoft Visual Studio/2022/\"*/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe)",
-      "Bash('C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' --build out/build/x64-Debug --target Pathtracer)"
+      "Bash('C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' --build out/build/x64-Debug --target Pathtracer)",
+      "Bash(python -c ':*)",
+      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -c ':*)",
+      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -m pip install pdfplumber)"
     ]
   }
 }

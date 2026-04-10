@@ -7,6 +7,11 @@
 #include "Renderer.h"
 #include "Windowsx.h"
 
+#undef SL_CHECK
+#define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
+    std::wcout << L"[SL] " << L#x << L" failed: " << (int)r << std::endl; } \
+} while(0)
+
 // ─────────────────────────────────────────────────────────────────
 Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
@@ -50,6 +55,21 @@ void Renderer::InitDevice() {
             D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
         if (opts5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
             throw std::runtime_error("Raytracing not supported on device");
+
+        // Initialize Reflex
+        {
+            sl::ReflexState state{};
+            sl::Result rr = slReflexGetState(state);
+            if (rr == sl::Result::eOk) {
+                m_reflexAvailable = state.lowLatencyAvailable;
+                LOG(L"[Reflex] Low latency available: " << (m_reflexAvailable ? L"yes" : L"no"));
+            } else {
+                LOG(L"[Reflex] GetState failed: " << (int)rr);
+            }
+            sl::ReflexOptions options{};
+            options.mode = sl::ReflexMode::eLowLatency;
+            SL_CHECK(slReflexSetOptions(options));
+        }
     } catch (const std::exception& e) {
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
@@ -123,6 +143,12 @@ void Renderer::InitSceneGPU() {
 void Renderer::UpdateRenderer(float dt) {
     using hrc = std::chrono::high_resolution_clock;
 
+    // Reflex sleep — must be called every frame regardless of mode
+    slReflexSleep(*m_ctx.frameToken);
+
+    // PCL: simulation start
+    slPCLSetMarker(sl::PCLMarker::eSimulationStart, *m_ctx.frameToken);
+
     // Simulation path
     if (m_simulator.IsActive()) {
         bool shouldCapture = false;
@@ -189,6 +215,9 @@ void Renderer::UpdateRenderer(float dt) {
     m_frameStats.cpuUpdateMs   = std::chrono::duration<float, std::milli>(t_instEnd - t_updateStart).count();
     m_frameStats.instanceCount = (UINT)m_scene.instances.size();
     m_frameStats.meshCount     = (UINT)m_scene.meshes.size();
+
+    // PCL: simulation end
+    slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *m_ctx.frameToken);
 
     // ── GPU sync + upload ────────────────────────────────────────
     // Wait for previous frame, then write all shared upload-heap buffers.
@@ -643,12 +672,22 @@ void Renderer::RenderFrame() {
 
     m_ctx.BeginFrame();
 
+    // PCL: render submit start
+    slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
+
     auto t_popStart = hrc::now();
     PopulateCommandList();
     auto t_popEnd = hrc::now();
     m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
 
+    // PCL: render submit end
+    slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
+
+    // PCL: present start
+    slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
     m_ctx.ExecuteAndPresent();
+    // PCL: present end
+    slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
 
     // CPU = total CPU work across UpdateRenderer + PopulateCommandList
     m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuPopulateMs;
