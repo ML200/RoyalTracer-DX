@@ -80,6 +80,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssMVec[curPix] = emMV;
             biasMV = emMV;
             isEmitterSurface = true;
+            gOutput[uint3(DTid.xy, 10)] = float4(abs(emMV), 0.0f, 1.0f);
 
             // Provide real geometric normal so DLSS-RR can do proper edge detection
             float3 emNormal = load_n1_g_with_instID(g_sample_current, pixelIdx, emInstID);
@@ -89,8 +90,25 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
             // Sky: no surface, clamped to cameraFar to stay within DLSS-RR's declared range
             g_dlssDepth[DTid.xy] = 10000.0f;
-            g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+            // Camera-only motion vector: reproject current ray direction through previous VP
+            float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+            float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+            float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
+            float3 camPos = mul(viewI, float4(0, 0, 0, 1)).xyz;
+            float3 farPoint = camPos + worldDir * 10000.0f;
+            float4 prevClip = mul(prevProjection, mul(prevView, float4(farPoint, 1.0f)));
+            float2 skyMV = float2(0.0f, 0.0f);
+            if (prevClip.w > 0.0f) {
+                float2 prevNdc = prevClip.xy / prevClip.w;
+                float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f, 0.5f - prevNdc.y * 0.5f);
+                float2 prevPix = prevUV * dims - 0.5f;
+                skyMV = prevPix - float2(DTid.xy) - jitter;
+            }
+            g_dlssMVec[DTid.xy] = skyMV;
+            biasMV = skyMV;
+            gOutput[uint3(DTid.xy, 10)] = float4(abs(skyMV), 0.0f, 1.0f);
         }
 
         biasInstID = emInstID;
@@ -106,9 +124,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gOutput[uint3(DTid.xy, 4)] = float4(0, 0, 0, 1);
         gOutput[uint3(DTid.xy, 5)] = float4(0, 0, 0, 1);
 
-        // Tonemap bright emitters before DLSS-RR to prevent ghosting/ringing
-        float3 dlssColor = accumulation / (1.0f + accumulation);
-        g_dlssInput[DTid.xy] = float4(saturate(dlssColor), 1.0f);
+        // Clamp emitter/sky radiance before DLSS-RR to prevent ghosting/ringing
+        g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
     }
     else{
         // Reconstruct surface for DLSS
