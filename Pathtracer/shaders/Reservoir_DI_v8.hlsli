@@ -34,7 +34,10 @@ static const uint DI_PLANE_WSUM  = 32u;
 static const uint DI_PLANE_PHAT  = 36u;
 
 // SoA address helpers
-uint di_numPx()                      { return IMG_W * IMG_H; }
+// Tile-aligned pixel count: MapPixelID uses 4x8 tiles, so the max pixelID
+// can exceed IMG_W*IMG_H when dimensions aren't multiples of 4/8.
+// SoA planes must be sized to the aligned count to avoid cross-plane overlap.
+uint di_numPx()                      { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint di_addr_pack1(uint px)          { return px * DI_SZ_PACK1; }
 uint di_addr_l2(uint px)             { uint N = di_numPx(); return N * DI_PLANE_L2    + px * DI_SZ_L2; }
 uint di_addr_w(uint px)              { uint N = di_numPx(); return N * DI_PLANE_W     + px * DI_SZ_W; }

@@ -16,6 +16,7 @@ public:
     void OnUpdate()  override;
     void OnRender()  override;
     void OnDestroy() override;
+    void OnResize(UINT width, UINT height) override;
     void OnKeyDown(UINT8 key) override;
     void OnKeyUp(UINT8 key)   override;
     void OnButtonDown(UINT32 lParam) override;

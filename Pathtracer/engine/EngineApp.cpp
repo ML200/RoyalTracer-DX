@@ -39,6 +39,13 @@ void EngineApp::OnUpdate() {
 void EngineApp::OnRender()  { m_renderer.RenderFrame(); }
 void EngineApp::OnDestroy() { m_renderer.DestroyRenderer(); }
 
+void EngineApp::OnResize(UINT width, UINT height) {
+    m_width       = width;
+    m_height      = height;
+    m_aspectRatio = static_cast<float>(width) / static_cast<float>(height);
+    m_renderer.OnResize(width, height);
+}
+
 void EngineApp::OnKeyDown(UINT8 key) {
     if (!m_renderer.WantsKeyboard()) InputManager::OnKeyDown(key);
 }

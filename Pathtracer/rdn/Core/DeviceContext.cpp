@@ -107,6 +107,48 @@ void DeviceContext::FlushAndReset() {
     ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
 }
 
+void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
+    if (newWidth == 0 || newHeight == 0) return;
+    if (newWidth == width && newHeight == height) return;
+
+    WaitForGPU();
+
+    // Release back buffer references before ResizeBuffers
+    for (UINT n = 0; n < FRAME_COUNT; ++n)
+        renderTargets[n].Reset();
+    depthStencil.Reset();
+
+    width  = newWidth;
+    height = newHeight;
+
+    ThrowIfFailed(swapChain->ResizeBuffers(
+        FRAME_COUNT, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, 0));
+    frameIndex = swapChain->GetCurrentBackBufferIndex();
+
+    // Recreate RTVs
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
+    for (UINT n = 0; n < FRAME_COUNT; n++) {
+        ThrowIfFailed(swapChain->GetBuffer(n, IID_PPV_ARGS(&renderTargets[n])));
+        device->CreateRenderTargetView(renderTargets[n].Get(), nullptr, rtvHandle);
+        rtvHandle.Offset(1, rtvDescriptorSize);
+    }
+
+    // Recreate depth stencil
+    auto hp  = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    auto drd = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1);
+    drd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    CD3DX12_CLEAR_VALUE cv(DXGI_FORMAT_D32_FLOAT, 1.0f, 0);
+    ThrowIfFailed(device->CreateCommittedResource(
+        &hp, D3D12_HEAP_FLAG_NONE, &drd, D3D12_RESOURCE_STATE_DEPTH_WRITE,
+        &cv, IID_PPV_ARGS(&depthStencil)));
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+    dsvDesc.Format        = DXGI_FORMAT_D32_FLOAT;
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    device->CreateDepthStencilView(depthStencil.Get(), &dsvDesc,
+        dsvHeap->GetCPUDescriptorHandleForHeapStart());
+}
+
 // ─────────────────────────────────────────────────────────────────
 D3D12_CPU_DESCRIPTOR_HANDLE DeviceContext::CurrentRTV() const {
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(

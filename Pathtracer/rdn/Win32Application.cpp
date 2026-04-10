@@ -110,6 +110,26 @@ LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
     }
     return 0;
 
+  case WM_SIZE:
+    if (pSample && wParam == SIZE_MAXIMIZED) {
+      UINT w = LOWORD(lParam);
+      UINT h = HIWORD(lParam);
+      if (w > 0 && h > 0)
+        pSample->OnResize(w, h);
+    }
+    return 0;
+
+  case WM_EXITSIZEMOVE:
+    if (pSample) {
+      RECT rc;
+      GetClientRect(hWnd, &rc);
+      UINT w = rc.right - rc.left;
+      UINT h = rc.bottom - rc.top;
+      if (w > 0 && h > 0)
+        pSample->OnResize(w, h);
+    }
+    return 0;
+
   case WM_DESTROY:
     PostQuitMessage(0);
     return 0;

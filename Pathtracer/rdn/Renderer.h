@@ -23,6 +23,12 @@
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
+// CPU-side sizing stubs matching shader-side SoA layout sizes
+struct Reservoir_DI  { uint8_t pad[100]; };
+struct Reservoir_GI  { uint8_t pad[100]; };
+struct SampleData    { uint8_t pad[100]; };
+struct InitialBSDFRay{ uint8_t pad[100]; };
+
 class Renderer {
 public:
     Renderer(UINT width, UINT height);
@@ -34,6 +40,7 @@ public:
     void UpdateRenderer(float dt);
     void RenderFrame();
     void DestroyRenderer();
+    void OnResize(UINT newWidth, UINT newHeight);
 
     Scene&         GetScene()       { return m_scene; }
     Camera&        GetCamera()      { return m_camera; }
@@ -197,6 +204,7 @@ private:
     void KickLightTreeRefit();
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
     void RebuildDLSSDescriptors();
+    void RebuildResolutionDependentDescriptors();
 
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();
