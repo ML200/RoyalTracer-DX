@@ -412,14 +412,6 @@ void Pass_raygen_v8()
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
-        // Update post-reconnection throughput for GI
-        if (depth >= 2)
-        {
-            uint px = MapPixelID(imgSize, pixel);
-            float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
-            store_Tpost_gi(g_Reservoirs_current_gi, px, tpost * updateWeight);
-        }
-
         // IOR stack update on transmission
         if (dot(hinfo.hitGNormal, s) < 0.0f)
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
@@ -435,15 +427,27 @@ void Pass_raygen_v8()
         rayOrigin   = offset_ray(hitPos, offsetN);
 
         // Update throughput: decompress → multiply → RR → recompress
+        // Tpost must track the same weight as throughput (including RR) for depth >= 1
         {
             float3 throughput = UnpackRGB9E5(throughputPk) * updateWeight;
+            float3 tpostWeight = updateWeight;  // weight factor for Tpost (before RR)
 
             // Russian Roulette (skip depth 0 to ensure at least one bounce)
             if (depth > 0)
             {
                 float survivalProb = min(1.0f, Luma(throughput));
                 if (RandomFloatSingle(seed) >= survivalProb) break;
-                throughput /= max(survivalProb, 0.1f);
+                float rrBoost = 1.0f / max(survivalProb, 0.1f);
+                throughput  *= rrBoost;
+                tpostWeight *= rrBoost;  // Tpost must include RR survival weight
+            }
+
+            // Update post-reconnection throughput for GI
+            if (depth >= 1)
+            {
+                uint px = MapPixelID(imgSize, pixel);
+                float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                store_Tpost_gi(g_Reservoirs_current_gi, px, tpost * tpostWeight);
             }
 
             throughputPk = PackRGB9E5(throughput);
