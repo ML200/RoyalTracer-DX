@@ -13,6 +13,7 @@
 #include "Camera/Camera.h"
 #include "Raytracing/PassSystem.h"
 #include "PostProcess/DLSSManager.h"
+#include <sl_reflex.h>
 #include "Editor/Editor.h"
 #include "../engine/Camera/FlyCamController.h"
 #include "LightTree.h"
@@ -195,6 +196,7 @@ private:
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
     bool m_dlssModeChanged = false;
+    bool m_reflexAvailable = false;
     FrameStats m_frameStats;
 
     uint32_t m_time = 0;

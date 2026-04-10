@@ -170,7 +170,7 @@ void DeviceContext::InitStreamline() {
     pref.flags           = sl::PreferenceFlags::eLoadDownloadedPlugins
                          | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
-    static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR };
+    static sl::Feature featList[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_RR, sl::kFeatureReflex, sl::kFeaturePCL };
     pref.featuresToLoad    = featList;
     pref.numFeaturesToLoad = _countof(featList);
 
