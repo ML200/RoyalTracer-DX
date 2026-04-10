@@ -80,7 +80,7 @@ uint PackNormal(float3 n)
         return PROBE_DI_NORMAL_ZERO_CODE;
     }
 
-    // 2. Standard Octahedral Encoding
+    // Octahedral encoding
     n = normalize(n);
     float3 a = abs(n);
     float2 p = n.xy / (a.x + a.y + a.z);
@@ -99,13 +99,13 @@ uint PackNormal(float3 n)
 
 float3 UnpackNormal(uint bits)
 {
-    // 1. Handle Zero Vector explicitly
+    // Zero vector sentinel
     if (bits == PROBE_DI_NORMAL_ZERO_CODE)
     {
         return float3(0.0f, 0.0f, 0.0f);
     }
 
-    // 2. Standard Octahedral Decoding
+    // Octahedral decoding
     float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
     float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
@@ -135,7 +135,7 @@ float3 UnpackNormal_INT(uint packed)
     return normalize(n);
 }
 
-// --- float16 packing helpers ---
+// Float16 packing
 uint f32tof16_custom(float val)
 {
     uint f32 = asuint(val);

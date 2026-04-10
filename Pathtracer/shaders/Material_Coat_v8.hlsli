@@ -88,7 +88,7 @@ inline float Sampling_Weight_COAT(
     return saturate(pc * Fv);
 }
 
-// Fused eval+pdf+transmittance for Coat — computes all shared work once
+// Fused coat eval, pdf, and transmittance
 struct CoatResult {
     float3 f;
     float  pdf;

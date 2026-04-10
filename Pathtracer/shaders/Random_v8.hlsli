@@ -1,6 +1,4 @@
-/*
-Random Number generation functions.
-*/
+// Random number generation
 
 // 32-bit mix
 inline uint Hash32(uint v) {
@@ -8,7 +6,7 @@ inline uint Hash32(uint v) {
     return v;
 }
 
-// c is a constant, eg time
+// Additional constant for seed variation
 uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
 {
     // Per-pixel
@@ -31,15 +29,6 @@ uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
     return uint2(s0, s1);
 }
 
-// Generate a seed that is exactly the same in every lane - used for example to reduce cache pressure when sampling NEE samples
-uint GetWaveSeed(uint2 idx, uint2 tileSize, uint t, uint c)
-{
-    uint2 tile = idx / tileSize;
-    uint tileKey = (tile.y << 16) | tile.x;
-    uint waveTileKey = WaveActiveMin(tileKey);
-    return Hash32(waveTileKey ^ 0xB5297A4Du * t ^ 0x68E31DA4u * c);
-}
-
 inline float RandomFloatSingle(inout uint s)
 {
     s *= 1664525u;
@@ -49,7 +38,6 @@ inline float RandomFloatSingle(inout uint s)
     return asfloat(r) - 1.0f;
 }
 
-// idx is pixel coordinate, t is time constant, c is additional constant
 uint initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
     return GetSeed(idx, t, c).x;
 }

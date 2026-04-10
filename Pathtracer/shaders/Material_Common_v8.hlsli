@@ -58,7 +58,7 @@ inline float G2_SmithGGX_Aniso(float NdotV, float TdotV, float BdotV,
          * G1_SmithGGX_Aniso(NdotL, TdotL, BdotL, ax, ay);
 }
 
-// Coordinate system for transforming vectors
+// Orthonormal basis from normal
 inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f)
@@ -81,7 +81,7 @@ inline void ComputeAnisotropicAlphas(float alpha, float aniso, out float ax, out
     ay = max(0.001f, alpha * aspect);
 }
 
-// Build tangent frame from normal, then rotate by anisotropy rotation angle
+// Tangent frame with anisotropy rotation
 inline void BuildAnisotropicFrame(float3 N, float anisoRotation, out float3 T, out float3 B)
 {
     CoordinateSystem(N, T, B);
@@ -97,8 +97,7 @@ inline void BuildAnisotropicFrame(float3 N, float anisoRotation, out float3 T, o
 }
 
 
-// Sample the microfacet normal using VNDF sampling (anisotropic)
-// T1, T2: tangent frame (possibly rotated for anisotropy)
+// VNDF microfacet sampling (anisotropic)
 inline float3 SampleVNDF_H_Aniso(float alpha_x, float alpha_y, float3 V, float3 N, float3 T1, float3 T2, inout uint seed)
 {
     // hemisphere config (stretch view)
@@ -133,7 +132,7 @@ inline float3 SampleVNDF_H_Aniso(float alpha_x, float alpha_y, float3 V, float3 
     return normalize(Ne.x * T1 + Ne.y * T2 + Ne.z * N);
 }
 
-// Isotropic convenience wrapper (backward compat)
+// Isotropic VNDF wrapper
 inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint seed)
 {
     float3 T1, T2;

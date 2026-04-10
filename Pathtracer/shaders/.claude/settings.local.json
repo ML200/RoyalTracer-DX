@@ -120,7 +120,17 @@
       "Bash(ls /c/Python*/python.exe)",
       "Read(//c/Users/Malte/AppData/Local/Programs/Python/**)",
       "Read(//c/Users/Malte/AppData/Local/Microsoft/WindowsApps/**)",
-      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -c \"import pdfplumber; print\\('ok'\\)\")"
+      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -c \"import pdfplumber; print\\('ok'\\)\")",
+      "Bash(ls -lah *.hlsl*)",
+      "Bash(grep -r \"//.*#include\" shaders/ --include=\"*.hlsl\" --include=\"*.hlsli\")",
+      "Bash(ls -la *.zip)",
+      "Bash(grep -r \"^//\" shaders/ --include=\"*.hlsl\" --include=\"*.hlsli\")",
+      "Bash(grep -rn \"^[[:space:]]*//.*TODO\\\\|FIXME\\\\|DEPRECATED\\\\|UNUSED\\\\|DEADCODE\" rdn/ engine/ src/ --include=\"*.h\" --include=\"*.cpp\")",
+      "Bash(unzip -l shaders_archive.zip)",
+      "Bash(grep -h \"#include\" *.hlsl *.hlsli)",
+      "Bash(grep -l \"#include \\\\\"Clouds_v8.hlsli\\\\\"\" *.hlsl)",
+      "Bash(grep -l \"BD_\\\\|BDPT_\\\\|RIS_\" *.hlsli *.hlsl)",
+      "Bash(ls -1 shaders/*.hlsl shaders/*.hlsli)"
     ]
   }
 }

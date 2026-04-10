@@ -179,7 +179,7 @@ float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
     return float2(a, b);
 }
 
-// -- Bulk copy (current -> last, for temporal reuse) --
+// Copy sample data for temporal reuse
 void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
