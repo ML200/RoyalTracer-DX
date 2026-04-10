@@ -32,28 +32,22 @@ A light tree built over the scene's emissive triangles provides efficient import
 ### ReSTIR
 ![MIS convergence test with emissive spheres on reflective surfaces](media/MIS.png)
 
-Full ReSTIR implementation for both direct (DI) and indirect (GI) illumination. Each path uses temporal and spatial reservoir resampling with pairwise MIS for unbiased combination of canonical and neighbor samples. M-capping limits temporal history length. A post-process boiling filter using groupshared edge-aware variance clamping suppresses temporal instability in low-sample regions.
+Unbiased ReSTIR PT with reconnection shift mapping for both direct (DI) and indirect (GI) illumination. Each path uses temporal and spatial reservoir resampling with pairwise MIS for unbiased combination of canonical and neighbor samples. M-capping limits temporal history length. Temporal permutation sampling improves convergence by decorrelating reuse patterns across frames.
 
 ### Rendering Pipeline
-Compute-based wavefront path tracer using inline ray tracing. The pipeline is split into discrete passes:
+Path tracer using inline ray tracing with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
 1. **Raygen** -- Primary rays, multi-bounce path tracing with NEE
 2. **Temporal DI/GI** -- Temporal reservoir resampling
 3. **Spatial DI select + merge** -- Neighbor selection and spatial resampling for DI
 4. **Spatial GI select + merge** -- Neighbor selection and spatial resampling for GI
-5. **Boiling filter** -- Temporal stability pass for DI and GI
-6. **Shading** -- Final accumulation, motion vectors, and DLSS input preparation
-7. **Post-process** -- Tone mapping (PBR Neutral) and sRGB gamma correction
+5. **Shading** -- Final accumulation, motion vectors, and DLSS input preparation
+6. **Post-process** -- Tone mapping (PBR Neutral) and sRGB gamma correction
 
 Pixel indexing uses 4x8 tile swizzling for improved cache coherence during spatial reuse.
 
 ### Denoiser
 NVIDIA DLSS Ray Reconstruction is used for denoising. The shading pass provides linear depth, geometric normals, diffuse and specular albedo, surface and specular motion vectors, roughness, specular hit distance, and a disocclusion bias hint. Emitter and sky pixels are routed through the diffuse denoiser channel with clamped radiance to prevent ghosting.
 
-### Procedural Sky
-Physically-based atmosphere rendering with single-scattering ray marching (Rayleigh + Mie + ozone absorption). Uses a Cornette-Shanks phase function for Mie scattering. The sun position is computed from latitude, longitude, day-of-year, and UTC time. Runtime-editable parameters include turbidity, sun/sky intensity, and simulation speed with automatic night speedup.
-
-### Volumetric Clouds
-Procedural volumetric clouds using a Nubis-style ray march with stochastic sampling. Two-lobe Cornette-Shanks Mie phase function for cloud lighting. Integrated with the path tracer's per-pixel random seed for DLSS-compatible temporal integration.
 
 ## Setting up the project
 
