@@ -16,6 +16,8 @@ Supports OBJ and glTF/glB formats via [tinyobjloader](https://github.com/tinyobj
 ### Material Model
 ![Material comparison showing varying roughness and metallic properties](media/balls.png)
 
+![Material model layer diagram](media/material_model.svg)
+
 A four-lobe energy-conserving BXDF with layered evaluation:
 - **Sheen** -- Charlie NDF for fabric-like surfaces
 - **Clearcoat** -- Dielectric GGX with independent roughness and Fresnel
