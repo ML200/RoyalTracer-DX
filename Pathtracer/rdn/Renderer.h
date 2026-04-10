@@ -195,7 +195,7 @@ private:
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
-    bool m_dlssModeChanged = false;
+    int m_dlssModeChangedFrames = 0;  // >0 = skip temporal reuse for this many frames
     bool m_reflexAvailable = false;
     DLSSGSettings m_dlssG;
     FrameStats m_frameStats;

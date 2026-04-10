@@ -33,6 +33,7 @@ public:
     float                     JitterX()      const { return m_jitterX; }
     float                     JitterY()      const { return m_jitterY; }
     uint32_t                  JitterFrame()  const { return m_jitterFrameIndex; }
+    void                      ResetJitter()        { m_jitterFrameIndex = 0; }
 
     nv_helpers_dx12::Manipulator& Manipulator() { return nv_helpers_dx12::CameraManip; }
 

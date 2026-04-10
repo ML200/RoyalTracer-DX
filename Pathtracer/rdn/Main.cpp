@@ -25,16 +25,16 @@ public:
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {
-        /*EmissiveCubes::Params p;
-        p.count = 5000; p.emissiveFraction = 0.4f; p.cubeSize = 0.03f;
-        p.emissionMin = 0.5; p.emissionMax = 100;
+        EmissiveCubes::Params p;
+        p.count = 50000; p.emissiveFraction = 0.05f; p.cubeSize = 0.5f;
+        p.emissionMin = 0.5; p.emissionMax = 3;
         p.speedMin = 0.5f; p.speedMax = 2.5f;
-        p.spawnMin = {-12, 0.3f, -8}; p.spawnMax = {12, 8, 8};
-        m_cubes.Init(p, sm, r);*/
+        p.spawnMin = {-120, 0.3f, -80}; p.spawnMax = {120, 80, 80};
+        m_cubes.Init(p, sm, r);
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
         flyCam.Update(dt);
-        //m_cubes.Update(dt, sm);
+        m_cubes.Update(dt, sm);
     }
 private:
     EmissiveCubes m_cubes;

@@ -186,12 +186,15 @@ void Renderer::UpdateRenderer(float dt) {
     m_time++;
 
     // Check for DLSS mode change — flag for reallocation in PopulateCommandList
-    if (m_dlss.UpdateMode(m_ctx.Device())) {
-        m_ctx.WaitForGPU();  // drain all in-flight GPU work before releasing old textures
-        m_dlssModeChanged = true;
-        RebuildDLSSDescriptors();
-        LOG(L"[DLSS] Mode changed → render res: "
-            << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
+    if (m_dlss.mode != m_dlss.ActiveMode()) {
+        m_ctx.WaitForGPU();  // drain all in-flight GPU work BEFORE releasing old textures
+        if (m_dlss.UpdateMode(m_ctx.Device())) {
+            m_dlssModeChangedFrames = 2;  // skip temporal reuse for 2 frames
+            m_camera.ResetJitter();       // force DLSS temporal reset (fixes blur)
+            RebuildDLSSDescriptors();
+            LOG(L"[DLSS] Mode changed → render res: "
+                << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
+        }
     }
 
     // Kick async light tree TLAS refit when dirty and no refit in flight
@@ -615,8 +618,9 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     RebuildResolutionDependentDescriptors();
     RebuildDLSSDescriptors();
 
-    // Disable temporal reuse on next frame (old reservoirs are stale)
-    m_dlssModeChanged = true;
+    // Disable temporal reuse for 2 frames (old reservoirs are stale)
+    m_dlssModeChangedFrames = 2;
+    m_camera.ResetJitter();
 
     // Re-enable DLSS-G after resize
     if (m_dlssG.enabled) {
@@ -744,8 +748,15 @@ void Renderer::RenderFrame() {
     if (elapsed >= 1.0f) {
         m_fps = s_frameCount / elapsed;
         std::wstringstream ss;
-        ss << std::fixed << std::setprecision(2)
-           << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
+        ss << std::fixed << std::setprecision(2);
+        if (m_dlssG.enabled && m_dlssG.framesToGenerate > 0) {
+            float presentedFps = m_fps * (1 + m_dlssG.framesToGenerate);
+            ss << L"Frame Time: " << 1000.0f / m_fps << L" ms ("
+               << presentedFps << L" fps, " << m_fps << L" rendered + "
+               << (1 + m_dlssG.framesToGenerate) << L"x FG)";
+        } else {
+            ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
+        }
         SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
         s_frameCount = 0;
         s_lastTime = now;
@@ -881,15 +892,17 @@ void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 
     // Reallocate Streamline DLSS feature if mode changed (needs open command list)
-    bool dlssResChanged = m_dlssModeChanged;
-    if (m_dlssModeChanged) {
-        m_dlssModeChanged = false;
-        sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
-        if (fr != sl::Result::eOk)
-            std::wcout << L"[SL] slFreeResources failed: " << (int)fr << std::endl;
-        sl::Result ar = slAllocateResources(cmdList, sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
-        if (ar != sl::Result::eOk)
-            std::wcout << L"[SL] slAllocateResources failed: " << (int)ar << std::endl;
+    bool dlssResChanged = (m_dlssModeChangedFrames > 0);
+    if (m_dlssModeChangedFrames > 0) {
+        if (m_dlssModeChangedFrames == 2) {  // first frame after change: reallocate SL resources
+            sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
+            if (fr != sl::Result::eOk)
+                std::wcout << L"[SL] slFreeResources failed: " << (int)fr << std::endl;
+            sl::Result ar = slAllocateResources(cmdList, sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
+            if (ar != sl::Result::eOk)
+                std::wcout << L"[SL] slAllocateResources failed: " << (int)ar << std::endl;
+        }
+        m_dlssModeChangedFrames--;
     }
 
     // Transition back buffer → render target
@@ -1041,7 +1054,7 @@ void Renderer::PopulateCommandList() {
     // When DLSS render resolution changes, the "last" reservoir/sample buffers
     // use a different SoA layout (gi_numPx changes).  Reading them with the new
     // layout yields garbage positions → NaN rays → GPU hang.  Disable temporal
-    // reuse for this single frame so those buffers are never read.
+    // reuse for 2 frames so those buffers are never read with stale layout.
     rsConsts[14] = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
     memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
@@ -1269,7 +1282,9 @@ void Renderer::PopulateCommandList() {
         constexpr D3D12_RESOURCE_STATES statePresent  = D3D12_RESOURCE_STATE_PRESENT;
         sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(),       (uint32_t)stateUAV);
         sl::Resource slFgMVec (sl::ResourceType::eTex2d, m_dlss.MVec(),        (uint32_t)stateUAV);
-        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_dlss.Output(),      (uint32_t)stateUAV);
+        // HUDLessColor = back buffer (final tonemapped frame, not pre-postprocess DLSS output)
+        // so optical flow runs on the clean displayed image, not raw HDR/noisy data
+        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
         sl::Resource slFgBB   (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
 
         sl::Extent renderExt { 0, 0, m_dlss.RenderWidth(),  m_dlss.RenderHeight()  };

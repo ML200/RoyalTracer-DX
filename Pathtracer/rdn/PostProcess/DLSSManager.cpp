@@ -132,6 +132,7 @@ bool DLSSManager::UpdateMode(ID3D12Device* device) {
                << L" render=" << m_renderWidth << L"x" << m_renderHeight << std::endl;
 
     CreateInputTextures(device);
+    m_forceReset = true;  // tell DLSS to discard temporal history
     return true;
 }
 
@@ -200,7 +201,8 @@ void DLSSManager::Evaluate(
     constants.motionVectors3D           = sl::Boolean::eFalse;
     constants.motionVectorsJittered     = sl::Boolean::eFalse;
     constants.cameraPinholeOffset       = { 0.5f, 0.5f };
-    constants.reset = (jitterFrameIndex <= 1) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    constants.reset = (jitterFrameIndex <= 1 || m_forceReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    m_forceReset = false;
 
     {
         auto iv = XMMatrixInverse(nullptr, viewMatrix);
