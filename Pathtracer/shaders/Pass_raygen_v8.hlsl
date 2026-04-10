@@ -372,7 +372,7 @@ void Pass_raygen_v8()
                         }
 
                         // GI: sun at depth >= 1
-                        if (depth >= 1)
+                        if (depth >= 2)
                         {
                             uint px = MapPixelID(imgSize, pixel);
                             float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
@@ -413,7 +413,7 @@ void Pass_raygen_v8()
             : float3(0, 0, 0);
 
         // Update post-reconnection throughput for GI
-        if (depth >= 1)
+        if (depth >= 2)
         {
             uint px = MapPixelID(imgSize, pixel);
             float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
@@ -463,54 +463,12 @@ void Pass_raygen_v8()
         store_M_di(g_Reservoirs_current_di, pixelIdx, 1);
     }
 
-    // GI — recompute F_gi via ReconnectGI so it matches spatial/temporal evaluation
+    // GI
     {
-        float F_gi = load_F_gi(g_Reservoirs_current_gi, pixelIdx);
-        float wsum = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
+        float F_gi  = load_F_gi(g_Reservoirs_current_gi, pixelIdx);
+        float wsum  = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
+        float Wgi   = 0.0f;
 
-        if (F_gi > 1e-6f && wsum > 0.0f)
-        {
-            // Rebuild x1 from primary hit (same path as spatial's BuildVertex)
-            uint x1_instID = load_instID(g_sample_current, pixelIdx);
-            uint x1_primID = load_primID(g_sample_current, pixelIdx);
-            float2 x1_bary = load_bary(g_sample_current, pixelIdx);
-            float3 camPos  = InitOrigin();
-            HitInfo h1 = EvalSurfaceState(x1_instID, x1_primID, x1_bary, camPos, 0);
-            float3 x1_Kd; float x1_Pr, x1_Pm;
-            uint x1_matID = GetMatIDFast(x1_instID, x1_primID);
-            RefetchMaterial(x1_matID, h1.uv, x1_Kd, x1_Pr, x1_Pm);
-            float x1_etai = load_etai(g_sample_current, pixelIdx);
-            float x1_etat = load_etat(g_sample_current, pixelIdx);
-
-            // Load x2 from reservoir (fp16 UV, packed normals — same as spatial/temporal)
-            uint   x2_objID = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
-            uint   x2_matID = load_matID_gi(g_Reservoirs_current_gi, pixelIdx);
-            float3 x2_pos   = load_x2_gi(g_Reservoirs_current_gi, pixelIdx, x2_objID);
-            float3 x2_ns    = load_n2_s_gi(g_Reservoirs_current_gi, pixelIdx, x2_objID);
-            float3 x2_ng    = load_n2_g_gi(g_Reservoirs_current_gi, pixelIdx, x2_objID);
-            float3 x2_L2    = load_L2_gi(g_Reservoirs_current_gi, pixelIdx);
-            float3 x2_V2    = load_V2_gi(g_Reservoirs_current_gi, pixelIdx);
-            float2 x2_uv    = load_uv_gi(g_Reservoirs_current_gi, pixelIdx);
-            float  x2_etai  = load_etai_gi(g_Reservoirs_current_gi, pixelIdx);
-            float  x2_etat  = load_etat_gi(g_Reservoirs_current_gi, pixelIdx);
-            float2 x2_J     = load_J_gi(g_Reservoirs_current_gi, pixelIdx);
-
-            float3 x2_Kd; float x2_Pr, x2_Pm;
-            RefetchMaterial(x2_matID, x2_uv, x2_Kd, x2_Pr, x2_Pm);
-
-            float Jd1, Jd2;
-            float3 contrib = ReconnectGI(
-                h1.hitPos, h1.hitNormal, h1.hitGNormal, normalize(camPos - h1.hitPos), x1_matID,
-                x1_Kd, x1_Pr, x1_Pm, x1_etai, x1_etat,
-                x2_matID, x2_pos, x2_ns, x2_ng, x2_L2, x2_V2,
-                x2_Kd, x2_Pr, x2_Pm, x2_etai, x2_etat,
-                x2_J.x, 1.0f, false, Jd1, Jd2);
-
-            F_gi = GetPHat(contrib);
-            store_F_gi(g_Reservoirs_current_gi, pixelIdx, F_gi);
-        }
-
-        float Wgi = 0.0f;
         if (F_gi > 1e-6f && wsum > 0.0f)
         {
             Wgi = wsum / F_gi;
