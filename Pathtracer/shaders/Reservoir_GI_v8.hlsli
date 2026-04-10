@@ -281,9 +281,6 @@ void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, uint F)
 }
 
 
-
-
-
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
     float similarity = dot(n1, n2);
     return (similarity < threshold);
@@ -500,7 +497,7 @@ bool UpdateReservoirGI_Fast(
 // Constant-data setters
 // ---------------------------------
 
-// Minimal constant setter as requested: x2, n2s, n2g, matID, objID
+// Store constant hit data for GI reconnection
 void SetReservoirGI_ConstHit(
     RWByteAddressBuffer buf,
     uint pixelIdx,

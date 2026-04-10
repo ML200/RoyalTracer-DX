@@ -1,13 +1,11 @@
-/*
-Camera ray operations, optimized
-*/
+// Camera ray generation and reprojection
 
-//Initial ray origin
+// Initial ray origin
 float3 InitOrigin(){
     return mul(viewI, float4(0, 0, 0, 1)).xyz;
 }
 
-//Initial ray direction with subpixel jitter
+// Initial ray direction with subpixel jitter
 float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 {
     float2 pixelSample = float2(pixel) + 0.5f + jitter;
@@ -87,8 +85,6 @@ inline int2 GetBestReprojectedPixel_d(
     return p;
 }
 
-
-
 inline int MirrorCoord(int v, int extent)
 {
     v = abs(v);
@@ -125,9 +121,3 @@ inline uint GetRandomPixelCircleWeighted(
 
     return MapPixelID(uint2(w, h), uint2(newX, newY));
 }
-
-
-
-
-
-

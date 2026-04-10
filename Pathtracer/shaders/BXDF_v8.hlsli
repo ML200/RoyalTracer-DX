@@ -1,6 +1,4 @@
-/*
-Manager for the bxdf evaluation
-*/
+// Layered BXDF evaluation and sampling
 
 struct SamplingP{
     float Psheen;
@@ -55,7 +53,6 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 // 3 - Sheen
 inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 {
-    // Updated: Uses passed seed
     float r = RandomFloatSingle(seed);
 
     float c = p.Pdiff;
@@ -75,7 +72,6 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
     float3 sample;
 
     bool refract = false;
-    // Updated: Use passed argument
     bool canRefract = ior_pointer < 3;
 
     //Sample from the selected strategy
@@ -119,7 +115,6 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
 // Evaluation for the complete material model
 inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s, float3 o, float3 localKd, float localPr, float localPm, float etai, float etat)
 {
-    // Read material once, normalize directions once
     Material mat = materials[matID];
     float3 N  = normalize(n_s);
     float3 fN = normalize(n_g);
@@ -155,7 +150,7 @@ inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s
     return f;
 }
 
-// Updated: Added full parameter list. 'i' is the sampled light direction (replacing -sstate.s)
+// Combined PDF for all BXDF lobes
 inline float BRDF_PDF_COMBINED(SamplingP p, uint matID, float3 n_s, float3 n_g, float3 s, float3 o, float3 localKd, float localPr, float localPm, float etai, float etat)
 {
     float pd  = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
@@ -181,16 +176,15 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     res.val = 0.0f;
     res.pdf = 0.0f;
 
-    // Read material once, normalize directions once
     Material mat = materials[matID];
     float3 N  = normalize(n_s);
     float3 fN = normalize(n_g);
     float3 V  = normalize(o);
     float3 L  = normalize(s);
 
-    float gate = 1.0f; // Energy conservation gate
+    float gate = 1.0f;
 
-    // --- SHEEN ---
+    // Sheen
     {
         float3 f = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
         float prob = BRDF_PDF_SHEEN(matID, n_s, -s, o);
@@ -201,7 +195,7 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
 
-    // --- COAT (fused: eval+pdf+transmittance computed once) ---
+    // Coat
     {
         CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
         res.val += gate * cr.f;
@@ -209,7 +203,7 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate *= cr.t;
     }
 
-    // --- SPECULAR GGX (fused: eval+pdf+transmittance computed once) ---
+    // GGX
     {
         GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
         res.val += gate * gr.f;
@@ -217,7 +211,7 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate *= gr.t;
     }
 
-    // --- DIFFUSE ---
+    // Diffuse
     {
         float3 f = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
         float prob = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);

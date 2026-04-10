@@ -1,9 +1,8 @@
 #ifndef VOLUME_STACK_PACKED_V2_HLSLI
 #define VOLUME_STACK_PACKED_V2_HLSLI
 
-// Matches your layout:
-//  - VolumeIOR: uint2 with 2x PackIORPair (each contains 2x 15-bit IOR + hidden pointer bits)
-//  - VolumeAux: uint2 mat stack (4x 16-bit) + uint obj stack (4x 8-bit)
+// VolumeIOR: uint2 with 2x PackIORPair (each contains 2x 15-bit IOR + hidden pointer bits)
+// VolumeAux: uint2 mat stack (4x 16-bit) + uint obj stack (4x 8-bit)
 struct VolumeIOR_Packed { uint2 raw; };
 struct VolumeAux_Packed { uint2 mat16; uint obj8; };
 
@@ -138,7 +137,7 @@ inline bool BoundaryMatch_packed(VolumeAux_Packed a, int slot, uint surfaceMatID
 }
 
 // -----------------------------------------------------------------------------
-// Packed equivalents of your original functions
+// Packed IOR stack operations
 // -----------------------------------------------------------------------------
 
 inline float2 GetIORs_packed(
@@ -261,7 +260,7 @@ inline void UpdateIORStack_packed(
 inline uint GetCurrentMediumMaterialID_packed(VolumeIOR_Packed vIOR, VolumeAux_Packed vAux)
 {
     int ptr = GetVolumePtrFast_packed(vIOR);
-    // Use your 15-bit invalid sentinel here (since you later mask to 15 bits anyway)
+    // 15-bit invalid sentinel (masked to 15 bits)
     return (ptr >= 0 && ptr < 4) ? GetMatAtSlot_packed(vAux, ptr) : 0x7FFFu;
 }
 

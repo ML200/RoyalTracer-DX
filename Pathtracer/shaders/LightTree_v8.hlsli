@@ -44,8 +44,6 @@ struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 // ============================================================================
 // TRIG-FREE NODE IMPORTANCE  (precomputed cosTheta_o / cosTheta_e in nodes)
 // ============================================================================
-// Replaces 4 trig ops (acos, asin, cos, sin) with 3 sqrts + ALU.
-// Adds smooth receiver-cosine weighting (was binary cull before).
 
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
@@ -319,13 +317,6 @@ float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
     return p_select / area;
 }
 
-inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objID)
-{
-    float p_select = LT_PdfSelectTriangle(x, n, tri);
-    float area     = max(1e-10, LT_TriangleArea(tri, objID));
-    return p_select / area;
-}
-
 // Helper to select a light source, a point on it and return point and pdf.
 
 struct LT_LightSampleResult
@@ -400,8 +391,6 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 // ============================================================================
 // INDIRECT LIGHT-TREE TRAVERSAL
 // ============================================================================
-
-//IMPORTANCE
 
 inline float LT_NodeImportance_Common_Indirect(
     float3 x,
@@ -547,7 +536,7 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         }
 
         if (childHit < 0) {
-            // Uniform fallback if the mapping isnt found
+            // Uniform fallback if the mapping isn't found
             pdfTLAS *= 1.0 / float(N.childCount);
             tnode = N.firstChild; // deterministic fallback path
             continue;

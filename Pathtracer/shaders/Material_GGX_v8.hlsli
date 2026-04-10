@@ -201,8 +201,7 @@ inline float3 SampleBRDF_GGX(
     float3 T, B;
     BuildAnisotropicFrame(N, anisoRot, T, B);
 
-    // 1) Sample visible normal H
-    //    For very smooth surfaces, fall back to perfect reflection/refraction
+    // Sample visible normal (fall back to perfect specular for very smooth surfaces)
     float3 H;
     if (r < SMOOTH_SPECULAR_THRESHOLD)
         H = N;
@@ -210,7 +209,7 @@ inline float3 SampleBRDF_GGX(
         H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
-    // 2) Path probabilities for this H
+    // Reflection/transmission probabilities
     float  F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
@@ -223,7 +222,6 @@ inline float3 SampleBRDF_GGX(
         // Reflection
         L = reflect(-V, H);
         refract = false;
-        //if (dot(N, L) <= 0.0f || dot(fN, L) <= 0.0f) return (float3)0;
     }
     else
     {
@@ -240,7 +238,7 @@ inline float3 SampleBRDF_GGX(
 }
 
 
-// Fused eval+pdf+transmittance for GGX — computes all shared work once
+// Fused GGX eval, pdf, and transmittance
 struct GGXResult {
     float3 f;
     float  pdf;

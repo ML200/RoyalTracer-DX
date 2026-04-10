@@ -3,12 +3,11 @@
 #include <iomanip>
 #include <sstream>
 #include <ctime>
-#include <cstdio> // Required for std::remove
+#include <cstdio>
 
 CameraRecorder::CameraRecorder() {
 }
 
-// The Destructor: Called automatically when the app closes
 CameraRecorder::~CameraRecorder() {
     if (!m_hasRecorded && !m_filePath.empty()) {
         // Try to delete the file
@@ -19,7 +18,7 @@ CameraRecorder::~CameraRecorder() {
 }
 
 void CameraRecorder::Initialize() {
-    m_hasRecorded = false; // Reset flag
+    m_hasRecorded = false;
     m_startTime = std::chrono::high_resolution_clock::now();
 
     // Generate unique filename
@@ -44,7 +43,6 @@ void CameraRecorder::Initialize() {
 }
 
 void CameraRecorder::CaptureKeyframe(nv_helpers_dx12::Manipulator& camera) {
-    // Mark that we have actually saved data
     m_hasRecorded = true;
 
     auto now = std::chrono::high_resolution_clock::now();

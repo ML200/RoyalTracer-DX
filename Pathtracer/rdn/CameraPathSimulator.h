@@ -28,8 +28,7 @@ public:
     size_t GetCurrentStepIndex() const { return m_currentStepIndex; }
 
     // Index of the frame that was most recently requested for capture (valid when outShouldCapture==true)
-    // FIX: Returns the index shifted by the offset so filenames continue (e.g. 100, 101...)
-    //      while the internal simulation ran (0, 1...)
+    // Returns disk-relative index (internal index + file offset)
     size_t GetLastCaptureIndex() const { return m_lastCaptureIndex + m_fileIndexOffset; }
 
     // Expose the configured output directory so Renderer can save to the correct place

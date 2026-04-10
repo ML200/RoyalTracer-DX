@@ -191,8 +191,6 @@ inline bool RejectDistance_DI(float3 x1, float3 x2, float3 normal, float thresho
 inline bool IsValidReservoir_DI(Reservoir_DI r){
     bool valid =
         any(abs(r.n2_di) > 0.0f) &&
-        //any(r.L2_di > 0.0f) &&
-        //r.W_di > 0.0f &&
         r.M_di > 0.0f
         ;
     return valid;
@@ -209,7 +207,7 @@ inline bool IsValidReservoir_DI_opt(in float3 n2, in uint M){
 float3 BSDF_term(
     uint   mID,
     float3 n_s,
-    float3 n_g, // Added
+    float3 n_g,
     float3 s,
     float3 o,
     float3 localKd,
@@ -224,7 +222,7 @@ float3 BSDF_term(
 float PDF_term(
     uint   mID,
     float3 n_s,
-    float3 n_g, // Added
+    float3 n_g,
     float3 s,
     float3 o,
     float3 localKd,
@@ -332,7 +330,7 @@ bool UpdateReservoirDI(
 
     float3 x2,
     float3 n2,
-    float3 L2, // No need to update L1, as this is always 0 when the sample is processed here. Also,we dont want to reuse sample on a lights surface
+    float3 L2,
     uint   objID,
     inout uint2 seed
     )

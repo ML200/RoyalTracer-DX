@@ -1,19 +1,13 @@
-/*
-Class for sampling path segments - Refactored for Semi-SoA Layout
-*/
+// Volume stack and IOR management
 
-// =================================================================================
-// HELPER: 8-Bit Boundary Hash
-// =================================================================================
+// Volume boundary matching
 
 inline bool BoundaryMatch(VolumeAux a, int slot, uint matID, uint objID)
 {
     return a.matID_stack[slot] == matID && a.objID_stack[slot] == objID;
 }
 
-// =================================================================================
-// VOLUME & IOR LOGIC (FIXED)
-// =================================================================================
+// IOR stack operations
 
 inline float2 GetIORs(
     in VolumeIOR vIOR,
@@ -61,7 +55,7 @@ inline float2 GetIORs(
 
         iors.y = (max_remaining_ior > 0.0f) ? max_remaining_ior : 1.0f;
 
-        // If we're exiting a lower-priority volume, this naturally becomes a null interface.
+        // Null interface if exiting lower-priority volume
         if (abs(iors.y - incident) < EPSILON)
             iors.y = 0.0f;
     }
@@ -136,9 +130,7 @@ inline uint GetCurrentMediumMaterialID(in VolumeIOR vIOR, in VolumeAux vAux)
     return (vIOR.pointer >= 0 && vIOR.pointer < 4) ? vAux.matID_stack[vIOR.pointer] : 0x0000FFFF;
 }
 
-// =================================================================================
-// MISC HELPERS
-// =================================================================================
+// Absorption
 
 inline float3 CalculateAbsorptionThroughput(
     float3 tintColor,
@@ -153,9 +145,7 @@ inline float3 CalculateAbsorptionThroughput(
     return throughput;
 }
 
-// =================================================================================
-// INITIALIZERS
-// =================================================================================
+// Initialization
 
 VolumeIOR InitVolumeIOR()
 {

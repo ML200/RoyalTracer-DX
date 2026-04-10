@@ -165,7 +165,6 @@
 #define CLOUD_HG_FORWARD        0.7f
 #endif
 
-// Kept for compatibility with prior overrides, but unused in this version.
 #ifndef CLOUD_HG_BACK
 #define CLOUD_HG_BACK           -0.4f
 #endif
@@ -561,16 +560,6 @@ CloudMaterialSample SampleCloudMaterialDistanceLOD(float3 worldPos, float distan
         detailFreq,
         warpBlend
     );
-}
-
-float SampleCloudDensity(float3 worldPos, int shapeOctaves, int detailOctaves)
-{
-    return SampleCloudMaterial(worldPos, shapeOctaves, detailOctaves).density;
-}
-
-float SampleCloudDensity(float3 worldPos)
-{
-    return SampleCloudMaterial(worldPos).density;
 }
 
 float SampleCloudDensityLOD(float3 worldPos)

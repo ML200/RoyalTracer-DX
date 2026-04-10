@@ -1,4 +1,4 @@
-// Constants for now
+// Sheen lobe constants (Charlie NDF)
 static const float  SHEEN_R      = 0.20f;
 static const float3 SHEEN_COLOR  = float3(1,1,1);
 
@@ -131,7 +131,6 @@ inline float Transmittance_SHEEN(
     return saturate(1.0f - w * aV);
 }
 
-// We use the lut again for optimizing sampling probability
 inline float Sampling_Weight_SHEEN(
     uint   mID,
     float3 normal,

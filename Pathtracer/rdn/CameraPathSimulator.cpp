@@ -16,7 +16,6 @@
 #include "glm/gtx/rotate_vector.hpp"
 #include "glm/gtc/constants.hpp"
 
-// Helper to convert wstring to string
 static std::string ToString(const std::wstring& wstr) {
     if (wstr.empty()) return std::string();
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -25,7 +24,6 @@ static std::string ToString(const std::wstring& wstr) {
     return strTo;
 }
 
-// Helper to convert string to wstring
 static std::wstring ToWString(const std::string& str) {
     if (str.empty()) return std::wstring();
     int size_needed = MultiByteToWideChar(CP_UTF8, 0, &str[0], (int)str.size(), NULL, 0);
@@ -34,7 +32,7 @@ static std::wstring ToWString(const std::string& str) {
     return wstrTo;
 }
 
-// FIX: Robust filename parsing to avoid crashes on non-numeric files
+// Parses numeric index from filename stem (handles non-numeric files safely)
 static bool TryParseIndexFromFilename(const std::filesystem::path& p, uint64_t& outIdx)
 {
     // Avoid narrow conversion (can throw on Windows); parse wstring.
@@ -233,7 +231,6 @@ void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
 }
 
 void CameraPathSimulator::GeneratePathPoints() {
-    // FIX: Add safety check to prevent integer underflow/crash if keyframes are missing
     if (m_keyframes.size() < 2) {
         m_interpolatedPath.clear();
         return;

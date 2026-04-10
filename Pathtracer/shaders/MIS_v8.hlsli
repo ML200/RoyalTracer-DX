@@ -1,15 +1,4 @@
-// Initial sampling
-float MIS_Initial_NEE(float pdf_nee, float pdf_bsdf, float M1, float M2){
-    float denom = M1 * pdf_nee + M2 * pdf_bsdf;
-    return denom > 0.0f ? pdf_nee / denom : 0.0f;
-}
-
-float MIS_Initial_BSDF(float pdf_nee, float pdf_bsdf, float M2, float M1){
-    float denom = M1 * pdf_bsdf + M2 * pdf_nee;
-    return denom > 0.0f ? pdf_bsdf / denom : 0.0f;
-}
-
-// defensive pair-wise MIS, canonical sample
+// Pairwise MIS: canonical sample (defensive)
 inline float PairwiseMIS_Canonical_Temp(
     float M_c,
     float M_n,
@@ -28,7 +17,7 @@ inline float PairwiseMIS_Canonical_Temp(
     return m_c;
 }
 
-// defensive pair-wise MIS, neighbour sample
+// Pairwise MIS: neighbor sample (defensive)
 inline float PairwiseMIS_Neighbour_Temp(
     float M_c,
     float M_n,
@@ -45,38 +34,8 @@ inline float PairwiseMIS_Neighbour_Temp(
            : 0.0f;
 }
 
-// Non-defensive pair-wise MIS
-float PairwiseMIS_Canonical_Temp_NonDef(
-    float M_c,
-    float M_n,
-    float p_c,
-    float p_n,
-    float M_sum)
-{
-    float num   = M_c * p_c;
-    float denom = num + M_n * p_n;
-
-    return (denom > 0.0f) ? (num / denom) : 0.0f;
-}
-
-
-// Non-defensive pair-wise MIS
-float PairwiseMIS_Neighbour_Temp_NonDef(
-    float M_c,
-    float M_n,
-    float n_c,
-    float n_n,
-    float M_sum)
-{
-    float num   = M_n * n_n;
-    float denom = num + M_c * n_c;
-
-    return (denom > 0.0f) ? (num / denom) : 0.0f;
-}
-
-
 #ifdef ENABLE_RAY_QUERY_INLINE
-// Algorithm 7 from the gentle intro
+// Pairwise MIS: canonical spatial DI
 float PairwiseMIS_Canonical_Spat_DI(
     in float M_sum_in,
     in float p_c,
@@ -126,49 +85,8 @@ float PairwiseMIS_Canonical_Spat_DI(
 #endif // ENABLE_RAY_QUERY_INLINE
 
 
-
 #ifdef ENABLE_RAY_QUERY_INLINE
-float PairwiseMIS_Neighbor_Spat_DI(
-    in float M_sum_in,
-    in float M_c,
-    in float M_n,
-    in float p_c,
-    in float p_hat_from,
-    in uint nID,// ID of the current candidate
-    // data needed from the canonical reseroir (we dont want to load the complete struct in here)
-    in float3 x2_n,
-    in float3 n2_n,
-    in float3 L2_n,
-    in uint objID_n
-    )
-{
-    float M_sum = max(M_sum_in, 1.0f);
-    // Reconstruct p_n from the neigbour reservoir
-    float visReuse = load_W_di(g_Reservoirs_current_di, nID) > 0.0f ? 1.0f : 0.0f;
-    uint nInstID = load_instID(g_sample_current, nID);
-    uint nPrimID = load_primID(g_sample_current, nID);
-    float2 nBary = load_bary(g_sample_current, nID);
-    SurfaceVertex sv_n = BuildVertexLight(nInstID, nPrimID, nBary,
-        load_n1_s_with_instID(g_sample_current, nID, nInstID),
-        load_n1_g_with_instID(g_sample_current, nID, nInstID),
-        load_uv(g_sample_current, nID),
-        load_etai(g_sample_current, nID),
-        load_etat(g_sample_current, nID),
-        InitOrigin());
-    float p_n = visReuse * GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.n_g, sv_n.o, sv_n.matID, x2_n, n2_n, L2_n, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, objID_n));
-    // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
-    float m_num = (M_sum - M_c) * p_n;
-    float m_den = m_num + M_c * p_hat_from;
-    if(m_den > 1e-4)
-        return (M_n/M_sum) * (m_num/m_den);
-    return 0.0f;
-}
-#endif // ENABLE_RAY_QUERY_INLINE
-
-
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-// Algorithm 7 from the gentle intro
+// Pairwise MIS: canonical spatial GI
 float PairwiseMIS_Canonical_Spat_GI(
     in float M_sum_in,
     in float p_c,
@@ -245,10 +163,8 @@ float PairwiseMIS_Neighbor_Spat_GI(
     )
 {
     float M_sum = max(M_sum_in, 1.0f);
-    // Reconstruct p_n from the neigbour reservoir
     float visReuse = W_n > 0.0f ? 1.0f : 0.0f;
     float p_n = visReuse * F_n;
-    // p_hat_from is in this case the reconnection between the canoncial position and the neighbor sample. Cause we need that later, it is provided
     float m_num = (M_sum - M_c) * p_n;
     float m_den = m_num + M_c * p_hat_from;
     if(m_den>EPSILON)

@@ -1,9 +1,5 @@
-//
-// Created by m on 30.01.2024.
-//
+#pragma once
 
-#ifndef PATHTRACER_OBJLOADER_H
-#define PATHTRACER_OBJLOADER_H
 //#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
 #include "../../lib/tiny_gltf_v3.h"
@@ -1315,5 +1311,3 @@ public:
         return scene;
     }
 };
-
-#endif //PATHTRACER_OBJLOADER_H
