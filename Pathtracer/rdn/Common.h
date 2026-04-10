@@ -104,12 +104,12 @@ struct ReSTIRSettings {
     int   tempMcapGI       = 8;
     int   spatCountMaxDI   = 1;
     int   spatCountMinDI   = 1;
-    int   spatRadMaxDI     = 50;
-    int   spatRadMinDI     = 50;
+    int   spatRadMaxDI     = 30;
+    int   spatRadMinDI     = 30;
     int   spatCountMaxGI   = 2;
     int   spatCountMinGI   = 2;
-    int   spatRadMaxGI     = 50;
-    int   spatRadMinGI     = 50;
+    int   spatRadMaxGI     = 30;
+    int   spatRadMinGI     = 30;
     bool  enableTempDI     = true;
     bool  enableTempGI     = true;
     bool  enableSpatDI     = true;
