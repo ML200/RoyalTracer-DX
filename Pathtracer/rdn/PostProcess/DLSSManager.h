@@ -37,6 +37,7 @@ public:
     UINT RenderHeight() const { return m_renderHeight; }
     UINT DisplayWidth() const { return m_displayWidth; }
     UINT DisplayHeight()const { return m_displayHeight; }
+    sl::DLSSMode ActiveMode() const { return m_activeMode; }
 
     // ── Resource accessors for SRV/UAV heap setup ─────────────────
     ID3D12Resource* Input()            const { return m_input.Get(); }
@@ -71,6 +72,7 @@ private:
     UINT m_displayWidth  = 0, m_displayHeight = 0;
     UINT m_renderWidth   = 0, m_renderHeight  = 0;
     sl::DLSSMode m_activeMode = sl::DLSSMode::eOff;  // mode resources were built for
+    bool m_forceReset = false;  // force DLSS temporal reset on next evaluate
 
     XMMATRIX m_dlssPrevView = XMMatrixIdentity();
     XMMATRIX m_dlssPrevProj = XMMatrixIdentity();

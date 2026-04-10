@@ -57,7 +57,14 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        ImGui::Text("%.1f fps | %.2f ms", fps, fps > 0 ? 1000.0f / fps : 0.0f);
+        if (dlssG.enabled && dlssG.framesToGenerate > 0) {
+            float presentedFps = fps * (1 + dlssG.framesToGenerate);
+            ImGui::Text("%.1f fps (%.1f rendered + %dx FG) | %.2f ms",
+                presentedFps, fps, 1 + dlssG.framesToGenerate,
+                fps > 0 ? 1000.0f / fps : 0.0f);
+        } else {
+            ImGui::Text("%.1f fps | %.2f ms", fps, fps > 0 ? 1000.0f / fps : 0.0f);
+        }
         ImGui::Separator();
         ImGui::Text("CPU: %.1f ms (upd %.1f | inst %.1f | pop %.1f | tlas %.2f)",
             stats.cpuFrameMs, stats.cpuUpdateMs, stats.cpuInstanceMs,
