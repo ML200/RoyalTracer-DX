@@ -30,25 +30,12 @@ void Pass_spat_gi_v8_1()
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
-    // If spatial GI is disabled, compute canonical output and store reservoir unchanged
+    // If spatial GI is disabled, use stored F_gi directly (no ReconnectGI needed)
     if (!(rs_flags & 8u))
     {
-        const float vis = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-        const float3 cameraPos = InitOrigin();
-        SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
-        sv1.etai = load_etai(g_sample_current, pixelIdx);
-        sv1.etat = load_etat(g_sample_current, pixelIdx);
-        float3 rKd0; float rPr0, rPm0;
-        RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd0, rPr0, rPm0);
-        SurfaceVertex sv2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rKd0, rPr0, rPm0, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
-        float Jd1 = 0.0f, Jd2 = 0.0f;
-        float3 c = ReconnectGI(
-            sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
-            sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
-            sv2.matID, sv2.x, sv2.n_s, sv2.n_g, rdi.L2_gi, sv2.o,
-            sv2.Kd, sv2.Pr, sv2.Pm, sv2.etai, sv2.etat,
-            rdi.J_gi.x, 1.0f, false, Jd1, Jd2) * vis;
-        gScratchPing[uint3(launchIndex, 2)] = float4(c * rdi.W_gi, 0);
+        float3 c = UnpackRGB9E5(rdi.F_gi);
+        float  W = (rdi.W_gi > 0.0f) ? rdi.W_gi : 0.0f;
+        gScratchPing[uint3(launchIndex, 2)] = float4(c * W, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
     }
@@ -82,34 +69,23 @@ void Pass_spat_gi_v8_1()
 
     float3 contrib_final = 0.0.xxx;
     float  p_c           = 0.0f;
-    float  Jn_canonical  = 0.0f;
 
-    // Build canonical vertex
+    // Build canonical vertex (needed for MIS and neighbor evaluation)
     const float3 cameraPos2 = InitOrigin();
     SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
     sv1.etai = load_etai(g_sample_current, pixelIdx);
     sv1.etat = load_etat(g_sample_current, pixelIdx);
 
-    // Build canonical x2 vertex from reservoir
+    // Build canonical x2 vertex from reservoir (needed for MIS canonical)
     float3 rKd; float rPr, rPm;
     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
-    SurfaceVertex sv2_c = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
 
+    // Use stored F_gi directly — skip canonical ReconnectGI
     {
-        float Jdummy = 0.0f;
-        float3 contrib_c = ReconnectGI(
-            sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
-            sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
-            sv2_c.matID, sv2_c.x, sv2_c.n_s, sv2_c.n_g, rdi.L2_gi, sv2_c.o,
-            sv2_c.Kd, sv2_c.Pr, sv2_c.Pm, sv2_c.etai, sv2_c.etat,
-            rdi.J_gi.x, 1.0f, false, Jn_canonical, Jdummy);
-        contrib_c *= visReuse;
+        float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * visReuse;
         p_c = GetPHat(contrib_c);
         contrib_final = contrib_c;
     }
-
-    // Set canonical jacobian (will be overwritten if neighbor wins in merge)
-    rdi.J_gi.y = Jn_canonical;
 
     // MIS for canonical
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
@@ -169,7 +145,7 @@ void Pass_spat_gi_v8_1()
             M_sum,
             M_c, Mn,
             p_hat_from,
-            rdi_r.W_gi, rdi_r.F_gi
+            rdi_r.W_gi, GetPHat(UnpackRGB9E5(rdi_r.F_gi))
         );
 
         const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
@@ -209,7 +185,7 @@ void Pass_spat_gi_v8_1()
             rdi.W_gi = 0.0f;
         }
 
-        rdi.F_gi = p_hat_final;
+        rdi.F_gi = PackRGB9E5(contrib_final);
 
         gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
     }
