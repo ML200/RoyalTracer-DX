@@ -24,6 +24,7 @@ struct DeviceContext {
     void WaitForPreviousFrame();           // wait for last submitted frame (call before writing shared buffers)
     void WaitForGPU();                     // CPU stall until GPU is idle
     void FlushAndReset();                  // execute current list, wait, reopen
+    void Resize(UINT newWidth, UINT newHeight);  // resize swap chain, RTVs, depth
 
     // ── Accessors ────────────────────────────────────────────────
     ID3D12Device10*                Device()       const { return device.Get(); }

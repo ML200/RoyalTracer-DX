@@ -136,6 +136,7 @@ void Renderer::UpdateRenderer(float dt) {
 
     // Check for DLSS mode change — flag for reallocation in PopulateCommandList
     if (m_dlss.UpdateMode(m_ctx.Device())) {
+        m_ctx.WaitForGPU();  // drain all in-flight GPU work before releasing old textures
         m_dlssModeChanged = true;
         RebuildDLSSDescriptors();
         LOG(L"[DLSS] Mode changed → render res: "
@@ -513,6 +514,125 @@ void Renderer::RebuildDLSSDescriptors() {
 }
 
 // ═════════════════════════════════════════════════════════════════
+// Resize
+// ═════════════════════════════════════════════════════════════════
+void Renderer::OnResize(UINT newWidth, UINT newHeight) {
+    if (newWidth == 0 || newHeight == 0) return;
+    if (newWidth == m_width && newHeight == m_height) return;
+
+    m_ctx.WaitForGPU();
+
+    m_width       = newWidth;
+    m_height      = newHeight;
+    m_aspectRatio = static_cast<float>(newWidth) / static_cast<float>(newHeight);
+
+    // Resize swap chain, RTVs, depth stencil
+    m_ctx.Resize(newWidth, newHeight);
+
+    // Recreate all display-resolution-dependent GPU resources
+    m_outputResource.Reset();
+    m_permanentDataTexture.Reset();
+    m_scratchPing.Reset();
+    m_reservoirBuffer.Reset();
+    m_reservoirBuffer_2.Reset();
+    m_reservoirBuffer_3.Reset();
+    m_reservoirBuffer_4.Reset();
+    m_sampleBuffer_current.Reset();
+    m_sampleBuffer_last.Reset();
+    m_initialBSDFRayBuffer.Reset();
+    m_pathStateBuffer.Reset();
+    for (int i = 0; i < MAX_STACKS; ++i)
+        m_stackBuffers[i].Reset();
+
+    CreateRaytracingOutputBuffer();
+    CreateStreamingCompactionBuffers();
+
+    // Recreate DLSS resources at new display resolution
+    m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
+
+    // Update descriptors for all resolution-dependent resources
+    RebuildResolutionDependentDescriptors();
+    RebuildDLSSDescriptors();
+
+    // Disable temporal reuse on next frame (old reservoirs are stale)
+    m_dlssModeChanged = true;
+
+    LOG(L"[Resize] " << newWidth << L"x" << newHeight);
+}
+
+void Renderer::RebuildResolutionDependentDescriptors() {
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    auto writeUAVAt = [&](UINT slot, auto& res, auto writeFn) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        writeFn(h);
+    };
+
+    UINT px = GetWidth() * GetHeight();
+
+    // Slot 0: output array UAV
+    writeUAVAt(0, m_outputResource, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        ud.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        ud.Texture2DArray.ArraySize = m_outputResource->GetDesc().DepthOrArraySize;
+        dev->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &ud, h);
+    });
+
+    // Slot 1: permanent data UAV
+    writeUAVAt(1, m_permanentDataTexture, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        ud.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        dev->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &ud, h);
+    });
+
+    // Slots 10-15: reservoir / sample raw UAVs
+    auto rawUAVAt = [&](UINT slot, ComPtr<ID3D12Resource>& res, UINT bytes) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = bytes / 4;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(res.Get(), nullptr, &ud, h);
+    };
+    rawUAVAt(10, m_reservoirBuffer,      px * sizeof(Reservoir_DI));
+    rawUAVAt(11, m_reservoirBuffer_2,    px * sizeof(Reservoir_DI));
+    rawUAVAt(12, m_reservoirBuffer_3,    px * sizeof(Reservoir_GI));
+    rawUAVAt(13, m_reservoirBuffer_4,    px * sizeof(Reservoir_GI));
+    rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
+    rawUAVAt(15, m_sampleBuffer_last,    px * sizeof(SampleData));
+
+    // Slot 18: scratch ping UAV
+    writeUAVAt(18, m_scratchPing, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        ud.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        ud.Texture2DArray.ArraySize = 16;
+        dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, h);
+    });
+
+    // Slot 19: initial BSDF ray UAV
+    rawUAVAt(19, m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay));
+
+    // Slot 32: path state UAV
+    rawUAVAt(32, m_pathStateBuffer, px * 88);
+
+    // Slots 35-38: stack buffers UAV
+    for (int s = 0; s < 4; ++s) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 35 + s, inc);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_UNKNOWN;
+        ud.Buffer.NumElements = GetWidth() * GetHeight();
+        ud.Buffer.StructureByteStride = 8;
+        dev->CreateUnorderedAccessView(m_stackBuffers[s].Get(), nullptr, &ud, h);
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════
 // Render
 // ═════════════════════════════════════════════════════════════════
 void Renderer::RenderFrame() {
@@ -670,6 +790,7 @@ void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 
     // Reallocate Streamline DLSS feature if mode changed (needs open command list)
+    bool dlssResChanged = m_dlssModeChanged;
     if (m_dlssModeChanged) {
         m_dlssModeChanged = false;
         sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
@@ -826,7 +947,11 @@ void Renderer::PopulateCommandList() {
     rsConsts[11] = (UINT)rs.spatCountMinGI;
     rsConsts[12] = (UINT)rs.spatRadMaxGI;
     rsConsts[13] = (UINT)rs.spatRadMinGI;
-    rsConsts[14] = rs.Flags();
+    // When DLSS render resolution changes, the "last" reservoir/sample buffers
+    // use a different SoA layout (gi_numPx changes).  Reading them with the new
+    // layout yields garbage positions → NaN rays → GPU hang.  Disable temporal
+    // reuse for this single frame so those buffers are never read.
+    rsConsts[14] = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
     memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
 

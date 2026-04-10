@@ -70,7 +70,8 @@ static const uint GI_PLANE_VPOST = 68u;
 static const uint GI_PLANE_TPOST = 72u;
 
 // SoA address helpers
-uint gi_numPx()                       { return IMG_W * IMG_H; }
+// Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
+uint gi_numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint gi_addr_pack1(uint px)           { return px * GI_SZ_PACK1; }
 uint gi_addr_l2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_L2    + px * GI_SZ_L2; }
 uint gi_addr_v2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_V2    + px * GI_SZ_V2; }

@@ -100,7 +100,12 @@
       "Bash(xargs wc:*)",
       "Bash(ls -la *.hlsl *.hlsli)",
       "Bash(grep -n \"TraceRay\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)",
-      "Bash(grep -l \"ShadowHitInfo\\\\|shadow\\\\|Shadow\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)"
+      "Bash(grep -l \"ShadowHitInfo\\\\|shadow\\\\|Shadow\" \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsl \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\shaders\"/*.hlsli)",
+      "Read(//c/Users/Malte/Documents/GitHub/RoyalTracer-DX/**)",
+      "Bash(ls *.sln)",
+      "Bash(cmake --build out/build/x64-Debug --target Pathtracer)",
+      "Bash(ls \"C:/Program Files/Microsoft Visual Studio/2022/\"*/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe)",
+      "Bash('C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' --build out/build/x64-Debug --target Pathtracer)"
     ]
   }
 }
