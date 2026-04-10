@@ -55,6 +55,7 @@ struct ScopedTimer {
 
 // ── Constants ────────────────────────────────────────────────────
 static constexpr UINT  FRAME_COUNT          = 3;
+static constexpr UINT  MAX_BACK_BUFFERS     = 6;   // DLSS-G may add extra back buffers beyond FRAME_COUNT
 static constexpr UINT  MAX_STACKS           = 4;
 static constexpr UINT  MAX_INDIRECT_COMMANDS = MAX_STACKS;
 static constexpr UINT  SORT_BUCKETS         = 65536;
@@ -120,6 +121,14 @@ struct ReSTIRSettings {
         return (enableTempDI ? 1u : 0u) | (enableTempGI ? 2u : 0u)
              | (enableSpatDI ? 4u : 0u) | (enableSpatGI ? 8u : 0u);
     }
+};
+
+// ── DLSS-G (Frame Generation) settings ──────────────────────────
+struct DLSSGSettings {
+    bool available        = false;
+    bool enabled          = false;
+    int  framesToGenerate = 1;   // 1=2x, 2=3x, 3=4x
+    int  maxFrames        = 1;   // queried from DLSSGState::numFramesToGenerateMax
 };
 
 // ── Sun / time-of-day settings (uploaded to GPU via camera buffer) ──

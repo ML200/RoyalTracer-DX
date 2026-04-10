@@ -197,6 +197,7 @@ private:
     float m_fps = 0.0f;
     bool m_dlssModeChanged = false;
     bool m_reflexAvailable = false;
+    DLSSGSettings m_dlssG;
     FrameStats m_frameStats;
 
     uint32_t m_time = 0;

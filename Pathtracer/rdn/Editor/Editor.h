@@ -23,8 +23,8 @@ public:
     void Shutdown();
 
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
-              PassSystem& passes, DLSSManager& dlss, ReSTIRSettings& restir,
-              float fps, const FrameStats& stats);
+              PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
+              ReSTIRSettings& restir, float fps, const FrameStats& stats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -34,7 +34,7 @@ private:
     void DrawScenePanel(Scene& scene);
     void DrawCameraPanel(Camera& camera, FlyCamController& flyCam);
     void DrawPassPipelinePanel(PassSystem& passes);
-    void DrawDLSSPanel(DLSSManager& dlss);
+    void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
     void DrawMaterialInspector(Scene& scene);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
     void DrawSunPanel(Camera& camera);

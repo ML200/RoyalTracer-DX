@@ -36,8 +36,8 @@ void Editor::Shutdown() {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
-                  PassSystem& passes, DLSSManager& dlss, ReSTIRSettings& restir,
-                  float fps, const FrameStats& stats)
+                  PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
+                  ReSTIRSettings& restir, float fps, const FrameStats& stats)
 {
     if (!m_visible) return;
 
@@ -50,7 +50,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Scene Hierarchy", nullptr, &m_showScene);
             ImGui::MenuItem("Camera",          nullptr, &m_showCamera);
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
-            ImGui::MenuItem("DLSS-RR",         nullptr, &m_showDLSS);
+            ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
@@ -74,7 +74,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showScene)     DrawScenePanel(scene);
     if (m_showCamera)    DrawCameraPanel(camera, flyCam);
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
-    if (m_showDLSS)      DrawDLSSPanel(dlss);
+    if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene);
@@ -232,14 +232,15 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
 }
 
 // ═════════════════════════════════════════════════════════════════
-void Editor::DrawDLSSPanel(DLSSManager& dlss) {
+void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::SetNextWindowPos(ImVec2(380, 440), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(350, 120), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(350, 200), ImGuiCond_FirstUseEver);
 
-    if (!ImGui::Begin("DLSS-RR")) { ImGui::End(); return; }
+    if (!ImGui::Begin("DLSS")) { ImGui::End(); return; }
 
-    // DLSS-RR only supports Off, DLAA, Quality (MaxQuality), and Balanced.
-    // Map combo indices to actual sl::DLSSMode enum values (which may not be contiguous).
+    // ── DLSS-RR (Ray Reconstruction) ────────────────────────────
+    ImGui::SeparatorText("Ray Reconstruction");
+
     const char* modeLabels[] = { "Off", "DLAA", "Quality", "Balanced" };
     const sl::DLSSMode modeValues[] = {
         sl::DLSSMode::eOff,
@@ -249,18 +250,35 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss) {
     };
     constexpr int modeCount = IM_ARRAYSIZE(modeLabels);
 
-    // Find current combo index from active mode
-    int currentIdx = 1; // default to DLAA
+    int currentIdx = 1;
     for (int i = 0; i < modeCount; ++i) {
         if (dlss.mode == modeValues[i]) { currentIdx = i; break; }
     }
 
-    if (ImGui::Combo("Mode", &currentIdx, modeLabels, modeCount))
+    if (ImGui::Combo("RR Mode", &currentIdx, modeLabels, modeCount))
         dlss.mode = modeValues[currentIdx];
 
     ImGui::TextDisabled("Render: %ux%u -> Display: %ux%u",
         dlss.RenderWidth(), dlss.RenderHeight(),
         dlss.DisplayWidth(), dlss.DisplayHeight());
+
+    // ── DLSS-G (Frame Generation) ───────────────────────────────
+    ImGui::SeparatorText("Frame Generation");
+
+    if (!dlssG.available) {
+        ImGui::TextDisabled("Not available on this GPU");
+    } else {
+        ImGui::Checkbox("Enabled", &dlssG.enabled);
+
+        if (dlssG.enabled) {
+            // Multiplier labels based on hardware max
+            const char* fgLabels[] = { "2x", "3x", "4x" };
+            // framesToGenerate: 1=2x, 2=3x, 3=4x  ->  combo index = framesToGenerate - 1
+            int fgIdx = dlssG.framesToGenerate - 1;
+            if (ImGui::Combo("Multiplier", &fgIdx, fgLabels, dlssG.maxFrames))
+                dlssG.framesToGenerate = fgIdx + 1;
+        }
+    }
 
     ImGui::End();
 }
