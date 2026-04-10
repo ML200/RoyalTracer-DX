@@ -1,6 +1,4 @@
-/*
-Random Number generation functions.
-*/
+// Random number generation
 
 // 32-bit mix
 inline uint Hash32(uint v) {
@@ -8,7 +6,7 @@ inline uint Hash32(uint v) {
     return v;
 }
 
-// c is a constant, eg time
+// Additional constant for seed variation
 uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
 {
     // Per-pixel
@@ -31,52 +29,15 @@ uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
     return uint2(s0, s1);
 }
 
-// Generate a seed that is exactly the same in every lane - used for example to reduce cache pressure when sampling NEE samples
-uint GetWaveSeed(uint2 idx, uint2 tileSize, uint t, uint c)
+inline float RandomFloatSingle(inout uint s)
 {
-    uint2 tile = idx / tileSize;
-    uint tileKey = (tile.y << 16) | tile.x;
-    uint waveTileKey = WaveActiveMin(tileKey);
-    return Hash32(waveTileKey ^ 0xB5297A4Du * t ^ 0x68E31DA4u * c);
+    s *= 1664525u;
+    s += 1013904223u;
+    uint r = (s >> 9u);
+    r = 0x3F800000u | r;
+    return asfloat(r) - 1.0f;
 }
 
-
-// Optimized random function
-float RandomFloat(inout uint2 s)
-{
-    uint sum = 0u;
-    for(uint i = 0u; i < 4u; ++i)
-    {
-        sum += 0x9E3779B9u;
-        s.x += ((s.y << 4u) + 0xA341316Cu)
-             ^ (s.y + sum)
-             ^ ((s.y >> 5u) + 0xC8013EA4u);
-        s.y += ((s.x << 4u) + 0xAD90777Du)
-             ^ (s.x + sum)
-             ^ ((s.x >> 5u) + 0x7E95761Eu);
-    }
-    return asfloat((s.x & 0x007FFFFFu) | 0x3F800000u) - 1.0;
-}
-
-// Cheap random function for single seed
-float RandomFloatSingle(inout uint s)
-{
-    s = s * 747796405u + 2891336453u;      // LCG step
-    uint x = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-    x = (x >> 22u) ^ x;
-    return asfloat(0x3F800000u | (x >> 9u)) - 1.0;
-}
-
-// Seed data object
-struct RandomData{
-    uint2 seed;
-    uint wSeed;
-};
-
-// idx is pixel coordinate, t is time constant, c is additional constant
-RandomData initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
-    RandomData rdata;
-    rdata.seed = GetSeed(idx, t, c);
-    rdata.wSeed = GetWaveSeed(idx, tileSize, t, c);
-    return rdata;
+uint initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
+    return GetSeed(idx, t, c).x;
 }

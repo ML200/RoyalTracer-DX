@@ -1,128 +1,188 @@
 /*
-The sample data is managed completely by the GPU in a single large buffer. The entries are structured like this (v=variable):v1_1,v1_2,v1_3...v1_n,v2_1,v2_2...v2_n,...
-This extension provides the functions to efficiently load and save data from and to the buffer.
-*/
-// Struct version for in-pass caching
-struct SampleData{
-    float3 x1;
-    float3 n1_s;
-    float3 n1_g;
-    float3 L1;
-    float3 o;
-    uint objID;
-    uint matID;
-};
+    Compact G-buffer: 32 bytes per pixel.
+    Stores minimal identifiers + cached normals/UV to avoid scattered vertex
+    buffer access during per-neighbor MIS evaluation.
 
-// CHANGED: Increased size from 28 to 32 bytes
+    Layout (per pixel):
+        Offset  0: instID (bits 0-15) + emitter flag (bit 31)   [uint32]
+        Offset  4: primID (FlatPrimID)                           [uint32]
+        Offset  8: bary.x                                        [float32]
+        Offset 12: bary.y                                        [float32]
+        Offset 16: etai / etat                                   [half2 -> uint32]
+        Offset 20: n1_g (geometric normal, object space, packed) [uint32]
+        Offset 24: n1_s (shading normal, object space, packed)   [uint32]
+        Offset 28: uv (texture coordinates)                      [half2 -> uint32]
+    Total: 32 bytes.
+
+    n1_s + uv are cached to allow BuildVertexLight (neighbor reconstruction)
+    to skip 12 scattered vertex-buffer loads (normals + UVs) per neighbor.
+
+    Emitter flag (bit 31 of word 0):
+        Set when the primary hit is an emitter or sky/miss.
+        When set, L1 has already been written to gScratchPing[pixel, 1] and [pixel, 2]
+        by the raygen/hit shader.  Temporal/spatial passes check this flag and skip.
+
+    Sky sentinel:
+        instID == 0xFFFF with emitter flag set -> sky/miss (no surface geometry).
+*/
+
 static const uint BYTES_SD = 32u;
 
-static const uint O_PACK1_SD = 0u;     // float4: (x1.xyz, n1_s)
-static const uint O_PACK2_SD = 16u;    // float4: (L1, o, n1_g, IDs)
-
-// helpers
 uint pixelBaseAddr_SD(uint pixelIdx)
 {
     return pixelIdx * BYTES_SD;
 }
-uint  PackID16(uint objID, uint matID) { return (objID & 0xFFFFu) | (matID << 16); }
-void  UnpackID16(uint v, out uint objID, out uint matID)
-{ objID = v & 0xFFFFu;  matID = v >> 16; }
 
-void storeSampleData(RWByteAddressBuffer buf,
-                     uint               pixelIdx,
-                     const SampleData   s)
-{
-    const uint base = pixelBaseAddr_SD(pixelIdx);
-
-    // Pack 1: x1 (float3) + n1_s (packed)
-    buf.Store4(base + O_PACK1_SD,
-               uint4(asuint(s.x1), PackNormal(s.n1_s)));
-
-    // Pack 2: L1 (packed) + o (packed) + n1_g (packed) + IDs (packed)
-    buf.Store4(base + O_PACK2_SD,
-               uint4(PackRGB9E5(s.L1),
-                     PackNormal(s.o),
-                     PackNormal(s.n1_g), // ADDED
-                     PackID16(s.objID, s.matID)));
-}
-
-SampleData loadSampleData(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    SampleData s;
-    const uint base = pixelBaseAddr_SD(pixelIdx);
-
-    // Load Pack 1
-    uint4 p1 = buf.Load4(base + O_PACK1_SD);
-    s.x1 = asfloat(p1.xyz);
-    s.n1_s = UnpackNormal(p1.w);
-
-    // Load Pack 2
-    uint4 p2 = buf.Load4(base + O_PACK2_SD);
-    s.L1 = UnpackRGB9E5(p2.x);
-    s.o  = UnpackNormal (p2.y);
-    s.n1_g = UnpackNormal(p2.z);
-    UnpackID16(p2.w, s.objID, s.matID);
-
-    return s;
-}
-
-// --- simple single loaders ---
-float3 load_x1   (RWByteAddressBuffer b, uint id){return asfloat(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).xyz);}
-float3 load_n1_s (RWByteAddressBuffer b, uint id){return UnpackNormal(b.Load4(pixelBaseAddr_SD(id)+O_PACK1_SD).w);}
-float3 load_L1   (RWByteAddressBuffer b, uint id){return UnpackRGB9E5(b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).x);}
-float3 load_o    (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).y);}
-float3 load_n1_g (RWByteAddressBuffer b, uint id){return UnpackNormal (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).z);}
-uint   load_objID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) & 0xFFFFu;}
-uint   load_matID(RWByteAddressBuffer b, uint id){return (b.Load4(pixelBaseAddr_SD(id)+O_PACK2_SD).w) >> 16;}
-
-// --- fast loaders ---
-// Loads the first 16-byte pack
-inline void load_x1_n1_s_fast(RWByteAddressBuffer buf,
-                             uint                pixelIdx,
-                             out float3          x1,
-                             out float3          n1_s)
-{
-    uint4 p1 = buf.Load4(pixelBaseAddr_SD(pixelIdx) + O_PACK1_SD);   // 16-byte read
-    x1 = asfloat(p1.xyz);
-    n1_s = UnpackNormal(p1.w);
-}
-
-// Loads the second 16-byte pack
-inline void load_L1_o_n1g_IDs_fast(RWByteAddressBuffer buf,
-                                    uint               pixelIdx,
-                                    out float3         L1,
-                                    out float3         o,
-                                    out float3         n1_g,
-                                    out uint           objID,
-                                    out uint           matID)
-{
-    uint4 p2 = buf.Load4(pixelBaseAddr_SD(pixelIdx) + O_PACK2_SD);
-    L1   = UnpackRGB9E5(p2.x);
-    o    = UnpackNormal(p2.y);
-    n1_g = UnpackNormal(p2.z);
-    UnpackID16(p2.w, objID, matID);
-}
-
-
-// OtW / WtO helpers
-
+// -- OtW / WtO helpers --
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
     return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
 }
-
 float3 ObjectToWorldPos(uint id, float3 Po)
 {
     return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
 }
-
 float3 ObjectToWorldNrm(uint id, float3 No)
 {
-    return normalize( mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
+    return normalize(mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
 }
-
 float3 WorldToObjectNrm(uint id, float3 Nw)
 {
-    float3x3 MT = transpose( (float3x3)instanceProps[id].objectToWorld );
-    return normalize( mul( MT, Nw ) );
+    float3x3 MT = transpose((float3x3)instanceProps[id].objectToWorld);
+    return normalize(mul(MT, Nw));
+}
+
+// -- Individual stores --
+
+// Store instID (bits 0-15) + emitter flag (bit 31)
+void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID, bool isEmitter)
+{
+    uint packed = (instID & 0xFFFFu) | (isEmitter ? 0x80000000u : 0u);
+    buf.Store(pixelBaseAddr_SD(pixelIdx), packed);
+}
+
+void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, primID);
+}
+
+void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
+{
+    buf.Store2(pixelBaseAddr_SD(pixelIdx) + 8u, asuint(bary));
+}
+
+void store_etai_etat(RWByteAddressBuffer buf, uint pixelIdx, float etai, float etat)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackFloat2x16(etai, etat));
+}
+
+// Store geometric normal in object space (for fast rejection + visibility)
+void store_n1_g_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1g_world, uint instID)
+{
+    float3 n1g_obj = (instID < 0xFFFEu) ? WorldToObjectNrm(instID, n1g_world) : n1g_world;
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1g_obj));
+}
+
+// Store shading normal in object space (cached for neighbor MIS)
+void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
+{
+    float3 n1s_obj = (instID < 0xFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 24u, PackNormal(n1s_obj));
+}
+
+// Store UV (cached for neighbor MIS)
+void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 28u, PackFloat2x16(uv.x, uv.y));
+}
+
+// Bulk store for sky/miss (zeros everything except instID+emitter flag)
+void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint base = pixelBaseAddr_SD(pixelIdx);
+    buf.Store4(base, uint4(0xFFFFu | 0x80000000u, 0u, 0u, 0u));
+    buf.Store4(base + 16u, uint4(PackFloat2x16(1.0f, 1.0f), 0u, 0u, 0u));
+}
+
+// -- Individual loads --
+
+uint load_instID_raw(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return buf.Load(pixelBaseAddr_SD(pixelIdx));
+}
+
+uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return buf.Load(pixelBaseAddr_SD(pixelIdx)) & 0xFFFFu;
+}
+
+bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx)) & 0x80000000u) != 0u;
+}
+
+uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u);
+}
+
+float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load2(pixelBaseAddr_SD(pixelIdx) + 8u));
+}
+
+float load_etai(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) & 0xFFFFu);
+}
+
+float load_etat(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) >> 16);
+}
+
+// Load geometric normal: stored in object space, returned in world space
+float3 load_n1_g(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint instID = load_instID(buf, pixelIdx);
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
+    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+}
+
+// Load geometric normal given an already-loaded instID (avoids redundant load)
+float3 load_n1_g_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
+{
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
+    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+}
+
+// Load shading normal: stored in object space, returned in world space
+float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint instID = load_instID(buf, pixelIdx);
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
+    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+}
+
+float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
+{
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
+    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+}
+
+// Load UV (half2)
+float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint packed = buf.Load(pixelBaseAddr_SD(pixelIdx) + 28u);
+    float a, b;
+    UnpackFloat2x16(packed, a, b);
+    return float2(a, b);
+}
+
+// Copy sample data for temporal reuse
+void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
+{
+    uint base = pixelBaseAddr_SD(pixelIdx);
+    dst.Store4(base,       src.Load4(base));
+    dst.Store4(base + 16u, src.Load4(base + 16u));
 }

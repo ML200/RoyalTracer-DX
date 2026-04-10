@@ -7,56 +7,50 @@
 #include <fstream>
 #include <sstream>
 #include <string>
-#include <d3d12.h>
-#include "DXSampleHelper.h"
-#include <dxcapi.h>
-
 #include <vector>
 #include <iostream>
+
+#include <d3d12.h>
+#include <dxcapi.h>
+#include <wrl/client.h> // For Microsoft::WRL::ComPtr
+
+#include "DXSampleHelper.h" // Assuming this contains ThrowIfFailed/ThrowIfFailed etc.
+
+using Microsoft::WRL::ComPtr;
 
 namespace nv_helpers_dx12
 {
 
 //--------------------------------------------------------------------------------------------------
-//
-//
-    inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
-                                        D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
-                                        const D3D12_HEAP_PROPERTIES& heapProps)
-    {
-        D3D12_RESOURCE_DESC bufDesc = {};
-        bufDesc.Alignment = 0;
-        bufDesc.DepthOrArraySize = 1;
-        bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bufDesc.Flags = flags;
-        bufDesc.Format = DXGI_FORMAT_UNKNOWN;
-        bufDesc.Height = 1;
-        bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        bufDesc.MipLevels = 1;
-        bufDesc.SampleDesc.Count = 1;
-        bufDesc.SampleDesc.Quality = 0;
-        bufDesc.Width = size;
+// Buffer Creation Helper
+//--------------------------------------------------------------------------------------------------
+inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
+                                    D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
+                                    const D3D12_HEAP_PROPERTIES& heapProps)
+{
+    D3D12_RESOURCE_DESC bufDesc = {};
+    bufDesc.Alignment = 0;
+    bufDesc.DepthOrArraySize = 1;
+    bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bufDesc.Flags = flags;
+    bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+    bufDesc.Height = 1;
+    bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    bufDesc.MipLevels = 1;
+    bufDesc.SampleDesc.Count = 1;
+    bufDesc.SampleDesc.Quality = 0;
+    bufDesc.Width = size;
 
-        // Debug output: Print buffer descriptor values
-        //std::wcout << L"Buffer descriptor width: " << bufDesc.Width << std::endl;
-        //std::wcout << L"Buffer descriptor dimension: " << bufDesc.Dimension << std::endl;
-        //std::wcout << L"Buffer descriptor layout: " << bufDesc.Layout << std::endl;
+    ID3D12Resource* pBuffer = nullptr;
+    HRESULT hr = m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                                    initState, nullptr, IID_PPV_ARGS(&pBuffer));
 
-        ID3D12Resource* pBuffer = nullptr;
-        HRESULT hr = m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
-                                                       initState, nullptr, IID_PPV_ARGS(&pBuffer));
-
-        // Debug output: Check if buffer creation succeeded
-        if (FAILED(hr)) {
-            //std::wcerr << L"Failed to create committed resource, HRESULT: " << std::hex << hr << std::endl;
-            HRESULT deviceRemovedReason = m_device->GetDeviceRemovedReason();
-            //std::wcerr << L"Device removed reason HRESULT: " << std::hex << deviceRemovedReason << std::endl;
-            return nullptr;
-        }
-
-        //std::wcout << L"Buffer created successfully!" << std::endl;
-        return pBuffer;
+    if (FAILED(hr)) {
+        return nullptr;
     }
+
+    return pBuffer;
+}
 
 
 #ifndef ROUND_UP
@@ -73,85 +67,124 @@ static const D3D12_HEAP_PROPERTIES kUploadHeapProps = {
 static const D3D12_HEAP_PROPERTIES kDefaultHeapProps = {
     D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
 
+static const CD3DX12_HEAP_PROPERTIES kReadbackHeapProps(D3D12_HEAP_TYPE_READBACK);
+
 //--------------------------------------------------------------------------------------------------
-// Compile a HLSL file into a DXIL library
-//
-IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
+// Internal Helper: Compile using IDxcCompiler3 (Modern Interface)
+// This is required for SM 6.x signing and validation to work correctly.
+//--------------------------------------------------------------------------------------------------
+inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR targetProfile)
 {
-  static IDxcCompiler* pCompiler = nullptr;
-  static IDxcLibrary* pLibrary = nullptr;
-  static IDxcIncludeHandler* dxcIncludeHandler;
+    // 1. Initialize DXC Compiler and Utils
+    static IDxcCompiler3* pCompiler3 = nullptr;
+    static IDxcUtils* pUtils = nullptr;
+    static IDxcIncludeHandler* pIncludeHandler = nullptr;
 
-  HRESULT hr;
-
-  // Initialize the DXC compiler and compiler helper
-  if (!pCompiler)
-  {
-    ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler, __uuidof(IDxcCompiler), (void **)&pCompiler));
-    ThrowIfFailed(DxcCreateInstance(CLSID_DxcLibrary, __uuidof(IDxcLibrary), (void **)&pLibrary));
-    ThrowIfFailed(pLibrary->CreateIncludeHandler(&dxcIncludeHandler));
-  }
-  // Open and read the file
-  std::ifstream shaderFile(fileName);
-  if (shaderFile.good() == false)
-  {
-    throw std::logic_error("Cannot find shader file");
-  }
-  std::stringstream strStream;
-  strStream << shaderFile.rdbuf();
-  std::string sShader = strStream.str();
-
-  // Create blob from the string
-  IDxcBlobEncoding* pTextBlob;
-  ThrowIfFailed(pLibrary->CreateBlobWithEncodingFromPinned(
-      (LPBYTE)sShader.c_str(), (uint32_t)sShader.size(), 0, &pTextBlob));
-
-  const wchar_t* arguments[] = {
-    L"-Zi",
-    L"-O3",
-    L"-enable-16bit-types",
-    L"-D",  L"MAX_REGS=96",
-    L"-HV", L"2021"
-  };
-
-  // Compile
-  IDxcOperationResult* pResult;
-  ThrowIfFailed(pCompiler->Compile(pTextBlob, fileName, L"", L"lib_6_8", arguments, _countof(arguments), nullptr, 0,
-                                   dxcIncludeHandler, &pResult));
-
-  // Verify the result
-  HRESULT resultCode;
-  ThrowIfFailed(pResult->GetStatus(&resultCode));
-  if (FAILED(resultCode))
-  {
-    IDxcBlobEncoding* pError;
-    hr = pResult->GetErrorBuffer(&pError);
-    if (FAILED(hr))
+    if (!pCompiler3)
     {
-      throw std::logic_error("Failed to get shader compiler error");
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&pCompiler3)));
+        ThrowIfFailed(DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(&pUtils)));
+        ThrowIfFailed(pUtils->CreateDefaultIncludeHandler(&pIncludeHandler));
     }
 
-    // Convert error blob to a string
-    std::vector<char> infoLog(pError->GetBufferSize() + 1);
-    memcpy(infoLog.data(), pError->GetBufferPointer(), pError->GetBufferSize());
-    infoLog[pError->GetBufferSize()] = 0;
+    // 2. Load the Shader Source File
+    ComPtr<IDxcBlobEncoding> pSourceBlob;
+    HRESULT hr = pUtils->LoadFile(fileName, nullptr, &pSourceBlob);
+    if (FAILED(hr))
+    {
+        std::wstring wFileName(fileName);
+        std::string sFileName(wFileName.begin(), wFileName.end());
+        throw std::runtime_error("Failed to load shader file: " + sFileName);
+    }
 
-    std::string errorMsg = "Shader Compiler Error:\n";
-    errorMsg.append(infoLog.data());
+    DxcBuffer sourceBuffer;
+    sourceBuffer.Ptr = pSourceBlob->GetBufferPointer();
+    sourceBuffer.Size = pSourceBlob->GetBufferSize();
+    sourceBuffer.Encoding = DXC_CP_ACP;
 
-    MessageBoxA(nullptr, errorMsg.c_str(), "Error!", MB_OK);
-    throw std::logic_error("Failed compile shader");
-  }
+    // 3. Configure Arguments
+    std::vector<LPCWSTR> args;
 
-  IDxcBlob* pBlob;
-  ThrowIfFailed(pResult->GetResult(&pBlob));
-  return pBlob;
+    // File and Entry Point
+    args.push_back(fileName);
+    args.push_back(L"-E");
+    args.push_back(entryPoint);
+    args.push_back(L"-T");
+    args.push_back(targetProfile);
+
+    // Debug and Optimization flags
+    args.push_back(L"-Zi");               // Generate debug info
+    args.push_back(L"-Qembed_debug");     // Embed debug info (keeps blob valid if PDB is missing)
+    args.push_back(L"-O3");               // Optimization
+    args.push_back(L"-enable-16bit-types");
+
+    // Shader Model specific defines
+    args.push_back(L"-D"); args.push_back(L"MAX_REGS=96");
+    args.push_back(L"-HV"); args.push_back(L"2021");
+
+    // 4. Compile
+    ComPtr<IDxcResult> pResult;
+    hr = pCompiler3->Compile(
+        &sourceBuffer,
+        args.data(), (uint32_t)args.size(),
+        pIncludeHandler,
+        IID_PPV_ARGS(&pResult)
+    );
+
+    // 5. Check Status
+    if (SUCCEEDED(hr))
+    {
+        pResult->GetStatus(&hr);
+    }
+
+    if (FAILED(hr))
+    {
+        ComPtr<IDxcBlobUtf8> pErrors;
+        pResult->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
+        if (pErrors && pErrors->GetStringLength() > 0)
+        {
+            OutputDebugStringA((char*)pErrors->GetStringPointer());
+            std::string errMsg = "Shader Compiler Error:\n";
+            errMsg += (char*)pErrors->GetStringPointer();
+            MessageBoxA(nullptr, errMsg.c_str(), "Shader Compilation Failed", MB_OK | MB_ICONERROR);
+        }
+        throw std::logic_error("Shader compilation failed.");
+    }
+
+    // 6. Retrieve the Compiled Shader Object
+    // Using IDxcCompiler3 ensures the blob is properly signed by dxil.dll
+    IDxcBlob* pBlob = nullptr;
+    ThrowIfFailed(pResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pBlob), nullptr));
+
+    return pBlob;
 }
 
 //--------------------------------------------------------------------------------------------------
-//
-//
-ID3D12DescriptorHeap* CreateDescriptorHeap(ID3D12Device* device, uint32_t count,
+// Wrappers to maintain compatibility with your existing Renderer code
+//--------------------------------------------------------------------------------------------------
+
+// Compile a HLSL file into a DXIL library (e.g. for Ray Tracing)
+inline IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
+{
+    return CompileShaderNew(fileName, L"", L"lib_6_9");
+}
+
+// Compile a HLSL file as a Compute Shader
+inline Microsoft::WRL::ComPtr<IDxcBlob> CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    return CompileShaderNew(fileName, entryPoint, L"cs_6_9");
+}
+
+// Compile a HLSL file as a Work Graph library
+inline Microsoft::WRL::ComPtr<IDxcBlob> CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    return CompileShaderNew(fileName, entryPoint, L"lib_6_9");
+}
+
+//--------------------------------------------------------------------------------------------------
+// Descriptor Heap Helper
+//--------------------------------------------------------------------------------------------------
+inline ID3D12DescriptorHeap* CreateDescriptorHeap(ID3D12Device* device, uint32_t count,
                                            D3D12_DESCRIPTOR_HEAP_TYPE type, bool shaderVisible)
 {
   D3D12_DESCRIPTOR_HEAP_DESC desc = {};
@@ -166,26 +199,26 @@ ID3D12DescriptorHeap* CreateDescriptorHeap(ID3D12Device* device, uint32_t count,
 }
 
 //--------------------------------------------------------------------------------------------------
-//
-//
+// Menger Sponge Helper
+//--------------------------------------------------------------------------------------------------
 template <class Vertex>
 void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>& outputVertices,
                           std::vector<UINT>& outputIndices)
 {
   struct Cube
   {
-    Cube(const XMVECTOR& tlf, float s) : m_topLeftFront(tlf), m_size(s)
+    Cube(const DirectX::XMVECTOR& tlf, float s) : m_topLeftFront(tlf), m_size(s)
     {
     }
-    XMVECTOR m_topLeftFront;
+    DirectX::XMVECTOR m_topLeftFront;
     float m_size;
 
     void enqueueQuad(std::vector<Vertex>& vertices, std::vector<UINT>& indices,
-                     const XMVECTOR& bottomLeft4, const XMVECTOR& dx, const XMVECTOR& dy, bool flip)
+                     const DirectX::XMVECTOR& bottomLeft4, const DirectX::XMVECTOR& dx, const DirectX::XMVECTOR& dy, bool flip)
     {
       UINT currentIndex = static_cast<UINT>(vertices.size());
-      XMFLOAT3 bottomLeft(bottomLeft4.m128_f32);
-      XMVECTOR normal = XMVector3Cross(XMVector3Normalize(dy), XMVector3Normalize(dx));
+      DirectX::XMFLOAT3 bottomLeft(bottomLeft4.m128_f32);
+      DirectX::XMVECTOR normal = DirectX::XMVector3Cross(DirectX::XMVector3Normalize(dy), DirectX::XMVector3Normalize(dx));
       if (flip)
       {
         normal = -normal;
@@ -231,7 +264,7 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
     void enqueueVertices(std::vector<Vertex>& vertices, std::vector<UINT>& indices)
     {
 
-      XMVECTOR current = m_topLeftFront;
+      DirectX::XMVECTOR current = m_topLeftFront;
       enqueueQuad(vertices, indices, current, {m_size, 0, 0}, {0, m_size, 0}, false);
       enqueueQuad(vertices, indices, current, {m_size, 0, 0}, {0, 0, m_size}, true);
       enqueueQuad(vertices, indices, current, {0, m_size, 0}, {0, 0, m_size}, false);
@@ -246,7 +279,7 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
     void split(std::vector<Cube>& cubes)
     {
       float size = m_size / 3.f;
-      XMVECTOR topLeftFront = m_topLeftFront;
+      DirectX::XMVECTOR topLeftFront = m_topLeftFront;
       for (int x = 0; x < 3; x++)
       {
         topLeftFront.m128_f32[0] = m_topLeftFront.m128_f32[0] + static_cast<float>(x) * size;
@@ -273,7 +306,7 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
     {
 
       float size = m_size / 3.f;
-      XMVECTOR topLeftFront = m_topLeftFront;
+      DirectX::XMVECTOR topLeftFront = m_topLeftFront;
       for (int x = 0; x < 3; x++)
       {
         topLeftFront.m128_f32[0] = m_topLeftFront.m128_f32[0] + static_cast<float>(x) * size;
@@ -293,7 +326,7 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
     }
   };
 
-  XMVECTOR orig;
+  DirectX::XMVECTOR orig;
   orig.m128_f32[0] = -0.5f;
   orig.m128_f32[1] = -0.5f;
   orig.m128_f32[2] = -0.5f;
@@ -330,136 +363,4 @@ void GenerateMengerSponge(int32_t level, float probability, std::vector<Vertex>&
   }
 }
 
-// Compile a HLSL file as a *compute* shader  (profile: cs_6_6)
-inline Microsoft::WRL::ComPtr<IDxcBlob>
-CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
-{
-    static IDxcCompiler*        s_compiler        = nullptr;
-    static IDxcLibrary*         s_library         = nullptr;
-    static IDxcIncludeHandler*  s_includeHandler  = nullptr;
-
-    if (!s_compiler)                                // one-time DXC init
-    {
-        ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler,
-                         IID_PPV_ARGS(&s_compiler)));
-        ThrowIfFailed(DxcCreateInstance(CLSID_DxcLibrary,
-                         IID_PPV_ARGS(&s_library)));
-        ThrowIfFailed(s_library->CreateIncludeHandler(&s_includeHandler));
-    }
-
-    std::ifstream shaderFile(fileName);
-    if (!shaderFile.good())
-        throw std::logic_error("Cannot find shader file");
-
-    std::stringstream ss;  ss << shaderFile.rdbuf();
-    std::string        src = ss.str();
-
-    Microsoft::WRL::ComPtr<IDxcBlobEncoding> textBlob;
-    ThrowIfFailed(s_library->CreateBlobWithEncodingFromPinned(
-            (LPBYTE)src.data(), (uint32_t)src.size(), 0, &textBlob));
-
-    const wchar_t* args[] =
-    {
-        L"-Zi",                    // debug info
-        L"-O3",                    // full optimisation
-        L"-enable-16bit-types",
-        L"-HV", L"2021"
-    };
-
-    Microsoft::WRL::ComPtr<IDxcOperationResult> result;
-    ThrowIfFailed(s_compiler->Compile(
-        textBlob.Get(), fileName,
-        entryPoint,
-        L"cs_6_6",
-        args, _countof(args),
-        nullptr, 0,
-        s_includeHandler,
-        &result));
-
-    HRESULT hrStatus = S_OK;
-    ThrowIfFailed(result->GetStatus(&hrStatus));
-    if (FAILED(hrStatus))
-    {
-        Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
-        result->GetErrorBuffer(&errors);
-        std::vector<char> log(errors->GetBufferSize() + 1);
-        memcpy(log.data(), errors->GetBufferPointer(), errors->GetBufferSize());
-        log.back() = 0;
-        OutputDebugStringA(log.data());
-        throw std::logic_error("DXC compute-shader compilation failed.");
-    }
-
-    Microsoft::WRL::ComPtr<IDxcBlob> blob;
-    ThrowIfFailed(result->GetResult(&blob));
-    return blob;
-}
-
-// Compile a HLSL file as a *Work Graph* library (profile: lib_6_8)
-inline Microsoft::WRL::ComPtr<IDxcBlob>
-CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
-{
-    static IDxcCompiler*        s_compiler        = nullptr;
-    static IDxcLibrary*         s_library         = nullptr;
-    static IDxcIncludeHandler*  s_includeHandler  = nullptr;
-
-    if (!s_compiler)                                // one-time DXC init
-    {
-        ThrowIfFailed(DxcCreateInstance(CLSID_DxcCompiler,
-                         IID_PPV_ARGS(&s_compiler)));
-        ThrowIfFailed(DxcCreateInstance(CLSID_DxcLibrary,
-                         IID_PPV_ARGS(&s_library)));
-        ThrowIfFailed(s_library->CreateIncludeHandler(&s_includeHandler));
-    }
-
-    // 1) Load the HLSL file
-    std::ifstream shaderFile(fileName);
-    if (!shaderFile.good())
-        throw std::logic_error("Cannot find shader file");
-
-    std::stringstream ss;  ss << shaderFile.rdbuf();
-    std::string        src = ss.str();
-
-    Microsoft::WRL::ComPtr<IDxcBlobEncoding> textBlob;
-    ThrowIfFailed(s_library->CreateBlobWithEncodingFromPinned(
-            (LPBYTE)src.data(), (uint32_t)src.size(), 0, &textBlob));
-
-    // 2) Set DXC compile arguments for Work Graph (lib_6_8)
-    const wchar_t* args[] =
-    {
-        L"-Zi",                    // debug info
-        L"-O3",                    // optimization
-        L"-enable-16bit-types",
-        L"-HV", L"2021",
-        L"-D", L"MAX_REGS=96",
-    };
-
-    Microsoft::WRL::ComPtr<IDxcOperationResult> result;
-    ThrowIfFailed(s_compiler->Compile(
-        textBlob.Get(), fileName,
-        entryPoint,
-        L"lib_6_8",
-        args, _countof(args),
-        nullptr, 0,
-        s_includeHandler,
-        &result));
-
-    HRESULT hrStatus = S_OK;
-    ThrowIfFailed(result->GetStatus(&hrStatus));
-    if (FAILED(hrStatus))
-    {
-        Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
-        result->GetErrorBuffer(&errors);
-        std::vector<char> log(errors->GetBufferSize() + 1);
-        memcpy(log.data(), errors->GetBufferPointer(), errors->GetBufferSize());
-        log.back() = 0;
-        OutputDebugStringA(log.data());
-        throw std::logic_error("DXC work graph library compilation failed.");
-    }
-
-    Microsoft::WRL::ComPtr<IDxcBlob> blob;
-    ThrowIfFailed(result->GetResult(&blob));
-    return blob;
-}
-
 } // namespace nv_helpers_dx12
-

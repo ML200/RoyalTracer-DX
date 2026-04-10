@@ -74,8 +74,8 @@ namespace lt
 #pragma pack(push, 1)
     struct LightTLASNodeGpu {
         XMFLOAT3 bmin; float power;
-        XMFLOAT3 bmax; float theta_o;
-        XMFLOAT3 axis; float theta_e;
+        XMFLOAT3 bmax; float cosTheta_o;
+        XMFLOAT3 axis; float cosTheta_e;
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -91,8 +91,8 @@ namespace lt
 
     struct LightBLASNodeGpu {
         XMFLOAT3 bmin; float power;
-        XMFLOAT3 bmax; float theta_o;
-        XMFLOAT3 axis; float theta_e;
+        XMFLOAT3 bmax; float cosTheta_o;
+        XMFLOAT3 axis; float cosTheta_e;
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -108,6 +108,7 @@ namespace lt
         uint32_t nodeCount;
         uint32_t triIndexOffset;
         uint32_t triIndexCount;
+        XMFLOAT4X4 worldToLocal;
     };
 #pragma pack(pop)
 
@@ -309,6 +310,11 @@ public:
         std::vector<ComPtr<ID3D12Resource>> staging;
     };
 
+    // CPU-side copy of BLASRanges for dynamic worldToLocal updates
+    std::vector<BlasRangeGpu> m_cpuBlasRanges;
+
+    const std::vector<BlasRangeGpu>& GetCpuBLASRanges() const { return m_cpuBlasRanges; }
+
     // -------------------------- API -----------------------------------
 
     void Build(const std::vector<::LightTriangle>& tris, const Settings& cfg = {}) {
@@ -358,6 +364,16 @@ public:
             r.triIndexOffset= static_cast<uint32_t>(gpuLeafTriIndex.size());
             r.triIndexCount = static_cast<uint32_t>(b.leafTriList.size());
 
+            // Compute worldToLocal from the instance that owns this BLAS
+            XMStoreFloat4x4(&r.worldToLocal, XMMatrixIdentity());
+            if (!b.triIndices.empty() && m_tris) {
+                UINT instID = (*m_tris)[b.triIndices[0]].instanceID;
+                const XMFLOAT4X4& W = worldXformFor(instID);
+                XMVECTOR det;
+                XMMATRIX Winv = XMMatrixInverse(&det, XMLoadFloat4x4(&W));
+                XMStoreFloat4x4(&r.worldToLocal, Winv);
+            }
+
             for (const auto& n : b.nodes)
                 gpuBlasNodes.push_back(toGpu(n));
 
@@ -393,6 +409,9 @@ public:
                 triToLeafOff[tri] = j;
             }
         }
+
+        // Keep CPU copy of BLASRanges for dynamic worldToLocal updates
+        m_cpuBlasRanges = gpuRanges;
 
         // Upload everything (alias buffers removed)
         m_gpu = {};
@@ -524,6 +543,10 @@ public:
 
 
     void ReleaseStaging(){ LT_TIME_SCOPE(L"ReleaseStaging()"); LT_LOG(L"ReleaseStaging: " << m_gpu.staging.size() << L" upload buffers freed"); m_gpu.staging.clear(); }
+
+    ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
+    ID3D12Resource* GetBLASToItemGpuBuffer() const { return m_gpu.BLASToItem.Get(); }
+    uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * sizeof(LightTLASNodeGpu)); }
 
     const GpuBuffers& GetGpu() const { return m_gpu; }
 
@@ -959,7 +982,9 @@ private:
         AggT parent{}; for (uint32_t i=begin;i<end;++i) aggTAdd(parent, it[i]);
 
         N0.bmin = parent.a.mn; N0.bmax = parent.a.mx; N0.power = parent.E;
-        N0.axis = parent.cone.axis; N0.theta_o = parent.cone.theta_o; N0.theta_e = parent.cone.theta_e;
+        N0.axis = parent.cone.axis;
+        N0.cosTheta_o = std::cos(clampf(parent.cone.theta_o, 0.f, LT_PI));
+        N0.cosTheta_e = std::cos(clampf(parent.cone.theta_e, 0.f, LT_PI));
         N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
         N0.itemFirst = begin; N0.itemCount = end - begin;
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
@@ -1127,7 +1152,9 @@ private:
     {
         LightBLASNodeGpu g{};
         g.bmin = n.aabb.mn; g.bmax = n.aabb.mx; g.power = n.power;
-        g.axis = n.cone.axis; g.theta_o = n.cone.theta_o; g.theta_e = n.cone.theta_e;
+        g.axis = n.cone.axis;
+        g.cosTheta_o = std::cos(clampf(n.cone.theta_o, 0.f, LT_PI));
+        g.cosTheta_e = std::cos(clampf(n.cone.theta_e, 0.f, LT_PI));
 
         g.firstChild = n.firstChild;
         g.childCount = n.childCount;

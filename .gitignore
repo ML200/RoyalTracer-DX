@@ -32,13 +32,27 @@
 /Pathtracer/cmake-build-release-visual-studio
 /Pathtracer/out
 /Pathtracer/.vs
-/Pathtracer/car
-/Pathtracer/candles
 *.idea
 
 sponza_big.mtl
 sponza_big.obj
 
-/Pathtracer/shaders/.claude
+car.obj
+
 testScene_2.obj
+
+bistro.obj
+bistro2.obj
+
+candles.obj
+
 combined02.obj
+
+salle_de_bain.obj
+trulla.obj
+
+/Pathtracer/Include/sponza_tex
+/Pathtracer/Include/bistro_tex
+
+*.glb
+/Pathtracer/shaders/.claude

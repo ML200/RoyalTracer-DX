@@ -1,0 +1,288 @@
+# Blender 4.3.2 MTL File: 'Auto Workshop.blend'
+# www.blender.org
+
+newmtl dec_damage_wall
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd dec_damage_wall_Color.png
+map_d dec_damage_wall_Mask.png
+map_Bump -bm 1.000000 dec_damage_wall_Normal.png
+
+newmtl dec_garage_sewage
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd dec_garage_sewage_BaseColor.png
+map_Pm dec_garage_sewage_Metallic.png
+map_Pr dec_garage_sewage_Roughness.png
+map_d dec_garage_sewage_alphamask.psd
+map_Bump -bm 1.000000 dec_garage_sewage_Normal.png
+
+newmtl mat_concrete_wall
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd Material_Base_color.png
+map_Pr Material_Roughness.png
+map_Bump -bm 1.000000 Material_Normal_OpenGL.png
+
+newmtl mat_concrete_wall.001
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd Garage_wall textures_mat_concrete_wall.001_BaseColor.png
+map_Pr Garage_wall textures_mat_concrete_wall.001_Roughness.png
+map_Bump -bm 1.000000 Garage_wall textures_mat_concrete_wall.001_Normal.png
+
+newmtl mat_garage_cable
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.638889
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_d mat_garage_cable_alphamask.psd
+map_Bump -bm 1.000000 mat_garage_cable_Normal_OpenGL.png
+
+newmtl mat_garage_canister
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_canister_Base_color.png
+map_Pr mat_garage_canister_Roughness.png
+map_Bump -bm 1.000000 mat_garage_canister_Normal_OpenGL.png
+
+newmtl mat_garage_car_jack
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_car_jack_Base_color.png
+map_Pm mat_garage_car_jack_Metallic.png
+map_Pr mat_garage_car_jack_Roughness.png
+map_Bump -bm 1.000000 mat_garage_car_jack_Normal_OpenGL.png
+
+newmtl mat_garage_concrete_slabs
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_concrete_slabs_Base_color.png
+map_Pr mat_garage_concrete_slabs_Roughness.png
+map_Bump -bm 1.000000 mat_garage_concrete_slabs_Normal_OpenGL.png
+
+newmtl mat_garage_floor
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 2
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_floor_diffuseOriginal.bmp
+map_Bump -bm 1.000000 mat_garage_floor_normal.bmp
+
+newmtl mat_garage_lamp
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 25.000000 25.839330 18.388095
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl mat_garage_metal
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_metal_BaseColor.png
+map_Pr mat_garage_metal_Roughness.png
+map_Bump -bm 1.000000 mat_garage_metal_Normal.png
+
+newmtl mat_garage_poster
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.536232
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_poster_color.png
+
+newmtl mat_garage_tool_stand
+Kd 0.075106 0.770886 0.800553
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_tool_stand_Base_color.png
+map_Pm mat_tool_stand_Metallic.png
+map_Pr mat_tool_stand_Roughness.png
+map_Bump -bm 1.000000 mat_tool_stand_Normal_OpenGL.png
+
+newmtl mat_garage_tool_table
+Kd 0.800000 0.800000 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Pm mat_garage_tool_table_Metallic.png
+map_Pr mat_garage_tool_table_Roughness.png
+map_Bump -bm 1.000000 mat_garage_tool_table_Normal_OpenGL.png
+
+newmtl mat_garage_wheel
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_wheel_BaseColor.png
+map_Pm mat_garage_wheel_Metallic.png
+map_Pr mat_garage_wheel_Roughness.png
+map_Bump -bm 1.000000 mat_garage_wheel_Normal.png
+
+newmtl mat_garage_wood
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.450000
+d 1.000000
+illum 3
+Pr 0.814815
+Pm 0.500000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd mat_garage_wood_diffuse.jpg
+map_Bump -bm 1.000000 mat_garage_wood_normal.jpg
+
+newmtl trim_garage_metal_grey
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd trim_garage_metal_blue_BaseColor.png
+map_Pm trim_garage_metal_Metallic.png
+map_Pr trim_garage_metal_Roughness.png
+map_Bump -bm 1.000000 trim_garage_metal_Normal.png
+
+newmtl trim_garage_metal_red
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd trim_garage_metal_BaseColor.png
+map_Pm trim_garage_metal_Metallic.png
+map_Pr trim_garage_metal_Roughness.png

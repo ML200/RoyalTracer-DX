@@ -38,6 +38,8 @@ enum class DirectSROptimizationType : uint32_t
     eMaxPerformance,
     ePowerSaving,
     eMaxPowerSaving,
+
+    eCount
 };
 
 enum class DirectSRVariantFlags : uint32_t
@@ -49,6 +51,8 @@ enum class DirectSRVariantFlags : uint32_t
     eSupportsReactiveMask = 0x8,
     eSupportsSharpness = 0x10,
     eDisallowsRegionOffsets = 0x20,
+
+    eAll = eSupportsExposureScaleTexture | eSupportsIgnoreHistoryMask | eNative | eSupportsReactiveMask | eSupportsSharpness | eDisallowsRegionOffsets
 };
 
 // {1AD87504-774E-4BF3-9633-A44D1F7F9CB8}

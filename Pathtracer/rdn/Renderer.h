@@ -1,477 +1,215 @@
-//*********************************************************
-//
-// Copyright (c) Microsoft. All rights reserved.
-// This code is licensed under the MIT License (MIT).
-// THIS CODE IS PROVIDED *AS IS* WITHOUT WARRANTY OF
-// ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING ANY
-// IMPLIED WARRANTIES OF FITNESS FOR A PARTICULAR
-// PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
-//
-//*********************************************************
-
 #pragma once
+// ═══════════════════════════════════════════════════════════════════
+// Renderer.h — Low-level DXR rendering module. Owned by EngineApp.
+// ═══════════════════════════════════════════════════════════════════
 
+#include "Common.h"
 #include "DXSample.h"
 
-#include <dxcapi.h>
-#include <vector>
-#include <d3d12video.h>
-#include <DirectXPackedVector.h>
+#include "Core/DeviceContext.h"
+#include "Core/ResourceFactory.h"
+#include "Scene/Scene.h"
+#include "Scene/AssetLoader.h"
+#include "Camera/Camera.h"
+#include "Raytracing/PassSystem.h"
+#include "PostProcess/DLSSManager.h"
+#include <sl_reflex.h>
+#include "Editor/Editor.h"
+#include "../engine/Camera/FlyCamController.h"
+#include "LightTree.h"
+#include "Lighting/LightTreeRefit.h"
+#include "CameraRecorder.h"
+#include "CameraPathSimulator.h"
 
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
-#include "../src/Components/Vertex.h"
 
-#include <sl.h>            // core SL types: sl::Result, sl::FeatureHandle, etc.
-#include <sl_consts.h>     // the sl::kFeature… enum values
-#include <sl_helpers.h>
-#include <sl_dlss.h>       // DLSS Super Resolution API
+// CPU-side sizing stubs matching shader-side SoA layout sizes
+struct Reservoir_DI  { uint8_t pad[100]; };
+struct Reservoir_GI  { uint8_t pad[100]; };
+struct SampleData    { uint8_t pad[100]; };
+struct InitialBSDFRay{ uint8_t pad[100]; };
 
-#include "LightTree.h"
-#include "sl_dlss_d.h"
-
-#include <unordered_map>
-#include <iostream>
-
-// Toggle logs at compile time (define LT_ENABLE_LOGS=0 to silence)
-#ifndef LT_ENABLE_LOGS
-#define LT_ENABLE_LOGS 1
-#endif
-
-// Extra-verbose per-leaf/per-node logs (off by default)
-#ifndef LT_LOG_BUILD_SPAM
-#define LT_LOG_BUILD_SPAM 0
-#endif
-
-#if LT_ENABLE_LOGS
-  #define LT_LOG(expr)  do { std::wcout << L"[LightTree] "      << expr << std::endl; } while(0)
-  #define LT_WARN(expr) do { std::wcout << L"[LightTree][WARN] " << expr << std::endl; } while(0)
-#else
-  #define LT_LOG(expr)  do {} while(0)
-  #define LT_WARN(expr) do {} while(0)
-#endif
-
-
-
-#include "../lib/imgui/imgui.h"
-#include "../lib/imgui/imgui_impl_dx12.h"
-#include "../lib/imgui/imgui_impl_win32.h"
-
-using namespace DirectX;
-
-// Note that while ComPtr is used to manage the lifetime of resources on the
-// CPU, it has no understanding of the lifetime of resources on the GPU. Apps
-// must account for the GPU lifetime of resources to avoid destroying objects
-// that may still be referenced by the GPU. An example of this can be found in
-// the class method: OnDestroy().
-using Microsoft::WRL::ComPtr;
-
-class Renderer : public DXSample {
+class Renderer {
 public:
-    void BuildGlobalMeshBuffers();
+    Renderer(UINT width, UINT height);
 
-    void CreateTriToLightIdBuffer();
+    // ── Public API (called by EngineApp) ────────────────────────
+    void InitDevice();
+    void LoadScene(const std::vector<ModelEntry>& models);
+    void InitSceneGPU();
+    void UpdateRenderer(float dt);
+    void RenderFrame();
+    void DestroyRenderer();
+    void OnResize(UINT newWidth, UINT newHeight);
 
-  Renderer(UINT width, UINT height, std::wstring name);
+    Scene&         GetScene()       { return m_scene; }
+    Camera&        GetCamera()      { return m_camera; }
+    DeviceContext& GetContext()      { return m_ctx; }
+    void           SetFlyCam(FlyCamController* fc) { m_flyCam = fc; }
+    UINT           GetWidth() const { return m_width; }
+    UINT           GetHeight() const{ return m_height; }
+    float          GetAspectRatio() const { return m_aspectRatio; }
 
-  void DLSSRR_Init();
+    // Create a new procedural mesh with its own BLAS. Call between LoadScene/InitSceneGPU.
+    UINT CreateProceduralMesh(const std::vector<Vertex>& vertices,
+                              const std::vector<UINT>& indices,
+                              const Material& material);
 
-  virtual void OnInit();
-  virtual void OnUpdate();
-  virtual void OnRender();
-  virtual void OnDestroy();
+    // Create a mesh entry that shares geometry (BLAS/VB/IB) with an existing mesh
+    // but has its own material. Much cheaper than CreateProceduralMesh.
+    UINT CreateMeshInstance(UINT sourceMeshIndex, const Material& material);
+    void HandleSceneStructuralChange();
+
+    bool WantsKeyboard() const;
+    bool WantsMouse() const;
+    void HandleKeyUp(UINT8 key);
 
 private:
-    // ── utilities ───────────────────────────────────────────────────────────────
-    enum class Stage { RayGen, Compute, Barrier };
+    UINT  m_width;
+    UINT  m_height;
+    float m_aspectRatio;
 
-    struct PassDesc
-    {
-        std::wstring  file;               // *.hlsl
-        Stage         stage   = Stage::RayGen;
-        uint32_t      groupX  = 0, groupY = 0;   // CS
-        uint32_t      psoIdx  = UINT32_MAX;      // CS
-        bool          isWorkGraph = false;
-        uint32_t      wgIdx  = UINT32_MAX;       // index into state-object array
-    };
-
-
-
-    PassDesc ParsePass(const std::wstring& token)
-    {
-        PassDesc p{};
-
-        // explicit barrier
-        if (token == L"barrier")
-        {
-            p.stage = Stage::Barrier;
-            return p;
-        }
-
-        // split “file|suffix”
-        const size_t bar = token.find(L'|');
-        p.file = token.substr(0, bar);              // part before ‘|’
-
-        // no ‘|’  → plain ray-gen
-        if (bar == std::wstring::npos)
-            return p;
-
-        const std::wstring tail = token.substr(bar + 1);
-
-        // explicit ray-gen tag
-        if (tail == L"rg" || tail == L"raygen")
-            return p;                               // still Stage::RayGen
-
-        // work graph pass “wg:WxH”
-        if (tail.rfind(L"wg:",0)==0)
-        {
-            p.stage        = Stage::Compute;        // will be scheduled like CS
-            p.isWorkGraph  = true;
-            swscanf_s(tail.c_str()+3, L"%ux%u", &p.groupX,&p.groupY);
-            return p;
-        }
-
-        // compute shader tag  “cs:WxH”
-        if (tail.rfind(L"cs:", 0) == 0)
-        {
-            p.stage = Stage::Compute;
-            if (swscanf_s(tail.c_str() + 3, L"%ux%u", &p.groupX, &p.groupY) != 2 ||
-                p.groupX == 0 || p.groupY == 0)
-                throw std::runtime_error("Invalid group size in pass string");
-            return p;
-        }
-
-        throw std::runtime_error("Unknown stage spec in pass string");
-    }
-    std::vector<std::wstring>                    m_passSequence;
-    std::unordered_map<std::wstring, uint32_t>   m_passIndex;
-    std::vector<Microsoft::WRL::ComPtr<IDxcBlob>> m_rayGenLibs;
-
-    //  Global arrays used by EvalSurface() in the inline‑ray‑query path
-    struct BTriVertex          // same layout as in HLSL
-    {
-        XMFLOAT3 vertex;
-        XMFLOAT4 normal;
-        XMFLOAT2 texCoord;
-    };
-
-    ComPtr<ID3D12Resource> m_vertexGlobal;
-    ComPtr<ID3D12Resource> m_indexGlobal;
-    UINT                   m_totalVertexCount = 0;
-    UINT                   m_totalIndexCount  = 0;
-
-
-  static const UINT FrameCount = 2;
-
-    // Streamline frame and viewport tracking
-    sl::FrameToken*     m_frameToken     = nullptr;
-    sl::ViewportHandle  m_viewportHandle = sl::ViewportHandle(0);
-    sl::DLSSDOptions     m_dlssdOptions   {};
-    sl::Constants        m_slConstants    {};
-
-    std::vector<PassDesc> m_passes;
-    std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
-    std::vector<ComPtr<ID3D12PipelineState>> m_wgPSOs;
-
-    struct WgRuntimeData
-    {
-        D3D12_PROGRAM_IDENTIFIER        id;
-        D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing;
-        ComPtr<ID3D12Resource>          backingRes;
-    };
-    std::vector<WgRuntimeData> m_wgRuntime;
-
-
-  // Pipeline objects.
-  CD3DX12_VIEWPORT m_viewport;
-  CD3DX12_RECT m_scissorRect;
-  ComPtr<IDXGISwapChain3> m_swapChain;
-  ComPtr<ID3D12Device10> m_device;
-  ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
-    ComPtr<ID3D12CommandAllocator> m_commandAllocators[FrameCount];
-  ComPtr<ID3D12CommandQueue> m_commandQueue;
-  ComPtr<ID3D12RootSignature> m_rootSignature;
-    ComPtr<ID3D12RootSignature>   m_computeSignature;
-  ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-  ComPtr<ID3D12PipelineState> m_pipelineState;
-  ComPtr<ID3D12GraphicsCommandList10> m_commandList;
-  UINT m_rtvDescriptorSize;
-
-  // App resources.
-  ComPtr<ID3D12Resource> m_vertexBuffer;
-  D3D12_VERTEX_BUFFER_VIEW m_vertexBufferView;
-
-    bool g_keys[256] = {};
-  // Synchronization objects.
-  UINT m_frameIndex;
-  HANDLE m_fenceEvent;
-  ComPtr<ID3D12Fence> m_fence;
-  UINT64 m_fenceValue;
-
-  void LoadPipeline();
-  void LoadAssets();
-
-    void OnInitTransform();
-
-    void PopulateCommandList();
-  void WaitForPreviousFrame();
-
-  void CheckRaytracingSupport();
-
-    void OnKeyDown(UINT8 key);
-
-    virtual void OnKeyUp(UINT8 key);
-  bool m_raster = true;
-
-  // #DXR
-  struct AccelerationStructureBuffers {
-    ComPtr<ID3D12Resource> pScratch;      // Scratch memory for AS builder
-    ComPtr<ID3D12Resource> pResult;       // Where the AS is
-    ComPtr<ID3D12Resource> pInstanceDesc; // Hold the matrices of the instances
-  };
-
-  ComPtr<ID3D12Resource> m_bottomLevelAS; // Storage for the bottom Level AS
-
-  nv_helpers_dx12::TopLevelASGenerator m_topLevelASGenerator;
-  AccelerationStructureBuffers m_topLevelASBuffers;
-  std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>> m_instances;
-
-    // Map from instance index to model index
-    std::vector<UINT> m_instanceModelIndices;
-    std::vector<UINT> m_materialIDOffsets;
-
-    // alias table
-    std::vector<float> m_aliasProb;
-    // probability array
-    std::vector<uint32_t> m_aliasIdx;
-    // alias‑index array
-    ComPtr<ID3D12Resource> m_aliasProbBuffer;
-    // default‑heap GPU copies
-    ComPtr<ID3D12Resource> m_aliasIdxBuffer;
-    ComPtr<ID3D12Resource> m_initialBSDFRayBuffer;
-
+    // ── Modules ──────────────────────────────────────────────────
+    DeviceContext       m_ctx;
+    Scene               m_scene;
+    Camera              m_camera;
+    PassSystem          m_passes;
+    DLSSManager         m_dlss;
+    Editor              m_editor;
+    FlyCamController*   m_flyCam = nullptr;
+    ReSTIRSettings      m_restirSettings;
     lt::LightTreeBuilder m_lightTree;
+    lt::LightTreeRefitManager m_lightTreeRefit;
+    std::vector<lt::BLASRootLocal> m_blasLocalRoots;
+    std::vector<lt::LightTLASNodeGpu> m_pendingTLASUpload;
+    std::vector<uint32_t> m_pendingBLASToItem;
+    std::vector<lt::BlasRangeGpu> m_pendingBLASRanges;
+    ComPtr<ID3D12Resource> m_tlasUploadStaging;
+    ComPtr<ID3D12Resource> m_blasToItemUploadStaging;
+    ComPtr<ID3D12Resource> m_rangesUploadStaging;
+    ComPtr<ID3D12Resource> m_ltTlasGpu;
+    ComPtr<ID3D12Resource> m_ltBtIGpu;
+    ComPtr<ID3D12Resource> m_ltRangesGpu;
+    UINT m_ltTlasGpuCapacity   = 0;
+    UINT m_ltBtIGpuCapacity    = 0;
+    UINT m_ltRangesGpuCapacity = 0;
+    static constexpr UINT LT_TLAS_SRV_SLOT        = 20;
+    static constexpr UINT LT_BLASRANGES_SRV_SLOT   = 22;
+    static constexpr UINT LT_BLASTOITEM_SRV_SLOT   = 27;
 
-    struct Reservoir_DI
-    {
-        uint8_t  pad[100];
+    bool m_emissiveGpuDirty = false;
+    ComPtr<ID3D12Resource> m_emissiveUploadStaging;
+    ComPtr<ID3D12Resource> m_triToLightIdUploadStaging;
+    ComPtr<ID3D12Resource> m_ownedEmissiveGpu;
+    ComPtr<ID3D12Resource> m_ownedTriToLightIdGpu;
+    UINT m_emissiveGpuCapacity     = 0;
+    UINT m_triToLightIdGpuCapacity = 0;
+    static constexpr UINT EMISSIVE_TRI_SRV_SLOT    = 9;
+    static constexpr UINT TRI_TO_LIGHTID_SRV_SLOT  = 24;
+    static constexpr UINT INSTANCE_PROPS_SRV_SLOT  = 6;
+    CameraRecorder      m_recorder;
+    CameraPathSimulator m_simulator;
+
+    // AS
+    struct AccelerationStructureBuffers {
+        ComPtr<ID3D12Resource> pScratch, pResult, pResultUncompacted, pInstanceDesc;
     };
+    nv_helpers_dx12::TopLevelASGenerator m_topLevelASGenerator;
+    AccelerationStructureBuffers m_topLevelASBuffers;
 
-    struct Reservoir_GI
-    {
-        uint8_t  pad[100];
-    };
+    AccelerationStructureBuffers CreateBottomLevelAS(
+        std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vb,
+        std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> ib,
+        UINT opaqueTriCount, UINT alphaTriCount,
+        MeshGPU* meshOmm = nullptr);
+    void CreateTopLevelAS(
+        const std::vector<std::pair<ComPtr<ID3D12Resource>, XMMATRIX>>& instances,
+        bool updateOnly = false);
+    void CreateAccelerationStructures();
 
-    struct SampleData
-    {
-        uint8_t  pad[100];
-    };
+    ComPtr<ID3D12RootSignature>       m_rayGenSignature, m_computeSignature;
+    ComPtr<ID3D12RootSignature>       m_hitSignature, m_missSignature;
+    ComPtr<ID3D12StateObject>         m_rtStateObject;
+    ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
+    std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
+    std::vector<std::wstring>         m_callableShaderNames;
+    std::vector<ComPtr<IDxcBlob>>     m_rayGenLibs;
+    nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
+    ComPtr<ID3D12Resource>            m_sbtStorage;
 
-    struct InitialBSDFRay
-    {
-        uint8_t  pad[100];
-    };
+    struct WgRuntimeData { D3D12_PROGRAM_IDENTIFIER id; D3D12_GPU_VIRTUAL_ADDRESS_RANGE backing; ComPtr<ID3D12Resource> backingRes; };
+    std::vector<WgRuntimeData>        m_wgRuntime;
+    std::vector<ComPtr<ID3D12StateObject>> m_wgStateObjects;
+    std::vector<ComPtr<ID3D12WorkGraphProperties>> m_wgProps;
 
+    ComPtr<ID3D12RootSignature> CreateRayGenSignature();
+    ComPtr<ID3D12RootSignature> CreateComputeSignature();
+    ComPtr<ID3D12RootSignature> CreateHitSignature();
+    ComPtr<ID3D12RootSignature> CreateMissSignature();
+    void CreateRaytracingPipeline();
+    void CreateShaderBindingTable();
 
-// Buffer to store emissive triangles
-    std::vector<LightTriangle> m_emissiveTriangles;
-    ComPtr<ID3D12Resource> m_emissiveTrianglesBuffer;
+    ComPtr<ID3D12Resource>       m_outputResource;
+    ComPtr<ID3D12Resource>       m_permanentDataTexture;
+    ComPtr<ID3D12Resource>       m_scratchPing;
+    ComPtr<ID3D12Resource>       m_pathStateBuffer;
+    ComPtr<ID3D12Resource>       m_reservoirBuffer, m_reservoirBuffer_2;
+    ComPtr<ID3D12Resource>       m_reservoirBuffer_3, m_reservoirBuffer_4;
+    ComPtr<ID3D12Resource>       m_sampleBuffer_current, m_sampleBuffer_last;
+    ComPtr<ID3D12Resource>       m_initialBSDFRayBuffer;
+    ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
+    ComPtr<ID3D12DescriptorHeap> m_stagingUavHeap;
 
-    // Per-instance base into the tri->light map and the map itself
-    std::vector<uint32_t>           m_instTriOffset;    // size = #instances
-    std::vector<uint32_t>           m_triToLightId;     // size = sum over instances of tri-count
-    ComPtr<ID3D12Resource>          m_triToLightIdBuffer;
+    void CreateRaytracingOutputBuffer();
+    void CreateShaderResourceHeap();
+    void CreatePathStateBuffer();
 
+    ComPtr<ID3D12Resource>         m_stackBuffers[MAX_STACKS];
+    ComPtr<ID3D12Resource>         m_globalCounterBuffer;
+    ComPtr<ID3D12Resource>         m_indirectArgsBuffer;
+    ComPtr<ID3D12Resource>         m_zeroBuffer;
+    ComPtr<ID3D12CommandSignature> m_commandSignature;
+    ComPtr<ID3D12PipelineState>    m_psoSetupIndirect, m_psoSetupIndirectNoClear;
+    ComPtr<ID3D12RootSignature>    m_rsSetupIndirect;
 
-    /// Create the acceleration structure of an instance
-  ///
-  /// \param     vVertexBuffers : pair of buffer and vertex count
-  /// \return    AccelerationStructureBuffers for TLAS
-  AccelerationStructureBuffers CreateBottomLevelAS(
-      std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vVertexBuffers,
-      std::vector<std::pair<ComPtr<ID3D12Resource>, uint32_t>> vIndexBuffers =
-          {});
+    ComPtr<ID3D12Resource>         m_sortCountBuffer, m_sortOffsetBuffer, m_sortBoundsBuffer;
+    ComPtr<ID3D12Resource>         m_sortBoundsResetBuffer;
+    D3D12_GPU_DESCRIPTOR_HANDLE    m_sortCountGpuHandle{}, m_sortOffsetGpuHandle{}, m_sortBoundsGpuHandle{};
+    D3D12_CPU_DESCRIPTOR_HANDLE    m_sortCountCpuHandle{}, m_sortOffsetCpuHandle{}, m_sortBoundsCpuHandle{};
 
-  /// Create the main acceleration structure that holds
-  /// all instances of the scene
-  /// \param     instances : pair of BLAS and transform
-  // #DXR Extra - Refitting
-  /// \param     updateOnly: if true, perform a refit instead of a full build
-  void CreateTopLevelAS(
-      const std::vector<std::pair<ComPtr<ID3D12Resource>, DirectX::XMMATRIX>>
-          &instances,
-      bool updateOnly = false);
+    void CreateStreamingCompactionBuffers();
+    void CreateIndirectCommandSignature();
+    void CompileSetupIndirectShader();
+    void ClearSortBuffers(ID3D12GraphicsCommandList* cmdList);
 
-  /// Create all acceleration structures, bottom and top
-  void CreateAccelerationStructures();
+    ComPtr<ID3D12Resource> m_lutTextureArray;
+    std::vector<ComPtr<ID3D12Resource>> m_lutUploadHeaps;
+    void GenerateLutTextures();
+    void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
+                                ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
-  // #DXR
-  ComPtr<ID3D12RootSignature> CreateRayGenSignature();
+    UINT m_currentDisplayLevel = 0;
+    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4, 5, 6, 7, 10 };
 
-  ComPtr<ID3D12RootSignature> CreateComputeSignature();
+    static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
+    static constexpr UINT DLSS_UAV_HEAP_START  = 39;
+    float m_fps = 0.0f;
+    int m_dlssModeChangedFrames = 0;  // >0 = skip temporal reuse for this many frames
+    bool m_reflexAvailable = false;
+    DLSSGSettings m_dlssG;
+    FrameStats m_frameStats;
 
-  ComPtr<ID3D12RootSignature> CreateMissSignature();
-  ComPtr<ID3D12RootSignature> CreateHitSignature();
+    uint32_t m_time = 0;
+    void PopulateCommandList();
+    void UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList);
+    void UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList);
+    void KickLightTreeRefit();
+    std::vector<InstanceXformCPU> BuildXformsFromScene() const;
+    void RebuildDLSSDescriptors();
+    void RebuildResolutionDependentDescriptors();
 
-  void CreateRaytracingPipeline();
-
-  ComPtr<IDxcBlob> m_rayGenLibrary;
-  ComPtr<IDxcBlob> m_rayGenLibrary2;
-  ComPtr<IDxcBlob> m_rayGenLibrary3;
-  ComPtr<IDxcBlob> m_hitLibrary;
-  ComPtr<IDxcBlob> m_missLibrary;
-
-  ComPtr<ID3D12RootSignature> m_rayGenSignature;
-  ComPtr<ID3D12RootSignature> m_hitSignature;
-  ComPtr<ID3D12RootSignature> m_missSignature;
-
-  // Ray tracing pipeline state
-  ComPtr<ID3D12StateObject> m_rtStateObject;
-  // Ray tracing pipeline state properties, retaining the shader identifiers
-  // to use in the Shader Binding Table
-  ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
-
-    std::vector< ComPtr<ID3D12StateObject>          > m_wgStateObjects;
-    std::vector< ComPtr<ID3D12WorkGraphProperties>  > m_wgProps;
-
-  // #DXR
-  void CreateRaytracingOutputBuffer();
-  void CreateShaderResourceHeap();
-  ComPtr<ID3D12Resource> m_outputResource;
-    ComPtr<ID3D12Resource> m_dlssOutputBuffer;
-    ComPtr<ID3D12Resource> m_permanentDataTexture;
-    ComPtr<ID3D12Resource> m_scratchPing;
-    ComPtr<ID3D12Resource> m_svgfConstBuffer;
-  ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
-
-  // #DXR
-  void CreateShaderBindingTable();
-  nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
-  ComPtr<ID3D12Resource> m_sbtStorage;
-
-  // #DXR Extra: Perspective Camera
-  void CreateCameraBuffer();
-  void UpdateCameraBuffer();
-  ComPtr<ID3D12Resource> m_cameraBuffer;
-  ComPtr<ID3D12Resource> m_sampleBuffer_current;
-  ComPtr<ID3D12Resource> m_sampleBuffer_last;
-  ComPtr<ID3D12Resource> m_reservoirBuffer;
-  ComPtr<ID3D12Resource> m_reservoirBuffer_2;
-  ComPtr<ID3D12Resource> m_reservoirBuffer_3;
-  ComPtr<ID3D12Resource> m_reservoirBuffer_4;
-  ComPtr<ID3D12DescriptorHeap> m_constHeap;
-  uint32_t m_cameraBufferSize = 0;
-
-  // #DXR Extra: Perspective Camera++
-  void OnButtonDown(UINT32 lParam);
-  void OnMouseMove(UINT8 wParam, UINT32 lParam);
-    XMMATRIX m_prevViewMatrix;
-    XMMATRIX m_prevProjMatrix;
-
-  // #DXR Extra: Per-Instance Data
-  ComPtr<ID3D12Resource> m_planeBuffer;
-  D3D12_VERTEX_BUFFER_VIEW m_planeBufferView;
-  void CreatePlaneVB();
-
-  // #DXR Extra: Per-Instance Data
-  void CreateGlobalConstantBuffer();
-  ComPtr<ID3D12Resource> m_globalConstantBuffer;
-
-  // #DXR Extra: Per-Instance Data
-  void CreatePerInstanceConstantBuffers();
-  std::vector<ComPtr<ID3D12Resource>> m_perInstanceConstantBuffers;
-
-  // #DXR Extra: Depth Buffering
-  void CreateDepthBuffer();
-  ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
-  ComPtr<ID3D12Resource> m_depthStencil;
-
-  ComPtr<ID3D12Resource> m_indexBuffer;
-  D3D12_INDEX_BUFFER_VIEW m_indexBufferView;
-
-  // #DXR Extra: Indexed Geometry
-  void CreateVB(std::string name);
-  ComPtr<ID3D12Resource> m_materialBuffer;
-  ComPtr<ID3D12Resource> m_materialIndexBuffer;
-  std::vector<UINT> m_materialIDs;
-  std::vector<Material> m_materials;
-  UINT materialIDOffset = 0;
-  UINT materialVertexOffset = 0;
-
-    ComPtr<ID3D12Resource> m_albedoTextureArray;
-    ComPtr<ID3D12Resource> m_normalTextureArray;
-    ComPtr<ID3D12Resource> m_rmaTextureArray;
-
-  //Support for several objects (instanced optionally)
-  std::vector<ComPtr<ID3D12Resource>> m_VB;
-  std::vector<ComPtr<ID3D12Resource>> m_IB;
-  std::vector<D3D12_VERTEX_BUFFER_VIEW> m_VBView;
-  std::vector<D3D12_INDEX_BUFFER_VIEW> m_IBView;
-  std::vector<ComPtr<ID3D12Resource>> m_material;
-  std::vector<ComPtr<ID3D12Resource>> m_materialID;
-  std::vector<UINT> m_IndexCount;
-  std::vector<UINT> m_VertexCount;
-
-
-  // #DXR Extra - Another ray type
-  ComPtr<IDxcBlob> m_shadowLibrary;
-  ComPtr<ID3D12RootSignature> m_shadowSignature;
-
-  // #DXR Extra - Refitting
-  uint32_t m_time = 0;
-
-  // #DXR Extra - Refitting
-  /// Per-instance properties
-  struct InstanceProperties {
-    XMMATRIX objectToWorld;
-    XMMATRIX objectToWorldInverse;
-    XMMATRIX prevObjectToWorld;
-    XMMATRIX prevObjectToWorldInverse;
-    XMMATRIX objectToWorldNormal;
-    XMMATRIX prevObjectToWorldNormal;
-      UINT  indexBase;
-      UINT  vertexBase;
-      UINT  materialBase;
-      UINT  triToLightBase;
-  };
-
-    //Frametime
-    struct FrameData
-    {
-        float Time;
-    };
-
-  ComPtr<ID3D12Resource> m_instanceProperties;
-  ComPtr<ID3D12Resource> m_instancePropertiesPrevious;
-    struct GeometryOffsets
-    {
-        UINT vertexBase;
-        UINT indexBase;
-        UINT materialBase;
-    };
-    std::vector<GeometryOffsets> m_geoOffsets;
-  void CreateInstancePropertiesBuffer();
-  void UpdateInstancePropertiesBuffer();
-
-  //SL specific
-  HINSTANCE__ *m_mod;
-
-  UINT m_currentDisplayLevel = 0; // Start with the main image at level 0
-  std::vector<UINT> m_displayLevels = {0, 10, 11, 12, 13, 14, 15, 16, 17, 20,21,22,23,24,25,26,27,28}; // Levels to cycle through
-  void ExtractFrustumPlanes(const XMMATRIX &viewProjMatrix, XMFLOAT4 *planes);
-
-
-    void CollectEmissiveTriangles();
-
-    void CreateEmissiveTrianglesBuffer();
-
-  void BuildAliasTableSoA(const std::vector<LightTriangle> &tris);
-
-  void CreateAliasBuffers();
-    void CreateTextureArrays(
-    const std::vector<TextureData>& albedoTextures,
-    const std::vector<TextureData>& normalTextures,
-    const std::vector<TextureData>& rmaTextures);
-
-  float ComputeTriangleWeight(const XMFLOAT3 &v0, const XMFLOAT3 &v1, const XMFLOAT3 &v2, const XMFLOAT3 &emissiveColor, const DirectX::XMMATRIX &M);
+    ComPtr<ID3D12Resource> m_readbackBuffer;
+    void CreateReadbackBuffer();
+    void SaveSimulationData(uint32_t stepIndex);
 };

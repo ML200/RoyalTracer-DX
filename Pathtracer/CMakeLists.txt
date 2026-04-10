@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.25.2)
+set(CMAKE_SYSTEM_VERSION "10.0.22621.0")
 project(Pathtracer)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ───────────────────────── DirectX Agility SDK ─────────────────────────────
-set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/Microsoft.Direct3D.D3D12.1.717.1-preview/build/native")
+set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3D.d3d12.1.719.0-preview/build/native")
 set(D3D12_AGILITY_INCLUDE "${D3D12_AGILITY_ROOT}/include")
 set(D3D12_AGILITY_LIB "${D3D12_AGILITY_ROOT}/bin/x64")
 
@@ -15,9 +16,51 @@ set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 
+# ───────────────────────── NVIDIA OMM SDK ───────────────────────────────────
+set(OMM_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/omm-sdk")
+
+# ───────────────────────── ONNX Runtime + DirectML ──────────────────────────
+# Your extracted layout is: third_party/onnxruntime-directml/ort/...
+set(ORT_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-directml/ort")
+
+set(ORT_INCLUDE_DIR "${ORT_ROOT}/build/native/include")
+set(ORT_BIN_DIR     "${ORT_ROOT}/runtimes/win-x64/native")
+set(ORT_LIB_DIR     "${ORT_BIN_DIR}")  # onnxruntime.lib is here in your package
+
+# Hard checks so you fail fast if the paths are wrong
+if(NOT EXISTS "${ORT_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+    message(FATAL_ERROR "ORT headers not found: ${ORT_INCLUDE_DIR} (expected onnxruntime_cxx_api.h)")
+endif()
+
+if(NOT EXISTS "${ORT_LIB_DIR}/onnxruntime.lib")
+    message(FATAL_ERROR "ORT import lib not found: ${ORT_LIB_DIR}/onnxruntime.lib")
+endif()
+
+if(NOT EXISTS "${ORT_BIN_DIR}/onnxruntime.dll")
+    message(FATAL_ERROR "ORT runtime DLL not found: ${ORT_BIN_DIR}/onnxruntime.dll")
+endif()
+
+message(STATUS "ORT include : ${ORT_INCLUDE_DIR}")
+message(STATUS "ORT lib dir : ${ORT_LIB_DIR}")
+message(STATUS "ORT bin dir : ${ORT_BIN_DIR}")
+
+
+
 # ────────────────────────── extra assets to copy ─────────────────────────────
 set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
 set(SHADERS_DIR   "${CMAKE_SOURCE_DIR}/shaders")
+
+
+# ────────────────────────── DirectXTex ─────────────────────────────
+file(GLOB DIRECTXTEX_SOURCES "DirectXTex/*.cpp")
+add_library(DirectXTex STATIC ${DIRECTXTEX_SOURCES})
+target_include_directories(DirectXTex PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/DirectXTex
+        ${D3D12_AGILITY_INCLUDE}
+)
+target_compile_features(DirectXTex PUBLIC cxx_std_17)
+target_link_libraries(DirectXTex PUBLIC dxguid ole32)
+
 
 # ───────────────────────── source files ──────────────────────────────────────
 add_executable(Pathtracer WIN32
@@ -48,28 +91,110 @@ add_executable(Pathtracer WIN32
         rdn/Diagnostics.h
         rdn/LightTree.h
         src/Util/stb_image.h
+        src/Util/stb_image_resize2.h
+        rdn/CameraRecorder.cpp
+        rdn/CameraRecorder.h
+        rdn/CameraPathSimulator.cpp
+        rdn/CameraPathSimulator.h
+        rdn/ResourceStateTracker.h
+
+        rdn/Core/DeviceContext.h
+        rdn/Core/DeviceContext.cpp
+        rdn/Core/ResourceFactory.h
+        rdn/Camera/Camera.h
+        rdn/Camera/Camera.cpp
+        rdn/Editor/Editor.h
+        rdn/Editor/Editor.cpp
+        rdn/PostProcess/DLSSManager.h
+        rdn/PostProcess/DLSSManager.cpp
+        rdn/Raytracing/PassSystem.h
+        rdn/Raytracing/PassSystem.cpp
+        rdn/Scene/Scene.h
+        rdn/Scene/Scene.cpp
+        rdn/Scene/AssetLoader.h
+        rdn/Scene/AssetLoader.cpp
+        rdn/Scene/OmmBuilder.h
+        rdn/Scene/OmmBuilder.cpp
+        rdn/Renderer_Pipeline.cpp
+        rdn/Common.h
+
+        rdn/ThirdPartyImpl.cpp
+        rdn/Lighting/LightTreeRefit.h
+
+        # Engine layer
+        engine/Core/Transform.h
+        engine/Input/InputManager.h
+        engine/Input/InputManager.cpp
+        engine/Scene/GameObject.h
+        engine/Scene/SceneDefinition.h
+        engine/Scene/SceneManager.h
+        engine/Scene/SceneManager.cpp
+        engine/Scene/EmissiveCubes.h
+        engine/Scene/EmissiveCubes.cpp
+        engine/Camera/FlyCamController.h
+        engine/Camera/FlyCamController.cpp
+        engine/EngineApp.h
+        engine/EngineApp.cpp
+
+        # ImGui
+        lib/imgui/imgui.cpp
+        lib/imgui/imgui_draw.cpp
+        lib/imgui/imgui_tables.cpp
+        lib/imgui/imgui_widgets.cpp
+        lib/imgui/imgui_impl_dx12.cpp
+        lib/imgui/imgui_impl_win32.cpp
 )
 
 # ───────────────────────── include directories ───────────────────────────────
 target_include_directories(Pathtracer PRIVATE
         ${D3D12_AGILITY_INCLUDE}
-        ${DIRECTX_SDK_INCLUDE}
-        ${SL_INCLUDE_DIR})
+        ${SL_INCLUDE_DIR}
+        ${ORT_INCLUDE_DIR}
+        ${OMM_SDK_ROOT}/include
+        ${CMAKE_SOURCE_DIR}/lib/imgui)
 
-# ──────────────── Streamline import‑lib as an IMPORTED static library ────────
+# ──────────────── Streamline import‐lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)
 set_target_properties(sl_interposer PROPERTIES
         IMPORTED_LOCATION           "${SL_LIB_PATH}"
         IMPORTED_LOCATION_DEBUG     "${SL_LIB_PATH}"
         IMPORTED_LOCATION_RELEASE   "${SL_LIB_PATH}"
 )
+# ────────────── ONNX Runtime imported library (DLL + import lib) ─────────────
+add_library(onnxruntime SHARED IMPORTED GLOBAL)
+set_target_properties(onnxruntime PROPERTIES
+        IMPORTED_IMPLIB   "${ORT_LIB_DIR}/onnxruntime.lib"
+        IMPORTED_LOCATION "${ORT_BIN_DIR}/onnxruntime.dll"
+)
+
+# ────────────── NVIDIA OMM SDK imported library + deps ───────────────────────
+add_library(omm_sdk STATIC IMPORTED GLOBAL)
+set_target_properties(omm_sdk PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/omm-lib.lib"
+)
+add_library(omm_lz4 STATIC IMPORTED GLOBAL)
+set_target_properties(omm_lz4 PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/lz4.lib"
+)
+add_library(omm_xxhash STATIC IMPORTED GLOBAL)
+set_target_properties(omm_xxhash PROPERTIES
+        IMPORTED_LOCATION "${OMM_SDK_ROOT}/lib/xxhash.lib"
+)
+
 
 # ───────────────────────── link libraries ────────────────────────────────────
 target_link_libraries(Pathtracer PRIVATE
+        DirectXTex
         sl_interposer
+        onnxruntime
+        omm_sdk omm_lz4 omm_xxhash
         d3d12.lib
         dxgi.lib dxguid.lib
-        dxcompiler.lib d3dcompiler.lib)
+        dxcompiler.lib d3dcompiler.lib windowsapp)
+
+# OMM SDK's static lib includes stb_image which also lives in ThirdPartyImpl.cpp.
+# Allow duplicate symbols — the linker picks one copy.
+target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
 
 
 # ────────────────── copy the contents of 'includes' on every build ─────────
@@ -82,7 +207,7 @@ add_custom_command(
         COMMENT "Copying contents of 'includes' into build output directory."
 )
 
-# ────────────────── copy the contents of 'shaders' (new shaders) on every build ─────────
+# ────────────────── copy the contents of 'shaders' on every build ─────────
 add_custom_command(
         TARGET Pathtracer
         POST_BUILD
@@ -114,8 +239,28 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${D3D12_AGILITY_LIB}/D3D12Core.dll"
         "${D3D12_AGILITY_LIB}/d3d12SDKLayers.dll"
+        "${D3D12_AGILITY_LIB}/D3D12StateObjectCompiler.dll"
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
 )
 
+# ───────────────────────── copy ORT + DirectML DLLs ─────────────────────────
+set(ORT_DLLS
+        "${ORT_BIN_DIR}/onnxruntime.dll"
+        "${ORT_BIN_DIR}/onnxruntime_providers_shared.dll"
+        "${ORT_BIN_DIR}/onnxruntime_providers_directml.dll"  # optional (not in your screenshot)
+        "${ORT_BIN_DIR}/DirectML.dll"                        # optional (not in your screenshot)
+)
 
+foreach(dll_path IN LISTS ORT_DLLS)
+    if(EXISTS "${dll_path}")
+        add_custom_command(TARGET Pathtracer POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${dll_path}"
+                "$<TARGET_FILE_DIR:Pathtracer>"
+                COMMENT "Copying ORT runtime: ${dll_path}"
+        )
+    else()
+        message(STATUS "ORT optional DLL missing (ok): ${dll_path}")
+    endif()
+endforeach()

@@ -71,9 +71,16 @@ float2 signNotZero(float2 v)
     return step(0.0f, v) * 2.0f - 1.0f;
 }
 
-// pack/unpack normal into 8 bits
+static const uint PROBE_DI_NORMAL_ZERO_CODE = ~0u;
+
 uint PackNormal(float3 n)
 {
+    if (dot(n, n) < 1e-6f)
+    {
+        return PROBE_DI_NORMAL_ZERO_CODE;
+    }
+
+    // Octahedral encoding
     n = normalize(n);
     float3 a = abs(n);
     float2 p = n.xy / (a.x + a.y + a.z);
@@ -82,11 +89,23 @@ uint PackNormal(float3 n)
         p = (1.0f - abs(p.yx)) * signNotZero(p);
 
     uint2 q = uint2(round((p * 0.5f + 0.5f) * kMax16));
-    return q.x | (q.y << 16);
+
+    uint packed = q.x | (q.y << 16);
+    if (packed == PROBE_DI_NORMAL_ZERO_CODE)
+        packed--;
+
+    return packed;
 }
 
 float3 UnpackNormal(uint bits)
 {
+    // Zero vector sentinel
+    if (bits == PROBE_DI_NORMAL_ZERO_CODE)
+    {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    // Octahedral decoding
     float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
     float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
@@ -95,6 +114,80 @@ float3 UnpackNormal(uint bits)
     n.xy     += -t * signNotZero(n.xy);
 
     return normalize(n);
+}
+
+float3 UnpackNormal_INT(uint packed)
+{
+    int ix = (int)(packed << 16) >> 16;
+    int iy = (int)packed >> 16;
+    float2 f = float2(ix, iy) / 32767.0f;
+
+    float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
+
+    if (n.z < 0.0)
+    {
+        float oldX = n.x;
+        float oldY = n.y;
+        n.x = (1.0f - abs(oldY)) * (oldX >= 0.0f ? 1.0f : -1.0f);
+        n.y = (1.0f - abs(oldX)) * (oldY >= 0.0f ? 1.0f : -1.0f);
+    }
+
+    return normalize(n);
+}
+
+// Float16 packing
+uint f32tof16_custom(float val)
+{
+    uint f32 = asuint(val);
+    uint sign = (f32 >> 31) & 0x1;
+    uint exp = (f32 >> 23) & 0xff;
+    uint mant = f32 & 0x7fffff;
+
+    if (exp == 0xff) // Inf / NaN
+        return (sign << 15) | 0x7c00 | (mant != 0 ? 0x200 : 0);
+    if (exp == 0) // Denorm
+        return (sign << 15);
+
+    int new_exp = exp - 127;
+    if (new_exp < -14) // Underflow to zero
+        return (sign << 15);
+    if (new_exp > 15) // Overflow to infinity
+        return (sign << 15) | 0x7c00;
+
+    return (sign << 15) | ((new_exp + 15) << 10) | (mant >> 13);
+}
+
+float f16tof32_custom(uint val)
+{
+    uint sign = (val >> 15) & 0x1;
+    uint exp = (val >> 10) & 0x1f;
+    uint mant = val & 0x3ff;
+
+    if (exp == 0x1f) // Inf / NaN
+        return asfloat((sign << 31) | 0x7f800000 | (mant != 0 ? 0x400000 : 0));
+    if (exp == 0) // Denorm or zero
+    {
+        if (mant == 0) return asfloat(sign << 31);
+        while ((mant & 0x400) == 0) {
+            mant <<= 1;
+            exp--;
+        }
+        mant &= 0x3ff;
+        return asfloat((sign << 31) | ((exp + 127) << 23) | (mant << 13));
+    }
+
+    return asfloat((sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13));
+}
+
+uint PackFloat2x16(float u, float v)
+{
+    return f32tof16_custom(u) | (f32tof16_custom(v) << 16);
+}
+
+void UnpackFloat2x16(uint p, out float u, out float v)
+{
+    u = f16tof32_custom(p & 0xFFFFu);
+    v = f16tof32_custom(p >> 16);
 }
 
 

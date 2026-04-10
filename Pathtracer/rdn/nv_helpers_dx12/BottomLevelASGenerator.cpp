@@ -30,6 +30,7 @@ Contacts for feedback:
 */
 
 #include <stdexcept>
+#include <memory>
 #include "BottomLevelASGenerator.h"
 
 // Helper to compute aligned buffer sizes
@@ -118,56 +119,90 @@ void BottomLevelASGenerator::AddVertexBuffer(
 }
 
 //--------------------------------------------------------------------------------------------------
+// Add a vertex buffer with Opacity Micro-Map linkage.
+void BottomLevelASGenerator::AddVertexBufferWithOMM(
+    ID3D12Resource *vertexBuffer, UINT64 vertexOffsetInBytes,
+    uint32_t vertexCount, UINT vertexSizeInBytes,
+    ID3D12Resource *indexBuffer, UINT64 indexOffsetInBytes, uint32_t indexCount,
+    ID3D12Resource *transformBuffer, UINT64 transformOffsetInBytes,
+    D3D12_GPU_VIRTUAL_ADDRESS ommArray,
+    D3D12_GPU_VIRTUAL_ADDRESS ommIndexBuffer,
+    uint32_t ommIndexCount)
+{
+  // Allocate stable storage for the triangle + linkage descriptors
+  auto storage = std::make_unique<OmmLinkageStorage>();
+
+  // Fill the triangles descriptor (same as regular triangles)
+  auto& tri = storage->triangles;
+  tri = {};
+  tri.VertexBuffer.StartAddress  = vertexBuffer->GetGPUVirtualAddress() + vertexOffsetInBytes;
+  tri.VertexBuffer.StrideInBytes = vertexSizeInBytes;
+  tri.VertexCount  = vertexCount;
+  tri.VertexFormat  = DXGI_FORMAT_R32G32B32_FLOAT;
+  tri.IndexBuffer   = indexBuffer ? (indexBuffer->GetGPUVirtualAddress() + indexOffsetInBytes) : 0;
+  tri.IndexFormat   = indexBuffer ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_UNKNOWN;
+  tri.IndexCount    = indexCount;
+  tri.Transform3x4  = transformBuffer
+      ? (transformBuffer->GetGPUVirtualAddress() + transformOffsetInBytes) : 0;
+
+  // Fill the OMM linkage descriptor
+  auto& link = storage->linkage;
+  link = {};
+  link.OpacityMicromapIndexBuffer.StartAddress  = ommIndexBuffer;
+  link.OpacityMicromapIndexBuffer.StrideInBytes = sizeof(int32_t);
+  link.OpacityMicromapIndexFormat  = DXGI_FORMAT_R32_UINT;
+  link.OpacityMicromapBaseLocation = 0;
+  link.OpacityMicromapArray        = ommArray;
+
+  // Build the geometry descriptor pointing to the stable storage
+  D3D12_RAYTRACING_GEOMETRY_DESC descriptor = {};
+  descriptor.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES;
+  descriptor.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_NONE; // not opaque — OMM decides
+  descriptor.OmmTriangles.pTriangles  = &storage->triangles;
+  descriptor.OmmTriangles.pOmmLinkage = &storage->linkage;
+
+  m_ommStorage.push_back(std::move(storage));
+  m_vertexBuffers.push_back(descriptor);
+}
+
+//--------------------------------------------------------------------------------------------------
 // Compute the size of the scratch space required to build the acceleration
 // structure, as well as the size of the resulting structure. The allocation of
 // the buffers is then left to the application
-void BottomLevelASGenerator::ComputeASBufferSizes(
-    ID3D12Device5 *device, // Device on which the build will be performed
-    bool allowUpdate,     // If true, the resulting acceleration structure will
-                          // allow iterative updates
-    UINT64 *scratchSizeInBytes, // Required scratch memory on the GPU to build
-                                // the acceleration structure
-    UINT64 *resultSizeInBytes   // Required GPU memory to store the acceleration
-                                // structure
-) {
-  // The generated AS can support iterative updates. This may change the final
-  // size of the AS as well as the temporary memory requirements, and hence has
-  // to be set before the actual build
-  m_flags =
-      allowUpdate
-          ? D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_UPDATE
-          : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    void BottomLevelASGenerator::ComputeASBufferSizes(
+        ID3D12Device5 *device,
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags, // <-- MODIFIED PARAMETER
+        UINT64 *scratchSizeInBytes,
+        UINT64 *resultSizeInBytes
+    ) {
+    // The generated AS can support iterative updates. This may change the final
+    // size of the AS as well as the temporary memory requirements, and hence has
+    // to be set before the actual build.
 
-  // Describe the work being requested, in this case the construction of a
-  // (possibly dynamic) bottom-level hierarchy, with the given vertex buffers
-  
-  D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS prebuildDesc;
-  prebuildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
-  prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
-  prebuildDesc.NumDescs = static_cast<UINT>(m_vertexBuffers.size());
-  prebuildDesc.pGeometryDescs = m_vertexBuffers.data();
-  prebuildDesc.Flags = m_flags;
+    // MODIFICATION: Use the flags passed in by the caller.
+    m_flags = buildFlags;
 
-  // This structure is used to hold the sizes of the required scratch memory and
-  // resulting AS
-  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+    // Describe the work being requested, in this case the construction of a
+    // (possibly dynamic) bottom-level hierarchy, with the given vertex buffers
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS prebuildDesc;
+    prebuildDesc.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    prebuildDesc.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    prebuildDesc.NumDescs = static_cast<UINT>(m_vertexBuffers.size());
+    prebuildDesc.pGeometryDescs = m_vertexBuffers.data();
+    prebuildDesc.Flags = m_flags; // Use the stored flags
 
-  // Building the acceleration structure (AS) requires some scratch space, as
-  // well as space to store the resulting structure This function computes a
-  // conservative estimate of the memory requirements for both, based on the
-  // geometry size.
-  device->GetRaytracingAccelerationStructurePrebuildInfo(&prebuildDesc, &info);
+    // ... rest of the function is identical ...
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info = {};
+    device->GetRaytracingAccelerationStructurePrebuildInfo(&prebuildDesc, &info);
 
-  // Buffer sizes need to be 256-byte-aligned
-  *scratchSizeInBytes =
-      ROUND_UP(info.ScratchDataSizeInBytes,
-               D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
-  *resultSizeInBytes = ROUND_UP(info.ResultDataMaxSizeInBytes,
-                                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    *scratchSizeInBytes =
+        ROUND_UP(info.ScratchDataSizeInBytes,
+                 D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+    *resultSizeInBytes = ROUND_UP(info.ResultDataMaxSizeInBytes,
+                                  D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
-  // Store the memory requirements for use during build
-  m_scratchSizeInBytes = *scratchSizeInBytes;
-  m_resultSizeInBytes = *resultSizeInBytes;
+    m_scratchSizeInBytes = *scratchSizeInBytes;
+    m_resultSizeInBytes = *resultSizeInBytes;
 }
 
 //--------------------------------------------------------------------------------------------------
