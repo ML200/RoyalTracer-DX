@@ -37,23 +37,7 @@ std::wstring DXSample::GetAssetFullPath(LPCWSTR assetName)
 	return m_assetsPath + assetName;
 }
 
-// Helper function for acquiring the first available hardware adapter that supports Direct3D 12.
-// If no such adapter can be found, *ppAdapter will be set to nullptr.
-#include <d3d12.h>
-#include <dxgi1_6.h>
-#include <wrl.h>
-#include <iostream>
-#include <string>
-
-using Microsoft::WRL::ComPtr;
-
-#include <d3d12.h>
-#include <dxgi1_6.h>
-#include <wrl.h>
-#include <string>
-
-using Microsoft::WRL::ComPtr;
-
+// Acquire the first available hardware adapter that supports D3D12.
 _Use_decl_annotations_
 void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAdapter)
 {

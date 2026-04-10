@@ -1059,9 +1059,9 @@ static inline void parseReal2(real_t *x, real_t *y, const char **token,
 }
 
 static inline void parseReal3(real_t *x, real_t *y, real_t *z,
-                              const char **token, const double default_x = 0.0,
-                              const double default_y = 0.0,
-                              const double default_z = 0.0) {
+                              const char **token, const double default_x = 1.0,
+                              const double default_y = 1.0,
+                              const double default_z = 1.0) {
   (*x) = parseReal(token, default_x);
   (*y) = parseReal(token, default_y);
   (*z) = parseReal(token, default_z);
@@ -2189,7 +2189,7 @@ void LoadMtl(std::map<std::string, int> *material_map,
     if ((token[0] == 'K' && token[1] == 't' && IS_SPACE((token[2]))) ||
         (token[0] == 'T' && token[1] == 'f' && IS_SPACE((token[2])))) {
       token += 2;
-      real_t r, g, b;
+      real_t r=0.0f; real_t g=0.0f; real_t b= 0.0f;
       parseReal3(&r, &g, &b, &token);
       material.transmittance[0] = r;
       material.transmittance[1] = g;

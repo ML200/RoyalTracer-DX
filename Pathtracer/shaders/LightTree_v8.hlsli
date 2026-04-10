@@ -6,32 +6,6 @@ Buffer<uint> gLT_BLASToItem      : register(t18);
 static const uint  LT_SENTINEL = 0xFFFFFFFFu;
 static const float LT_PI = 3.14159265358979323846;
 
-inline float3 LT_AabbCenter(float3 mn, float3 mx) { return 0.5*(mn+mx); }
-inline float  LT_AabbRadius(float3 mn, float3 mx) { float3 e = 0.5*(mx-mn); return length(e); }
-inline float  LT_SafeAcos(float x){ return acos(clamp(x, -1.0, 1.0)); }
-inline float  LT_SafeAsin(float x){ return asin(clamp(x, -1.0, 1.0)); }
-
-// Categorical pick (for 4-ary tree)
-inline uint LT_CategoricalPick(in float w[4], uint n, float u, out float pChosen)
-{
-    float sum = 0.0;
-    [unroll] for (uint i=0;i<4;i++) if (i<n) sum += max(w[i], 0.0);
-    if (sum > 0.0) {
-        float acc = 0.0;
-        [unroll] for (uint i=0;i<4;i++){
-            if (i>=n) break;
-            float p = w[i] / sum;
-            acc += p;
-            if (u <= acc) { pChosen = p; return i; }
-        }
-        pChosen = w[n-1]/sum; return n-1; // numeric tail
-    } else {
-        uint idx = min((uint)floor(u * n), n-1);
-        pChosen = 1.0 / float(n);
-        return idx;
-    }
-}
-
 inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
                               out float p_chosen, out float xi_out)
 {
@@ -58,7 +32,8 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
     }
     float wi = max(w[idx], 0.0);
     p_chosen = wi / sum;
-    xi_out = (wi > 0.0) ? saturate((target - accum) / wi) : 0.0;
+    xi_out = (wi > 0.0) ? ((target - accum) / wi) : 0.0;
+    xi_out = clamp(xi_out, 0.0, ONE_MINUS_EPSILON);
     return idx;
 }
 
@@ -66,95 +41,62 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// Custom angle importance factor based on angle between normal and corner direction
-// Idea:
-// - the more corners are behind the surface, the less volume is relevant -> downweight based on number
-// - angle between normal and corner direction can be interpreted as cheap lambertian approx of the node -> downweight if all corners and the center have a small angle
-inline float LT_AabbVertexVisibilityWeight(float3 x, float3 n, float3 bmin, float3 bmax)
-{
-    float3 lo = min(bmin, bmax);
-    float3 hi = max(bmin, bmax);
-    float3 c  = 0.5 * (lo + hi);
+// ============================================================================
+// TRIG-FREE NODE IMPORTANCE  (precomputed cosTheta_o / cosTheta_e in nodes)
+// ============================================================================
 
-    float3 P[9] = {
-        float3(lo.x,lo.y,lo.z), float3(hi.x,lo.y,lo.z),
-        float3(lo.x,hi.y,lo.z), float3(hi.x,hi.y,lo.z),
-        float3(lo.x,lo.y,hi.z), float3(hi.x,lo.y,hi.z),
-        float3(lo.x,hi.y,hi.z), float3(hi.x,hi.y,hi.z),
-        c
-    };
-    const float angleFloorMin = 0.1;
-
-    float maxFrontCos = 0.0;   // best visible corner
-    uint  behindCount = 0u;
-
-    [unroll] for (uint i = 0; i < 9; ++i)
-    {
-        float3 v   = P[i] - x;
-        float  l2  = max(dot(v, v), EPSILON);
-        float3 dir = v * rsqrt(l2);
-
-        float cosT = dot(n, dir);
-        if (cosT > 0.0) {
-            maxFrontCos = max(maxFrontCos, cosT);
-        } else {
-            behindCount++;
-        }
-    }
-
-    // no front-facing samples?
-    if (maxFrontCos <= 0.0) return 0.0;
-
-    float angleFactor = max(maxFrontCos, angleFloorMin);
-
-    // behind penalty
-    float denom   = (behindCount > 0u) ? float(behindCount) : 1.0;
-    float penalty = 1.0 / denom;
-
-    return angleFactor * penalty;
-}
-
-
-// CONTY–KULLA NODE IMPORTANCE
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
-    float3 axis, float theta_o, float theta_e,
-    float power, bool isGlobalLight, float)
+    float3 axis, float cosTheta_o, float cosTheta_e,
+    float power)
 {
     const float3 c = 0.5 * (bmin + bmax);
     const float3 e = 0.5 * (bmax - bmin);
-    const float  R = length(e);
+    const float  R2 = dot(e, e);
 
     float3 v  = x - c;
-    float  d0 = length(v);
-    float3 dir_to_point = (d0 > 0.0) ? (v / d0) : float3(0,0,1);
+    float  d2 = dot(v, v);
+    float  invD = rsqrt(max(d2, 1e-12));
+    float  d0 = d2 * invD;
+    float3 dir = v * invD;
 
-    float theta     = LT_SafeAcos(dot(axis, dir_to_point));
-    float theta_u   = LT_SafeAsin(saturate(R / max(d0, 1e-6)));
-    float theta_p   = max(theta - theta_o - theta_u, 0.0);
-    if (theta_p >= theta_e) return 0.0;         // outside emission lobe
-    float orientTerm = cos(theta_p);            // conservative emitter cosine
+    float  R    = sqrt(R2);
+    float  sinU = saturate(R * invD);
+    float  cosU = sqrt(max(1.0 - sinU * sinU, 0.0));
 
-    float ci    = dot(-dir_to_point, n);
-    float sin_u = sin(theta_u);
-    if (ci <= -sin_u) return 0.0;
+    float cosTheta  = dot(axis, dir);
+    float sinTheta  = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+    float sinTheta_o = sqrt(max(1.0 - cosTheta_o * cosTheta_o, 0.0));
 
-    float d2   = isGlobalLight ? 1.0 : (d0*d0 + R*R); // conservative near field clamp
-    float geom = isGlobalLight ? 1.0 : rcp(d2);
+    float cosA = cosTheta * cosTheta_o + sinTheta * sinTheta_o;
+    float sinA = sinTheta * cosTheta_o - cosTheta * sinTheta_o;
+    float cosFull = cosA * cosU + sinA * sinU;
 
-    float visCorners = LT_AabbVertexVisibilityWeight(x, n, bmin, bmax);
+    float cosOuterBound = cosTheta_o * cosU - sinTheta_o * sinU;
+    float sinOuterBound = sinTheta_o * cosU + cosTheta_o * sinU;
+    bool  insideCone = (sinOuterBound <= 0.0) || (cosTheta >= cosOuterBound);
 
-    return power * geom * orientTerm * visCorners;
+    float orientTerm = insideCone ? 1.0 : max(cosFull, 0.0);
+
+    if (!insideCone && cosFull <= cosTheta_e) return 0.0;
+
+    float ci = dot(-dir, n);
+    if (ci <= -sinU) return 0.0;
+    float cosReceiver = saturate(ci + sinU);
+
+    float geom = rcp(d2 + R2);
+
+    return power * geom * orientTerm * cosReceiver;
 }
 
 inline float LT_NodeImportance_TLAS(LightTLASNodeGpu n, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, false, 0.01f);
+    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.cosTheta_o, n.cosTheta_e, n.power);
 }
 inline float LT_NodeImportance_BLAS(LightBLASNodeGpu n, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.theta_o, n.theta_e, n.power, false, 0.01f);
+    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.cosTheta_o, n.cosTheta_e, n.power);
 }
 
 inline float LT_BranchProb(float IL, float IR)
@@ -199,6 +141,11 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
 {
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
+
+    // Transform shading point and normal to LOCAL space for BLAS traversal
+    float3 xLocal = mul(R.worldToLocal, float4(x, 1.0)).xyz;
+    float3 nLocal = normalize(mul((float3x3)R.worldToLocal, n));
+
     uint node = 0;
 
     [loop] for (;;)
@@ -213,7 +160,7 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
         [unroll] for (uint i=0;i<4;i++){
             if (i < N.childCount) {
                 LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS(C, x, n), 0.0);
+                w[i] = max(LT_NodeImportance_BLAS(C, xLocal, nLocal), 0.0);
             } else {
                 w[i] = 0.0;
             }
@@ -221,7 +168,7 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
 
         float p, xi_next;
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
-        pdfBLAS *= max(p, 1e-20);
+        pdfBLAS *= p;
         node = N.firstChild + idx;
         xi   = xi_next;
     }
@@ -253,13 +200,15 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
 LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 {
     // Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
-    float xi = RandomFloatSingle(rng);
+    float xiT = RandomFloatSingle(rng);
+    float xiB = RandomFloatSingle(rng);
+    float xiL = RandomFloatSingle(rng);
 
     float pdfT, pdfB, pdfL;
 
-    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xi, pdfT);
-    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xi, pdfB);
-    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xi, pdfL);
+    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xiT, pdfT);
+    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xiB, pdfB);
+    uint   tri  = LT_SampleLeafTriangle_Stratified(worldPos, worldNormal, blas, leaf, xiL, pdfL);
 
     LT_Sample s; s.id = tri; s.pdf = pdfT * pdfB * pdfL;
     return s;
@@ -307,8 +256,11 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         tnode = N.firstChild + (uint)childHit;
     }
 
-    // BLAS path probability
+    // BLAS path probability (in local space)
     BlasRangeGpu Rng = gLT_Range[blas];
+    float3 xLocal = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
+    float3 nLocal = normalize(mul((float3x3)Rng.worldToLocal, n));
+
     float pdfBLAS = 1.0f;
     uint  bnode   = 0;
 
@@ -332,14 +284,13 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         [unroll] for (uint i=0;i<4;i++){
             if (i >= N.childCount) break;
             LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (N.firstChild + i)];
-            w[i] = max(LT_NodeImportance_BLAS(C, x, n), 0.0);
+            w[i] = max(LT_NodeImportance_BLAS(C, xLocal, nLocal), 0.0);
             sum += w[i];
             bool inChild = (localIdx >= C.triFirst) && (localIdx < (C.triFirst + C.triCount));
             if (inChild) childHit = (int)i;
         }
 
         if (childHit < 0) {
-            // Uniform fallback if not found
             pdfBLAS *= 1.0 / float(N.childCount);
             bnode = N.firstChild;
             continue;
@@ -359,25 +310,87 @@ inline float LT_TriangleArea(uint tri, uint objID)
     return 0.5 * length(cross(B - A, C - A));
 }
 
-inline float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
+float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
 {
     float p_select = LT_PdfSelectTriangle(x, n, tri);
     float area     = max(1e-10, LT_TriangleArea(tri, objID));
     return p_select / area;
 }
 
-inline float LT_Pdf_LightTree_HaloSphere(float3 x, float3 n, uint tri, uint objID)
+// Helper to select a light source, a point on it and return point and pdf.
+
+struct LT_LightSampleResult
 {
-    float p_select = LT_PdfSelectTriangle(x, n, tri);
-    float area     = max(1e-10, LT_TriangleArea(tri, objID));
-    return p_select / area;
+    float3 position;      // World space position on light
+    float3 normal;        // Geometric normal of the light triangle
+    float3 emission;      // Emissive color
+    float  pdfSolidAngle; // PDF w.r.t Solid Angle (for MIS)
+    uint   triIndex;      // The selected global triangle index
+    uint   objID;         // The InstanceID of the light
+};
+
+// Requires: g_EmissiveTriangles, instanceProps
+LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
+{
+    LT_LightSampleResult result;
+
+    // 1. Pick a triangle from the tree
+    LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
+    result.triIndex = treeSample.id;
+
+    // 2. Fetch Triangle Data
+    LightTriangle triData = g_EmissiveTriangles[result.triIndex];
+    result.objID    = triData.instanceID;
+    result.emission = triData.emission;
+
+    // 3. Transform Vertices
+    float4x4 worldMat = instanceProps[result.objID].objectToWorld;
+    float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
+    float3 v1 = mul(worldMat, float4(triData.y, 1.0)).xyz;
+    float3 v2 = mul(worldMat, float4(triData.z, 1.0)).xyz;
+
+    // 4. Sample Point Uniformly
+    float r1 = RandomFloatSingle(rng);
+    float r2 = RandomFloatSingle(rng);
+    float sqrtR1 = sqrt(r1);
+    float u = 1.0f - sqrtR1;
+    float v = r2 * sqrtR1;
+
+    result.position = (1.0f - u - v) * v0 + u * v1 + v * v2;
+
+    // 5. Normal & Area
+    float3 e1 = v1 - v0;
+    float3 e2 = v2 - v0;
+    float3 crossP = cross(e1, e2);
+    float area2 = length(crossP);
+    result.normal = crossP / area2; // Normalize
+    float area = 0.5f * area2;
+
+    // 6. Calculate Solid Angle PDF
+    //    PDF_SA = PDF_Area * (dist^2 / cosTheta_Light)
+    float3 toLight = result.position - refPos;
+    float distSq   = dot(toLight, toLight);
+    float dist     = sqrt(distSq);
+
+    // Check for valid geometry (avoid divide by zero)
+    float cosLight = max(dot(result.normal, -toLight / dist), 0.0f);
+
+    float pdfArea = treeSample.pdf / max(area, 1e-10f);
+
+    if (cosLight > 1e-6f) {
+        result.pdfSolidAngle = pdfArea * distSq / cosLight;
+    } else {
+        result.pdfSolidAngle = 0.0f;
+    }
+
+    return result;
 }
+
+
 
 // ============================================================================
 // INDIRECT LIGHT-TREE TRAVERSAL
 // ============================================================================
-
-//IMPORTANCE
 
 inline float LT_NodeImportance_Common_Indirect(
     float3 x,
@@ -443,6 +456,9 @@ LTLeaf LT_DescendBLAS_Stratified_Indirect(float3 x, uint blasIndex, inout float 
 {
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
+
+    float3 xLocal = mul(R.worldToLocal, float4(x, 1.0)).xyz;
+
     uint node = 0;
 
     [loop] for (;;)
@@ -457,7 +473,7 @@ LTLeaf LT_DescendBLAS_Stratified_Indirect(float3 x, uint blasIndex, inout float 
         [unroll] for (uint i=0;i<4;i++){
             if (i < N.childCount) {
                 LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS_Indirect(C, x), 0.0);
+                w[i] = max(LT_NodeImportance_BLAS_Indirect(C, xLocal), 0.0);
             } else {
                 w[i] = 0.0;
             }
@@ -520,7 +536,7 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         }
 
         if (childHit < 0) {
-            // Uniform fallback if the mapping isnt found
+            // Uniform fallback if the mapping isn't found
             pdfTLAS *= 1.0 / float(N.childCount);
             tnode = N.firstChild; // deterministic fallback path
             continue;
@@ -531,8 +547,10 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         tnode = N.firstChild + (uint)childHit;
     }
 
-    // BLAS path probability (indirect weights)
+    // BLAS path probability (indirect weights, local space)
     BlasRangeGpu Rng = gLT_Range[blas];
+    float3 xLocal = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
+
     float pdfBLAS = 1.0f;
     uint  bnode   = 0;
 
@@ -555,14 +573,13 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         [unroll] for (uint i=0;i<4;i++){
             if (i >= N.childCount) break;
             LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (N.firstChild + i)];
-            w[i] = max(LT_NodeImportance_BLAS_Indirect(C, x), 0.0);
+            w[i] = max(LT_NodeImportance_BLAS_Indirect(C, xLocal), 0.0);
             sum += w[i];
             bool inChild = (localIdx >= C.triFirst) && (localIdx < (C.triFirst + C.triCount));
             if (inChild) childHit = (int)i;
         }
 
         if (childHit < 0) {
-            // Uniform fallback if not found
             pdfBLAS *= 1.0 / float(N.childCount);
             bnode = N.firstChild;
             continue;

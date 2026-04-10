@@ -12,8 +12,12 @@
 #include "stdafx.h"
 
 #include "Win32Application.h"
+#include "../lib/imgui/imgui.h"
 
 HWND Win32Application::m_hwnd = nullptr;
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 int Win32Application::Run(DXSample *pSample, HINSTANCE hInstance,
                           int nCmdShow) {
@@ -71,6 +75,8 @@ int Win32Application::Run(DXSample *pSample, HINSTANCE hInstance,
 // Main message handler for the sample.
 LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
                                               WPARAM wParam, LPARAM lParam) {
+  if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam))
+    return true;
   DXSample *pSample =
       reinterpret_cast<DXSample *>(GetWindowLongPtr(hWnd, GWLP_USERDATA));
 
@@ -104,6 +110,26 @@ LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
     }
     return 0;
 
+  case WM_SIZE:
+    if (pSample && wParam == SIZE_MAXIMIZED) {
+      UINT w = LOWORD(lParam);
+      UINT h = HIWORD(lParam);
+      if (w > 0 && h > 0)
+        pSample->OnResize(w, h);
+    }
+    return 0;
+
+  case WM_EXITSIZEMOVE:
+    if (pSample) {
+      RECT rc;
+      GetClientRect(hWnd, &rc);
+      UINT w = rc.right - rc.left;
+      UINT h = rc.bottom - rc.top;
+      if (w > 0 && h > 0)
+        pSample->OnResize(w, h);
+    }
+    return 0;
+
   case WM_DESTROY:
     PostQuitMessage(0);
     return 0;
@@ -112,6 +138,13 @@ LRESULT CALLBACK Win32Application::WindowProc(HWND hWnd, UINT message,
   case WM_MBUTTONDOWN:
     if (pSample) {
       pSample->OnButtonDown(static_cast<UINT32>(lParam));
+    }
+    return 0;
+  case WM_LBUTTONUP:
+  case WM_RBUTTONUP:
+  case WM_MBUTTONUP:
+    if (pSample) {
+      pSample->OnButtonUp(message, static_cast<UINT32>(lParam));
     }
     return 0;
   case WM_MOUSEMOVE:

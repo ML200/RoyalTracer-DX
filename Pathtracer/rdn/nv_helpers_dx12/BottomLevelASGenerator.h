@@ -127,16 +127,31 @@ public:
                                             /// optimizing the search for a closest hit
   );
 
+  /// Add a vertex buffer with Opacity Micro-Map linkage. The geometry type will
+  /// be D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES, allowing the hardware to
+  /// skip any-hit invocations for micro-triangles classified as opaque/transparent.
+  void AddVertexBufferWithOMM(
+      ID3D12Resource* vertexBuffer, UINT64 vertexOffsetInBytes,
+      uint32_t vertexCount, UINT vertexSizeInBytes,
+      ID3D12Resource* indexBuffer, UINT64 indexOffsetInBytes, uint32_t indexCount,
+      ID3D12Resource* transformBuffer, UINT64 transformOffsetInBytes,
+      D3D12_GPU_VIRTUAL_ADDRESS ommArray,        /// Built OMM array (0 if special-only)
+      D3D12_GPU_VIRTUAL_ADDRESS ommIndexBuffer,  /// Per-triangle OMM index buffer
+      uint32_t ommIndexCount                     /// Number of entries in OMM index buffer
+  );
+
   /// Compute the size of the scratch space required to build the acceleration structure, as well as
   /// the size of the resulting structure. The allocation of the buffers is then left to the
   /// application
   void ComputeASBufferSizes(
-      ID3D12Device5* device, /// Device on which the build will be performed
-      bool allowUpdate,           /// If true, the resulting acceleration structure will
+      ID3D12Device5 *device,
+      /// If true, the resulting acceleration structure will
                                   /// allow iterative updates
-      UINT64* scratchSizeInBytes, /// Required scratch memory on the GPU to
+      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags,
+      UINT64 *scratchSizeInBytes,
+      /// Required scratch memory on the GPU to
                                   /// build the acceleration structure
-      UINT64* resultSizeInBytes   /// Required GPU memory to store the
+      UINT64 *resultSizeInBytes   /// Required GPU memory to store the
                                   /// acceleration structure
   );
 
@@ -157,6 +172,14 @@ public:
 private:
   /// Vertex buffer descriptors used to generate the AS
   std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> m_vertexBuffers = {};
+
+  /// Stable storage for OMM-linked geometry (the OmmTriangles union member
+  /// contains CPU pointers to these, so they must not be moved/invalidated).
+  struct OmmLinkageStorage {
+      D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC triangles;
+      D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC linkage;
+  };
+  std::vector<std::unique_ptr<OmmLinkageStorage>> m_ommStorage;
 
   /// Amount of temporary memory required by the builder
   UINT64 m_scratchSizeInBytes = 0;

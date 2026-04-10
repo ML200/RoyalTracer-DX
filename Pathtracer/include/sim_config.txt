@@ -1,0 +1,9 @@
+# Realtime Simulation
+Mode Realtime
+KeyframeFile camera_path_2026-01-29_18-53-09.txt
+OutputDir output
+TotalPathSteps 20
+WaitTime 5
+UpRotationAngle 10.0
+UpRotationSteps 1
+ForwardRollSteps 2

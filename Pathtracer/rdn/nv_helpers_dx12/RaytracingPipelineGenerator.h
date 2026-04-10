@@ -119,8 +119,14 @@ public:
   /// algorithms must be flattened to a loop in the ray generation program for best performance.
   void SetMaxRecursionDepth(UINT maxDepth);
 
+  /// Set pipeline flags (e.g. D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS).
+  /// Must be called before Generate().
+  void SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAGS flags);
+
   /// Compiles the raytracing state object
   ID3D12StateObject* Generate();
+
+  void SetGlobalRootSignature(ID3D12RootSignature* rootSig);
 
 private:
   /// Storage for DXIL libraries and their exported symbols
@@ -191,7 +197,9 @@ private:
   ID3D12RootSignature* m_dummyLocalRootSignature;
   ID3D12RootSignature* m_dummyGlobalRootSignature;
 
-  
+  ID3D12RootSignature* m_globalRootSignature;
+
+  D3D12_RAYTRACING_PIPELINE_FLAGS m_pipelineFlags = D3D12_RAYTRACING_PIPELINE_FLAG_NONE;
 };
 
 } // namespace nv_helpers_dx12

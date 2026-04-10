@@ -130,6 +130,8 @@ public:
   /// the layout of its root signature
   void AddHitGroup(const std::wstring& entryPoint, const std::vector<void*>& inputData);
 
+  void AddCallableProgram(const std::wstring& entryPoint, const std::vector<void*>& inputData);
+
   /// Compute the size of the SBT based on the set of programs and hit groups it contains
   uint32_t ComputeSBTSize();
 
@@ -160,6 +162,9 @@ public:
   /// Get the size in bytes of hit group entry in the SBT
   UINT GetHitGroupEntrySize() const;
 
+  UINT GetCallableSectionSize() const;
+  UINT GetCallableEntrySize() const;
+
 private:
   /// Wrapper for SBT entries, each consisting of the name of the program and a list of values,
   /// which can be either pointers or raw 32-bit constants
@@ -185,6 +190,7 @@ private:
   std::vector<SBTEntry> m_rayGen;
   std::vector<SBTEntry> m_miss;
   std::vector<SBTEntry> m_hitGroup;
+  std::vector<SBTEntry> m_callable;
 
   /// For each category, the size of an entry in the SBT depends on the maximum number of resources
   /// used by the shaders in that category.The helper computes those values automatically in
@@ -192,6 +198,7 @@ private:
   uint32_t m_rayGenEntrySize;
   uint32_t m_missEntrySize;
   uint32_t m_hitGroupEntrySize;
+  uint32_t m_callableEntrySize;
 
   /// The program names are translated into program identifiers.The size in bytes of an identifier
   /// is provided by the device and is the same for all categories.
