@@ -7,11 +7,13 @@
 
 #include "../Common.h"
 #include <dxgi1_4.h>
+#include <dxgi1_5.h>
 
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_helpers.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
 
 struct DeviceContext {
     // ── Creation ─────────────────────────────────────────────────
@@ -35,6 +37,7 @@ struct DeviceContext {
     D3D12_CPU_DESCRIPTOR_HANDLE    CurrentRTV()   const;
     D3D12_CPU_DESCRIPTOR_HANDLE    DSV()          const;
     UINT                           FrameIndex()   const { return frameIndex; }
+    UINT                           BufferCount()  const { return bufferCount; }
     UINT                           Width()        const { return width; }
     UINT                           Height()       const { return height; }
     float                          AspectRatio()  const { return (float)width / (float)height; }
@@ -58,8 +61,8 @@ private:
     UINT  height = 0;
 
     ComPtr<IDXGISwapChain3>        swapChain;
-    ComPtr<ID3D12CommandAllocator> cmdAllocators[FRAME_COUNT];
-    ComPtr<ID3D12Resource>         renderTargets[FRAME_COUNT];
+    ComPtr<ID3D12CommandAllocator> cmdAllocators[MAX_BACK_BUFFERS];
+    ComPtr<ID3D12Resource>         renderTargets[MAX_BACK_BUFFERS];
 
     // RTV heap
     ComPtr<ID3D12DescriptorHeap>   rtvHeap;
@@ -71,8 +74,10 @@ private:
 
     // Sync
     ComPtr<ID3D12Fence>            fence;
-    UINT64                         fenceValues[FRAME_COUNT] = {};  // per-slot: last fence value signaled
-    UINT64                         nextFenceValue = 1;             // monotonically increasing
+    UINT64                         fenceValues[MAX_BACK_BUFFERS] = {};  // per-slot: last fence value signaled
+    UINT64                         nextFenceValue = 1;                  // monotonically increasing
     HANDLE                         fenceEvent = nullptr;
     UINT                           frameIndex = 0;
+    UINT                           bufferCount = FRAME_COUNT;           // actual swap chain buffer count (may differ from FRAME_COUNT with DLSS-G)
+    bool                           tearingSupported = false;
 };

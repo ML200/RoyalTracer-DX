@@ -108,7 +108,19 @@
       "Bash('C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe' --build out/build/x64-Debug --target Pathtracer)",
       "Bash(python -c ':*)",
       "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -c ':*)",
-      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -m pip install pdfplumber)"
+      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -m pip install pdfplumber)",
+      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" Pathtracer/rdn.sln -t:rdn -p:Configuration=Debug -p:Platform=x64 -noLogo -v:q)",
+      "Bash(cmake --build cmake-build-debug-visual-studio --target rdn)",
+      "Bash(\"C:\\\\Program Files\\\\CMake\\\\bin\\\\cmake.exe\" --build \"C:\\\\Users\\\\Malte\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\cmake-build-debug-visual-studio\" --target rdn)",
+      "Bash(where.exe cmake:*)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/cmake-build-debug-visual-studio\" --target rdn)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe\" --build \"C:/Users/Malte/Documents/GitHub/RoyalTracer-DX/Pathtracer/cmake-build-debug-visual-studio\")",
+      "Bash(ls /c/Python*/python.exe)",
+      "Read(//c/Users/Malte/AppData/Local/Programs/Python/**)",
+      "Read(//c/Users/Malte/AppData/Local/Microsoft/WindowsApps/**)",
+      "Bash(/c/Users/Malte/AppData/Local/Programs/Python/Python313/python.exe -c \"import pdfplumber; print\\('ok'\\)\")"
     ]
   }
 }

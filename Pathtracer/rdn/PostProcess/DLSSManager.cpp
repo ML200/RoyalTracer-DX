@@ -199,6 +199,7 @@ void DLSSManager::Evaluate(
     constants.depthInverted             = sl::Boolean::eFalse;
     constants.motionVectors3D           = sl::Boolean::eFalse;
     constants.motionVectorsJittered     = sl::Boolean::eFalse;
+    constants.cameraPinholeOffset       = { 0.5f, 0.5f };
     constants.reset = (jitterFrameIndex <= 1) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 
     {

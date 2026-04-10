@@ -70,6 +70,28 @@ void Renderer::InitDevice() {
             options.mode = sl::ReflexMode::eLowLatency;
             SL_CHECK(slReflexSetOptions(options));
         }
+
+        // Initialize DLSS Frame Generation
+        {
+            LUID luid = m_ctx.Device()->GetAdapterLuid();
+            sl::AdapterInfo ai;
+            ai.deviceLUID = (uint8_t*)&luid;
+            ai.deviceLUIDSizeInBytes = sizeof(LUID);
+            sl::Result sr = slIsFeatureSupported(sl::kFeatureDLSS_G, ai);
+            if (sr == sl::Result::eOk) {
+                m_dlssG.available = true;
+                // Query max generated frames from hardware
+                sl::DLSSGState gState{};
+                sl::DLSSGOptions gOpts{};
+                gOpts.mode = sl::DLSSGMode::eOff;
+                if (slDLSSGGetState(m_ctx.viewportHandle, gState, &gOpts) == sl::Result::eOk) {
+                    m_dlssG.maxFrames = std::max(1, (int)gState.numFramesToGenerateMax);
+                }
+                LOG(L"[DLSS-G] Feature supported, maxFrames=" << m_dlssG.maxFrames);
+            } else {
+                LOG(L"[DLSS-G] Not supported: " << (int)sr);
+            }
+        }
     } catch (const std::exception& e) {
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
@@ -125,9 +147,12 @@ void Renderer::InitSceneGPU() {
                 m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), IMGUI_FONT_HEAP_SLOT, inc);
             CD3DX12_GPU_DESCRIPTOR_HANDLE fontGpu(
                 m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), IMGUI_FONT_HEAP_SLOT, inc);
-            m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), FRAME_COUNT,
+            m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), m_ctx.BufferCount(),
                 m_srvUavHeap.Get(), fontCpu, fontGpu);
         }
+        // DLSS-G resources will be allocated on the first frame (after slSetConstants)
+        // because slAllocateResources requires constants to be set first.
+
         // Command list left open — EngineApp closes it.
     } catch (const std::exception& e) {
         wchar_t wMsg[4096];
@@ -204,7 +229,7 @@ void Renderer::UpdateRenderer(float dt) {
     // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_restirSettings, m_fps, m_frameStats);
+                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_fps, m_frameStats);
 
     // Prepare instance data on CPU shadow buffer (overlaps with GPU)
     auto t_instStart = hrc::now();
@@ -549,6 +574,13 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     if (newWidth == 0 || newHeight == 0) return;
     if (newWidth == m_width && newHeight == m_height) return;
 
+    // Disable DLSS-G before resize to avoid deadlock with present hook
+    if (m_dlssG.enabled) {
+        sl::DLSSGOptions gOpts{};
+        gOpts.mode = sl::DLSSGMode::eOff;
+        slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
+    }
+
     m_ctx.WaitForGPU();
 
     m_width       = newWidth;
@@ -585,6 +617,19 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
 
     // Disable temporal reuse on next frame (old reservoirs are stale)
     m_dlssModeChanged = true;
+
+    // Re-enable DLSS-G after resize
+    if (m_dlssG.enabled) {
+        sl::DLSSGOptions gOpts{};
+        gOpts.mode = sl::DLSSGMode::eOn;
+        gOpts.numFramesToGenerate = m_dlssG.framesToGenerate;
+        gOpts.numBackBuffers      = m_ctx.BufferCount();
+        gOpts.mvecDepthWidth      = m_dlss.RenderWidth();
+        gOpts.mvecDepthHeight     = m_dlss.RenderHeight();
+        gOpts.colorWidth          = newWidth;
+        gOpts.colorHeight         = newHeight;
+        slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
+    }
 
     LOG(L"[Resize] " << newWidth << L"x" << newHeight);
 }
@@ -711,6 +756,13 @@ void Renderer::RenderFrame() {
 // Destroy
 // ═════════════════════════════════════════════════════════════════
 void Renderer::DestroyRenderer() {
+    if (m_dlssG.enabled) {
+        sl::DLSSGOptions gOpts{};
+        gOpts.mode = sl::DLSSGMode::eOff;
+        slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
+        slFreeResources(sl::kFeatureDLSS_G, m_ctx.viewportHandle);
+        m_dlssG.enabled = false;
+    }
     m_editor.Shutdown();
     m_ctx.Shutdown();
 }
@@ -1135,6 +1187,23 @@ void Renderer::PopulateCommandList() {
                 m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame(),
                 m_camera.fovDegrees, m_camera.nearPlane, m_camera.farPlane);
 
+            // DLSS Frame Generation: set options every frame
+            if (m_dlssG.available && m_dlssG.enabled) {
+                sl::DLSSGOptions gOpts{};
+                gOpts.mode                = sl::DLSSGMode::eOn;
+                gOpts.numFramesToGenerate = m_dlssG.framesToGenerate;
+                gOpts.numBackBuffers      = m_ctx.BufferCount();
+                gOpts.mvecDepthWidth      = m_dlss.RenderWidth();
+                gOpts.mvecDepthHeight     = m_dlss.RenderHeight();
+                gOpts.colorWidth          = GetWidth();
+                gOpts.colorHeight         = GetHeight();
+                SL_CHECK(slDLSSGSetOptions(m_ctx.viewportHandle, gOpts));
+            } else if (m_dlssG.available && !m_dlssG.enabled) {
+                sl::DLSSGOptions gOpts{};
+                gOpts.mode = sl::DLSSGMode::eOff;
+                slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
+            }
+
             // Now safe to advance prev matrices for next frame
             m_camera.AdvanceFrame();
 
@@ -1192,6 +1261,31 @@ void Renderer::PopulateCommandList() {
         auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
         cmdList->ResourceBarrier(1, &b);
+    }
+
+    // ── DLSS-G: tag resources after back buffer has final content ──
+    if (m_dlssG.enabled) {
+        constexpr D3D12_RESOURCE_STATES stateUAV     = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        constexpr D3D12_RESOURCE_STATES statePresent  = D3D12_RESOURCE_STATE_PRESENT;
+        sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(),       (uint32_t)stateUAV);
+        sl::Resource slFgMVec (sl::ResourceType::eTex2d, m_dlss.MVec(),        (uint32_t)stateUAV);
+        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_dlss.Output(),      (uint32_t)stateUAV);
+        sl::Resource slFgBB   (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
+
+        sl::Extent renderExt { 0, 0, m_dlss.RenderWidth(),  m_dlss.RenderHeight()  };
+        sl::Extent displayExt{ 0, 0, m_dlss.DisplayWidth(), m_dlss.DisplayHeight() };
+        auto fgLife = sl::ResourceLifecycle::eValidUntilPresent;
+
+        sl::ResourceTag fgTags[] = {
+            { &slFgDepth, sl::kBufferTypeDepth,            fgLife, &renderExt  },
+            { &slFgMVec,  sl::kBufferTypeMotionVectors,    fgLife, &renderExt  },
+            { &slFgHud,   sl::kBufferTypeHUDLessColor,     fgLife, &displayExt },
+            { &slFgBB,    sl::kBufferTypeBackbuffer,        fgLife, &displayExt },
+            { nullptr,    sl::kBufferTypeUIColorAndAlpha,   fgLife, &displayExt },
+        };
+        // nullptr for cmdBuffer: docs say OK when all tags are eValidUntilPresent
+        SL_CHECK(slSetTagForFrame(*m_ctx.frameToken, m_ctx.viewportHandle,
+            fgTags, _countof(fgTags), nullptr));
     }
 }
 
