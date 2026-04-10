@@ -37,6 +37,8 @@ Light tree builds on the cpu. In case of dynamic lights / changes to brighness, 
 Unbiased ReSTIR DI/PT (only reconnection shift mapping) for both direct (DI) and indirect (GI) illumination. Each path uses temporal and spatial reservoir resampling with pairwise MIS for unbiased combination of canonical and neighbor samples. M-capping limits temporal history length. Temporal permutation sampling improves convergence by decorrelating reuse patterns across frames.
 
 ### Rendering Pipeline
+![Render pipeline diagram](media/pipeline.svg)
+
 Path tracer using new HitObj ray tracing with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
 1. **Raygen** -- Primary rays, multi-bounce path tracing with NEE. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
 2. **Temporal DI/GI** -- Temporal reservoir resampling. Using permutation sampling for temporal neighbor selection to break up temporal correlations that become very appearent in the denoiser.
