@@ -290,12 +290,14 @@ void Pass_raygen_v8()
 
                 if (cosSurf > 1e-6f && cosLight > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, L, dist * 0.999f))
                 {
-                    // Decompress after IsVisible — these were dead across the call
-                    float3 lKd = UnpackRGB9E5(matKdPk);
-                    float  lPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
-                    float  lPm = f16tof32_custom(matPrPmPk >> 16u);
+                    // Refetch material at full precision to keep F_gi consistent with ReconnectGI
+                    float3 lKd; float lPr, lPm;
+                    RefetchMaterial(matID, hinfo.uv, lKd, lPr, lPm);
                     float3 hitN = UnpackNormal(hitNormalPk);
                     float3 throughput = UnpackRGB9E5(throughputPk);
+
+                    // Recompute cosSurf with lossy normal for consistency with bdataNEE
+                    cosSurf = dot(hitN, L);
 
                     SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hitN, iors.x, iors.y, lKd, lPm);
                     BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitGNormal, L, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
@@ -347,10 +349,9 @@ void Pass_raygen_v8()
 
                 if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, sun.direction, 10000.0f))
                 {
-                    // Decompress after IsVisible
-                    float3 lKd = UnpackRGB9E5(matKdPk);
-                    float  lPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
-                    float  lPm = f16tof32_custom(matPrPmPk >> 16u);
+                    // Refetch material at full precision to keep F_gi consistent with ReconnectGI
+                    float3 lKd; float lPr, lPm;
+                    RefetchMaterial(matID, hinfo.uv, lKd, lPr, lPm);
                     float3 hitN = UnpackNormal(hitNormalPk);
                     float3 throughput = UnpackRGB9E5(throughputPk);
 
@@ -391,10 +392,8 @@ void Pass_raygen_v8()
                 }
             }
 
-            // Unpack for BSDF sampling below
-            hitLocalKd = UnpackRGB9E5(matKdPk);
-            hitLocalPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
-            hitLocalPm = f16tof32_custom(matPrPmPk >> 16u);
+            // Refetch material at full precision for BSDF sampling (throughput feeds into F_gi)
+            RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
             hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
@@ -413,7 +412,7 @@ void Pass_raygen_v8()
             : float3(0, 0, 0);
 
         // Update post-reconnection throughput for GI
-        if (depth >= 1)
+        if (depth >= 2)
         {
             uint px = MapPixelID(imgSize, pixel);
             float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
