@@ -15,7 +15,7 @@ struct Reservoir_GI
     float3 L2_gi;
     float3 V2_gi;
     float2 J_gi;
-    float  F_gi;
+    uint   F_gi;        // RGB9E5-packed contribution (replaces scalar luminance)
 
     // Reservoir bookkeeping
     float  W_gi;
@@ -125,7 +125,7 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store (gi_addr_matid(pixelIdx), r.matID_gi);
     buf.Store2(gi_addr_j(pixelIdx),     uint2(asuint(r.J_gi.x), asuint(r.J_gi.y)));
     buf.Store (gi_addr_w(pixelIdx),     asuint(r.W_gi));
-    buf.Store (gi_addr_f(pixelIdx),     asuint(r.F_gi));
+    buf.Store (gi_addr_f(pixelIdx),     r.F_gi);
     buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
     buf.Store (gi_addr_wsum(pixelIdx),  asuint(r.w_sum_gi));
 }
@@ -154,7 +154,7 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     uint2 j_raw = buf.Load2(gi_addr_j(pixelIdx));
     r.J_gi     = asfloat(j_raw);
     r.W_gi     = asfloat(buf.Load(gi_addr_w(pixelIdx)));
-    r.F_gi     = asfloat(buf.Load(gi_addr_f(pixelIdx)));
+    r.F_gi     = buf.Load(gi_addr_f(pixelIdx));
 
     r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
     r.w_sum_gi = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
@@ -239,9 +239,9 @@ float  load_W_gi(RWByteAddressBuffer b, uint pixelIdx)
     return asfloat(b.Load(gi_addr_w(pixelIdx)));
 }
 
-float  load_F_gi(RWByteAddressBuffer b, uint pixelIdx)
+uint   load_F_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load(gi_addr_f(pixelIdx)));
+    return b.Load(gi_addr_f(pixelIdx));
 }
 
 
@@ -274,9 +274,9 @@ void store_W_gi(RWByteAddressBuffer b, uint pixelIdx, float W)
     b.Store(gi_addr_w(pixelIdx), asuint(W));
 }
 
-void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, float F)
+void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, uint F)
 {
-    b.Store(gi_addr_f(pixelIdx), asuint(F));
+    b.Store(gi_addr_f(pixelIdx), F);
 }
 
 
@@ -431,7 +431,7 @@ bool UpdateReservoirGI(
     in uint objID,
 
     in float2 J,
-    in float  F,
+    in uint   F,
 
     inout uint2 seed
 )

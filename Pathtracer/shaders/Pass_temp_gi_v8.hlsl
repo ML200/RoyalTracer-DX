@@ -150,10 +150,11 @@ void Pass_temp_gi_v8()
                 float J1  = 1.0f, J2 = 1.0f;
 
                 const float visReuse_c = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-                const float p_c = rdi.F_gi * visReuse_c;
+                const float p_c = GetPHat(UnpackRGB9E5(rdi.F_gi)) * visReuse_c;
 
                 float p_n = 0.0f;
                 float n_c = 0.0f;
+                float3 contrib_n_from_me = 0;
 
                 // p_n: reconnect from neighbor vertex to current GI reservoir sample
                 {
@@ -198,11 +199,13 @@ void Pass_temp_gi_v8()
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
-                      n_c = ph * ((_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                      n_c = ph * vis_n;
+                      contrib_n_from_me = c * vis_n; }
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
-                const float n_n = rdi_r.F_gi * visReuse_n;
+                const float n_n = GetPHat(UnpackRGB9E5(rdi_r.F_gi)) * visReuse_n;
 
                 // Dynamic M caps
                 float sdata_Pr = myPr;
@@ -227,6 +230,7 @@ void Pass_temp_gi_v8()
 
                 rdi.w_sum_gi = w_c;
 
+                uint F_gi_winner = rdi.F_gi;
                 p_hat_final = p_c;
                 if (UpdateReservoirGI(
                         rdi,
@@ -243,6 +247,7 @@ void Pass_temp_gi_v8()
                 {
                     p_hat_final = n_c;
                     rdi.J_gi.y  = Jn;
+                    F_gi_winner = PackRGB9E5(contrib_n_from_me);
                 }
 
                 if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f)
@@ -258,7 +263,7 @@ void Pass_temp_gi_v8()
 
                 boilValue = p_hat_final * rdi.W_gi;
 
-                rdi.F_gi = p_hat_final;
+                rdi.F_gi = F_gi_winner;
             }
         }
     }
