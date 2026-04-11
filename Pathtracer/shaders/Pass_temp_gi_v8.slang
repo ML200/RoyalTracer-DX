@@ -74,10 +74,6 @@ void Pass_temp_gi_v8()
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
 
-    // Debug: slice 6 = specular reprojection (blue=spec, red=diff), slice 7 = specularity
-    gOutput[uint3(launchIndex, 6)] = float4(useSpecReproj ? 0.0f : 1.0f, 0.0f, useSpecReproj ? 1.0f : 0.0f, 1.0f);
-    gOutput[uint3(launchIndex, 7)] = float4(specularity, specularity, specularity, 1.0f);
-
     // --- permuted candidate ---
     int2 permCoord = baseCoord;
     bool permInBounds = false;

@@ -80,7 +80,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssMVec[curPix] = emMV;
             biasMV = emMV;
             isEmitterSurface = true;
-            gOutput[uint3(DTid.xy, 10)] = float4(abs(emMV), 0.0f, 1.0f);
 
             // Provide real geometric normal so DLSS-RR can do proper edge detection
             float3 emNormal = load_n1_g_with_instID(g_sample_current, pixelIdx, emInstID);
@@ -108,7 +107,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
             g_dlssMVec[DTid.xy] = skyMV;
             biasMV = skyMV;
-            gOutput[uint3(DTid.xy, 10)] = float4(abs(skyMV), 0.0f, 1.0f);
         }
 
         biasInstID = emInstID;
@@ -121,8 +119,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssRoughness[DTid.xy] = 1.0f;
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 10000.0f;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
-        gOutput[uint3(DTid.xy, 4)] = float4(0, 0, 0, 1);
-        gOutput[uint3(DTid.xy, 5)] = float4(0, 0, 0, 1);
 
         // Clamp emitter/sky radiance before DLSS-RR to prevent ghosting/ringing
         g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
@@ -151,7 +147,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
 
         g_dlssMVec[curPix] = mvPixels;
-        gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels), 0.0f, 1.0f);
 
         biasInstID = sInstID;
         biasMV = mvPixels;
@@ -185,11 +180,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
         }
         g_dlssSpecMVec[DTid.xy] = specMV;
-
-        // Debug: slice 5 = spec MV divergence from surface MV
-        gOutput[uint3(DTid.xy, 4)] = float4(specularity, specularity, specularity, 1.0f);
-        float2 mvDiff = abs(specMV - mvPixels);
-        gOutput[uint3(DTid.xy, 5)] = float4(saturate(mvDiff * 0.1f), validSpecReproj ? 1.0f : 0.0f, 1.0f);
 
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
@@ -226,4 +216,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
         }
     }
+
+    // ── Debug view (slice 3) — written by Pass_npg_debug, default to black ──
+    gOutput[uint3(DTid.xy, 3)] = float4(0, 0, 0, 1);
 }

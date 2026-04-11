@@ -53,17 +53,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
-    // Load output slices
+    // Load output slices: 0=noisy, 1=dlss, 2=accumulated, 3=debug
     float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
     float3 clean = g_dlssOutput[DTid.xy].xyz;
-    float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
+    float3 gt    = gOutput[uint3(DTid.xy, 2)].xyz;
+    float3 debug = gOutput[uint3(DTid.xy, 3)].xyz;
 
-    // Apply gamma correction
+    // Apply gamma correction (debug is already in display-linear, pass through)
     noisy = sRGBGammaCorrection(noisy);
-    clean =  sRGBGammaCorrection(clean);
-    gt =  sRGBGammaCorrection(gt);
+    clean = sRGBGammaCorrection(clean);
+    gt    = sRGBGammaCorrection(gt);
 
     gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
+    gOutput[uint3(DTid.xy, 3)] = float4(debug, 0.0f);
 }

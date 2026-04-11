@@ -178,6 +178,14 @@ private:
     D3D12_GPU_DESCRIPTOR_HANDLE    m_sortCountGpuHandle{}, m_sortOffsetGpuHandle{}, m_sortBoundsGpuHandle{};
     D3D12_CPU_DESCRIPTOR_HANDLE    m_sortCountCpuHandle{}, m_sortOffsetCpuHandle{}, m_sortBoundsCpuHandle{};
 
+    // Neural Path Guiding (NPG/NASG) buffers — u24-u28
+    ComPtr<ID3D12Resource>         m_npgWeights;      // u24: float[3269] - NASG MLP weights+bias (13076 bytes)
+    ComPtr<ID3D12Resource>         m_npgGradients;    // u25: float[3269] - accumulated gradients
+    ComPtr<ID3D12Resource>         m_npgAdamM;        // u26: float[3269] - Adam first moment
+    ComPtr<ID3D12Resource>         m_npgAdamV;        // u27: float[3269] - Adam second moment
+    ComPtr<ID3D12Resource>         m_npgCounters;     // u28: uint[8]     - sample count + adam_t
+    bool                           m_npgInitialized = false;
+
     void CreateStreamingCompactionBuffers();
     void CreateIndirectCommandSignature();
     void CompileSetupIndirectShader();
@@ -190,7 +198,7 @@ private:
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
     UINT m_currentDisplayLevel = 0;
-    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4, 5, 6, 7, 10 };
+    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 }; // noisy, dlss, accumulated, debug
 
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;

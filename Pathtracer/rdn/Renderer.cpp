@@ -28,6 +28,10 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_spat_gi_select_v8.slang|cs:16x16", L"barrier",
         L"Pass_spat_gi_v8_1.slang|rg", L"barrier",
         L"Pass_shading_v8.slang|cs:16x16",   L"barrier",
+        // Neural Path Guiding: gradient accumulation → Adam update → debug vis
+        L"Pass_npg_train.slang|fx:64",      L"barrier",
+        L"Pass_npg_adam.slang|fx:13",        L"barrier",
+        L"Pass_npg_debug.slang|cs:16x16",   L"barrier",
         L"dlss",                             L"barrier",
         L"Pass_postprocess_v8.slang|cs:8x4",  L"barrier",
     });
@@ -605,6 +609,9 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     m_sampleBuffer_last.Reset();
     m_initialBSDFRayBuffer.Reset();
     m_pathStateBuffer.Reset();
+    m_npgWeights.Reset(); m_npgGradients.Reset();
+    m_npgAdamM.Reset(); m_npgAdamV.Reset(); m_npgCounters.Reset();
+    m_npgInitialized = false;
     for (int i = 0; i < MAX_STACKS; ++i)
         m_stackBuffers[i].Reset();
 
@@ -1019,6 +1026,29 @@ void Renderer::PopulateCommandList() {
       auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(),
           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       cmdList->ResourceBarrier(1, &b2); }
+
+    // ��─ NPG weight initialization (one-shot) ─────────────────────
+    if (!m_npgInitialized) {
+        // Find the NPG init PSO (compiled separately, not in pipeline)
+        static ComPtr<ID3D12PipelineState> s_npgInitPSO;
+        if (!s_npgInitPSO) {
+            ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(L"Pass_npg_init.slang", L"main");
+            D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
+            desc.pRootSignature = m_computeSignature.Get();
+            desc.CS = { cs->GetBufferPointer(), cs->GetBufferSize() };
+            ThrowIfFailed(m_ctx.Device()->CreateComputePipelineState(&desc, IID_PPV_ARGS(&s_npgInitPSO)));
+        }
+        cmdList->SetPipelineState(s_npgInitPSO.Get());
+        cmdList->SetComputeRootSignature(m_computeSignature.Get());
+        cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
+        UINT initConsts[20] = {}; initConsts[0] = GetWidth(); initConsts[1] = GetHeight();
+        cmdList->SetComputeRoot32BitConstants(1, 20, initConsts, 0);
+        cmdList->Dispatch(13, 1, 1);  // ceil(3269/256) = 13 groups
+        auto uavBarrier = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        cmdList->ResourceBarrier(1, &uavBarrier);
+        m_npgInitialized = true;
+        OutputDebugStringA("NPG: Weights initialized\n");
+    }
 
     // ── Execute pass pipeline ────────────────────────────────────
     uint32_t currentStack = 0, nextStack = 1;

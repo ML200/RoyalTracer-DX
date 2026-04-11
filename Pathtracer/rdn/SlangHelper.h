@@ -488,6 +488,7 @@ inline IDxcBlob* CompileSlangShader(
     dxcArgs.push_back(L"-HV");
     dxcArgs.push_back(L"2021");
     dxcArgs.push_back(L"-Wno-unknown-attributes");
+    dxcArgs.push_back(L"-Zi");  // Embed debug info for Nsight/PIX
 
     Microsoft::WRL::ComPtr<IDxcResult> dxcResult;
     HRESULT hr = dxcCompiler->Compile(&sourceBuffer, dxcArgs.data(), (UINT32)dxcArgs.size(),
@@ -559,7 +560,7 @@ inline IDxcBlob* CompileSlangDirectDXIL(
 
     // Build slangc command for direct DXIL emission
     std::string cmd = "slangc.exe " + cleanFileName +
-        " -target dxil -profile " + std::string(slangProfile) + " -DMAX_REGS=96";
+        " -target dxil -profile " + std::string(slangProfile) + " -DMAX_REGS=96 -g";
 
     // For library targets (sEntry empty), scan for entry points
     if (!sEntry.empty())

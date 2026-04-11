@@ -271,6 +271,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Neural Path Guiding: u24-u27 (weights, gradients, adam_m, adam_v) + u28 (counters)
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 24, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     rootParameters[1].InitAsConstants(20, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -517,6 +519,16 @@ void Renderer::CreateRaytracingOutputBuffer() {
     MakeRaw(m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay),L"InitialBSDFRay");
 
     CreatePathStateBuffer();
+
+    // Neural Path Guiding (NASG): weight buffer (3269 float32 = 13076 bytes)
+    // Includes output bias (37 params). Training via Pass_npg_train + Pass_npg_adam.
+    static const UINT NPG_WEIGHT_BYTES = 3269 * 4;  // 13076
+    MakeRaw(m_npgWeights,   NPG_WEIGHT_BYTES, L"NPG_Weights");
+    MakeRaw(m_npgGradients, NPG_WEIGHT_BYTES, L"NPG_Gradients");
+    MakeRaw(m_npgAdamM,     NPG_WEIGHT_BYTES, L"NPG_AdamM");
+    MakeRaw(m_npgAdamV,     NPG_WEIGHT_BYTES, L"NPG_AdamV");
+    MakeRaw(m_npgCounters,  64,               L"NPG_Counters");
+    m_npgInitialized = false;
 }
 
 void Renderer::CreatePathStateBuffer() {
@@ -775,6 +787,13 @@ void Renderer::CreateShaderResourceHeap() {
     { auto [c,g] = sortUAV(m_sortCountBuffer,  SORT_BUCKETS); m_sortCountCpuHandle  = c; m_sortCountGpuHandle  = g; }
     { auto [c,g] = sortUAV(m_sortOffsetBuffer, SORT_BUCKETS); m_sortOffsetCpuHandle = c; m_sortOffsetGpuHandle = g; }
     { auto [c,g] = sortUAV(m_sortBoundsBuffer, 8);            m_sortBoundsCpuHandle = c; m_sortBoundsGpuHandle = g; }
+
+    // Neural Path Guiding UAVs (u24-u28)
+    rawUAV(m_npgWeights,   3269 * 4);  // u24: NASG MLP weights+bias (13076 bytes)
+    rawUAV(m_npgGradients, 3269 * 4);  // u25: accumulated gradients
+    rawUAV(m_npgAdamM,     3269 * 4);  // u26: Adam first moment
+    rawUAV(m_npgAdamV,     3269 * 4);  // u27: Adam second moment
+    rawUAV(m_npgCounters,  64);        // u28: sample count + adam_t
 
     // Bindless textures
     UINT globalTexIdx = 0;

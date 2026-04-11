@@ -1,4 +1,8 @@
 #include "Includes_raygen_v8.slang"
+#include "NPG_common.slang"
+
+// Neural Path Guiding weight buffer (trained inline, Hogwild! SGD)
+RWByteAddressBuffer g_npgWeights : register(u24);
 
 #ifndef MAX_BOUNCES
 #define MAX_BOUNCES 10
@@ -49,6 +53,24 @@ void Pass_raygen_v8()
         aiorP.mat32 = PackMatStack(a0.matID_stack);
         aiorP.obj32 = PackObjStack(a0.objID_stack);
     }
+
+    // ── NPG: best indirect training sample (selected after path completes) ──
+    // Tile-based 1/16 subsampling for wave coherence: all threads in an 8×4 tile
+    // make the same decision, so entire warps train or skip with zero divergence.
+    // The selected tile-phase rotates each frame via `time`.
+    bool npg_active;
+    {
+        uint2 tile = DispatchRaysIndex().xy / uint2(8, 4);  // tile coords
+        uint  tileHash = Hash32(tile.x ^ (tile.y * 0x9E3779B9u));
+        npg_active = ((tileHash + (uint)time) & 15u) == 0u;
+    }
+    float  npg_bestW = 0.0f;
+    float3 npg_pos   = float3(0, 0, 0);
+    uint   npg_nPk   = 0, npg_woPk = 0, npg_dirPk = 0;
+    float  npg_rough  = 0.5f;
+    // Previous surface state (for BSDF emitter hit training)
+    uint   npg_prevWoPk   = 0;  // 0 = invalid sentinel
+    float  npg_prevRough  = 0.5f;
 
     // ── Bounce loop ────────────────────────────────────────────────────
     [loop]
@@ -114,6 +136,21 @@ void Pass_raygen_v8()
 
                 if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, J_new, V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
+            }
+
+            // ── NPG: track best indirect env map hit ──
+            if (npg_active && depth >= 2 && npg_prevWoPk != 0)
+            {
+                float rw = Luma(T_envL);
+                if (rw > npg_bestW)
+                {
+                    npg_bestW = rw;
+                    npg_pos = rayOrigin;
+                    npg_nPk = prevNormalPk;
+                    npg_woPk = npg_prevWoPk;
+                    npg_dirPk = PackNormal(rayDir);
+                    npg_rough = npg_prevRough;
+                }
             }
             break;
         }
@@ -243,6 +280,22 @@ void Pass_raygen_v8()
                 if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, float2(0.0f, gi_J.x * gi_J.y), V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
             }
+
+            // ── NPG: track best indirect BSDF emitter hit ──
+            // The surface that chose the direction is the PREVIOUS bounce
+            if (npg_active && depth >= 2 && npg_prevWoPk != 0)
+            {
+                float rw = Luma(throughput * emission) * misWeight;
+                if (rw > npg_bestW)
+                {
+                    npg_bestW = rw;
+                    npg_pos = rayOrigin;          // previous surface position
+                    npg_nPk = prevNormalPk;        // previous surface normal
+                    npg_woPk = npg_prevWoPk;       // wo at previous surface
+                    npg_dirPk = PackNormal(rayDir); // BSDF-sampled direction
+                    npg_rough = npg_prevRough;     // roughness at previous surface
+                }
+            }
             break;
         }
 
@@ -336,6 +389,21 @@ void Pass_raygen_v8()
                             if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, J_new, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
+
+                        // ── NPG: track best indirect NEE (point light) ──
+                        if (npg_active && depth >= 1)
+                        {
+                            float rw = Luma(throughput * light.emission * bdataNEE.val * cosSurf / lightPdf) * misWeight;
+                            if (rw > npg_bestW)
+                            {
+                                npg_bestW = rw;
+                                npg_pos = hitPos;
+                                npg_nPk = PackNormal(hitN);
+                                npg_woPk = PackNormal(-rayDir);
+                                npg_dirPk = PackNormal(L);
+                                npg_rough = lPr;
+                            }
+                        }
                     }
                 }
             }
@@ -390,6 +458,21 @@ void Pass_raygen_v8()
                             if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, J_new, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
+
+                        // ── NPG: track best indirect NEE (sun) ──
+                        if (npg_active && depth >= 1)
+                        {
+                            float rw = Luma(contrib) * misWeight;
+                            if (rw > npg_bestW)
+                            {
+                                npg_bestW = rw;
+                                npg_pos = hitPos;
+                                npg_nPk = PackNormal(hitN);
+                                npg_woPk = PackNormal(-rayDir);
+                                npg_dirPk = PackNormal(sun.direction);
+                                npg_rough = lPr;
+                            }
+                        }
                     }
                 }
             }
@@ -422,6 +505,10 @@ void Pass_raygen_v8()
         // Validate before continuing
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
+
+        // NPG: store current surface data for BSDF emitter training at next bounce
+        npg_prevWoPk  = PackNormal(-rayDir);  // wo = direction back toward previous surface
+        npg_prevRough = hitLocalPr;
 
         // Advance path state
         prev_pdf    = bdata.pdf;
@@ -457,6 +544,8 @@ void Pass_raygen_v8()
         }
         prevNormalPk = PackNormal(hinfo.hitNormal);
     }
+
+    // NPG training is now handled by Pass_npg_train (gradient accumulation + Adam)
 
     // ── Final reservoir weight computation ─────────────────────────────
     uint pixelIdx = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
