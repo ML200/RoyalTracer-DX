@@ -328,7 +328,6 @@ void Renderer::CreateRaytracingPipeline() {
     m_hitSignature     = CreateHitSignature();
     pipeline.SetGlobalRootSignature(m_rayGenSignature.Get());
 
-    m_rayGenLibs.clear();
     m_csPSOs.clear();
     m_callableShaderNames.clear();
     uint32_t nextCs = 0, rgSlot = 0;
@@ -421,7 +420,6 @@ void Renderer::CreateRaytracingPipeline() {
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
         ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
-        m_rayGenLibs.push_back(lib);
         pipeline.AddLibrary(lib.Get(), { base.c_str() });
         m_passes.RegisterPassIndex(p.file, rgSlot);
         rgSlot++;

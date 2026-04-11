@@ -134,7 +134,6 @@ private:
     ComPtr<ID3D12StateObjectProperties> m_rtStateObjectProps;
     std::vector<ComPtr<ID3D12PipelineState>> m_csPSOs;
     std::vector<std::wstring>         m_callableShaderNames;
-    std::vector<ComPtr<IDxcBlob>>     m_rayGenLibs;
     nv_helpers_dx12::ShaderBindingTableGenerator m_sbtHelper;
     ComPtr<ID3D12Resource>            m_sbtStorage;
 
