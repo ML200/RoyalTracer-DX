@@ -2,9 +2,9 @@
 #define VOLUME_STACK_PACKED_V2_HLSLI
 
 // VolumeIOR: uint2 with 2x PackIORPair (each contains 2x 15-bit IOR + hidden pointer bits)
-// VolumeAux: uint2 mat stack (4x 16-bit) + uint obj stack (4x 8-bit)
+// VolumeAux: uint4 mat stack (4x 32-bit) + uint4 obj stack (4x 32-bit)
 struct VolumeIOR_Packed { uint2 raw; };
-struct VolumeAux_Packed { uint2 mat16; uint obj8; };
+struct VolumeAux_Packed { uint4 mat32; uint4 obj32; };
 
 // -----------------------------------------------------------------------------
 // Helpers: pointer bits are hidden in bit15 and bit31 of each 32-bit word.
@@ -95,45 +95,28 @@ inline bool SlotOccupied_packed(VolumeIOR_Packed v, int slot)
 // -----------------------------------------------------------------------------
 inline uint GetMatAtSlot_packed(VolumeAux_Packed a, int slot)
 {
-    uint w = (slot < 2) ? a.mat16.x : a.mat16.y;
-    uint shift = (uint)(slot & 1) * 16u;
-    return (w >> shift) & 0xFFFFu;
+    return a.mat32[slot];
 }
 
 inline void SetMatAtSlot_packed(inout VolumeAux_Packed a, int slot, uint matID)
 {
-    matID &= 0xFFFFu;
-    uint shift = (uint)(slot & 1) * 16u;
-    uint mask  = 0xFFFFu << shift;
-
-    if (slot < 2) a.mat16.x = (a.mat16.x & ~mask) | (matID << shift);
-    else          a.mat16.y = (a.mat16.y & ~mask) | (matID << shift);
+    a.mat32[slot] = matID;
 }
 
-inline uint GetObj8AtSlot_packed(VolumeAux_Packed a, int slot)
+inline uint GetObjAtSlot_packed(VolumeAux_Packed a, int slot)
 {
-    uint shift = (uint)slot * 8u;
-    return (a.obj8 >> shift) & 0xFFu;
+    return a.obj32[slot];
 }
 
-inline void SetObj8AtSlot_packed(inout VolumeAux_Packed a, int slot, uint obj8)
+inline void SetObjAtSlot_packed(inout VolumeAux_Packed a, int slot, uint objID)
 {
-    obj8 &= 0xFFu;
-    uint shift = (uint)slot * 8u;
-    uint mask  = 0xFFu << shift;
-    a.obj8 = (a.obj8 & ~mask) | (obj8 << shift);
-}
-
-// 8-bit boundary ID (by design). Replace this with a better 8-bit hash if needed.
-inline uint BoundaryObj8_packed(uint surfaceObjID)
-{
-    return surfaceObjID & 0xFFu;
+    a.obj32[slot] = objID;
 }
 
 inline bool BoundaryMatch_packed(VolumeAux_Packed a, int slot, uint surfaceMatID, uint surfaceObjID)
 {
-    return (GetMatAtSlot_packed(a, slot) == (surfaceMatID & 0xFFFFu)) &&
-           (GetObj8AtSlot_packed(a, slot) == BoundaryObj8_packed(surfaceObjID));
+    return (GetMatAtSlot_packed(a, slot) == surfaceMatID) &&
+           (GetObjAtSlot_packed(a, slot) == surfaceObjID);
 }
 
 // -----------------------------------------------------------------------------
@@ -226,7 +209,7 @@ inline void UpdateIORStack_packed(
         // EXIT
         SetIORAtSlot_packed(vIOR, existing_slot, 0.0f);
         SetMatAtSlot_packed(vAux, existing_slot, 0u);
-        SetObj8AtSlot_packed(vAux, existing_slot, 0u);
+        SetObjAtSlot_packed(vAux, existing_slot, 0u);
     }
     else if (empty_slot >= 0)
     {
@@ -234,7 +217,7 @@ inline void UpdateIORStack_packed(
         float ni = materials[surfaceMatID].Ni;
         SetIORAtSlot_packed(vIOR, empty_slot, ni);
         SetMatAtSlot_packed(vAux, empty_slot, surfaceMatID);
-        SetObj8AtSlot_packed(vAux, empty_slot, BoundaryObj8_packed(surfaceObjID));
+        SetObjAtSlot_packed(vAux, empty_slot, surfaceObjID);
     }
 
     // Recompute pointer = max IOR
@@ -260,8 +243,8 @@ inline void UpdateIORStack_packed(
 inline uint GetCurrentMediumMaterialID_packed(VolumeIOR_Packed vIOR, VolumeAux_Packed vAux)
 {
     int ptr = GetVolumePtrFast_packed(vIOR);
-    // 15-bit invalid sentinel (masked to 15 bits)
-    return (ptr >= 0 && ptr < 4) ? GetMatAtSlot_packed(vAux, ptr) : 0x7FFFu;
+    // Invalid sentinel (no medium)
+    return (ptr >= 0 && ptr < 4) ? GetMatAtSlot_packed(vAux, ptr) : 0xFFFFFFFFu;
 }
 
 #endif // VOLUME_STACK_PACKED_V2_HLSLI

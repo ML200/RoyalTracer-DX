@@ -103,32 +103,10 @@ void Pass_temp_gi_v8()
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
+    // 1) Try the permuted sample
     if (permInBounds)
-    {
-        tempPixelIdx = MapPixelID(dims_f, (uint2)permCoord);
-
-        // Tiered rejection against last-frame data
-        bool reject = load_isEmitter(g_sample_last, tempPixelIdx);
-        if (!reject)
-        {
-            rInstID = load_instID(g_sample_last, tempPixelIdx);
-            rPrimID = load_primID(g_sample_last, tempPixelIdx);
-            if (GetMatIDFast(rInstID, rPrimID) != myMatID) reject = true;
-        }
-        if (!reject)
-        {
-            float3 n1s_r = load_n1_s_with_instID(g_sample_last, tempPixelIdx, rInstID);
-            if (RejectNormal_GI(myN1s, n1s_r, 0.36f)) reject = true;
-        }
-        if (!reject)
-        {
-            rBary = load_bary(g_sample_last, tempPixelIdx);
-            float3 x1_r = ReconstructPosition(rInstID, rPrimID, rBary);
-            if (RejectDistance_GI(myPos, x1_r, myN1s, 0.4f)) reject = true;
-        }
-        if (!reject)
-            valid = true;
-    }
+        valid = TestTemporalCandidate_GI(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
+                                         tempPixelIdx, rInstID, rPrimID, rBary);
 
     [branch]
     if (valid)

@@ -59,24 +59,22 @@ void UnpackIORStackAndPtr(uint2 packed, out float stack[4], out int ptr) {
     ptr = (int)p - 1;
 }
 
-// --- Material IDs (16-bit) ---
-uint2 PackMatStack16(uint stack[4]) {
-    return uint2((stack[0] & 0xFFFF) | (stack[1] << 16),
-                 (stack[2] & 0xFFFF) | (stack[3] << 16));
+// --- Material IDs (full 32-bit) ---
+uint4 PackMatStack(uint stack[4]) {
+    return uint4(stack[0], stack[1], stack[2], stack[3]);
 }
 
-void UnpackMatStack16(uint2 packed, out uint stack[4]) {
-    stack[0] = packed.x & 0xFFFF; stack[1] = packed.x >> 16;
-    stack[2] = packed.y & 0xFFFF; stack[3] = packed.y >> 16;
+void UnpackMatStack(uint4 packed, out uint stack[4]) {
+    stack[0] = packed.x; stack[1] = packed.y;
+    stack[2] = packed.z; stack[3] = packed.w;
 }
 
-// --- Priorities (8-bit) ---
-uint PackPrioStack8(uint stack[4]) {
-    return (stack[0] & 0xFF) | ((stack[1] & 0xFF) << 8) |
-           ((stack[2] & 0xFF) << 16) | ((stack[3] & 0xFF) << 24);
+// --- Object IDs (full 32-bit) ---
+uint4 PackObjStack(uint stack[4]) {
+    return uint4(stack[0], stack[1], stack[2], stack[3]);
 }
 
-void UnpackPrioStack8(uint packed, out uint stack[4]) {
-    stack[0] = packed & 0xFF; stack[1] = (packed >> 8) & 0xFF;
-    stack[2] = (packed >> 16) & 0xFF; stack[3] = (packed >> 24) & 0xFF;
+void UnpackObjStack(uint4 packed, out uint stack[4]) {
+    stack[0] = packed.x; stack[1] = packed.y;
+    stack[2] = packed.z; stack[3] = packed.w;
 }

@@ -4,8 +4,8 @@
 #define MAX_BOUNCES 10
 #endif
 
-#ifndef MEDIUM_INVALID_15
-#define MEDIUM_INVALID_15 0x7FFFu
+#ifndef MEDIUM_INVALID
+#define MEDIUM_INVALID 0xFFFFFFFFu
 #endif
 
 [shader("raygeneration")]
@@ -46,8 +46,8 @@ void Pass_raygen_v8()
         VolumeIOR v0 = InitVolumeIOR();
         VolumeAux a0 = InitVolumeAux();
         viorP.raw   = PackIORStackAndPtr(v0.ior_stack, v0.pointer);
-        aiorP.mat16 = PackMatStack16(a0.matID_stack);
-        aiorP.obj8  = PackPrioStack8(a0.objID_stack);
+        aiorP.mat32 = PackMatStack(a0.matID_stack);
+        aiorP.obj32 = PackObjStack(a0.objID_stack);
     }
 
     // ── Bounce loop ────────────────────────────────────────────────────
@@ -136,7 +136,6 @@ void Pass_raygen_v8()
         }
 
         uint mediumMatID = GetCurrentMediumMaterialID_packed(viorP, aiorP);
-        if (mediumMatID == 0x0000FFFFu) mediumMatID = MEDIUM_INVALID_15;
 
         BuiltInTriangleIntersectionAttributes attr;
         hitObj.GetAttributes(attr);
@@ -147,7 +146,7 @@ void Pass_raygen_v8()
         RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
 
         // Volume absorption
-        float3 absorptionTint = (mediumMatID != MEDIUM_INVALID_15)
+        float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
             ? CalculateAbsorptionThroughput(materials[mediumMatID].Tf, hitT)
             : float3(1, 1, 1);
 
@@ -158,8 +157,8 @@ void Pass_raygen_v8()
         {
             uint px = MapPixelID(imgSize, pixel);
             bool isEmitter = any(emission > 0.0f);
-            store_instID(g_sample_current, px, instID, isEmitter);
-            store_primID(g_sample_current, px, primID);
+            store_instID(g_sample_current, px, instID);
+            store_primID(g_sample_current, px, primID, isEmitter);
             store_bary(g_sample_current, px, attr.barycentrics);
             store_etai_etat(g_sample_current, px, iors.x, iors.y);
             store_n1_g_world(g_sample_current, px, hinfo.hitGNormal, instID);
@@ -270,7 +269,7 @@ void Pass_raygen_v8()
         //   hitLocalKd(3)+hitLocalPr(1)+hitLocalPm(1) → matPk(2 uints)
         //   hinfo.hitNormal(3) → hitNormalPk(1 uint) — IsVisible only needs hitGNormal
         //   throughput stays packed as throughputPk — decompress only after IsVisible
-        bool performNEE = !(mediumMatID != MEDIUM_INVALID_15 || materials[matID].Kd.w < EPSILON);
+        bool performNEE = !(mediumMatID != MEDIUM_INVALID || materials[matID].Kd.w < EPSILON);
 
         uint matKdPk, matPrPmPk, hitNormalPk;
         if (performNEE)

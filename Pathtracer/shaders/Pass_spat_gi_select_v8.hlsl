@@ -46,26 +46,22 @@ void main(uint3 tid : SV_DispatchThreadID)
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
-    // Budgeting
-    const float M_c_raw = load_M_gi(g_Reservoirs_current_gi, pixelIdx);
-    const float conf = min(60.0f, M_c_raw) / max(1u, rs_tempMcapGI);
-
-    const uint nbrBudget = min(rs_spatCountMaxGI, SPAT_COUNT_MAX_GI);
-
-    const uint radiusBudget =
-        rs_spatRadMinGI +
-        uint((1.0f - conf) * float(rs_spatRadMaxGI - rs_spatRadMinGI) + 0.5f);
-
-    // Neighbor selection
+    // Neighbor selection: up to 2 neighbors, rs_spatTriesGI total attempts.
+    // Radius shrinks linearly from rs_spatRadMaxGI to rs_spatRadMinGI over all tries.
     uint  nIds[SPAT_COUNT_MAX_GI];
     uint  validCount = 0;
     float M_sum      = 0.0f;
 
+    const uint totalTries = max(2u, rs_spatTriesGI);
+
     [loop]
-    for (uint i = 0; i < nbrBudget; ++i)
+    for (uint i = 0; i < totalTries && validCount < SPAT_COUNT_MAX_GI; ++i)
     {
+        float t = float(i) / float(totalTries - 1u);
+        uint  radius = (uint)lerp(float(rs_spatRadMaxGI), float(rs_spatRadMinGI), t);
+
         const uint iID = GetRandomPixelCircleWeighted(
-            radiusBudget, dims.x, dims.y,
+            radius, dims.x, dims.y,
             launchIndex.x, launchIndex.y,
             seed);
 

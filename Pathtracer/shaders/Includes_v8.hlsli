@@ -27,8 +27,8 @@ cbuffer Push : register(b1)
     uint  rs_flags;            // [14] bit0=tempDI, bit1=tempGI, bit2=spatDI, bit3=spatGI
     float rs_reuseRoughnessMin;// [15]
     float rs_reuseRoughnessMax;// [16]
-    uint  _pad17;              // [17]
-    uint  _pad18;              // [18]
+    uint  rs_spatTriesGI;      // [17] total attempts to find GI spatial neighbors
+    uint  rs_spatTriesDI;      // [18] total attempts to find DI spatial neighbor
     uint  _pad19;              // [19]
 };
 
@@ -158,6 +158,100 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Reservoir_GI_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
+
+// Temporal candidate tests (depend on GetMatIDFast from Inline_RT and ReconstructPosition from SurfaceVertex)
+inline bool TestTemporalCandidate_DI(
+    int2   coord,
+    float2 dims,
+    RWByteAddressBuffer sampleBuf,
+    uint   myMatID,
+    float3 myN1g,
+    float3 myPos,
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
+{
+    outPixelIdx = 0xFFFFFFFFu;
+    outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
+
+    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
+        return false;
+
+    uint tpx = MapPixelID(dims, (uint2)coord);
+
+    if (load_isEmitter(sampleBuf, tpx))
+        return false;
+
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
+
+    float3 ng = load_n1_g_with_instID(sampleBuf, tpx, rI);
+    if (RejectNormal_DI(myN1g, ng, 0.36f))
+        return false;
+
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
+    if (RejectDistance_DI(myPos, xr, myN1g, 0.4f))
+        return false;
+
+    outPixelIdx = tpx;
+    outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
+    return true;
+}
+
+inline bool TestTemporalCandidate_GI(
+    int2   coord,
+    float2 dims,
+    RWByteAddressBuffer sampleBuf,
+    uint   myMatID,
+    float3 myN1s,
+    float3 myPos,
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
+{
+    outPixelIdx = 0xFFFFFFFFu;
+    outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
+
+    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
+        return false;
+
+    uint tpx = MapPixelID(dims, (uint2)coord);
+
+    if (load_isEmitter(sampleBuf, tpx))
+        return false;
+
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
+
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
+    if (RejectNormal_GI(myN1s, ns, 0.36f))
+        return false;
+
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
+    if (RejectDistance_GI(myPos, xr, myN1s, 0.4f))
+        return false;
+
+    outPixelIdx = tpx;
+    outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
+    return true;
+}
+
 #include "Camera_ray_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
 #include "MIS_v8.hlsli"

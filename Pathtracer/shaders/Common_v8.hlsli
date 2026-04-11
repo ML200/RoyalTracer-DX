@@ -123,11 +123,11 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 
 #define BOIL_GROUP_X 16
 #define BOIL_GROUP_Y 16
-#define BOIL_THREAD_COUNT (BOIL_GROUP_X * BOIL_GROUP_Y)
-#define BOIL_MAX_WAVES 8
+#define BOIL_PATCH   8       // 8x8 patch for local averaging
+#define BOIL_QUADRANTS 4     // 2x2 quadrants per 16x16 group
 
-groupshared float gBoilSum[BOIL_MAX_WAVES];
-groupshared uint  gBoilCnt[BOIL_MAX_WAVES];
+// Per-thread storage for the 8x8 reduction (one float per thread in the group)
+groupshared float gBoilValues[BOIL_GROUP_X * BOIL_GROUP_Y];
 
 float BoilMultiplier(float strength)
 {
@@ -141,41 +141,62 @@ bool BoilingFilter(
     out float avgNonzero,
     out float threshold)
 {
-    float waveSum = WaveActiveSum(v);
-    uint  waveCnt = WaveActiveCountBits(v > 0.0f);
+    // Determine which 8x8 quadrant this thread belongs to (0..3)
+    uint qx = localIndex.x / BOIL_PATCH;
+    uint qy = localIndex.y / BOIL_PATCH;
 
-    uint linearThreadIndex = localIndex.x + localIndex.y * BOIL_GROUP_X;
-    uint waveIndex         = linearThreadIndex / WaveGetLaneCount();
+    // Local position within the 8x8 patch
+    uint lx = localIndex.x % BOIL_PATCH;
+    uint ly = localIndex.y % BOIL_PATCH;
+    uint localPatchIdx = lx + ly * BOIL_PATCH; // 0..63
 
-    if (WaveIsFirstLane())
+    // Store into groupshared: lay out as quadrant * 64 + localPatchIdx
+    uint quadrant = qx + qy * 2u;
+    uint gsIdx = quadrant * 64u + localPatchIdx;
+    gBoilValues[gsIdx] = v;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // Parallel reduction within each 8x8 patch (64 threads)
+    // Sum and count of nonzero values
+    float patchSum = 0.0f;
+    uint  patchCnt = 0u;
+
+    uint base = quadrant * 64u;
+
+    // Each thread reduces a stride: thread 0 sums [0..63] is too serial.
+    // Instead, use a simple tree reduction in groupshared.
+    // Step 1: each thread holds its own value. Reduce in log2(64)=6 steps.
+    [unroll]
+    for (uint stride = 32u; stride > 0u; stride >>= 1u)
     {
-        if (waveIndex < BOIL_MAX_WAVES)
+        if (localPatchIdx < stride)
         {
-            gBoilSum[waveIndex] = waveSum;
-            gBoilCnt[waveIndex] = waveCnt;
+            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride];
         }
+        GroupMemoryBarrierWithGroupSync();
     }
 
+    // Thread 0 of each patch has the sum
+    patchSum = gBoilValues[base];
+
+    // For count: reuse the array with a second pass
+    gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
-    uint numWaves = (BOIL_THREAD_COUNT + WaveGetLaneCount() - 1) / WaveGetLaneCount();
-    numWaves = min(numWaves, (uint)BOIL_MAX_WAVES);
-
-    if (linearThreadIndex < numWaves)
+    [unroll]
+    for (uint stride2 = 32u; stride2 > 0u; stride2 >>= 1u)
     {
-        float s = gBoilSum[linearThreadIndex];
-        uint  c = gBoilCnt[linearThreadIndex];
-
-        s = WaveActiveSum(s);
-        c = WaveActiveSum(c);
-
-        if (linearThreadIndex == 0)
-            gBoilSum[0] = (c > 0) ? (s / float(c)) : 0.0f;
+        if (localPatchIdx < stride2)
+        {
+            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride2];
+        }
+        GroupMemoryBarrierWithGroupSync();
     }
 
-    GroupMemoryBarrierWithGroupSync();
+    patchCnt = (uint)gBoilValues[base];
 
-    avgNonzero = gBoilSum[0];
+    avgNonzero = (patchCnt > 0) ? (patchSum / float(patchCnt)) : 0.0f;
     threshold  = avgNonzero * BoilMultiplier(filterStrength);
 
     return (v > threshold);
