@@ -1039,6 +1039,8 @@ void Renderer::PopulateCommandList() {
     rs.spatCountMinGI = rs.spatCountMaxGI;
     rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
     rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
+    rs.spatTriesGI    = std::clamp(rs.spatTriesGI, 2, 16);
+    rs.spatTriesDI    = std::clamp(rs.spatTriesDI, 1, 16);
 
     UINT rsConsts[20] = {};
     rsConsts[4]  = (UINT)rs.tempMcapDI;
@@ -1058,6 +1060,8 @@ void Renderer::PopulateCommandList() {
     rsConsts[14] = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
     memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
+    rsConsts[17] = (UINT)rs.spatTriesGI;
+    rsConsts[18] = (UINT)rs.spatTriesDI;
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;

@@ -28,17 +28,17 @@
 
 #define SPAT_MCAP_GI 48
 #define SPAT_EXP_GI 0.8f
-#define SPAT_RAD_MAX_GI 32
-#define SPAT_RAD_MIN_GI 32
+#define SPAT_RAD_MAX_GI 48
+#define SPAT_RAD_MIN_GI 8
 
 #define SPAT_COUNT_MAX_GI 2
 
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
-// Boiling filter
-#define GI_BOIL_STRENGTH_TEMP 0.2f
+// Boiling filter (lower strength = less aggressive clamping)
+#define GI_BOIL_STRENGTH_TEMP 0.1f
 #define GI_BOIL_MIN_AVG_TEMP  1e-8f
 
-#define DI_BOIL_STRENGTH_TEMP 0.2f
+#define DI_BOIL_STRENGTH_TEMP 0.1f
 #define DI_BOIL_MIN_AVG_TEMP  1e-8f

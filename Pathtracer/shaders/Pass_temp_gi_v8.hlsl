@@ -103,87 +103,10 @@ void Pass_temp_gi_v8()
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    // --- Helper: test a candidate coordinate against last-frame data ---
-    #define TEST_TEMPORAL_CANDIDATE_GI(coord)                                       \
-    {                                                                               \
-        int2 _tc = (coord);                                                         \
-        if (_tc.x >= 0 && _tc.y >= 0 &&                                            \
-            _tc.x < (int)IMG_W && _tc.y < (int)IMG_H)                              \
-        {                                                                           \
-            uint _tpx = MapPixelID(dims_f, (uint2)_tc);                             \
-            bool _rej = load_isEmitter(g_sample_last, _tpx);                        \
-            uint _rI = 0, _rP = 0;                                                 \
-            if (!_rej)                                                              \
-            {                                                                       \
-                _rI = load_instID(g_sample_last, _tpx);                             \
-                _rP = load_primID(g_sample_last, _tpx);                             \
-                if (GetMatIDFast(_rI, _rP) != myMatID) _rej = true;                 \
-            }                                                                       \
-            if (!_rej)                                                              \
-            {                                                                       \
-                float3 _ns = load_n1_s_with_instID(g_sample_last, _tpx, _rI);       \
-                if (RejectNormal_GI(myN1s, _ns, 0.36f)) _rej = true;                \
-            }                                                                       \
-            float2 _rB = float2(0, 0);                                              \
-            if (!_rej)                                                              \
-            {                                                                       \
-                _rB = load_bary(g_sample_last, _tpx);                                \
-                float3 _xr = ReconstructPosition(_rI, _rP, _rB);                    \
-                if (RejectDistance_GI(myPos, _xr, myN1s, 0.4f)) _rej = true;         \
-            }                                                                       \
-            if (!_rej)                                                              \
-            {                                                                       \
-                valid = true;                                                        \
-                tempPixelIdx = _tpx;                                                 \
-                rInstID = _rI;                                                       \
-                rPrimID = _rP;                                                       \
-                rBary   = _rB;                                                       \
-            }                                                                       \
-        }                                                                           \
-    }
-
     // 1) Try the permuted sample
     if (permInBounds)
-    {
-        TEST_TEMPORAL_CANDIDATE_GI(permCoord);
-    }
-
-    // 2) If invalid, try the raw reprojected sample (unless same as permuted)
-    if (!valid && (baseCoord.x != permCoord.x || baseCoord.y != permCoord.y))
-    {
-        TEST_TEMPORAL_CANDIDATE_GI(baseCoord);
-    }
-
-    // 3) If still invalid, search 3x3 neighbourhood around baseCoord in random order
-    if (!valid)
-    {
-        int2 offsets[9] = {
-            int2(-1,-1), int2(0,-1), int2(1,-1),
-            int2(-1, 0), int2(0, 0), int2(1, 0),
-            int2(-1, 1), int2(0, 1), int2(1, 1)
-        };
-
-        // Fisher-Yates shuffle
-        [unroll]
-        for (int i = 8; i > 0; --i)
-        {
-            uint j = RandomFloatSingle(seed.x) * (float)(i + 1);
-            j = min(j, (uint)i);
-            int2 tmp = offsets[i];
-            offsets[i] = offsets[j];
-            offsets[j] = tmp;
-        }
-
-        [loop]
-        for (int k = 0; k < 9; ++k)
-        {
-            int2 candidate = baseCoord + offsets[k];
-            TEST_TEMPORAL_CANDIDATE_GI(candidate);
-            if (valid) break;
-        }
-    }
-
-    #undef TEST_TEMPORAL_CANDIDATE_GI
+        valid = TestTemporalCandidate_GI(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
+                                         tempPixelIdx, rInstID, rPrimID, rBary);
 
     [branch]
     if (valid)
