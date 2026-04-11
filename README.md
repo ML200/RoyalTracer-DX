@@ -62,7 +62,7 @@ Unbiased [ReSTIR DI/PT](https://research.nvidia.com/publication/2022-07_generali
 ### Rendering Pipeline
 ![Render pipeline diagram](media/pipeline.svg)
 
-Path tracer using new HitObj ray tracing with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
+The path tracer is using new HitObj ray tracing with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
 1. **Raygen** -- Primary rays, multi-bounce path tracing with NEE. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
 2. **Temporal DI/GI** -- Temporal reservoir resampling. Using permutation sampling for temporal neighbor selection to break up temporal correlations that become very appearent in the denoiser.
 3. **Spatial DI select + merge** -- Neighbor selection and spatial resampling for DI
