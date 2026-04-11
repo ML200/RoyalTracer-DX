@@ -74,35 +74,90 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    // permute sample
+    // --- Helper: test a candidate coordinate against last-frame data ---
+    // Returns true if the candidate passes all rejection tests.
+    #define TEST_TEMPORAL_CANDIDATE(coord)                                          \
+    {                                                                               \
+        int2 _tc = (coord);                                                         \
+        if (_tc.x >= 0 && _tc.y >= 0 &&                                            \
+            _tc.x < (int)IMG_W && _tc.y < (int)IMG_H)                              \
+        {                                                                           \
+            uint _tpx = MapPixelID(dims, (uint2)_tc);                               \
+            bool _rej = load_isEmitter(g_sample_last, _tpx);                        \
+            uint _rI = 0, _rP = 0;                                                 \
+            if (!_rej)                                                              \
+            {                                                                       \
+                _rI = load_instID(g_sample_last, _tpx);                             \
+                _rP = load_primID(g_sample_last, _tpx);                             \
+                if (GetMatIDFast(_rI, _rP) != myMatID) _rej = true;                 \
+            }                                                                       \
+            if (!_rej)                                                              \
+            {                                                                       \
+                float3 _ng = load_n1_g_with_instID(g_sample_last, _tpx, _rI);       \
+                if (RejectNormal_DI(myN1g, _ng, 0.36f)) _rej = true;                \
+            }                                                                       \
+            float2 _rB = float2(0, 0);                                              \
+            if (!_rej)                                                              \
+            {                                                                       \
+                _rB = load_bary(g_sample_last, _tpx);                                \
+                float3 _xr = ReconstructPosition(_rI, _rP, _rB);                    \
+                if (RejectDistance_DI(myPos, _xr, myN1g, 0.4f)) _rej = true;         \
+            }                                                                       \
+            if (!_rej)                                                              \
+            {                                                                       \
+                valid = true;                                                        \
+                tempPixelIdx = _tpx;                                                 \
+                rInstID = _rI;                                                       \
+                rPrimID = _rP;                                                       \
+                rBary   = _rB;                                                       \
+            }                                                                       \
+        }                                                                           \
+    }
+
+    // 1) Try the permuted sample
     if (permInBounds)
     {
-        tempPixelIdx = MapPixelID(dims, (uint2)permCoord);
+        TEST_TEMPORAL_CANDIDATE(permCoord);
+    }
 
-        // Tiered rejection against last-frame data
-        bool reject = load_isEmitter(g_sample_last, tempPixelIdx);
-        if (!reject)
+    // 2) If invalid, try the raw reprojected sample (unless same as permuted)
+    if (!valid && (baseCoord.x != permCoord.x || baseCoord.y != permCoord.y))
+    {
+        TEST_TEMPORAL_CANDIDATE(baseCoord);
+    }
+
+    // 3) If still invalid, search 3x3 neighbourhood around baseCoord in random order
+    if (!valid)
+    {
+        // Build a randomly-ordered list of the 9 offsets in [-1,1]^2
+        // using Fisher-Yates shuffle with the per-pixel seed
+        int2 offsets[9] = {
+            int2(-1,-1), int2(0,-1), int2(1,-1),
+            int2(-1, 0), int2(0, 0), int2(1, 0),
+            int2(-1, 1), int2(0, 1), int2(1, 1)
+        };
+
+        // Fisher-Yates shuffle
+        [unroll]
+        for (int i = 8; i > 0; --i)
         {
-            rInstID = load_instID(g_sample_last, tempPixelIdx);
-            rPrimID = load_primID(g_sample_last, tempPixelIdx);
-            if (GetMatIDFast(rInstID, rPrimID) != myMatID) reject = true;
+            uint j = RandomFloatSingle(seed.x) * (float)(i + 1);
+            j = min(j, (uint)i);
+            int2 tmp = offsets[i];
+            offsets[i] = offsets[j];
+            offsets[j] = tmp;
         }
-        if (!reject)
+
+        [loop]
+        for (int k = 0; k < 9; ++k)
         {
-            float3 n1g_r = load_n1_g_with_instID(g_sample_last, tempPixelIdx, rInstID);
-            if (RejectNormal_DI(myN1g, n1g_r, 0.36f)) reject = true;
-        }
-        if (!reject)
-        {
-            rBary = load_bary(g_sample_last, tempPixelIdx);
-            float3 x1_r = ReconstructPosition(rInstID, rPrimID, rBary);
-            if (RejectDistance_DI(myPos, x1_r, myN1g, 0.4f)) reject = true;
-        }
-        if (!reject)
-        {
-            valid = true;
+            int2 candidate = baseCoord + offsets[k];
+            TEST_TEMPORAL_CANDIDATE(candidate);
+            if (valid) break;
         }
     }
+
+    #undef TEST_TEMPORAL_CANDIDATE
 
 
     [branch]
