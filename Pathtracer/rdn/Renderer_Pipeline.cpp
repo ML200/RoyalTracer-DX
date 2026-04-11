@@ -428,10 +428,10 @@ void Renderer::CreateRaytracingPipeline() {
     }
 
     // Fixed shaders
-    ComPtr<IDxcBlob> missLib    = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
-    ComPtr<IDxcBlob> hitLib     = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
-    ComPtr<IDxcBlob> shadowLib  = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
-    ComPtr<IDxcBlob> anyHitLib  = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
+    ComPtr<IDxcBlob> missLib    = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.slang");
+    ComPtr<IDxcBlob> hitLib     = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.slang");
+    ComPtr<IDxcBlob> shadowLib  = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.slang");
+    ComPtr<IDxcBlob> anyHitLib  = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.slang");
 
     pipeline.AddLibrary(missLib.Get(),    { L"Miss" });
     pipeline.AddLibrary(shadowLib.Get(),  { L"ShadowClosestHit", L"ShadowMiss" });

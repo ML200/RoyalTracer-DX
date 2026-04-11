@@ -163,23 +163,45 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
 // Wrappers to maintain compatibility with your existing Renderer code
 //--------------------------------------------------------------------------------------------------
 
-// Compile a HLSL file into a DXIL library (e.g. for Ray Tracing)
+#ifdef USE_SLANG
+
+} // temporarily close namespace nv_helpers_dx12 for SlangHelper.h (uses ::slang:: types)
+#include "SlangHelper.h"
+namespace nv_helpers_dx12 {
+
+// Slang compilation — produces identical DXIL blobs consumed by D3D12
+inline IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
+{
+    return ::CompileSlangLibrary(fileName);
+}
+
+inline Microsoft::WRL::ComPtr<IDxcBlob> CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    return ::CompileSlangCS(fileName, entryPoint);
+}
+
+inline Microsoft::WRL::ComPtr<IDxcBlob> CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    return ::CompileSlangWG(fileName, entryPoint);
+}
+
+#else
+// Legacy DXC compilation (HLSL)
 inline IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
 {
     return CompileShaderNew(fileName, L"", L"lib_6_9");
 }
 
-// Compile a HLSL file as a Compute Shader
 inline Microsoft::WRL::ComPtr<IDxcBlob> CompileCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
     return CompileShaderNew(fileName, entryPoint, L"cs_6_9");
 }
 
-// Compile a HLSL file as a Work Graph library
 inline Microsoft::WRL::ComPtr<IDxcBlob> CompileWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
     return CompileShaderNew(fileName, entryPoint, L"lib_6_9");
 }
+#endif
 
 //--------------------------------------------------------------------------------------------------
 // Descriptor Heap Helper

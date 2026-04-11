@@ -1,0 +1,226 @@
+// Common utility functions
+
+// Estimated luminance
+inline float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
+// Average
+inline float Avg3(float3 c) { return dot(c, float3(0.33333f, 0.33333f, 0.33333f)); }
+
+// Map pixel coordinate to tile-swizzled linear index
+inline uint MapPixelID(uint2 dims, int2 lIndex)
+{
+    if (lIndex.x < 0 || lIndex.y < 0 ||
+        lIndex.x >= int(dims.x) || lIndex.y >= int(dims.y))
+    {
+        return 0xFFFFFFFF;
+    }
+    const uint tileWidth  = 4;
+    const uint tileHeight = 8;
+
+    uint2 uIndex   = uint2(lIndex);
+    uint tileCountX = (dims.x + tileWidth - 1u) / tileWidth;
+
+    uint tileX = uIndex.x / tileWidth;
+    uint tileY = uIndex.y / tileHeight;
+
+    uint localX = uIndex.x % tileWidth;
+    uint localY = uIndex.y % tileHeight;
+
+    uint tileIndex  = tileY * tileCountX + tileX;
+    uint localIndex = localY * tileWidth + localX;
+
+    return tileIndex * (tileWidth * tileHeight) + localIndex;
+}
+
+inline int2 UnmapPixelID(uint pixelID, uint2 dims)
+{
+    if (pixelID == 0xFFFFFFFF)
+    {
+        return int2(-1, -1);
+    }
+
+    const uint tileWidth  = 4;
+    const uint tileHeight = 8;
+    const uint tileSize   = tileWidth * tileHeight; // 32
+
+    uint tileIndex  = pixelID / tileSize;
+    uint localIndex = pixelID % tileSize;
+
+    uint tileCountX = (dims.x + tileWidth - 1u) / tileWidth;
+
+    uint tileY = tileIndex / tileCountX;
+    uint tileX = tileIndex % tileCountX;
+
+    uint localY = localIndex / tileWidth;
+    uint localX = localIndex % tileWidth;
+
+    uint globalX = tileX * tileWidth + localX;
+    uint globalY = tileY * tileHeight + localY;
+
+    // Padding check
+    if (globalX >= dims.x || globalY >= dims.y)
+    {
+        return int2(-1, -1);
+    }
+
+    return int2(globalX, globalY);
+}
+
+void ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber)
+{
+    int2 offset = int2(uniformRandomNumber & 3, (uniformRandomNumber >> 2) & 3);
+    prevPixelPos += offset;
+
+    prevPixelPos.x ^= 3;
+    prevPixelPos.y ^= 3;
+
+    prevPixelPos -= offset;
+}
+
+float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
+{
+    // Compute F0 (specular albedo) from metallic workflow inputs
+    float3 SpecularColor = lerp(float3(0.04, 0.04, 0.04), Kd, saturate(Pm));
+
+    // Convert perceptual roughness to GGX alpha
+    float alpha = Pr * Pr;
+
+    NoV = abs(NoV);
+
+    // [Ray Tracing Gems, Chapter 32]
+    float4 X;
+    X.x = 1.f;
+    X.y = NoV;
+    X.z = NoV * NoV;
+    X.w = NoV * X.z;
+
+    float4 Y;
+    Y.x = 1.f;
+    Y.y = alpha;
+    Y.z = alpha * alpha;
+    Y.w = alpha * Y.z;
+
+    float2x2 M1 = float2x2(0.99044f, -1.28514f,
+                           1.29678f, -0.755907f);
+
+    float3x3 M2 = float3x3(1.f,     2.92338f,  59.4188f,
+                           20.3225f, -27.0302f, 222.592f,
+                           121.563f, 626.13f,   316.627f);
+
+    float2x2 M3 = float2x2(0.0365463f,  3.32707f,
+                           9.0632f,    -9.04756f);
+
+    float3x3 M4 = float3x3(1.f,      3.59685f, -1.36772f,
+                           9.04401f, -16.3174f,  9.22949f,
+                           5.56589f,  19.7886f, -20.2123f);
+
+    float bias  = dot(mul(M1, X.xy),  Y.xy)  * rcp(dot(mul(M2, X.xyw), Y.xyw));
+    float scale = dot(mul(M3, X.xy),  Y.xy)  * rcp(dot(mul(M4, X.xzw), Y.xyw));
+
+    bias *= saturate(SpecularColor.g * 50);
+
+    return mad(SpecularColor, max(0, scale), max(0, bias));
+}
+
+#define BOIL_GROUP_X 16
+#define BOIL_GROUP_Y 16
+#define BOIL_PATCH   8       // 8x8 patch for local averaging
+#define BOIL_QUADRANTS 4     // 2x2 quadrants per 16x16 group
+
+// Per-thread storage for the 8x8 reduction (one float per thread in the group)
+groupshared float gBoilValues[BOIL_GROUP_X * BOIL_GROUP_Y];
+
+float BoilMultiplier(float strength)
+{
+    return 10.0f / clamp(strength, 1e-6f, 1.0f) - 9.0f;
+}
+
+bool BoilingFilter(
+    uint2 localIndex,
+    float filterStrength,
+    float v,
+    out float avgNonzero,
+    out float threshold)
+{
+    // Determine which 8x8 quadrant this thread belongs to (0..3)
+    uint qx = localIndex.x / BOIL_PATCH;
+    uint qy = localIndex.y / BOIL_PATCH;
+
+    // Local position within the 8x8 patch
+    uint lx = localIndex.x % BOIL_PATCH;
+    uint ly = localIndex.y % BOIL_PATCH;
+    uint localPatchIdx = lx + ly * BOIL_PATCH; // 0..63
+
+    // Store into groupshared: lay out as quadrant * 64 + localPatchIdx
+    uint quadrant = qx + qy * 2u;
+    uint gsIdx = quadrant * 64u + localPatchIdx;
+    gBoilValues[gsIdx] = v;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    // Parallel reduction within each 8x8 patch (64 threads)
+    // Sum and count of nonzero values
+    float patchSum = 0.0f;
+    uint  patchCnt = 0u;
+
+    uint base = quadrant * 64u;
+
+    // Each thread reduces a stride: thread 0 sums [0..63] is too serial.
+    // Instead, use a simple tree reduction in groupshared.
+    // Step 1: each thread holds its own value. Reduce in log2(64)=6 steps.
+    [unroll]
+    for (uint stride = 32u; stride > 0u; stride >>= 1u)
+    {
+        if (localPatchIdx < stride)
+        {
+            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Thread 0 of each patch has the sum
+    patchSum = gBoilValues[base];
+
+    // For count: reuse the array with a second pass
+    gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride2 = 32u; stride2 > 0u; stride2 >>= 1u)
+    {
+        if (localPatchIdx < stride2)
+        {
+            gBoilValues[gsIdx] += gBoilValues[gsIdx + stride2];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    patchCnt = (uint)gBoilValues[base];
+
+    avgNonzero = (patchCnt > 0) ? (patchSum / float(patchCnt)) : 0.0f;
+    threshold  = avgNonzero * BoilMultiplier(filterStrength);
+
+    return (v > threshold);
+}
+
+// Wave-only variant for raygen shaders (no groupshared memory)
+bool BoilingFilter_Wave(
+    float filterStrength,
+    float v,
+    out float avgNonzero,
+    out float threshold)
+{
+    float waveSum = WaveActiveSum(v);
+    uint  waveCnt = WaveActiveCountBits(v > 0.0f);
+
+    avgNonzero = (waveCnt > 0) ? (waveSum / float(waveCnt)) : 0.0f;
+    threshold  = avgNonzero * BoilMultiplier(filterStrength);
+
+    return (v > threshold);
+}
+
+float DLSS_LinearDepthFromWorldPos(float3 worldPos)
+{
+    // view is world->view. With RH projection (XMMatrixPerspectiveFovRH), forward is -Z.
+    float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
+    return max(0.0f, -viewPos.z);
+}

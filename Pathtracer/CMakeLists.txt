@@ -16,6 +16,9 @@ set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 
+# ───────────────────────── Slang Shader Compiler ───────────────────────────
+set(SLANG_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/slang")
+
 # ───────────────────────── NVIDIA OMM SDK ───────────────────────────────────
 set(OMM_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/omm-sdk")
 
@@ -150,6 +153,7 @@ target_include_directories(Pathtracer PRIVATE
         ${SL_INCLUDE_DIR}
         ${ORT_INCLUDE_DIR}
         ${OMM_SDK_ROOT}/include
+        ${SLANG_SDK_ROOT}/include
         ${CMAKE_SOURCE_DIR}/lib/imgui)
 
 # ──────────────── Streamline import‐lib as an IMPORTED static library ────────
@@ -164,6 +168,13 @@ add_library(onnxruntime SHARED IMPORTED GLOBAL)
 set_target_properties(onnxruntime PROPERTIES
         IMPORTED_IMPLIB   "${ORT_LIB_DIR}/onnxruntime.lib"
         IMPORTED_LOCATION "${ORT_BIN_DIR}/onnxruntime.dll"
+)
+
+# ────────────── Slang compiler imported library (DLL + import lib) ───────────
+add_library(slang_lib SHARED IMPORTED GLOBAL)
+set_target_properties(slang_lib PROPERTIES
+        IMPORTED_IMPLIB   "${SLANG_SDK_ROOT}/lib/slang.lib"
+        IMPORTED_LOCATION "${SLANG_SDK_ROOT}/bin/slang.dll"
 )
 
 # ────────────── NVIDIA OMM SDK imported library + deps ───────────────────────
@@ -186,12 +197,16 @@ target_link_libraries(Pathtracer PRIVATE
         DirectXTex
         sl_interposer
         onnxruntime
+        slang_lib
         omm_sdk omm_lz4 omm_xxhash
         d3d12.lib
         dxgi.lib dxguid.lib
         dxcompiler.lib d3dcompiler.lib windowsapp)
 
 target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
+
+# Enable Slang shader compiler (define USE_SLANG to switch from DXC to Slang)
+target_compile_definitions(Pathtracer PRIVATE USE_SLANG)
 
 
 # ────────────────── copy the contents of 'includes' on every build ─────────
@@ -239,6 +254,18 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         "${D3D12_AGILITY_LIB}/D3D12StateObjectCompiler.dll"
         "$<TARGET_FILE_DIR:Pathtracer>"
         COMMENT "Copying Agility D3D12Core.dll to output folder."
+)
+
+# ───────────────────────── copy Slang runtime DLLs ─────────────────────────
+add_custom_command(TARGET Pathtracer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SLANG_SDK_ROOT}/bin/slang.dll"
+        "${SLANG_SDK_ROOT}/bin/slang-compiler.dll"
+        "${SLANG_SDK_ROOT}/bin/slang-rt.dll"
+        "${SLANG_SDK_ROOT}/bin/slang-glslang.dll"
+        "${SLANG_SDK_ROOT}/bin/slangc.exe"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMENT "Copying Slang runtime DLLs to output folder."
 )
 
 # ───────────────────────── copy ORT + DirectML DLLs ─────────────────────────
