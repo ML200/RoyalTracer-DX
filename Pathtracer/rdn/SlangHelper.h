@@ -522,8 +522,127 @@ inline IDxcBlob* CompileSlangShader(
 }
 
 //--------------------------------------------------------------------------------------------------
+// Direct DXIL compilation: .slang -> slangc (-target dxil) -> DXIL blob
+//
+// Uses Slang's own LLVM backend (slang-llvm.dll) to emit DXIL directly,
+// bypassing the HLSL intermediate step. Required for neural shader features
+// (CoopVec, neural inference, NeuralNetworkTexture, etc.) that have no
+// standard HLSL representation.
+//--------------------------------------------------------------------------------------------------
+inline IDxcBlob* CompileSlangDirectDXIL(
+    LPCWSTR fileName,
+    LPCWSTR entryPoint,
+    const char* slangProfile)
+{
+    auto WideToNarrow = [](const std::wstring& w) -> std::string {
+        if (w.empty()) return {};
+        int sz = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        std::string s(sz, 0);
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), sz, nullptr, nullptr);
+        while (!s.empty() && s.back() == '\0') s.pop_back();
+        return s;
+    };
+
+    std::string cleanFileName = WideToNarrow(fileName);
+    std::string sEntry = WideToNarrow(entryPoint ? entryPoint : L"");
+
+    std::string moduleName = cleanFileName;
+    for (const auto& ext : { ".slang", ".hlsl" })
+    {
+        std::string e(ext);
+        if (moduleName.size() > e.size() &&
+            moduleName.compare(moduleName.size() - e.size(), e.size(), e) == 0)
+        { moduleName.erase(moduleName.size() - e.size()); break; }
+    }
+
+    std::string dxilPath = moduleName + "_slang.dxil";
+
+    // Build slangc command for direct DXIL emission
+    std::string cmd = "slangc.exe " + cleanFileName +
+        " -target dxil -profile " + std::string(slangProfile) + " -DMAX_REGS=96";
+
+    // For library targets (sEntry empty), scan for entry points
+    if (!sEntry.empty())
+    {
+        cmd += " -entry " + sEntry;
+    }
+    else
+    {
+        // Library target — scan for [shader("...")] entry points
+        std::string source = ReadFileToString(cleanFileName);
+        const std::string searchStr = "[shader(\"";
+        size_t pos = 0;
+        bool foundAny = false;
+        while ((pos = source.find(searchStr, pos)) != std::string::npos)
+        {
+            size_t stageStart = pos + searchStr.size();
+            size_t stageEnd = source.find("\"", stageStart);
+            if (stageEnd == std::string::npos) break;
+            std::string stage = source.substr(stageStart, stageEnd - stageStart);
+
+            size_t attrEnd = source.find(")]", pos);
+            if (attrEnd == std::string::npos) break;
+            attrEnd += 2;
+
+            size_t fnStart = source.find_first_not_of(" \t\r\n", attrEnd);
+            if (fnStart == std::string::npos) break;
+            size_t spaceAfterType = source.find(' ', fnStart);
+            if (spaceAfterType == std::string::npos) break;
+            size_t nameStart = spaceAfterType + 1;
+            size_t nameEnd = source.find_first_of("( \t", nameStart);
+            if (nameEnd == std::string::npos) break;
+            std::string epName = source.substr(nameStart, nameEnd - nameStart);
+
+            if (!epName.empty())
+            {
+                cmd += " -entry " + epName + " -stage " + stage;
+                foundAny = true;
+            }
+            pos = attrEnd;
+        }
+        if (!foundAny)
+            throw std::logic_error("No entry points found in " + cleanFileName);
+    }
+
+    cmd += " -o \"" + dxilPath + "\"";
+
+    OutputDebugStringA(("slangc (direct DXIL): " + cmd + "\n").c_str());
+    auto [slangOut, slangExit] = RunProcess(cmd);
+    if (!slangOut.empty())
+        OutputDebugStringA(("slangc output:\n" + slangOut).c_str());
+    if (slangExit != 0)
+    {
+        std::string errMsg = "slangc direct DXIL failed for " + cleanFileName +
+            " (exit " + std::to_string(slangExit) + ")\n" + slangOut;
+        MessageBoxA(nullptr, errMsg.c_str(), "Slang Neural Compilation Failed", MB_OK | MB_ICONERROR);
+        throw std::logic_error(errMsg);
+    }
+
+    // Read the DXIL binary blob
+    std::ifstream dxilFile(dxilPath, std::ios::binary | std::ios::ate);
+    if (!dxilFile.is_open())
+        throw std::logic_error("slangc produced no DXIL file for " + cleanFileName);
+
+    size_t dxilSize = static_cast<size_t>(dxilFile.tellg());
+    dxilFile.seekg(0, std::ios::beg);
+    std::vector<uint8_t> dxilData(dxilSize);
+    dxilFile.read(reinterpret_cast<char*>(dxilData.data()), dxilSize);
+    dxilFile.close();
+
+    if (dxilData.empty())
+        throw std::logic_error("slangc produced empty DXIL for " + cleanFileName);
+
+    OutputDebugStringA(("Compiled (neural) " + cleanFileName + " -> " +
+        std::to_string(dxilData.size()) + " bytes DXIL\n").c_str());
+
+    return new SlangDxilBlob(dxilData.data(), dxilData.size());
+}
+
+//--------------------------------------------------------------------------------------------------
 // Public API — mirrors the DXC wrappers in DXRHelper.h
 //--------------------------------------------------------------------------------------------------
+
+// ── Standard path: .slang → HLSL → DXC → DXIL (for existing shaders) ──
 
 inline IDxcBlob* CompileSlangLibrary(LPCWSTR fileName)
 {
@@ -538,4 +657,18 @@ inline Microsoft::WRL::ComPtr<IDxcBlob> CompileSlangCS(LPCWSTR fileName, LPCWSTR
 inline Microsoft::WRL::ComPtr<IDxcBlob> CompileSlangWG(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
 {
     return CompileSlangShader(fileName, entryPoint, "lib_6_9", L"lib_6_9");
+}
+
+// ── Neural path: .slang → slangc direct DXIL (for neural shader features) ──
+// Requires slang-llvm.dll at runtime. Use these for shaders that use CoopVec,
+// neural inference, NeuralNetworkTexture, or other Slang-specific neural constructs.
+
+inline IDxcBlob* CompileSlangNeuralLibrary(LPCWSTR fileName)
+{
+    return CompileSlangDirectDXIL(fileName, L"", "lib_6_9");
+}
+
+inline Microsoft::WRL::ComPtr<IDxcBlob> CompileSlangNeuralCS(LPCWSTR fileName, LPCWSTR entryPoint = L"main")
+{
+    return CompileSlangDirectDXIL(fileName, entryPoint, "sm_6_9");
 }

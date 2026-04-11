@@ -268,6 +268,42 @@ add_custom_command(TARGET Pathtracer POST_BUILD
         COMMENT "Copying Slang runtime DLLs to output folder."
 )
 
+# ───────────────────────── Slang LLVM backend (neural shaders) ─────────────
+# slang-llvm.dll (~109 MB) is stored as slang-llvm.zip in the repo.
+# Unzip it at build time if the DLL doesn't already exist, then copy to output.
+set(SLANG_LLVM_ZIP "${SLANG_SDK_ROOT}/bin/slang-llvm.zip")
+set(SLANG_LLVM_DLL "${SLANG_SDK_ROOT}/bin/slang-llvm.dll")
+
+add_custom_command(
+        OUTPUT "${SLANG_LLVM_DLL}"
+        COMMAND ${CMAKE_COMMAND} -E tar xf "${SLANG_LLVM_ZIP}"
+        WORKING_DIRECTORY "${SLANG_SDK_ROOT}/bin"
+        DEPENDS "${SLANG_LLVM_ZIP}"
+        COMMENT "Extracting slang-llvm.zip -> slang-llvm.dll (Slang LLVM backend for neural shaders)"
+)
+add_custom_target(slang_llvm_extract DEPENDS "${SLANG_LLVM_DLL}")
+add_dependencies(Pathtracer slang_llvm_extract)
+
+add_custom_command(TARGET Pathtracer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${SLANG_LLVM_DLL}"
+        "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMENT "Copying slang-llvm.dll to output folder."
+)
+
+# ───────────────────── copy Slang neural standard modules ──────────────────
+# Neural shader imports (CoopVec, layers, activations, encoders, etc.) need
+# the standard module directory next to slangc at runtime.
+set(SLANG_NEURAL_MODULES "${SLANG_SDK_ROOT}/bin/slang-standard-module-2026.5.2")
+if(EXISTS "${SLANG_NEURAL_MODULES}")
+    add_custom_command(TARGET Pathtracer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${SLANG_NEURAL_MODULES}"
+            "$<TARGET_FILE_DIR:Pathtracer>/slang-standard-module-2026.5.2"
+            COMMENT "Copying Slang neural standard modules to output folder."
+    )
+endif()
+
 # ───────────────────────── copy ORT + DirectML DLLs ─────────────────────────
 set(ORT_DLLS
         "${ORT_BIN_DIR}/onnxruntime.dll"
