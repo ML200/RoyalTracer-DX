@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1050 720" font-family="Segoe UI, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 660" font-family="Segoe UI, Arial, sans-serif">
   <defs>
     <linearGradient id="pgRaygen" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#e8f0ff"/>
@@ -31,138 +31,113 @@
     <marker id="arrowBlack" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
       <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
     </marker>
-    <marker id="arrowOrange" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#d08020"/>
-    </marker>
-    <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#409040"/>
-    </marker>
     <marker id="arrowTemporal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
       <path d="M0,0 L8,3 L0,6 Z" fill="#c06020"/>
     </marker>
   </defs>
 
   <!-- Background -->
-  <rect width="1050" height="720" fill="white" rx="8"/>
+  <rect width="900" height="660" fill="white" rx="8"/>
 
-  <!-- Title -->
-  <text x="525" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#333">Render Pipeline</text>
-
-  <!-- ===== DI COLUMN (left) ===== -->
-  <text x="255" y="58" text-anchor="middle" font-size="14" font-weight="700" fill="#888">Direct Illumination</text>
-
-  <!-- ===== GI COLUMN (right) ===== -->
-  <text x="635" y="58" text-anchor="middle" font-size="14" font-weight="700" fill="#888">Global Illumination</text>
+  <!-- Column headers -->
+  <text x="260" y="28" text-anchor="middle" font-size="14" font-weight="700" fill="#888">Direct Illumination</text>
+  <text x="640" y="28" text-anchor="middle" font-size="14" font-weight="700" fill="#888">Global Illumination</text>
 
   <!-- ===== 1. PATH TRACING (full width) ===== -->
-  <rect x="80" y="70" width="720" height="70" rx="6" fill="url(#pgRaygen)" stroke="#80a0d0" stroke-width="1.5"/>
-  <text x="440" y="97" text-anchor="middle" font-size="17" font-weight="600" fill="#333">Path Tracing</text>
-  <text x="440" y="117" text-anchor="middle" font-size="12" fill="#666">Multi-bounce path tracing with NEE  ·  Initializes DI and GI reservoirs  ·  Writes G-buffer</text>
+  <rect x="90" y="40" width="720" height="70" rx="6" fill="url(#pgRaygen)" stroke="#80a0d0" stroke-width="1.5"/>
+  <text x="450" y="67" text-anchor="middle" font-size="17" font-weight="600" fill="#333">Path Tracing</text>
+  <text x="450" y="87" text-anchor="middle" font-size="12" fill="#666">Multi-bounce path tracing with NEE  ·  Initializes DI and GI reservoirs  ·  Writes G-buffer</text>
 
   <!-- Divider line -->
-  <line x1="440" y1="155" x2="440" y2="590" stroke="#ddd" stroke-width="1" stroke-dasharray="6,4"/>
+  <line x1="450" y1="125" x2="450" y2="370" stroke="#ddd" stroke-width="1" stroke-dasharray="6,4"/>
 
   <!-- ===== 2. TEMPORAL DI ===== -->
-  <rect x="80" y="155" width="340" height="65" rx="6" fill="url(#pgTemporal)" stroke="#c0a060" stroke-width="1.5"/>
-  <text x="250" y="182" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Temporal Reuse</text>
-  <text x="250" y="200" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS with previous frame's spatial output</text>
+  <rect x="90" y="125" width="340" height="65" rx="6" fill="url(#pgTemporal)" stroke="#c0a060" stroke-width="1.5"/>
+  <text x="260" y="152" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Temporal Reuse</text>
+  <text x="260" y="170" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS with previous frame's spatial output</text>
 
   <!-- ===== 3. BOIL DI ===== -->
-  <rect x="80" y="232" width="340" height="45" rx="6" fill="url(#pgBoil)" stroke="#b090b0" stroke-width="1.5"/>
-  <text x="250" y="260" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Boiling Filter</text>
+  <rect x="90" y="202" width="340" height="45" rx="6" fill="url(#pgBoil)" stroke="#b090b0" stroke-width="1.5"/>
+  <text x="260" y="230" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Boiling Filter</text>
 
   <!-- ===== 4. TEMPORAL GI ===== -->
-  <rect x="460" y="155" width="340" height="65" rx="6" fill="url(#pgTemporal)" stroke="#c0a060" stroke-width="1.5"/>
-  <text x="630" y="182" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Temporal Reuse</text>
-  <text x="630" y="200" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS with previous frame's spatial output</text>
+  <rect x="470" y="125" width="340" height="65" rx="6" fill="url(#pgTemporal)" stroke="#c0a060" stroke-width="1.5"/>
+  <text x="640" y="152" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Temporal Reuse</text>
+  <text x="640" y="170" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS with previous frame's spatial output</text>
 
   <!-- ===== 5. BOIL GI ===== -->
-  <rect x="460" y="232" width="340" height="45" rx="6" fill="url(#pgBoil)" stroke="#b090b0" stroke-width="1.5"/>
-  <text x="630" y="260" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Boiling Filter</text>
+  <rect x="470" y="202" width="340" height="45" rx="6" fill="url(#pgBoil)" stroke="#b090b0" stroke-width="1.5"/>
+  <text x="640" y="230" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Boiling Filter</text>
 
   <!-- ===== 6. SPATIAL DI ===== -->
-  <rect x="80" y="292" width="340" height="65" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
-  <text x="250" y="319" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Reuse</text>
-  <text x="250" y="337" text-anchor="middle" font-size="11" fill="#666">Single-neighbor resampling  ·  Outputs DI radiance</text>
+  <rect x="90" y="262" width="340" height="65" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
+  <text x="260" y="289" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Reuse</text>
+  <text x="260" y="307" text-anchor="middle" font-size="11" fill="#666">Single-neighbor resampling  ·  Outputs DI radiance</text>
 
   <!-- ===== 7. SPATIAL GI SELECT ===== -->
-  <rect x="460" y="292" width="340" height="40" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5" opacity="0.7"/>
-  <text x="630" y="317" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Neighbor Selection</text>
+  <rect x="470" y="262" width="340" height="40" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5" opacity="0.7"/>
+  <text x="640" y="287" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Neighbor Selection</text>
 
   <!-- ===== 8. SPATIAL GI MERGE ===== -->
-  <rect x="460" y="342" width="340" height="55" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
-  <text x="630" y="365" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Merge</text>
-  <text x="630" y="383" text-anchor="middle" font-size="11" fill="#666">Reconnection shift  ·  Outputs GI radiance</text>
+  <rect x="470" y="312" width="340" height="55" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
+  <text x="640" y="335" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Merge</text>
+  <text x="640" y="353" text-anchor="middle" font-size="11" fill="#666">Reconnection shift  ·  Outputs GI radiance</text>
 
   <!-- ===== 9. SHADING (full width) ===== -->
-  <rect x="80" y="415" width="720" height="65" rx="6" fill="url(#pgShading)" stroke="#b0b090" stroke-width="1.5"/>
-  <text x="440" y="442" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Shading &amp; Accumulation</text>
-  <text x="440" y="460" text-anchor="middle" font-size="11" fill="#666">Combines DI + GI + sun  ·  Motion vectors  ·  DLSS-RR inputs (depth, normals, albedo, roughness)</text>
+  <rect x="90" y="385" width="720" height="65" rx="6" fill="url(#pgShading)" stroke="#b0b090" stroke-width="1.5"/>
+  <text x="450" y="412" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Shading &amp; Accumulation</text>
+  <text x="450" y="430" text-anchor="middle" font-size="11" fill="#666">Combines DI + GI + sun  ·  Motion vectors  ·  DLSS-RR inputs (depth, normals, albedo, roughness)</text>
 
   <!-- ===== 10. DLSS ===== -->
-  <rect x="80" y="498" width="720" height="55" rx="6" fill="url(#pgDLSS)" stroke="#60b090" stroke-width="1.5"/>
-  <text x="440" y="522" text-anchor="middle" font-size="16" font-weight="600" fill="#333">DLSS Ray Reconstruction</text>
-  <text x="440" y="538" text-anchor="middle" font-size="11" fill="#666">Denoising  ·  Super resolution</text>
+  <rect x="90" y="468" width="720" height="55" rx="6" fill="url(#pgDLSS)" stroke="#60b090" stroke-width="1.5"/>
+  <text x="450" y="492" text-anchor="middle" font-size="16" font-weight="600" fill="#333">DLSS Ray Reconstruction</text>
+  <text x="450" y="508" text-anchor="middle" font-size="11" fill="#666">Denoising  ·  Super resolution</text>
 
   <!-- ===== 11. POST-PROCESS ===== -->
-  <rect x="80" y="571" width="720" height="50" rx="6" fill="url(#pgPost)" stroke="#c0b060" stroke-width="1.5"/>
-  <text x="440" y="600" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Post-Process</text>
-  <text x="440" y="614" text-anchor="middle" font-size="11" fill="#666">PBR Neutral tone mapping  ·  sRGB gamma</text>
+  <rect x="90" y="541" width="720" height="50" rx="6" fill="url(#pgPost)" stroke="#c0b060" stroke-width="1.5"/>
+  <text x="450" y="570" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Post-Process</text>
+  <text x="450" y="584" text-anchor="middle" font-size="11" fill="#666">PBR Neutral tone mapping  ·  sRGB gamma</text>
 
-  <!-- ===== FORWARD ARROWS (black, main pipeline flow) ===== -->
+  <!-- ===== FORWARD ARROWS (main pipeline flow) ===== -->
   <!-- Raygen -> Temporal DI -->
-  <line x1="250" y1="140" x2="250" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="260" y1="110" x2="260" y2="117" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Raygen -> Temporal GI -->
-  <line x1="630" y1="140" x2="630" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="640" y1="110" x2="640" y2="117" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Temporal DI -> Boil DI -->
-  <line x1="250" y1="220" x2="250" y2="232" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="260" y1="190" x2="260" y2="194" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Boil DI -> Spatial DI -->
-  <line x1="250" y1="277" x2="250" y2="292" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="260" y1="247" x2="260" y2="254" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Temporal GI -> Boil GI -->
-  <line x1="630" y1="220" x2="630" y2="232" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="640" y1="190" x2="640" y2="194" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Boil GI -> Spatial GI Select -->
-  <line x1="630" y1="277" x2="630" y2="292" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="640" y1="247" x2="640" y2="254" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Spatial GI Select -> Spatial GI Merge -->
-  <line x1="630" y1="332" x2="630" y2="342" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="640" y1="302" x2="640" y2="304" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Spatial DI -> Shading -->
-  <line x1="250" y1="357" x2="250" y2="415" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="260" y1="327" x2="260" y2="377" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Spatial GI Merge -> Shading -->
-  <line x1="630" y1="397" x2="630" y2="415" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="640" y1="367" x2="640" y2="377" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- Shading -> DLSS -->
-  <line x1="440" y1="480" x2="440" y2="498" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="450" y1="450" x2="450" y2="460" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
   <!-- DLSS -> Post -->
-  <line x1="440" y1="553" x2="440" y2="571" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
+  <line x1="450" y1="523" x2="450" y2="533" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
 
   <!-- ===== TEMPORAL FEEDBACK ARROWS ===== -->
 
-  <!-- DI: Spatial output feeds back to next frame's Temporal -->
-  <!-- Arrow from Spatial DI right side, curving around to Temporal DI -->
-  <path d="M 48,324 L 48,175 L 80,175"
+  <!-- DI: Spatial output -> left edge -> up -> back into Temporal DI -->
+  <path d="M 90,310 L 58,310 L 58,145 L 90,145"
         fill="none" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowTemporal)"/>
-  <!-- Label -->
-  <text x="15" y="260" text-anchor="middle" font-size="10" font-weight="600" fill="#c06020" transform="rotate(-90, 15, 260)">prev frame spatial DI</text>
+  <text x="25" y="235" text-anchor="middle" font-size="10" font-weight="600" fill="#c06020" transform="rotate(-90, 25, 235)">prev frame spatial DI</text>
 
-  <!-- Arrow from Spatial DI to left feedback path -->
-  <path d="M 80,340 L 48,340"
-        fill="none" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3"/>
-
-  <!-- GI: Spatial output feeds back to next frame's Temporal -->
-  <path d="M 832,370 L 832,175 L 800,175"
+  <!-- GI: Spatial GI Merge output -> right edge -> up -> back into Temporal GI -->
+  <path d="M 810,340 L 842,340 L 842,145 L 810,145"
         fill="none" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowTemporal)"/>
-  <!-- Label -->
-  <text x="868" y="280" text-anchor="middle" font-size="10" font-weight="600" fill="#c06020" transform="rotate(90, 868, 280)">prev frame spatial GI</text>
-
-  <!-- Arrow from Spatial GI Merge to right feedback path -->
-  <path d="M 800,370 L 832,370"
-        fill="none" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="875" y="250" text-anchor="middle" font-size="10" font-weight="600" fill="#c06020" transform="rotate(90, 875, 250)">prev frame spatial GI</text>
 
   <!-- ===== LEGEND ===== -->
-  <rect x="80" y="645" width="720" height="55" rx="6" fill="#fafafa" stroke="#e0e0e0" stroke-width="1"/>
-  <line x1="110" y1="670" x2="150" y2="670" stroke="#555" stroke-width="2"/>
-  <text x="158" y="674" font-size="11" fill="#666">Current frame data flow</text>
-
-  <line x1="310" y1="670" x2="350" y2="670" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="358" y="674" font-size="11" fill="#666">Temporal feedback (previous frame's spatial output)</text>
-
-  <text x="110" y="692" font-size="11" fill="#999">Reservoir buffers are double-buffered: spatial writes to _last, temporal reads from _last</text>
+  <rect x="90" y="610" width="720" height="40" rx="6" fill="#fafafa" stroke="#e0e0e0" stroke-width="1"/>
+  <line x1="120" y1="633" x2="160" y2="633" stroke="#555" stroke-width="2"/>
+  <text x="168" y="637" font-size="11" fill="#666">Current frame data flow</text>
+  <line x1="380" y1="633" x2="420" y2="633" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="428" y="637" font-size="11" fill="#666">Temporal feedback (previous frame's spatial output)</text>
 </svg>
