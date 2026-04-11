@@ -20,12 +20,11 @@ set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
 set(OMM_SDK_ROOT "${CMAKE_SOURCE_DIR}/third_party/omm-sdk")
 
 # ───────────────────────── ONNX Runtime + DirectML ──────────────────────────
-# Your extracted layout is: third_party/onnxruntime-directml/ort/...
 set(ORT_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime-directml/ort")
 
 set(ORT_INCLUDE_DIR "${ORT_ROOT}/build/native/include")
 set(ORT_BIN_DIR     "${ORT_ROOT}/runtimes/win-x64/native")
-set(ORT_LIB_DIR     "${ORT_BIN_DIR}")  # onnxruntime.lib is here in your package
+set(ORT_LIB_DIR     "${ORT_BIN_DIR}")
 
 # Hard checks so you fail fast if the paths are wrong
 if(NOT EXISTS "${ORT_INCLUDE_DIR}/onnxruntime_cxx_api.h")
@@ -192,8 +191,6 @@ target_link_libraries(Pathtracer PRIVATE
         dxgi.lib dxguid.lib
         dxcompiler.lib d3dcompiler.lib windowsapp)
 
-# OMM SDK's static lib includes stb_image which also lives in ThirdPartyImpl.cpp.
-# Allow duplicate symbols — the linker picks one copy.
 target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
 
 
@@ -248,8 +245,8 @@ add_custom_command(TARGET Pathtracer POST_BUILD
 set(ORT_DLLS
         "${ORT_BIN_DIR}/onnxruntime.dll"
         "${ORT_BIN_DIR}/onnxruntime_providers_shared.dll"
-        "${ORT_BIN_DIR}/onnxruntime_providers_directml.dll"  # optional (not in your screenshot)
-        "${ORT_BIN_DIR}/DirectML.dll"                        # optional (not in your screenshot)
+        "${ORT_BIN_DIR}/onnxruntime_providers_directml.dll"
+        "${ORT_BIN_DIR}/DirectML.dll"
 )
 
 foreach(dll_path IN LISTS ORT_DLLS)
