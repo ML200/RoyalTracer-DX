@@ -187,8 +187,8 @@ inline bool TestTemporalCandidate_DI(
 
     uint rI = load_instID(sampleBuf, tpx);
     uint rP = load_primID(sampleBuf, tpx);
-    if (GetMatIDFast(rI, rP) != myMatID)
-        return false;
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
 
     float3 ng = load_n1_g_with_instID(sampleBuf, tpx, rI);
     if (RejectNormal_DI(myN1g, ng, 0.36f))
@@ -233,8 +233,8 @@ inline bool TestTemporalCandidate_GI(
 
     uint rI = load_instID(sampleBuf, tpx);
     uint rP = load_primID(sampleBuf, tpx);
-    if (GetMatIDFast(rI, rP) != myMatID)
-        return false;
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
 
     float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
     if (RejectNormal_GI(myN1s, ns, 0.36f))
