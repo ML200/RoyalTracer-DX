@@ -28,6 +28,12 @@
 *.out
 *.app
 
+# ── but allow Slang CLI tools ──
+!/Pathtracer/third_party/slang/bin/slangc.exe
+
+# ── Slang large binaries (use zipped version instead) ──
+/Pathtracer/third_party/slang/bin/slang-llvm.dll
+
 /Pathtracer/cmake-build-debug-visual-studio
 /Pathtracer/cmake-build-release-visual-studio
 /Pathtracer/out
