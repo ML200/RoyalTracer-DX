@@ -5,8 +5,8 @@
 #ifndef PAYLOAD_PATH_V1_HLSLI
 #define PAYLOAD_PATH_V1_HLSLI
 
-// Sentinel for "no medium" (fits in 15 bits)
-static const uint MEDIUM_INVALID_15 = 0x7FFFu;
+// Sentinel for "no medium"
+static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 
 // Payload (SM 6.9): [raypayload]
 struct [raypayload] PathRayPayload

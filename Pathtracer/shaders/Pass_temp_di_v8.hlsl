@@ -74,35 +74,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    // permute sample
+    // 1) Try the permuted sample
     if (permInBounds)
-    {
-        tempPixelIdx = MapPixelID(dims, (uint2)permCoord);
-
-        // Tiered rejection against last-frame data
-        bool reject = load_isEmitter(g_sample_last, tempPixelIdx);
-        if (!reject)
-        {
-            rInstID = load_instID(g_sample_last, tempPixelIdx);
-            rPrimID = load_primID(g_sample_last, tempPixelIdx);
-            if (GetMatIDFast(rInstID, rPrimID) != myMatID) reject = true;
-        }
-        if (!reject)
-        {
-            float3 n1g_r = load_n1_g_with_instID(g_sample_last, tempPixelIdx, rInstID);
-            if (RejectNormal_DI(myN1g, n1g_r, 0.36f)) reject = true;
-        }
-        if (!reject)
-        {
-            rBary = load_bary(g_sample_last, tempPixelIdx);
-            float3 x1_r = ReconstructPosition(rInstID, rPrimID, rBary);
-            if (RejectDistance_DI(myPos, x1_r, myN1g, 0.4f)) reject = true;
-        }
-        if (!reject)
-        {
-            valid = true;
-        }
-    }
+        valid = TestTemporalCandidate_DI(permCoord, dims, g_sample_last, myMatID, myN1g, myPos,
+                                         tempPixelIdx, rInstID, rPrimID, rBary);
 
 
     [branch]

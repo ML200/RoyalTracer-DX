@@ -60,9 +60,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
-        // Emitters have a valid surface; sky sentinel (instID==0xFFFF) does not
+        // Emitters have a valid surface; sky sentinel (instID==0xFFFFFFFF) does not
         uint emInstID = load_instID(g_sample_current, pixelIdx);
-        bool hasPosition = (emInstID != 0xFFFFu);
+        bool hasPosition = (emInstID != 0xFFFFFFFFu);
 
         if (hasPosition)
         {

@@ -4,8 +4,8 @@
     buffer access during per-neighbor MIS evaluation.
 
     Layout (per pixel):
-        Offset  0: instID (bits 0-15) + emitter flag (bit 31)   [uint32]
-        Offset  4: primID (FlatPrimID)                           [uint32]
+        Offset  0: instID (full 32-bit)                          [uint32]
+        Offset  4: primID (bits 0-30) + emitter flag (bit 31)   [uint32]
         Offset  8: bary.x                                        [float32]
         Offset 12: bary.y                                        [float32]
         Offset 16: etai / etat                                   [half2 -> uint32]
@@ -17,13 +17,13 @@
     n1_s + uv are cached to allow BuildVertexLight (neighbor reconstruction)
     to skip 12 scattered vertex-buffer loads (normals + UVs) per neighbor.
 
-    Emitter flag (bit 31 of word 0):
+    Emitter flag (bit 31 of word 1 / primID):
         Set when the primary hit is an emitter or sky/miss.
         When set, L1 has already been written to gScratchPing[pixel, 1] and [pixel, 2]
         by the raygen/hit shader.  Temporal/spatial passes check this flag and skip.
 
     Sky sentinel:
-        instID == 0xFFFF with emitter flag set -> sky/miss (no surface geometry).
+        instID == 0xFFFFFFFF with emitter flag set -> sky/miss (no surface geometry).
 */
 
 static const uint BYTES_SD = 32u;
@@ -54,16 +54,17 @@ float3 WorldToObjectNrm(uint id, float3 Nw)
 
 // -- Individual stores --
 
-// Store instID (bits 0-15) + emitter flag (bit 31)
-void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID, bool isEmitter)
+// Store instID (full 32-bit)
+void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
-    uint packed = (instID & 0xFFFFu) | (isEmitter ? 0x80000000u : 0u);
-    buf.Store(pixelBaseAddr_SD(pixelIdx), packed);
+    buf.Store(pixelBaseAddr_SD(pixelIdx), instID);
 }
 
-void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID)
+// Store primID (bits 0-30) + emitter flag (bit 31)
+void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID, bool isEmitter)
 {
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, primID);
+    uint packed = (primID & 0x7FFFFFFFu) | (isEmitter ? 0x80000000u : 0u);
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, packed);
 }
 
 void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
@@ -79,14 +80,14 @@ void store_etai_etat(RWByteAddressBuffer buf, uint pixelIdx, float etai, float e
 // Store geometric normal in object space (for fast rejection + visibility)
 void store_n1_g_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1g_world, uint instID)
 {
-    float3 n1g_obj = (instID < 0xFFFEu) ? WorldToObjectNrm(instID, n1g_world) : n1g_world;
+    float3 n1g_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1g_world) : n1g_world;
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1g_obj));
 }
 
 // Store shading normal in object space (cached for neighbor MIS)
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
-    float3 n1s_obj = (instID < 0xFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
+    float3 n1s_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 24u, PackNormal(n1s_obj));
 }
 
@@ -100,30 +101,25 @@ void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
 void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
-    buf.Store4(base, uint4(0xFFFFu | 0x80000000u, 0u, 0u, 0u));
+    buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
     buf.Store4(base + 16u, uint4(PackFloat2x16(1.0f, 1.0f), 0u, 0u, 0u));
 }
 
 // -- Individual loads --
 
-uint load_instID_raw(RWByteAddressBuffer buf, uint pixelIdx)
+uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return buf.Load(pixelBaseAddr_SD(pixelIdx));
 }
 
-uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return buf.Load(pixelBaseAddr_SD(pixelIdx)) & 0xFFFFu;
-}
-
 bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return (buf.Load(pixelBaseAddr_SD(pixelIdx)) & 0x80000000u) != 0u;
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x80000000u) != 0u;
 }
 
 uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u);
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x7FFFFFFFu;
 }
 
 float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
@@ -146,14 +142,14 @@ float3 load_n1_g(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint instID = load_instID(buf, pixelIdx);
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 // Load geometric normal given an already-loaded instID (avoids redundant load)
 float3 load_n1_g_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 // Load shading normal: stored in object space, returned in world space
@@ -161,13 +157,13 @@ float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint instID = load_instID(buf, pixelIdx);
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
-    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
-    return (instID < 0xFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 // Load UV (half2)
