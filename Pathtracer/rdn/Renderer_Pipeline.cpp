@@ -143,7 +143,7 @@ void Renderer::CreateTopLevelAS(
         for (size_t i = 0; i < instances.size(); i++)
             m_topLevelASGenerator.AddInstance(
                 instances[i].first.Get(), instances[i].second,
-                static_cast<UINT>(i), static_cast<UINT>(2 * i));
+                static_cast<UINT>(i), static_cast<UINT>(i));
 
         UINT64 scratchSize, resultSize, instanceDescsSize;
         m_topLevelASGenerator.ComputeASBufferSizes(
@@ -430,19 +430,16 @@ void Renderer::CreateRaytracingPipeline() {
     // Fixed shaders
     ComPtr<IDxcBlob> missLib    = nv_helpers_dx12::CompileShaderLibrary(L"Miss_v8.hlsl");
     ComPtr<IDxcBlob> hitLib     = nv_helpers_dx12::CompileShaderLibrary(L"Hit_v8.hlsl");
-    ComPtr<IDxcBlob> shadowLib  = nv_helpers_dx12::CompileShaderLibrary(L"ShadowRay.hlsl");
     ComPtr<IDxcBlob> anyHitLib  = nv_helpers_dx12::CompileShaderLibrary(L"AnyHit.hlsl");
 
     pipeline.AddLibrary(missLib.Get(),    { L"Miss" });
-    pipeline.AddLibrary(shadowLib.Get(),  { L"ShadowClosestHit", L"ShadowMiss" });
     pipeline.AddLibrary(hitLib.Get(),     { L"ClosestHit" });
     pipeline.AddLibrary(anyHitLib.Get(),  { L"AlphaTestAnyHit" });
 
     pipeline.AddHitGroup(L"HitGroup",       L"ClosestHit", L"AlphaTestAnyHit");
-    pipeline.AddHitGroup(L"ShadowHitGroup", L"ShadowClosestHit", L"AlphaTestAnyHit");
 
-    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss", L"ShadowMiss" });
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"HitGroup", L"ShadowHitGroup" });
+    pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss" });
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"HitGroup" });
 
     pipeline.SetMaxPayloadSize(128);
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
@@ -826,13 +823,10 @@ void Renderer::CreateShaderBindingTable() {
     }
 
     m_sbtHelper.AddMissProgram(L"Miss", {});
-    m_sbtHelper.AddMissProgram(L"ShadowMiss", {});
 
     for (size_t i = 0; i < m_scene.instances.size(); ++i) {
         m_sbtHelper.AddHitGroup(L"HitGroup", {});
-        m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
     }
-    m_sbtHelper.AddHitGroup(L"ShadowHitGroup", {});
 
     for (const auto& name : m_callableShaderNames)
         m_sbtHelper.AddCallableProgram(name, { heapPointer });
