@@ -2,7 +2,7 @@
 
 A real-time path tracer written in HLSL using the DirectX 12 API.
 
-![Monk statue in sponza scene with emissive light strips](media/monk.png)
+![Bistro exterior scene](media/bistro.png)
 
 ## Background
 
@@ -32,12 +32,12 @@ What started as a port of the [RoyalTracer university project](https://github.co
 ### Model Loading
 Supports OBJ and glTF/glB formats via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinygltf](https://github.com/syoyo/tinygltf). Textures are loaded through stb_image with DDS decompression via [DirectXTex](https://github.com/microsoft/DirectXTex). Models, materials, and per-instance transforms are unified into a single scene representation.
 
-![Bistro exterior scene](media/bistro.png)
-
-![Sponza courtyard](media/sponza.png)
-
 ### Material Model
-![Dragon bust with subsurface transmission](media/dragon.png)
+
+<p float="left">
+  <img src="media/sponza.png" width="49%" />
+  <img src="media/dragon.png" width="49%" />
+</p>
 
 ![Material model layer diagram](media/material_model.svg)
 
