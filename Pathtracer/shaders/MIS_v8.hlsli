@@ -104,7 +104,6 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float  localPm2_c,
     in float  etai2_c,
     in float  etat2_c,
-    in float  pdfx2_c,
     in float  J_c
     )
 {
@@ -136,7 +135,7 @@ float PairwiseMIS_Canonical_Spat_GI(
                 sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
                 sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, L2_c, sv_c2.o,
                 sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                pdfx2_c, J_c, true, Jn, J));
+                J_c, true, Jn, J));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
                 p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;

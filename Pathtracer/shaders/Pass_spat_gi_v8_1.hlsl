@@ -11,26 +11,45 @@ uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
 [shader("raygeneration")]
 void Pass_spat_gi_v8_1()
 {
+    //─────────────────────────────────────────────────────────────────────────
+    // SER: classify thread with minimal live state across reorder
+    //─────────────────────────────────────────────────────────────────────────
+    uint sortKey;
+    {
+        const uint2 li  = DispatchRaysIndex().xy;
+        const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
+        const bool  emi = load_isEmitter(g_sample_current, px);
+
+        if (emi || !(rs_flags & 8u))
+        {
+            sortKey = emi ? 0u : 1u;
+        }
+        else
+        {
+            const uint selBase = gi_sel_addr(li.y * IMG_W + li.x);
+            sortKey = 2u + g_pathStateBuffer.Load(selBase); // validCount
+        }
+    }
+
+    dx::MaybeReorderThread(sortKey, 3);
+
+    //─────────────────────────────────────────────────────────────────────────
+    // Post-reorder: recompute identity, then heavy loads on coherent warps
+    //─────────────────────────────────────────────────────────────────────────
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
-    // Only do spatial GI when pixel is not an emitter
+    // Emitter early-out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
     }
 
-    // Lightweight loads
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-
-    // If spatial GI is disabled, use stored F_gi directly (no ReconnectGI needed)
+    // Disabled early-out
     if (!(rs_flags & 8u))
     {
         float3 c = UnpackRGB9E5(rdi.F_gi);
@@ -40,9 +59,7 @@ void Pass_spat_gi_v8_1()
         return;
     }
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Read pre-computed neighbor selection from g_pathStateBuffer
-    //─────────────────────────────────────────────────────────────────────────
+    // Re-read neighbor selection (cheap buffer loads)
     const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
     const uint selBase   = gi_sel_addr(linearIdx);
     uint2 header         = g_pathStateBuffer.Load2(selBase);
@@ -53,6 +70,12 @@ void Pass_spat_gi_v8_1()
     [unroll]
     for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
         nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
+
+    // Lightweight loads
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
     // Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
@@ -92,7 +115,7 @@ void Pass_spat_gi_v8_1()
         M_sum, p_c, M_c, nIds,
         rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
         rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-        rdi.J_gi.x, rdi.J_gi.y
+        rdi.J_gi
     );
 
     // Adjust canonical weight
@@ -127,7 +150,7 @@ void Pass_spat_gi_v8_1()
                 sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
                 sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
                 sv2_n.Kd, sv2_n.Pr, sv2_n.Pm, sv2_n.etai, sv2_n.etat,
-                rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
+                rdi_r.J_gi, true, Jn, Jnn);
 
             // Visibility after reconnection
             {
@@ -164,7 +187,7 @@ void Pass_spat_gi_v8_1()
             ))
         {
             contrib_final = contrib_n;
-            rdi.J_gi.y = Jn;
+            rdi.J_gi = Jn;
         }
     }
 

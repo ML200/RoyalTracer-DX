@@ -6,11 +6,28 @@
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
-    const uint2 launchIndex = DispatchRaysIndex().xy;
-    const float2 dims_f = float2(IMG_W, IMG_H);
-    const uint pixelIdx = MapPixelID(dims_f, launchIndex);
+    //─────────────────────────────────────────────────────────────────────────
+    // SER: classify thread with minimal live state across reorder
+    //─────────────────────────────────────────────────────────────────────────
+    uint sortKey;
+    {
+        const uint2 li  = DispatchRaysIndex().xy;
+        const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
+        const bool  emi = load_isEmitter(g_sample_current, px);
 
-    // Emitter check
+        sortKey = emi ? 0u : (!(rs_flags & 2u) ? 1u : 2u);
+    }
+
+    dx::MaybeReorderThread(sortKey, 2);
+
+    //─────────────────────────────────────────────────────────────────────────
+    // Post-reorder: recompute identity, then heavy loads on coherent warps
+    //─────────────────────────────────────────────────────────────────────────
+    const uint2  launchIndex = DispatchRaysIndex().xy;
+    const float2 dims_f      = float2(IMG_W, IMG_H);
+    const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
+
+    // Emitter early-out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
@@ -20,7 +37,7 @@ void Pass_temp_gi_v8()
     // Load current reservoir (must stay alive until final store)
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
-    // Early-out if temporal GI is disabled
+    // Disabled early-out
     if (!(rs_flags & 2u)) {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
@@ -29,7 +46,6 @@ void Pass_temp_gi_v8()
 
     // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
-
 
     // RNG (keep as small as possible; preserve your semantics)
     uint2 seed = GetSeed(pixelIdx, time, 3);
@@ -150,7 +166,7 @@ void Pass_temp_gi_v8()
                         sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
                         sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, rdi.L2_gi, sv_c2.o,
                         sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                        rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
+                        rdi.J_gi, true, Jnc, J1);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
@@ -173,7 +189,7 @@ void Pass_temp_gi_v8()
                         sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
                         sv_r2.matID, sv_r2.x, sv_r2.n_s, sv_r2.n_g, rdi_r.L2_gi, sv_r2.o,
                         sv_r2.Kd, sv_r2.Pr, sv_r2.Pm, sv_r2.etai, sv_r2.etat,
-                        rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
+                        rdi_r.J_gi, true, Jn, J2);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
@@ -224,7 +240,7 @@ void Pass_temp_gi_v8()
                     ))
                 {
                     p_hat_final = n_c;
-                    rdi.J_gi.y  = Jn;
+                    rdi.J_gi  = Jn;
                     F_gi_winner = PackRGB9E5(contrib_n_from_me);
                 }
 

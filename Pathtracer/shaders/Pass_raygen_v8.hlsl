@@ -38,7 +38,8 @@ void Pass_raygen_v8()
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));   // compressed: 3 floats → 1 uint
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));    // compressed: 3 floats → 1 uint
     float  prev_pdf   = 1.0f;
-    uint   gi_J_pk    = 0;      // packed fp16: partial_J (low16) + pdf2_bsdf (high16)
+    float  gi_pdf_product = 1.0f;
+    float  gi_J       = 0.0f;
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -106,13 +107,11 @@ void Pass_raygen_v8()
             if (depth >= 2)
             {
                 float  p_hat  = GetPHat(T_envL);
-                uint   F_pk   = PackRGB9E5(T_envL);
+                uint   F_pk   = PackRGB9E5(T_envL * gi_pdf_product);
                 float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
-                float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                float2 J_new  = float2(0.0f, gi_J.x * gi_J.y);
                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
 
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, J_new, V2_new, seed))
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, gi_J, V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
             }
             break;
@@ -237,11 +236,10 @@ void Pass_raygen_v8()
                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
                 float3 contrib_gi = throughput * emission;
                 float  p_hat  = GetPHat(contrib_gi);
-                uint   F_pk   = PackRGB9E5(contrib_gi);
+                uint   F_pk   = PackRGB9E5(contrib_gi * gi_pdf_product);
                 float  wi     = p_hat * misWeight;
 
-                float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, float2(0.0f, gi_J.x * gi_J.y), V2_new, seed))
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, gi_J, V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
             }
             break;
@@ -255,7 +253,7 @@ void Pass_raygen_v8()
             SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
             float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
             float dist2  = max(hitT * hitT, EPSILON);
-            gi_J_pk = (gi_J_pk & 0xFFFF0000u) | f32tof16_custom(prev_pdf * cos_x2 / dist2);
+            gi_J = cos_x2 / dist2;
         }
 
         // ── Depth 2: store post-reconnection direction ────────────────
@@ -324,17 +322,14 @@ void Pass_raygen_v8()
                         if (depth >= 1)
                         {
                             float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                            float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_nee = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
-                            float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
+                            float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf;
                             float  p_hat   = GetPHat(contrib);
-                            uint   F_pk    = PackRGB9E5(contrib);
-                            float  wi      = p_hat * misWeight;
+                            uint   F_pk    = PackRGB9E5(contrib * gi_pdf_product);
+                            float  wi      = p_hat * misWeight / lightPdf;
                             float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
+                            if (depth > 1) tpost *= bdataNEE.val * cosSurf;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, J_new, V2_new, seed))
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, gi_J, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
                     }
@@ -379,16 +374,14 @@ void Pass_raygen_v8()
                         {
                             uint px = MapPixelID(imgSize, pixel);
                             float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                            float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_sun = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
-                            float  p_hat  = GetPHat(contrib);
-                            uint   F_pk   = PackRGB9E5(contrib);
-                            float  wi     = p_hat;
+                            float3 contrib_gi = throughput * NdotL * sun.radiance * bdataNEE.val;
+                            float  p_hat  = GetPHat(contrib_gi);
+                            uint   F_pk   = PackRGB9E5(contrib_gi * gi_pdf_product);
+                            float  wi     = p_hat / lightPdf;
                             float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
+                            if (depth > 1) tpost *= bdataNEE.val * NdotL;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, J_new, V2_new, seed))
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, gi_J, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
                     }
@@ -407,10 +400,6 @@ void Pass_raygen_v8()
         float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
-        // Track BSDF pdf at reconnection vertex for GI jacobian
-        if (depth == 1)
-            gi_J_pk = (gi_J_pk & 0x0000FFFFu) | (f32tof16_custom(bdata.pdf) << 16u);
-
         float cosTheta = abs(dot(hinfo.hitNormal, s));
         float3 updateWeight = (bdata.pdf > 1e-6f)
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
@@ -425,16 +414,16 @@ void Pass_raygen_v8()
             break;
 
         // Advance path state
-        prev_pdf    = bdata.pdf;
+        prev_pdf       = bdata.pdf;
+        gi_pdf_product *= bdata.pdf;
         rayDir      = s;
         float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);
 
         // Update throughput: decompress → multiply → RR → recompress
-        // Tpost must track the same weight as throughput (including RR) for depth >= 1
         {
             float3 throughput = UnpackRGB9E5(throughputPk) * updateWeight;
-            float3 tpostWeight = updateWeight;  // weight factor for Tpost (before RR)
+            float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
             // Russian Roulette (skip depth 0 to ensure at least one bounce)
             if (depth > 0)
