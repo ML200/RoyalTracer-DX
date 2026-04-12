@@ -431,7 +431,7 @@ void Pass_raygen_v8()
             }
 
             // Update post-reconnection throughput for GI
-            if (depth >= 0)
+            if (depth >= 2)
             {
                 uint px = MapPixelID(imgSize, pixel);
                 float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
