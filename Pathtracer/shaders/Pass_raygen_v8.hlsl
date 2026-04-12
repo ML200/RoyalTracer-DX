@@ -39,7 +39,6 @@ void Pass_raygen_v8()
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));    // compressed: 3 floats → 1 uint
     float  prev_pdf   = 1.0f;
     float  gi_pdf_product = 1.0f;
-    float  gi_J       = 0.0f;
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -111,7 +110,7 @@ void Pass_raygen_v8()
                 float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
 
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, gi_J, V2_new, seed))
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
             }
             break;
@@ -239,7 +238,7 @@ void Pass_raygen_v8()
                 uint   F_pk   = PackRGB9E5(contrib_gi * gi_pdf_product);
                 float  wi     = p_hat * misWeight;
 
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, gi_J, V2_new, seed))
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, V2_new, seed))
                     store_F_gi(g_Reservoirs_current_gi, px, F_pk);
             }
             break;
@@ -250,10 +249,7 @@ void Pass_raygen_v8()
         {
             uint px = MapPixelID(imgSize, pixel);
             SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
-            SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
-            float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
-            float dist2  = max(hitT * hitT, EPSILON);
-            gi_J = cos_x2 / dist2;
+            SetReservoirGI_UV(g_Reservoirs_current_gi, px, hinfo.uv);
         }
 
         // ── Depth 2: store post-reconnection direction ────────────────
@@ -329,7 +325,7 @@ void Pass_raygen_v8()
                             float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
                             if (depth > 1) tpost *= bdataNEE.val * cosSurf;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, gi_J, V2_new, seed))
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
                     }
@@ -381,7 +377,7 @@ void Pass_raygen_v8()
                             float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
                             if (depth > 1) tpost *= bdataNEE.val * NdotL;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, gi_J, V2_new, seed))
+                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
                         }
                     }

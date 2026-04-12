@@ -110,12 +110,15 @@ void Pass_spat_gi_v8_1()
         contrib_final = contrib_c;
     }
 
+    // Canonical Jc: jacobian at current pixel's x1 → canonical x2
+    const float Jc_canonical = ComputeJc(sv1.x, rdi.x2_gi, rdi.n2_s_gi);
+
     // MIS for canonical
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
         M_sum, p_c, M_c, nIds,
         rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-        rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-        rdi.J_gi
+        rKd, rPr, rPm,
+        Jc_canonical
     );
 
     // Adjust canonical weight
@@ -132,25 +135,31 @@ void Pass_spat_gi_v8_1()
         // Load neighbor reservoir only for this iteration
         Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
 
+        // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
+        const float Jc_neighbor = ComputeJc(
+            ReconstructPosition(load_instID(g_sample_current, nID),
+                                load_primID(g_sample_current, nID),
+                                load_bary(g_sample_current, nID)),
+            rdi_r.x2_gi, rdi_r.n2_s_gi);
+
         // Compute neighbor reconnection contribution
         float3 contrib_n = 0.0.xxx;
         float  p_hat_from = 0.0f;
         float  Jn = 0.0f;
-        float  Jnn = 1.0f;
 
         {
             // Refetch neighbor x2 material
             float3 rnKd; float rnPr, rnPm;
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
-            SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
+            SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, 0, 0, rdi_r.matID_gi, rdi_r.uv_gi };
 
             contrib_n = ReconnectGI(
                 sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
                 sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
                 sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
-                sv2_n.Kd, sv2_n.Pr, sv2_n.Pm, sv2_n.etai, sv2_n.etat,
-                rdi_r.J_gi, true, Jn, Jnn);
+                sv2_n.Kd, sv2_n.Pr, sv2_n.Pm,
+                Jn);
 
             // Visibility after reconnection
             {
@@ -159,7 +168,7 @@ void Pass_spat_gi_v8_1()
                 contrib_n *= vis;
             }
 
-            p_hat_from = GetPHat(contrib_n) * Jnn;
+            p_hat_from = GetPHat(contrib_n) * JacobianRatio(Jn, Jc_neighbor);
         }
 
         // MIS weight for neighbor
@@ -180,19 +189,17 @@ void Pass_spat_gi_v8_1()
                 min(SPAT_MCAP_GI, rdi_r.M_gi),
                 rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                 rdi_r.uv_gi,
-                rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
-                rdi_r.J_gi, rdi_r.F_gi,
+                rdi_r.F_gi,
                 seed
             ))
         {
             contrib_final = contrib_n;
-            rdi.J_gi = Jn;
         }
     }
 
     //─────────────────────────────────────────────────────────────────────────
-    // Finalize W/F/J and output
+    // Finalize W/F and output
     //─────────────────────────────────────────────────────────────────────────
     {
         const float p_hat_final = GetPHat(contrib_final);

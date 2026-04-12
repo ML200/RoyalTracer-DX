@@ -8,31 +8,31 @@ struct Reservoir_GI
     uint   objID_gi;
     uint   matID_gi;
     float2 uv_gi;
-    float  etai_gi;
-    float  etat_gi;
 
     // Varying payload
     float3 L2_gi;
     float3 V2_gi;
-    float  J_gi;
     uint   F_gi;        // RGB9E5-packed contribution (replaces scalar luminance)
 
     // Reservoir bookkeeping
     float  W_gi;
-    float  w_sum_gi;
+    float  w_sum_gi;    // raygen-only (merge passes overwrite before use)
     uint   M_gi;
 
 };
 
 
 // SoA layout — each field is a contiguous plane across all pixels.
-// Layout: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | IOR(4) | MATID(4) |
-//         J(4) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) = 72
+// Merge-active: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | MATID(4) |
+//               W(4) | F(4) | M(4) = 52
+// Raygen-only:  WSUM(4) | VPOST(4) | TPOST(4) = 12
+// Total: 64 bytes/pixel
 
-static const uint BYTES_GI       = 64u;
+static const uint BYTES_GI       = 52u;
+static const uint BYTES_GI_WSUM  =  4u;
 static const uint BYTES_GI_VPOST =  4u;
 static const uint BYTES_GI_TPOST =  4u;
-static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 72
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 64
 
 // Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
@@ -41,9 +41,7 @@ static const uint GI_SZ_V2    =  4u;
 static const uint GI_SZ_N2G   =  4u;
 static const uint GI_SZ_OBJID =  4u;
 static const uint GI_SZ_UV    =  4u;
-static const uint GI_SZ_IOR   =  4u;  // etai(fp16) + etat(fp16)
 static const uint GI_SZ_MATID =  4u;
-static const uint GI_SZ_J     =  4u;
 static const uint GI_SZ_W     =  4u;
 static const uint GI_SZ_F     =  4u;
 static const uint GI_SZ_M     =  4u;
@@ -58,15 +56,13 @@ static const uint GI_PLANE_V2    = 20u;
 static const uint GI_PLANE_N2G   = 24u;
 static const uint GI_PLANE_OBJID = 28u;
 static const uint GI_PLANE_UV    = 32u;
-static const uint GI_PLANE_IOR   = 36u;
-static const uint GI_PLANE_MATID = 40u;
-static const uint GI_PLANE_J     = 44u;
-static const uint GI_PLANE_W     = 48u;
-static const uint GI_PLANE_F     = 52u;
-static const uint GI_PLANE_M     = 56u;
-static const uint GI_PLANE_WSUM  = 60u;
-static const uint GI_PLANE_VPOST = 64u;
-static const uint GI_PLANE_TPOST = 68u;
+static const uint GI_PLANE_MATID = 36u;
+static const uint GI_PLANE_W     = 40u;
+static const uint GI_PLANE_F     = 44u;
+static const uint GI_PLANE_M     = 48u;
+static const uint GI_PLANE_WSUM  = 52u;
+static const uint GI_PLANE_VPOST = 56u;
+static const uint GI_PLANE_TPOST = 60u;
 
 // SoA address helpers
 // Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
@@ -77,9 +73,7 @@ uint gi_addr_v2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE
 uint gi_addr_n2g(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_N2G   + px * GI_SZ_N2G; }
 uint gi_addr_objid(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_OBJID + px * GI_SZ_OBJID; }
 uint gi_addr_uv(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_UV    + px * GI_SZ_UV; }
-uint gi_addr_ior(uint px)            { uint N = gi_numPx(); return N * GI_PLANE_IOR   + px * GI_SZ_IOR; }
 uint gi_addr_matid(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_MATID + px * GI_SZ_MATID; }
-uint gi_addr_j(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_J     + px * GI_SZ_J; }
 uint gi_addr_w(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_W     + px * GI_SZ_W; }
 uint gi_addr_f(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_F     + px * GI_SZ_F; }
 uint gi_addr_m(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_M     + px * GI_SZ_M; }
@@ -121,13 +115,10 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store (gi_addr_n2g(pixelIdx),   PackNormal(normalize(nGO)));
     buf.Store (gi_addr_objid(pixelIdx), r.objID_gi);
     buf.Store (gi_addr_uv(pixelIdx),    PackFloat2x16(r.uv_gi.x, r.uv_gi.y));
-    buf.Store (gi_addr_ior(pixelIdx),   PackFloat2x16(r.etai_gi, r.etat_gi));
     buf.Store (gi_addr_matid(pixelIdx), r.matID_gi);
-    buf.Store (gi_addr_j(pixelIdx),     asuint(r.J_gi));
     buf.Store (gi_addr_w(pixelIdx),     asuint(r.W_gi));
     buf.Store (gi_addr_f(pixelIdx),     r.F_gi);
     buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
-    buf.Store (gi_addr_wsum(pixelIdx),  asuint(r.w_sum_gi));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -146,17 +137,14 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     r.L2_gi    = UnpackRGB9E5(buf.Load(gi_addr_l2(pixelIdx)));
     r.V2_gi    = UnpackNormal(buf.Load(gi_addr_v2(pixelIdx)));
 
-    uint ior_packed = buf.Load(gi_addr_ior(pixelIdx));
     uint uv_packed  = buf.Load(gi_addr_uv(pixelIdx));
-    UnpackFloat2x16(uv_packed,  r.uv_gi.x,   r.uv_gi.y);
-    UnpackFloat2x16(ior_packed, r.etai_gi,    r.etat_gi);
+    UnpackFloat2x16(uv_packed, r.uv_gi.x, r.uv_gi.y);
 
-    r.J_gi     = asfloat(buf.Load(gi_addr_j(pixelIdx)));
     r.W_gi     = asfloat(buf.Load(gi_addr_w(pixelIdx)));
     r.F_gi     = buf.Load(gi_addr_f(pixelIdx));
 
     r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
-    r.w_sum_gi = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
+    r.w_sum_gi = 0.0f; // raygen-only; merge passes overwrite before use
 
     return r;
 }
@@ -209,28 +197,6 @@ float2 load_uv_gi(RWByteAddressBuffer b, uint pixelIdx)
     float2 r;
     UnpackFloat2x16(b.Load(gi_addr_uv(pixelIdx)), r.x, r.y);
     return r;
-}
-
-float  load_etai_gi(RWByteAddressBuffer b, uint pixelIdx)
-{
-    uint p = b.Load(gi_addr_ior(pixelIdx));
-    return f16tof32_custom(p & 0xFFFFu);
-}
-
-float  load_etat_gi(RWByteAddressBuffer b, uint pixelIdx)
-{
-    uint p = b.Load(gi_addr_ior(pixelIdx));
-    return f16tof32_custom(p >> 16);
-}
-
-float load_J_gi(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return asfloat(b.Load(gi_addr_j(pixelIdx)));
-}
-
-void store_J_gi(RWByteAddressBuffer b, uint pixelIdx, float J)
-{
-    b.Store(gi_addr_j(pixelIdx), asuint(J));
 }
 
 float  load_W_gi(RWByteAddressBuffer b, uint pixelIdx)
@@ -316,6 +282,22 @@ inline void InvalidateReservoirGI_ShadingNormal(
 
 
 
+// Geometric jacobian: recomputable from positions + shading normal
+inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
+{
+    float3 d = x1 - x2;
+    float  dist2 = dot(d, d);
+    if (dist2 < EPSILON) return EPSILON;
+    float  dist = sqrt(dist2);
+    return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
+}
+
+// Safe jacobian ratio: matches old behavior of zeroing when Jc is degenerate
+inline float JacobianRatio(float Jn, float Jc)
+{
+    return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
+}
+
 // Calculate reconnection (two–sided)
 inline float3 ReconnectGI(
     // Vertex x1 (camera path hit)
@@ -340,14 +322,8 @@ inline float3 ReconnectGI(
     in float3  localKd2,
     in float   localPr2,
     in float   localPm2,
-    in float   etai2,
-    in float   etat2,
 
-    // Jacobian plumbing
-    in float   Jc,      // canonical jacobian term (geometric only)
-    in bool    applyJ,
-    out float  Jn,
-    out float  J
+    out float  Jn
 )
 {
     if (length(L2) < EPSILON)
@@ -357,6 +333,10 @@ inline float3 ReconnectGI(
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x2 to x1
+
+    // x2 IOR: depth-1 hit is always from air → derive from material
+    float etai2 = 1.0f;
+    float etat2 = materials[mID2].Ni;
 
     float3 F1 = BSDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
     float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
@@ -372,19 +352,11 @@ inline float3 ReconnectGI(
         transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
     }
 
-    // Jacobian: only geometric term, PDFs removed from PSS mapping
-    float Gj = abs(dot(ndirN, n2_s)) / (dist * dist);
-    Jn = max(Gj, EPSILON);
-    J  = 1.0f;
+    // Geometric jacobian at the new x1
+    Jn = max(abs(dot(ndirN, n2_s)) / (dist * dist), EPSILON);
 
     // Throughput: no PDF division — wi divides by pdf explicitly in raygen
     float3 r = F1 * F2 * L2 * G1 * G2 * transmittance;
-
-    if (applyJ)
-    {
-        if(Jc < EPSILON) return 0.0f;
-        J = Jn / Jc;
-    }
 
     if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
         r = (float3)0.0f;
@@ -407,13 +379,10 @@ bool UpdateReservoirGI(
     in float3 V2,
 
     in float2 uv,
-    in float  etai,
-    in float  etat,
 
     in uint matID,
     in uint objID,
 
-    in float J,
     in uint  F,
 
     inout uint2 seed
@@ -430,13 +399,10 @@ bool UpdateReservoirGI(
         reservoir.objID_gi = objID;
         reservoir.matID_gi = matID;
 
-        reservoir.uv_gi      = uv;
-        reservoir.etai_gi    = etai;
-        reservoir.etat_gi    = etat;
+        reservoir.uv_gi   = uv;
 
         reservoir.L2_gi   = L2;
         reservoir.V2_gi   = V2;
-        reservoir.J_gi    = J;
         reservoir.F_gi    = F;
         return true;
     }
@@ -452,7 +418,6 @@ bool UpdateReservoirGI_Fast(
 
     // Varying (always written on accept)
     float3 L2_new,
-    float  J_new,
     float3 V2_new,
 
     inout uint2 seed
@@ -471,7 +436,6 @@ bool UpdateReservoirGI_Fast(
 
         buf.Store(gi_addr_l2(pixelIdx), PackRGB9E5(L2_new));
         buf.Store(gi_addr_v2(pixelIdx), PackNormal(normalize(V2_new)));
-        buf.Store(gi_addr_j(pixelIdx),  asuint(J_new));
     }
 
     return isAccepted;
@@ -503,14 +467,11 @@ void SetReservoirGI_ConstHit(
     buf.Store (gi_addr_matid(pixelIdx), matID);
 }
 
-void SetReservoirGI_UVAndIOR(
+void SetReservoirGI_UV(
     RWByteAddressBuffer buf,
     uint pixelIdx,
-    float2 uv,
-    float  etai,
-    float  etat
+    float2 uv
 )
 {
-    buf.Store(gi_addr_uv(pixelIdx),  PackFloat2x16(uv.x, uv.y));
-    buf.Store(gi_addr_ior(pixelIdx), PackFloat2x16(etai, etat));
+    buf.Store(gi_addr_uv(pixelIdx), PackFloat2x16(uv.x, uv.y));
 }

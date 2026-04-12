@@ -102,8 +102,6 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float3 localKd2_c,
     in float  localPr2_c,
     in float  localPm2_c,
-    in float  etai2_c,
-    in float  etat2_c,
     in float  J_c
     )
 {
@@ -126,18 +124,16 @@ float PairwiseMIS_Canonical_Spat_GI(
                 load_etat(g_sample_current, id),
                 InitOrigin());
 
-            SurfaceVertex sv_c2 = { x2_c, n2s_c, n2g_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, matID_c, float2(0,0) };
-
             float Jn = 0.0f;
-            float J = 0.0f;
             float p_hat_from = GetPHat(ReconnectGI(
                 sv_n1.x, sv_n1.n_s, sv_n1.n_g, sv_n1.o, sv_n1.matID,
                 sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
-                sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, L2_c, sv_c2.o,
-                sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                J_c, true, Jn, J));
+                matID_c, x2_c, n2s_c, n2g_c, L2_c, V2_c,
+                localKd2_c, localPr2_c, localPm2_c,
+                Jn));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
+                float J = JacobianRatio(Jn, J_c);
                 p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
             }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
