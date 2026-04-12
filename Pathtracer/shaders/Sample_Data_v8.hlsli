@@ -1,54 +1,37 @@
 /*
-    SoA G-buffer: 32 bytes per pixel, 8 planes of 4 bytes each.
-    Written once by raygen at depth 0; read-only in all merge passes.
+    Compact G-buffer: 32 bytes per pixel.
+    Stores minimal identifiers + cached normals/UV to avoid scattered vertex
+    buffer access during per-neighbor MIS evaluation.
 
-    SoA layout — each field is a contiguous array across all pixels:
-        Plane 0: instID          (uint32)
-        Plane 1: matID | flags   (uint32) bits[2:31]=matID, bit1=isSky, bit0=isEmitter
-        Plane 2: normal_packed   (uint32) object-space octahedral
-        Plane 3: localPos.x      (float32) object-space
-        Plane 4: localPos.y      (float32) object-space
-        Plane 5: localPos.z      (float32) object-space
-        Plane 6: Kd_packed       (uint32) PackRGB9E5(albedo)
-        Plane 7: PrPm_packed     (uint32) half2(roughness, metalness)
+    Layout (per pixel):
+        Offset  0: instID (full 32-bit)                          [uint32]
+        Offset  4: primID (bits 0-30) + emitter flag (bit 31)   [uint32]
+        Offset  8: bary.x                                        [float32]
+        Offset 12: bary.y                                        [float32]
+        Offset 16: etai / etat                                   [half2 -> uint32]
+        Offset 20: (padding)                                     [uint32]
+        Offset 24: n1_s (shading normal, object space, packed)   [uint32]
+        Offset 28: uv (texture coordinates)                      [half2 -> uint32]
+    Total: 32 bytes.
 
-    IOR derivation (camera always in air at x1):
-        etai = 1.0
-        etat = materials[matID].Ni
+    n1_s + uv are cached to allow BuildVertexLight (neighbor reconstruction)
+    to skip 12 scattered vertex-buffer loads (normals + UVs) per neighbor.
 
-    Access:
-        addr(plane, pixelIdx) = plane * (W*H*4) + pixelIdx * 4
+    Emitter flag (bit 31 of word 1 / primID):
+        Set when the primary hit is an emitter or sky/miss.
+        When set, L1 has already been written to gScratchPing[pixel, 1] and [pixel, 2]
+        by the raygen/hit shader.  Temporal/spatial passes check this flag and skip.
 
-    Binding:
-        g_sample_current (RWByteAddressBuffer u6) — raygen writes
-        g_sample_last    (RWByteAddressBuffer u7) — shading writes swap
-        g_gbuf_current   (ByteAddressBuffer   t7) — merge/shading reads
-        g_gbuf_last      (ByteAddressBuffer   t8) — merge reads (previous frame)
+    Sky sentinel:
+        instID == 0xFFFFFFFF with emitter flag set -> sky/miss (no surface geometry).
 */
 
-#define GB_NUM_PLANES 8u
-#define GB_PLANE_BYTES (IMG_W * IMG_H * 4u)
-#define GB_TOTAL_BYTES (GB_NUM_PLANES * GB_PLANE_BYTES)
+static const uint BYTES_SD = 32u;
 
-#define GB_PLANE_INSTID    0u
-#define GB_PLANE_MATFLAGS  1u
-#define GB_PLANE_NORMAL    2u
-#define GB_PLANE_POSX      3u
-#define GB_PLANE_POSY      4u
-#define GB_PLANE_POSZ      5u
-#define GB_PLANE_KD        6u
-#define GB_PLANE_PRPM      7u
-
-// Flag bits inside the matFlags plane
-#define GB_FLAG_EMITTER 1u
-#define GB_FLAG_SKY     2u
-#define GB_FLAG_MASK    3u   // emitter | sky
-
-uint gb_addr(uint plane, uint px) { return plane * GB_PLANE_BYTES + px * 4u; }
-
-// ═══════════════════════════════════════════════════════════════════
-//  World-space helpers (used by loads)
-// ═══════════════════════════════════════════════════════════════════
+uint pixelBaseAddr_SD(uint pixelIdx)
+{
+    return pixelIdx * BYTES_SD;
+}
 
 // -- OtW / WtO helpers --
 float3 WorldToObjectPos(uint id, float3 Pw)
@@ -69,187 +52,111 @@ float3 WorldToObjectNrm(uint id, float3 Nw)
     return normalize(mul(MT, Nw));
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Stores — RWByteAddressBuffer (raygen only)
-// ═══════════════════════════════════════════════════════════════════
+// -- Individual stores --
 
-void gb_store_instID(RWByteAddressBuffer buf, uint px, uint instID)
+// Store instID (full 32-bit)
+void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
-    buf.Store(gb_addr(GB_PLANE_INSTID, px), instID);
+    buf.Store(pixelBaseAddr_SD(pixelIdx), instID);
 }
 
-void gb_store_matFlags(RWByteAddressBuffer buf, uint px, uint matID, bool isEmitter)
+// Store primID (bits 0-30) + emitter flag (bit 31)
+void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID, bool isEmitter)
 {
-    buf.Store(gb_addr(GB_PLANE_MATFLAGS, px),
-              (matID << 2) | (isEmitter ? GB_FLAG_EMITTER : 0u));
+    uint packed = (primID & 0x7FFFFFFFu) | (isEmitter ? 0x80000000u : 0u);
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, packed);
 }
 
-void gb_store_normal(RWByteAddressBuffer buf, uint px, float3 n_world, uint instID)
+void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
 {
-    float3 n_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n_world) : n_world;
-    buf.Store(gb_addr(GB_PLANE_NORMAL, px), PackNormal(n_obj));
+    buf.Store2(pixelBaseAddr_SD(pixelIdx) + 8u, asuint(bary));
 }
 
-void gb_store_localPos(RWByteAddressBuffer buf, uint px, float3 worldPos, uint instID)
+void store_etai_etat(RWByteAddressBuffer buf, uint pixelIdx, float etai, float etat)
 {
-    float3 lp = (instID < 0xFFFFFFFEu) ? WorldToObjectPos(instID, worldPos) : worldPos;
-    buf.Store(gb_addr(GB_PLANE_POSX, px), asuint(lp.x));
-    buf.Store(gb_addr(GB_PLANE_POSY, px), asuint(lp.y));
-    buf.Store(gb_addr(GB_PLANE_POSZ, px), asuint(lp.z));
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackFloat2x16(etai, etat));
 }
 
-void gb_store_Kd(RWByteAddressBuffer buf, uint px, float3 Kd)
+// Store shading normal in object space (cached for neighbor MIS)
+void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
-    buf.Store(gb_addr(GB_PLANE_KD, px), PackRGB9E5(Kd));
+    float3 n1s_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 24u, PackNormal(n1s_obj));
 }
 
-void gb_store_PrPm(RWByteAddressBuffer buf, uint px, float Pr, float Pm)
+// Store UV (cached for neighbor MIS)
+void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
 {
-    buf.Store(gb_addr(GB_PLANE_PRPM, px), PackFloat2x16(Pr, Pm));
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 28u, PackFloat2x16(uv.x, uv.y));
 }
 
-// Bulk store for sky/miss (sentinel values)
-void gb_store_sky(RWByteAddressBuffer buf, uint px)
+// Bulk store for sky/miss (zeros everything except instID+emitter flag)
+void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    buf.Store(gb_addr(GB_PLANE_INSTID, px),   0xFFFFFFFFu);
-    buf.Store(gb_addr(GB_PLANE_MATFLAGS, px), GB_FLAG_EMITTER | GB_FLAG_SKY);
-    buf.Store(gb_addr(GB_PLANE_NORMAL, px),   0u);
-    buf.Store(gb_addr(GB_PLANE_POSX, px),     0u);
-    buf.Store(gb_addr(GB_PLANE_POSY, px),     0u);
-    buf.Store(gb_addr(GB_PLANE_POSZ, px),     0u);
-    buf.Store(gb_addr(GB_PLANE_KD, px),       0u);
-    buf.Store(gb_addr(GB_PLANE_PRPM, px),     0u);
+    uint base = pixelBaseAddr_SD(pixelIdx);
+    buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
+    buf.Store4(base + 16u, uint4(PackFloat2x16(1.0f, 1.0f), 0u, 0u, 0u));
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  Loads — ByteAddressBuffer (SRV, merge/shading passes)
-// ═══════════════════════════════════════════════════════════════════
+// -- Individual loads --
 
-uint gb_load_instID(ByteAddressBuffer buf, uint px)
+uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(gb_addr(GB_PLANE_INSTID, px));
+    return buf.Load(pixelBaseAddr_SD(pixelIdx));
 }
 
-bool gb_load_isEmitter(ByteAddressBuffer buf, uint px)
+bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return (buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) & GB_FLAG_EMITTER) != 0u;
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x80000000u) != 0u;
 }
 
-bool gb_load_isSky(ByteAddressBuffer buf, uint px)
+uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return (buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) & GB_FLAG_SKY) != 0u;
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x7FFFFFFFu;
 }
 
-uint gb_load_matID(ByteAddressBuffer buf, uint px)
+float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) >> 2;
+    return asfloat(buf.Load2(pixelBaseAddr_SD(pixelIdx) + 8u));
 }
 
-float3 gb_load_normal_world(ByteAddressBuffer buf, uint px, uint instID)
+float load_etai(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    float3 raw = UnpackNormal(buf.Load(gb_addr(GB_PLANE_NORMAL, px)));
+    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) & 0xFFFFu);
+}
+
+float load_etat(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) >> 16);
+}
+
+// Load shading normal: stored in object space, returned in world space
+float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    uint instID = load_instID(buf, pixelIdx);
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
     return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
-float3 gb_load_localPos(ByteAddressBuffer buf, uint px)
+float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
-    return float3(
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSX, px))),
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSY, px))),
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSZ, px))));
-}
-
-// World-space position: 1 matrix multiply from cached instance transform
-float3 gb_load_worldPos(ByteAddressBuffer buf, uint px, uint instID)
-{
-    float3 lp = gb_load_localPos(buf, px);
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldPos(instID, lp) : lp;
-}
-
-float3 gb_load_Kd(ByteAddressBuffer buf, uint px)
-{
-    return UnpackRGB9E5(buf.Load(gb_addr(GB_PLANE_KD, px)));
-}
-
-float gb_load_Pr(ByteAddressBuffer buf, uint px)
-{
-    return f16tof32_custom(buf.Load(gb_addr(GB_PLANE_PRPM, px)) & 0xFFFFu);
-}
-
-float gb_load_Pm(ByteAddressBuffer buf, uint px)
-{
-    return f16tof32_custom(buf.Load(gb_addr(GB_PLANE_PRPM, px)) >> 16);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Loads — RWByteAddressBuffer overloads (raygen pre-SRV, shading)
-// ═══════════════════════════════════════════════════════════════════
-
-uint gb_load_instID(RWByteAddressBuffer buf, uint px)
-{
-    return buf.Load(gb_addr(GB_PLANE_INSTID, px));
-}
-
-bool gb_load_isEmitter(RWByteAddressBuffer buf, uint px)
-{
-    return (buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) & GB_FLAG_EMITTER) != 0u;
-}
-
-bool gb_load_isSky(RWByteAddressBuffer buf, uint px)
-{
-    return (buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) & GB_FLAG_SKY) != 0u;
-}
-
-uint gb_load_matID(RWByteAddressBuffer buf, uint px)
-{
-    return buf.Load(gb_addr(GB_PLANE_MATFLAGS, px)) >> 2;
-}
-
-float3 gb_load_normal_world(RWByteAddressBuffer buf, uint px, uint instID)
-{
-    float3 raw = UnpackNormal(buf.Load(gb_addr(GB_PLANE_NORMAL, px)));
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
     return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
-float3 gb_load_localPos(RWByteAddressBuffer buf, uint px)
+// Load UV (half2)
+float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return float3(
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSX, px))),
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSY, px))),
-        asfloat(buf.Load(gb_addr(GB_PLANE_POSZ, px))));
+    uint packed = buf.Load(pixelBaseAddr_SD(pixelIdx) + 28u);
+    float a, b;
+    UnpackFloat2x16(packed, a, b);
+    return float2(a, b);
 }
 
-float3 gb_load_worldPos(RWByteAddressBuffer buf, uint px, uint instID)
+// Copy sample data for temporal reuse
+void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
 {
-    float3 lp = gb_load_localPos(buf, px);
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldPos(instID, lp) : lp;
-}
-
-float3 gb_load_Kd(RWByteAddressBuffer buf, uint px)
-{
-    return UnpackRGB9E5(buf.Load(gb_addr(GB_PLANE_KD, px)));
-}
-
-float gb_load_Pr(RWByteAddressBuffer buf, uint px)
-{
-    return f16tof32_custom(buf.Load(gb_addr(GB_PLANE_PRPM, px)) & 0xFFFFu);
-}
-
-float gb_load_Pm(RWByteAddressBuffer buf, uint px)
-{
-    return f16tof32_custom(buf.Load(gb_addr(GB_PLANE_PRPM, px)) >> 16);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Copy — shading pass swap (SRV source → UAV destination)
-// ═══════════════════════════════════════════════════════════════════
-
-void gb_copy(RWByteAddressBuffer dst, ByteAddressBuffer src, uint px)
-{
-    [unroll]
-    for (uint p = 0; p < GB_NUM_PLANES; p++)
-    {
-        uint a = gb_addr(p, px);
-        dst.Store(a, src.Load(a));
-    }
+    uint base = pixelBaseAddr_SD(pixelIdx);
+    dst.Store4(base,       src.Load4(base));
+    dst.Store4(base + 16u, src.Load4(base + 16u));
 }

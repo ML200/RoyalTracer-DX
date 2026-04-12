@@ -15,7 +15,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     uint   pixelIdx  = MapPixelID(dims, launchIndex);
 
     // Emitter check
-    if (gb_load_isEmitter(g_gbuf_current, pixelIdx))
+    if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 0)] = 0;
         return;
@@ -31,11 +31,13 @@ void main(uint3 tid : SV_DispatchThreadID)
         return;
     }
 
-    // Lightweight loads for reprojection & rejection (defer full loads to merge)
-    const uint   myInstID = gb_load_instID(g_gbuf_current, pixelIdx);
-    const uint   myMatID  = gb_load_matID(g_gbuf_current, pixelIdx);
-    const float3 myPos    = gb_load_worldPos(g_gbuf_current, pixelIdx, myInstID);
-    const float3 myN1s    = gb_load_normal_world(g_gbuf_current, pixelIdx, myInstID);
+    // Lightweight loads for reprojection & rejection (defer BuildVertex to merge)
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
+    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     float boilValue = 0.0f;
 
@@ -67,12 +69,15 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
-    uint rInstID = 0;
+    // Lightweight neighbor identifiers (survive rejection -> merge)
+    uint   rInstID = 0;
+    uint   rPrimID = 0;
+    float2 rBary   = float2(0, 0);
 
     // 1) Try the permuted sample
     if (permInBounds)
-        valid = TestTemporalCandidate_DI(permCoord, dims, g_gbuf_last, myMatID, myN1s, myPos,
-                                         tempPixelIdx, rInstID);
+        valid = TestTemporalCandidate_DI(permCoord, dims, g_sample_last, myMatID, myN1s, myPos,
+                                         tempPixelIdx, rInstID, rPrimID, rBary);
 
 
     [branch]
@@ -95,30 +100,17 @@ void main(uint3 tid : SV_DispatchThreadID)
             float3 x_c, n_s_c, x_r, n_s_r;
             float Pr_c, Pr_r;
 
-            // -- Phase 1: current pixel (inline G-buffer loads, no BuildVertex) --
+            // -- Phase 1: sv_c scope (build, reconnect, extract, drop) --
             {
-                x_c   = myPos;
-                n_s_c = gb_load_normal_world(g_gbuf_current, pixelIdx, myInstID);
+                SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
+                sv.etai = load_etai(g_sample_current, pixelIdx);
+                sv.etat = load_etat(g_sample_current, pixelIdx);
 
-                p_c = GetPHat(ReconnectDI(x_c, n_s_c, normalize(cameraPos - x_c),
-                        gb_load_matID(g_gbuf_current, pixelIdx),
-                        rdi.x2_di, rdi.n2_di, rdi.L2_di,
-                        gb_load_Kd(g_gbuf_current, pixelIdx),
-                        gb_load_Pr(g_gbuf_current, pixelIdx),
-                        gb_load_Pm(g_gbuf_current, pixelIdx),
-                        1.0,
-                        materials[myMatID].Ni,
-                        rdi.objID_di)) * visReuse_c;
-                n_c = GetPHat(ReconnectDI(x_c, n_s_c, normalize(cameraPos - x_c),
-                        gb_load_matID(g_gbuf_current, pixelIdx),
-                        rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di,
-                        gb_load_Kd(g_gbuf_current, pixelIdx),
-                        gb_load_Pr(g_gbuf_current, pixelIdx),
-                        gb_load_Pm(g_gbuf_current, pixelIdx),
-                        1.0,
-                        materials[myMatID].Ni,
-                        rdi_r.objID_di));
-                Pr_c = gb_load_Pr(g_gbuf_current, pixelIdx);
+                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di)) * visReuse_c;
+                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di));
+                x_c   = sv.x;
+                n_s_c = sv.n_s;
+                Pr_c  = sv.Pr;
 
                 // visibility for n_c
                 { float3 _vd; float _vt;
@@ -127,30 +119,17 @@ void main(uint3 tid : SV_DispatchThreadID)
                   n_c *= IsVisible(x_c, n_s_c, _vd, _vt) ? 1.0f : 0.0f; }
             }
 
-            // -- Phase 2: neighbor pixel (inline G-buffer loads from g_gbuf_last) --
+            // -- Phase 2: sv_r scope (build, reconnect, extract, drop) --
             {
-                x_r   = gb_load_worldPos(g_gbuf_last, tempPixelIdx, rInstID);
-                n_s_r = gb_load_normal_world(g_gbuf_last, tempPixelIdx, rInstID);
+                SurfaceVertex sv = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
+                sv.etai = load_etai(g_sample_last, tempPixelIdx);
+                sv.etat = load_etat(g_sample_last, tempPixelIdx);
 
-                p_n = GetPHat(ReconnectDI(x_r, n_s_r, normalize(cameraPos - x_r),
-                        gb_load_matID(g_gbuf_last, tempPixelIdx),
-                        rdi.x2_di, rdi.n2_di, rdi.L2_di,
-                        gb_load_Kd(g_gbuf_last, tempPixelIdx),
-                        gb_load_Pr(g_gbuf_last, tempPixelIdx),
-                        gb_load_Pm(g_gbuf_last, tempPixelIdx),
-                        1.0,
-                        materials[gb_load_matID(g_gbuf_last, tempPixelIdx)].Ni,
-                        rdi.objID_di));
-                n_n = GetPHat(ReconnectDI(x_r, n_s_r, normalize(cameraPos - x_r),
-                        gb_load_matID(g_gbuf_last, tempPixelIdx),
-                        rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di,
-                        gb_load_Kd(g_gbuf_last, tempPixelIdx),
-                        gb_load_Pr(g_gbuf_last, tempPixelIdx),
-                        gb_load_Pm(g_gbuf_last, tempPixelIdx),
-                        1.0,
-                        materials[gb_load_matID(g_gbuf_last, tempPixelIdx)].Ni,
-                        rdi_r.objID_di)) * visReuse_r;
-                Pr_r = gb_load_Pr(g_gbuf_last, tempPixelIdx);
+                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di));
+                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di)) * visReuse_r;
+                x_r   = sv.x;
+                n_s_r = sv.n_s;
+                Pr_r  = sv.Pr;
 
                 // visibility for p_n
                 { float3 _vd; float _vt;

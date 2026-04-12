@@ -18,7 +18,7 @@ void Pass_spat_gi_v8_1()
     {
         const uint2 li  = DispatchRaysIndex().xy;
         const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
-        const bool  emi = gb_load_isEmitter(g_gbuf_current, px);
+        const bool  emi = load_isEmitter(g_sample_current, px);
 
         if (emi || !(rs_flags & 8u))
         {
@@ -43,7 +43,7 @@ void Pass_spat_gi_v8_1()
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
     // Emitter early-out
-    if (gb_load_isEmitter(g_gbuf_current, pixelIdx))
+    if (load_isEmitter(g_sample_current, pixelIdx))
     {
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
@@ -72,8 +72,10 @@ void Pass_spat_gi_v8_1()
         nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
 
     // Lightweight loads
-    const uint   myInstID = gb_load_instID(g_gbuf_current, pixelIdx);
-    const uint   myMatID  = gb_load_matID(g_gbuf_current, pixelIdx);
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
     // Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
@@ -93,9 +95,9 @@ void Pass_spat_gi_v8_1()
 
     // Build canonical vertex (needed for MIS and neighbor evaluation)
     const float3 cameraPos2 = InitOrigin();
-    const float3 myPos  = gb_load_worldPos(g_gbuf_current, pixelIdx, myInstID);
-    const float3 myN1s  = gb_load_normal_world(g_gbuf_current, pixelIdx, myInstID);
-    const float3 viewDir = normalize(cameraPos2 - myPos);
+    SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
+    sv1.etai = load_etai(g_sample_current, pixelIdx);
+    sv1.etat = load_etat(g_sample_current, pixelIdx);
 
     // Build canonical x2 vertex from reservoir (needed for MIS canonical)
     float3 rKd; float rPr, rPm;
@@ -109,7 +111,7 @@ void Pass_spat_gi_v8_1()
     }
 
     // Canonical Jc: jacobian at current pixel's x1 → canonical x2
-    const float Jc_canonical = ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
+    const float Jc_canonical = ComputeJc(sv1.x, rdi.x2_gi, rdi.n2_s_gi);
 
     // MIS for canonical
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
@@ -135,7 +137,9 @@ void Pass_spat_gi_v8_1()
 
         // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
         const float Jc_neighbor = ComputeJc(
-            gb_load_worldPos(g_gbuf_current, nID, gb_load_instID(g_gbuf_current, nID)),
+            ReconstructPosition(load_instID(g_sample_current, nID),
+                                load_primID(g_sample_current, nID),
+                                load_bary(g_sample_current, nID)),
             rdi_r.x2_gi, rdi_r.n2_s_gi);
 
         // Compute neighbor reconnection contribution
@@ -149,20 +153,16 @@ void Pass_spat_gi_v8_1()
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
             contrib_n = ReconnectGI(
-                myPos, myN1s, viewDir, myMatID,
-                gb_load_Kd(g_gbuf_current, pixelIdx),
-                gb_load_Pr(g_gbuf_current, pixelIdx),
-                gb_load_Pm(g_gbuf_current, pixelIdx),
-                1.0,
-                materials[myMatID].Ni,
+                sv1.x, sv1.n_s, sv1.o, sv1.matID,
+                sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
                 rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                 rnKd, rnPr, rnPm,
                 Jn);
 
             // Visibility after reconnection
             {
-                float3 _conn = rdi_r.x2_gi - myPos; float _cd = length(_conn);
-                float vis = (_cd > EPSILON && IsVisible(myPos, myN1s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
+                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
                 contrib_n *= vis;
             }
 

@@ -649,20 +649,8 @@ void Renderer::CreateShaderResourceHeap() {
     rawUAV(m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAV(m_sampleBuffer_last,    px * sizeof(SampleData));
 
-    // Slots 16-17: SRV t7/t8 — G-buffer read-only views (same buffers as u6/u7)
-    {
-        auto rawSRV = [&](ComPtr<ID3D12Resource>& res, UINT bytes) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-            sd.Format = DXGI_FORMAT_R32_TYPELESS;
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.Buffer.NumElements = bytes / 4;
-            sd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
-            dev->CreateShaderResourceView(res.Get(), &sd, handle); next();
-        };
-        rawSRV(m_sampleBuffer_current, px * sizeof(SampleData));
-        rawSRV(m_sampleBuffer_last,    px * sizeof(SampleData));
-    }
+    // Slots 16-17: placeholders
+    nullSRV(); nullSRV();
 
     // Slot 18: scratch ping UAV
     { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};

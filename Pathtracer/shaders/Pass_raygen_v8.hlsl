@@ -82,7 +82,7 @@ void Pass_raygen_v8()
                     if (length(sun) > 0.0f) skyL1 = sun;
                     gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
                     gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
-                    gb_store_sky(g_sample_current, MapPixelID(imgSize, pixel));
+                    store_sky(g_sample_current, MapPixelID(imgSize, pixel));
                 }
                 break;
             }
@@ -155,12 +155,12 @@ void Pass_raygen_v8()
         {
             uint px = MapPixelID(imgSize, pixel);
             bool isEmitter = any(emission > 0.0f);
-            gb_store_instID(g_sample_current, px, instID);
-            gb_store_matFlags(g_sample_current, px, matID, isEmitter);
-            gb_store_normal(g_sample_current, px, hinfo.hitNormal, instID);
-            gb_store_localPos(g_sample_current, px, hitPos, instID);
-            gb_store_Kd(g_sample_current, px, hitLocalKd);
-            gb_store_PrPm(g_sample_current, px, hitLocalPr, hitLocalPm);
+            store_instID(g_sample_current, px, instID);
+            store_primID(g_sample_current, px, primID, isEmitter);
+            store_bary(g_sample_current, px, attr.barycentrics);
+            store_etai_etat(g_sample_current, px, iors.x, iors.y);
+            store_n1_s_world(g_sample_current, px, hinfo.hitNormal, instID);
+            store_uv(g_sample_current, px, hinfo.uv);
             if (isEmitter) {
                 gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);

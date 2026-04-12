@@ -27,7 +27,7 @@
 // CPU-side sizing stubs matching shader-side SoA layout sizes
 struct Reservoir_DI  { uint8_t pad[100]; };
 struct Reservoir_GI  { uint8_t pad[100]; };
-struct SampleData    { uint8_t pad[32]; };  // 8 SoA planes × 4 bytes = 32 bytes/pixel
+struct SampleData    { uint8_t pad[100]; };
 struct InitialBSDFRay{ uint8_t pad[100]; };
 
 class Renderer {

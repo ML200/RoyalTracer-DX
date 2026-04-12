@@ -9,7 +9,6 @@
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gb_copy(g_sample_last, g_gbuf_current, MapPixelID(float2(IMG_W, IMG_H), DTid.xy));
     gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
 
     float3 output_DI  = gScratchPing[uint3(DTid.xy, 1)];
@@ -58,17 +57,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float2 biasMV = float2(0, 0);
     bool  isEmitterSurface = false;
 
-    bool isEmissiveOrSky = gb_load_isEmitter(g_gbuf_current, pixelIdx);
+    bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
         // Emitters have a valid surface; sky sentinel (instID==0xFFFFFFFF) does not
-        uint emInstID = gb_load_instID(g_gbuf_current, pixelIdx);
+        uint emInstID = load_instID(g_sample_current, pixelIdx);
         bool hasPosition = (emInstID != 0xFFFFFFFFu);
 
         if (hasPosition)
         {
             // Emitter surface: compute depth + motion vectors like regular geometry
-            float3 emPos  = gb_load_worldPos(g_gbuf_current, pixelIdx, emInstID);
+            uint emPrimID = load_primID(g_sample_current, pixelIdx);
+            float2 emBary = load_bary(g_sample_current, pixelIdx);
+            float3 emPos  = ReconstructPosition(emInstID, emPrimID, emBary);
             g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
@@ -82,7 +83,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             gOutput[uint3(DTid.xy, 10)] = float4(abs(emMV), 0.0f, 1.0f);
 
             // Provide shading normal for DLSS-RR edge detection
-            float3 emNormal = gb_load_normal_world(g_gbuf_current, pixelIdx, emInstID);
+            float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
@@ -128,15 +129,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
     else{
         // Reconstruct surface for DLSS
-        uint sInstID = gb_load_instID(g_gbuf_current, pixelIdx);
-        float3 camPos = mul(viewI, float4(0, 0, 0, 1)).xyz;
-        SurfaceVertex sv;
-        sv.x   = gb_load_worldPos(g_gbuf_current, pixelIdx, sInstID);
-        sv.n_s = gb_load_normal_world(g_gbuf_current, pixelIdx, sInstID);
-        sv.o   = normalize(camPos - sv.x);
-        sv.Kd  = gb_load_Kd(g_gbuf_current, pixelIdx);
-        sv.Pr  = gb_load_Pr(g_gbuf_current, pixelIdx);
-        sv.Pm  = gb_load_Pm(g_gbuf_current, pixelIdx);
+        uint sInstID = load_instID(g_sample_current, pixelIdx);
+        uint sPrimID = load_primID(g_sample_current, pixelIdx);
+        float2 sBary = load_bary(g_sample_current, pixelIdx);
+        SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, mul(viewI, float4(0, 0, 0, 1)).xyz);
+        sv.etai = load_etai(g_sample_current, pixelIdx);
+        sv.etat = load_etat(g_sample_current, pixelIdx);
 
         // DLSS RR input data:
         g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
@@ -207,7 +205,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         int2 prevPixI = int2(round(reprojPrev));
         if (all(prevPixI >= 0) && all(prevPixI < int2(dims))) {
             uint prevPixelIdx = MapPixelID(uint2(dims), prevPixI);
-            uint prevInstID = gb_load_instID(g_gbuf_last, prevPixelIdx);
+            uint prevInstID = load_instID(g_sample_last, prevPixelIdx);
             disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
         }
 

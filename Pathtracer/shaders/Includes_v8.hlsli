@@ -113,8 +113,6 @@ RWTexture2DArray<float4> gScratchPing        : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
-ByteAddressBuffer   g_gbuf_current           : register(t7);
-ByteAddressBuffer   g_gbuf_last              : register(t8);
 RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
 RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
 RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
@@ -161,76 +159,96 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 
-// Temporal candidate tests (use SRV G-buffer)
+// Temporal candidate tests (depend on GetMatIDFast from Inline_RT and ReconstructPosition from SurfaceVertex)
 inline bool TestTemporalCandidate_DI(
     int2   coord,
     float2 dims,
-    ByteAddressBuffer gbuf,
+    RWByteAddressBuffer sampleBuf,
     uint   myMatID,
     float3 myN1s,
     float3 myPos,
-    out uint outPixelIdx,
-    out uint outInstID)
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
 {
     outPixelIdx = 0xFFFFFFFFu;
     outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
 
     if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
         return false;
 
     uint tpx = MapPixelID(dims, (uint2)coord);
 
-    if (gb_load_isEmitter(gbuf, tpx))
+    if (load_isEmitter(sampleBuf, tpx))
         return false;
 
-    uint rI = gb_load_instID(gbuf, tpx);
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
 
-    float3 ns = gb_load_normal_world(gbuf, tpx, rI);
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
     if (RejectNormal_DI(myN1s, ns, 0.36f))
         return false;
 
-    float3 xr = gb_load_worldPos(gbuf, tpx, rI);
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
     if (RejectDistance_DI(myPos, xr, myN1s, 0.4f))
         return false;
 
     outPixelIdx = tpx;
     outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
     return true;
 }
 
 inline bool TestTemporalCandidate_GI(
     int2   coord,
     float2 dims,
-    ByteAddressBuffer gbuf,
+    RWByteAddressBuffer sampleBuf,
     uint   myMatID,
     float3 myN1s,
     float3 myPos,
-    out uint outPixelIdx,
-    out uint outInstID)
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
 {
     outPixelIdx = 0xFFFFFFFFu;
     outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
 
     if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
         return false;
 
     uint tpx = MapPixelID(dims, (uint2)coord);
 
-    if (gb_load_isEmitter(gbuf, tpx))
+    if (load_isEmitter(sampleBuf, tpx))
         return false;
 
-    uint rI = gb_load_instID(gbuf, tpx);
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
 
-    float3 ns = gb_load_normal_world(gbuf, tpx, rI);
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
     if (RejectNormal_GI(myN1s, ns, 0.36f))
         return false;
 
-    float3 xr = gb_load_worldPos(gbuf, tpx, rI);
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
     if (RejectDistance_GI(myPos, xr, myN1s, 0.4f))
         return false;
 
     outPixelIdx = tpx;
     outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
     return true;
 }
 
