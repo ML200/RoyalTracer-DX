@@ -29,19 +29,17 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint baseAddr = gi_sel_addr(linearIdx);
 
     // Emitter or spatial GI disabled → no neighbors
-    if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u))
+    if (gb_load_isEmitter(g_gbuf_current, pixelIdx) || !(rs_flags & 8u))
     {
         g_pathStateBuffer.Store2(baseAddr, uint2(0u, asuint(0.0f)));
         return;
     }
 
     // Lightweight loads for rejection
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
+    const uint   myInstID = gb_load_instID(g_gbuf_current, pixelIdx);
+    const uint   myMatID  = gb_load_matID(g_gbuf_current, pixelIdx);
+    const float3 myPos    = gb_load_worldPos(g_gbuf_current, pixelIdx, myInstID);
+    const float3 myN1s    = gb_load_normal_world(g_gbuf_current, pixelIdx, myInstID);
 
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
@@ -66,17 +64,15 @@ void main(uint3 tid : SV_DispatchThreadID)
             seed);
 
         bool ok = false;
-        if (!load_isEmitter(g_sample_current, iID))
+        if (!gb_load_isEmitter(g_gbuf_current, iID))
         {
-            uint nInstID_t = load_instID(g_sample_current, iID);
-            uint nPrimID_t = load_primID(g_sample_current, iID);
-            if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
+            uint nInstID_t = gb_load_instID(g_gbuf_current, iID);
+            if (gb_load_matID(g_gbuf_current, iID) == myMatID)
             {
-                const float3 n1s_r = load_n1_s_with_instID(g_sample_current, iID, nInstID_t);
+                const float3 n1s_r = gb_load_normal_world(g_gbuf_current, iID, nInstID_t);
                 if (!RejectNormal_GI(myN1s, n1s_r, 0.36f))
                 {
-                    float2 nBary_t = load_bary(g_sample_current, iID);
-                    const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
+                    const float3 x1_r = gb_load_worldPos(g_gbuf_current, iID, nInstID_t);
                     if (!RejectDistance_GI(myPos, x1_r, myN1s, 0.1f))
                         ok = true;
                 }

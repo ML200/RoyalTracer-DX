@@ -13,7 +13,7 @@ void Pass_temp_gi_v8()
     {
         const uint2 li  = DispatchRaysIndex().xy;
         const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
-        const bool  emi = load_isEmitter(g_sample_current, px);
+        const bool  emi = gb_load_isEmitter(g_gbuf_current, px);
 
         sortKey = emi ? 0u : (!(rs_flags & 2u) ? 1u : 2u);
     }
@@ -28,7 +28,7 @@ void Pass_temp_gi_v8()
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
 
     // Emitter early-out
-    if (load_isEmitter(g_sample_current, pixelIdx))
+    if (gb_load_isEmitter(g_gbuf_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         return;
@@ -53,20 +53,17 @@ void Pass_temp_gi_v8()
 
     // --- base reprojection ---
     // Lightweight loads for reprojection & rejection
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float2 myUV = load_uv(g_sample_current, pixelIdx);
-    float3 myKd; float myPr, myPm;
-    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
+    const uint   myInstID = gb_load_instID(g_gbuf_current, pixelIdx);
+    const uint   myMatID  = gb_load_matID(g_gbuf_current, pixelIdx);
+    const float3 myPos    = gb_load_worldPos(g_gbuf_current, pixelIdx, myInstID);
+    const float3 myN1s    = gb_load_normal_world(g_gbuf_current, pixelIdx, myInstID);
 
     // Specularity (same computation DLSS-RR gets via EnvBRDFApprox2)
     const float3 camPos = InitOrigin();
     const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
-    const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
+    const float  myPr = gb_load_Pr(g_gbuf_current, pixelIdx);
+    const float  myPm = gb_load_Pm(g_gbuf_current, pixelIdx);
+    const float  specularity = Luma(EnvBRDFApprox2(gb_load_Kd(g_gbuf_current, pixelIdx), myPr, myPm, NoV));
 
     // Stochastic reprojection: randomly choose specular vs diffuse MV
     // weighted by specularity. Over many frames this converges naturally.
@@ -116,13 +113,11 @@ void Pass_temp_gi_v8()
 
     // Lightweight neighbor identifiers (survive rejection -> merge)
     uint   rInstID = 0;
-    uint   rPrimID = 0;
-    float2 rBary   = float2(0, 0);
 
     // 1) Try the permuted sample
     if (permInBounds)
-        valid = TestTemporalCandidate_GI(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
-                                         tempPixelIdx, rInstID, rPrimID, rBary);
+        valid = TestTemporalCandidate_GI(permCoord, dims_f, g_gbuf_current, myMatID, myN1s, myPos,
+                                         tempPixelIdx, rInstID);
 
     [branch]
     if (valid)
@@ -154,52 +149,58 @@ void Pass_temp_gi_v8()
 
                 // p_n: reconnect from neighbor vertex to current GI reservoir sample
                 {
-                    SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
-                    sv_r.etai = load_etai(g_sample_last, tempPixelIdx);
-                    sv_r.etat = load_etat(g_sample_last, tempPixelIdx);
+                    const float3 rWorldPos = gb_load_worldPos(g_gbuf_current, tempPixelIdx, rInstID);
+                    const float3 rN1s      = gb_load_normal_world(g_gbuf_current, tempPixelIdx, rInstID);
+                    const float3 rO        = normalize(cameraPos - rWorldPos);
+                    const uint   rMatID    = gb_load_matID(g_gbuf_current, tempPixelIdx);
 
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
 
                     float3 c = ReconnectGI(
-                        sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
-                        sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
+                        rWorldPos, rN1s, rO, rMatID,
+                        gb_load_Kd(g_gbuf_current, tempPixelIdx),
+                        gb_load_Pr(g_gbuf_current, tempPixelIdx),
+                        gb_load_Pm(g_gbuf_current, tempPixelIdx),
+                        1.0,
+                        materials[rMatID].Ni,
                         rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi,
                         rcKd, rcPr, rcPm,
                         Jnc);
 
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
-                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    { float3 _conn = rdi.x2_gi - rWorldPos; float _cd = length(_conn);
+                      p_n = ph * ((_cd > EPSILON && IsVisible(rWorldPos, rN1s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
                 // n_c: reconnect from current vertex to neighbor GI reservoir sample
                 float J2;
                 {
-                    SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
-                    sv_c.etai = load_etai(g_sample_current, pixelIdx);
-                    sv_c.etat = load_etat(g_sample_current, pixelIdx);
+                    const float3 myO = normalize(cameraPos - myPos);
 
                     // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
-                    // sv_r.x was built from rInstID/rPrimID/rBary above — reuse via ReconstructPosition
                     const float Jc_neighbor = ComputeJc(
-                        ReconstructPosition(rInstID, rPrimID, rBary),
+                        gb_load_worldPos(g_gbuf_current, tempPixelIdx, rInstID),
                         rdi_r.x2_gi, rdi_r.n2_s_gi);
 
                     float3 rrKd; float rrPr, rrPm;
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
 
                     float3 c = ReconnectGI(
-                        sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
-                        sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
+                        myPos, myN1s, myO, myMatID,
+                        gb_load_Kd(g_gbuf_current, pixelIdx),
+                        gb_load_Pr(g_gbuf_current, pixelIdx),
+                        gb_load_Pm(g_gbuf_current, pixelIdx),
+                        1.0,
+                        materials[myMatID].Ni,
                         rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                         rrKd, rrPr, rrPm,
                         Jn);
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
-                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                    { float3 _conn = rdi_r.x2_gi - myPos; float _cd = length(_conn);
+                      float vis_n = (_cd > EPSILON && IsVisible(myPos, myN1s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
                       n_c = ph * vis_n;
                       contrib_n_from_me = c * vis_n; }
                 }
@@ -208,7 +209,7 @@ void Pass_temp_gi_v8()
                 const float n_n = GetPHat(UnpackRGB9E5(rdi_r.F_gi)) * visReuse_n;
 
                 // Dynamic M caps
-                float sdata_Pr = myPr;
+                float sdata_Pr = gb_load_Pr(g_gbuf_current, pixelIdx);
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);

@@ -683,6 +683,20 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAVAt(15, m_sampleBuffer_last,    px * sizeof(SampleData));
 
+    // Slots 16-17: SRV t7/t8 — G-buffer read-only views (same buffers as u6/u7)
+    auto rawSRVAt = [&](UINT slot, ComPtr<ID3D12Resource>& res, UINT bytes) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        sd.Format = DXGI_FORMAT_R32_TYPELESS;
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Buffer.NumElements = bytes / 4;
+        sd.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        dev->CreateShaderResourceView(res.Get(), &sd, h);
+    };
+    rawSRVAt(16, m_sampleBuffer_current, px * sizeof(SampleData));
+    rawSRVAt(17, m_sampleBuffer_last,    px * sizeof(SampleData));
+
     // Slot 18: scratch ping UAV
     writeUAVAt(18, m_scratchPing, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
@@ -1108,11 +1122,34 @@ void Renderer::PopulateCommandList() {
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
             raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
             cmdList->DispatchRays(&raysDesc);
+
+            // G-buffer: after raygen, transition both sample buffers UAV→SRV
+            // so merge passes read through the L1 texture cache
+            if (p.file == L"Pass_raygen_v8.hlsl") {
+                CD3DX12_RESOURCE_BARRIER gb[] = {
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_sampleBuffer_current.Get(),
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_sampleBuffer_last.Get(),
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE),
+                };
+                cmdList->ResourceBarrier(2, gb);
+            }
             break;
         }
 
         case Stage::Compute:
         {
+            // G-buffer: before shading, transition last→UAV for gb_copy write
+            const bool isShading = (p.file == L"Pass_shading_v8.hlsl");
+            if (isShading) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_sampleBuffer_last.Get(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &b);
+            }
+
             if (p.isWorkGraph) {
                 const auto& rt = m_wgRuntime[p.wgIdx];
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
@@ -1135,6 +1172,14 @@ void Renderer::PopulateCommandList() {
                 cmdList->Dispatch(
                     (dispW + p.groupX - 1) / p.groupX,
                     (dispH + p.groupY - 1) / p.groupY, 1);
+            }
+
+            // G-buffer: after shading, restore current→UAV for next frame's raygen
+            if (isShading) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_sampleBuffer_current.Get(),
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &b);
             }
             break;
         }
