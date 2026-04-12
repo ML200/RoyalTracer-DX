@@ -165,7 +165,7 @@ inline bool TestTemporalCandidate_DI(
     float2 dims,
     RWByteAddressBuffer sampleBuf,
     uint   myMatID,
-    float3 myN1g,
+    float3 myN1s,
     float3 myPos,
     out uint   outPixelIdx,
     out uint   outInstID,
@@ -190,13 +190,13 @@ inline bool TestTemporalCandidate_DI(
     /*if (GetMatIDFast(rI, rP) != myMatID)
         return false;*/
 
-    float3 ng = load_n1_g_with_instID(sampleBuf, tpx, rI);
-    if (RejectNormal_DI(myN1g, ng, 0.36f))
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
+    if (RejectNormal_DI(myN1s, ns, 0.36f))
         return false;
 
     float2 rB = load_bary(sampleBuf, tpx);
     float3 xr = ReconstructPosition(rI, rP, rB);
-    if (RejectDistance_DI(myPos, xr, myN1g, 0.4f))
+    if (RejectDistance_DI(myPos, xr, myN1s, 0.4f))
         return false;
 
     outPixelIdx = tpx;

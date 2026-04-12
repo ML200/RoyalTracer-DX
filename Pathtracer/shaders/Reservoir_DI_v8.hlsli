@@ -257,7 +257,6 @@ float J_term(
 inline float3 ReconnectDI(
     in float3 x1,
     in float3 n1_s,
-    in float3 n1_g,
     in float3 o,
     in uint   mID,
     in float3 x2,
@@ -277,7 +276,7 @@ inline float3 ReconnectDI(
     if (objID_di == 0xFFFFFFFFu)
     {
         float3 wi = normalize(x2);
-        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
+        float3 F = BSDF_term(mID, n1_s, n1_s, wi, o, localKd, localPr, localPm, etai, etat);
 
         float cosTheta = max(1e-15f, dot(n1_s, wi));
 
@@ -297,7 +296,7 @@ inline float3 ReconnectDI(
         if (all(Le < EPSILON))
             return 0;
 
-        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
+        float3 F = BSDF_term(mID, n1_s, n1_s, wi, o, localKd, localPr, localPm, etai, etat);
         float  c = max(1e-15f, dot(n1_s, wi));
 
         float3 r = F * Le * c;
@@ -310,7 +309,7 @@ inline float3 ReconnectDI(
     float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
     // Terms
-    float3 F = BSDF_term(mID, n1_s, n1_g, -ndirN, o, localKd, localPr, localPm, etai, etat);
+    float3 F = BSDF_term(mID, n1_s, n1_s, -ndirN, o, localKd, localPr, localPm, etai, etat);
     float   G = G_term(n1_s, -ndirN);
 
     // Throughput

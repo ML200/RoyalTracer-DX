@@ -4,7 +4,6 @@ struct Reservoir_GI
     // Constant-after-hit payload
     float3 x2_gi;
     float3 n2_s_gi;
-    float3 n2_g_gi;
     uint   objID_gi;
     uint   matID_gi;
     float2 uv_gi;
@@ -23,22 +22,21 @@ struct Reservoir_GI
 
 
 // SoA layout — each field is a contiguous plane across all pixels.
-// Merge-active: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | MATID(4) |
-//               W(4) | F(4) | M(4) = 52
+// Merge-active: PACK1(16) | L2(4) | V2(4) | OBJID(4) | UV(4) | MATID(4) |
+//               W(4) | F(4) | M(4) = 48
 // Raygen-only:  WSUM(4) | VPOST(4) | TPOST(4) = 12
-// Total: 64 bytes/pixel
+// Total: 60 bytes/pixel
 
-static const uint BYTES_GI       = 52u;
+static const uint BYTES_GI       = 48u;
 static const uint BYTES_GI_WSUM  =  4u;
 static const uint BYTES_GI_VPOST =  4u;
 static const uint BYTES_GI_TPOST =  4u;
-static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 64
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 60
 
 // Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
 static const uint GI_SZ_L2    =  4u;
 static const uint GI_SZ_V2    =  4u;
-static const uint GI_SZ_N2G   =  4u;
 static const uint GI_SZ_OBJID =  4u;
 static const uint GI_SZ_UV    =  4u;
 static const uint GI_SZ_MATID =  4u;
@@ -53,16 +51,15 @@ static const uint GI_SZ_TPOST =  4u;
 static const uint GI_PLANE_PACK1 =  0u;
 static const uint GI_PLANE_L2    = 16u;
 static const uint GI_PLANE_V2    = 20u;
-static const uint GI_PLANE_N2G   = 24u;
-static const uint GI_PLANE_OBJID = 28u;
-static const uint GI_PLANE_UV    = 32u;
-static const uint GI_PLANE_MATID = 36u;
-static const uint GI_PLANE_W     = 40u;
-static const uint GI_PLANE_F     = 44u;
-static const uint GI_PLANE_M     = 48u;
-static const uint GI_PLANE_WSUM  = 52u;
-static const uint GI_PLANE_VPOST = 56u;
-static const uint GI_PLANE_TPOST = 60u;
+static const uint GI_PLANE_OBJID = 24u;
+static const uint GI_PLANE_UV    = 28u;
+static const uint GI_PLANE_MATID = 32u;
+static const uint GI_PLANE_W     = 36u;
+static const uint GI_PLANE_F     = 40u;
+static const uint GI_PLANE_M     = 44u;
+static const uint GI_PLANE_WSUM  = 48u;
+static const uint GI_PLANE_VPOST = 52u;
+static const uint GI_PLANE_TPOST = 56u;
 
 // SoA address helpers
 // Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
@@ -70,7 +67,6 @@ uint gi_numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7
 uint gi_addr_pack1(uint px)           { return px * GI_SZ_PACK1; }
 uint gi_addr_l2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_L2    + px * GI_SZ_L2; }
 uint gi_addr_v2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_V2    + px * GI_SZ_V2; }
-uint gi_addr_n2g(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_N2G   + px * GI_SZ_N2G; }
 uint gi_addr_objid(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_OBJID + px * GI_SZ_OBJID; }
 uint gi_addr_uv(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_UV    + px * GI_SZ_UV; }
 uint gi_addr_matid(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_MATID + px * GI_SZ_MATID; }
@@ -107,12 +103,10 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
 {
     float3 xO  = WorldToObjectPos (r.objID_gi, r.x2_gi);
     float3 nSO = WorldToObjectNrm(r.objID_gi, r.n2_s_gi);
-    float3 nGO = WorldToObjectNrm(r.objID_gi, r.n2_g_gi);
 
     buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
     buf.Store (gi_addr_l2(pixelIdx),    PackRGB9E5(r.L2_gi));
     buf.Store (gi_addr_v2(pixelIdx),    PackNormal(normalize(r.V2_gi)));
-    buf.Store (gi_addr_n2g(pixelIdx),   PackNormal(normalize(nGO)));
     buf.Store (gi_addr_objid(pixelIdx), r.objID_gi);
     buf.Store (gi_addr_uv(pixelIdx),    PackFloat2x16(r.uv_gi.x, r.uv_gi.y));
     buf.Store (gi_addr_matid(pixelIdx), r.matID_gi);
@@ -132,7 +126,6 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.x2_gi    = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
     r.n2_s_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
-    r.n2_g_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(buf.Load(gi_addr_n2g(pixelIdx))));
 
     r.L2_gi    = UnpackRGB9E5(buf.Load(gi_addr_l2(pixelIdx)));
     r.V2_gi    = UnpackNormal(buf.Load(gi_addr_v2(pixelIdx)));
@@ -173,12 +166,6 @@ float3 load_x2_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 float3 load_n2_s_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
     uint enc = b.Load4(gi_addr_pack1(pixelIdx)).w;
-    return ObjectToWorldNrm(objID, UnpackNormal(enc));
-}
-
-float3 load_n2_g_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
-{
-    uint enc = b.Load(gi_addr_n2g(pixelIdx));
     return ObjectToWorldNrm(objID, UnpackNormal(enc));
 }
 
@@ -303,7 +290,6 @@ inline float3 ReconnectGI(
     // Vertex x1 (camera path hit)
     in float3  x1,
     in float3  n1_s,
-    in float3  n1_g,
     in float3  o,
     in uint    mID1,
     in float3  localKd1,
@@ -316,7 +302,6 @@ inline float3 ReconnectGI(
     in uint    mID2,
     in float3  x2,
     in float3  n2_s,
-    in float3  n2_g,
     in float3  L2,
     in float3  V2,
     in float3  localKd2,
@@ -338,16 +323,16 @@ inline float3 ReconnectGI(
     float etai2 = 1.0f;
     float etat2 = materials[mID2].Ni;
 
-    float3 F1 = BSDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
-    float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
+    float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
+    float3 F2 = BSDF_term(mID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     // Geometry term
     float  G1  = G_term(n1_s, -ndirN);
     float  G2  = G_term(n2_s, -V2);
 
-    // If the direction from x1 to x2 (-ndirN) points against the geometric normal, we are transmitting INTO the object.
+    // Transmittance: if direction points against the shading normal, we are transmitting INTO the object
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
-    if (dot(n1_g, -ndirN) < 0.0f)
+    if (dot(n1_s, -ndirN) < 0.0f)
     {
         transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
     }
@@ -374,7 +359,6 @@ bool UpdateReservoirGI(
 
     in float3 x2,
     in float3 n2_s,
-    in float3 n2_g,
     in float3 L2,
     in float3 V2,
 
@@ -395,7 +379,6 @@ bool UpdateReservoirGI(
     {
         reservoir.x2_gi   = x2;
         reservoir.n2_s_gi = n2_s;
-        reservoir.n2_g_gi = n2_g;
         reservoir.objID_gi = objID;
         reservoir.matID_gi = matID;
 
@@ -452,17 +435,14 @@ void SetReservoirGI_ConstHit(
     uint pixelIdx,
     float3 x2_world,
     float3 n2s_world,
-    float3 n2g_world,
     uint   matID,
     uint   objID
 )
 {
     float3 xO  = WorldToObjectPos (objID, x2_world);
     float3 nSO = WorldToObjectNrm(objID, n2s_world);
-    float3 nGO = WorldToObjectNrm(objID, n2g_world);
 
     buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
-    buf.Store (gi_addr_n2g(pixelIdx),   PackNormal(normalize(nGO)));
     buf.Store (gi_addr_objid(pixelIdx), objID);
     buf.Store (gi_addr_matid(pixelIdx), matID);
 }

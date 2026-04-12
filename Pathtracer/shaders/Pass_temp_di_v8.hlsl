@@ -37,7 +37,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     float boilValue = 0.0f;
 
@@ -76,7 +76,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // 1) Try the permuted sample
     if (permInBounds)
-        valid = TestTemporalCandidate_DI(permCoord, dims, g_sample_last, myMatID, myN1g, myPos,
+        valid = TestTemporalCandidate_DI(permCoord, dims, g_sample_last, myMatID, myN1s, myPos,
                                          tempPixelIdx, rInstID, rPrimID, rBary);
 
 
@@ -97,7 +97,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             const float visReuse_r = rdi_r.W_di > 0.0f ? 1.0f : 0.0f;
 
             float p_c, n_c, p_n, n_n;
-            float3 x_c, n_g_c, x_r, n_g_r;
+            float3 x_c, n_s_c, x_r, n_s_r;
             float Pr_c, Pr_r;
 
             // -- Phase 1: sv_c scope (build, reconnect, extract, drop) --
@@ -106,17 +106,17 @@ void main(uint3 tid : SV_DispatchThreadID)
                 sv.etai = load_etai(g_sample_current, pixelIdx);
                 sv.etat = load_etat(g_sample_current, pixelIdx);
 
-                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di)) * visReuse_c;
-                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di));
+                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di)) * visReuse_c;
+                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di));
                 x_c   = sv.x;
-                n_g_c = sv.n_g;
+                n_s_c = sv.n_s;
                 Pr_c  = sv.Pr;
 
                 // visibility for n_c
                 { float3 _vd; float _vt;
                   if (rdi_r.objID_di >= 0xFFFFFFFEu) { _vd = normalize(rdi_r.x2_di); _vt = 10000.0f; }
                   else { float3 _c = rdi_r.x2_di - x_c; float _d = length(_c); _vd = _c / max(_d, EPSILON); _vt = _d * 0.999f; }
-                  n_c *= IsVisible(x_c, n_g_c, _vd, _vt) ? 1.0f : 0.0f; }
+                  n_c *= IsVisible(x_c, n_s_c, _vd, _vt) ? 1.0f : 0.0f; }
             }
 
             // -- Phase 2: sv_r scope (build, reconnect, extract, drop) --
@@ -125,17 +125,17 @@ void main(uint3 tid : SV_DispatchThreadID)
                 sv.etai = load_etai(g_sample_last, tempPixelIdx);
                 sv.etat = load_etat(g_sample_last, tempPixelIdx);
 
-                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di));
-                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.n_g, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di)) * visReuse_r;
+                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di));
+                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di)) * visReuse_r;
                 x_r   = sv.x;
-                n_g_r = sv.n_g;
+                n_s_r = sv.n_s;
                 Pr_r  = sv.Pr;
 
                 // visibility for p_n
                 { float3 _vd; float _vt;
                   if (rdi.objID_di >= 0xFFFFFFFEu) { _vd = normalize(rdi.x2_di); _vt = 10000.0f; }
                   else { float3 _c = rdi.x2_di - x_r; float _d = length(_c); _vd = _c / max(_d, EPSILON); _vt = _d * 0.999f; }
-                  p_n *= IsVisible(x_r, n_g_r, _vd, _vt) ? 1.0f : 0.0f; }
+                  p_n *= IsVisible(x_r, n_s_r, _vd, _vt) ? 1.0f : 0.0f; }
             }
 
             // -- Phase 3: Jacobians (only extracted positions) --

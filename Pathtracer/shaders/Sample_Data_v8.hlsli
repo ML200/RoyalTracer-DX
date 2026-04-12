@@ -9,7 +9,7 @@
         Offset  8: bary.x                                        [float32]
         Offset 12: bary.y                                        [float32]
         Offset 16: etai / etat                                   [half2 -> uint32]
-        Offset 20: n1_g (geometric normal, object space, packed) [uint32]
+        Offset 20: (padding)                                     [uint32]
         Offset 24: n1_s (shading normal, object space, packed)   [uint32]
         Offset 28: uv (texture coordinates)                      [half2 -> uint32]
     Total: 32 bytes.
@@ -77,13 +77,6 @@ void store_etai_etat(RWByteAddressBuffer buf, uint pixelIdx, float etai, float e
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackFloat2x16(etai, etat));
 }
 
-// Store geometric normal in object space (for fast rejection + visibility)
-void store_n1_g_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1g_world, uint instID)
-{
-    float3 n1g_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1g_world) : n1g_world;
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1g_obj));
-}
-
 // Store shading normal in object space (cached for neighbor MIS)
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
@@ -135,21 +128,6 @@ float load_etai(RWByteAddressBuffer buf, uint pixelIdx)
 float load_etat(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) >> 16);
-}
-
-// Load geometric normal: stored in object space, returned in world space
-float3 load_n1_g(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    uint instID = load_instID(buf, pixelIdx);
-    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
-}
-
-// Load geometric normal given an already-loaded instID (avoids redundant load)
-float3 load_n1_g_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
-{
-    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 // Load shading normal: stored in object space, returned in world space

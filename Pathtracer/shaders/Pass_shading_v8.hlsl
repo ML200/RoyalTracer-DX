@@ -82,8 +82,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
             isEmitterSurface = true;
             gOutput[uint3(DTid.xy, 10)] = float4(abs(emMV), 0.0f, 1.0f);
 
-            // Provide real geometric normal so DLSS-RR can do proper edge detection
-            float3 emNormal = load_n1_g_with_instID(g_sample_current, pixelIdx, emInstID);
+            // Provide shading normal for DLSS-RR edge detection
+            float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else

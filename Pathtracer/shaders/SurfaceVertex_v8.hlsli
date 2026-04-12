@@ -8,7 +8,6 @@
 struct SurfaceVertex {
     float3 x;           // world position
     float3 n_s;         // shading normal (world)
-    float3 n_g;         // geometric normal (world)
     float3 o;           // outgoing/view direction (world, normalized)
     float3 Kd;          // albedo (refetched from texture)
     float  Pr;          // roughness
@@ -41,7 +40,6 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
     HitInfo h = EvalSurfaceState(instID, primID, bary, viewOrigin, 0);
     v.x     = h.hitPos;
     v.n_s   = h.hitNormal;
-    v.n_g   = h.hitGNormal;
     v.o     = normalize(viewOrigin - h.hitPos);
     v.matID = GetMatIDFast(instID, primID);
     v.uv    = h.uv;
@@ -51,17 +49,16 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
     return v;
 }
 
-// Lightweight reconstruction using cached G-buffer data (~8 loads vs 20)
+// Lightweight reconstruction using cached G-buffer data (~7 loads vs 20)
 // Skips vertex normal/UV loads by using pre-cached values from the G-buffer
 inline SurfaceVertex BuildVertexLight(
     uint instID, uint primID, float2 bary,
-    float3 n1s_world, float3 n1g_world, float2 uv,
+    float3 n1s_world, float2 uv,
     float etai, float etat, float3 viewOrigin)
 {
     SurfaceVertex v;
     v.x     = ReconstructPosition(instID, primID, bary);
     v.n_s   = n1s_world;
-    v.n_g   = n1g_world;
     v.o     = normalize(viewOrigin - v.x);
     v.matID = GetMatIDFast(instID, primID);
     v.uv    = uv;

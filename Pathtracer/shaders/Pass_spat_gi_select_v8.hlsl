@@ -41,7 +41,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
-    const float3 myN1g    = load_n1_g_with_instID(g_sample_current, pixelIdx, myInstID);
+    const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     // RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
@@ -72,12 +72,12 @@ void main(uint3 tid : SV_DispatchThreadID)
             uint nPrimID_t = load_primID(g_sample_current, iID);
             if (GetMatIDFast(nInstID_t, nPrimID_t) == myMatID)
             {
-                const float3 n1g_r = load_n1_g_with_instID(g_sample_current, iID, nInstID_t);
-                if (!RejectNormal_GI(myN1g, n1g_r, 0.36f))
+                const float3 n1s_r = load_n1_s_with_instID(g_sample_current, iID, nInstID_t);
+                if (!RejectNormal_GI(myN1s, n1s_r, 0.36f))
                 {
                     float2 nBary_t = load_bary(g_sample_current, iID);
                     const float3 x1_r = ReconstructPosition(nInstID_t, nPrimID_t, nBary_t);
-                    if (!RejectDistance_GI(myPos, x1_r, myN1g, 0.1f))
+                    if (!RejectDistance_GI(myPos, x1_r, myN1s, 0.1f))
                         ok = true;
                 }
             }

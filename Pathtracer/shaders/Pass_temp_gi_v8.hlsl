@@ -161,18 +161,16 @@ void Pass_temp_gi_v8()
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
 
-                    SurfaceVertex sv_c2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rcKd, rcPr, rcPm, 0, 0, rdi.matID_gi, rdi.uv_gi };
-
                     float3 c = ReconnectGI(
-                        sv_r.x, sv_r.n_s, sv_r.n_g, sv_r.o, sv_r.matID,
+                        sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
                         sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
-                        sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, rdi.L2_gi, sv_c2.o,
-                        sv_c2.Kd, sv_c2.Pr, sv_c2.Pm,
+                        rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi,
+                        rcKd, rcPr, rcPm,
                         Jnc);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
-                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
                 // n_c: reconnect from current vertex to neighbor GI reservoir sample
@@ -191,19 +189,17 @@ void Pass_temp_gi_v8()
                     float3 rrKd; float rrPr, rrPm;
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
 
-                    SurfaceVertex sv_r2 = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rrKd, rrPr, rrPm, 0, 0, rdi_r.matID_gi, rdi_r.uv_gi };
-
                     float3 c = ReconnectGI(
-                        sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID,
+                        sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
                         sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
-                        sv_r2.matID, sv_r2.x, sv_r2.n_s, sv_r2.n_g, rdi_r.L2_gi, sv_r2.o,
-                        sv_r2.Kd, sv_r2.Pr, sv_r2.Pm,
+                        rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                        rrKd, rrPr, rrPm,
                         Jn);
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
-                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
                       n_c = ph * vis_n;
                       contrib_n_from_me = c * vis_n; }
                 }
@@ -240,7 +236,7 @@ void Pass_temp_gi_v8()
                         rdi,
                         w_n,
                         rdi_r.M_gi,
-                        rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                        rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                         rdi_r.uv_gi,
                         rdi_r.matID_gi, rdi_r.objID_gi,
                         rdi_r.F_gi,

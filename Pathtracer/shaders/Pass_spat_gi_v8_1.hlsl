@@ -116,7 +116,7 @@ void Pass_spat_gi_v8_1()
     // MIS for canonical
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
         M_sum, p_c, M_c, nIds,
-        rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+        rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
         rKd, rPr, rPm,
         Jc_canonical
     );
@@ -152,19 +152,17 @@ void Pass_spat_gi_v8_1()
             float3 rnKd; float rnPr, rnPm;
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
-            SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, 0, 0, rdi_r.matID_gi, rdi_r.uv_gi };
-
             contrib_n = ReconnectGI(
-                sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
+                sv1.x, sv1.n_s, sv1.o, sv1.matID,
                 sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
-                sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
-                sv2_n.Kd, sv2_n.Pr, sv2_n.Pm,
+                rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                rnKd, rnPr, rnPm,
                 Jn);
 
             // Visibility after reconnection
             {
                 float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
-                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
                 contrib_n *= vis;
             }
 
@@ -187,7 +185,7 @@ void Pass_spat_gi_v8_1()
                 rdi,
                 w_n,
                 min(SPAT_MCAP_GI, rdi_r.M_gi),
-                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                 rdi_r.uv_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.F_gi,

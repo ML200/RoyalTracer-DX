@@ -159,7 +159,6 @@ void Pass_raygen_v8()
             store_primID(g_sample_current, px, primID, isEmitter);
             store_bary(g_sample_current, px, attr.barycentrics);
             store_etai_etat(g_sample_current, px, iors.x, iors.y);
-            store_n1_g_world(g_sample_current, px, hinfo.hitGNormal, instID);
             store_n1_s_world(g_sample_current, px, hinfo.hitNormal, instID);
             store_uv(g_sample_current, px, hinfo.uv);
             if (isEmitter) {
@@ -171,7 +170,7 @@ void Pass_raygen_v8()
             // Uses inline RayQuery — no SER reorder point, avoids live-state spike.
             {
                 float3 reflDir = reflect(rayDir, hinfo.hitNormal);
-                float3 reflOrigin = offset_ray(hitPos, hinfo.hitGNormal);
+                float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
                 RayDesc reflRay;
                 reflRay.Origin    = reflOrigin;
                 reflRay.Direction = reflDir;
@@ -248,7 +247,7 @@ void Pass_raygen_v8()
         if (depth == 1)
         {
             uint px = MapPixelID(imgSize, pixel);
-            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
+            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, matID, instID);
             SetReservoirGI_UV(g_Reservoirs_current_gi, px, hinfo.uv);
         }
 
@@ -261,7 +260,7 @@ void Pass_raygen_v8()
         // ── NEE (point lights + sun) ──────────────────────────────────
         // Pack caller state to reduce live regs across IsVisible calls:
         //   hitLocalKd(3)+hitLocalPr(1)+hitLocalPm(1) → matPk(2 uints)
-        //   hinfo.hitNormal(3) → hitNormalPk(1 uint) — IsVisible only needs hitGNormal
+        //   hinfo.hitNormal(3) → hitNormalPk(1 uint) — IsVisible needs shading normal
         //   throughput stays packed as throughputPk — decompress only after IsVisible
         bool performNEE = !(mediumMatID != MEDIUM_INVALID || materials[matID].Kd.w < EPSILON);
 
@@ -284,7 +283,7 @@ void Pass_raygen_v8()
                 float cosSurf  = dot(hinfo.hitNormal, L);
                 float cosLight = dot(light.normal, -L);
 
-                if (cosSurf > 1e-6f && cosLight > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, L, dist * 0.999f))
+                if (cosSurf > 1e-6f && cosLight > 1e-6f && IsVisible(hitPos, hinfo.hitNormal, L, dist * 0.999f))
                 {
                     // Decompress after IsVisible — these were dead across the call
                     float3 lKd = UnpackRGB9E5(matKdPk);
@@ -294,7 +293,7 @@ void Pass_raygen_v8()
                     float3 throughput = UnpackRGB9E5(throughputPk);
 
                     SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hitN, iors.x, iors.y, lKd, lPm);
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitGNormal, L, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitNormal, L, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
 
                     float lightPdf = light.pdfSolidAngle;
                     float bsdfPdf  = bdataNEE.pdf;
@@ -339,7 +338,7 @@ void Pass_raygen_v8()
                 float3 hitN_sun = UnpackNormal(hitNormalPk);
                 float NdotL = dot(hitN_sun, sun.direction);
 
-                if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitGNormal, sun.direction, 10000.0f))
+                if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitNormal, sun.direction, 10000.0f))
                 {
                     // Decompress after IsVisible
                     float3 lKd = UnpackRGB9E5(matKdPk);
@@ -349,7 +348,7 @@ void Pass_raygen_v8()
                     float3 throughput = UnpackRGB9E5(throughputPk);
 
                     SamplingP sp_nee = CalculateStrategyProbabilities(matID, -rayDir, hitN, iors.x, iors.y, lKd, lPm);
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitGNormal, sun.direction, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, matID, hitN, hinfo.hitNormal, sun.direction, -rayDir, lKd, lPr, lPm, iors.x, iors.y);
 
                     float lightPdf = sun.pdf;
                     float bsdfPdf  = bdataNEE.pdf;
@@ -393,8 +392,8 @@ void Pass_raygen_v8()
 
         // ── Sample next direction (BSDF) ──────────────────────────────
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
-        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
         float cosTheta = abs(dot(hinfo.hitNormal, s));
         float3 updateWeight = (bdata.pdf > 1e-6f)
@@ -402,7 +401,7 @@ void Pass_raygen_v8()
             : float3(0, 0, 0);
 
         // IOR stack update on transmission
-        if (dot(hinfo.hitGNormal, s) < 0.0f)
+        if (dot(hinfo.hitNormal, s) < 0.0f)
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
 
         // Validate before continuing
@@ -413,7 +412,7 @@ void Pass_raygen_v8()
         prev_pdf       = bdata.pdf;
         gi_pdf_product *= bdata.pdf;
         rayDir      = s;
-        float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
+        float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);
 
         // Update throughput: decompress → multiply → RR → recompress
