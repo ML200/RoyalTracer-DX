@@ -33,14 +33,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (cameraChanged)
     {
         // Camera moved: reset running average and sample count
-        newAvg     = accumulation;
+        newAvg     = gScratchPing[uint3(DTid.xy, 6)];
         newSamples = 1.0h;
     }
     else
     {
         newSamples = min(prevSamples + 1.0h, MAX_SAMPLES);
         float invN  = 1.0h / newSamples;
-        newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
+        newAvg     = mad(gScratchPing[uint3(DTid.xy, 6)] - prevAvg, invN, prevAvg);
     }
 
     // store back

@@ -33,7 +33,7 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     RayDesc ray;
     ray.Origin    = origin;
     ray.Direction = direction;
-    ray.TMin      = 0.001f;
+    ray.TMin      = 0.0001f;
     ray.TMax      = tMax;
 
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
@@ -392,6 +392,7 @@ HitInfo EvalSurfaceState(
     hit.hitPos     = posW;
     hit.hitNormal  = isBackface ? -normW    : normW;
     hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
+    hit.hitNormal = isBackface ? -geoNormW : geoNormW;
 
     // Clamp (keep Vw scoped)
     {
