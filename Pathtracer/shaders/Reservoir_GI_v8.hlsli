@@ -337,7 +337,7 @@ inline float3 ReconnectGI(
     float etai2 = 1.0f;
     float etat2 = eta2;
 
-    if(dot(ndirN, n2_s)<0.0f)
+    if(dot(-ndirN, n1_s)<0.0f)
         etai2 = etat1;
 
     float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);

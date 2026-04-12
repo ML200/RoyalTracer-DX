@@ -54,9 +54,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     // Load output slices
-    float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
-    float3 clean = g_dlssOutput[DTid.xy].xyz;
-    float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
+    float3 noisy = PBRNeutral(gOutput[uint3(DTid.xy, 0)].xyz);
+    float3 clean = PBRNeutral(g_dlssOutput[DTid.xy].xyz);
+    float3 gt = PBRNeutral(gOutput[uint3(DTid.xy, 2)].xyz);
 
     // Apply gamma correction
     noisy = sRGBGammaCorrection(noisy);

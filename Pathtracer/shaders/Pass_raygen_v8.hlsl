@@ -399,8 +399,8 @@ void Pass_raygen_v8()
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
-        // IOR stack update on transmission
-        if (dot(hinfo.hitNormal, s) < 0.0f)
+        // IOR stack update on transmission (use geometric normal to detect actual surface crossing)
+        if (dot(hinfo.hitGNormal, s) < 0.0f)
             UpdateIORStack_packed(viorP, aiorP, matID, instID);
 
         // Validate before continuing
@@ -411,7 +411,7 @@ void Pass_raygen_v8()
         prev_pdf       = bdata.pdf;
         gi_pdf_product *= bdata.pdf;
         rayDir      = s;
-        float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
+        float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);
 
         // Update throughput: decompress → multiply → RR → recompress
