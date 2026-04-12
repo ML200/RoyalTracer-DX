@@ -103,11 +103,9 @@ void main(uint3 tid : SV_DispatchThreadID)
             // -- Phase 1: sv_c scope (build, reconnect, extract, drop) --
             {
                 SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
-                sv.etai = load_etai(g_sample_current, pixelIdx);
-                sv.etat = load_etat(g_sample_current, pixelIdx);
 
-                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di)) * visReuse_c;
-                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di));
+                p_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, rdi.objID_di)) * visReuse_c;
+                n_c = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, rdi_r.objID_di));
                 x_c   = sv.x;
                 n_s_c = sv.n_s;
                 Pr_c  = sv.Pr;
@@ -122,11 +120,9 @@ void main(uint3 tid : SV_DispatchThreadID)
             // -- Phase 2: sv_r scope (build, reconnect, extract, drop) --
             {
                 SurfaceVertex sv = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
-                sv.etai = load_etai(g_sample_last, tempPixelIdx);
-                sv.etat = load_etat(g_sample_last, tempPixelIdx);
 
-                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi.objID_di));
-                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat, rdi_r.objID_di)) * visReuse_r;
+                p_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv.Kd, sv.Pr, sv.Pm, rdi.objID_di));
+                n_n = GetPHat(ReconnectDI(sv.x, sv.n_s, sv.o, sv.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv.Kd, sv.Pr, sv.Pm, rdi_r.objID_di)) * visReuse_r;
                 x_r   = sv.x;
                 n_s_r = sv.n_s;
                 Pr_r  = sv.Pr;

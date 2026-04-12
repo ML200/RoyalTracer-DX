@@ -62,10 +62,8 @@ float PairwiseMIS_Canonical_Spat_DI(
             SurfaceVertex sv_n = BuildVertexLight(nInstID, nPrimID, nBary,
                 load_n1_s_with_instID(g_sample_current, nIds[i], nInstID),
                 load_uv(g_sample_current, nIds[i]),
-                load_etai(g_sample_current, nIds[i]),
-                load_etat(g_sample_current, nIds[i]),
                 InitOrigin());
-            float p_hat_from = GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.o, sv_n.matID, x2_c, n2_c, L2_c, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, objID_c));
+            float p_hat_from = GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.o, sv_n.matID, x2_c, n2_c, L2_c, sv_n.Kd, sv_n.Pr, sv_n.Pm, objID_c));
             p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, sv_n.x, n2_c, objID_c);
             // Visibility check
             {
@@ -100,6 +98,7 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float3 localKd2_c,
     in float  localPr2_c,
     in float  localPm2_c,
+    in float2 iors_c,
     in float  J_c
     )
 {
@@ -117,16 +116,14 @@ float PairwiseMIS_Canonical_Spat_GI(
             SurfaceVertex sv_n1 = BuildVertexLight(nInstID, nPrimID, nBary,
                 load_n1_s_with_instID(g_sample_current, id, nInstID),
                 load_uv(g_sample_current, id),
-                load_etai(g_sample_current, id),
-                load_etat(g_sample_current, id),
                 InitOrigin());
 
             float Jn = 0.0f;
             float p_hat_from = GetPHat(ReconnectGI(
                 sv_n1.x, sv_n1.n_s, sv_n1.o, sv_n1.matID,
-                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
+                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm,
                 matID_c, x2_c, n2s_c, L2_c, V2_c,
-                localKd2_c, localPr2_c, localPm2_c,
+                localKd2_c, localPr2_c, localPm2_c, iors_c,
                 Jn));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);

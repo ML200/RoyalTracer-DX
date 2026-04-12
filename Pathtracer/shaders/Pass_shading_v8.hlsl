@@ -133,9 +133,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         uint sPrimID = load_primID(g_sample_current, pixelIdx);
         float2 sBary = load_bary(g_sample_current, pixelIdx);
         SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, mul(viewI, float4(0, 0, 0, 1)).xyz);
-        sv.etai = load_etai(g_sample_current, pixelIdx);
-        sv.etat = load_etat(g_sample_current, pixelIdx);
-
         // DLSS RR input data:
         g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
 

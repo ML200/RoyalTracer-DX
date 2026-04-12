@@ -265,10 +265,11 @@ inline float3 ReconnectDI(
     float3 localKd,
     float  localPr,
     float  localPm,
-    float  etai,
-    float  etat,
     in uint objID_di)
 {
+    // x1 is always a primary hit from air
+    float etai = 1.0f;
+    float etat = materials[mID].Ni;
     if (all(L < EPSILON))
         return 0;
 

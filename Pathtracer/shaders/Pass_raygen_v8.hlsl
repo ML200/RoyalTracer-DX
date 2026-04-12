@@ -158,7 +158,6 @@ void Pass_raygen_v8()
             store_instID(g_sample_current, px, instID);
             store_primID(g_sample_current, px, primID, isEmitter);
             store_bary(g_sample_current, px, attr.barycentrics);
-            store_etai_etat(g_sample_current, px, iors.x, iors.y);
             store_n1_s_world(g_sample_current, px, hinfo.hitNormal, instID);
             store_uv(g_sample_current, px, hinfo.uv);
             if (isEmitter) {
@@ -247,7 +246,7 @@ void Pass_raygen_v8()
         if (depth == 1)
         {
             uint px = MapPixelID(imgSize, pixel);
-            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, matID, instID);
+            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, matID, instID, iors.y);
             SetReservoirGI_UV(g_Reservoirs_current_gi, px, hinfo.uv);
         }
 

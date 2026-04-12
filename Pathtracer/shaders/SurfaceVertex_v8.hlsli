@@ -53,8 +53,7 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
 // Skips vertex normal/UV loads by using pre-cached values from the G-buffer
 inline SurfaceVertex BuildVertexLight(
     uint instID, uint primID, float2 bary,
-    float3 n1s_world, float2 uv,
-    float etai, float etat, float3 viewOrigin)
+    float3 n1s_world, float2 uv, float3 viewOrigin)
 {
     SurfaceVertex v;
     v.x     = ReconstructPosition(instID, primID, bary);
@@ -63,8 +62,8 @@ inline SurfaceVertex BuildVertexLight(
     v.matID = GetMatIDFast(instID, primID);
     v.uv    = uv;
     RefetchMaterial(v.matID, uv, v.Kd, v.Pr, v.Pm);
-    v.etai  = etai;
-    v.etat  = etat;
+    v.etai  = 1.0f;
+    v.etat  = 1.0f;
     return v;
 }
 

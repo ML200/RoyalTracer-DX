@@ -155,17 +155,15 @@ void Pass_temp_gi_v8()
                 // p_n: reconnect from neighbor vertex to current GI reservoir sample
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
-                    sv_r.etai = load_etai(g_sample_last, tempPixelIdx);
-                    sv_r.etat = load_etat(g_sample_last, tempPixelIdx);
 
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
 
                     float3 c = ReconnectGI(
                         sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
-                        sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
+                        sv_r.Kd, sv_r.Pr, sv_r.Pm,
                         rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi,
-                        rcKd, rcPr, rcPm,
+                        rcKd, rcPr, rcPm, rdi.eta_gi,
                         Jnc);
 
                     float ph = GetPHat(c);
@@ -177,8 +175,6 @@ void Pass_temp_gi_v8()
                 float J2;
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
-                    sv_c.etai = load_etai(g_sample_current, pixelIdx);
-                    sv_c.etat = load_etat(g_sample_current, pixelIdx);
 
                     // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
                     // sv_r.x was built from rInstID/rPrimID/rBary above — reuse via ReconstructPosition
@@ -191,9 +187,9 @@ void Pass_temp_gi_v8()
 
                     float3 c = ReconnectGI(
                         sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
-                        sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
+                        sv_c.Kd, sv_c.Pr, sv_c.Pm,
                         rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                        rrKd, rrPr, rrPm,
+                        rrKd, rrPr, rrPm, rdi_r.eta_gi,
                         Jn);
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
@@ -238,7 +234,7 @@ void Pass_temp_gi_v8()
                         rdi_r.M_gi,
                         rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                         rdi_r.uv_gi,
-                        rdi_r.matID_gi, rdi_r.objID_gi,
+                        rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
                         rdi_r.F_gi,
                         seed
                     ))

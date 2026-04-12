@@ -8,7 +8,7 @@
         Offset  4: primID (bits 0-30) + emitter flag (bit 31)   [uint32]
         Offset  8: bary.x                                        [float32]
         Offset 12: bary.y                                        [float32]
-        Offset 16: etai / etat                                   [half2 -> uint32]
+        Offset 16: (padding)                                     [uint32]
         Offset 20: (padding)                                     [uint32]
         Offset 24: n1_s (shading normal, object space, packed)   [uint32]
         Offset 28: uv (texture coordinates)                      [half2 -> uint32]
@@ -72,11 +72,6 @@ void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
     buf.Store2(pixelBaseAddr_SD(pixelIdx) + 8u, asuint(bary));
 }
 
-void store_etai_etat(RWByteAddressBuffer buf, uint pixelIdx, float etai, float etat)
-{
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackFloat2x16(etai, etat));
-}
-
 // Store shading normal in object space (cached for neighbor MIS)
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
@@ -95,7 +90,7 @@ void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
     buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
-    buf.Store4(base + 16u, uint4(PackFloat2x16(1.0f, 1.0f), 0u, 0u, 0u));
+    buf.Store4(base + 16u, uint4(0u, 0u, 0u, 0u));
 }
 
 // -- Individual loads --
@@ -118,16 +113,6 @@ uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
 float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return asfloat(buf.Load2(pixelBaseAddr_SD(pixelIdx) + 8u));
-}
-
-float load_etai(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) & 0xFFFFu);
-}
-
-float load_etat(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return f16tof32_custom(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u) >> 16);
 }
 
 // Load shading normal: stored in object space, returned in world space

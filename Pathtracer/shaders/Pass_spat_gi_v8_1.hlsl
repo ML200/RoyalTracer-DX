@@ -96,8 +96,6 @@ void Pass_spat_gi_v8_1()
     // Build canonical vertex (needed for MIS and neighbor evaluation)
     const float3 cameraPos2 = InitOrigin();
     SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
-    sv1.etai = load_etai(g_sample_current, pixelIdx);
-    sv1.etat = load_etat(g_sample_current, pixelIdx);
 
     // Build canonical x2 vertex from reservoir (needed for MIS canonical)
     float3 rKd; float rPr, rPm;
@@ -117,7 +115,7 @@ void Pass_spat_gi_v8_1()
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
         M_sum, p_c, M_c, nIds,
         rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-        rKd, rPr, rPm,
+        rKd, rPr, rPm, rdi.eta_gi,
         Jc_canonical
     );
 
@@ -154,9 +152,9 @@ void Pass_spat_gi_v8_1()
 
             contrib_n = ReconnectGI(
                 sv1.x, sv1.n_s, sv1.o, sv1.matID,
-                sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
+                sv1.Kd, sv1.Pr, sv1.Pm,
                 rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rnKd, rnPr, rnPm,
+                rnKd, rnPr, rnPm, rdi_r.eta_gi,
                 Jn);
 
             // Visibility after reconnection
@@ -187,7 +185,7 @@ void Pass_spat_gi_v8_1()
                 min(SPAT_MCAP_GI, rdi_r.M_gi),
                 rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                 rdi_r.uv_gi,
-                rdi_r.matID_gi, rdi_r.objID_gi,
+                rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
                 rdi_r.F_gi,
                 seed
             ))

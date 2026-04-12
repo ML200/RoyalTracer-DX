@@ -7,6 +7,7 @@ struct Reservoir_GI
     uint   objID_gi;
     uint   matID_gi;
     float2 uv_gi;
+    float  eta_gi;      // transmittance IOR at x2 (stored at path creation)
 
     // Varying payload
     float3 L2_gi;
@@ -23,15 +24,15 @@ struct Reservoir_GI
 
 // SoA layout — each field is a contiguous plane across all pixels.
 // Merge-active: PACK1(16) | L2(4) | V2(4) | OBJID(4) | UV(4) | MATID(4) |
-//               W(4) | F(4) | M(4) = 48
+//               W(4) | F(4) | M(4) | ETA(4) = 52
 // Raygen-only:  WSUM(4) | VPOST(4) | TPOST(4) = 12
-// Total: 60 bytes/pixel
+// Total: 64 bytes/pixel
 
-static const uint BYTES_GI       = 48u;
+static const uint BYTES_GI       = 52u;
 static const uint BYTES_GI_WSUM  =  4u;
 static const uint BYTES_GI_VPOST =  4u;
 static const uint BYTES_GI_TPOST =  4u;
-static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 60
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 64
 
 // Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
@@ -43,6 +44,7 @@ static const uint GI_SZ_MATID =  4u;
 static const uint GI_SZ_W     =  4u;
 static const uint GI_SZ_F     =  4u;
 static const uint GI_SZ_M     =  4u;
+static const uint GI_SZ_ETA   =  4u;
 static const uint GI_SZ_WSUM  =  4u;
 static const uint GI_SZ_VPOST =  4u;
 static const uint GI_SZ_TPOST =  4u;
@@ -57,9 +59,10 @@ static const uint GI_PLANE_MATID = 32u;
 static const uint GI_PLANE_W     = 36u;
 static const uint GI_PLANE_F     = 40u;
 static const uint GI_PLANE_M     = 44u;
-static const uint GI_PLANE_WSUM  = 48u;
-static const uint GI_PLANE_VPOST = 52u;
-static const uint GI_PLANE_TPOST = 56u;
+static const uint GI_PLANE_ETA   = 48u;
+static const uint GI_PLANE_WSUM  = 52u;
+static const uint GI_PLANE_VPOST = 56u;
+static const uint GI_PLANE_TPOST = 60u;
 
 // SoA address helpers
 // Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
@@ -73,6 +76,7 @@ uint gi_addr_matid(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_
 uint gi_addr_w(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_W     + px * GI_SZ_W; }
 uint gi_addr_f(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_F     + px * GI_SZ_F; }
 uint gi_addr_m(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_M     + px * GI_SZ_M; }
+uint gi_addr_eta(uint px)            { uint N = gi_numPx(); return N * GI_PLANE_ETA   + px * GI_SZ_ETA; }
 uint gi_addr_wsum(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_WSUM  + px * GI_SZ_WSUM; }
 uint gi_addr_vpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_VPOST + px * GI_SZ_VPOST; }
 uint gi_addr_tpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_TPOST + px * GI_SZ_TPOST; }
@@ -113,6 +117,7 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store (gi_addr_w(pixelIdx),     asuint(r.W_gi));
     buf.Store (gi_addr_f(pixelIdx),     r.F_gi);
     buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
+    buf.Store (gi_addr_eta(pixelIdx),   asuint(r.eta_gi));
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -137,6 +142,7 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     r.F_gi     = buf.Load(gi_addr_f(pixelIdx));
 
     r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
+    r.eta_gi   = asfloat(buf.Load(gi_addr_eta(pixelIdx)));
     r.w_sum_gi = 0.0f; // raygen-only; merge passes overwrite before use
 
     return r;
@@ -194,6 +200,11 @@ float  load_W_gi(RWByteAddressBuffer b, uint pixelIdx)
 uint   load_F_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(gi_addr_f(pixelIdx));
+}
+
+float  load_eta_gi(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return asfloat(b.Load(gi_addr_eta(pixelIdx)));
 }
 
 
@@ -295,8 +306,6 @@ inline float3 ReconnectGI(
     in float3  localKd1,
     in float   localPr1,
     in float   localPm1,
-    in float   etai1,
-    in float   etat1,
 
     // Vertex x2 (GI reservoir / reconnection vertex)
     in uint    mID2,
@@ -307,6 +316,7 @@ inline float3 ReconnectGI(
     in float3  localKd2,
     in float   localPr2,
     in float   localPm2,
+    in float   eta2,        // stored transmittance IOR at x2
 
     out float  Jn
 )
@@ -319,9 +329,16 @@ inline float3 ReconnectGI(
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x2 to x1
 
-    // x2 IOR: depth-1 hit is always from air → derive from material
+    // x1 IOR: always air / material (primary hit)
+    float etai1 = 1.0f;
+    float etat1 = materials[mID1].Ni;
+
+    // x2 IOR
     float etai2 = 1.0f;
-    float etat2 = materials[mID2].Ni;
+    float etat2 = eta2;
+
+    if(dot(ndirN, n2_s)<0.0f)
+        etai2 = etat1;
 
     float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
     float3 F2 = BSDF_term(mID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
@@ -366,6 +383,7 @@ bool UpdateReservoirGI(
 
     in uint matID,
     in uint objID,
+    in float eta,
 
     in uint  F,
 
@@ -381,6 +399,7 @@ bool UpdateReservoirGI(
         reservoir.n2_s_gi = n2_s;
         reservoir.objID_gi = objID;
         reservoir.matID_gi = matID;
+        reservoir.eta_gi   = eta;
 
         reservoir.uv_gi   = uv;
 
@@ -436,7 +455,8 @@ void SetReservoirGI_ConstHit(
     float3 x2_world,
     float3 n2s_world,
     uint   matID,
-    uint   objID
+    uint   objID,
+    float  eta
 )
 {
     float3 xO  = WorldToObjectPos (objID, x2_world);
@@ -445,6 +465,7 @@ void SetReservoirGI_ConstHit(
     buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
     buf.Store (gi_addr_objid(pixelIdx), objID);
     buf.Store (gi_addr_matid(pixelIdx), matID);
+    buf.Store (gi_addr_eta(pixelIdx),   asuint(eta));
 }
 
 void SetReservoirGI_UV(

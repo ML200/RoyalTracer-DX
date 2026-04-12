@@ -36,16 +36,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     // Load G-buffer data shared by disabled path and main path
     const float2 myUV   = load_uv(g_sample_current, pixelIdx);
-    const float  myEtai = load_etai(g_sample_current, pixelIdx);
-    const float  myEtat = load_etat(g_sample_current, pixelIdx);
 
     // If spatial DI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 4u))
     {
         const float3 cameraPos = InitOrigin();
-        SurfaceVertex sv_c = BuildVertexLight(myInstID, myPrimID, myBary, myN1s, myUV, myEtai, myEtat, cameraPos);
+        SurfaceVertex sv_c = BuildVertexLight(myInstID, myPrimID, myBary, myN1s, myUV, cameraPos);
         const float vis = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-        float3 c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi.objID_di) * vis;
+        float3 c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, rdi.objID_di) * vis;
         gScratchPing[uint3(tid.xy, 1)] = float4(c * rdi.W_di, 0);
         storeReservoirDI(g_Reservoirs_last_di, pixelIdx, rdi);
         return;
@@ -115,10 +113,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Canonical contribution
     //─────────────────────────────────────────────────────────────────────────
     const float3 cameraPos2 = InitOrigin();
-    SurfaceVertex sv_c = BuildVertexLight(myInstID, myPrimID, myBary, myN1s, myUV, myEtai, myEtat, cameraPos2);
+    SurfaceVertex sv_c = BuildVertexLight(myInstID, myPrimID, myBary, myN1s, myUV, cameraPos2);
 
     const float visReuse = (rdi.W_di > 0.0f) ? 1.0f : 0.0f;
-    float3 contrib_c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi.objID_di) * visReuse;
+    float3 contrib_c = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi.x2_di, rdi.n2_di, rdi.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, rdi.objID_di) * visReuse;
     float  p_c           = GetPHat(contrib_c);
     float3 contrib_final = contrib_c;
 
@@ -141,7 +139,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir_DI rdi_r = loadReservoirDI(g_Reservoirs_current_di, nID);
 
         // Reconnect neighbor sample at canonical position
-        float3 contrib_n = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat, rdi_r.objID_di);
+        float3 contrib_n = ReconnectDI(sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv_c.Kd, sv_c.Pr, sv_c.Pm, rdi_r.objID_di);
         // Visibility check
         {
             float3 _vd; float _vt;
@@ -168,10 +166,8 @@ void main(uint3 tid : SV_DispatchThreadID)
             SurfaceVertex sv_n = BuildVertexLight(nInstID, nPrimID, nBary,
                 load_n1_s_with_instID(g_sample_current, nID, nInstID),
                 load_uv(g_sample_current, nID),
-                load_etai(g_sample_current, nID),
-                load_etat(g_sample_current, nID),
                 cameraPos2);
-            float p_n = visReuse_n * GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.o, sv_n.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, rdi_r.objID_di));
+            float p_n = visReuse_n * GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.o, sv_n.matID, rdi_r.x2_di, rdi_r.n2_di, rdi_r.L2_di, sv_n.Kd, sv_n.Pr, sv_n.Pm, rdi_r.objID_di));
             float m_num = (M_sum_safe - M_c) * p_n;
             float m_den = m_num + M_c * p_hat_from;
             mis_n = (m_den > 1e-4) ? (M_n / M_sum_safe) * (m_num / m_den) : 0.0f;
