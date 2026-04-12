@@ -143,7 +143,7 @@ void Pass_temp_gi_v8()
                 float Jnc = 0.0f, Jn = 0.0f;
 
                 const float visReuse_c = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-                const float p_c = GetPHat(UnpackRGB9E5(rdi.F_gi)) * visReuse_c;
+                const float p_c = rdi.F_mag_gi * visReuse_c;
 
                 // Canonical Jc: jacobian at current pixel's x1 → canonical x2
                 const float Jc_canonical = ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
@@ -201,7 +201,7 @@ void Pass_temp_gi_v8()
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
-                const float n_n = GetPHat(UnpackRGB9E5(rdi_r.F_gi)) * visReuse_n;
+                const float n_n = rdi_r.F_mag_gi * visReuse_n;
 
                 // Dynamic M caps
                 float sdata_Pr = myPr;
@@ -226,7 +226,8 @@ void Pass_temp_gi_v8()
 
                 rdi.w_sum_gi = w_c;
 
-                uint F_gi_winner = rdi.F_gi;
+                uint  F_gi_color_winner = rdi.F_gi;
+                float F_gi_mag_winner   = rdi.F_mag_gi;
                 p_hat_final = p_c;
                 if (UpdateReservoirGI(
                         rdi,
@@ -235,12 +236,15 @@ void Pass_temp_gi_v8()
                         rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                         rdi_r.uv_gi,
                         rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
-                        rdi_r.F_gi,
+                        rdi_r.F_gi, rdi_r.F_mag_gi,
                         seed
                     ))
                 {
                     p_hat_final = n_c;
-                    F_gi_winner = PackRGB9E5(contrib_n_from_me);
+                    float  n_c_mag  = GetPHat(contrib_n_from_me);
+                    float3 n_c_norm = (n_c_mag > 1e-20f) ? contrib_n_from_me / n_c_mag : float3(0,0,0);
+                    F_gi_color_winner = PackRGB9E5(n_c_norm);
+                    F_gi_mag_winner   = n_c_mag;
                 }
 
                 if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f)
@@ -256,7 +260,8 @@ void Pass_temp_gi_v8()
 
                 boilValue = p_hat_final * rdi.W_gi;
 
-                rdi.F_gi = F_gi_winner;
+                rdi.F_gi     = F_gi_color_winner;
+                rdi.F_mag_gi = F_gi_mag_winner;
             }
         }
     }

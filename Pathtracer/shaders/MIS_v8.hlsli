@@ -98,7 +98,7 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float3 localKd2_c,
     in float  localPr2_c,
     in float  localPm2_c,
-    in float2 iors_c,
+    in float  eta_c,
     in float  J_c
     )
 {
@@ -123,7 +123,7 @@ float PairwiseMIS_Canonical_Spat_GI(
                 sv_n1.x, sv_n1.n_s, sv_n1.o, sv_n1.matID,
                 sv_n1.Kd, sv_n1.Pr, sv_n1.Pm,
                 matID_c, x2_c, n2s_c, L2_c, V2_c,
-                localKd2_c, localPr2_c, localPm2_c, iors_c,
+                localKd2_c, localPr2_c, localPm2_c, eta_c,
                 Jn));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);

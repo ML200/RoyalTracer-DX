@@ -52,7 +52,7 @@ void Pass_spat_gi_v8_1()
     // Disabled early-out
     if (!(rs_flags & 8u))
     {
-        float3 c = UnpackRGB9E5(rdi.F_gi);
+        float3 c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi;
         float  W = (rdi.W_gi > 0.0f) ? rdi.W_gi : 0.0f;
         gScratchPing[uint3(launchIndex, 2)] = float4(c * W, 0);
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
@@ -103,7 +103,7 @@ void Pass_spat_gi_v8_1()
 
     // Use stored F_gi directly — skip canonical ReconnectGI
     {
-        float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * visReuse;
+        float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi * visReuse;
         p_c = GetPHat(contrib_c);
         contrib_final = contrib_c;
     }
@@ -173,7 +173,7 @@ void Pass_spat_gi_v8_1()
             M_sum,
             M_c, Mn,
             p_hat_from,
-            rdi_r.W_gi, GetPHat(UnpackRGB9E5(rdi_r.F_gi))
+            rdi_r.W_gi, rdi_r.F_mag_gi
         );
 
         const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
@@ -186,7 +186,7 @@ void Pass_spat_gi_v8_1()
                 rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
                 rdi_r.uv_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
-                rdi_r.F_gi,
+                rdi_r.F_gi, rdi_r.F_mag_gi,
                 seed
             ))
         {
@@ -211,7 +211,10 @@ void Pass_spat_gi_v8_1()
             rdi.W_gi = 0.0f;
         }
 
-        rdi.F_gi = PackRGB9E5(contrib_final);
+        float  F_mag_final  = GetPHat(contrib_final);
+        float3 F_norm_final = (F_mag_final > 1e-20f) ? contrib_final / F_mag_final : float3(0,0,0);
+        rdi.F_gi     = PackRGB9E5(F_norm_final);
+        rdi.F_mag_gi = F_mag_final;
 
         gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
     }
