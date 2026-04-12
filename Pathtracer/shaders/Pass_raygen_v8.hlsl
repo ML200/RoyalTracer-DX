@@ -410,7 +410,7 @@ void Pass_raygen_v8()
 
         // Advance path state
         prev_pdf       = bdata.pdf;
-        gi_pdf_product *= bdata.pdf;
+        gi_pdf_product = min(gi_pdf_product * bdata.pdf, 1e30f);
         rayDir      = s;
         float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);

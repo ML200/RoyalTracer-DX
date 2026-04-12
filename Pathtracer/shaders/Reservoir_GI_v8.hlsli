@@ -267,6 +267,8 @@ void store_F_mag_gi(RWByteAddressBuffer b, uint pixelIdx, float mag)
 // Combined store: split float3 F into normalized RGB9E5 color + float magnitude
 void store_F_combined_gi(RWByteAddressBuffer b, uint pixelIdx, float3 F)
 {
+    if (any(isnan(F)) || any(isinf(F)))
+        F = float3(0, 0, 0);
     float mag = GetPHat(F);
     float3 norm = (mag > 1e-20f) ? F / mag : float3(0, 0, 0);
     b.Store(gi_addr_f(pixelIdx), PackRGB9E5(norm));
