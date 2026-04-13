@@ -392,7 +392,6 @@ HitInfo EvalSurfaceState(
     hit.hitPos     = posW;
     hit.hitNormal  = isBackface ? -normW    : normW;
     hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
-    hit.hitNormal = isBackface ? -geoNormW : geoNormW;
 
     // Clamp (keep Vw scoped)
     {

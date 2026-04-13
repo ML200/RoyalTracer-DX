@@ -8,21 +8,6 @@
 #define MEDIUM_INVALID 0xFFFFFFFFu
 #endif
 
-// ─────────────────────────────────────────────────────────────────────────
-// CONVENTIONS (read this before touching reservoir updates)
-//
-//   throughput      = f / p_path_so_far   (incremental BSDF*cos/pdf product)
-//   gi_pdf_product  = p_path_so_far       (product of all sampling pdfs so far)
-//   ⇒  pdf-free contribution f = throughput * gi_pdf_product
-//
-//   For a reservoir sample, we always compute:
-//     F_contrib = (pdf-free contribution of the full path including terminal event)
-//     p_hat     = luma(F_contrib)                       ← stored in reservoir
-//     wi        = misWeight * p_hat / p_full            ← RIS weight
-//   where p_full is the product of ALL sampling pdfs along the path,
-//   including the terminal event (BSDF pdf for emitter/env hits, light pdf for NEE).
-// ─────────────────────────────────────────────────────────────────────────
-
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
@@ -53,12 +38,6 @@ void Pass_raygen_v8()
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf       = 1.0f;
     float  gi_pdf_product = 1.0f;   // p_path_so_far
-
-    // ── Reference accumulator (bypasses RIS entirely) ──────────────────
-    // Sums every f/p contribution along the path. Final value is written
-    // to gScratchPing[..., 6] at the end. Lets us A/B against the ReSTIR
-    // resolve to localize bias.
-    float3 refAccum = float3(0, 0, 0);
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -104,14 +83,10 @@ void Pass_raygen_v8()
             float3 throughput = UnpackRGB9E5(throughputPk);
             float3 envL = EvalMissState(rayDir, float3(0, 0, 0));
 
-            // Reference: throughput already = f/p, so this term is f/p * envL.
-            // GI-only: gated to depth>=2 to match the GI reservoir feed.
-            if (depth >= 2) refAccum += throughput * envL;
-
             // pdf-free contribution: f = throughput * gi_pdf_product * envL
             float3 F_contrib = throughput * envL * gi_pdf_product;
             float  p_hat     = GetPHat(F_contrib);
-            float  p_full    = gi_pdf_product;            // last event was BSDF sample → already in product
+            float  p_full    = gi_pdf_product;            //last event was BSDF sample -> already in product
             float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
 
             uint px = MapPixelID(imgSize, pixel);
@@ -132,7 +107,7 @@ void Pass_raygen_v8()
             break;
         }
 
-        // ── Hit setup ──────────────────────────────────────────────────
+        //Hit setup
         float  hitT   = hitObj.GetRayTCurrent();
         float3 hitPos = rayOrigin + rayDir * hitT;
 
@@ -163,7 +138,7 @@ void Pass_raygen_v8()
 
         float3 emission = GetEmissionFast(instID, primID);
 
-        // ── Depth 0: store primary hit ─────────────────────────────────
+        //Depth 0: store primary hit
         if (depth == 0)
         {
             uint px = MapPixelID(imgSize, pixel);
@@ -178,7 +153,7 @@ void Pass_raygen_v8()
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
             }
 
-            // Specular motion vector reflection probe (inline RQ).
+            //Specular motion vector reflection probe
             {
                 float3 reflDir = reflect(rayDir, hinfo.hitNormal);
                 float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
@@ -216,7 +191,7 @@ void Pass_raygen_v8()
             }
         }
 
-        // ── Emitter hit (BSDF-sampled): MIS with NEE ──────────────────
+        //Emitter hit
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
             float3 throughput = UnpackRGB9E5(throughputPk);
@@ -226,9 +201,6 @@ void Pass_raygen_v8()
             float dist2        = max(hitT * hitT, EPSILON);
             float lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             float misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
-
-            // Reference: f/p * Le. GI-only: gated to depth>=2.
-            if (depth >= 2) refAccum += throughput * emission * misWeight;
 
             // pdf-free contribution: f = throughput * gi_pdf_product * emission
             float3 F_contrib = throughput * emission * gi_pdf_product;
@@ -254,7 +226,7 @@ void Pass_raygen_v8()
             break;
         }
 
-        // ── Depth 1: store GI reconnection vertex ─────────────────────
+        //Depth 1: store reconnection vertex
         if (depth == 1)
         {
             uint px = MapPixelID(imgSize, pixel);
@@ -267,7 +239,7 @@ void Pass_raygen_v8()
             store_Vpost_gi(g_Reservoirs_current_gi, MapPixelID(imgSize, pixel), -rayDir);
         }
 
-        // ── NEE (point lights + sun) ──────────────────────────────────
+        //NEE
         bool performNEE = !(mediumMatID != MEDIUM_INVALID || materials[matID].Kd.w < EPSILON);
 
         uint matKdPk, matPrPmPk, hitNormalPk;
@@ -277,7 +249,7 @@ void Pass_raygen_v8()
             matPrPmPk   = f32tof16_custom(hitLocalPr) | (f32tof16_custom(hitLocalPm) << 16u);
             hitNormalPk = PackNormal(hinfo.hitNormal);
 
-            // ── Point light NEE ─────────────────────────────────────
+            //Point light NEE
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
 
@@ -307,11 +279,6 @@ void Pass_raygen_v8()
                     {
                         float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
-                        // Reference: f/p_path * (Le*bsdf*cos / lightPdf), MIS-weighted.
-                        // INDIRECT ONLY: depth>=1 (camera→surface→light = one bounce indirect).
-                        if (depth >= 1)
-                            refAccum += throughput * light.emission * bdataNEE.val * cosSurf * (misWeight / lightPdf);
-
                         // pdf-free local measurement at this vertex
                         float3 localMeasurement = light.emission * bdataNEE.val * cosSurf;
                         // f = throughput * gi_pdf_product * localMeasurement
@@ -340,7 +307,7 @@ void Pass_raygen_v8()
                 }
             }
 
-            // ── Sun NEE ─────────────────────────────────────────────
+            //Sun NEE
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
@@ -364,11 +331,6 @@ void Pass_raygen_v8()
                     if (lightPdf > 1e-20f && bsdfPdf > 0.0f)
                     {
                         float misWeight = lightPdf / (lightPdf + bsdfPdf);
-
-                        // Reference: f/p_path * sun_radiance * bsdf * NdotL / lightPdf, MIS-weighted.
-                        // GI-only: gated to depth>=2 to match GI reservoir feed.
-                        if (depth >= 1)
-                            refAccum += throughput * sun.radiance * bdataNEE.val * NdotL * (misWeight / lightPdf);
 
                         // pdf-free local measurement
                         float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL;
@@ -436,7 +398,7 @@ void Pass_raygen_v8()
                 float rrBoost = 1.0f / max(survivalProb, 0.1f);
                 throughput  *= rrBoost;
                 tpostWeight *= rrBoost;
-                // RR survival is part of the path pdf — fold it in so f/p stays consistent.
+                // RR survival is part of the path pdf
                 gi_pdf_product = min(gi_pdf_product * survivalProb, 1e30f);
             }
 
@@ -452,18 +414,8 @@ void Pass_raygen_v8()
         prevNormalPk = PackNormal(hinfo.hitNormal);
     }
 
-    // ── Final reservoir weight resolve ─────────────────────────────────
+    //Final reservoir weight resolve
     uint pixelIdx = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
-
-    // Write reference (non-RIS) accumulator. This is ground-truth path tracing
-    // for all depth>=1 contributions, ignoring ReSTIR entirely. Compare against
-    // the ReSTIR resolve to localize bias. NaN/Inf guard so a single bad path
-    // doesn't poison the pixel.
-    {
-        float3 r = refAccum;
-        if (any(isnan(r)) || any(isinf(r))) r = float3(0, 0, 0);
-        gScratchPing[uint3(DispatchRaysIndex().xy, 6)] = float4(r, 0);
-    }
 
     {
         float p_hat = load_phat_di(g_Reservoirs_current_di, pixelIdx);
@@ -490,15 +442,4 @@ void Pass_raygen_v8()
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, Wgi);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);
     }
-
-    // ── DEBUG: overwrite reference slot with RIS estimator output ──────
-    // Compares apples-to-apples: slot 6 will now show what the GI reservoir
-    // resolves to (F_full * W_gi) instead of the path-traced reference.
-    /*{
-        float3 F_full = load_F_full_gi(g_Reservoirs_current_gi, pixelIdx);
-        float  W      = load_W_gi(g_Reservoirs_current_gi, pixelIdx);
-        float3 ris    = F_full * W;
-        if (any(isnan(ris)) || any(isinf(ris))) ris = float3(0, 0, 0);
-        gScratchPing[uint3(DispatchRaysIndex().xy, 6)] = float4(ris, 0);
-    }*/
 }
