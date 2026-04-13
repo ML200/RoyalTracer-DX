@@ -123,11 +123,10 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 
 #define BOIL_GROUP_X 16
 #define BOIL_GROUP_Y 16
-#define BOIL_PATCH   8       // 8x8 patch for local averaging
-#define BOIL_QUADRANTS 4     // 2x2 quadrants per 16x16 group
+#define BOIL_THREADS (BOIL_GROUP_X * BOIL_GROUP_Y) // 256
 
-// Per-thread storage for the 8x8 reduction (one float per thread in the group)
-groupshared float gBoilValues[BOIL_GROUP_X * BOIL_GROUP_Y];
+// Per-thread storage for the 16x16 reduction (one float per thread in the group)
+groupshared float gBoilValues[BOIL_THREADS];
 
 float BoilMultiplier(float strength)
 {
@@ -141,62 +140,41 @@ bool BoilingFilter(
     out float avgNonzero,
     out float threshold)
 {
-    // Determine which 8x8 quadrant this thread belongs to (0..3)
-    uint qx = localIndex.x / BOIL_PATCH;
-    uint qy = localIndex.y / BOIL_PATCH;
+    uint gsIdx = localIndex.x + localIndex.y * BOIL_GROUP_X; // 0..255
 
-    // Local position within the 8x8 patch
-    uint lx = localIndex.x % BOIL_PATCH;
-    uint ly = localIndex.y % BOIL_PATCH;
-    uint localPatchIdx = lx + ly * BOIL_PATCH; // 0..63
-
-    // Store into groupshared: lay out as quadrant * 64 + localPatchIdx
-    uint quadrant = qx + qy * 2u;
-    uint gsIdx = quadrant * 64u + localPatchIdx;
+    // Sum reduction over full 16x16 group
     gBoilValues[gsIdx] = v;
-
     GroupMemoryBarrierWithGroupSync();
 
-    // Parallel reduction within each 8x8 patch (64 threads)
-    // Sum and count of nonzero values
-    float patchSum = 0.0f;
-    uint  patchCnt = 0u;
-
-    uint base = quadrant * 64u;
-
-    // Each thread reduces a stride: thread 0 sums [0..63] is too serial.
-    // Instead, use a simple tree reduction in groupshared.
-    // Step 1: each thread holds its own value. Reduce in log2(64)=6 steps.
     [unroll]
-    for (uint stride = 32u; stride > 0u; stride >>= 1u)
+    for (uint stride = 128u; stride > 0u; stride >>= 1u)
     {
-        if (localPatchIdx < stride)
+        if (gsIdx < stride)
         {
             gBoilValues[gsIdx] += gBoilValues[gsIdx + stride];
         }
         GroupMemoryBarrierWithGroupSync();
     }
 
-    // Thread 0 of each patch has the sum
-    patchSum = gBoilValues[base];
+    float groupSum = gBoilValues[0];
 
-    // For count: reuse the array with a second pass
+    // Count reduction over full 16x16 group
     gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
     [unroll]
-    for (uint stride2 = 32u; stride2 > 0u; stride2 >>= 1u)
+    for (uint stride2 = 128u; stride2 > 0u; stride2 >>= 1u)
     {
-        if (localPatchIdx < stride2)
+        if (gsIdx < stride2)
         {
             gBoilValues[gsIdx] += gBoilValues[gsIdx + stride2];
         }
         GroupMemoryBarrierWithGroupSync();
     }
 
-    patchCnt = (uint)gBoilValues[base];
+    uint groupCnt = (uint)gBoilValues[0];
 
-    avgNonzero = (patchCnt > 0) ? (patchSum / float(patchCnt)) : 0.0f;
+    avgNonzero = (groupCnt > 0) ? (groupSum / float(groupCnt)) : 0.0f;
     threshold  = avgNonzero * BoilMultiplier(filterStrength);
 
     return (v > threshold);

@@ -37,8 +37,8 @@
 #define REUSE_ROUGHNESS_MAX 0.6f
 
 // Boiling filter (lower strength = less aggressive clamping)
-#define GI_BOIL_STRENGTH_TEMP 0.1f
+#define GI_BOIL_STRENGTH_TEMP 0.2f
 #define GI_BOIL_MIN_AVG_TEMP  1e-8f
 
-#define DI_BOIL_STRENGTH_TEMP 0.1f
+#define DI_BOIL_STRENGTH_TEMP 0.2f
 #define DI_BOIL_MIN_AVG_TEMP  1e-8f
