@@ -124,7 +124,7 @@ private:
         UINT opaqueTriCount, UINT alphaTriCount,
         MeshGPU* meshOmm = nullptr);
     void CreateTopLevelAS(
-        const std::vector<std::pair<ComPtr<ID3D12Resource>, XMMATRIX>>& instances,
+        const std::vector<Scene::TLASInstance>& instances,
         bool updateOnly = false);
     void CreateAccelerationStructures();
 

@@ -181,7 +181,8 @@ inline dx::HitObject TraceRay_Custom(
 {
 
     TracePayload payload = (TracePayload)0;
-    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 0, 0, ray, payload);
+    // RayContribution=0, MultiplierForGeometry=1 (select opaque vs alpha hit group per geometry), MissIndex=0
+    dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 
     uint hint = hitObj.IsHit()?1:0;
     dx::MaybeReorderThread(hitObj, hint, 1);

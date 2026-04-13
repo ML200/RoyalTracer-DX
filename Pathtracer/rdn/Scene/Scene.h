@@ -83,8 +83,14 @@ struct Scene {
     std::vector<std::string>    materialNames;  // parallel to materials (CPU-only, for editor)
     std::vector<UINT>           materialIDs;
 
-    // TLAS instance pairs (BLAS resource + transform)
-    std::vector<std::pair<ComPtr<ID3D12Resource>, XMMATRIX>> tlasInstances;
+    // TLAS instance data (BLAS resource, transform, hit group contribution, flags)
+    struct TLASInstance {
+        ComPtr<ID3D12Resource> blas;
+        XMMATRIX transform;
+        UINT hitGroupContribution;
+        D3D12_RAYTRACING_INSTANCE_FLAGS flags;
+    };
+    std::vector<TLASInstance> tlasInstances;
 
     // Global merged GPU buffers
     ComPtr<ID3D12Resource> vertexGlobal;

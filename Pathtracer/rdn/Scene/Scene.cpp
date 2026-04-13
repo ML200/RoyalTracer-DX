@@ -190,7 +190,7 @@ void Scene::PrepareInstanceProperties() {
 
         // Keep TLAS in sync
         if (idx < tlasInstances.size())
-            tlasInstances[idx].second = M;
+            tlasInstances[idx].transform = M;
     }
 }
 
@@ -224,8 +224,20 @@ void Scene::UploadInstanceProperties() {
 void Scene::RebuildTLASInstanceList() {
     tlasInstances.clear();
     tlasInstances.reserve(instances.size());
-    for (const auto& si : instances)
-        tlasInstances.emplace_back(meshes[si.meshIndex].blas, si.worldTransform);
+    for (size_t i = 0; i < instances.size(); ++i) {
+        const auto& si   = instances[i];
+        const auto& mesh = meshes[si.meshIndex];
+
+        // Two SBT hit-group entries per instance: [opaque, alpha]
+        UINT hitGroupContrib = static_cast<UINT>(i) * 2;
+
+        // Fully-opaque instances skip any-hit entirely at the hardware level
+        auto flags = (mesh.alphaTriCount == 0)
+            ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
+            : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+
+        tlasInstances.push_back({ mesh.blas, si.worldTransform, hitGroupContrib, flags });
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
