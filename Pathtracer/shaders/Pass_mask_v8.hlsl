@@ -9,35 +9,33 @@
 #define DECAY          0.86f
 #define NORMAL_THRESH  0.36f
 
-// Binary edge: 1 if any pixel in the 2x2 patch (self, right, down, diagonal)
-// has dot(n_i, n_j) < NORMAL_THRESH with any other pixel in the patch.
+// Binary edge: 1 if any 3x3 neighbor has dot(n_center, n_neighbor) < NORMAL_THRESH.
 inline float ComputeEdge(RWByteAddressBuffer buf, float2 dims, int2 pixel)
 {
-    static const int2 off[4] = { int2(0,0), int2(1,0), int2(0,1), int2(1,1) };
-    float3 n[4];
-    bool   emitter[4];
+    uint px = MapPixelID(dims, (uint2)pixel);
+    if (load_isEmitter(buf, px)) return 1.0f;
+
+    float3 nc = load_n1_s(buf, px);
+
+    static const int2 off[8] = {
+        int2(-1,-1), int2(0,-1), int2(1,-1),
+        int2(-1, 0),             int2(1, 0),
+        int2(-1, 1), int2(0, 1), int2(1, 1)
+    };
 
     [unroll]
-    for (uint i = 0; i < 4; i++)
+    for (uint i = 0; i < 8; i++)
     {
-        int2 p = pixel + off[i];
-        if (p.x < 0 || p.y < 0 || p.x >= (int)dims.x || p.y >= (int)dims.y)
-            { n[i] = float3(0,0,0); emitter[i] = true; continue; }
-        uint px = MapPixelID(dims, (uint2)p);
-        emitter[i] = load_isEmitter(buf, px);
-        n[i] = emitter[i] ? float3(0,0,0) : load_n1_s(buf, px);
+        int2 np = pixel + off[i];
+        if (np.x < 0 || np.y < 0 || np.x >= (int)dims.x || np.y >= (int)dims.y)
+            continue;
+        uint npx = MapPixelID(dims, (uint2)np);
+        if (load_isEmitter(buf, npx))
+            return 1.0f;
+        float3 nn = load_n1_s(buf, npx);
+        if (dot(nc, nn) < NORMAL_THRESH)
+            return 1.0f;
     }
-
-    // Any emitter in the patch next to a non-emitter is an edge.
-    bool hasEmitter    = emitter[0] || emitter[1] || emitter[2] || emitter[3];
-    bool hasNonEmitter = !emitter[0] || !emitter[1] || !emitter[2] || !emitter[3];
-    if (hasEmitter && hasNonEmitter) return 1.0f;
-    if (hasEmitter) return 0.0f; // all emitters, no edge
-
-    // Check all 6 pairs in the 2x2 patch.
-    [unroll] for (uint a = 0; a < 3; a++)
-    [unroll] for (uint b = a + 1; b < 4; b++)
-        if (dot(n[a], n[b]) < NORMAL_THRESH) return 1.0f;
 
     return 0.0f;
 }
