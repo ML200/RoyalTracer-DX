@@ -36,53 +36,12 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     ray.TMin      = 0.0001f;
     ray.TMax      = tMax;
 
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-           | RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+       | RAY_FLAG_FORCE_OPAQUE> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-
-    while (q.Proceed())
-    {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            // With FORCE_OMM_2_STATE, OMM geometry never reaches here (all micro-tris
-            // are resolved to OPAQUE/TRANSPARENT by hardware). Only non-OMM non-opaque
-            // geometry (e.g. glass/transparent materials) generates candidates.
-            uint   instID = q.CandidateInstanceID();
-            uint   primID = FlatPrimID(instID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-            uint   matID  = materialIDs[instanceProps[instID].materialBase + primID];
-            Material mat  = materials[matID];
-
-            if (mat.albedoTexID < 0)
-            {
-                // Transparent material (Kd.w < 1): let shadow ray pass through
-                if (mat.Kd.w < 1.0f - EPSILON)
-                    continue;
-                q.CommitNonOpaqueTriangleHit();
-                continue;
-            }
-
-            uint baseI = instanceProps[instID].indexBase;
-            uint i0 = indices[baseI + 3u * primID + 0u];
-            uint i1 = indices[baseI + 3u * primID + 1u];
-            uint i2 = indices[baseI + 3u * primID + 2u];
-
-            float2 uv0 = (float2)BTriVertex[i0].texCoord;
-            float2 uv1 = (float2)BTriVertex[i1].texCoord;
-            float2 uv2 = (float2)BTriVertex[i2].texCoord;
-
-            float2 bc  = q.CandidateTriangleBarycentrics();
-            float  b0  = 1.0f - bc.x - bc.y;
-            float2 uv  = uv0 * b0 + uv1 * bc.x + uv2 * bc.y;
-
-            Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
-            float alpha = tex.SampleLevel(g_sampler, uv * mat.albedoUVScale, 0).a;
-
-            if (alpha >= mat.alphaThreshold)
-                q.CommitNonOpaqueTriangleHit();
-        }
-    }
-
-    return (q.CommittedStatus() == COMMITTED_NOTHING);
+    q.Proceed(); // effectively a no-op with FORCE_OPAQUE
+    return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
