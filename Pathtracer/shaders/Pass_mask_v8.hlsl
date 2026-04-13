@@ -8,36 +8,48 @@
 
 #define DECAY          0.86f
 #define NORMAL_THRESH  0.36f
+#define DEPTH_THRESH   0.4f
 
-// Binary edge: 1 if any pixel in the 2x2 patch (self, right, down, diagonal)
-// has dot(n_i, n_j) < NORMAL_THRESH with any other pixel in the patch.
+// Binary edge: 1 if any pair in the 2x2 patch (self, right, down, diagonal)
+// fails the normal test (dot < 0.36) or the plane-distance test (> 0.4).
+// Matches RejectNormal_GI / RejectDistance_GI thresholds from temporal ReSTIR.
 inline float ComputeEdge(RWByteAddressBuffer buf, float2 dims, int2 pixel)
 {
     static const int2 off[4] = { int2(0,0), int2(1,0), int2(0,1), int2(1,1) };
     float3 n[4];
-    bool   emitter[4];
+    float3 pos[4];
+    bool   dead[4];
 
     [unroll]
     for (uint i = 0; i < 4; i++)
     {
         int2 p = pixel + off[i];
         if (p.x < 0 || p.y < 0 || p.x >= (int)dims.x || p.y >= (int)dims.y)
-            { n[i] = float3(0,0,0); emitter[i] = true; continue; }
+            { n[i] = float3(0,0,0); pos[i] = float3(0,0,0); dead[i] = true; continue; }
         uint px = MapPixelID(dims, (uint2)p);
-        emitter[i] = load_isEmitter(buf, px);
-        n[i] = emitter[i] ? float3(0,0,0) : load_n1_s(buf, px);
+        uint iID = load_instID(buf, px);
+        dead[i] = load_isEmitter(buf, px) || (iID == 0xFFFFFFFFu);
+        if (dead[i])
+            { n[i] = float3(0,0,0); pos[i] = float3(0,0,0); continue; }
+        n[i] = load_n1_s(buf, px);
+        uint pID   = load_primID(buf, px);
+        float2 bar = load_bary(buf, px);
+        pos[i] = ReconstructPosition(iID, pID, bar);
     }
 
-    // Any emitter in the patch next to a non-emitter is an edge.
-    bool hasEmitter    = emitter[0] || emitter[1] || emitter[2] || emitter[3];
-    bool hasNonEmitter = !emitter[0] || !emitter[1] || !emitter[2] || !emitter[3];
-    if (hasEmitter && hasNonEmitter) return 1.0f;
-    if (hasEmitter) return 0.0f; // all emitters, no edge
+    // Mixed dead/live patch is always an edge.
+    bool hasDead = dead[0] || dead[1] || dead[2] || dead[3];
+    bool hasLive = !dead[0] || !dead[1] || !dead[2] || !dead[3];
+    if (hasDead && hasLive) return 1.0f;
+    if (hasDead) return 0.0f;
 
-    // Check all 6 pairs in the 2x2 patch.
+    // Check all 6 pairs: normal similarity + plane distance.
     [unroll] for (uint a = 0; a < 3; a++)
     [unroll] for (uint b = a + 1; b < 4; b++)
+    {
         if (dot(n[a], n[b]) < NORMAL_THRESH) return 1.0f;
+        if (abs(dot(pos[b] - pos[a], n[a])) > DEPTH_THRESH) return 1.0f;
+    }
 
     return 0.0f;
 }
