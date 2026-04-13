@@ -19,6 +19,7 @@ Renderer::Renderer(UINT width, UINT height)
 {
     // Define the rendering pass pipeline (data-driven)
     m_passes.Build({
+        L"Pass_camera_v8.hlsl|rg",          L"barrier",
         L"Pass_raygen_v8.hlsl|rg",          L"barrier",
         L"Pass_temp_di_v8.hlsl|cs:16x8",    L"barrier",
         L"Pass_boil_di_v8.hlsl|cs:16x16", L"barrier",
