@@ -158,6 +158,9 @@ bool BoilingFilter(
 
     float groupSum = gBoilValues[0];
 
+    // Barrier: all threads must read groupSum before the array is reused
+    GroupMemoryBarrierWithGroupSync();
+
     // Count reduction over full 16x16 group
     gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
     GroupMemoryBarrierWithGroupSync();
