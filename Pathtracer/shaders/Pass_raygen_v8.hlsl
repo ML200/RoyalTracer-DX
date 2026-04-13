@@ -15,13 +15,8 @@ void Pass_raygen_v8()
     uint2  imgSize = DispatchRaysDimensions().xy;
     uint   pixelIdx = MapPixelID(imgSize, pixel);
 
-    // Reorder threads before bounce loop: group dead rays
-    uint camInstID = load_instID(g_sample_current, pixelIdx);
-    bool rayDead   = (camInstID == 0xFFFFFFFFu) || load_isEmitter(g_sample_current, pixelIdx);
-    dx::MaybeReorderThread(dx::HitObject::MakeNop(), rayDead ? 0u : 1u, 1);
-
     // ── Early-out: sky (camera shader stored sentinel + scratch) ───────
-    if (camInstID == 0xFFFFFFFFu)
+    if (load_instID(g_sample_current, pixelIdx) == 0xFFFFFFFFu)
     {
         store_W_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
         store_M_di(g_Reservoirs_current_di, pixelIdx, 1);
