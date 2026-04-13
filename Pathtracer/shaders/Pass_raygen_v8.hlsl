@@ -11,19 +11,24 @@
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
-    uint2  pixel   = DispatchRaysIndex().xy;
-    uint2  imgSize = DispatchRaysDimensions().xy;
-    uint   pixelIdx = MapPixelID(imgSize, pixel);
-
-    // ── Early-out: sky (camera shader stored sentinel + scratch) ───────
-    if (load_instID(g_sample_current, pixelIdx) == 0xFFFFFFFFu)
     {
+        uint2 pixel   = DispatchRaysIndex().xy;
+        uint2 imgSize = DispatchRaysDimensions().xy;
+        uint pixelIdx = MapPixelID(imgSize, pixel);
+        storeReservoirDI(g_Reservoirs_current_di, pixelIdx, (Reservoir_DI)0);
+        store_wsum_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
         store_W_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
-        store_M_di(g_Reservoirs_current_di, pixelIdx, 1);
-        InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);
+        store_phat_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
+
+        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, (Reservoir_GI)0);
+        store_wsum_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
-        store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);
-        return;
+        store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
+        store_F_mag_gi(g_Reservoirs_current_gi, pixelIdx, 0.0f);
+        store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
+        store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
+
+        gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
     }
 
     uint   seed       = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
@@ -32,7 +37,7 @@ void Pass_raygen_v8()
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf       = 1.0f;
-    float  gi_pdf_product = 1.0f;
+    float  gi_pdf_product = 1.0f;   // p_path_so_far
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -47,78 +52,69 @@ void Pass_raygen_v8()
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
-        float  hitT;
-        float3 hitPos;
-        uint   instID, primID;
-        HitInfo hinfo;
+        if (any(isnan(rayDir)) || any(isinf(rayDir)) || dot(rayDir, rayDir) < 1e-12f ||
+            any(isnan(rayOrigin)) || any(isinf(rayOrigin)))
+            break;
 
-        if (depth == 0)
+        RayDesc ray;
+        ray.Origin    = rayOrigin;
+        ray.Direction = rayDir;
+        ray.TMin      = 0.00001f;
+        ray.TMax      = 10000.0f;
+        dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
+
+        const uint2 pixel   = DispatchRaysIndex().xy;
+        const uint2 imgSize = DispatchRaysDimensions().xy;
+
+        // ── Miss ───────────────────────────────────────────────────────
+        if (!hitObj.IsHit())
         {
-            // ── Read primary hit from G-buffer (traced by camera shader) ──
-            instID = load_instID(g_sample_current, pixelIdx);
-            primID = load_primID(g_sample_current, pixelIdx);
-            float2 bary = load_bary(g_sample_current, pixelIdx);
-            hinfo  = EvalSurfaceState(instID, primID, bary, rayOrigin, 0);
-            hitPos = hinfo.hitPos;
-            hitT   = length(hitPos - rayOrigin);
-        }
-        else
-        {
-            // ── Trace bounce rays (depth >= 1) ────────────────────────────
-            if (any(isnan(rayDir)) || any(isinf(rayDir)) || dot(rayDir, rayDir) < 1e-12f ||
-                any(isnan(rayOrigin)) || any(isinf(rayOrigin)))
-                break;
-
-            RayDesc ray;
-            ray.Origin    = rayOrigin;
-            ray.Direction = rayDir;
-            ray.TMin      = 0.00001f;
-            ray.TMax      = 10000.0f;
-            dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
-
-            // ── Miss ───────────────────────────────────────────────────────
-            if (!hitObj.IsHit())
+            if (depth == 0)
             {
-                float3 throughput = UnpackRGB9E5(throughputPk);
-                float3 envL = EvalMissState(rayDir, float3(0, 0, 0));
-
-                float3 F_contrib = throughput * envL * gi_pdf_product;
-                float  p_hat     = GetPHat(F_contrib);
-                float  p_full    = gi_pdf_product;
-                float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
-
-                uint px = MapPixelID(imgSize, pixel);
-
-                if (depth == 1)
-                {
-                    if (UpdateReservoirDI_Infinite(g_Reservoirs_current_di, px, wi, rayDir, envL, 0xFFFFFFFFu, seed))
-                        store_phat_di(g_Reservoirs_current_di, px, p_hat);
-                }
-                else if (depth >= 2)
-                {
-                    float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
-                    float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
-
-                    if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, envL * tpost, V2_new, seed))
-                        store_F_combined_gi(g_Reservoirs_current_gi, px, F_contrib);
-                }
+                float3 sun = EvaluateSun(rayDir);
+                float3 skyL1 = EvalMissState(rayDir, sun);
+                if (length(sun) > 0.0f) skyL1 = sun;
+                gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
+                gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
+                store_sky(g_sample_current, MapPixelID(imgSize, pixel));
                 break;
             }
 
-            hitT   = hitObj.GetRayTCurrent();
-            hitPos = rayOrigin + rayDir * hitT;
+            float3 throughput = UnpackRGB9E5(throughputPk);
+            float3 envL = EvalMissState(rayDir, float3(0, 0, 0));
 
-            instID = hitObj.GetInstanceIndex();
-            primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
+            // pdf-free contribution: f = throughput * gi_pdf_product * envL
+            float3 F_contrib = throughput * envL * gi_pdf_product;
+            float  p_hat     = GetPHat(F_contrib);
+            float  p_full    = gi_pdf_product;            //last event was BSDF sample -> already in product
+            float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
 
-            BuiltInTriangleIntersectionAttributes attr;
-            hitObj.GetAttributes(attr);
-            hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
+            uint px = MapPixelID(imgSize, pixel);
+
+            if (depth == 1)
+            {
+                if (UpdateReservoirDI_Infinite(g_Reservoirs_current_di, px, wi, rayDir, envL, 0xFFFFFFFFu, seed))
+                    store_phat_di(g_Reservoirs_current_di, px, p_hat);
+            }
+            else if (depth >= 2)
+            {
+                float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
+                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
+
+                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, envL * tpost, V2_new, seed))
+                    store_F_combined_gi(g_Reservoirs_current_gi, px, F_contrib);
+            }
+            break;
         }
 
-        // ── Common hit processing ──────────────────────────────────────
-        uint   matID = GetMatIDFast(instID, primID);
-        float2 iors  = GetIORs_packed(viorP, aiorP, matID, instID);
+        //Hit setup
+        float  hitT   = hitObj.GetRayTCurrent();
+        float3 hitPos = rayOrigin + rayDir * hitT;
+
+        const uint instID = hitObj.GetInstanceIndex();
+        const uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
+        uint matID  = GetMatIDFast(instID, primID);
+        float2 iors = GetIORs_packed(viorP, aiorP, matID, instID);
 
         if (iors.y == 0.0f)
         {
@@ -129,6 +125,10 @@ void Pass_raygen_v8()
 
         uint mediumMatID = GetCurrentMediumMaterialID_packed(viorP, aiorP);
 
+        BuiltInTriangleIntersectionAttributes attr;
+        hitObj.GetAttributes(attr);
+        HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
+
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
         RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
 
@@ -138,7 +138,60 @@ void Pass_raygen_v8()
 
         float3 emission = GetEmissionFast(instID, primID);
 
-        // ── Emitter hit ────────────────────────────────────────────────
+        //Depth 0: store primary hit
+        if (depth == 0)
+        {
+            uint px = MapPixelID(imgSize, pixel);
+            bool isEmitter = any(emission > 0.0f);
+            store_instID(g_sample_current, px, instID);
+            store_primID(g_sample_current, px, primID, isEmitter);
+            store_bary(g_sample_current, px, attr.barycentrics);
+            store_n1_s_world(g_sample_current, px, hinfo.hitNormal, instID);
+            store_uv(g_sample_current, px, hinfo.uv);
+            if (isEmitter) {
+                gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
+                gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
+            }
+
+            //Specular motion vector reflection probe
+            {
+                float3 reflDir = reflect(rayDir, hinfo.hitNormal);
+                float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
+                RayDesc reflRay;
+                reflRay.Origin    = reflOrigin;
+                reflRay.Direction = reflDir;
+                reflRay.TMin      = 0.00001f;
+                reflRay.TMax      = 10000.0f;
+
+                RayQuery<RAY_FLAG_NONE> q;
+                q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
+                while (q.Proceed())
+                {
+                    if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                    {
+                        uint cInstID = q.CandidateInstanceIndex();
+                        uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+                        uint cMatID  = GetMatIDFast(cInstID, cPrimID);
+                        float alpha  = materials[cMatID].alphaThreshold;
+                        if (alpha < 1.0f)
+                            q.CommitNonOpaqueTriangleHit();
+                    }
+                }
+
+                if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+                {
+                    float3 reflPos = reflOrigin + reflDir * q.CommittedRayT();
+                    float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
+                    gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
+                }
+                else
+                {
+                    gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
+                }
+            }
+        }
+
+        //Emitter hit
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
             float3 throughput = UnpackRGB9E5(throughputPk);
@@ -149,9 +202,10 @@ void Pass_raygen_v8()
             float lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             float misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
 
+            // pdf-free contribution: f = throughput * gi_pdf_product * emission
             float3 F_contrib = throughput * emission * gi_pdf_product;
             float  p_hat     = GetPHat(F_contrib);
-            float  p_full    = gi_pdf_product;
+            float  p_full    = gi_pdf_product;            // last event already in product
             float  wi        = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
             uint px = MapPixelID(imgSize, pixel);
@@ -225,10 +279,12 @@ void Pass_raygen_v8()
                     {
                         float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
+                        // pdf-free local measurement at this vertex
                         float3 localMeasurement = light.emission * bdataNEE.val * cosSurf;
+                        // f = throughput * gi_pdf_product * localMeasurement
                         float3 F_contrib = throughput * localMeasurement * gi_pdf_product;
                         float  p_hat     = GetPHat(F_contrib);
-                        float  p_full    = gi_pdf_product * lightPdf;
+                        float  p_full    = gi_pdf_product * lightPdf;  // terminal event = NEE light pdf
                         float  wi        = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
                         uint px = MapPixelID(imgSize, pixel);
@@ -276,6 +332,7 @@ void Pass_raygen_v8()
                     {
                         float misWeight = lightPdf / (lightPdf + bsdfPdf);
 
+                        // pdf-free local measurement
                         float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL;
                         float3 F_contrib = throughput * localMeasurement * gi_pdf_product;
                         float  p_hat     = GetPHat(F_contrib);
@@ -341,6 +398,7 @@ void Pass_raygen_v8()
                 float rrBoost = 1.0f / max(survivalProb, 0.1f);
                 throughput  *= rrBoost;
                 tpostWeight *= rrBoost;
+                // RR survival is part of the path pdf
                 gi_pdf_product = min(gi_pdf_product * survivalProb, 1e30f);
             }
 
@@ -357,19 +415,19 @@ void Pass_raygen_v8()
     }
 
     //Final reservoir weight resolve
-    uint finalPx = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
+    uint pixelIdx = MapPixelID(DispatchRaysDimensions().xy, DispatchRaysIndex().xy);
 
     {
-        float p_hat = load_phat_di(g_Reservoirs_current_di, finalPx);
-        float wsum  = load_wsum_di(g_Reservoirs_current_di, finalPx);
+        float p_hat = load_phat_di(g_Reservoirs_current_di, pixelIdx);
+        float wsum  = load_wsum_di(g_Reservoirs_current_di, pixelIdx);
         float W     = (p_hat > 1e-6f && wsum > 0.0f) ? (wsum / p_hat) : 0.0f;
-        store_W_di(g_Reservoirs_current_di, finalPx, W);
-        store_M_di(g_Reservoirs_current_di, finalPx, 1);
+        store_W_di(g_Reservoirs_current_di, pixelIdx, W);
+        store_M_di(g_Reservoirs_current_di, pixelIdx, 1);
     }
 
     {
-        float F_gi  = load_F_mag_gi(g_Reservoirs_current_gi, finalPx);
-        float wsum  = load_wsum_gi(g_Reservoirs_current_gi, finalPx);
+        float F_gi  = load_F_mag_gi(g_Reservoirs_current_gi, pixelIdx);
+        float wsum  = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
         float Wgi   = 0.0f;
 
         if (F_gi > 1e-6f && wsum > 0.0f)
@@ -379,9 +437,9 @@ void Pass_raygen_v8()
         }
 
         if (Wgi == 0.0f)
-            InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, finalPx);
+            InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);
 
-        store_W_gi(g_Reservoirs_current_gi, finalPx, Wgi);
-        store_M_gi(g_Reservoirs_current_gi, finalPx, 1u);
+        store_W_gi(g_Reservoirs_current_gi, pixelIdx, Wgi);
+        store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);
     }
 }
