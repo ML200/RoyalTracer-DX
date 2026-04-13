@@ -189,7 +189,7 @@ private:
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
     UINT m_currentDisplayLevel = 0;
-    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4, 5, 6, 7, 10 };
+    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
 
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
