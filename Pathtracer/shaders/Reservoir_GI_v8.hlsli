@@ -17,8 +17,8 @@ struct Reservoir_GI
 
     // Reservoir bookkeeping
     float  W_gi;
-    float  w_sum_gi;    // raygen-only (merge passes overwrite before use)
     uint   M_gi;
+    float  w_sum_gi;    // raygen-only (merge passes overwrite before use)
 
 };
 
