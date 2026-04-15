@@ -391,7 +391,7 @@ void Pass_raygen_v8()
             float3 throughput = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
-            if (depth > 0)
+            if (depth > 1)
             {
                 float survivalProb = min(1.0f, Luma(throughput));
                 if (RandomFloatSingle(seed) >= survivalProb) break;
