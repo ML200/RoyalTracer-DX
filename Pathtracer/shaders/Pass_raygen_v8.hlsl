@@ -375,7 +375,7 @@ void Pass_raygen_v8()
                         }
 
                         // GI: sun at depth >= 1
-                        if (depth >= 2)
+                        if (depth >= 1)
                         {
                             uint px = MapPixelID(imgSize, pixel);
                             float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
