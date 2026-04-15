@@ -436,8 +436,8 @@ void Pass_raygen_v8()
             float3 throughput = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = updateWeight;  // weight factor for Tpost (before RR)
 
-            // Russian Roulette (skip depth 0 to ensure at least one bounce)
-            if (depth > 0)
+            // Russian Roulette (skip depth 1 to ensure at least one bounce)
+            if (depth > 1)
             {
                 float survivalProb = min(1.0f, Luma(throughput));
                 if (RandomFloatSingle(seed) >= survivalProb) break;

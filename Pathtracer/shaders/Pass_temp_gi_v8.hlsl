@@ -85,7 +85,7 @@ void Pass_temp_gi_v8()
         float u = RandomFloatSingle(permSeed);
         uint  permRnd = (uint)min(u * 16.0f, 15.0f);
 
-        ApplyPermutationSampling(permCoord, permRnd);
+        //ApplyPermutationSampling(permCoord, permRnd);
 
         permInBounds =
             (permCoord.x >= 0 && permCoord.y >= 0 &&
