@@ -86,12 +86,7 @@ float PairwiseMIS_Canonical_Spat_DI(
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE
-// Pairwise MIS: canonical spatial GI.
-//
-// Evaluates p̂(T_{c→n}(u_c)) for every spatial neighbor — i.e. "what does the
-// canonical reservoir's path look like if we shift it into neighbor i's domain?"
-// The shift uses the CANONICAL reservoir's method / k / seed (method_c etc.)
-// since the sample being re-evaluated belongs to the canonical reservoir.
+// Pairwise MIS: canonical spatial GI
 float PairwiseMIS_Canonical_Spat_GI(
     in float M_sum_in,
     in float p_c,
@@ -104,18 +99,13 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float3 L2_c,
     in float3 V2_c,
     in uint   matID_c,
-    in uint   objID_c,
-    in float2 uv_c,
     in float3 localKd2_c,
     in float  localPr2_c,
     in float  localPm2_c,
     in float  etai2_c,
     in float  etat2_c,
-    in float  J_can_c,
-    // Hybrid-shift classification of the canonical reservoir
-    in uint   method_c,
-    in uint   k_c,
-    in uint   seed_c
+    in float  pdfx2_c,
+    in float  J_c
     )
 {
     float M_sum = max(M_sum_in, 1.0f);
@@ -137,19 +127,20 @@ float PairwiseMIS_Canonical_Spat_GI(
                 load_etat(g_sample_current, id),
                 InitOrigin());
 
-            float Jn = 0.0f;
-            float J  = 0.0f;
-            float3 c_shifted = ShiftGI(
-                sv_n1,
-                method_c, k_c, seed_c,
-                x2_c, n2s_c, n2g_c, matID_c, objID_c, uv_c,
-                etai2_c, etat2_c,
-                localKd2_c, localPr2_c, localPm2_c,
-                L2_c, V2_c, J_can_c,
-                Jn, J);
-            // ShiftGI returns the raw contribution (without the PSS Jacobian applied).
-            float p_hat_from = GetPHat(c_shifted) * J;
+            SurfaceVertex sv_c2 = { x2_c, n2s_c, n2g_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, matID_c, float2(0,0) };
 
+            float Jn = 0.0f;
+            float J = 0.0f;
+            float p_hat_from = GetPHat(ReconnectGI(
+                sv_n1.x, sv_n1.n_s, sv_n1.n_g, sv_n1.o, sv_n1.matID,
+                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
+                sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, L2_c, sv_c2.o,
+                sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
+                pdfx2_c, J_c, true, Jn, J));
+            {
+                float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
+                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+            }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)
                 m_c += (min(SPAT_MCAP_GI,load_M_gi(g_Reservoirs_current_gi, id))/M_sum) * (m_num / m_den);

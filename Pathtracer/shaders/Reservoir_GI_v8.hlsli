@@ -1,66 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────
-//  Reconnection / path-type encoding for Reservoir_GI::method_gi
-//
-//  For each of the 4 terminal types (env / emitter / NEE / Sun),
-//  the reservoir stores either:
-//    • a path with a valid reconnection vertex x_k     (plain method)
-//    • a path with NO reconnection vertex              (..._RP = "replay")
-//
-//  Hybrid-shift behaviour by method:
-//    BSDF_ENV     : reconnect x1' → x_k, tail replays suffix to env miss
-//    BSDF_EMIT    : reconnect x1' → x_k, tail replays suffix to emitter hit
-//    NEE          : reconnect x1' → x_k (x_k is a surface), tail = NEE link
-//    SUN          : reconnect x1' → x_k (x_k is a surface), tail = sun link
-//    BSDF_ENV_RP  : replay x0→x1'→… with stored seed;  shift ok iff misses
-//    BSDF_EMIT_RP : replay x0→x1'→… with stored seed;  shift ok iff hits emitter
-//    NEE_RP       : replay x0→x1'→…x_{k-1}', then connect to stored emitter
-//    SUN_RP       : replay x0→x1'→…x_{k-1}', then connect via stored sun dir
-// ─────────────────────────────────────────────────────────────────────
-static const uint RC_METHOD_INVALID      = 0u;
-static const uint RC_METHOD_BSDF_ENV     = 1u;
-static const uint RC_METHOD_BSDF_EMIT    = 2u;
-static const uint RC_METHOD_NEE          = 3u;
-static const uint RC_METHOD_SUN          = 4u;
-static const uint RC_METHOD_BSDF_ENV_RP  = 5u;
-static const uint RC_METHOD_BSDF_EMIT_RP = 6u;
-static const uint RC_METHOD_NEE_RP       = 7u;
-static const uint RC_METHOD_SUN_RP       = 8u;
-
-inline bool RC_HasReconVertex(uint m) { return m >= RC_METHOD_BSDF_ENV     && m <= RC_METHOD_SUN; }
-inline bool RC_IsReplay      (uint m) { return m >= RC_METHOD_BSDF_ENV_RP  && m <= RC_METHOD_SUN_RP; }
-
-static const float RC_ALPHA_MIN   = 0.1f;     // single-vertex roughness threshold (α_min)
-static const float RC_C_OVER_100  = 0.0002f;  // c = 0.02 in the paper
-
-// Eq. 5: dual ray-footprint + single-vertex roughness criterion.
-// All quantities are at the candidate link x_{k-1} -> x_k.
-//   pdf_km1  : p^x_{k-1}(ω_{k-1})    solid-angle BSDF pdf at x_{k-1} toward x_k
-//   pdf_k    : p^x_k    (ω_k)        solid-angle BSDF pdf at x_k toward x_{k+1}
-//                                    (for NEE/sun terminals, pass lightPdf here;
-//                                     ω_k is degenerate but the footprint still bounds)
-//   cos_xk   : |n_xk    · (-ω_{k-1})|
-//   cos_xkm1 : |n_xkm1  · ( ω_{k-1})|
-//   dist2    : ||x_k - x_{k-1}||^2
-//   alpha_km1: roughness α at x_{k-1}
-//   primary_fp_thresh : RHS of Eq. 5, precomputed at depth 0.
-inline bool HybridReconnectionCriterion(
-    float pdf_km1, float pdf_k,
-    float cos_xk,  float cos_xkm1,
-    float dist2,
-    float alpha_km1,
-    float primary_fp_thresh)
-{
-    if (alpha_km1 < RC_ALPHA_MIN) return false;
-
-    float fwd_area_pdf = pdf_km1 * cos_xk   / max(dist2, 1e-20f);   // area density at x_k
-    float bwd_area_pdf = pdf_k   * cos_xkm1 / max(dist2, 1e-20f);   // area density at x_{k-1}
-
-    float fwd_fp = 1.0f / max(fwd_area_pdf, 1e-20f);
-    float bwd_fp = 1.0f / max(bwd_area_pdf, 1e-20f);
-
-    return min(fwd_fp, bwd_fp) >= primary_fp_thresh;
-}
-
 // RIS reservoir for global illumination
 struct Reservoir_GI
 {
@@ -85,27 +22,18 @@ struct Reservoir_GI
     float  w_sum_gi;
     uint   M_gi;
 
-    // ── Hybrid-shift additions ─────────────────────────────────────
-    uint   seed_gi;     // BSDF-stream seed snapshot → replay x_1..x_{k-1} in shift
-    uint   k_gi;        // reconnection index (k >= 2; 0 = no recon vertex / replay-only)
-    uint   method_gi;   // one of RC_METHOD_*
 };
 
 
 // SoA layout — each field is a contiguous plane across all pixels.
-// Total buffer size per pixel is 88 bytes.
+// Total buffer size per pixel is unchanged (80 bytes).
 // Layout: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | IOR(4) | MATID(4) |
-//         J(8) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) |
-//         SEED(4) | K(4) | METHOD(4) = 88
+//         J(8) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) = 76
 
-static const uint BYTES_GI        = 68u;
-static const uint BYTES_GI_VPOST  =  4u;
-static const uint BYTES_GI_TPOST  =  4u;
-static const uint BYTES_GI_SEED   =  4u;
-static const uint BYTES_GI_K      =  4u;
-static const uint BYTES_GI_METHOD =  4u;
-static const uint STRIDE_GI       = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST
-                                  + BYTES_GI_SEED + BYTES_GI_K + BYTES_GI_METHOD; // 88
+static const uint BYTES_GI       = 68u;
+static const uint BYTES_GI_VPOST =  4u;
+static const uint BYTES_GI_TPOST =  4u;
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 76
 
 // Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
@@ -121,11 +49,8 @@ static const uint GI_SZ_W     =  4u;
 static const uint GI_SZ_F     =  4u;
 static const uint GI_SZ_M     =  4u;
 static const uint GI_SZ_WSUM  =  4u;
-static const uint GI_SZ_VPOST  =  4u;
-static const uint GI_SZ_TPOST  =  4u;
-static const uint GI_SZ_SEED   =  4u;
-static const uint GI_SZ_K      =  4u;
-static const uint GI_SZ_METHOD =  4u;
+static const uint GI_SZ_VPOST =  4u;
+static const uint GI_SZ_TPOST =  4u;
 
 // Plane cumulative offsets (per-pixel contribution to base address)
 static const uint GI_PLANE_PACK1 =  0u;
@@ -141,11 +66,8 @@ static const uint GI_PLANE_W     = 52u;
 static const uint GI_PLANE_F     = 56u;
 static const uint GI_PLANE_M     = 60u;
 static const uint GI_PLANE_WSUM  = 64u;
-static const uint GI_PLANE_VPOST  = 68u;
-static const uint GI_PLANE_TPOST  = 72u;
-static const uint GI_PLANE_SEED   = 76u;
-static const uint GI_PLANE_K      = 80u;
-static const uint GI_PLANE_METHOD = 84u;
+static const uint GI_PLANE_VPOST = 68u;
+static const uint GI_PLANE_TPOST = 72u;
 
 // SoA address helpers
 // Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
@@ -163,11 +85,8 @@ uint gi_addr_w(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_
 uint gi_addr_f(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_F     + px * GI_SZ_F; }
 uint gi_addr_m(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_M     + px * GI_SZ_M; }
 uint gi_addr_wsum(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_WSUM  + px * GI_SZ_WSUM; }
-uint gi_addr_vpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_VPOST  + px * GI_SZ_VPOST; }
-uint gi_addr_tpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_TPOST  + px * GI_SZ_TPOST; }
-uint gi_addr_seed(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_SEED   + px * GI_SZ_SEED; }
-uint gi_addr_k(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_K      + px * GI_SZ_K; }
-uint gi_addr_method(uint px)         { uint N = gi_numPx(); return N * GI_PLANE_METHOD + px * GI_SZ_METHOD; }
+uint gi_addr_vpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_VPOST + px * GI_SZ_VPOST; }
+uint gi_addr_tpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_TPOST + px * GI_SZ_TPOST; }
 
 // Store/load packed V_post (world-space)
 void store_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
@@ -193,11 +112,9 @@ float3 load_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx)
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
-    // Sentinels (sun=0xFFFFFFFEu, env=0xFFFFFFFFu) have no transform — store world values directly.
-    bool sentinel = (r.objID_gi == 0xFFFFFFFFu) || (r.objID_gi == 0xFFFFFFFEu);
-    float3 xO  = sentinel ? r.x2_gi   : WorldToObjectPos (r.objID_gi, r.x2_gi);
-    float3 nSO = sentinel ? r.n2_s_gi : WorldToObjectNrm(r.objID_gi, r.n2_s_gi);
-    float3 nGO = sentinel ? r.n2_g_gi : WorldToObjectNrm(r.objID_gi, r.n2_g_gi);
+    float3 xO  = WorldToObjectPos (r.objID_gi, r.x2_gi);
+    float3 nSO = WorldToObjectNrm(r.objID_gi, r.n2_s_gi);
+    float3 nGO = WorldToObjectNrm(r.objID_gi, r.n2_g_gi);
 
     buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
     buf.Store (gi_addr_l2(pixelIdx),    PackRGB9E5(r.L2_gi));
@@ -212,9 +129,6 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store (gi_addr_f(pixelIdx),     r.F_gi);
     buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
     buf.Store (gi_addr_wsum(pixelIdx),  asuint(r.w_sum_gi));
-    buf.Store (gi_addr_seed(pixelIdx),  r.seed_gi);
-    buf.Store (gi_addr_k(pixelIdx),     r.k_gi);
-    buf.Store (gi_addr_method(pixelIdx),r.method_gi);
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -226,11 +140,9 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
     r.objID_gi = buf.Load(gi_addr_objid(pixelIdx));
     r.matID_gi = buf.Load(gi_addr_matid(pixelIdx));
 
-    bool sentinel = (r.objID_gi == 0xFFFFFFFFu) || (r.objID_gi == 0xFFFFFFFEu);
-    r.x2_gi    = sentinel ? asfloat(p1.xyz)       : ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
-    r.n2_s_gi  = sentinel ? UnpackNormal(p1.w)    : ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
-    uint n2g_enc = buf.Load(gi_addr_n2g(pixelIdx));
-    r.n2_g_gi  = sentinel ? UnpackNormal(n2g_enc) : ObjectToWorldNrm(r.objID_gi, UnpackNormal(n2g_enc));
+    r.x2_gi    = ObjectToWorldPos (r.objID_gi, asfloat(p1.xyz));
+    r.n2_s_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(p1.w));
+    r.n2_g_gi  = ObjectToWorldNrm(r.objID_gi, UnpackNormal(buf.Load(gi_addr_n2g(pixelIdx))));
 
     r.L2_gi    = UnpackRGB9E5(buf.Load(gi_addr_l2(pixelIdx)));
     r.V2_gi    = UnpackNormal(buf.Load(gi_addr_v2(pixelIdx)));
@@ -247,10 +159,6 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
     r.w_sum_gi = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
-
-    r.seed_gi   = buf.Load(gi_addr_seed(pixelIdx));
-    r.k_gi      = buf.Load(gi_addr_k(pixelIdx));
-    r.method_gi = buf.Load(gi_addr_method(pixelIdx));
 
     return r;
 }
@@ -273,21 +181,19 @@ uint  load_matID_gi(RWByteAddressBuffer b, uint pixelIdx)
 float3 load_x2_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
     float3 xO = asfloat(b.Load4(gi_addr_pack1(pixelIdx)).xyz);
-    return (objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) ? xO : ObjectToWorldPos(objID, xO);
+    return ObjectToWorldPos(objID, xO);
 }
 
 float3 load_n2_s_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
     uint enc = b.Load4(gi_addr_pack1(pixelIdx)).w;
-    float3 n = UnpackNormal(enc);
-    return (objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) ? n : ObjectToWorldNrm(objID, n);
+    return ObjectToWorldNrm(objID, UnpackNormal(enc));
 }
 
 float3 load_n2_g_gi(RWByteAddressBuffer b, uint pixelIdx, uint objID)
 {
     uint enc = b.Load(gi_addr_n2g(pixelIdx));
-    float3 n = UnpackNormal(enc);
-    return (objID == 0xFFFFFFFFu || objID == 0xFFFFFFFEu) ? n : ObjectToWorldNrm(objID, n);
+    return ObjectToWorldNrm(objID, UnpackNormal(enc));
 }
 
 float3 load_L2_gi(RWByteAddressBuffer b, uint pixelIdx)
@@ -373,16 +279,6 @@ void store_F_gi(RWByteAddressBuffer b, uint pixelIdx, uint F)
 {
     b.Store(gi_addr_f(pixelIdx), F);
 }
-
-// Hybrid-shift bookkeeping: seed / k / method
-uint load_seed_gi  (RWByteAddressBuffer b, uint pixelIdx)         { return b.Load(gi_addr_seed(pixelIdx)); }
-void store_seed_gi (RWByteAddressBuffer b, uint pixelIdx, uint s) {        b.Store(gi_addr_seed(pixelIdx), s); }
-
-uint load_k_gi     (RWByteAddressBuffer b, uint pixelIdx)         { return b.Load(gi_addr_k(pixelIdx)); }
-void store_k_gi    (RWByteAddressBuffer b, uint pixelIdx, uint k) {        b.Store(gi_addr_k(pixelIdx), k); }
-
-uint load_method_gi (RWByteAddressBuffer b, uint pixelIdx)         { return b.Load(gi_addr_method(pixelIdx)); }
-void store_method_gi(RWByteAddressBuffer b, uint pixelIdx, uint m) {        b.Store(gi_addr_method(pixelIdx), m); }
 
 
 inline bool RejectNormal_GI(float3 n1, float3 n2, float threshold){
@@ -535,11 +431,6 @@ bool UpdateReservoirGI(
     in float2 J,
     in uint   F,
 
-    // Hybrid-shift fields from the donor candidate — propagated on accept.
-    in uint   cand_seed,
-    in uint   cand_k,
-    in uint   cand_method,
-
     inout uint2 seed
 )
 {
@@ -562,71 +453,11 @@ bool UpdateReservoirGI(
         reservoir.V2_gi   = V2;
         reservoir.J_gi    = J;
         reservoir.F_gi    = F;
-
-        reservoir.seed_gi   = cand_seed;
-        reservoir.k_gi      = cand_k;
-        reservoir.method_gi = cand_method;
         return true;
     }
     return false;
 }
 
-
-// Per-candidate RIS update for raygen. Writes all varying + const-hit fields
-// associated with this specific candidate if RIS accepts.
-//
-// x_k_* describe the reconnection vertex for THIS candidate:
-//   • For BSDF_ENV / BSDF_EMIT / NEE / SUN: the reconnection vertex x_k
-//   • For NEE_RP : light position / surface (still stored so shift can reconnect)
-//   • For SUN_RP : sun direction in x_k slot (objID = 0xFFFFFFFEu)
-//   • For BSDF_*_RP : unused — caller may pass dummies (objID=0)
-bool UpdateReservoirGI_Candidate(
-    RWByteAddressBuffer buf, uint pixelIdx, float wi,
-
-    // Reconnection vertex (x_k) — written on accept
-    float3 x_k_world, float3 n_k_s_world, float3 n_k_g_world,
-    uint   matID_k,   uint   objID_k,
-    float2 uv_k,      float  etai_k,      float etat_k,
-
-    // Suffix / tail data
-    float3 L2_new, float3 V2_new, float2 J_new, uint F_pk,
-
-    // Path classification + replay handle
-    uint method, uint k_idx, uint bsdf_seed0,
-
-    inout uint2 seed)
-{
-    float currentWSum = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
-    float newWSum     = currentWSum + wi;
-    buf.Store(gi_addr_wsum(pixelIdx), asuint(newWSum));
-
-    if (wi <= 0.0f || RandomFloatSingle(seed.x) >= (wi / newWSum))
-        return false;
-
-    // Const-hit — x_k varies per candidate. Sentinel objIDs (sun / env) skip the transform.
-    bool sentinel = (objID_k == 0xFFFFFFFFu) || (objID_k == 0xFFFFFFFEu);
-    float3 xO  = sentinel ? x_k_world    : WorldToObjectPos (objID_k, x_k_world);
-    float3 nSO = sentinel ? n_k_s_world  : WorldToObjectNrm(objID_k, n_k_s_world);
-    float3 nGO = sentinel ? n_k_g_world  : WorldToObjectNrm(objID_k, n_k_g_world);
-    buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
-    buf.Store (gi_addr_n2g  (pixelIdx), PackNormal(normalize(nGO)));
-    buf.Store (gi_addr_objid(pixelIdx), objID_k);
-    buf.Store (gi_addr_matid(pixelIdx), matID_k);
-    buf.Store (gi_addr_uv   (pixelIdx), PackFloat2x16(uv_k.x, uv_k.y));
-    buf.Store (gi_addr_ior  (pixelIdx), PackFloat2x16(etai_k, etat_k));
-
-    // Varying
-    buf.Store (gi_addr_l2(pixelIdx), PackRGB9E5(L2_new));
-    buf.Store (gi_addr_v2(pixelIdx), PackNormal(normalize(V2_new)));
-    buf.Store2(gi_addr_j (pixelIdx), uint2(asuint(J_new.x), asuint(J_new.y)));
-    buf.Store (gi_addr_f (pixelIdx), F_pk);
-
-    // Classification
-    buf.Store (gi_addr_method(pixelIdx), method);
-    buf.Store (gi_addr_k     (pixelIdx), k_idx);
-    buf.Store (gi_addr_seed  (pixelIdx), bsdf_seed0);
-    return true;
-}
 
 // Fast Update
 bool UpdateReservoirGI_Fast(
