@@ -90,9 +90,11 @@ void Pass_spat_gi_v8_1()
     // MIS for canonical
     const float mis_c = PairwiseMIS_Canonical_Spat_GI(
         M_sum, p_c, M_c, nIds,
-        rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+        rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
+        rdi.matID_gi, rdi.objID_gi, rdi.uv_gi,
         rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-        rdi.J_gi.x, rdi.J_gi.y
+        rdi.J_gi.y,
+        rdi.method_gi, rdi.k_gi, rdi.seed_gi
     );
 
     // Adjust canonical weight
@@ -116,26 +118,23 @@ void Pass_spat_gi_v8_1()
         float  Jnn = 1.0f;
 
         {
-            // Refetch neighbor x2 material
+            // Shift NEIGHBOR's sample into the canonical domain (sv1 is canonical's x_1).
+            // Uses the neighbor reservoir's method/k/seed.
             float3 rnKd; float rnPr, rnPm;
             RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
-            SurfaceVertex sv2_n = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rnKd, rnPr, rnPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
+            contrib_n = ShiftGI(
+                sv1,
+                rdi_r.method_gi, rdi_r.k_gi, rdi_r.seed_gi,
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi,
+                rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.uv_gi,
+                rdi_r.etai_gi, rdi_r.etat_gi,
+                rnKd, rnPr, rnPm,
+                rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.y,
+                Jn, Jnn);
 
-            contrib_n = ReconnectGI(
-                sv1.x, sv1.n_s, sv1.n_g, sv1.o, sv1.matID,
-                sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
-                sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
-                sv2_n.Kd, sv2_n.Pr, sv2_n.Pm, sv2_n.etai, sv2_n.etat,
-                rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
-
-            // Visibility after reconnection
-            {
-                float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
-                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
-                contrib_n *= vis;
-            }
-
+            // ShiftGI returns the raw contribution (without the PSS Jacobian applied).
+            // Apply Jnn = Jn / J_can here for correct RIS weighting.
             p_hat_from = GetPHat(contrib_n) * Jnn;
         }
 
@@ -160,6 +159,7 @@ void Pass_spat_gi_v8_1()
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.J_gi, rdi_r.F_gi,
+                rdi_r.seed_gi, rdi_r.k_gi, rdi_r.method_gi,
                 seed
             ))
         {

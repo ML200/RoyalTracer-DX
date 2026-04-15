@@ -158,6 +158,7 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Reservoir_GI_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
+#include "Shift_GI_v8.hlsli"
 
 // Temporal candidate tests (depend on GetMatIDFast from Inline_RT and ReconstructPosition from SurfaceVertex)
 inline bool TestTemporalCandidate_DI(
