@@ -27,18 +27,30 @@ void Pass_raygen_v8()
         store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
         store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
+        store_seed_gi  (g_Reservoirs_current_gi, pixelIdx, 0u);
+        store_k_gi     (g_Reservoirs_current_gi, pixelIdx, 0u);
+        store_method_gi(g_Reservoirs_current_gi, pixelIdx, RC_METHOD_INVALID);
 
         gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
     }
 
     // ── Path state ─────────────────────────────────────────────────────
     uint   seed       = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
+    // Dedicated BSDF stream — consumed ONLY by BSDF lobe choice + direction.
+    // RR, NEE/sun sampling, and the RIS acceptance random stay on `seed`.
+    uint   bsdf_seed       = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 2u);
+    const uint bsdf_seed0  = bsdf_seed;   // immutable snapshot for prefix replay
     float3 rayOrigin  = InitOrigin();
     float3 rayDir     = InitDirection(DispatchRaysIndex().xy, float2(DispatchRaysDimensions().xy), seed);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));   // compressed: 3 floats → 1 uint
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));    // compressed: 3 floats → 1 uint
     float  prev_pdf   = 1.0f;
-    uint   gi_J_pk    = 0;      // packed fp16: partial_J (low16) + pdf2_bsdf (high16)
+
+    // ── Hybrid-shift bookkeeping ──────────────────────────────────────
+    float primary_fp_thresh = 0.0f;    // RHS of Eq. 5, set at depth 0
+    float prev_alpha        = 0.0f;    // α at x_{depth}  (→ α_{k-1} at next iter's criterion)
+    uint  k_recon           = 0u;      // first depth at which criterion passed on BSDF walk
+                                       //   (0 = not found yet)
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -102,18 +114,45 @@ void Pass_raygen_v8()
                     store_phat_di(g_Reservoirs_current_di, px, p_hat);
             }
 
-            // GI reservoir: env map hit at depth >= 2
+            // GI reservoir: env map hit at depth >= 2 — BSDF_ENV or BSDF_ENV_RP.
             if (depth >= 2)
             {
-                float  p_hat  = GetPHat(T_envL);
-                uint   F_pk   = PackRGB9E5(T_envL);
-                float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
-                float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                float2 J_new  = float2(0.0f, gi_J.x * gi_J.y);
-                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                float  p_hat = GetPHat(T_envL);
+                uint   F_pk  = PackRGB9E5(T_envL);
 
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, p_hat, envL * tpost, J_new, V2_new, seed))
-                    store_F_gi(g_Reservoirs_current_gi, px, F_pk);
+                if (k_recon > 0u)
+                {
+                    // Reconnection found along the walk → read x_k state stashed at G5-bis.
+                    uint   xk_obj  = load_objID_gi(g_Reservoirs_current_gi, px);
+                    uint   xk_mat  = load_matID_gi(g_Reservoirs_current_gi, px);
+                    float3 xk_pos  = load_x2_gi  (g_Reservoirs_current_gi, px, xk_obj);
+                    float3 xk_ns   = load_n2_s_gi(g_Reservoirs_current_gi, px, xk_obj);
+                    float3 xk_ng   = load_n2_g_gi(g_Reservoirs_current_gi, px, xk_obj);
+                    float2 xk_uv   = load_uv_gi  (g_Reservoirs_current_gi, px);
+                    float  xk_etai = load_etai_gi(g_Reservoirs_current_gi, px);
+                    float  xk_etat = load_etat_gi(g_Reservoirs_current_gi, px);
+                    float3 V2_new  = load_Vpost_gi(g_Reservoirs_current_gi, px);
+                    float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                    float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
+
+                    UpdateReservoirGI_Candidate(
+                        g_Reservoirs_current_gi, px, p_hat,
+                        xk_pos, xk_ns, xk_ng, xk_mat, xk_obj, xk_uv, xk_etai, xk_etat,
+                        envL * tpost, V2_new, J_new, F_pk,
+                        RC_METHOD_BSDF_ENV, k_recon, bsdf_seed0,
+                        seed);
+                }
+                else
+                {
+                    // No reconnection vertex → BSDF_ENV_RP. Shift must replay entire path.
+                    UpdateReservoirGI_Candidate(
+                        g_Reservoirs_current_gi, px, p_hat,
+                        float3(0,0,0), float3(0,1,0), float3(0,1,0), 0u, 0u,
+                        float2(0,0), 1.0f, 1.0f,
+                        envL, -rayDir, float2(0.0f, 1.0f), F_pk,
+                        RC_METHOD_BSDF_ENV_RP, 0u, bsdf_seed0,
+                        seed);
+                }
             }
             break;
         }
@@ -164,6 +203,14 @@ void Pass_raygen_v8()
             store_n1_g_world(g_sample_current, px, hinfo.hitGNormal, instID);
             store_n1_s_world(g_sample_current, px, hinfo.hitNormal, instID);
             store_uv(g_sample_current, px, hinfo.uv);
+
+            // Hybrid-shift: RHS of Eq. 5 — constant per pixel for the whole path.
+            {
+                float cos_x1_cam = max(abs(dot(hinfo.hitNormal, -rayDir)), 1e-6f);
+                primary_fp_thresh = RC_C_OVER_100 * 4.0f * 3.14159265f
+                                  * (hitT * hitT) / cos_x1_cam;
+            }
+
             if (isEmitter) {
                 gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
@@ -230,38 +277,50 @@ void Pass_raygen_v8()
                     store_phat_di(g_Reservoirs_current_di, px, p_hat);
             }
 
-            // GI: emitter at depth >= 2
+            // GI: emitter at depth >= 2 — BSDF_EMIT or BSDF_EMIT_RP.
             if (depth >= 2)
             {
-                float3 V2_new = (depth == 2) ? (-rayDir) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
                 float3 contrib_gi = throughput * emission;
                 float  p_hat  = GetPHat(contrib_gi);
                 uint   F_pk   = PackRGB9E5(contrib_gi);
                 float  wi     = p_hat * misWeight;
 
-                float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, float2(0.0f, gi_J.x * gi_J.y), V2_new, seed))
-                    store_F_gi(g_Reservoirs_current_gi, px, F_pk);
+                if (k_recon > 0u)
+                {
+                    // Reconnection set during BSDF walk → load x_k state stashed at G5-bis.
+                    uint   xk_obj  = load_objID_gi(g_Reservoirs_current_gi, px);
+                    uint   xk_mat  = load_matID_gi(g_Reservoirs_current_gi, px);
+                    float3 xk_pos  = load_x2_gi  (g_Reservoirs_current_gi, px, xk_obj);
+                    float3 xk_ns   = load_n2_s_gi(g_Reservoirs_current_gi, px, xk_obj);
+                    float3 xk_ng   = load_n2_g_gi(g_Reservoirs_current_gi, px, xk_obj);
+                    float2 xk_uv   = load_uv_gi  (g_Reservoirs_current_gi, px);
+                    float  xk_etai = load_etai_gi(g_Reservoirs_current_gi, px);
+                    float  xk_etat = load_etat_gi(g_Reservoirs_current_gi, px);
+                    float3 V2_new  = load_Vpost_gi(g_Reservoirs_current_gi, px);
+                    float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                    float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
+
+                    UpdateReservoirGI_Candidate(
+                        g_Reservoirs_current_gi, px, wi,
+                        xk_pos, xk_ns, xk_ng, xk_mat, xk_obj, xk_uv, xk_etai, xk_etat,
+                        emission * tpost, V2_new, J_new, F_pk,
+                        RC_METHOD_BSDF_EMIT, k_recon, bsdf_seed0,
+                        seed);
+                }
+                else
+                {
+                    // No reconnection → BSDF_EMIT_RP. Shift must replay entire path,
+                    // succeeds iff replay terminates at an emitter.
+                    UpdateReservoirGI_Candidate(
+                        g_Reservoirs_current_gi, px, wi,
+                        float3(0,0,0), float3(0,1,0), float3(0,1,0), 0u, 0u,
+                        float2(0,0), 1.0f, 1.0f,
+                        emission, -rayDir, float2(0.0f, 1.0f), F_pk,
+                        RC_METHOD_BSDF_EMIT_RP, 0u, bsdf_seed0,
+                        seed);
+                }
             }
             break;
-        }
-
-        // ── Depth 1: store GI reconnection vertex data ────────────────
-        if (depth == 1)
-        {
-            uint px = MapPixelID(imgSize, pixel);
-            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
-            SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
-            float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
-            float dist2  = max(hitT * hitT, EPSILON);
-            gi_J_pk = (gi_J_pk & 0xFFFF0000u) | f32tof16_custom(prev_pdf * cos_x2 / dist2);
-        }
-
-        // ── Depth 2: store post-reconnection direction ────────────────
-        if (depth == 2)
-        {
-            store_Vpost_gi(g_Reservoirs_current_gi, MapPixelID(imgSize, pixel), -rayDir);
         }
 
         // ── NEE (point lights + sun) ──────────────────────────────────
@@ -320,22 +379,68 @@ void Pass_raygen_v8()
                                 store_phat_di(g_Reservoirs_current_di, px, p_hat);
                         }
 
-                        // GI: NEE at depth >= 1
+                        // GI: NEE at depth >= 1 — NEE vs NEE_RP based on per-candidate criterion.
                         if (depth >= 1)
                         {
-                            float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                            float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_nee = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
                             float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
                             float  p_hat   = GetPHat(contrib);
                             uint   F_pk    = PackRGB9E5(contrib);
                             float  wi      = p_hat * misWeight;
-                            float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, J_new, V2_new, seed))
-                                store_F_gi(g_Reservoirs_current_gi, px, F_pk);
+                            if (k_recon > 0u)
+                            {
+                                // CASE A: reconnect at earlier BSDF-walk vertex x_{k_recon}.
+                                // Tail: BSDF bounces from x_k to x_{depth+1}, then NEE link (baked into L2 via tpost).
+                                uint   xk_obj  = load_objID_gi(g_Reservoirs_current_gi, px);
+                                uint   xk_mat  = load_matID_gi(g_Reservoirs_current_gi, px);
+                                float3 xk_pos  = load_x2_gi  (g_Reservoirs_current_gi, px, xk_obj);
+                                float3 xk_ns   = load_n2_s_gi(g_Reservoirs_current_gi, px, xk_obj);
+                                float3 xk_ng   = load_n2_g_gi(g_Reservoirs_current_gi, px, xk_obj);
+                                float2 xk_uv   = load_uv_gi  (g_Reservoirs_current_gi, px);
+                                float  xk_etai = load_etai_gi(g_Reservoirs_current_gi, px);
+                                float  xk_etat = load_etat_gi(g_Reservoirs_current_gi, px);
+                                float3 V2_new  = load_Vpost_gi(g_Reservoirs_current_gi, px);
+                                float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                                float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
+
+                                // If this NEE fires strictly past x_k, bake the NEE link into the tail.
+                                float3 L2_new = ((uint)depth + 1u > k_recon)
+                                              ? (light.emission * tpost * (bdataNEE.val * cosSurf / lightPdf))
+                                              : (light.emission * tpost);
+
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    xk_pos, xk_ns, xk_ng, xk_mat, xk_obj, xk_uv, xk_etai, xk_etat,
+                                    L2_new, V2_new, J_new, F_pk,
+                                    RC_METHOD_NEE, k_recon, bsdf_seed0,
+                                    seed);
+                            }
+                            else
+                            {
+                                // x_k is the LIGHT here (no BSDF-walk reconnection vertex was found).
+                                // Shift mechanics = prefix replay + direct emitter connection.
+                                // We always use NEE_RP; the per-candidate criterion (currently
+                                // unused) could later parameterise the stored Jacobian.
+                                //
+                                // L2 is stored pre-divided by lightPdf so the shift's
+                                //   r = prefixT * bd_y * NdotL_y * L2
+                                // equals the expected  prefixT · BSDF · cos · emission / lightPdf.
+                                float cos_xk      = max(cosLight, 0.0f);
+                                float3 L2_store   = light.emission / max(lightPdf, EPSILON);
+                                float3 V2_new     = -L;
+                                float  J_can      = bsdfPdf * (cos_xk / max(distSq, EPSILON)) * lightPdf;
+                                float2 J_new      = float2(0.0f, J_can);
+                                uint   k_cand     = (uint)(depth + 2);   // replay length for the shift
+
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    light.position, light.normal, light.normal,
+                                    0u /*matID unused for light terminals*/, light.objID,
+                                    float2(0, 0), 1.0f, 1.0f,
+                                    L2_store, V2_new, J_new, F_pk,
+                                    RC_METHOD_NEE_RP, k_cand, bsdf_seed0,
+                                    seed);
+                            }
                         }
                     }
                 }
@@ -374,22 +479,62 @@ void Pass_raygen_v8()
                             gScratchPing[uint3(pixel, 3)] = float4(misWeight * contrib, 0);
                         }
 
-                        // GI: sun at depth >= 1
+                        // GI: sun at depth >= 1 — SUN vs SUN_RP based on per-candidate criterion.
                         if (depth >= 1)
                         {
                             uint px = MapPixelID(imgSize, pixel);
-                            float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                            float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_sun = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
-                            float  p_hat  = GetPHat(contrib);
-                            uint   F_pk   = PackRGB9E5(contrib);
-                            float  wi     = p_hat;
-                            float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
+                            float  p_hat = GetPHat(contrib);
+                            uint   F_pk  = PackRGB9E5(contrib);
+                            float  wi    = p_hat;
 
-                            if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, J_new, V2_new, seed))
-                                store_F_gi(g_Reservoirs_current_gi, px, F_pk);
+                            if (k_recon > 0u)
+                            {
+                                // CASE A: reconnect at earlier BSDF-walk vertex x_{k_recon}.
+                                uint   xk_obj  = load_objID_gi(g_Reservoirs_current_gi, px);
+                                uint   xk_mat  = load_matID_gi(g_Reservoirs_current_gi, px);
+                                float3 xk_pos  = load_x2_gi  (g_Reservoirs_current_gi, px, xk_obj);
+                                float3 xk_ns   = load_n2_s_gi(g_Reservoirs_current_gi, px, xk_obj);
+                                float3 xk_ng   = load_n2_g_gi(g_Reservoirs_current_gi, px, xk_obj);
+                                float2 xk_uv   = load_uv_gi  (g_Reservoirs_current_gi, px);
+                                float  xk_etai = load_etai_gi(g_Reservoirs_current_gi, px);
+                                float  xk_etat = load_etat_gi(g_Reservoirs_current_gi, px);
+                                float3 V2_new  = load_Vpost_gi(g_Reservoirs_current_gi, px);
+                                float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                                float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
+
+                                float3 L2_new = ((uint)depth + 1u > k_recon)
+                                              ? (sun.radiance * tpost * (bdataNEE.val * NdotL / lightPdf))
+                                              : (sun.radiance * tpost);
+
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    xk_pos, xk_ns, xk_ng, xk_mat, xk_obj, xk_uv, xk_etai, xk_etat,
+                                    L2_new, V2_new, J_new, F_pk,
+                                    RC_METHOD_SUN, k_recon, bsdf_seed0,
+                                    seed);
+                            }
+                            else
+                            {
+                                // x_k = sun (at infinity). Shift = prefix replay + direct sun connection.
+                                // Always SUN_RP; per-candidate criterion value unused in v1.
+                                //
+                                // L2 is stored pre-divided by sun.pdf so the shift produces the correctly
+                                // scaled contribution (see NEE_RP comment above).
+                                float3 L2_store = sun.radiance / max(lightPdf, EPSILON);
+                                float3 V2_new   = -sun.direction;
+                                float  J_can    = bsdfPdf * max(NdotL, 1e-6f) * lightPdf;
+                                float2 J_new    = float2(0.0f, J_can);
+                                uint   k_cand   = (uint)(depth + 2);
+
+                                // objID = 0xFFFFFFFEu is the existing "sun" sentinel (see DI side).
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    sun.direction, -sun.direction, -sun.direction,
+                                    0u, 0xFFFFFFFEu, float2(0, 0), 1.0f, 1.0f,
+                                    L2_store, V2_new, J_new, F_pk,
+                                    RC_METHOD_SUN_RP, k_cand, bsdf_seed0,
+                                    seed);
+                            }
                         }
                     }
                 }
@@ -404,12 +549,41 @@ void Pass_raygen_v8()
 
         // ── Sample next direction (BSDF) ──────────────────────────────
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, bsdf_seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
-        // Track BSDF pdf at reconnection vertex for GI jacobian
-        if (depth == 1)
-            gi_J_pk = (gi_J_pk & 0x0000FFFFu) | (f32tof16_custom(bdata.pdf) << 16u);
+        // ── Hybrid-shift: try to reconnect at the freshly-hit vertex x_{depth+1} ──
+        // (NEE / Sun candidates above evaluate the criterion on their own terminal link.)
+        if (k_recon == 0u && depth >= 1 && bdata.pdf > 1e-6f)
+        {
+            float3 prev_normal = UnpackNormal(prevNormalPk);
+            float  cos_xk      = abs(dot(hinfo.hitGNormal, -rayDir));
+            float  cos_xkm1    = abs(dot(prev_normal,       rayDir));
+            float  dist2       = max(hitT * hitT, EPSILON);
+
+            if (HybridReconnectionCriterion(prev_pdf, bdata.pdf,
+                                            cos_xk, cos_xkm1, dist2,
+                                            prev_alpha, primary_fp_thresh))
+            {
+                k_recon = (uint)(depth + 1);   // current vertex IS x_k, where k = depth+1
+                uint px = MapPixelID(imgSize, pixel);
+
+                // Snapshot x_k surface data; env / emitter accept blocks read it back.
+                SetReservoirGI_ConstHit (g_Reservoirs_current_gi, px, hitPos,
+                                         hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
+                SetReservoirGI_UVAndIOR (g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
+
+                // V_post convention: "from x_{k+1} back to x_k" = -s.
+                store_Vpost_gi(g_Reservoirs_current_gi, px, -s);
+
+                // J_can = pdf_{k-1} · G(x_{k-1}→x_k) · pdf_k   (single-cosine G).
+                float J_can = prev_pdf * (cos_xk / dist2) * bdata.pdf;
+                store_Jy_gi(g_Reservoirs_current_gi, px, J_can);
+
+                // Tpost accumulates BSDF factors at x_{k+1}, x_{k+2}, … in the throughput block.
+                store_Tpost_gi(g_Reservoirs_current_gi, px, float3(1, 1, 1));
+            }
+        }
 
         float cosTheta = abs(dot(hinfo.hitNormal, s));
         float3 updateWeight = (bdata.pdf > 1e-6f)
@@ -446,8 +620,14 @@ void Pass_raygen_v8()
                 tpostWeight *= rrBoost;  // Tpost must include RR survival weight
             }
 
-            // Update post-reconnection throughput for GI
-            if (depth >= 2)
+            // Update post-reconnection throughput for GI.
+            // Accumulates BSDF factors at x_{k+1}, x_{k+2}, …  The shift re-evaluates
+            // the BSDF at x_k itself, so we start accumulating from the iter after k_recon
+            // was set (at the moment tpostWeight first describes BSDF at x_{k+1}).
+            // tpostWeight at iter d = BSDF factor at x_{d+1}. We want BSDF at x_{k+1} onward,
+            // i.e. d+1 >= k+1, i.e. d >= k. Guard k_recon > 0 so we never write before
+            // reconnection was decided.
+            if (k_recon > 0u && (uint)depth >= k_recon)
             {
                 uint px = MapPixelID(imgSize, pixel);
                 float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
@@ -457,6 +637,7 @@ void Pass_raygen_v8()
             throughputPk = PackRGB9E5(throughput);
         }
         prevNormalPk = PackNormal(hinfo.hitNormal);
+        prev_alpha   = hitLocalPr;   // α at x_{depth+1} becomes α_{k-1} at next iter's criterion
     }
 
     // ── Final reservoir weight computation ─────────────────────────────
@@ -473,18 +654,24 @@ void Pass_raygen_v8()
 
     // GI
     {
-        float F_gi  = GetPHat(UnpackRGB9E5(load_F_gi(g_Reservoirs_current_gi, pixelIdx)));
-        float wsum  = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
-        float Wgi   = 0.0f;
+        uint  method = load_method_gi(g_Reservoirs_current_gi, pixelIdx);
+        float F_gi   = GetPHat(UnpackRGB9E5(load_F_gi(g_Reservoirs_current_gi, pixelIdx)));
+        float wsum   = load_wsum_gi(g_Reservoirs_current_gi, pixelIdx);
+        float Wgi    = 0.0f;
 
-        if (F_gi > 1e-6f && wsum > 0.0f)
+        if (method != RC_METHOD_INVALID && F_gi > 1e-6f && wsum > 0.0f)
         {
             Wgi = wsum / F_gi;
             if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
         }
 
         if (Wgi == 0.0f)
+        {
             InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);
+            store_method_gi(g_Reservoirs_current_gi, pixelIdx, RC_METHOD_INVALID);
+            store_k_gi     (g_Reservoirs_current_gi, pixelIdx, 0u);
+            store_seed_gi  (g_Reservoirs_current_gi, pixelIdx, 0u);
+        }
 
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, Wgi);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 1u);

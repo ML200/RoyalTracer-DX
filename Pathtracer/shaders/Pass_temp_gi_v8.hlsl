@@ -85,7 +85,7 @@ void Pass_temp_gi_v8()
         float u = RandomFloatSingle(permSeed);
         uint  permRnd = (uint)min(u * 16.0f, 15.0f);
 
-        //ApplyPermutationSampling(permCoord, permRnd);
+        ApplyPermutationSampling(permCoord, permRnd);
 
         permInBounds =
             (permCoord.x >= 0 && permCoord.y >= 0 &&
@@ -134,7 +134,8 @@ void Pass_temp_gi_v8()
                 float n_c = 0.0f;
                 float3 contrib_n_from_me = 0;
 
-                // p_n: reconnect from neighbor vertex to current GI reservoir sample
+                // p_n: shift CANONICAL's sample into the neighbor's domain (sv_r is neighbor's x_1).
+                // Uses the canonical reservoir's method/k/seed.
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
                     sv_r.etai = load_etai(g_sample_last, tempPixelIdx);
@@ -143,21 +144,20 @@ void Pass_temp_gi_v8()
                     float3 rcKd; float rcPr, rcPm;
                     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
 
-                    SurfaceVertex sv_c2 = { rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.V2_gi, rcKd, rcPr, rcPm, rdi.etai_gi, rdi.etat_gi, rdi.matID_gi, rdi.uv_gi };
-
-                    float3 c = ReconnectGI(
-                        sv_r.x, sv_r.n_s, sv_r.n_g, sv_r.o, sv_r.matID,
-                        sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
-                        sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, rdi.L2_gi, sv_c2.o,
-                        sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                        rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
-
-                    float ph = GetPHat(c);
-                    { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
-                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    float3 c = ShiftGI(
+                        sv_r,
+                        rdi.method_gi, rdi.k_gi, rdi.seed_gi,
+                        rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi,
+                        rdi.matID_gi, rdi.objID_gi, rdi.uv_gi,
+                        rdi.etai_gi, rdi.etat_gi,
+                        rcKd, rcPr, rcPm,
+                        rdi.L2_gi, rdi.V2_gi, rdi.J_gi.y,
+                        Jnc, J1);
+                    p_n = GetPHat(c);
                 }
 
-                // n_c: reconnect from current vertex to neighbor GI reservoir sample
+                // n_c: shift NEIGHBOR's sample into the canonical domain (sv_c is canonical's x_1).
+                // Uses the neighbor reservoir's method/k/seed.
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
                     sv_c.etai = load_etai(g_sample_current, pixelIdx);
@@ -166,20 +166,17 @@ void Pass_temp_gi_v8()
                     float3 rrKd; float rrPr, rrPm;
                     RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
 
-                    SurfaceVertex sv_r2 = { rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi, rdi_r.V2_gi, rrKd, rrPr, rrPm, rdi_r.etai_gi, rdi_r.etat_gi, rdi_r.matID_gi, rdi_r.uv_gi };
-
-                    float3 c = ReconnectGI(
-                        sv_c.x, sv_c.n_s, sv_c.n_g, sv_c.o, sv_c.matID,
-                        sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
-                        sv_r2.matID, sv_r2.x, sv_r2.n_s, sv_r2.n_g, rdi_r.L2_gi, sv_r2.o,
-                        sv_r2.Kd, sv_r2.Pr, sv_r2.Pm, sv_r2.etai, sv_r2.etat,
-                        rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
-
-                    float ph = GetPHat(c);
-                    { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
-                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_g, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
-                      n_c = ph * vis_n;
-                      contrib_n_from_me = c * vis_n; }
+                    float3 c = ShiftGI(
+                        sv_c,
+                        rdi_r.method_gi, rdi_r.k_gi, rdi_r.seed_gi,
+                        rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.n2_g_gi,
+                        rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.uv_gi,
+                        rdi_r.etai_gi, rdi_r.etat_gi,
+                        rrKd, rrPr, rrPm,
+                        rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.y,
+                        Jn, J2);
+                    n_c = GetPHat(c);
+                    contrib_n_from_me = c;
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
@@ -190,8 +187,8 @@ void Pass_temp_gi_v8()
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
-                                        : min(rs_tempMcapGI, rs_tempMcapGI * tempMcapScale);
+                const float dynTempMcap   = rs_tempMcapGI;//(minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
+                                        //: min(rs_tempMcapGI, rs_tempMcapGI * tempMcapScale);
 
                 const float M_c   = min(rs_tempMcapGI, rdi.M_gi);
                 const float M_n   = min(dynTempMcap,  rdi_r.M_gi);
@@ -220,6 +217,7 @@ void Pass_temp_gi_v8()
                         rdi_r.matID_gi, rdi_r.objID_gi,
                         rdi_r.J_gi,
                         rdi_r.F_gi,
+                        rdi_r.seed_gi, rdi_r.k_gi, rdi_r.method_gi,
                         seed
                     ))
                 {
