@@ -1,8 +1,3 @@
-// Hybrid shift (paper §7.4/§8.3) — connectability thresholds
-static const uint  MAX_RC_INDEX        = 4u;    // cap on reconnection depth (replay bounces = rc - 1)
-static const float HYBRID_ROUGH_MIN    = 0.2f;  // per-lobe GGX roughness threshold
-static const float HYBRID_MAX_DIST_MIN = 0.02f; // minimum connection distance (~2% scene size)
-
 // RIS reservoir for global illumination
 struct Reservoir_GI
 {
@@ -27,22 +22,18 @@ struct Reservoir_GI
     float  w_sum_gi;
     uint   M_gi;
 
-    // Hybrid shift: seed for random replay + reconnection index k (1 = pure reconnection)
-    uint   seed_gi;
-    uint   rc_idx_gi;
 };
 
 
 // SoA layout — each field is a contiguous plane across all pixels.
+// Total buffer size per pixel is unchanged (80 bytes).
 // Layout: PACK1(16) | L2(4) | V2(4) | N2G(4) | OBJID(4) | UV(4) | IOR(4) | MATID(4) |
-//         J(8) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) | SEED(4) | RC(4) = 84
+//         J(8) | W(4) | F(4) | M(4) | WSUM(4) | VPOST(4) | TPOST(4) = 76
 
 static const uint BYTES_GI       = 68u;
 static const uint BYTES_GI_VPOST =  4u;
 static const uint BYTES_GI_TPOST =  4u;
-static const uint BYTES_GI_SEED  =  4u;
-static const uint BYTES_GI_RC    =  4u;
-static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST + BYTES_GI_SEED + BYTES_GI_RC; // 84
+static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_VPOST + BYTES_GI_TPOST; // 76
 
 // Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
@@ -60,8 +51,6 @@ static const uint GI_SZ_M     =  4u;
 static const uint GI_SZ_WSUM  =  4u;
 static const uint GI_SZ_VPOST =  4u;
 static const uint GI_SZ_TPOST =  4u;
-static const uint GI_SZ_SEED  =  4u;
-static const uint GI_SZ_RC    =  4u;
 
 // Plane cumulative offsets (per-pixel contribution to base address)
 static const uint GI_PLANE_PACK1 =  0u;
@@ -79,8 +68,6 @@ static const uint GI_PLANE_M     = 60u;
 static const uint GI_PLANE_WSUM  = 64u;
 static const uint GI_PLANE_VPOST = 68u;
 static const uint GI_PLANE_TPOST = 72u;
-static const uint GI_PLANE_SEED  = 76u;
-static const uint GI_PLANE_RC    = 80u;
 
 // SoA address helpers
 // Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
@@ -100,8 +87,6 @@ uint gi_addr_m(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_
 uint gi_addr_wsum(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_WSUM  + px * GI_SZ_WSUM; }
 uint gi_addr_vpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_VPOST + px * GI_SZ_VPOST; }
 uint gi_addr_tpost(uint px)          { uint N = gi_numPx(); return N * GI_PLANE_TPOST + px * GI_SZ_TPOST; }
-uint gi_addr_seed(uint px)           { uint N = gi_numPx(); return N * GI_PLANE_SEED  + px * GI_SZ_SEED; }
-uint gi_addr_rc(uint px)             { uint N = gi_numPx(); return N * GI_PLANE_RC    + px * GI_SZ_RC; }
 
 // Store/load packed V_post (world-space)
 void store_Vpost_gi(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
@@ -124,12 +109,6 @@ float3 load_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx)
     return UnpackRGB9E5(b.Load(gi_addr_tpost(pixelIdx)));
 }
 
-// Hybrid shift: seed / rc_idx accessors
-void store_seed_gi(RWByteAddressBuffer b, uint pixelIdx, uint s) { b.Store(gi_addr_seed(pixelIdx), s); }
-uint load_seed_gi (RWByteAddressBuffer b, uint pixelIdx)         { return b.Load(gi_addr_seed(pixelIdx)); }
-void store_rc_gi  (RWByteAddressBuffer b, uint pixelIdx, uint k) { b.Store(gi_addr_rc(pixelIdx), k); }
-uint load_rc_gi   (RWByteAddressBuffer b, uint pixelIdx)         { return b.Load(gi_addr_rc(pixelIdx)); }
-
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {
@@ -150,8 +129,6 @@ void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI
     buf.Store (gi_addr_f(pixelIdx),     r.F_gi);
     buf.Store (gi_addr_m(pixelIdx),     r.M_gi);
     buf.Store (gi_addr_wsum(pixelIdx),  asuint(r.w_sum_gi));
-    buf.Store (gi_addr_seed(pixelIdx),  r.seed_gi);
-    buf.Store (gi_addr_rc(pixelIdx),    r.rc_idx_gi);
 }
 
 Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
@@ -182,9 +159,6 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.M_gi     = buf.Load(gi_addr_m(pixelIdx));
     r.w_sum_gi = asfloat(buf.Load(gi_addr_wsum(pixelIdx)));
-
-    r.seed_gi   = buf.Load(gi_addr_seed(pixelIdx));
-    r.rc_idx_gi = buf.Load(gi_addr_rc(pixelIdx));
 
     return r;
 }
@@ -344,90 +318,7 @@ inline void InvalidateReservoirGI_ShadingNormal(
 
 
 
-// ────────────────────────────────────────────────────────────────────────────
-// Hybrid shift replay: inline RayQuery trace returning hit surface identifiers
-// (matches the alpha-test logic in IsVisible from Inline_RT_v8.hlsli).
-// ────────────────────────────────────────────────────────────────────────────
-#ifdef ENABLE_RAY_QUERY_INLINE
-struct HybridReplayHit
-{
-    bool   hit;
-    uint   instID;
-    uint   primID;
-    float2 bary;
-    float  tHit;
-};
-
-inline HybridReplayHit HybridTraceReplay(float3 origin, float3 direction)
-{
-    HybridReplayHit r;
-    r.hit = false; r.instID = 0u; r.primID = 0u; r.bary = float2(0,0); r.tHit = 0.0f;
-
-    RayDesc ray;
-    ray.Origin    = origin;
-    ray.Direction = direction;
-    ray.TMin      = 0.001f;
-    ray.TMax      = 10000.0f;
-
-    RayQuery<RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-
-    while (q.Proceed())
-    {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            uint   iID    = q.CandidateInstanceID();
-            uint   pID    = FlatPrimID(iID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-            uint   mID    = materialIDs[instanceProps[iID].materialBase + pID];
-            Material mat  = materials[mID];
-
-            if (mat.albedoTexID < 0)
-            {
-                if (mat.Kd.w < 1.0f - EPSILON) continue;
-                q.CommitNonOpaqueTriangleHit();
-                continue;
-            }
-
-            uint baseI = instanceProps[iID].indexBase;
-            uint i0 = indices[baseI + 3u * pID + 0u];
-            uint i1 = indices[baseI + 3u * pID + 1u];
-            uint i2 = indices[baseI + 3u * pID + 2u];
-
-            float2 uv0 = (float2)BTriVertex[i0].texCoord;
-            float2 uv1 = (float2)BTriVertex[i1].texCoord;
-            float2 uv2 = (float2)BTriVertex[i2].texCoord;
-
-            float2 bc  = q.CandidateTriangleBarycentrics();
-            float  b0  = 1.0f - bc.x - bc.y;
-            float2 uv  = uv0 * b0 + uv1 * bc.x + uv2 * bc.y;
-
-            Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
-            float alpha = tex.SampleLevel(g_sampler, uv * mat.albedoUVScale, 0).a;
-
-            if (alpha >= mat.alphaThreshold)
-                q.CommitNonOpaqueTriangleHit();
-        }
-    }
-
-    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-    {
-        r.hit    = true;
-        r.instID = q.CommittedInstanceID();
-        r.primID = FlatPrimID(r.instID, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
-        r.bary   = q.CommittedTriangleBarycentrics();
-        r.tHit   = q.CommittedRayT();
-    }
-    return r;
-}
-#endif // ENABLE_RAY_QUERY_INLINE
-
-
-// Calculate reconnection (two–sided). For rc_idx == 1 this is the classic
-// reconnection shift; for rc_idx >= 2 the function first performs (rc_idx−1)
-// bounces of random replay from (x1, n1_s, …) using replaySeed, arriving at
-// y_k, then reconnects y_k → x2. On any failure (replay miss, degenerate pdf,
-// or failed connectability at y_k) the shift is undefined and returns 0 —
-// preserving bijectivity per Lin et al. 2022 §7.4.
+// Calculate reconnection (two–sided)
 inline float3 ReconnectGI(
     // Vertex x1 (camera path hit)
     in float3  x1,
@@ -441,7 +332,7 @@ inline float3 ReconnectGI(
     in float   etai1,
     in float   etat1,
 
-    // Vertex x_{k+1} (stored GI reservoir / reconnection vertex)
+    // Vertex x2 (GI reservoir / reconnection vertex)
     in uint    mID2,
     in float3  x2,
     in float3  n2_s,
@@ -458,153 +349,62 @@ inline float3 ReconnectGI(
     in float   pdfx2,
     in float   Jc,      // canonical jacobian term
     in bool    applyJ,
-
-    // Hybrid shift: reconnection index k (≥1) and replay seed
-    in uint    rc_idx,
-    in uint    replaySeed,
-
     out float  Jn,
     out float  J
 )
 {
-    Jn = EPSILON;
-    J  = 1.0f;
-
     if (length(L2) < EPSILON)
         return 0.0f;
 
-    // ─── y_k state: starts at (x1, …); mutated by replay for rc_idx ≥ 2 ───
-    float3 yk_pos  = x1;
-    float3 yk_ns   = n1_s;
-    float3 yk_ng   = n1_g;
-    float3 yk_o    = o;
-    uint   yk_mID  = mID1;
-    float3 yk_Kd   = localKd1;
-    float  yk_Pr   = localPr1;
-    float  yk_Pm   = localPm1;
-    float  yk_etai = etai1;
-    float  yk_etat = etat1;
-
-    float3 replayTP = float3(1.0f, 1.0f, 1.0f);
-
-#ifdef ENABLE_RAY_QUERY_INLINE
-    // rc_idx is assumed to already be ≤ MAX_RC_INDEX (enforced in raygen commit block).
-    // No upper-bound check here — we must not silently drop a valid reservoir just
-    // because its rc_idx happens to be high; that would lose reconnections.
-    if (rc_idx >= 2u)
-    {
-        uint pSeed = replaySeed;
-        [loop]
-        for (uint i = 1u; i < rc_idx; ++i)
-        {
-            // Replay bounce i: sample BSDF at y_i with the shared seed
-            SamplingP sp = CalculateStrategyProbabilities(
-                yk_mID, yk_o, yk_ns, yk_etai, yk_etat, yk_Kd, yk_Pm);
-            float3 s = SampleBRDF(sp, yk_mID, yk_o, yk_ns, yk_ng,
-                                  yk_Kd, yk_Pr, yk_Pm, pSeed,
-                                  yk_etai, yk_etat, -1);
-            BrdfData bd = EvaluateAndPdf_COMBINED(
-                sp, yk_mID, yk_ns, yk_ng, s, yk_o,
-                yk_Kd, yk_Pr, yk_Pm, yk_etai, yk_etat);
-
-            if (bd.pdf <= EPSILON || dot(s, s) < 1e-12f)
-                return 0.0f;
-
-            float  cosTheta = abs(dot(yk_ns, s));
-            float3 tpStep   = (bd.val * cosTheta) / bd.pdf;
-            if (any(isnan(tpStep)) || any(isinf(tpStep)))
-                return 0.0f;
-            replayTP *= tpStep;
-
-            // Trace to next vertex
-            float3 offN   = (dot(s, yk_ng) >= 0.0f) ? yk_ng : -yk_ng;
-            float3 origin = offset_ray(yk_pos, offN);
-
-            HybridReplayHit rh = HybridTraceReplay(origin, s);
-            if (!rh.hit)
-                return 0.0f;
-
-            HitInfo h   = EvalSurfaceState(rh.instID, rh.primID, rh.bary, origin, 0);
-            uint    nMI = GetMatIDFast(rh.instID, rh.primID);
-            float3  nKd; float nPr, nPm;
-            RefetchMaterial(nMI, h.uv, nKd, nPr, nPm);
-
-            yk_pos  = h.hitPos;
-            yk_ns   = h.hitNormal;
-            yk_ng   = h.hitGNormal;
-            yk_o    = normalize(origin - h.hitPos);
-            yk_mID  = nMI;
-            yk_Kd   = nKd;
-            yk_Pr   = nPr;
-            yk_Pm   = nPm;
-            // Simplification: treat inter-vertex medium as vacuum during replay.
-            yk_etai = 1.0f;
-            yk_etat = 1.0f;
-        }
-
-        // Connectability at (y_k, x_{k+1}) — paper §7.5.
-        if (yk_Pr < HYBRID_ROUGH_MIN || localPr2 < HYBRID_ROUGH_MIN)
-            return 0.0f;
-        if (length(x2 - yk_pos) < HYBRID_MAX_DIST_MIN)
-            return 0.0f;
-    }
-#else
-    // No inline RT available — silently fall back to pure reconnection.
-    if (rc_idx >= 2u) return 0.0f;
-#endif
-
-    // ─── Reconnection math at (y_k, x_{k+1}) ───
-    float3 dir   = x2 - yk_pos;
+    // Geometric prep
+    float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    if (dist < EPSILON) return 0.0f;
-    float3 ndirN = normalize(-dir);
+    float3 ndirN = normalize(-dir); // direction from x2 to x1
 
-    float3 F1 = BSDF_term(yk_mID, yk_ns, yk_ng, -ndirN, yk_o,
-                          yk_Kd, yk_Pr, yk_Pm, yk_etai, yk_etat);
-    float3 F2 = BSDF_term(mID2,  n2_s,  n2_g,  -V2,    ndirN,
-                          localKd2, localPr2, localPm2, etai2, etat2);
+    float3 F1 = BSDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
+    float3 F2 = BSDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
-    float G1 = G_term(yk_ns, -ndirN);
-    float G2 = G_term(n2_s, -V2);
+    // Geometry term
+    float  G1  = G_term(n1_s, -ndirN);
+    float  G2  = G_term(n2_s, -V2);
 
-    float PDF1 = PDF_term(yk_mID, yk_ns, yk_ng, -ndirN, yk_o,
-                          yk_Kd, yk_Pr, yk_Pm, yk_etai, yk_etat);
+    // Missing pdfs:
+    // PDF at x1 always recomputed
+    float PDF1 = PDF_term(mID1, n1_s, n1_g, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
+
+    // PDF at x2: reuse if provided (NEE ray etc), else recompute
     float PDF2 = pdfx2;
     if (pdfx2 == 0.0f)
-        PDF2 = PDF_term(mID2, n2_s, n2_g, -V2, ndirN,
-                        localKd2, localPr2, localPm2, etai2, etat2);
+        PDF2 = PDF_term(mID2, n2_s, n2_g, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
     if (PDF1 <= EPSILON || PDF2 <= EPSILON)
         return 0.0f;
 
+    // If the direction from x1 to x2 (-ndirN) points against the geometric normal, we are transmitting INTO the object.
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
-    if (dot(yk_ng, -ndirN) < 0.0f)
-        transmittance = CalculateAbsorptionThroughput(materials[yk_mID].Tf, dist);
+    if (dot(n1_g, -ndirN) < 0.0f)
+    {
+        transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
+    }
 
-    // PSS Jacobian denominator at the actual reconnection pair (y_k, x_{k+1}).
-    // MUST use the GEOMETRIC normal n2_g — the canonical side is stored in raygen as
-    //     prev_pdf * |hitGNormal · -rayDir| / dist²
-    // using the geometric normal. If we used n2_s here the two sides of J = Jn/Jc
-    // would be evaluated against different surfaces and the ratio collapses
-    // unpredictably on any surface where shading ≠ geometric normal (normal-mapped
-    // metal, etc.) — which is exactly the "mirror reflection shows no improvement"
-    // symptom (the base shift stores one thing, the offset recomputes another).
-    float Gj = abs(dot(ndirN, n2_g)) / (dist * dist);
+    // Always compute PSS jacobian for tracking through reservoir merge
+    float Gj = abs(dot(ndirN, n2_s)) / (dist * dist);
     Jn = max(PDF1 * PDF2 * Gj, EPSILON);
     J  = 1.0f;
 
-    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2 * transmittance * replayTP;
+    // Throughput
+    float3 r = (F1 / PDF1) * (F2 / PDF2) * L2 * G1 * G2 * transmittance;
 
     if (applyJ)
     {
-        if (Jc < EPSILON) return 0.0f;
+        if(Jc < EPSILON) return 0.0f;
         J = Jn / Jc;
     }
 
     if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
         r = (float3)0.0f;
 
-    return max(r, 0.0f);
+    return max(r,0.0f);
 }
 
 
@@ -631,9 +431,6 @@ bool UpdateReservoirGI(
     in float2 J,
     in uint   F,
 
-    in uint   replaySeed,
-    in uint   rcIdx,
-
     inout uint2 seed
 )
 {
@@ -656,9 +453,6 @@ bool UpdateReservoirGI(
         reservoir.V2_gi   = V2;
         reservoir.J_gi    = J;
         reservoir.F_gi    = F;
-
-        reservoir.seed_gi   = replaySeed;
-        reservoir.rc_idx_gi = rcIdx;
         return true;
     }
     return false;

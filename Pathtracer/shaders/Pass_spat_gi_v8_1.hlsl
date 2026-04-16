@@ -92,8 +92,7 @@ void Pass_spat_gi_v8_1()
         M_sum, p_c, M_c, nIds,
         rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
         rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-        rdi.J_gi.x, rdi.J_gi.y,
-        rdi.rc_idx_gi, rdi.seed_gi
+        rdi.J_gi.x, rdi.J_gi.y
     );
 
     // Adjust canonical weight
@@ -128,9 +127,7 @@ void Pass_spat_gi_v8_1()
                 sv1.Kd, sv1.Pr, sv1.Pm, sv1.etai, sv1.etat,
                 sv2_n.matID, sv2_n.x, sv2_n.n_s, sv2_n.n_g, rdi_r.L2_gi, sv2_n.o,
                 sv2_n.Kd, sv2_n.Pr, sv2_n.Pm, sv2_n.etai, sv2_n.etat,
-                rdi_r.J_gi.x, rdi_r.J_gi.y, true,
-                rdi_r.rc_idx_gi, rdi_r.seed_gi,
-                Jn, Jnn);
+                rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, Jnn);
 
             // Visibility after reconnection
             {
@@ -163,7 +160,6 @@ void Pass_spat_gi_v8_1()
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rdi_r.matID_gi, rdi_r.objID_gi,
                 rdi_r.J_gi, rdi_r.F_gi,
-                rdi_r.seed_gi, rdi_r.rc_idx_gi,
                 seed
             ))
         {
