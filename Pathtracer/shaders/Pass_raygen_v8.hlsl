@@ -27,18 +27,30 @@ void Pass_raygen_v8()
         store_F_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
         store_M_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
         store_Tpost_gi(g_Reservoirs_current_gi, pixelIdx, 1.0f);
+        store_seed_gi(g_Reservoirs_current_gi, pixelIdx, 0u);
+        store_rc_gi  (g_Reservoirs_current_gi, pixelIdx, 0u);
 
         gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
     }
 
     // ── Path state ─────────────────────────────────────────────────────
     uint   seed       = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 1u);
+    // pathSeed is a dedicated RNG stream consumed ONLY by SampleBRDF — it is what
+    // the hybrid shift random-replay needs to reproduce. pathSeed_init is its value
+    // before any BSDF call and is the value stored in the reservoir for replay.
+    uint   pathSeed   = initRandomData(DispatchRaysIndex().xy, uint2(8, 4), time, 2u);
+    uint   pathSeed_init = pathSeed;
     float3 rayOrigin  = InitOrigin();
     float3 rayDir     = InitDirection(DispatchRaysIndex().xy, float2(DispatchRaysDimensions().xy), seed);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));   // compressed: 3 floats → 1 uint
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));    // compressed: 3 floats → 1 uint
     float  prev_pdf   = 1.0f;
     uint   gi_J_pk    = 0;      // packed fp16: partial_J (low16) + pdf2_bsdf (high16)
+
+    // Hybrid shift bookkeeping (paper §7.4)
+    uint   rcFound    = 0u;     // 1 once we've committed the reconnection vertex
+    uint   rc_idx     = 0u;     // reconnection depth (=> x_{rc_idx+1} is the stored vertex)
+    uint   prevRough  = 0u;     // was x_{depth} rough? (read at start of next iter)
 
     VolumeIOR_Packed viorP;
     VolumeAux_Packed aiorP;
@@ -102,12 +114,13 @@ void Pass_raygen_v8()
                     store_phat_di(g_Reservoirs_current_di, px, p_hat);
             }
 
-            // GI reservoir: env map hit at depth >= 2
-            if (depth >= 2)
+            // GI reservoir: env map miss past the rc vertex (rc already committed).
+            // Env miss at the rc vertex itself is impossible (rc commit requires a surface hit).
+            if (rcFound && depth > (int)rc_idx)
             {
                 float  p_hat  = GetPHat(T_envL);
                 uint   F_pk   = PackRGB9E5(T_envL);
-                float3 V2_new = (depth > 2) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
+                float3 V2_new = (depth > (int)rc_idx + 1) ? load_Vpost_gi(g_Reservoirs_current_gi, px) : -rayDir;
                 float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
                 float2 J_new  = float2(0.0f, gi_J.x * gi_J.y);
                 float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
@@ -208,6 +221,31 @@ void Pass_raygen_v8()
             }
         }
 
+        // ── Hybrid shift: try to commit rc vertex at this hit ─────────
+        // Condition: previous vertex x_{depth} rough & current x_{depth+1} rough &
+        //            ‖x_{depth+1} − x_{depth}‖ ≥ HYBRID_MAX_DIST_MIN
+        uint rcJustFound = 0u;
+        {
+            uint curRough = (hitLocalPr >= HYBRID_ROUGH_MIN) ? 1u : 0u;
+            if (rcFound == 0u && depth >= 1 && prevRough == 1u && curRough == 1u &&
+                hitT >= HYBRID_MAX_DIST_MIN && depth <= (int)MAX_RC_INDEX)
+            {
+                uint px = MapPixelID(imgSize, pixel);
+                SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
+                SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
+                float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
+                float dist2  = max(hitT * hitT, EPSILON);
+                gi_J_pk = (gi_J_pk & 0xFFFF0000u) | f32tof16_custom(prev_pdf * cos_x2 / dist2);
+
+                store_seed_gi(g_Reservoirs_current_gi, px, pathSeed_init);
+                store_rc_gi  (g_Reservoirs_current_gi, px, (uint)depth);
+
+                rc_idx       = (uint)depth;
+                rcFound      = 1u;
+                rcJustFound  = 1u;
+            }
+        }
+
         // ── Emitter hit: BSDF-sampled light with MIS ──────────────────
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
@@ -230,15 +268,24 @@ void Pass_raygen_v8()
                     store_phat_di(g_Reservoirs_current_di, px, p_hat);
             }
 
-            // GI: emitter at depth >= 2
-            if (depth >= 2)
+            // GI: emitter on or after the rc vertex (depth >= rc_idx). Requires rc already found.
+            // For emitter AT the rc vertex (rcJustFound), use lightPdfSA as PDF2_canonical
+            // since no BSDF scatter happens at x_{k+1}. For emitter past rc, use captured gi_J.y.
+            if (rcFound && depth >= (int)rc_idx && depth >= 2)
             {
-                float3 V2_new = (depth == 2) ? (-rayDir) : load_Vpost_gi(g_Reservoirs_current_gi, px);
-                float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
+                bool atRC = (depth == (int)rc_idx);
+                float3 V2_new = atRC ? (-rayDir)
+                              : ((depth == (int)rc_idx + 1) ? (-rayDir) : load_Vpost_gi(g_Reservoirs_current_gi, px));
+                float3 tpost  = atRC ? float3(1,1,1) : load_Tpost_gi(g_Reservoirs_current_gi, px);
                 float3 contrib_gi = throughput * emission;
                 float  p_hat  = GetPHat(contrib_gi);
                 uint   F_pk   = PackRGB9E5(contrib_gi);
                 float  wi     = p_hat * misWeight;
+
+                // When we've just found rc at this iteration, we have no bsdf pdf at x_{k+1}
+                // (path ends at emitter). Substitute lightPdfSA for the high-16 slot.
+                if (rcJustFound)
+                    gi_J_pk = (gi_J_pk & 0x0000FFFFu) | (f32tof16_custom(max(lightPdfSA, EPSILON)) << 16u);
 
                 float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
                 if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, emission * tpost, float2(0.0f, gi_J.x * gi_J.y), V2_new, seed))
@@ -247,19 +294,8 @@ void Pass_raygen_v8()
             break;
         }
 
-        // ── Depth 1: store GI reconnection vertex data ────────────────
-        if (depth == 1)
-        {
-            uint px = MapPixelID(imgSize, pixel);
-            SetReservoirGI_ConstHit(g_Reservoirs_current_gi, px, hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
-            SetReservoirGI_UVAndIOR(g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
-            float cos_x2 = abs(dot(hinfo.hitGNormal, -rayDir));
-            float dist2  = max(hitT * hitT, EPSILON);
-            gi_J_pk = (gi_J_pk & 0xFFFF0000u) | f32tof16_custom(prev_pdf * cos_x2 / dist2);
-        }
-
-        // ── Depth 2: store post-reconnection direction ────────────────
-        if (depth == 2)
+        // ── First post-rc hit: store outgoing direction at x_{k+1} ────
+        if (rcFound && depth == (int)rc_idx + 1)
         {
             store_Vpost_gi(g_Reservoirs_current_gi, MapPixelID(imgSize, pixel), -rayDir);
         }
@@ -320,19 +356,20 @@ void Pass_raygen_v8()
                                 store_phat_di(g_Reservoirs_current_di, px, p_hat);
                         }
 
-                        // GI: NEE at depth >= 1
-                        if (depth >= 1)
+                        // GI: NEE at rc vertex or beyond
+                        if (rcFound && depth >= (int)rc_idx)
                         {
-                            float3 V2_new = (depth == 1) ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, px);
+                            bool atRC = (depth == (int)rc_idx);
+                            float3 V2_new = atRC ? (-L) : load_Vpost_gi(g_Reservoirs_current_gi, px);
                             float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_nee = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
+                            float  Jy_nee = atRC ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
+                            float2 J_new  = atRC ? float2(lightPdf, Jy_nee) : float2(0.0f, Jy_nee);
                             float3 contrib = throughput * light.emission * bdataNEE.val * cosSurf / lightPdf;
                             float  p_hat   = GetPHat(contrib);
                             uint   F_pk    = PackRGB9E5(contrib);
                             float  wi      = p_hat * misWeight;
-                            float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * cosSurf / lightPdf;
+                            float3 tpost   = atRC ? float3(1,1,1) : load_Tpost_gi(g_Reservoirs_current_gi, px);
+                            if (!atRC) tpost *= bdataNEE.val * cosSurf / lightPdf;
 
                             if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, light.emission * tpost, J_new, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
@@ -374,19 +411,20 @@ void Pass_raygen_v8()
                             gScratchPing[uint3(pixel, 3)] = float4(misWeight * contrib, 0);
                         }
 
-                        // GI: sun at depth >= 1
-                        if (depth >= 1)
+                        // GI: sun at rc vertex or beyond
+                        if (rcFound && depth >= (int)rc_idx)
                         {
                             uint px = MapPixelID(imgSize, pixel);
-                            float3 V2_new = (depth == 1) ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
+                            bool atRC = (depth == (int)rc_idx);
+                            float3 V2_new = atRC ? (-sun.direction) : load_Vpost_gi(g_Reservoirs_current_gi, px);
                             float2 gi_J; UnpackFloat2x16(gi_J_pk, gi_J.x, gi_J.y);
-                            float  Jy_sun = (depth == 1) ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
-                            float2 J_new  = (depth == 1) ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
+                            float  Jy_sun = atRC ? (gi_J.x * lightPdf) : (gi_J.x * gi_J.y);
+                            float2 J_new  = atRC ? float2(lightPdf, Jy_sun) : float2(0.0f, Jy_sun);
                             float  p_hat  = GetPHat(contrib);
                             uint   F_pk   = PackRGB9E5(contrib);
                             float  wi     = p_hat;
-                            float3 tpost  = load_Tpost_gi(g_Reservoirs_current_gi, px);
-                            if (depth > 1) tpost *= bdataNEE.val * NdotL / lightPdf;
+                            float3 tpost  = atRC ? float3(1,1,1) : load_Tpost_gi(g_Reservoirs_current_gi, px);
+                            if (!atRC) tpost *= bdataNEE.val * NdotL / lightPdf;
 
                             if (UpdateReservoirGI_Fast(g_Reservoirs_current_gi, px, wi, sun.radiance * tpost, J_new, V2_new, seed))
                                 store_F_gi(g_Reservoirs_current_gi, px, F_pk);
@@ -403,12 +441,15 @@ void Pass_raygen_v8()
         }
 
         // ── Sample next direction (BSDF) ──────────────────────────────
+        // BSDF samples consume pathSeed (the dedicated replay stream). NEE/RR/etc.
+        // continue to use `seed`. This split is what allows hybrid random replay.
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, pathSeed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
-        // Track BSDF pdf at reconnection vertex for GI jacobian
-        if (depth == 1)
+        // Track BSDF pdf at the reconnection vertex for the GI jacobian denominator.
+        // Fires in the iteration where rc was just committed (current hit is x_{k+1}).
+        if (rcJustFound == 1u)
             gi_J_pk = (gi_J_pk & 0x0000FFFFu) | (f32tof16_custom(bdata.pdf) << 16u);
 
         float cosTheta = abs(dot(hinfo.hitNormal, s));
@@ -446,8 +487,10 @@ void Pass_raygen_v8()
                 tpostWeight *= rrBoost;  // Tpost must include RR survival weight
             }
 
-            // Update post-reconnection throughput for GI
-            if (depth >= 2)
+            // Update post-reconnection throughput for GI.
+            // Accumulate only for bounces strictly after the rc vertex (the rc vertex's own
+            // outgoing scatter is part of PDF2_canonical / V2, not of the post-rc throughput).
+            if (rcFound && depth > (int)rc_idx)
             {
                 uint px = MapPixelID(imgSize, pixel);
                 float3 tpost = load_Tpost_gi(g_Reservoirs_current_gi, px);
@@ -457,6 +500,9 @@ void Pass_raygen_v8()
             throughputPk = PackRGB9E5(throughput);
         }
         prevNormalPk = PackNormal(hinfo.hitNormal);
+
+        // Hybrid shift: remember current vertex's roughness for the next iteration's connectability test.
+        prevRough = (hitLocalPr >= HYBRID_ROUGH_MIN) ? 1u : 0u;
     }
 
     // ── Final reservoir weight computation ─────────────────────────────

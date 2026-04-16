@@ -150,7 +150,9 @@ void Pass_temp_gi_v8()
                         sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
                         sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, rdi.L2_gi, sv_c2.o,
                         sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                        rdi.J_gi.x, rdi.J_gi.y, true, Jnc, J1);
+                        rdi.J_gi.x, rdi.J_gi.y, true,
+                        rdi.rc_idx_gi, rdi.seed_gi,
+                        Jnc, J1);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
@@ -173,7 +175,9 @@ void Pass_temp_gi_v8()
                         sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
                         sv_r2.matID, sv_r2.x, sv_r2.n_s, sv_r2.n_g, rdi_r.L2_gi, sv_r2.o,
                         sv_r2.Kd, sv_r2.Pr, sv_r2.Pm, sv_r2.etai, sv_r2.etat,
-                        rdi_r.J_gi.x, rdi_r.J_gi.y, true, Jn, J2);
+                        rdi_r.J_gi.x, rdi_r.J_gi.y, true,
+                        rdi_r.rc_idx_gi, rdi_r.seed_gi,
+                        Jn, J2);
 
                     float ph = GetPHat(c);
                     { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
@@ -190,8 +194,8 @@ void Pass_temp_gi_v8()
                 float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
-                                        : min(rs_tempMcapGI, rs_tempMcapGI * tempMcapScale);
+                const float dynTempMcap   = rs_tempMcapGI;//(minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
+                                        //: min(rs_tempMcapGI, rs_tempMcapGI * tempMcapScale);
 
                 const float M_c   = min(rs_tempMcapGI, rdi.M_gi);
                 const float M_n   = min(dynTempMcap,  rdi_r.M_gi);
@@ -220,6 +224,7 @@ void Pass_temp_gi_v8()
                         rdi_r.matID_gi, rdi_r.objID_gi,
                         rdi_r.J_gi,
                         rdi_r.F_gi,
+                        rdi_r.seed_gi, rdi_r.rc_idx_gi,
                         seed
                     ))
                 {

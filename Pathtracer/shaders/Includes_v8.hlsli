@@ -155,9 +155,11 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "SunSampler_v8.hlsli"
 #include "Clouds_v8.hlsli"
 #include "Reservoir_DI_v8.hlsli"
-#include "Reservoir_GI_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
+// Reservoir_GI must come after Inline_RT — ReconnectGI's hybrid-shift random replay
+// uses RayQuery, EvalSurfaceState, and offset_ray from Inline_RT_v8.
+#include "Reservoir_GI_v8.hlsli"
 
 // Temporal candidate tests (depend on GetMatIDFast from Inline_RT and ReconstructPosition from SurfaceVertex)
 inline bool TestTemporalCandidate_DI(
