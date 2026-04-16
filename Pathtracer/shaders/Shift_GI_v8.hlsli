@@ -34,6 +34,25 @@
 #endif
 
 // -------------------------------------------------------------------------
+// ShiftReplayBounceEstimate
+//
+// Returns the number of BSDF replay bounces ShiftGI will perform for a
+// reservoir described by (method, k).  Used as the SER coherence hint in
+// the temp/spat reuse passes so threads with similar shift workload cluster
+// together and divergence in the replay loop drops.
+//
+//   HAS_RECON (method 1..4) with k>=2 : prefix replay length = k-2
+//   _RP       (method 5..8)            : full path replay (up to SHIFT_MAX_BOUNCES)
+//   INVALID                            : 0 (no shift work)
+// -------------------------------------------------------------------------
+inline uint ShiftReplayBounceEstimate(uint method, uint k)
+{
+    if (method == RC_METHOD_INVALID) return 0u;
+    if (RC_HasReconVertex(method))   return (k > 2u) ? (k - 2u) : 0u;
+    return (uint)SHIFT_MAX_BOUNCES;   // _RP variants
+}
+
+// -------------------------------------------------------------------------
 // ShiftTraceClosest_Inline
 //
 // Inline RayQuery closest-hit trace with alpha testing equivalent to the
@@ -327,6 +346,11 @@ inline float3 ShiftGI(
     in float3 L2, in float3 V2,
     in float  J_can,
 
+    // For RC_METHOD_*_ATRC: stored lightPdf (= J_gi.x) substituted for the
+    // (degenerate) BSDF pdf at x_k inside ReconnectGI.  Pass 0 for any other
+    // method — ReconnectGI then recomputes PDF2 from the BSDF as usual.
+    in float  pdfx2_atrc,
+
     // Outputs
     out float Jn,
     out float J)
@@ -403,22 +427,32 @@ inline float3 ShiftGI(
         return r;
     }
 
-    // ── HAS_RECON (BSDF_ENV / BSDF_EMIT / NEE / SUN): reconnect y_{k-1} → x_k ─
+    // ── HAS_RECON (BSDF_ENV / BSDF_EMIT / NEE / SUN / *_ATRC): reconnect y_{k-1} → x_k ─
     //
     // We reuse ReconnectGI's math, substituting y_{k-1} for x_1 and folding
     // the replayed prefix throughput over the result.  ReconnectGI already
     // handles the J_can ratio if applyJ = true.
+    //
+    // For *_ATRC methods: V2 stores -L_dir (toward the light) and pdfx2_atrc
+    // holds the light's sampling pdf, so ReconnectGI's F2/G2/PDF2 evaluate
+    // the BSDF/cos at x_k for the NEE link direction with PDF2 = lightPdf
+    // (not BSDF pdf).  Plus we still need a shadow ray from x_k to the light
+    // for sun (delta-direction at infinity) or to the stored light position.
     {
+        const bool isAtRc = RC_IsAtRc(method);
+
         float3 c = ReconnectGI(
             sv_km1.x, sv_km1.n_s, sv_km1.n_g, sv_km1.o, sv_km1.matID,
             sv_km1.Kd, sv_km1.Pr, sv_km1.Pm, sv_km1.etai, sv_km1.etat,
             matID_k, xk_pos, xk_ns, xk_ng, L2, V2,
             xk_Kd, xk_Pr, xk_Pm, etai_k, etat_k,
-            0.0f /* pdfx2 — let ReconnectGI recompute */,
+            isAtRc ? pdfx2_atrc : 0.0f,   // _ATRC: pass stored lightPdf;  others: ReconnectGI recomputes
             J_can, true,
             Jn, J);
 
-        // Visibility y_{k-1} → x_k  (skip for sun terminals at infinity).
+        // Visibility y_{k-1} → x_k  (skip for sun/env sentinels in HAS_RECON variants
+        // that store the terminal as x_k — only the legacy SUN_RP/ENV_RP path uses
+        // those sentinels and goes through the _RP branch above).
         bool sentinel = (objID_k == 0xFFFFFFFEu) || (objID_k == 0xFFFFFFFFu);
         if (!sentinel)
         {
@@ -428,6 +462,10 @@ inline float3 ShiftGI(
                           IsVisible(sv_km1.x, sv_km1.n_g, d / cd, cd * 0.999f)) ? 1.0f : 0.0f;
             c *= vis;
         }
+
+        // No extra x_k → light visibility check needed for _ATRC: the light and x_k
+        // are both canonical-stored values (unchanged by the shift), and visibility
+        // was validated at candidate generation in raygen.
 
         if (any(isnan(c)) || any(isinf(c))) return float3(0, 0, 0);
 

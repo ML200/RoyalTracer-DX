@@ -115,6 +115,8 @@ void Pass_raygen_v8()
             }
 
             // GI reservoir: env map hit at depth >= 2 — BSDF_ENV or BSDF_ENV_RP.
+            // [DEBUG: env reservoir writes commented out to isolate sun-bias source]
+        #if 0
             if (depth >= 2)
             {
                 float  p_hat = GetPHat(T_envL);
@@ -154,6 +156,7 @@ void Pass_raygen_v8()
                         seed);
                 }
             }
+        #endif
             break;
         }
 
@@ -252,6 +255,51 @@ void Pass_raygen_v8()
                 {
                     gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
                 }
+            }
+        }
+
+        // ── BSDF sample at current vertex (moved earlier so the dual-footprint
+        //    criterion can run BEFORE NEE/Sun — letting depth=1 NEE/Sun emit a
+        //    HAS_RECON-style _ATRC candidate with k=2 → zero replay bounces). ──
+        SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
+        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, bsdf_seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+
+        // ── Hybrid-shift criterion: BSDF link x_d → x_{d+1}.  Fire only on a
+        //    non-emissive vertex (emitter terminates the path; can't be x_k). ──
+        // Stash these so the NEE/Sun blocks below can recompute J_can_atrc when
+        // they detect "criterion-just-fired" (k_recon == depth + 1).
+        float  link_cos_xkm1      = 0.0f;
+        float  link_cos_xk        = 0.0f;
+        float  link_dist2         = 1.0f;
+
+        if (k_recon == 0u && depth >= 1 && bdata.pdf > 1e-6f && !any(emission > 0.0f))
+        {
+            float3 prev_normal = UnpackNormal(prevNormalPk);
+            link_cos_xk   = abs(dot(hinfo.hitGNormal, -rayDir));
+            link_cos_xkm1 = abs(dot(prev_normal,       rayDir));
+            link_dist2    = max(hitT * hitT, EPSILON);
+
+            if (HybridReconnectionCriterion(prev_pdf, bdata.pdf,
+                                            link_cos_xk, link_cos_xkm1, link_dist2,
+                                            prev_alpha, primary_fp_thresh))
+            {
+                k_recon = (uint)(depth + 1);
+                uint px = MapPixelID(imgSize, pixel);
+
+                // Snapshot x_k surface data — same values as the legacy criterion site.
+                SetReservoirGI_ConstHit (g_Reservoirs_current_gi, px, hitPos,
+                                         hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
+                SetReservoirGI_UVAndIOR (g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
+
+                // Default V_post / J_can for the regular HAS_RECON path.  NEE/Sun blocks
+                // below overwrite these on accept of an _ATRC candidate (V_post = -L_dir,
+                // J_can_atrc = prev_pdf · lightPdf · cos·cos / dist²).
+                store_Vpost_gi(g_Reservoirs_current_gi, px, -s);
+                float J_can_default = prev_pdf * (link_cos_xk / link_dist2) * bdata.pdf;
+                store_Jy_gi(g_Reservoirs_current_gi, px, J_can_default);
+
+                store_Tpost_gi(g_Reservoirs_current_gi, px, float3(1, 1, 1));
             }
         }
 
@@ -387,7 +435,30 @@ void Pass_raygen_v8()
                             uint   F_pk    = PackRGB9E5(contrib);
                             float  wi      = p_hat * misWeight;
 
-                            if (k_recon > 0u)
+                            if (k_recon > 0u && (uint)depth + 1u == k_recon)
+                            {
+                                // CASE A_ATRC: criterion fired THIS iter (above) → x_k = current
+                                // vertex (= NEE source).  ReconnectGI re-evaluates BSDF at x_k for
+                                // direction -V2 = toward light, with PDF2 = stored lightPdf.
+                                // Storage:
+                                //   x_k state was already snapshot to the reservoir at criterion fire.
+                                //   V2 = -L (overrides default -s).  L2 = light.emission (no extra factors).
+                                //   J.x = lightPdf,  J.y = J_can_atrc = prev_pdf · lightPdf · cos·cos / dist²
+                                //   k = depth + 1 (= k_recon) → ShiftReplayPrefix does k-2 = depth-1 bounces.
+                                // Single-cosine G to match ReconnectGI's Jn = PDF1·PDF2·cos_xk/dist²
+                                // (so canonical J = Jn/J_can = 1 at y=x).
+                                float  J_can_atrc = prev_pdf * lightPdf * link_cos_xk / link_dist2;
+                                float2 J_new      = float2(lightPdf, J_can_atrc);
+
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID,
+                                    hinfo.uv, iors.x, iors.y,
+                                    light.emission, -L, J_new, F_pk,
+                                    RC_METHOD_NEE_ATRC, k_recon, bsdf_seed0,
+                                    seed);
+                            }
+                            else if (k_recon > 0u)
                             {
                                 // CASE A: reconnect at earlier BSDF-walk vertex x_{k_recon}.
                                 // Tail: BSDF bounces from x_k to x_{depth+1}, then NEE link (baked into L2 via tpost).
@@ -403,10 +474,8 @@ void Pass_raygen_v8()
                                 float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
                                 float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
 
-                                // If this NEE fires strictly past x_k, bake the NEE link into the tail.
-                                float3 L2_new = ((uint)depth + 1u > k_recon)
-                                              ? (light.emission * tpost * (bdataNEE.val * cosSurf / lightPdf))
-                                              : (light.emission * tpost);
+                                // This NEE fires strictly past x_k → bake the NEE link into the tail.
+                                float3 L2_new = light.emission * tpost * (bdataNEE.val * cosSurf / lightPdf);
 
                                 UpdateReservoirGI_Candidate(
                                     g_Reservoirs_current_gi, px, wi,
@@ -487,7 +556,28 @@ void Pass_raygen_v8()
                             uint   F_pk  = PackRGB9E5(contrib);
                             float  wi    = p_hat;
 
-                            if (k_recon > 0u)
+                            if (k_recon > 0u && (uint)depth + 1u == k_recon)
+                            {
+                                // CASE A_ATRC: criterion fired THIS iter (above) → x_k = current
+                                // vertex (= NEE source).  Same pattern as NEE_ATRC above; for sun,
+                                // the "G" geometry term degenerates to just cos_xkm1 (sun is at
+                                // infinity → cos_xk/dist² → 1 in solid-angle measure), but we keep
+                                // both cosines in the *atrc* J_can since x_{k-1}→x_k is a real surface
+                                // link — the "lightness" only matters for the second pdf substitution.
+                                // Single-cosine G to match ReconnectGI's Jn = PDF1·PDF2·cos_xk/dist²
+                                // (so canonical J = Jn/J_can = 1 at y=x).
+                                float  J_can_atrc = prev_pdf * lightPdf * link_cos_xk / link_dist2;
+                                float2 J_new      = float2(lightPdf, J_can_atrc);
+
+                                UpdateReservoirGI_Candidate(
+                                    g_Reservoirs_current_gi, px, wi,
+                                    hitPos, hinfo.hitNormal, hinfo.hitGNormal, matID, instID,
+                                    hinfo.uv, iors.x, iors.y,
+                                    sun.radiance, -sun.direction, J_new, F_pk,
+                                    RC_METHOD_SUN_ATRC, k_recon, bsdf_seed0,
+                                    seed);
+                            }
+                            else if (k_recon > 0u)
                             {
                                 // CASE A: reconnect at earlier BSDF-walk vertex x_{k_recon}.
                                 uint   xk_obj  = load_objID_gi(g_Reservoirs_current_gi, px);
@@ -502,9 +592,7 @@ void Pass_raygen_v8()
                                 float3 tpost   = load_Tpost_gi(g_Reservoirs_current_gi, px);
                                 float2 J_new   = float2(0.0f, load_J_gi(g_Reservoirs_current_gi, px).y);
 
-                                float3 L2_new = ((uint)depth + 1u > k_recon)
-                                              ? (sun.radiance * tpost * (bdataNEE.val * NdotL / lightPdf))
-                                              : (sun.radiance * tpost);
+                                float3 L2_new = sun.radiance * tpost * (bdataNEE.val * NdotL / lightPdf);
 
                                 UpdateReservoirGI_Candidate(
                                     g_Reservoirs_current_gi, px, wi,
@@ -540,51 +628,11 @@ void Pass_raygen_v8()
                 }
             }
 
-            // Unpack for BSDF sampling below
-            hitLocalKd = UnpackRGB9E5(matKdPk);
-            hitLocalPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
-            hitLocalPm = f16tof32_custom(matPrPmPk >> 16u);
-            hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
-        // ── Sample next direction (BSDF) ──────────────────────────────
-        SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitGNormal, hitLocalKd, hitLocalPr, hitLocalPm, bsdf_seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
-        BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitGNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
-
-        // ── Hybrid-shift: try to reconnect at the freshly-hit vertex x_{depth+1} ──
-        // (NEE / Sun candidates above evaluate the criterion on their own terminal link.)
-        if (k_recon == 0u && depth >= 1 && bdata.pdf > 1e-6f)
-        {
-            float3 prev_normal = UnpackNormal(prevNormalPk);
-            float  cos_xk      = abs(dot(hinfo.hitGNormal, -rayDir));
-            float  cos_xkm1    = abs(dot(prev_normal,       rayDir));
-            float  dist2       = max(hitT * hitT, EPSILON);
-
-            if (HybridReconnectionCriterion(prev_pdf, bdata.pdf,
-                                            cos_xk, cos_xkm1, dist2,
-                                            prev_alpha, primary_fp_thresh))
-            {
-                k_recon = (uint)(depth + 1);   // current vertex IS x_k, where k = depth+1
-                uint px = MapPixelID(imgSize, pixel);
-
-                // Snapshot x_k surface data; env / emitter accept blocks read it back.
-                SetReservoirGI_ConstHit (g_Reservoirs_current_gi, px, hitPos,
-                                         hinfo.hitNormal, hinfo.hitGNormal, matID, instID);
-                SetReservoirGI_UVAndIOR (g_Reservoirs_current_gi, px, hinfo.uv, iors.x, iors.y);
-
-                // V_post convention: "from x_{k+1} back to x_k" = -s.
-                store_Vpost_gi(g_Reservoirs_current_gi, px, -s);
-
-                // J_can = pdf_{k-1} · G(x_{k-1}→x_k) · pdf_k   (single-cosine G).
-                float J_can = prev_pdf * (cos_xk / dist2) * bdata.pdf;
-                store_Jy_gi(g_Reservoirs_current_gi, px, J_can);
-
-                // Tpost accumulates BSDF factors at x_{k+1}, x_{k+2}, … in the throughput block.
-                store_Tpost_gi(g_Reservoirs_current_gi, px, float3(1, 1, 1));
-            }
-        }
-
+        // BSDF sample + criterion already ran above (before NEE/Sun) so the
+        // _ATRC variants could fire for depth=1 NEE/Sun.  Just compute the
+        // throughput weight from the cached `bdata` / `s`.
         float cosTheta = abs(dot(hinfo.hitNormal, s));
         float3 updateWeight = (bdata.pdf > 1e-6f)
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
@@ -637,7 +685,12 @@ void Pass_raygen_v8()
             throughputPk = PackRGB9E5(throughput);
         }
         prevNormalPk = PackNormal(hinfo.hitNormal);
-        prev_alpha   = hitLocalPr;   // α at x_{depth+1} becomes α_{k-1} at next iter's criterion
+        // Effective α at x_{depth+1} for the criterion at the next iter (where this becomes α_{k-1}).
+        // Paper-faithful α = GGX α = Pr².  For non-parametric / layered materials (paper §4.2 supplemental),
+        // derive α from the strategy mix: Lambertian + sheen lobes are inherently "rough" (α≈1), GGX/coat
+        // contribute Pr² weighted by their lobe strength.  This fixes purely-diffuse materials whose
+        // stored Pr=0 was previously failing the α≥α_min check and forcing every neighbour shift to replay.
+        prev_alpha   = max(hitLocalPr * hitLocalPr, sp.Pdiff + sp.Psheen);
     }
 
     // ── Final reservoir weight computation ─────────────────────────────

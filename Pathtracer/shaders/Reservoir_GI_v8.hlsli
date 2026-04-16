@@ -25,9 +25,19 @@ static const uint RC_METHOD_BSDF_ENV_RP  = 5u;
 static const uint RC_METHOD_BSDF_EMIT_RP = 6u;
 static const uint RC_METHOD_NEE_RP       = 7u;
 static const uint RC_METHOD_SUN_RP       = 8u;
+// "Reconnection vertex IS the NEE source" variants.  Used when the criterion
+// fires at the same iteration as the NEE/Sun event, so x_k = current vertex
+// (= NEE source) rather than an earlier BSDF-walk vertex.  The tail is just
+// the direct NEE link to the light, with V2 pointing toward the light and
+// the light's sampling pdf stored in J_gi.x so the shift can substitute it
+// for the (degenerate) BSDF pdf at x_k in ReconnectGI.  Shift replay length
+// = k-2 exactly like HAS_RECON (so k=2 at depth=1 → zero replay bounces).
+static const uint RC_METHOD_NEE_ATRC     = 9u;
+static const uint RC_METHOD_SUN_ATRC     = 10u;
 
-inline bool RC_HasReconVertex(uint m) { return m >= RC_METHOD_BSDF_ENV     && m <= RC_METHOD_SUN; }
+inline bool RC_HasReconVertex(uint m) { return (m >= RC_METHOD_BSDF_ENV     && m <= RC_METHOD_SUN) || m == RC_METHOD_NEE_ATRC || m == RC_METHOD_SUN_ATRC; }
 inline bool RC_IsReplay      (uint m) { return m >= RC_METHOD_BSDF_ENV_RP  && m <= RC_METHOD_SUN_RP; }
+inline bool RC_IsAtRc        (uint m) { return m == RC_METHOD_NEE_ATRC     || m == RC_METHOD_SUN_ATRC; }
 
 static const float RC_ALPHA_MIN   = 0.1f;     // single-vertex roughness threshold (α_min)
 static const float RC_C_OVER_100  = 0.0002f;  // c = 0.02 in the paper
@@ -41,7 +51,10 @@ static const float RC_C_OVER_100  = 0.0002f;  // c = 0.02 in the paper
 //   cos_xk   : |n_xk    · (-ω_{k-1})|
 //   cos_xkm1 : |n_xkm1  · ( ω_{k-1})|
 //   dist2    : ||x_k - x_{k-1}||^2
-//   alpha_km1: roughness α at x_{k-1}
+//   alpha_km1: effective GGX α at x_{k-1}.  Paper uses GGX α directly; for the
+//              layered/non-parametric BSDF in this codebase the caller passes
+//              max(Pr², Pdiff+Psheen) so purely-diffuse surfaces (Pr=0) read as
+//              "fully rough" and pass the α≥α_min safeguard (paper §4.2 supplemental).
 //   primary_fp_thresh : RHS of Eq. 5, precomputed at depth 0.
 inline bool HybridReconnectionCriterion(
     float pdf_km1, float pdf_k,
@@ -190,6 +203,29 @@ float3 load_Tpost_gi(RWByteAddressBuffer b, uint pixelIdx)
     return UnpackRGB9E5(b.Load(gi_addr_tpost(pixelIdx)));
 }
 
+
+// Raw word-for-word copy of a reservoir from src→dst.  Avoids the
+// unpack→world-transform→repack roundtrip in load+store, which is wasted
+// work for early-out paths that just pass the reservoir through unchanged.
+void copyReservoirGI_Raw(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
+{
+    dst.Store4(gi_addr_pack1(pixelIdx), src.Load4(gi_addr_pack1(pixelIdx)));
+    dst.Store (gi_addr_l2(pixelIdx),    src.Load (gi_addr_l2(pixelIdx)));
+    dst.Store (gi_addr_v2(pixelIdx),    src.Load (gi_addr_v2(pixelIdx)));
+    dst.Store (gi_addr_n2g(pixelIdx),   src.Load (gi_addr_n2g(pixelIdx)));
+    dst.Store (gi_addr_objid(pixelIdx), src.Load (gi_addr_objid(pixelIdx)));
+    dst.Store (gi_addr_uv(pixelIdx),    src.Load (gi_addr_uv(pixelIdx)));
+    dst.Store (gi_addr_ior(pixelIdx),   src.Load (gi_addr_ior(pixelIdx)));
+    dst.Store (gi_addr_matid(pixelIdx), src.Load (gi_addr_matid(pixelIdx)));
+    dst.Store2(gi_addr_j(pixelIdx),     src.Load2(gi_addr_j(pixelIdx)));
+    dst.Store (gi_addr_w(pixelIdx),     src.Load (gi_addr_w(pixelIdx)));
+    dst.Store (gi_addr_f(pixelIdx),     src.Load (gi_addr_f(pixelIdx)));
+    dst.Store (gi_addr_m(pixelIdx),     src.Load (gi_addr_m(pixelIdx)));
+    dst.Store (gi_addr_wsum(pixelIdx),  src.Load (gi_addr_wsum(pixelIdx)));
+    dst.Store (gi_addr_seed(pixelIdx),  src.Load (gi_addr_seed(pixelIdx)));
+    dst.Store (gi_addr_k(pixelIdx),     src.Load (gi_addr_k(pixelIdx)));
+    dst.Store (gi_addr_method(pixelIdx),src.Load (gi_addr_method(pixelIdx)));
+}
 
 void storeReservoirGI(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir_GI r)
 {

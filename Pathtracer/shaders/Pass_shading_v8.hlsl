@@ -15,7 +15,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 output_GI  = gScratchPing[uint3(DTid.xy, 2)];
     float3 sunDirect  = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    float3 accumulation = /*output_DI +*/ output_GI /*+ sunDirect*/;
+    float3 accumulation = output_DI + output_GI /*+ sunDirect*/;
 
     bool cameraChanged = false;
     [unroll]

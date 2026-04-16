@@ -10,40 +10,68 @@ void Pass_temp_gi_v8()
     const float2 dims_f = float2(IMG_W, IMG_H);
     const uint pixelIdx = MapPixelID(dims_f, launchIndex);
 
-    // Emitter check
+    // ── Cheap early outs (no reorder for these — they exit immediately) ──
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         return;
     }
 
-    // Load current reservoir (must stay alive until final store)
-    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-
-    // Early-out if temporal GI is disabled
-    if (!(rs_flags & 2u)) {
+    if (!(rs_flags & 2u))
+    {
+        // Temporal disabled: copy reservoir through, no shift work to coalesce.
+        Reservoir_GI rdi_pass = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
         gScratchPing[uint3(launchIndex, 5)] = 0;
-        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
+        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi_pass);
         return;
     }
 
+    // ── SER reorder seed: load only what's needed to estimate shift work ──
+    // Canonical reservoir's expected replay length (small loads only).
+    const uint canonMethod = load_method_gi(g_Reservoirs_current_gi, pixelIdx);
+    const uint canonK      = load_k_gi    (g_Reservoirs_current_gi, pixelIdx);
+
+    // Reproject with the diffuse motion vector — needed for the hint and reused
+    // by the actual reprojection path below (the spec path also falls back to it).
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+
+    const int2 diffReproj = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+
+    uint reprojMethod = 0u;
+    uint reprojK      = 0u;
+    if (diffReproj.x >= 0)
+    {
+        const uint reprojIdx = MapPixelID(dims_f, uint2(diffReproj));
+        reprojMethod = load_method_gi(g_Reservoirs_last_gi, reprojIdx);
+        reprojK      = load_k_gi    (g_Reservoirs_last_gi, reprojIdx);
+    }
+
+    // Pack: (canonical replay bounces : 4 bits) | (reproj replay bounces : 4 bits).
+    // Threads with the same (canonK, reprojK) replay-length pair end up in the
+    // same SER bucket → matched control flow through ShiftGI's replay loop.
+    {
+        const uint canRb = min(ShiftReplayBounceEstimate(canonMethod, canonK), 15u);
+        const uint rprRb = min(ShiftReplayBounceEstimate(reprojMethod, reprojK), 15u);
+        dx::MaybeReorderThread((canRb << 4) | rprRb, 8u);
+    }
+
+    // ── Heavy loads happen AFTER reorder so they land on coherent threads ──
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+
     // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
-
 
     // RNG (keep as small as possible; preserve your semantics)
     uint2 seed = GetSeed(pixelIdx, time, 3);
     uint  permSeed = GetSeed(1, time, 3).x;
 
-    // --- base reprojection ---
-    // Lightweight loads for reprojection & rejection
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    // (Already loaded for the reorder hint: myInstID/myPrimID/myBary/myPos)
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float2 myUV = load_uv(g_sample_current, pixelIdx);
+    const float2 myUV     = load_uv(g_sample_current, pixelIdx);
     float3 myKd; float myPr, myPm;
     RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
@@ -65,11 +93,11 @@ void Pass_temp_gi_v8()
     {
         baseCoord = GetBestReprojectedPixel_d(reflData.xyz, prevView, prevProjection, dims_f, reflInstID);
         if (baseCoord.x == -1)
-            baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+            baseCoord = diffReproj;   // reuse the one already computed for the SER hint
     }
     else
     {
-        baseCoord = GetBestReprojectedPixel_d(myPos, prevView, prevProjection, dims_f, myInstID);
+        baseCoord = diffReproj;
     }
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
@@ -152,6 +180,7 @@ void Pass_temp_gi_v8()
                         rdi.etai_gi, rdi.etat_gi,
                         rcKd, rcPr, rcPm,
                         rdi.L2_gi, rdi.V2_gi, rdi.J_gi.y,
+                        rdi.J_gi.x,   // pdfx2_atrc (= stored lightPdf for *_ATRC, 0 otherwise)
                         Jnc, J1);
                     p_n = GetPHat(c);
                 }
@@ -174,6 +203,7 @@ void Pass_temp_gi_v8()
                         rdi_r.etai_gi, rdi_r.etat_gi,
                         rrKd, rrPr, rrPm,
                         rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.y,
+                        rdi_r.J_gi.x,   // pdfx2_atrc (= stored lightPdf for *_ATRC, 0 otherwise)
                         Jn, J2);
                     n_c = GetPHat(c);
                     contrib_n_from_me = c;

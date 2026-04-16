@@ -112,6 +112,7 @@ float PairwiseMIS_Canonical_Spat_GI(
     in float  etai2_c,
     in float  etat2_c,
     in float  J_can_c,
+    in float  pdfx2_atrc_c,   // J_gi.x for canonical reservoir (= stored lightPdf for *_ATRC, 0 otherwise)
     // Hybrid-shift classification of the canonical reservoir
     in uint   method_c,
     in uint   k_c,
@@ -145,7 +146,7 @@ float PairwiseMIS_Canonical_Spat_GI(
                 x2_c, n2s_c, n2g_c, matID_c, objID_c, uv_c,
                 etai2_c, etat2_c,
                 localKd2_c, localPr2_c, localPm2_c,
-                L2_c, V2_c, J_can_c,
+                L2_c, V2_c, J_can_c, pdfx2_atrc_c,
                 Jn, J);
             // ShiftGI returns the raw contribution (without the PSS Jacobian applied).
             float p_hat_from = GetPHat(c_shifted) * J;

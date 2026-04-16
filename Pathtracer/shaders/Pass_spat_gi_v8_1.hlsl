@@ -15,34 +15,32 @@ void Pass_spat_gi_v8_1()
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-
-    // Only do spatial GI when pixel is not an emitter
+    // ── Cheap exits — no reorder needed for these threads ────────────────
+    // Emitter pixels: pass reservoir through unchanged.
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
-        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+        copyReservoirGI_Raw(g_Reservoirs_last_gi, g_Reservoirs_current_gi, pixelIdx);
         return;
     }
 
-    // Lightweight loads
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-
-    // If spatial GI is disabled, use stored F_gi directly (no ReconnectGI needed)
+    // Spatial GI disabled: use stored F_gi for the output and pass through.
     if (!(rs_flags & 8u))
     {
-        float3 c = UnpackRGB9E5(rdi.F_gi);
-        float  W = (rdi.W_gi > 0.0f) ? rdi.W_gi : 0.0f;
-        gScratchPing[uint3(launchIndex, 2)] = float4(c * W, 0);
-        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+        const uint  Fpk = load_F_gi(g_Reservoirs_current_gi, pixelIdx);
+        const float W   = load_W_gi(g_Reservoirs_current_gi, pixelIdx);
+        const float Wp  = (W > 0.0f) ? W : 0.0f;
+        gScratchPing[uint3(launchIndex, 2)] = float4(UnpackRGB9E5(Fpk) * Wp, 0);
+        copyReservoirGI_Raw(g_Reservoirs_last_gi, g_Reservoirs_current_gi, pixelIdx);
         return;
     }
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Read pre-computed neighbor selection from g_pathStateBuffer
-    //─────────────────────────────────────────────────────────────────────────
+    // ── SER reorder seed: pull only what's needed to size the shift work ──
+    // Canonical method/k describe the shift performed for this pixel's stored sample.
+    const uint canonMethod = load_method_gi(g_Reservoirs_current_gi, pixelIdx);
+    const uint canonK      = load_k_gi    (g_Reservoirs_current_gi, pixelIdx);
+
+    // Read the pre-computed neighbor selection (we need this for the actual work
+    // anyway, so loading it now adds no extra cost).
     const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
     const uint selBase   = gi_sel_addr(linearIdx);
     uint2 header         = g_pathStateBuffer.Load2(selBase);
@@ -53,6 +51,32 @@ void Pass_spat_gi_v8_1()
     [unroll]
     for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
         nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
+
+    // First neighbor's method/k is a good proxy for the merge-loop's per-shift
+    // workload (subsequent neighbors tend to share surface type → similar shift).
+    uint nbr0Method = 0u;
+    uint nbr0K      = 0u;
+    if (validCount > 0u)
+    {
+        nbr0Method = load_method_gi(g_Reservoirs_current_gi, nIds[0]);
+        nbr0K      = load_k_gi    (g_Reservoirs_current_gi, nIds[0]);
+    }
+
+    // Pack: (canonical replay bounces : 4 bits) | (first-neighbor replay bounces : 4 bits).
+    {
+        const uint canRb = min(ShiftReplayBounceEstimate(canonMethod, canonK), 15u);
+        const uint nbrRb = min(ShiftReplayBounceEstimate(nbr0Method,  nbr0K),  15u);
+        dx::MaybeReorderThread((canRb << 4) | nbrRb, 8u);
+    }
+
+    // ── Heavy loads after reorder ─────────────────────────────────────────
+    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+
+    // Lightweight surface loads
+    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
+    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
+    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
     // Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
@@ -93,7 +117,7 @@ void Pass_spat_gi_v8_1()
         rdi.x2_gi, rdi.n2_s_gi, rdi.n2_g_gi, rdi.L2_gi, rdi.V2_gi,
         rdi.matID_gi, rdi.objID_gi, rdi.uv_gi,
         rKd, rPr, rPm, rdi.etai_gi, rdi.etat_gi,
-        rdi.J_gi.y,
+        rdi.J_gi.y, rdi.J_gi.x,
         rdi.method_gi, rdi.k_gi, rdi.seed_gi
     );
 
@@ -131,6 +155,7 @@ void Pass_spat_gi_v8_1()
                 rdi_r.etai_gi, rdi_r.etat_gi,
                 rnKd, rnPr, rnPm,
                 rdi_r.L2_gi, rdi_r.V2_gi, rdi_r.J_gi.y,
+                rdi_r.J_gi.x,   // pdfx2_atrc (= stored lightPdf for *_ATRC, 0 otherwise)
                 Jn, Jnn);
 
             // ShiftGI returns the raw contribution (without the PSS Jacobian applied).
