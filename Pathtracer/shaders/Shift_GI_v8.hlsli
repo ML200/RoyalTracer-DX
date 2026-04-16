@@ -1,6 +1,11 @@
 // =====================================================================================================================
 //  Shift_GI_v8.hlsli — hybrid shift mapping for GI reservoirs.
 //
+//  NOTE: Sun and environment/miss handling has been commented out in this
+//  revision. Shifts for SUN, SUN_RP, BSDF_ENV_RP, and any HAS_RECON variant
+//  that terminates on sun/env sentinels will return zero (shift failure).
+//  Re-enable by uncommenting the blocks marked `// [SUN/MISS DISABLED]`.
+//
 //  Replaces the plain reconnection shift with a method-aware shift that
 //  supports the 8 path classifications in Reservoir_GI.method_gi:
 //
@@ -48,6 +53,12 @@
 inline uint ShiftReplayBounceEstimate(uint method, uint k)
 {
     if (method == RC_METHOD_INVALID) return 0u;
+    // [SUN/MISS DISABLED] Sun/env replay shifts return 0 work since they
+    // will short-circuit to failure in ShiftGI anyway.
+    if (method == RC_METHOD_BSDF_ENV_RP) return 0u;
+    if (method == RC_METHOD_SUN_RP)      return 0u;
+    if (method == RC_METHOD_SUN)         return 0u;
+
     if (RC_HasReconVertex(method))   return (k > 2u) ? (k - 2u) : 0u;
     return (uint)SHIFT_MAX_BOUNCES;   // _RP variants
 }
@@ -236,6 +247,10 @@ inline bool ShiftReplayPrefix(
 //
 // On failure (wrong terminal type, invalid sample, max bounces exceeded):
 //   returns false and contrib = 0.
+//
+// [SUN/MISS DISABLED] Env-miss termination path is commented out; this
+// function now only succeeds for BSDF_EMIT_RP. Passing BSDF_ENV_RP always
+// fails (the miss branch returns false immediately).
 // -------------------------------------------------------------------------
 inline bool ShiftReplayToTerminal(
     in  SurfaceVertex sv_y1,
@@ -244,6 +259,10 @@ inline bool ShiftReplayToTerminal(
     out float3        contrib)
 {
     contrib = float3(0, 0, 0);
+
+    // [SUN/MISS DISABLED] Reject env terminals outright.
+    if (expectMethod == RC_METHOD_BSDF_ENV_RP)
+        return false;
 
     uint   bseed  = bsdf_seed0;
     float3 T_full = float3(1, 1, 1);
@@ -287,11 +306,15 @@ inline bool ShiftReplayToTerminal(
 
         if (!anyHit)
         {
-            // Env miss — accept only for BSDF_ENV_RP.
-            if (expectMethod != RC_METHOD_BSDF_ENV_RP) return false;
-            float3 envL = EvalMissState(s, float3(0, 0, 0));
-            contrib = T_full * envL;
-            return true;
+            // [SUN/MISS DISABLED] Env-miss terminal is disabled; a miss here
+            // is always a shift failure regardless of expectMethod.
+            return false;
+            // --- original code ---
+            // // Env miss — accept only for BSDF_ENV_RP.
+            // if (expectMethod != RC_METHOD_BSDF_ENV_RP) return false;
+            // float3 envL = EvalMissState(s, float3(0, 0, 0));
+            // contrib = T_full * envL;
+            // return true;
         }
 
         float3 emission = GetEmissionFast(instID, primID);
@@ -319,6 +342,12 @@ inline bool ShiftReplayToTerminal(
 //
 // On success, returns the shifted radiance contribution.  On failure
 // (visibility, BSDF=0, replay diverged, etc.) returns 0.
+//
+// [SUN/MISS DISABLED] The following method classes now always return 0:
+//   • RC_METHOD_SUN           (HAS_RECON sun)
+//   • RC_METHOD_SUN_RP        (replay-to-sun)
+//   • RC_METHOD_BSDF_ENV_RP   (replay-to-env-miss)
+//   • any HAS_RECON reservoir whose x_k carries a sun/env sentinel objID
 //
 // Outputs:
 //   Jn  — Jacobian numerator (PSS).  For HAS_RECON methods this is
@@ -360,8 +389,14 @@ inline float3 ShiftGI(
 
     if (method == RC_METHOD_INVALID) return float3(0, 0, 0);
 
+    // [SUN/MISS DISABLED] Early reject sun/env-terminal methods.
+    if (method == RC_METHOD_SUN)         return float3(0, 0, 0);
+    if (method == RC_METHOD_SUN_RP)      return float3(0, 0, 0);
+    if (method == RC_METHOD_BSDF_ENV_RP) return float3(0, 0, 0);
+
     // ── Replay-only terminals ────────────────────────────────────────
-    if (method == RC_METHOD_BSDF_ENV_RP || method == RC_METHOD_BSDF_EMIT_RP)
+    // [SUN/MISS DISABLED] BSDF_ENV_RP rejected above; only BSDF_EMIT_RP remains.
+    if (/* method == RC_METHOD_BSDF_ENV_RP || */ method == RC_METHOD_BSDF_EMIT_RP)
     {
         float3 c;
         bool ok = ShiftReplayToTerminal(sv_y1, seed0, method, c);
@@ -380,20 +415,24 @@ inline float3 ShiftGI(
         return float3(0, 0, 0);
 
     // ── NEE_RP / SUN_RP: connect y_{k-1} → stored emitter (no recon BSDF at x_k)
-    if (method == RC_METHOD_NEE_RP || method == RC_METHOD_SUN_RP)
+    // [SUN/MISS DISABLED] SUN_RP rejected above; only NEE_RP remains.
+    if (method == RC_METHOD_NEE_RP /* || method == RC_METHOD_SUN_RP */)
     {
         float3 toL;
         float  dist;
         float  tMax;
 
-        if (method == RC_METHOD_SUN_RP)
-        {
-            // x_k slot stores sun direction (unit-length, "from surface toward sun").
-            toL  = xk_pos;
-            dist = 1.0f;        // not used
-            tMax = 10000.0f;
-        }
-        else
+        // [SUN/MISS DISABLED] SUN_RP branch removed — only area-light NEE_RP
+        // reaches here.
+        // --- original code ---
+        // if (method == RC_METHOD_SUN_RP)
+        // {
+        //     // x_k slot stores sun direction (unit-length, "from surface toward sun").
+        //     toL  = xk_pos;
+        //     dist = 1.0f;        // not used
+        //     tMax = 10000.0f;
+        // }
+        // else
         {
             float3 d = xk_pos - sv_km1.x;
             dist = length(d);
@@ -429,6 +468,11 @@ inline float3 ShiftGI(
 
     // ── HAS_RECON (BSDF_ENV / BSDF_EMIT / NEE / SUN / *_ATRC): reconnect y_{k-1} → x_k ─
     //
+    // [SUN/MISS DISABLED] With SUN rejected early and sun/env sentinels
+    // unreachable (reservoirs bearing those sentinels are created only by
+    // SUN/_RP paths above), this branch now effectively handles BSDF_EMIT,
+    // NEE, and their *_ATRC counterparts.
+    //
     // We reuse ReconnectGI's math, substituting y_{k-1} for x_1 and folding
     // the replayed prefix throughput over the result.  ReconnectGI already
     // handles the J_can ratio if applyJ = true.
@@ -450,11 +494,20 @@ inline float3 ShiftGI(
             J_can, true,
             Jn, J);
 
-        // Visibility y_{k-1} → x_k  (skip for sun/env sentinels in HAS_RECON variants
-        // that store the terminal as x_k — only the legacy SUN_RP/ENV_RP path uses
-        // those sentinels and goes through the _RP branch above).
-        bool sentinel = (objID_k == 0xFFFFFFFEu) || (objID_k == 0xFFFFFFFFu);
-        if (!sentinel)
+        // Visibility y_{k-1} → x_k.
+        // [SUN/MISS DISABLED] Sun/env sentinel check removed — sentinel-bearing
+        // reservoirs are filtered out by the early method rejections above, so
+        // objID_k here is always a real geometry ID.
+        // --- original code ---
+        // bool sentinel = (objID_k == 0xFFFFFFFEu) || (objID_k == 0xFFFFFFFFu);
+        // if (!sentinel)
+        // {
+        //     float3 d  = xk_pos - sv_km1.x;
+        //     float  cd = length(d);
+        //     float  vis = (cd > EPSILON &&
+        //                   IsVisible(sv_km1.x, sv_km1.n_g, d / cd, cd * 0.999f)) ? 1.0f : 0.0f;
+        //     c *= vis;
+        // }
         {
             float3 d  = xk_pos - sv_km1.x;
             float  cd = length(d);
