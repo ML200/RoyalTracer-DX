@@ -34,6 +34,76 @@
 #endif
 
 // -------------------------------------------------------------------------
+// ShiftTraceClosest_Inline
+//
+// Inline RayQuery closest-hit trace with alpha testing equivalent to the
+// AnyHit shader.  Used by ShiftReplayPrefix / ShiftReplayToTerminal in lieu
+// of TraceRay_Custom — avoids the SER reorder + payload roundtrip cost of
+// the HitObject path, which dominated shift cost.
+//
+// Returns true on a committed triangle hit and writes instID, primID, bc.
+// Returns false on miss.
+// -------------------------------------------------------------------------
+inline bool ShiftTraceClosest_Inline(
+    in  RayDesc ray,
+    out uint    outInstID,
+    out uint    outPrimID,
+    out float2  outBary)
+{
+    outInstID = 0u;
+    outPrimID = 0u;
+    outBary   = float2(0.0f, 0.0f);
+
+    RayQuery<RAY_FLAG_FORCE_OMM_2_STATE, RAYQUERY_FLAG_ALLOW_OPACITY_MICROMAPS> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+
+    while (q.Proceed())
+    {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            uint cInstID = q.CandidateInstanceIndex();
+            uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+            uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
+            Material cMat = materials[cMatID];
+
+            // No albedo texture → fully opaque (matches AnyHit shader).
+            if (cMat.albedoTexID < 0)
+            {
+                q.CommitNonOpaqueTriangleHit();
+                continue;
+            }
+
+            uint baseI = instanceProps[cInstID].indexBase;
+            uint i0 = indices[baseI + 3u * cPrimID + 0u];
+            uint i1 = indices[baseI + 3u * cPrimID + 1u];
+            uint i2 = indices[baseI + 3u * cPrimID + 2u];
+
+            float2 uv0 = (float2)BTriVertex[i0].texCoord;
+            float2 uv1 = (float2)BTriVertex[i1].texCoord;
+            float2 uv2 = (float2)BTriVertex[i2].texCoord;
+
+            float2 bc = q.CandidateTriangleBarycentrics();
+            float  b0 = 1.0f - bc.x - bc.y;
+            float2 uv = uv0 * b0 + uv1 * bc.x + uv2 * bc.y;
+
+            Texture2D<float4> tex = ResourceDescriptorHeap[cMat.albedoTexID];
+            float alpha = tex.SampleLevel(g_sampler, uv * cMat.albedoUVScale, 0).a;
+
+            if (alpha >= cMat.alphaThreshold)
+                q.CommitNonOpaqueTriangleHit();
+        }
+    }
+
+    if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+        return false;
+
+    outInstID = q.CommittedInstanceIndex();
+    outPrimID = FlatPrimID(outInstID, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+    outBary   = q.CommittedTriangleBarycentrics();
+    return true;
+}
+
+// -------------------------------------------------------------------------
 // ShiftReplayPrefix
 //
 // Replays (kTarget - 2) BSDF bounces starting at y_1, consuming bsdf_seed0.
@@ -106,23 +176,19 @@ inline bool ShiftReplayPrefix(
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
-        dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-        // Prefix must land on a non-emissive surface to reach y_{k-1}.
-        if (!hitObj.IsHit()) return false;
-
-        uint instID = hitObj.GetInstanceIndex();
-        uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
+        uint   instID;
+        uint   primID;
+        float2 bcHit;
+        if (!ShiftTraceClosest_Inline(ray, instID, primID, bcHit))
+            return false;   // miss — prefix must land on a non-emissive surface
 
         float3 emission = GetEmissionFast(instID, primID);
         if (any(emission > 0.0f)) return false;   // hit emitter mid-prefix — shift fails
 
-        BuiltInTriangleIntersectionAttributes attr;
-        hitObj.GetAttributes(attr);
-
         // Build the next SurfaceVertex.  Note: view-origin for BuildVertex is
         // the previous vertex (the one we just bounced from).
-        SurfaceVertex sv_next = BuildVertex(instID, primID, attr.barycentrics, sv_cur.x);
+        SurfaceVertex sv_next = BuildVertex(instID, primID, bcHit, sv_cur.x);
         // etai/etat not propagated (no volume tracking in v1); BuildVertex already
         // zeroed them to (1,1) which mirrors the common non-dielectric case.
 
@@ -194,9 +260,13 @@ inline bool ShiftReplayToTerminal(
         ray.Direction = s;
         ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
-        dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-        if (!hitObj.IsHit())
+        uint   instID;
+        uint   primID;
+        float2 bcHit;
+        bool   anyHit = ShiftTraceClosest_Inline(ray, instID, primID, bcHit);
+
+        if (!anyHit)
         {
             // Env miss — accept only for BSDF_ENV_RP.
             if (expectMethod != RC_METHOD_BSDF_ENV_RP) return false;
@@ -204,9 +274,6 @@ inline bool ShiftReplayToTerminal(
             contrib = T_full * envL;
             return true;
         }
-
-        uint instID = hitObj.GetInstanceIndex();
-        uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
 
         float3 emission = GetEmissionFast(instID, primID);
         if (any(emission > 0.0f))
@@ -218,9 +285,7 @@ inline bool ShiftReplayToTerminal(
         }
 
         // Non-terminal surface — continue the walk.
-        BuiltInTriangleIntersectionAttributes attr;
-        hitObj.GetAttributes(attr);
-        sv_cur = BuildVertex(instID, primID, attr.barycentrics, sv_cur.x);
+        sv_cur = BuildVertex(instID, primID, bcHit, sv_cur.x);
     }
 
     // Exceeded SHIFT_MAX_BOUNCES without reaching the expected terminal.
