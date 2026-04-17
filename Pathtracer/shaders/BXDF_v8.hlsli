@@ -20,9 +20,9 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 
     sp.Psheen = r_sheen;
     float energy_after_sheen = 1.0f - sp.Psheen;
-    sp.Pcoat = energy_after_sheen * r_coat;
+    sp.Pcoat = energy_after_sheen * r_coat * 3.0f;
     float energy_after_coat = energy_after_sheen * (1.0f - r_coat);
-    sp.Pspec = energy_after_coat * r_ggx;
+    sp.Pspec = energy_after_coat * r_ggx * 5.0f; // cheap boost for specular surfaces -> better denosining
     float energy_after_ggx = energy_after_coat * (1.0f - r_ggx);
     sp.Pdiff = energy_after_ggx * r_lamb;
 
