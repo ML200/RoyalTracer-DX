@@ -49,9 +49,18 @@ void Pass_raygen_v8()
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
 
-    // Local unified reservoir. All candidates accumulate here.
-    Reservoir_GI res = (Reservoir_GI)0;
-    res.eta_gi = 1.0f;     // defensive — avoids eta=0 paths in shift if accepted
+    // Zero the GI reservoir. RIS acceptance overwrites on demand; this
+    // ensures "no candidate accepted" pixels end up as empty reservoirs.
+    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, (Reservoir_GI)0);
+
+    // Compact RIS state — 3 scalars instead of a full local Reservoir_GI
+    // (~17). The winning payload is written directly to the reservoir
+    // buffer on acceptance; F_pack/F_mag/wsum are tracked here for the
+    // final W computation.
+    InitialRisState ris;
+    ris.wsum   = 0.0f;
+    ris.F_pack = 0u;
+    ris.F_mag  = 0.0f;
 
     uint   seed         = initRandomData(pixel, uint2(8, 4), time, 1u);
     float3 rayOrigin    = InitOrigin();
@@ -126,7 +135,7 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 // DI env candidate — d=2 path, x2 stored as DIRECTION.
-                AddGICandidate(res, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                     rayDir, float3(0, 1, 0),          // x2=dir, n2=unit default
                     envL,   float3(0, 1, 0),          // L2,     V2=unit default
                     float2(0, 0),
@@ -135,7 +144,7 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI env (x2 = stashed depth-1 vertex)
             {
-                AddGICandidate(res, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                     x2_world, n2_world,
                     envL * tpost, v2_world,
                     uv_at_x2,
@@ -247,7 +256,7 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 // DI triangle-emitter candidate — d=2 path.
-                AddGICandidate(res, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
                     emission, float3(0, 1, 0),        // V2 unused for DI
                     float2(0, 0),
@@ -256,7 +265,7 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI emitter (x2 = stashed depth-1 vertex)
             {
-                AddGICandidate(res, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                     x2_world, n2_world,
                     emission * tpost, v2_world,
                     uv_at_x2,
@@ -331,7 +340,7 @@ void Pass_raygen_v8()
                         if (depth == 0)
                         {
                             // DI NEE at primary vertex — d=2 path, x2 = light.
-                            AddGICandidate(res, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                                 light.position, light.normal,
                                 light.emission, float3(0, 1, 0),
                                 float2(0, 0),
@@ -341,7 +350,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             // GI NEE at depth-1 vertex — d=3 path, x2 = current hit.
-                            AddGICandidate(res, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 light.emission, -L,
                                 hinfo.uv,
@@ -352,7 +361,7 @@ void Pass_raygen_v8()
                         {
                             // tpost so far excludes current BSDF; NEE adds it.
                             const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
-                            AddGICandidate(res, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                                 x2_world, n2_world,
                                 light.emission * tpostNEE, v2_world,
                                 uv_at_x2,
@@ -402,7 +411,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-                            AddGICandidate(res, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 sun.radiance, -sun.direction,
                                 hinfo.uv,
@@ -413,7 +422,7 @@ void Pass_raygen_v8()
                         {
                             const float  wi       = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
                             const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
-                            AddGICandidate(res, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
                                 x2_world, n2_world,
                                 sun.radiance * tpostNEE, v2_world,
                                 uv_at_x2,
@@ -477,23 +486,23 @@ void Pass_raygen_v8()
     }
 
     //════════════════════════════════════════════════════════════════════════
-    // Final resolve — commit local reservoir, compute W, export wsum.
+    // Final resolve — commit RIS state to the buffer, compute W.
+    // Per-field stores only; x2/n2/matID/etc. were already written to the
+    // buffer by AddInitialCandidate on the last RIS acceptance.
     //════════════════════════════════════════════════════════════════════════
     {
-        const float F_gi = res.F_mag_gi;
-        const float wsum = res.w_sum_gi;
         float Wgi = 0.0f;
-        if (F_gi > 1e-6f && wsum > 0.0f)
+        if (ris.F_mag > 1e-6f && ris.wsum > 0.0f)
         {
-            Wgi = wsum / F_gi;
-            if (isnan(Wgi) || isinf(Wgi)) Wgi = 0.0f;
+            Wgi = ris.wsum / ris.F_mag;
+            if (isnan(Wgi) || isinf(Wgi) || Wgi < 0.0f) Wgi = 0.0f;
         }
-        res.W_gi = Wgi;
-        res.M_gi = 1u;  // initial-pass convention: a single composite sample
 
-        storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, res);
-        // Pass_boil_gi reads wsum — keep it in sync with local state.
-        store_wsum_gi(g_Reservoirs_current_gi, pixelIdx, wsum);
+        store_F_gi    (g_Reservoirs_current_gi, pixelIdx, ris.F_pack);
+        store_F_mag_gi(g_Reservoirs_current_gi, pixelIdx, ris.F_mag);
+        store_wsum_gi (g_Reservoirs_current_gi, pixelIdx, ris.wsum);
+        store_W_gi    (g_Reservoirs_current_gi, pixelIdx, Wgi);
+        store_M_gi    (g_Reservoirs_current_gi, pixelIdx, 1u);
 
         if (Wgi == 0.0f)
             InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);

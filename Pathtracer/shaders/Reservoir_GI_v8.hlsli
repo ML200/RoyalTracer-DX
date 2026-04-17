@@ -487,13 +487,62 @@ bool UpdateReservoirGI(
 }
 
 
-// Raygen convenience wrapper: accumulate a single candidate into a local
-// Reservoir_GI. Handles F_contrib -> (F_pack, F_mag) packing and the
-// `uint` <-> `uint2` seed conversion so call-sites in the path loop stay
-// compact. The underlying UpdateReservoirGI writes ALL reservoir fields on
-// RIS acceptance, which is exactly what the unified DI+GI path needs —
-// each candidate can carry its own (x2, matID, ...) including sentinel
-// matIDs for env/miss and triangle-light samples.
+// Tiny RIS accumulator kept in registers across the raygen path loop.
+// Replaces a full local Reservoir_GI (~17 scalars -> 3 scalars of live
+// state). The winning candidate's payload (x2, n2, L2, V2, uv, matID,
+// objID, eta) is written *directly* to the reservoir buffer in
+// AddInitialCandidate; only F_pack / F_mag need to survive in registers
+// for the final W computation.
+struct InitialRisState
+{
+    float wsum;
+    uint  F_pack;
+    float F_mag;
+};
+
+// Initial-resampling candidate update: accumulates wsum in registers, and
+// on RIS acceptance writes the reservoir payload straight to the buffer.
+// Sentinel objIDs (env/miss) bypass object-space transform via the
+// identity shortcut in Sample_Data_v8.
+inline bool AddInitialCandidate(
+    inout InitialRisState ris,
+    RWByteAddressBuffer buf,
+    uint pixelIdx,
+    float  wi,
+    float3 x2, float3 n2_s,
+    float3 L2, float3 V2,
+    float2 uv,
+    uint   matID, uint objID, float eta,
+    float3 F_contrib,
+    inout uint seed)
+{
+    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return false;
+    const float F_mag_new = GetPHat(F_contrib);
+    if (F_mag_new <= 1e-20f) return false;
+    const uint F_pack_new = PackRGB9E5(F_contrib / F_mag_new);
+
+    ris.wsum += wi;
+    if (ris.wsum > EPSILON && RandomFloatSingle(seed) < (wi / ris.wsum))
+    {
+        const float3 xO  = WorldToObjectPos(objID, x2);
+        const float3 nSO = WorldToObjectNrm(objID, n2_s);
+        buf.Store4(gi_addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
+        buf.Store (gi_addr_l2   (pixelIdx), PackRGB9E5(L2));
+        buf.Store (gi_addr_v2   (pixelIdx), PackNormal(normalize(V2)));
+        buf.Store (gi_addr_objid(pixelIdx), objID);
+        buf.Store (gi_addr_matid(pixelIdx), matID);
+        buf.Store (gi_addr_eta  (pixelIdx), asuint(eta));
+        buf.Store (gi_addr_uv   (pixelIdx), PackFloat2x16(uv.x, uv.y));
+
+        ris.F_pack = F_pack_new;
+        ris.F_mag  = F_mag_new;
+        return true;
+    }
+    return false;
+}
+
+// Legacy wrapper — kept for any caller that still expects the local-struct
+// form. New raygen path uses AddInitialCandidate above.
 inline void AddGICandidate(
     inout Reservoir_GI res,
     in float  wi,
