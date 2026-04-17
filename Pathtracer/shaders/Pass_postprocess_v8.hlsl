@@ -45,20 +45,18 @@ float3 PBRNeutral(float3 color) {
     return lerp(color, newPeak.xxx, g);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  GAMMA CORRECTION AND PP PASS
-// ─────────────────────────────────────────────────────────────────────────────
+//GAMMA CORRECTION AND PP PASS
 [numthreads(8, 4, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
-    // Load output slices
+    //Load output slices
     float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
     float3 clean = g_dlssOutput[DTid.xy].xyz;
     float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
 
-    // Apply gamma correction
+    //Apply gamma correction
     noisy = sRGBGammaCorrection(noisy);
     clean =  sRGBGammaCorrection(clean);
     gt =  sRGBGammaCorrection(gt);

@@ -1248,7 +1248,7 @@ void Renderer::PopulateCommandList() {
       cmdList->ResourceBarrier(1, &toDst); }
 
     UINT layer = m_displayLevels[m_currentDisplayLevel];
-    UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 60);
+    UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
     CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), sub);
     CD3DX12_TEXTURE_COPY_LOCATION dst(m_ctx.BackBuffer(), 0);
     D3D12_BOX box = { 0, 0, 0, GetWidth(), GetHeight(), 1 };

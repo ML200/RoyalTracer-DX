@@ -93,9 +93,10 @@ public:
                                                   /// at several world-space positions
               UINT instanceID,   /// Instance ID, which can be used in the shaders to
                                  /// identify this specific instance
-              UINT hitGroupIndex /// Hit group index, corresponding the the index of the
-                                 /// hit group in the Shader Binding Table that will be
-                                 /// invocated upon hitting the geometry
+              UINT hitGroupIndex, /// Hit group index, corresponding the the index of the
+                                  /// hit group in the Shader Binding Table that will be
+                                  /// invocated upon hitting the geometry
+              D3D12_RAYTRACING_INSTANCE_FLAGS flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE
   );
 
   /// Compute the size of the scratch space required to build the acceleration
@@ -155,7 +156,8 @@ private:
   /// Helper struct storing the instance data
   struct Instance
   {
-    Instance(ID3D12Resource* blAS, const DirectX::XMMATRIX& tr, UINT iID, UINT hgId);
+    Instance(ID3D12Resource* blAS, const DirectX::XMMATRIX& tr, UINT iID, UINT hgId,
+             D3D12_RAYTRACING_INSTANCE_FLAGS f);
     /// Bottom-level AS
     ID3D12Resource* bottomLevelAS;
     /// Transform matrix
@@ -164,6 +166,8 @@ private:
     UINT instanceID;
     /// Hit group index used to fetch the shaders from the SBT
     UINT hitGroupIndex;
+    /// Per-instance flags (FORCE_OPAQUE, etc.)
+    D3D12_RAYTRACING_INSTANCE_FLAGS flags;
   };
 
   /// Construction flags, indicating whether the AS supports iterative updates

@@ -136,14 +136,15 @@ Renderer::CreateBottomLevelAS(
 }
 
 void Renderer::CreateTopLevelAS(
-    const std::vector<std::pair<ComPtr<ID3D12Resource>, XMMATRIX>>& instances,
+    const std::vector<Scene::TLASInstance>& instances,
     bool updateOnly)
 {
     if (!updateOnly) {
         for (size_t i = 0; i < instances.size(); i++)
             m_topLevelASGenerator.AddInstance(
-                instances[i].first.Get(), instances[i].second,
-                static_cast<UINT>(i), static_cast<UINT>(i));
+                instances[i].blas.Get(), instances[i].transform,
+                static_cast<UINT>(i), instances[i].hitGroupContribution,
+                instances[i].flags);
 
         UINT64 scratchSize, resultSize, instanceDescsSize;
         m_topLevelASGenerator.ComputeASBufferSizes(
@@ -434,10 +435,12 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddLibrary(hitLib.Get(),     { L"ClosestHit" });
     pipeline.AddLibrary(anyHitLib.Get(),  { L"AlphaTestAnyHit" });
 
-    pipeline.AddHitGroup(L"HitGroup",       L"ClosestHit", L"AlphaTestAnyHit");
+    // Two hit groups: opaque (no any-hit, fast path) and alpha (any-hit for transparency)
+    pipeline.AddHitGroup(L"OpaqueHitGroup", L"ClosestHit");
+    pipeline.AddHitGroup(L"AlphaHitGroup",  L"ClosestHit", L"AlphaTestAnyHit");
 
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss" });
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"HitGroup" });
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"OpaqueHitGroup", L"AlphaHitGroup" });
 
     pipeline.SetMaxPayloadSize(128);
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
@@ -467,9 +470,9 @@ void Renderer::CreateRaytracingOutputBuffer() {
     auto* dev = m_ctx.Device();
     UINT w = GetWidth(), h = GetHeight(), px = w * h;
 
-    // Main output array (60 layers)
+    // Main output array (4 layers: noisy, denoised, accumulated, debug)
     D3D12_RESOURCE_DESC rd = {};
-    rd.DepthOrArraySize = 60;
+    rd.DepthOrArraySize = 4;
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -822,8 +825,23 @@ void Renderer::CreateShaderBindingTable() {
 
     m_sbtHelper.AddMissProgram(L"Miss", {});
 
+    // Two SBT hit-group entries per instance (stride 2):
+    //   entry i*2+0  → opaque geometry (GeometryIndex 0)
+    //   entry i*2+1  → alpha geometry  (GeometryIndex 1)
+    // For meshes with only one geometry type, the unused entry is harmless.
     for (size_t i = 0; i < m_scene.instances.size(); ++i) {
-        m_sbtHelper.AddHitGroup(L"HitGroup", {});
+        const auto& mesh = m_scene.meshes[m_scene.instances[i].meshIndex];
+        bool hasAlpha  = mesh.alphaTriCount  > 0;
+        bool hasOpaque = mesh.opaqueTriCount > 0;
+
+        // GeometryIndex 0: opaque if mesh has opaque tris, otherwise alpha-only
+        if (hasOpaque)
+            m_sbtHelper.AddHitGroup(L"OpaqueHitGroup", {});
+        else
+            m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
+
+        // GeometryIndex 1: alpha (only reached if BLAS has 2 geometries)
+        m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
     }
 
     for (const auto& name : m_callableShaderNames)

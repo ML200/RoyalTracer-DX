@@ -1,9 +1,7 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
-//─────────────────────────────────────────────────────────────────────────────
-//  BOILING FILTER  GI  (groupshared post-pass for raygen temporal GI)
-//─────────────────────────────────────────────────────────────────────────────
+//  BOILING FILTER  GI
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID, uint2 localIdx : SV_GroupThreadID)
 {
@@ -22,7 +20,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint2 localIdx : SV_GroupThreadID)
     if (!oob && boil && boilValue > 0.0f)
     {
         float W   = load_W_gi(g_Reservoirs_current_gi, pixelIdx);
-        float F   = GetPHat(UnpackRGB9E5(load_F_gi(g_Reservoirs_current_gi, pixelIdx)));
+        float F   = load_F_mag_gi(g_Reservoirs_current_gi, pixelIdx);
         float scale = thrV / boilValue;
         W *= scale;
         store_W_gi(g_Reservoirs_current_gi, pixelIdx, W);

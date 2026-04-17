@@ -1,25 +1,21 @@
 #ifndef SURFACE_VERTEX_V8_HLSLI
 #define SURFACE_VERTEX_V8_HLSLI
 
-// =====================================================================================================================
 // SurfaceVertex: clean wrapper for reconnection functions
-// =====================================================================================================================
 
 struct SurfaceVertex {
-    float3 x;           // world position
-    float3 n_s;         // shading normal (world)
-    float3 n_g;         // geometric normal (world)
-    float3 o;           // outgoing/view direction (world, normalized)
-    float3 Kd;          // albedo (refetched from texture)
-    float  Pr;          // roughness
-    float  Pm;          // metallic
-    float  etai;        // IOR (incident side)
-    float  etat;        // IOR (transmitted side)
-    uint   matID;       // material ID
-    float2 uv;          // texture coordinates
+    float3 x;
+    float3 n_s;
+    float3 o;
+    float3 Kd;
+    float  Pr;
+    float  Pm;
+    float  etai;
+    float  etat;
+    uint   matID;
+    float2 uv;
 };
 
-// Lightweight position-only reconstruction (~6 loads + 20 ALU)
 inline float3 ReconstructPosition(uint instID, uint primID, float2 bary)
 {
     const uint baseI = instanceProps[instID].indexBase;
@@ -34,14 +30,12 @@ inline float3 ReconstructPosition(uint instID, uint primID, float2 bary)
     return mul(instanceProps[instID].objectToWorld, float4(pLocal, 1.0f)).xyz;
 }
 
-// Full reconstruction via EvalSurfaceState + RefetchMaterial (~20 scattered loads)
 inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 viewOrigin)
 {
     SurfaceVertex v;
     HitInfo h = EvalSurfaceState(instID, primID, bary, viewOrigin, 0);
     v.x     = h.hitPos;
     v.n_s   = h.hitNormal;
-    v.n_g   = h.hitGNormal;
     v.o     = normalize(viewOrigin - h.hitPos);
     v.matID = GetMatIDFast(instID, primID);
     v.uv    = h.uv;
@@ -51,23 +45,19 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
     return v;
 }
 
-// Lightweight reconstruction using cached G-buffer data (~8 loads vs 20)
-// Skips vertex normal/UV loads by using pre-cached values from the G-buffer
 inline SurfaceVertex BuildVertexLight(
     uint instID, uint primID, float2 bary,
-    float3 n1s_world, float3 n1g_world, float2 uv,
-    float etai, float etat, float3 viewOrigin)
+    float3 n1s_world, float2 uv, float3 viewOrigin)
 {
     SurfaceVertex v;
     v.x     = ReconstructPosition(instID, primID, bary);
     v.n_s   = n1s_world;
-    v.n_g   = n1g_world;
     v.o     = normalize(viewOrigin - v.x);
     v.matID = GetMatIDFast(instID, primID);
     v.uv    = uv;
     RefetchMaterial(v.matID, uv, v.Kd, v.Pr, v.Pm);
-    v.etai  = etai;
-    v.etat  = etat;
+    v.etai  = 1.0f;
+    v.etat  = 1.0f;
     return v;
 }
 

@@ -7,12 +7,12 @@ static const uint RGB9E5_EXP_MASK       = (1u << RGB9E5_EXP_BITS) - 1;
 
 uint PackRGB9E5(float3 v)
 {
-    // clamp to [0, sharedexp_max]
+    //clamp to [0, sharedexp_max]
     const float sharedexp_max = (float(RGB9E5_MANT_MASK) / float(RGB9E5_MANT_MASK + 1u))
                               * exp2((RGB9E5_EXP_MASK - RGB9E5_EXP_BIAS));
     float3 c = clamp(v, 0.0f, sharedexp_max);
 
-    // pick the largest channel
+    //pick the largest channel
     float m = max(max(c.x, c.y), c.z);
 
     // get IEEE exponent and mantissa
@@ -20,15 +20,15 @@ uint PackRGB9E5(float3 v)
     int  exp_unb = int((bits >> 23) & 0xFF) - 127;       // floor(log2(m))
     uint frac    = bits & 0x7FFFFF;                     // mantissa bits
 
-    // compute shared biased exponent = ceil(log2(m)) + B
-    // ceil = floor + (mantissa>0?1:0)
+    //compute shared biased exponent = ceil(log2(m)) + B
+    //ceil = floor + (mantissa>0?1:0)
     int sharedExp = exp_unb + int(frac != 0) + RGB9E5_EXP_BIAS;
     sharedExp = clamp(sharedExp, 0, int(RGB9E5_EXP_MASK));
 
     // denominator = 2^(sharedExp − B − N)
     float denom = exp2(float(sharedExp - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
-    // quantize each channel
+    //quantize each channel
     uint rm = uint(floor(c.x / denom + 0.5f));
     uint gm = uint(floor(c.y / denom + 0.5f));
     uint bm = uint(floor(c.z / denom + 0.5f));
@@ -43,7 +43,7 @@ uint PackRGB9E5(float3 v)
     gm &= RGB9E5_MANT_MASK;
     bm &= RGB9E5_MANT_MASK;
 
-    // 7) pack: [ r:9 | g:9 | b:9 | exp:5 ]
+    //pack: [ r:9 | g:9 | b:9 | exp:5 ]
     return (rm <<  0) |
            (gm <<  9) |
            (bm << 18) |
@@ -52,13 +52,13 @@ uint PackRGB9E5(float3 v)
 
 float3 UnpackRGB9E5(uint p)
 {
-    // extract fields
+    //extract fields
     uint rm = (p >>  0) & RGB9E5_MANT_MASK;
     uint gm = (p >>  9) & RGB9E5_MANT_MASK;
     uint bm = (p >> 18) & RGB9E5_MANT_MASK;
     int  e  = int((p >> 27) & RGB9E5_EXP_MASK);
 
-    // compute scale = 2^(e − B − N)
+    //compute scale = 2^(e − B − N)
     float scale = exp2(float(e - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
     return float3(rm * scale, gm * scale, bm * scale);
@@ -80,7 +80,7 @@ uint PackNormal(float3 n)
         return PROBE_DI_NORMAL_ZERO_CODE;
     }
 
-    // Octahedral encoding
+    //Octahedral encoding
     n = normalize(n);
     float3 a = abs(n);
     float2 p = n.xy / (a.x + a.y + a.z);
@@ -99,13 +99,13 @@ uint PackNormal(float3 n)
 
 float3 UnpackNormal(uint bits)
 {
-    // Zero vector sentinel
+    //Zero vector sentinel
     if (bits == PROBE_DI_NORMAL_ZERO_CODE)
     {
         return float3(0.0f, 0.0f, 0.0f);
     }
 
-    // Octahedral decoding
+    //Octahedral decoding
     float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
     float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));

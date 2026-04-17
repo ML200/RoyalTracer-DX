@@ -10,11 +10,8 @@ struct Reservoir_DI
     uint objID_di;
 };
 
-// SoA layout — each field is a contiguous plane across all pixels.
-// Total buffer size per pixel is unchanged (40 bytes).
 static const uint BYTES_DI = 40u;
 
-// Per-pixel field sizes (bytes)
 static const uint DI_SZ_PACK1 = 16u;  // position(12) + packed normal(4)
 static const uint DI_SZ_L2    =  4u;  // PackRGB9E5
 static const uint DI_SZ_W     =  4u;
@@ -23,8 +20,6 @@ static const uint DI_SZ_M     =  4u;
 static const uint DI_SZ_WSUM  =  4u;
 static const uint DI_SZ_PHAT  =  4u;
 
-// Plane base offsets (multiply by totalPixels to get byte offset)
-// Layout: PACK1 | L2 | W | OBJID | M | WSUM | PHAT
 static const uint DI_PLANE_PACK1 =  0u;
 static const uint DI_PLANE_L2    = 16u;
 static const uint DI_PLANE_W     = 20u;
@@ -33,10 +28,6 @@ static const uint DI_PLANE_M     = 28u;
 static const uint DI_PLANE_WSUM  = 32u;
 static const uint DI_PLANE_PHAT  = 36u;
 
-// SoA address helpers
-// Tile-aligned pixel count: MapPixelID uses 4x8 tiles, so the max pixelID
-// can exceed IMG_W*IMG_H when dimensions aren't multiples of 4/8.
-// SoA planes must be sized to the aligned count to avoid cross-plane overlap.
 uint di_numPx()                      { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint di_addr_pack1(uint px)          { return px * DI_SZ_PACK1; }
 uint di_addr_l2(uint px)             { uint N = di_numPx(); return N * DI_PLANE_L2    + px * DI_SZ_L2; }
@@ -257,7 +248,6 @@ float J_term(
 inline float3 ReconnectDI(
     in float3 x1,
     in float3 n1_s,
-    in float3 n1_g,
     in float3 o,
     in uint   mID,
     in float3 x2,
@@ -266,10 +256,11 @@ inline float3 ReconnectDI(
     float3 localKd,
     float  localPr,
     float  localPm,
-    float  etai,
-    float  etat,
     in uint objID_di)
 {
+    // x1 is always a primary hit from air
+    float etai = 1.0f;
+    float etat = materials[mID].Ni;
     if (all(L < EPSILON))
         return 0;
 
@@ -277,7 +268,7 @@ inline float3 ReconnectDI(
     if (objID_di == 0xFFFFFFFFu)
     {
         float3 wi = normalize(x2);
-        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
+        float3 F = BSDF_term(mID, n1_s, n1_s, wi, o, localKd, localPr, localPm, etai, etat);
 
         float cosTheta = max(1e-15f, dot(n1_s, wi));
 
@@ -287,21 +278,10 @@ inline float3 ReconnectDI(
         return r;
     }
 
-    // Sun (should not appear in DI reservoirs anymore — sun is handled
-    // separately via scratch ping. Keep as fallback for safety.)
+    // Sun (should not appear in DI reservoirs anymore) fallback
     if (objID_di == 0xFFFFFFFEu)
     {
-        float3 wi = normalize(x2);
-        float3 Le = EvaluateSun(wi);
-
-        if (all(Le < EPSILON))
-            return 0;
-
-        float3 F = BSDF_term(mID, n1_s, n1_g, wi, o, localKd, localPr, localPm, etai, etat);
-        float  c = max(1e-15f, dot(n1_s, wi));
-
-        float3 r = F * Le * c;
-        return any(isnan(r)) ? 0 : r;
+        return 0;
     }
 
     // Geometric prep
@@ -310,7 +290,7 @@ inline float3 ReconnectDI(
     float3 ndirN = normalize(-dir);     // direction from x1 to x2, negated
 
     // Terms
-    float3 F = BSDF_term(mID, n1_s, n1_g, -ndirN, o, localKd, localPr, localPm, etai, etat);
+    float3 F = BSDF_term(mID, n1_s, n1_s, -ndirN, o, localKd, localPr, localPm, etai, etat);
     float   G = G_term(n1_s, -ndirN);
 
     // Throughput
@@ -353,11 +333,11 @@ bool UpdateReservoirDI(
 bool UpdateReservoirDI_Fast(
     RWByteAddressBuffer buf,
     uint pixelIdx,
-    float wi,     // Weight of new sample
-    float3 x2,    // New Sample Pos
-    float3 n2,    // New Sample Normal
-    float3 L2,    // New Sample Radiance
-    uint objID,   // New Sample ID
+    float wi,
+    float3 x2,
+    float3 n2,
+    float3 L2,
+    uint objID,
     inout uint2 seed
 )
 {
@@ -386,10 +366,10 @@ bool UpdateReservoirDI_Fast(
 bool UpdateReservoirDI_Infinite(
     RWByteAddressBuffer buf,
     uint pixelIdx,
-    float wi,     // Weight of new sample
-    float3 dir,   // Light Direction
-    float3 L2,    // New Sample Radiance
-    uint objID,   // Light ID
+    float wi,
+    float3 dir,
+    float3 L2,
+    uint objID,
     inout uint2 seed
 )
 {
@@ -406,7 +386,7 @@ bool UpdateReservoirDI_Infinite(
         buf.Store4(di_addr_pack1(pixelIdx), uint4(asuint(dir), PackNormal(normalize(float3(1,1,0.5f)))));
         buf.Store (di_addr_l2(pixelIdx),    PackRGB9E5(L2));
         buf.Store (di_addr_w(pixelIdx),     asuint(0.0f));
-        buf.Store (di_addr_objid(pixelIdx), objID);   // 0xFFFFFFFFu now preserved
+        buf.Store (di_addr_objid(pixelIdx), objID);
         buf.Store (di_addr_m(pixelIdx),     1);
     }
 
@@ -441,4 +421,52 @@ float JacobianDeterminantDI(
     float J = (cosn / max(cosc,1e-4)) * (distc / max(distn,1e-4));
 
     return !isnan(J)?J:0.0f;
+}
+
+
+//Temporal candidate tests
+inline bool TestTemporalCandidate_DI(
+    int2   coord,
+    float2 dims,
+    RWByteAddressBuffer sampleBuf,
+    uint   myMatID,
+    float3 myN1s,
+    float3 myPos,
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
+{
+    outPixelIdx = 0xFFFFFFFFu;
+    outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
+
+    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
+        return false;
+
+    uint tpx = MapPixelID(dims, (uint2)coord);
+
+    if (load_isEmitter(sampleBuf, tpx))
+        return false;
+
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
+
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
+    if (RejectNormal_DI(myN1s, ns, 0.36f))
+        return false;
+
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
+    if (RejectDistance_DI(myPos, xr, myN1s, 0.4f))
+        return false;
+
+    outPixelIdx = tpx;
+    outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
+    return true;
 }

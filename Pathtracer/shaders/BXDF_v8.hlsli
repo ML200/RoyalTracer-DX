@@ -20,9 +20,9 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 
     sp.Psheen = r_sheen;
     float energy_after_sheen = 1.0f - sp.Psheen;
-    sp.Pcoat = energy_after_sheen * r_coat;
+    sp.Pcoat = energy_after_sheen * r_coat * 3.0f;
     float energy_after_coat = energy_after_sheen * (1.0f - r_coat);
-    sp.Pspec = energy_after_coat * r_ggx;
+    sp.Pspec = energy_after_coat * r_ggx * 5.0f; // cheap boost for specular surfaces -> better denosining
     float energy_after_ggx = energy_after_coat * (1.0f - r_ggx);
     sp.Pdiff = energy_after_ggx * r_lamb;
 
@@ -129,7 +129,7 @@ inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s
     f += gate * f_sheen;
     gate *= Transmittance_SHEEN(matID, n_s, -s, o);
 
-    // Base COAT (fused: eval+transmittance, pdf is DCE'd)
+    // Base COAT
     {
         CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
         f += gate * cr.f;

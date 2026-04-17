@@ -80,19 +80,18 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssMVec[curPix] = emMV;
             biasMV = emMV;
             isEmitterSurface = true;
-            gOutput[uint3(DTid.xy, 10)] = float4(abs(emMV), 0.0f, 1.0f);
 
-            // Provide real geometric normal so DLSS-RR can do proper edge detection
-            float3 emNormal = load_n1_g_with_instID(g_sample_current, pixelIdx, emInstID);
+            //Provide shading normal for DLSS-RR edge detection
+            float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
         {
-            // Sky: no surface, clamped to cameraFar to stay within DLSS-RR's declared range
+            //Sky: no surface, clamped to cameraFar to stay within DLSS-RRs declared range
             g_dlssDepth[DTid.xy] = 10000.0f;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-            // Camera-only motion vector: reproject current ray direction through previous VP
+            //Camera-only motion vector: reproject current ray direction through previous VP
             float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
@@ -108,23 +107,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
             g_dlssMVec[DTid.xy] = skyMV;
             biasMV = skyMV;
-            gOutput[uint3(DTid.xy, 10)] = float4(abs(skyMV), 0.0f, 1.0f);
         }
 
         biasInstID = emInstID;
-
-        // Emitters are diffuse light sources — use roughness=1, diffuse albedo=1
-        // to route through DLSS-RR's diffuse denoiser (not the specular denoiser,
-        // which is view-dependent and causes direction-dependent trailing).
         g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(1.0f, 1.0f, 1.0f, 0.0f);
         g_dlssRoughness[DTid.xy] = 1.0f;
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 10000.0f;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
-        gOutput[uint3(DTid.xy, 4)] = float4(0, 0, 0, 1);
-        gOutput[uint3(DTid.xy, 5)] = float4(0, 0, 0, 1);
-
-        // Clamp emitter/sky radiance before DLSS-RR to prevent ghosting/ringing
         g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
     }
     else{
@@ -133,9 +123,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         uint sPrimID = load_primID(g_sample_current, pixelIdx);
         float2 sBary = load_bary(g_sample_current, pixelIdx);
         SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, mul(viewI, float4(0, 0, 0, 1)).xyz);
-        sv.etai = load_etai(g_sample_current, pixelIdx);
-        sv.etat = load_etat(g_sample_current, pixelIdx);
-
         // DLSS RR input data:
         g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
 
@@ -151,7 +138,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
 
         g_dlssMVec[curPix] = mvPixels;
-        gOutput[uint3(DTid.xy, 10)] = float4(abs(mvPixels), 0.0f, 1.0f);
 
         biasInstID = sInstID;
         biasMV = mvPixels;
@@ -160,11 +146,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
-        // Post-spatial GI reservoir for stable hit distance
-        Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_last_gi, pixelIdx);
+        Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sv.x);
 
-        // ── Specular motion vector ───────────────────────────────────────
+        // Specular motion vector
         // Uses the deterministic perfect-reflection ray traced in raygen (scratch slice 4).
         float specularity = Luma(specularAlbedo);
         float2 specMV = mvPixels; // default: surface motion vector
@@ -186,19 +171,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         g_dlssSpecMVec[DTid.xy] = specMV;
 
-        // Debug: slice 5 = spec MV divergence from surface MV
-        gOutput[uint3(DTid.xy, 4)] = float4(specularity, specularity, specularity, 1.0f);
-        float2 mvDiff = abs(specMV - mvPixels);
-        gOutput[uint3(DTid.xy, 5)] = float4(saturate(mvDiff * 0.1f), validSpecReproj ? 1.0f : 0.0f, 1.0f);
-
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
 
-    // ── Bias hint: instance-ID-based disocclusion detection ──────────────────
-    // Compare current instID with the previous frame's instID at the reprojected
-    // pixel. Mismatch = different object = disocclusion → tell DLSS-RR to trust
-    // the current frame (bias=1). This provides exact object identity info that
-    // DLSS-RR cannot derive from depth/normals alone.
+    //Bias hint: instance-ID-based disocclusion detection
+    //Compare current instID with the previous frames instID at the reprojected
+    //pixel. Mismatch = different object = disocclusion -> tell DLSS-RR to trust
+    //the current frame (bias=1). This provides exact object identity info that
+    //DLSS-RR cannot derive from depth/normals alone.
     {
         float disoccBias = 1.0f;  // default: trust current (off-screen, first frame)
         float2 reprojPrev = float2(DTid.xy) + biasMV;
@@ -208,20 +188,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint prevInstID = load_instID(g_sample_last, prevPixelIdx);
             disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
         }
-
-        // Emitter surfaces have deterministic direct emission — they don't benefit
-        // from temporal denoising. Always bias to current frame to prevent DLSS-RR
-        // from accumulating bright emitter color that persists as trails when the
-        // emitter moves.
         float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
-
         float bias = max(disoccBias, emitterBias);
         g_dlssBiasHint[DTid.xy] = bias;
-
-        // For disoccluded non-emitter pixels, the GI reservoir is stale (it belonged
-        // to the previous frame's surface at this pixel). The specular hit distance
-        // from that reservoir is meaningless and can confuse DLSS-RR's temporal
-        // weighting. Fall back to primary ray depth as a safe substitute.
         if (disoccBias > 0.5f && !isEmissiveOrSky) {
             g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
         }

@@ -116,8 +116,8 @@ struct ReSTIRSettings {
     bool  enableTempGI     = true;
     bool  enableSpatDI     = true;
     bool  enableSpatGI     = true;
-    float reuseRoughnessMin = 0.15f;
-    float reuseRoughnessMax = 0.6f;
+    float reuseRoughnessMin = 0.05f;
+    float reuseRoughnessMax = 0.3f;
 
     UINT Flags() const {
         return (enableTempDI ? 1u : 0u) | (enableTempGI ? 2u : 0u)

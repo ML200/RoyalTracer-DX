@@ -5,6 +5,7 @@
 #include "../../lib/tiny_gltf_v3.h"
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <cmath>
 #include <random>
@@ -561,12 +562,17 @@ private:
 
     // Recursively collect mesh instances with accumulated transforms.
     // IMPORTANT: Stores the node transform — vertices stay in mesh-local space.
+    // Uses a visited set to prevent double-traversal when a node appears as
+    // both a scene root and a child of another node.
     static void CollectGltfNodesV3(
         const tg3_model& model, int nodeIdx,
         const XMMATRIX& parentTransform,
-        std::vector<std::pair<int, XMMATRIX>>& outMeshes)
+        std::vector<std::pair<int, XMMATRIX>>& outMeshes,
+        std::unordered_set<int>& visited)
     {
         if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count) return;
+        if (!visited.insert(nodeIdx).second) return; // already visited
+
         const tg3_node& node = model.nodes[nodeIdx];
         XMMATRIX local = XMMatrixIdentity();
 
@@ -586,7 +592,7 @@ private:
         XMMATRIX world = local * parentTransform;
         if (node.mesh >= 0) outMeshes.push_back({ node.mesh, world });
         for (uint32_t i = 0; i < node.children_count; ++i)
-            CollectGltfNodesV3(model, node.children[i], world, outMeshes);
+            CollectGltfNodesV3(model, node.children[i], world, outMeshes, visited);
     }
 
     static int tg3_find_attribute(const tg3_primitive& prim, const char* name) {
@@ -1194,8 +1200,9 @@ public:
         int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
         if (sceneIdx < (int)model.scenes_count) {
             const tg3_scene& sc = model.scenes[sceneIdx];
+            std::unordered_set<int> visited;
             for (uint32_t i = 0; i < sc.nodes_count; ++i)
-                CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances);
+                CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances, visited);
         }
 
         // ---- 6. Build one LoadedMesh per unique glTF mesh -----------------------

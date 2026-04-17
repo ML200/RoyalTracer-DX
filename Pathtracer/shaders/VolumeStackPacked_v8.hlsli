@@ -1,15 +1,9 @@
 #ifndef VOLUME_STACK_PACKED_V2_HLSLI
 #define VOLUME_STACK_PACKED_V2_HLSLI
 
-// VolumeIOR: uint2 with 2x PackIORPair (each contains 2x 15-bit IOR + hidden pointer bits)
-// VolumeAux: uint4 mat stack (4x 32-bit) + uint4 obj stack (4x 32-bit)
 struct VolumeIOR_Packed { uint2 raw; };
 struct VolumeAux_Packed { uint4 mat32; uint4 obj32; };
 
-// -----------------------------------------------------------------------------
-// Helpers: pointer bits are hidden in bit15 and bit31 of each 32-bit word.
-// This gives 4 bits; your pointer uses values 0..4 (needs 3 bits), so ok.
-// -----------------------------------------------------------------------------
 inline int GetVolumePtrFast_packed(VolumeIOR_Packed v)
 {
     uint b0 = (v.raw.x >> 15) & 1u;
@@ -24,7 +18,7 @@ inline void SetVolumePtrFast_packed(inout VolumeIOR_Packed v, int ptr)
 {
     uint p = (uint)(ptr + 1) & 0xFu;
 
-    // Clear pointer bits (bit15 and bit31) in both words
+    //Clear pointer bits (bit15 and bit31) in both words
     v.raw.x &= ~(0x8000u | 0x80000000u);
     v.raw.y &= ~(0x8000u | 0x80000000u);
 
@@ -35,17 +29,13 @@ inline void SetVolumePtrFast_packed(inout VolumeIOR_Packed v, int ptr)
     if (p & 8u) v.raw.y |= 0x80000000u;
 }
 
-// -----------------------------------------------------------------------------
-// Helpers: read/write IOR slot (0..3) without unpacking arrays.
-// Stored IOR is 15-bit unsigned in [0..32767], mapped to [0..4] by *4.
-// -----------------------------------------------------------------------------
 inline uint GetIOR15RawAtSlot_packed(VolumeIOR_Packed v, int slot)
 {
-    // slot 0/1 in v.raw.x, slot 2/3 in v.raw.y
+    //slot 0/1 in v.raw.x, slot 2/3 in v.raw.y
     uint w = (slot < 2) ? v.raw.x : v.raw.y;
     uint shift = (uint)(slot & 1) * 16u;
     uint h = (w >> shift) & 0xFFFFu;
-    return h & 0x7FFFu; // strip hidden pointer bit
+    return h & 0x7FFFu; //strip hidden pointer bit
 }
 
 inline float GetIORAtSlot_packed(VolumeIOR_Packed v, int slot)
@@ -57,7 +47,7 @@ inline float GetIORAtSlot_packed(VolumeIOR_Packed v, int slot)
 
 inline void SetIORAtSlot_packed(inout VolumeIOR_Packed v, int slot, float ior)
 {
-    // Quantize [0..4] to 15-bit, preserve pointer bit (we'll recompute pointer later anyway)
+    // Quantize [0..4] to 15-bit, preserve pointer bit (well recompute pointer later anyway)
     uint q15 = (uint)(saturate(ior * 0.25f) * 32767.0f) & 0x7FFFu;
 
     if (slot < 2)
@@ -65,7 +55,7 @@ inline void SetIORAtSlot_packed(inout VolumeIOR_Packed v, int slot, float ior)
         uint shift = (uint)(slot & 1) * 16u;
         uint mask  = 0xFFFFu << shift;
 
-        // Preserve existing pointer bit at that halfword (bit15 of the halfword)
+        // Preserve existing pointer bit at that halfword
         uint oldHalf = (v.raw.x >> shift) & 0xFFFFu;
         uint ptrBit  = oldHalf & 0x8000u;
 
@@ -90,9 +80,6 @@ inline bool SlotOccupied_packed(VolumeIOR_Packed v, int slot)
     return GetIOR15RawAtSlot_packed(v, slot) != 0u;
 }
 
-// -----------------------------------------------------------------------------
-// Helpers: read/write packed aux stacks
-// -----------------------------------------------------------------------------
 inline uint GetMatAtSlot_packed(VolumeAux_Packed a, int slot)
 {
     return a.mat32[slot];
@@ -119,9 +106,6 @@ inline bool BoundaryMatch_packed(VolumeAux_Packed a, int slot, uint surfaceMatID
            (GetObjAtSlot_packed(a, slot) == surfaceObjID);
 }
 
-// -----------------------------------------------------------------------------
-// Packed IOR stack operations
-// -----------------------------------------------------------------------------
 
 inline float2 GetIORs_packed(
     VolumeIOR_Packed vIOR,
@@ -131,12 +115,12 @@ inline float2 GetIORs_packed(
 {
     float2 iors;
 
-    // Incident IOR (current / dominant medium)
+    //Incident IOR
     int ptr = GetVolumePtrFast_packed(vIOR);
     float incident = (ptr >= 0 && ptr < 4) ? GetIORAtSlot_packed(vIOR, ptr) : 1.0f;
     iors.x = incident;
 
-    // Detect whether we're exiting an existing boundary
+    //Detect whether were exiting an existing boundary
     int exiting_slot = -1;
     [unroll]
     for (int v = 0; v < 4; ++v)
@@ -239,12 +223,12 @@ inline void UpdateIORStack_packed(
     SetVolumePtrFast_packed(vIOR, new_ptr);
 }
 
-// Get the Material ID of the volume the camera is currently inside
+// Get the Material ID of the volume the ray is currently inside
 inline uint GetCurrentMediumMaterialID_packed(VolumeIOR_Packed vIOR, VolumeAux_Packed vAux)
 {
     int ptr = GetVolumePtrFast_packed(vIOR);
-    // Invalid sentinel (no medium)
+    //Invalid sentinel
     return (ptr >= 0 && ptr < 4) ? GetMatAtSlot_packed(vAux, ptr) : 0xFFFFFFFFu;
 }
 
-#endif // VOLUME_STACK_PACKED_V2_HLSLI
+#endif

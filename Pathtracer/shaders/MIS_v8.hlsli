@@ -61,18 +61,15 @@ float PairwiseMIS_Canonical_Spat_DI(
             float2 nBary = load_bary(g_sample_current, nIds[i]);
             SurfaceVertex sv_n = BuildVertexLight(nInstID, nPrimID, nBary,
                 load_n1_s_with_instID(g_sample_current, nIds[i], nInstID),
-                load_n1_g_with_instID(g_sample_current, nIds[i], nInstID),
                 load_uv(g_sample_current, nIds[i]),
-                load_etai(g_sample_current, nIds[i]),
-                load_etat(g_sample_current, nIds[i]),
                 InitOrigin());
-            float p_hat_from = GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.n_g, sv_n.o, sv_n.matID, x2_c, n2_c, L2_c, sv_n.Kd, sv_n.Pr, sv_n.Pm, sv_n.etai, sv_n.etat, objID_c));
+            float p_hat_from = GetPHat(ReconnectDI(sv_n.x, sv_n.n_s, sv_n.o, sv_n.matID, x2_c, n2_c, L2_c, sv_n.Kd, sv_n.Pr, sv_n.Pm, objID_c));
             p_hat_from *= JacobianDeterminantDI(x1_c, x2_c, sv_n.x, n2_c, objID_c);
             // Visibility check
             {
                 float3 _vd = (objID_c >= 0xFFFFFFFEu) ? normalize(x2_c) : ((x2_c - sv_n.x) / max(length(x2_c - sv_n.x), EPSILON));
                 float  _vt = (objID_c >= 0xFFFFFFFEu) ? 10000.0f : (length(x2_c - sv_n.x) * 0.999f);
-                p_hat_from *= IsVisible(sv_n.x, sv_n.n_g, _vd, _vt) ? 1.0f : 0.0f;
+                p_hat_from *= IsVisible(sv_n.x, sv_n.n_s, _vd, _vt) ? 1.0f : 0.0f;
             }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > 1e-4)
@@ -95,16 +92,13 @@ float PairwiseMIS_Canonical_Spat_GI(
     // data needed from the canonical reseroir (we dont want to load the complete struct in here)
     in float3 x2_c,
     in float3 n2s_c,
-    in float3 n2g_c,
     in float3 L2_c,
     in float3 V2_c,
     in uint   matID_c,
     in float3 localKd2_c,
     in float  localPr2_c,
     in float  localPm2_c,
-    in float  etai2_c,
-    in float  etat2_c,
-    in float  pdfx2_c,
+    in float  eta_c,
     in float  J_c
     )
 {
@@ -121,25 +115,20 @@ float PairwiseMIS_Canonical_Spat_GI(
             float2 nBary = load_bary(g_sample_current, id);
             SurfaceVertex sv_n1 = BuildVertexLight(nInstID, nPrimID, nBary,
                 load_n1_s_with_instID(g_sample_current, id, nInstID),
-                load_n1_g_with_instID(g_sample_current, id, nInstID),
                 load_uv(g_sample_current, id),
-                load_etai(g_sample_current, id),
-                load_etat(g_sample_current, id),
                 InitOrigin());
 
-            SurfaceVertex sv_c2 = { x2_c, n2s_c, n2g_c, V2_c, localKd2_c, localPr2_c, localPm2_c, etai2_c, etat2_c, matID_c, float2(0,0) };
-
             float Jn = 0.0f;
-            float J = 0.0f;
             float p_hat_from = GetPHat(ReconnectGI(
-                sv_n1.x, sv_n1.n_s, sv_n1.n_g, sv_n1.o, sv_n1.matID,
-                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
-                sv_c2.matID, sv_c2.x, sv_c2.n_s, sv_c2.n_g, L2_c, sv_c2.o,
-                sv_c2.Kd, sv_c2.Pr, sv_c2.Pm, sv_c2.etai, sv_c2.etat,
-                pdfx2_c, J_c, true, Jn, J));
+                sv_n1.x, sv_n1.n_s, sv_n1.o, sv_n1.matID,
+                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm,
+                matID_c, x2_c, n2s_c, L2_c, V2_c,
+                localKd2_c, localPr2_c, localPm2_c, eta_c,
+                Jn));
             {
                 float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_g, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
+                float J = JacobianRatio(Jn, J_c);
+                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_s, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
             }
             float m_den = m_num + (M_sum - M_c) * p_hat_from;
             if(m_den > EPSILON)

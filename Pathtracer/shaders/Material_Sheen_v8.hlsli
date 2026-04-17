@@ -2,7 +2,7 @@
 static const float  SHEEN_R      = 0.20f;
 static const float3 SHEEN_COLOR  = float3(1,1,1);
 
-// Precomputed constants derived from SHEEN_R (all compile-time)
+// Precomputed constants derived from SHEEN_R
 static const float SHEEN_INVR    = 1.0f / SHEEN_R;                          // 5.0
 static const float SHEEN_D_SCALE = (2.0f + SHEEN_INVR) * (0.5f * INV_PI);  // 7/(2pi)
 static const float SHEEN_SAMP_EXPO = (2.0f * SHEEN_R) / (2.0f * SHEEN_R + 1.0f); // 2/7
@@ -30,7 +30,7 @@ inline float SHEEN_L_eval(float x)
          + SHEEN_FIT_D * x + SHEEN_FIT_E;
 }
 
-// Precomputed L(0.5) — used in every Lambda_Charlie call
+// Precomputed L(0.5), used in every Lambda_Charlie call
 static const float SHEEN_L_HALF = SHEEN_FIT_A / (1.0f + SHEEN_FIT_B * pow(0.5f, SHEEN_FIT_C))
                                 + SHEEN_FIT_D * 0.5f + SHEEN_FIT_E;
 
@@ -104,7 +104,7 @@ inline float3 EvaluateBRDF_SHEEN(
     float  G = SHEEN_G_Charlie(NdotV, NdotL);
     float  denom = max(1e-6f, 4.0f * NdotV * NdotL);
 
-    // F~1, SHEEN_COLOR=white — both multiply to identity
+    // F~1, SHEEN_COLOR=white, both multiply to identity
     return w * (G * D / denom);
 }
 
@@ -127,7 +127,7 @@ inline float Transmittance_SHEEN(
         return 1.0f;
 
     float aV = GetSheenLUT(SHEEN_R, NdotV);
-    // SHEEN_COLOR=white → Luma=1, tintLum=1
+    // SHEEN_COLOR=white -> Luma=1, tintLum=1
     return saturate(1.0f - w * aV);
 }
 
@@ -144,7 +144,7 @@ inline float Sampling_Weight_SHEEN(
     if (w <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
     float  aV = GetSheenLUT(SHEEN_R, NdotV);
-    // SHEEN_COLOR=white → Luma=1, tintLum=1
+    // SHEEN_COLOR=white -> Luma=1, tintLum=1
     return saturate(w * aV);
 }
 
