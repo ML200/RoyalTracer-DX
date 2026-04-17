@@ -17,17 +17,16 @@ Texture2D<int2> g_reuseTexture0 : register(t19);
 Texture2D<int2> g_reuseTexture1 : register(t20);
 Texture2D<int2> g_reuseTexture2 : register(t21);
 
-// Per-pixel scratch layout in g_pathStateBuffer:
+// Per-pixel scratch layout in g_pathStateBuffer (56 bytes):
 //   offset 0:   uint  validCount              (this pass)
-//   offset 4:   float M_sum                   (this pass)
-//   offset 8:   float my_Jc                   (filled by shift pass)
-//   offset 12:  pad
-//   offset 16 + s*16 + 0:  uint  nID          (this pass; 0xFFFFFFFFu if slot s rejected)
-//   offset 16 + s*16 + 4:  uint  F_pack       (shift pass)
-//   offset 16 + s*16 + 8:  float F_mag        (shift pass, visibility baked)
-//   offset 16 + s*16 + 12: float Jn           (shift pass)
-static const uint GI_SEL_STRIDE      = 64u;
-static const uint GI_SEL_SLOT_BASE   = 16u;
+//   offset 4:   float my_Jc                   (filled by shift pass)
+//   offset 8 + s*16 + 0:  uint  nID           (this pass; 0xFFFFFFFFu if slot s rejected)
+//   offset 8 + s*16 + 4:  uint  F_pack        (shift pass)
+//   offset 8 + s*16 + 8:  float F_mag         (shift pass, visibility baked)
+//   offset 8 + s*16 + 12: float Jn            (shift pass)
+// M_sum is recomputed in the merge pass from per-slot partner.M loads.
+static const uint GI_SEL_STRIDE      = 56u;
+static const uint GI_SEL_SLOT_BASE   = 8u;
 static const uint GI_SEL_SLOT_STRIDE = 16u;
 
 uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
@@ -110,7 +109,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     //Emitter or spatial GI disabled -> no neighbors
     if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u))
     {
-        g_pathStateBuffer.Store2(baseAddr, uint2(0u, asuint(0.0f)));
+        g_pathStateBuffer.Store(baseAddr, 0u);  // validCount=0
         return;
     }
 
@@ -118,7 +117,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint myM = load_M_gi(g_Reservoirs_current_gi, pixelIdx);
     if (myM == 0u)
     {
-        g_pathStateBuffer.Store2(baseAddr, uint2(0u, asuint(0.0f)));
+        g_pathStateBuffer.Store(baseAddr, 0u);
         return;
     }
 
@@ -135,8 +134,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     [unroll]
     for (uint i = 0u; i < SPAT_COUNT_MAX_GI; ++i) nIds[i] = 0xFFFFFFFFu;
 
-    uint  validCount = 0;
-    float M_sum      = 0.0f;
+    uint validCount = 0;
 
     [loop]
     for (uint s = 0u; s < SPAT_COUNT_MAX_GI; ++s)
@@ -166,11 +164,10 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         nIds[s] = bID;
         ++validCount;
-        M_sum += min(SPAT_MCAP_GI, bM);
     }
 
-    //Write header: validCount, M_sum. my_Jc + per-slot shift payload
-    g_pathStateBuffer.Store2(baseAddr, uint2(validCount, asuint(M_sum)));
+    //Write header: validCount (my_Jc filled by shift pass)
+    g_pathStateBuffer.Store(baseAddr, validCount);
 
     //Write nIDs at slot positions
     [unroll]

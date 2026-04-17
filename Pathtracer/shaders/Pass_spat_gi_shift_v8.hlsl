@@ -14,8 +14,8 @@
 //─────────────────────────────────────────────────────────────────────────────
 
 // Scratch layout mirrors Pass_spat_gi_select_v8.hlsl
-static const uint GI_SEL_STRIDE      = 64u;
-static const uint GI_SEL_SLOT_BASE   = 16u;
+static const uint GI_SEL_STRIDE      = 56u;
+static const uint GI_SEL_SLOT_BASE   = 8u;
 static const uint GI_SEL_SLOT_STRIDE = 16u;
 
 uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
@@ -50,40 +50,51 @@ void Pass_spat_gi_shift_v8()
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, InitOrigin());
 
-    //MY Jc, partners read this from my scratch header for their canonical MIS
+    //MY Jc, partners read this from my scratch header for their canonical MIS.
+    //Load only the two reservoir fields ComputeJc needs — no full reservoir load.
     {
-        const Reservoir_GI myRdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-        const float my_Jc = ComputeJc(sv.x, myRdi.x2_gi, myRdi.n2_s_gi);
-        g_pathStateBuffer.Store(baseAddr + 8u, asuint(my_Jc));
+        const uint   myObjID = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
+        const float3 my_x2   = load_x2_gi   (g_Reservoirs_current_gi, pixelIdx, myObjID);
+        const float3 my_n2s  = load_n2_s_gi (g_Reservoirs_current_gi, pixelIdx, myObjID);
+        const float  my_Jc   = ComputeJc(sv.x, my_x2, my_n2s);
+        g_pathStateBuffer.Store(baseAddr + 4u, asuint(my_Jc));
     }
 
-    //One shift per valid slot
+    //One shift per valid slot. Partner is loaded per-field (skip M / W / F_gi /
+    //F_mag / w_sum fields shift doesn't need) and pack1 is fetched once for
+    //both x2 and n2_s.
     [loop]
     for (uint s = 0u; s < SPAT_COUNT_MAX_GI; ++s)
     {
         const uint slotAddr = gi_sel_slot_addr(pixelIdx, s);
         const uint nID      = g_pathStateBuffer.Load(slotAddr);
-
         if (nID == 0xFFFFFFFFu) continue;
 
-        //Partner reservoir
-        const Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
+        const uint   p_objID = load_objID_gi(g_Reservoirs_current_gi, nID);
+        const uint   p_matID = load_matID_gi(g_Reservoirs_current_gi, nID);
+        const uint4  pack1   = g_Reservoirs_current_gi.Load4(gi_addr_pack1(nID));
+        const float3 p_x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
+        const float3 p_n2s   = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
+        const float3 p_L2    = load_L2_gi(g_Reservoirs_current_gi, nID);
+        const float3 p_V2    = load_V2_gi(g_Reservoirs_current_gi, nID);
+        const float2 p_uv    = load_uv_gi(g_Reservoirs_current_gi, nID);
+        const float  p_eta   = load_eta_gi(g_Reservoirs_current_gi, nID);
 
         float3 rKd; float rPr, rPm;
-        RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rKd, rPr, rPm);
+        RefetchMaterial(p_matID, p_uv, rKd, rPr, rPm);
 
         // MY x1 -> partner x2
         float  Jn = 0.0f;
         float3 c  = ReconnectGI(
             sv.x, sv.n_s, sv.o, sv.matID,
             sv.Kd, sv.Pr, sv.Pm,
-            rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-            rKd, rPr, rPm, rdi_r.eta_gi,
+            p_matID, p_x2, p_n2s, p_L2, p_V2,
+            rKd, rPr, rPm, p_eta,
             Jn);
 
         // Visibility — baked into the stored contribution
         {
-            const float3 conn = rdi_r.x2_gi - sv.x;
+            const float3 conn = p_x2 - sv.x;
             const float  cd   = length(conn);
             const float  vis  = (cd > EPSILON &&
                                  IsVisible(sv.x, sv.n_s, conn / cd, cd * 0.999f))
@@ -91,7 +102,6 @@ void Pass_spat_gi_shift_v8()
             c *= vis;
         }
 
-        // Pack (color dir + magnitude + Jn) into 12 bytes
         const float  F_mag  = GetPHat(c);
         const float3 F_norm = (F_mag > 1e-20f) ? c / F_mag : float3(0, 0, 0);
         const uint   F_pack = PackRGB9E5(F_norm);
