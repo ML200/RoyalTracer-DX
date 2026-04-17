@@ -31,7 +31,7 @@
 #define SPAT_RAD_MAX_GI 48
 #define SPAT_RAD_MIN_GI 8
 
-#define SPAT_COUNT_MAX_GI 2
+#define SPAT_COUNT_MAX_GI 3
 
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f

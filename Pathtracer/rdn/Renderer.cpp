@@ -6,6 +6,8 @@
 #include "stdafx.h"
 #include "Renderer.h"
 #include "Windowsx.h"
+#include "ReuseTextureGen.h"
+#include <random>
 
 #undef SL_CHECK
 #define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
@@ -26,7 +28,8 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_boil_gi_v8.hlsl|cs:16x16", L"barrier",
         L"Pass_spat_di_v8.hlsl|cs:16x16",   L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|rg", L"barrier",
+        L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|rg",             L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
         L"dlss",                             L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",
@@ -49,6 +52,7 @@ void Renderer::InitDevice() {
                 std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
         }
         GenerateLutTextures();
+        InitReuseTextures();
 
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
@@ -1042,7 +1046,7 @@ void Renderer::PopulateCommandList() {
     rs.spatTriesGI    = std::clamp(rs.spatTriesGI, 2, 16);
     rs.spatTriesDI    = std::clamp(rs.spatTriesDI, 1, 16);
 
-    UINT rsConsts[20] = {};
+    UINT rsConsts[29] = {};
     rsConsts[4]  = (UINT)rs.tempMcapDI;
     rsConsts[5]  = (UINT)rs.tempMcapGI;
     rsConsts[6]  = (UINT)rs.spatCountMaxDI;
@@ -1063,9 +1067,22 @@ void Renderer::PopulateCommandList() {
     rsConsts[17] = (UINT)rs.spatTriesGI;
     rsConsts[18] = (UINT)rs.spatTriesDI;
 
+    // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
+    // Sizes must match shaders' hardcoded values and InitReuseTextures.
+    {
+        const UINT kSizes[3] = { 254u, 230u, 210u };
+        std::mt19937 rng(static_cast<uint32_t>(m_time) * 0x9E3779B9u + 1u);
+        std::uniform_int_distribution<uint32_t> dist;
+        for (int i = 0; i < 3; ++i) {
+            rsConsts[20 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
+            rsConsts[20 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
+            rsConsts[20 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
+        }
+    }
+
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 20, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 29, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

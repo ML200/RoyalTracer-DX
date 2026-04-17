@@ -188,6 +188,11 @@ private:
     void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
+    // Paired spatial reuse textures (Lin et al. 2026)
+    ComPtr<ID3D12Resource> m_reuseTexture[3];
+    std::vector<ComPtr<ID3D12Resource>> m_reuseTextureUploadHeaps;
+    void InitReuseTextures();
+
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
 

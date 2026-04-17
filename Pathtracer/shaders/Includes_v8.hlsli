@@ -26,6 +26,17 @@ cbuffer Push : register(b1)
     uint  rs_spatTriesGI;      // [17] total attempts to find GI spatial neighbors
     uint  rs_spatTriesDI;      // [18] total attempts to find DI spatial neighbor
     uint  _pad19;              // [19]
+    // Paired reuse textures, per-slot randomized transforms (Lin et al. 2026 §3.2)
+    // flags bits: 1=flipX, 2=flipY, 4=transpose
+    uint  rs_reuseOffset0_x;   // [20]
+    uint  rs_reuseOffset0_y;   // [21]
+    uint  rs_reuseFlags0;      // [22]
+    uint  rs_reuseOffset1_x;   // [23]
+    uint  rs_reuseOffset1_y;   // [24]
+    uint  rs_reuseFlags1;      // [25]
+    uint  rs_reuseOffset2_x;   // [26]
+    uint  rs_reuseOffset2_y;   // [27]
+    uint  rs_reuseFlags2;      // [28]
 };
 
 //Image size convenience macros

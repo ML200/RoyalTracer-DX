@@ -115,6 +115,8 @@ add_executable(Pathtracer WIN32
         rdn/Scene/OmmBuilder.h
         rdn/Scene/OmmBuilder.cpp
         rdn/Renderer_Pipeline.cpp
+        rdn/ReuseTextureGen.h
+        rdn/ReuseTextureGen.cpp
         rdn/Common.h
 
         rdn/ThirdPartyImpl.cpp
