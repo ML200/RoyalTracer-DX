@@ -15,7 +15,6 @@ struct Reservoir_GI
     uint   F_gi;        // RGB9E5-packed normalized color  (F / Luma(F))
     float  F_mag_gi;    // scalar magnitude = Luma(F) = GetPHat(F)
 
-    // Reservoir bookkeeping
     float  W_gi;
     uint   M_gi;
     float  w_sum_gi;    // raygen-only (merge passes overwrite before use)
@@ -23,19 +22,13 @@ struct Reservoir_GI
 };
 
 
-// SoA layout — each field is a contiguous plane across all pixels.
-// Merge-active: PACK1(16) | L2(4) | V2(4) | OBJID(4) | UV(4) | MATID(4) |
-//               W(4) | F(4) | FMAG(4) | M(4) | ETA(4) = 56
-// Raygen-only:  WSUM(4) | VPOST(4) | TPOST(4) = 12
-// Total: 68 bytes/pixel
-
 static const uint BYTES_GI       = 56u;
 static const uint BYTES_GI_WSUM  =  4u;
 static const uint BYTES_GI_VPOST =  4u;
 static const uint BYTES_GI_TPOST =  4u;
 static const uint STRIDE_GI      = BYTES_GI + BYTES_GI_WSUM + BYTES_GI_VPOST + BYTES_GI_TPOST; // 68
 
-// Per-field sizes
+//Per-field sizes
 static const uint GI_SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
 static const uint GI_SZ_L2    =  4u;
 static const uint GI_SZ_V2    =  4u;
@@ -51,7 +44,7 @@ static const uint GI_SZ_WSUM  =  4u;
 static const uint GI_SZ_VPOST =  4u;
 static const uint GI_SZ_TPOST =  4u;
 
-// Plane cumulative offsets (per-pixel contribution to base address)
+//Plane cumulative offsets
 static const uint GI_PLANE_PACK1 =  0u;
 static const uint GI_PLANE_L2    = 16u;
 static const uint GI_PLANE_V2    = 20u;
@@ -68,7 +61,7 @@ static const uint GI_PLANE_VPOST = 60u;
 static const uint GI_PLANE_TPOST = 64u;
 
 // SoA address helpers
-// Tile-aligned pixel count — must match MapPixelID's 4x8 tile swizzle.
+// Tile-aligned pixel count, must match MapPixelID's 4x8 tile swizzle.
 uint gi_numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint gi_addr_pack1(uint px)           { return px * GI_SZ_PACK1; }
 uint gi_addr_l2(uint px)              { uint N = gi_numPx(); return N * GI_PLANE_L2    + px * GI_SZ_L2; }
@@ -155,10 +148,6 @@ Reservoir_GI loadReservoirGI(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-// -------------------------------
-// Fast loaders (DI-style usage)
-// -------------------------------
-
 uint  load_objID_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(gi_addr_objid(pixelIdx));
@@ -224,10 +213,6 @@ float  load_eta_gi(RWByteAddressBuffer b, uint pixelIdx)
     return asfloat(b.Load(gi_addr_eta(pixelIdx)));
 }
 
-
-// -----------------------------------------
-// Special entry accessors (fast update only)
-// -----------------------------------------
 
 float load_wsum_gi(RWByteAddressBuffer b, uint pixelIdx)
 {
@@ -323,13 +308,13 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
-// Safe jacobian ratio: matches old behavior of zeroing when Jc is degenerate
+// Safe jacobian ratio
 inline float JacobianRatio(float Jn, float Jc)
 {
     return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
 }
 
-// Calculate reconnection (two–sided)
+// Calculate reconnection
 inline float3 ReconnectGI(
     // Vertex x1 (camera path hit)
     in float3  x1,
@@ -349,7 +334,7 @@ inline float3 ReconnectGI(
     in float3  localKd2,
     in float   localPr2,
     in float   localPm2,
-    in float   eta2,        // stored transmittance IOR at x2
+    in float   eta2, // stored transmittance IOR at x2
 
     out float  Jn
 )
@@ -362,11 +347,11 @@ inline float3 ReconnectGI(
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x2 to x1
 
-    // x1 IOR: always air / material (primary hit)
+    //x1 IOR: always air / material (primary hit)
     float etai1 = 1.0f;
     float etat1 = materials[mID1].Ni;
 
-    // x2 IOR
+    //x2 IOR
     float etai2 = 1.0f;
     float etat2 = eta2;
 
@@ -380,7 +365,7 @@ inline float3 ReconnectGI(
     float  G1  = G_term(n1_s, -ndirN);
     float  G2  = G_term(n2_s, -V2);
 
-    // Transmittance: if direction points against the shading normal, we are transmitting INTO the object
+    //Transmittance: if direction points against the shading normal, we are transmitting INTO the object
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
     if (dot(n1_s, -ndirN) < 0.0f)
     {
@@ -389,8 +374,7 @@ inline float3 ReconnectGI(
 
     // Geometric jacobian at the new x1
     Jn = max(abs(dot(ndirN, n2_s)) / (dist * dist), EPSILON);
-
-    // Throughput: no PDF division — wi divides by pdf explicitly in raygen
+    // contribution
     float3 r = F1 * F2 * L2 * G1 * G2 * transmittance;
 
     if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
@@ -452,8 +436,6 @@ bool UpdateReservoirGI_Fast(
     RWByteAddressBuffer buf,
     uint pixelIdx,
     float wi,
-
-    // Varying (always written on accept)
     float3 L2_new,
     float3 V2_new,
 
@@ -478,10 +460,6 @@ bool UpdateReservoirGI_Fast(
     return isAccepted;
 }
 
-
-// ---------------------------------
-// Constant-data setters
-// ---------------------------------
 
 // Store constant hit data for GI reconnection
 void SetReservoirGI_ConstHit(
@@ -510,4 +488,50 @@ void SetReservoirGI_UV(
 )
 {
     buf.Store(gi_addr_uv(pixelIdx), PackFloat2x16(uv.x, uv.y));
+}
+
+inline bool TestTemporalCandidate_GI(
+    int2   coord,
+    float2 dims,
+    RWByteAddressBuffer sampleBuf,
+    uint   myMatID,
+    float3 myN1s,
+    float3 myPos,
+    out uint   outPixelIdx,
+    out uint   outInstID,
+    out uint   outPrimID,
+    out float2 outBary)
+{
+    outPixelIdx = 0xFFFFFFFFu;
+    outInstID   = 0;
+    outPrimID   = 0;
+    outBary     = float2(0, 0);
+
+    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
+        return false;
+
+    uint tpx = MapPixelID(dims, (uint2)coord);
+
+    if (load_isEmitter(sampleBuf, tpx))
+        return false;
+
+    uint rI = load_instID(sampleBuf, tpx);
+    uint rP = load_primID(sampleBuf, tpx);
+    /*if (GetMatIDFast(rI, rP) != myMatID)
+        return false;*/
+
+    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
+    if (RejectNormal_GI(myN1s, ns, 0.36f))
+        return false;
+
+    float2 rB = load_bary(sampleBuf, tpx);
+    float3 xr = ReconstructPosition(rI, rP, rB);
+    if (RejectDistance_GI(myPos, xr, myN1s, 0.4f))
+        return false;
+
+    outPixelIdx = tpx;
+    outInstID   = rI;
+    outPrimID   = rP;
+    outBary     = rB;
+    return true;
 }

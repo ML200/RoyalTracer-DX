@@ -1,34 +1,11 @@
-// ============================================================================
-// Sun + Physically-Based Atmospheric Sky
-// Based on: Bruneton 2008/2017 parameterization (exact Earth coefficients)
-//           Hillaire 2020 single-scatter ray march approach
-//
-// Drop-in replacement — public API identical:
-//   SunSampleResult SampleSun(float2 u)
-//   float          GetSunPdf(float3 rayDir)
-//   float3         EvaluateSun(float3 rayDir)
-//   float3         EvaluateSky(float3 rayDir)
-//
-// Approach: single-scattering ray march with Rayleigh + Mie + ozone,
-// two-lobe Cornette-Shanks Mie phase for balanced halo/horizon,
-// Bruneton piecewise-linear ozone profile,
-// and a simple constant multi-scattering energy correction.
-// ============================================================================
-
 #define TAU     (2.0f * PI)
 #define DEG2RAD (PI / 180.0f)
 #define RAD2DEG (180.0f / PI)
 
-// ---------------------------------------------------------------------------
-// External time input
-// ---------------------------------------------------------------------------
 #ifndef SUN_FRAMECOUNT
 #define SUN_FRAMECOUNT time
 #endif
 
-// ---------------------------------------------------------------------------
-// Location / date
-// ---------------------------------------------------------------------------
 #ifndef SUN_LATITUDE_DEG
 #define SUN_LATITUDE_DEG   48.5200f
 #endif
@@ -41,9 +18,6 @@
 #define SUN_DAY_OF_YEAR    172.0f
 #endif
 
-// ---------------------------------------------------------------------------
-// Simulation control
-// ---------------------------------------------------------------------------
 #ifndef SUN_FPS
 #define SUN_FPS            90.0f
 #endif
@@ -60,9 +34,6 @@
 #define SUN_NIGHT_SPEEDUP  2.0f
 #endif
 
-// ---------------------------------------------------------------------------
-// Sun appearance
-// ---------------------------------------------------------------------------
 #ifndef SUN_ANGULAR_DEG
 #define SUN_ANGULAR_DEG    0.53f
 #endif
@@ -87,10 +58,8 @@
 #define SUN_LIMB_DARKENING 1
 #endif
 
-// ---------------------------------------------------------------------------
-// Atmosphere: Bruneton 2017 standard Earth parameters
-// ALL lengths in km.  ALL coefficients in 1/km.
-// ---------------------------------------------------------------------------
+//Atmosphere: Bruneton 2017 standard Earth parameters
+//ALL lengths in km. ALL coefficients in 1/km.
 
 #ifndef ATMOS_BOTTOM_RADIUS
 #define ATMOS_BOTTOM_RADIUS     6360.0f
@@ -100,7 +69,6 @@
 #define ATMOS_TOP_RADIUS        6420.0f
 #endif
 
-// ---- Rayleigh (air molecules) ----
 #ifndef ATMOS_RAYLEIGH_SCATTER
 #define ATMOS_RAYLEIGH_SCATTER  float3(0.005802f, 0.013558f, 0.033100f)
 #endif
@@ -109,7 +77,6 @@
 #define ATMOS_RAYLEIGH_SCALE_H  8.0f
 #endif
 
-// ---- Mie (aerosols) ----
 #ifndef ATMOS_MIE_SCATTER_BASE
 #define ATMOS_MIE_SCATTER_BASE  float3(0.003996f, 0.003996f, 0.003996f)
 #endif
@@ -122,11 +89,11 @@
 #define ATMOS_MIE_SCALE_H       1.2f
 #endif
 
-// Two-lobe Mie phase function:
-//   Primary lobe:   narrow forward scatter (the sun halo core)
-//   Secondary lobe: wider forward scatter (soft glow around sun)
-// The two-lobe approach gives a visible halo on short zenith paths
-// without over-accumulating scatter on long horizon paths.
+//Two-lobe Mie phase function:
+//Primary lobe: narrow forward scatter (the sun halo core)
+//Secondary lobe: wider forward scatter (soft glow around sun)
+//The two-lobe approach gives a visible halo on short zenith paths
+//without over-accumulating scatter on long horizon paths.
 #ifndef ATMOS_MIE_G_PRIMARY
 #define ATMOS_MIE_G_PRIMARY     0.76f
 #endif
@@ -135,22 +102,22 @@
 #define ATMOS_MIE_G_SECONDARY   0.35f
 #endif
 
-// Weight of secondary lobe (0 = single lobe, 1 = all secondary)
+//Weight of secondary lobe (0 = single lobe, 1 = all secondary)
 #ifndef ATMOS_MIE_LOBE2_WEIGHT
 #define ATMOS_MIE_LOBE2_WEIGHT  0.15f
 #endif
 
-// Turbidity multiplier on Mie (1.0 = very clear, 2-3 = clear, 5+ = hazy)
+//Turbidity multiplier on Mie (1.0 = very clear, 2-3 = clear, 5+ = hazy)
 #ifndef SUN_TURBIDITY
 #define SUN_TURBIDITY           2.0f
 #endif
 
-// ---- Ozone (absorption only) ----
+//Ozone
 #ifndef ATMOS_OZONE_ABSORPTION
 #define ATMOS_OZONE_ABSORPTION  float3(0.000650f, 0.001881f, 0.000085f)
 #endif
 
-// ---- Ray march quality ----
+//Ray march quality
 #ifndef ATMOS_VIEW_STEPS
 #define ATMOS_VIEW_STEPS        12
 #endif
@@ -159,24 +126,22 @@
 #define ATMOS_LIGHT_STEPS       8
 #endif
 
-// ---- Solar irradiance at top of atmosphere ----
+//Solar irradiance at top of atmosphere
 #ifndef ATMOS_SOLAR_IRRADIANCE
 #define ATMOS_SOLAR_IRRADIANCE  float3(1.0f, 1.0f, 1.0f)
 #endif
 
-// ---- Multi-scattering energy correction ----
+//Multi-scattering energy correction
 #ifndef ATMOS_MULTI_SCATTER_FACTOR
 #define ATMOS_MULTI_SCATTER_FACTOR  1.1f
 #endif
 
-// ---- Final sky exposure ----
+//Final sky exposure
 #ifndef SKY_INTENSITY
 #define SKY_INTENSITY           6.0f
 #endif
 
-// ---------------------------------------------------------------------------
 // Night sky
-// ---------------------------------------------------------------------------
 #ifndef SKY_TWILIGHT_DEG
 #define SKY_TWILIGHT_DEG        18.0f
 #endif
@@ -209,9 +174,7 @@
 #define SKY_NIGHT_BASE          float3(0.00015f, 0.00020f, 0.00035f)
 #endif
 
-// ---------------------------------------------------------------------------
 // Star config
-// ---------------------------------------------------------------------------
 #ifndef SKY_STAR_LAYERS
 #define SKY_STAR_LAYERS         3
 #endif
@@ -220,27 +183,17 @@
 #define SKY_STAR_SCINTILLATION  0.04f
 #endif
 
-// How many degrees past civil twilight (-6°) the brightest stars persist.
-// At magnitude=1.0, stars fade at elevDeg = -6 + SKY_STAR_DAWN_LINGER.
-// Dim stars (magnitude~0) still fade at the normal deep twilight threshold.
-// 8.0 means the very brightest stars linger until sun is about -6+8 = +2°
-// (just above horizon). Realistic: Venus/Sirius visible well into dawn.
 #ifndef SKY_STAR_DAWN_LINGER
 #define SKY_STAR_DAWN_LINGER    10.0f
 #endif
 
-// ---------------------------------------------------------------------------
 // World orientation
-// ---------------------------------------------------------------------------
 #ifndef WORLD_NORTH
 #define WORLD_NORTH             normalize(float3(0, 0, 1))
 #endif
 
 static const float3 WORLD_UP = float3(0, 1, 0);
 
-// ============================================================================
-// Structs
-// ============================================================================
 struct SunSampleResult
 {
     float3 direction;
@@ -263,14 +216,12 @@ struct SunState
 
 struct MediumSample
 {
-    float3 scatterR;        // Rayleigh scattering [1/km]
-    float3 scatterM;        // Mie scattering [1/km]
-    float3 extinction;      // Total extinction [1/km]
+    float3 scatterR;
+    float3 scatterM;
+    float3 extinction;
 };
 
-// ============================================================================
 // Utility
-// ============================================================================
 inline float3 SafeNormalize(float3 v)
 {
     return (dot(v, v) > 0.0f) ? normalize(v) : float3(0, 1, 0);
@@ -294,9 +245,7 @@ inline float Smooth01(float x)
     return x * x * (3.0f - 2.0f * x);
 }
 
-// ============================================================================
-// Hashing (improved distribution for stars)
-// ============================================================================
+//Hashing (improved stars)
 inline float Hash12(float2 p)
 {
     float3 p3 = frac(float3(p.xyx) * float3(0.1031f, 0.1030f, 0.0973f));
@@ -311,9 +260,7 @@ inline float2 Hash22(float2 p)
     return frac(float2((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y));
 }
 
-// ============================================================================
-// Solar position (NOAA)
-// ============================================================================
+// Solar position
 inline float SolarDeclinationRad(float dayOfYear, float timeHours)
 {
     float gamma = TAU / 365.0f * (dayOfYear - 1.0f + (timeHours - 12.0f) / 24.0f);
@@ -395,10 +342,7 @@ inline void GetSunDirAndElev(out float3 dirWS, out float elevRad)
     elevRad = asin(clamp(up, -1.0f, 1.0f));
 }
 
-// ============================================================================
 // Atmosphere medium sampling
-// ============================================================================
-
 inline float DensityOzone(float altKm)
 {
     return (altKm < 25.0f)
@@ -428,9 +372,7 @@ inline MediumSample SampleMedium(float altKm)
     return m;
 }
 
-// ============================================================================
 // Phase functions
-// ============================================================================
 inline float PhaseRayleigh(float cosTheta)
 {
     return (3.0f / (16.0f * PI)) * (1.0f + cosTheta * cosTheta);
@@ -445,10 +387,6 @@ inline float PhaseMieCS(float cosTheta, float g)
     return num / denom;
 }
 
-// Two-lobe Mie phase: narrow forward peak + wider glow
-// This ensures a visible halo even on short (near-zenith) paths,
-// while the wider lobe doesn't accumulate as aggressively on long
-// horizon paths because it's spread over a larger solid angle.
 inline float PhaseMieTwoLobe(float cosTheta)
 {
     float p1 = PhaseMieCS(cosTheta, ATMOS_MIE_G_PRIMARY);
@@ -456,9 +394,6 @@ inline float PhaseMieTwoLobe(float cosTheta)
     return lerp(p1, p2, ATMOS_MIE_LOBE2_WEIGHT);
 }
 
-// ============================================================================
-// Ray-sphere intersection (origin = sphere center)
-// ============================================================================
 inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0, out float t1)
 {
     float b = dot(ro, rd);
@@ -471,9 +406,6 @@ inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0,
     return true;
 }
 
-// ============================================================================
-// Transmittance from P toward L to atmosphere boundary
-// ============================================================================
 inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 {
     float t0, t1;
@@ -501,9 +433,6 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
     return exp(-od);
 }
 
-// ============================================================================
-// Main scattering integral
-// ============================================================================
 float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittanceOut)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
@@ -535,10 +464,6 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
         return float3(0, 0, 0);
     }
 
-    // --- Non-uniform step distribution ---
-    // Use sqrt-spaced steps: denser near the observer (low altitude, high density)
-    // and sparser in the upper atmosphere. This improves horizon accuracy
-    // without needing more total steps.
     float totalDist = tMax - tMin;
 
     float cosTheta = dot(V, L);
@@ -598,7 +523,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
     return totalInScatter;
 }
 
-// Full-path transmittance from observer along a direction
+//Full-path transmittance from observer along a direction
 float3 AtmosphericTransmittance(float3 dir)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
@@ -631,9 +556,6 @@ float3 AtmosphericTransmittance(float3 dir)
     return exp(-od);
 }
 
-// ============================================================================
-// Sun limb darkening (Neckel & Labs 1994 — simplified)
-// ============================================================================
 inline float3 LimbDarkening(float mu)
 {
     float u = 1.0f - mu;
@@ -645,9 +567,6 @@ inline float3 LimbDarkening(float mu)
     return max(ld, 0.0f);
 }
 
-// ============================================================================
-// SunState
-// ============================================================================
 inline SunState ComputeSunState()
 {
     SunState S;
@@ -675,9 +594,7 @@ inline SunState ComputeSunState()
     return S;
 }
 
-// ============================================================================
-// Public API — Sun
-// ============================================================================
+// Public Sun API
 SunSampleResult SampleSun(float2 u)
 {
     SunState S = ComputeSunState();
@@ -747,10 +664,7 @@ float3 EvaluateSun(float3 rayDir)
 #endif
 }
 
-// ============================================================================
 // Stars
-// ============================================================================
-
 inline float3 RotateAroundAxis(float3 v, float3 axis, float angle)
 {
     float s = sin(angle), c = cos(angle);
@@ -788,7 +702,7 @@ inline float3 StarColor(float rand01)
     return col;
 }
 
-// Atmospheric scintillation — elevation dependent, TAA stable
+//Atmospheric scintillation
 inline float Scintillation(float seed, float elevFactor, float frameCount)
 {
     float strength = SKY_STAR_SCINTILLATION * (1.0f - elevFactor * elevFactor);
@@ -803,7 +717,6 @@ inline float Scintillation(float seed, float elevFactor, float frameCount)
 }
 
 // Single star layer
-// sunElevDeg: sun elevation in degrees (used for per-star twilight fade)
 float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
                          float brightnessScale, float sunElevDeg)
 {
@@ -811,14 +724,9 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
     uv.x = atan2(vStar.z, vStar.x) / TAU + 0.5f;
     uv.y = acos(clamp(vStar.y, -1.0f, 1.0f)) / PI;
 
-    // Pole compensation: at the poles, UV cells cover a tiny solid angle,
-    // causing stars to cluster and appear shrunken. Two corrections:
-    //   1) Aggressively reject stars where cells are small (raised floor)
-    //   2) Scale the distance metric so surviving stars keep their angular size
     float sinTheta = sqrt(max(1e-6f, 1.0f - vStar.y * vStar.y));
     float poleCompensation = saturate(sinTheta);
 
-    // Hard cutoff very near the pole where cells degenerate
     if (poleCompensation < 0.08f) return float3(0, 0, 0);
 
     float2 g    = uv * float2(gridScale, gridScale * 0.5f);
@@ -826,37 +734,21 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
     float2 f    = frac(g);
 
     float r0 = Hash12(cell);
-    // Floor raised to 0.3 — at sinTheta < 0.3 (within ~17° of pole),
-    // stars are progressively culled. This prevents visible clustering.
     float adjustedDensity = 1.0f - (1.0f - density) * poleCompensation;
     float present = step(adjustedDensity, r0);
     if (present < 0.5f) return float3(0, 0, 0);
 
-    // Jittered position within cell
     float2 starPos = Hash22(cell + 5.0f);
     starPos = lerp(0.15f, 0.85f, starPos);
-
-    // Anisotropic pole correction for distance:
-    // Near the pole, grid cells are compressed in x (longitude) but not y (latitude).
-    // Without correction, length(f - starPos) treats both axes equally, making
-    // stars appear stretched vertically. We scale delta.x by sinTheta so that
-    // the distance is computed in angular-proportional coordinates — this makes
-    // the Gaussian point spread circular on the sky at all latitudes.
     float2 delta = f - starPos;
     delta.x *= max(0.15f, poleCompensation);
     float dist = length(delta);
 
-    // Power-law magnitude: few bright, many dim
     float magRand = Hash12(cell + 13.0f);
     float magnitude = pow(magRand, 2.5f);
 
-    // --- Per-star twilight fade ---
-    // Dim stars (magnitude~0): fade threshold at deep twilight (-SKY_TWILIGHT_DEG)
-    // Bright stars (magnitude~1): linger until sun is at -6 + SKY_STAR_DAWN_LINGER degrees
-    // This creates the natural effect of a few bright stars persisting into dawn/dusk
-    // while the bulk of the sky gradually empties.
-    float dimThreshold    = -SKY_TWILIGHT_DEG;                        // e.g. -18°
-    float brightThreshold = -6.0f + SKY_STAR_DAWN_LINGER;            // e.g. +2°
+    float dimThreshold    = -SKY_TWILIGHT_DEG;
+    float brightThreshold = -6.0f + SKY_STAR_DAWN_LINGER;
     float starThreshold   = lerp(dimThreshold, brightThreshold, magnitude);
     float fadeRange        = max(1.0f, abs(starThreshold - dimThreshold) * 0.4f + 2.0f);
     float starTwilight    = Smooth01(saturate((starThreshold - sunElevDeg) / fadeRange));
@@ -882,33 +774,24 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
 float3 EvaluateStars(float3 rayDir, float elevDeg)
 {
     float3 v = SafeNormalize(rayDir);
-
-    // Sidereal rotation
     float solarH = GetSolarTimeHours();
     float sidFrac = frac((solarH / 24.0f) * SKY_SIDEREAL_RATIO);
     float3 vStar = RotateAroundAxis(v, WORLD_UP, -TAU * sidFrac);
 
-    // Fade out below horizon (keep this — stars shouldn't render underground)
     float upDot = dot(v, WORLD_UP);
     float horizonW = Smooth01(saturate(upDot / 0.02f));
 
     if (horizonW <= 0.0f) return float3(0, 0, 0);
 
-    // Note: twilight fade is now per-star inside EvaluateStarLayer,
-    // so bright stars naturally persist into dawn/dusk while dim ones vanish first.
-
     float3 stars = float3(0, 0, 0);
 
-    // Layer 0: Sparse bright stars (these linger longest at dawn)
     stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 0.5f,
                                0.985f, 1.6f, elevDeg);
 
-    // Layer 1: Medium density
     stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 1.0f,
                                SKY_STAR_DENSITY, 1.0f, elevDeg);
 
 #if SKY_STAR_LAYERS >= 3
-    // Layer 2: Dense dim background (vanishes first at dawn)
     stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 2.2f,
                                0.994f, 0.35f, elevDeg);
 #endif
@@ -916,9 +799,7 @@ float3 EvaluateStars(float3 rayDir, float elevDeg)
     return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE * horizonW;
 }
 
-// ============================================================================
-// Public API — Sky
-// ============================================================================
+// Public Sky API
 float3 EvaluateSky(float3 rayDir)
 {
     SunState S = ComputeSunState();

@@ -1,14 +1,10 @@
-// ═══════════════════════════════════════════════════════════════════
-// Includes_v8.hlsli — Unified include for all passes.
-//
-// Compute shaders:  #define COMPUTE_PASS before including.
-// Raygen/hit/miss:  Include directly (no define needed).
-// ═══════════════════════════════════════════════════════════════════
+//Includes_v8.hlsli
+//Compute shaders:  #define COMPUTE_PASS before including.
 
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
 
-// ─── Push constants ────────────────────────────────────────────────
+//Push constants
 cbuffer Push : register(b1)
 {
     uint2 gImageSize;          // [0-1]
@@ -32,12 +28,12 @@ cbuffer Push : register(b1)
     uint  _pad19;              // [19]
 };
 
-// ─── Image size convenience macros ─────────────────────────────────
+//Image size convenience macros
 #define IMG_W (gImageSize.x)
 #define IMG_H (gImageSize.y)
 
 #ifdef COMPUTE_PASS
-    // Compute shaders emulate DispatchRaysIndex/Dimensions for shared code
+    //Compute shaders emulate DispatchRaysIndex/Dimensions for shared code
     #define gImageWidth  (gImageSize.x)
     #define gImageHeight (gImageSize.y)
     #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
@@ -45,15 +41,15 @@ cbuffer Push : register(b1)
     #define DispatchRaysIndex()      gDispatchIdx
 #endif
 
-// ─── Inline ray tracing support ────────────────────────────────────
+//Inline ray tracing support
 #define ENABLE_RAY_QUERY_INLINE
 
-// ─── Samplers & LUTs ───────────────────────────────────────────────
+//Samplers & LUTs
 SamplerState   g_sampler     : register(s0);
 SamplerState   g_sampler_LUT : register(s1);
 Texture2DArray g_LUT         : register(t33);
 
-// ─── Wavefront compaction ──────────────────────────────────────────
+//Wavefront compaction (UNUSED)
 RWByteAddressBuffer          g_GlobalCounters : register(u34);
 RWStructuredBuffer<uint3>    g_IndirectArgs   : register(u35);
 RWStructuredBuffer<uint2>    g_Stack0         : register(u36);
@@ -62,7 +58,7 @@ RWByteAddressBuffer          g_SortCount      : register(u60);
 RWByteAddressBuffer          g_SortOffset     : register(u61);
 RWByteAddressBuffer          g_SortBounds     : register(u62);
 
-// ─── Camera ────────────────────────────────────────────────────────
+//Camera
 cbuffer CameraParams : register(b0)
 {
     float4x4 view;
@@ -74,7 +70,7 @@ cbuffer CameraParams : register(b0)
     float  time;
     float2 jitter;
     float  _cbpad0;
-    // Sun settings (runtime-editable)
+    // Sun settings
     float sunLatitude;
     float sunLongitude;
     float sunDayOfYear;
@@ -98,7 +94,7 @@ cbuffer CameraParams : register(b0)
 #define SKY_INTENSITY_VAL   sunSkyIntensity
 #define SKY_INTENSITY       sunSkyIntensity
 
-// ─── Core utility headers ──────────────────────────────────────────
+//Core utility headers
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
 #include "Data_v8.hlsli"
@@ -106,7 +102,7 @@ cbuffer CameraParams : register(b0)
 #include "Compression_v8.hlsli"
 #include "HitState_v8.hlsli"
 
-// ─── Output / scratch / reservoir buffers ──────────────────────────
+//Output / scratch / reservoir buffers
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
 RWTexture2DArray<float4> gScratchPing        : register(u8);
@@ -120,7 +116,7 @@ RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
 RWByteAddressBuffer g_InitialBSDFRays        : register(u9);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
-// ─── Scene data ────────────────────────────────────────────────────
+//Scene data
 StructuredBuffer<STriVertex>         BTriVertex          : register(t2);
 StructuredBuffer<int>                indices             : register(t1);
 RaytracingAccelerationStructure      SceneBVH            : register(t0);
@@ -130,7 +126,7 @@ StructuredBuffer<Material>           materials           : register(t5);
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-// Light tree
+//Light tree
 StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
 StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
@@ -138,7 +134,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 Buffer<float>                      gLT_LeafAliasProb: register(t16);
 Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 
-// ─── Shading & material headers ────────────────────────────────────
+//Shading and material headers
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
 #include "Path_State_v8.hlsli"
@@ -150,113 +146,20 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
 
-// ─── Sampling, reservoirs, ray tracing ─────────────────────────────
+//Sampling, reservoirs, ray tracing
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "Clouds_v8.hlsli"
-#include "Reservoir_DI_v8.hlsli"
-#include "Reservoir_GI_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
-
-// Temporal candidate tests (depend on GetMatIDFast from Inline_RT and ReconstructPosition from SurfaceVertex)
-inline bool TestTemporalCandidate_DI(
-    int2   coord,
-    float2 dims,
-    RWByteAddressBuffer sampleBuf,
-    uint   myMatID,
-    float3 myN1s,
-    float3 myPos,
-    out uint   outPixelIdx,
-    out uint   outInstID,
-    out uint   outPrimID,
-    out float2 outBary)
-{
-    outPixelIdx = 0xFFFFFFFFu;
-    outInstID   = 0;
-    outPrimID   = 0;
-    outBary     = float2(0, 0);
-
-    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
-        return false;
-
-    uint tpx = MapPixelID(dims, (uint2)coord);
-
-    if (load_isEmitter(sampleBuf, tpx))
-        return false;
-
-    uint rI = load_instID(sampleBuf, tpx);
-    uint rP = load_primID(sampleBuf, tpx);
-    /*if (GetMatIDFast(rI, rP) != myMatID)
-        return false;*/
-
-    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
-    if (RejectNormal_DI(myN1s, ns, 0.36f))
-        return false;
-
-    float2 rB = load_bary(sampleBuf, tpx);
-    float3 xr = ReconstructPosition(rI, rP, rB);
-    if (RejectDistance_DI(myPos, xr, myN1s, 0.4f))
-        return false;
-
-    outPixelIdx = tpx;
-    outInstID   = rI;
-    outPrimID   = rP;
-    outBary     = rB;
-    return true;
-}
-
-inline bool TestTemporalCandidate_GI(
-    int2   coord,
-    float2 dims,
-    RWByteAddressBuffer sampleBuf,
-    uint   myMatID,
-    float3 myN1s,
-    float3 myPos,
-    out uint   outPixelIdx,
-    out uint   outInstID,
-    out uint   outPrimID,
-    out float2 outBary)
-{
-    outPixelIdx = 0xFFFFFFFFu;
-    outInstID   = 0;
-    outPrimID   = 0;
-    outBary     = float2(0, 0);
-
-    if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
-        return false;
-
-    uint tpx = MapPixelID(dims, (uint2)coord);
-
-    if (load_isEmitter(sampleBuf, tpx))
-        return false;
-
-    uint rI = load_instID(sampleBuf, tpx);
-    uint rP = load_primID(sampleBuf, tpx);
-    /*if (GetMatIDFast(rI, rP) != myMatID)
-        return false;*/
-
-    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
-    if (RejectNormal_GI(myN1s, ns, 0.36f))
-        return false;
-
-    float2 rB = load_bary(sampleBuf, tpx);
-    float3 xr = ReconstructPosition(rI, rP, rB);
-    if (RejectDistance_GI(myPos, xr, myN1s, 0.4f))
-        return false;
-
-    outPixelIdx = tpx;
-    outInstID   = rI;
-    outPrimID   = rP;
-    outBary     = rB;
-    return true;
-}
+#include "Reservoir_DI_v8.hlsli"
+#include "Reservoir_GI_v8.hlsli"
 
 #include "Camera_ray_v8.hlsli"
 #include "VolumeStackPacked_v8.hlsli"
 #include "MIS_v8.hlsli"
 
-// ─── DLSS-RR resources (only needed by shading pass) ──────────────
+//DLSS-RR resources
 #ifdef COMPUTE_PASS
 RWTexture2D<float>  g_dlssDepth          : register(u11);
 RWTexture2D<float2> g_dlssMVec           : register(u12);

@@ -40,7 +40,7 @@ static float2 UnpackIORPair(uint raw, out uint bits) {
     return float2(fA * 4.0f, fB * 4.0f);
 }
 
-// --- IOR Stack (15-bit) + Pointer (Hidden in MSBs) ---
+//IOR Stack (15-bit) + Pointer (Hidden in MSBs)
 uint2 PackIORStackAndPtr(float stack[4], int ptr) {
     uint p = (uint)(ptr + 1) & 0xF;
     uint2 packed;
@@ -59,7 +59,7 @@ void UnpackIORStackAndPtr(uint2 packed, out float stack[4], out int ptr) {
     ptr = (int)p - 1;
 }
 
-// --- Material IDs (full 32-bit) ---
+//Material IDs (full 32-bit)
 uint4 PackMatStack(uint stack[4]) {
     return uint4(stack[0], stack[1], stack[2], stack[3]);
 }
@@ -69,7 +69,7 @@ void UnpackMatStack(uint4 packed, out uint stack[4]) {
     stack[2] = packed.z; stack[3] = packed.w;
 }
 
-// --- Object IDs (full 32-bit) ---
+//Object IDs (full 32-bit)
 uint4 PackObjStack(uint stack[4]) {
     return uint4(stack[0], stack[1], stack[2], stack[3]);
 }

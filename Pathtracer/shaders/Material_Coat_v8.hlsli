@@ -112,7 +112,7 @@ inline CoatResult EvalCoatAll(
 
     float Pr_coat = mat.Pcr_aniso_anisor.x;
 
-    // --- Transmittance (uses N, not H) ---
+    //Transmittance
     if (NdotV > 0.0f && NdotL > 0.0f)
     {
         float Fo = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr_coat * 0.7f) * (1.0f - Pr_coat * 0.7f);
@@ -120,7 +120,7 @@ inline CoatResult EvalCoatAll(
         r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
     }
 
-    // --- Eval + PDF (need valid geometry) ---
+    // Eval + PDF
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);

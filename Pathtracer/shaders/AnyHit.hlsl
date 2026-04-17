@@ -1,4 +1,4 @@
-#include "Includes_raygen_v8.hlsli"
+#include "Includes_v8.hlsli"
 
 [shader("anyhit")]
 void AlphaTestAnyHit(inout TracePayload payload,
@@ -10,7 +10,7 @@ void AlphaTestAnyHit(inout TracePayload payload,
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     Material mat = materials[matID];
 
-    // No albedo texture → fully opaque, accept hit
+    // No albedo texture -> fully opaque, accept hit
     if (mat.albedoTexID < 0)
         return;
 

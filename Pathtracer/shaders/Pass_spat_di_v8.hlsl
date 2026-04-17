@@ -16,7 +16,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     Reservoir_DI rdi = loadReservoirDI(g_Reservoirs_current_di, pixelIdx);
 
-    // Copy compact G-buffer for temporal reuse (must run for all pixels)
+    // Copy compact G-buffer for temporal reuse
     copySampleData(g_sample_last, g_sample_current, pixelIdx);
 
     // Only do spatial DI when pixel is not an emitter
@@ -37,7 +37,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Load G-buffer data shared by disabled path and main path
     const float2 myUV   = load_uv(g_sample_current, pixelIdx);
 
-    // If spatial DI is disabled, compute canonical output and store reservoir unchanged
+    //If spatial DI is disabled, compute canonical output and store reservoir unchanged
     if (!(rs_flags & 4u))
     {
         const float3 cameraPos = InitOrigin();
@@ -49,7 +49,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         return;
     }
 
-    // RNG
+    //RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
     // Single neighbor selection: rs_spatTriesDI attempts, radius shrinks linearly.
@@ -128,7 +128,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     rdi.w_sum_di = mis_c * p_c * rdi.W_di;
 
     //─────────────────────────────────────────────────────────────────────────
-    // Merge neighbors (tight per-iteration scopes)
+    // Merge neighbors
     //─────────────────────────────────────────────────────────────────────────
     [loop]
     for (uint k = 0; k < validCount; ++k)
@@ -148,7 +148,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             contrib_n *= IsVisible(sv_c.x, sv_c.n_s, _vd, _vt) ? 1.0f : 0.0f;
         }
 
-        // Load neighbor G-buffer once — shared between Jacobian and MIS
+        // Load neighbor G-buffer once - shared between Jacobian and MIS
         uint nInstID = load_instID(g_sample_current, nID);
         uint nPrimID = load_primID(g_sample_current, nID);
         float2 nBary = load_bary(g_sample_current, nID);
@@ -157,7 +157,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         float p_hat_from = GetPHat(contrib_n * JacobianDeterminantDI(
             x1_neighbor, rdi_r.x2_di, sv_c.x, rdi_r.n2_di, rdi_r.objID_di));
 
-        // Inlined PairwiseMIS_Neighbor_Spat_DI — reuses nInstID/nPrimID/nBary
+        // Inlined PairwiseMIS_Neighbor_Spat_DI - reuses nInstID/nPrimID/nBary
         float mis_n;
         {
             float M_sum_safe = max(M_sum, 1.0f);

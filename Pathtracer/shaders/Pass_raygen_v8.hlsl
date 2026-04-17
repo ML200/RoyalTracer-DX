@@ -1,4 +1,4 @@
-#include "Includes_raygen_v8.hlsli"
+#include "Includes_v8.hlsli"
 
 #ifndef MAX_BOUNCES
 #define MAX_BOUNCES 10
@@ -66,7 +66,7 @@ void Pass_raygen_v8()
         const uint2 pixel   = DispatchRaysIndex().xy;
         const uint2 imgSize = DispatchRaysDimensions().xy;
 
-        // ── Miss ───────────────────────────────────────────────────────
+        //Miss case
         if (!hitObj.IsHit())
         {
             if (depth == 0)
@@ -365,7 +365,7 @@ void Pass_raygen_v8()
             hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
-        // ── Sample next direction (BSDF) ──────────────────────────────
+        //Sample next direction (BSDF)
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
         float3 s = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
         BrdfData bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
@@ -398,7 +398,8 @@ void Pass_raygen_v8()
                 float rrBoost = 1.0f / max(survivalProb, 0.1f);
                 throughput  *= rrBoost;
                 tpostWeight *= rrBoost;
-                // RR survival is part of the path pdf
+                // RR survival is part of the path pdf -> but DONT include it in the restir unbiased contribution weight
+                // directly, it is implicitely covered
                 gi_pdf_product = min(gi_pdf_product * survivalProb, 1e30f);
             }
 

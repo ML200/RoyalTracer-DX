@@ -1,19 +1,12 @@
-#include "Includes_raygen_v8.hlsli"
+#include "Includes_v8.hlsli"
 
-//─────────────────────────────────────────────────────────────────────────────
-//  SPATIAL  GI  (raygen shader — merge only, neighbor selection done in pre-pass)
-//─────────────────────────────────────────────────────────────────────────────
-
-// Must match layout in Pass_spat_gi_select_v8.hlsl
+//Layout in Pass_spat_gi_select_v8.hlsl
 static const uint GI_SEL_STRIDE = 40u;
 uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
 
 [shader("raygeneration")]
 void Pass_spat_gi_v8_1()
 {
-    //─────────────────────────────────────────────────────────────────────────
-    // SER: classify thread with minimal live state across reorder
-    //─────────────────────────────────────────────────────────────────────────
     uint sortKey;
     {
         const uint2 li  = DispatchRaysIndex().xy;
@@ -33,23 +26,21 @@ void Pass_spat_gi_v8_1()
 
     dx::MaybeReorderThread(sortKey, 3);
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Post-reorder: recompute identity, then heavy loads on coherent warps
-    //─────────────────────────────────────────────────────────────────────────
+    //================================================================================
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
-    // Emitter early-out
+    //Emitter early-out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
         return;
     }
 
-    // Disabled early-out
+    //Disabled early-out
     if (!(rs_flags & 8u))
     {
         float3 c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi;
@@ -59,7 +50,7 @@ void Pass_spat_gi_v8_1()
         return;
     }
 
-    // Re-read neighbor selection (cheap buffer loads)
+    //Re-read neighbor selection
     const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
     const uint selBase   = gi_sel_addr(linearIdx);
     uint2 header         = g_pathStateBuffer.Load2(selBase);
@@ -71,18 +62,17 @@ void Pass_spat_gi_v8_1()
     for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
         nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
 
-    // Lightweight loads
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
-    // Canonical M cap + include in M_sum
+    //Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
     rdi.M_gi = M_c;
     const float M_sum = M_sum_nbr + M_c;
 
-    // RNG (for reservoir update only — neighbor selection already consumed its own)
+    //RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
     //─────────────────────────────────────────────────────────────────────────
@@ -93,22 +83,22 @@ void Pass_spat_gi_v8_1()
     float3 contrib_final = 0.0.xxx;
     float  p_c           = 0.0f;
 
-    // Build canonical vertex (needed for MIS and neighbor evaluation)
+    //Build canonical vertex (needed for MIS and neighbor evaluation)
     const float3 cameraPos2 = InitOrigin();
     SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
 
-    // Build canonical x2 vertex from reservoir (needed for MIS canonical)
+    //Build canonical x2 vertex from reservoir (needed for MIS canonical)
     float3 rKd; float rPr, rPm;
     RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
 
-    // Use stored F_gi directly — skip canonical ReconnectGI
+    //Use stored F_gi directly
     {
         float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi * visReuse;
         p_c = GetPHat(contrib_c);
         contrib_final = contrib_c;
     }
 
-    // Canonical Jc: jacobian at current pixel's x1 → canonical x2
+    //Canonical Jc: jacobian at current pixel's x1 -> canonical x2
     const float Jc_canonical = ComputeJc(sv1.x, rdi.x2_gi, rdi.n2_s_gi);
 
     // MIS for canonical
@@ -119,11 +109,11 @@ void Pass_spat_gi_v8_1()
         Jc_canonical
     );
 
-    // Adjust canonical weight
+    //Adjust canonical weight
     rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
 
     //─────────────────────────────────────────────────────────────────────────
-    // Merge neighbors (tight per-iteration scopes)
+    // Merge neighbors
     //─────────────────────────────────────────────────────────────────────────
     [loop]
     for (uint k = 0; k < validCount; ++k)
@@ -133,7 +123,7 @@ void Pass_spat_gi_v8_1()
         // Load neighbor reservoir only for this iteration
         Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
 
-        // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
+        // Neighbor Jc: jacobian at neighbors x1 -> neighbors x2
         const float Jc_neighbor = ComputeJc(
             ReconstructPosition(load_instID(g_sample_current, nID),
                                 load_primID(g_sample_current, nID),
@@ -194,9 +184,6 @@ void Pass_spat_gi_v8_1()
         }
     }
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Finalize W/F and output
-    //─────────────────────────────────────────────────────────────────────────
     {
         const float p_hat_final = GetPHat(contrib_final);
 

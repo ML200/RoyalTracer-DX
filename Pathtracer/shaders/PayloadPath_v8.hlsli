@@ -1,7 +1,3 @@
-// ============================================================================
-// PayloadPath_v8.hlsli — DXR ray payload struct (SM 6.9)
-// ============================================================================
-
 #ifndef PAYLOAD_PATH_V1_HLSLI
 #define PAYLOAD_PATH_V1_HLSLI
 
@@ -22,3 +18,5 @@ struct [raypayload] PathRayPayload
 };
 
 #endif // PAYLOAD_PATH_V1_HLSLI
+
+//UNUSED!!!

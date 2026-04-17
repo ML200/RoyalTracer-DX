@@ -2,8 +2,7 @@
 #include "Includes_v8.hlsli"
 
 //─────────────────────────────────────────────────────────────────────────────
-//  SPATIAL GI — Neighbor Selection Pre-pass
-//  Writes compact neighbor list to g_pathStateBuffer for the raygen merge pass.
+//  SPATIAL GI - Neighbor Selection Pre-pass
 //─────────────────────────────────────────────────────────────────────────────
 
 // Per-pixel layout in g_pathStateBuffer (40 bytes, linear y*W+x indexing):
@@ -25,17 +24,17 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint   linearIdx   = launchIndex.y * IMG_W + launchIndex.x;
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    // Default: 0 valid neighbors
+    //Default: 0 valid neighbors
     const uint baseAddr = gi_sel_addr(linearIdx);
 
-    // Emitter or spatial GI disabled → no neighbors
+    //Emitter or spatial GI disabled -> no neighbors
     if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u))
     {
         g_pathStateBuffer.Store2(baseAddr, uint2(0u, asuint(0.0f)));
         return;
     }
 
-    // Lightweight loads for rejection
+    //Lightweight loads for rejection
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
@@ -43,11 +42,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
-    // RNG
+    //RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
-    // Neighbor selection: up to 2 neighbors, rs_spatTriesGI total attempts.
-    // Radius shrinks linearly from rs_spatRadMaxGI to rs_spatRadMinGI over all tries.
+    //Neighbor selection: up to 2 neighbors, rs_spatTriesGI total attempts.
+    //Radius shrinks linearly from rs_spatRadMaxGI to rs_spatRadMinGI over all tries.
     uint  nIds[SPAT_COUNT_MAX_GI];
     uint  validCount = 0;
     float M_sum      = 0.0f;
@@ -86,7 +85,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (!ok)
             continue;
 
-        // Lightweight validity: M > 0 is sufficient for pre-selection
+        //Lightweight validity: M > 0 is sufficient for pre-selection
         uint rM = load_M_gi(g_Reservoirs_current_gi, iID);
         if (rM > 0)
         {
@@ -95,7 +94,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         }
     }
 
-    // Write results: validCount, M_sum, and neighbor IDs
+    //Write results: validCount, M_sum, and neighbor IDs
     g_pathStateBuffer.Store2(baseAddr, uint2(validCount, asuint(M_sum)));
 
     [unroll]

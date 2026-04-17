@@ -25,7 +25,7 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-// Shadow/visibility test with RTG origin offset and alpha testing
+// Visibility test with RTG origin offset
 inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
     float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
@@ -40,7 +40,7 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
        | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
        | RAY_FLAG_FORCE_OPAQUE> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-    q.Proceed(); // effectively a no-op with FORCE_OPAQUE
+    q.Proceed();
     return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
@@ -203,7 +203,7 @@ HitInfo EvalSurfaceState(
     uint   level
 )
 {
-    // 1) DATA GATHER (keep indices/offsets short-lived)
+    //DATA GATHER
     const uint baseI      = instanceProps[instID].indexBase;
     const uint baseM      = instanceProps[instID].materialBase;
     const uint materialID = materialIDs[baseM + primID];
@@ -212,7 +212,7 @@ HitInfo EvalSurfaceState(
     const uint i1 = indices[baseI + 3u * primID + 1u];
     const uint i2 = indices[baseI + 3u * primID + 2u];
 
-    // Load only required vertex fields (avoid whole-struct register bloat)
+    //Load only required vertex fields
     const float3 p0 = BTriVertex[i0].vertex;
     const float3 p1 = BTriVertex[i1].vertex;
     const float3 p2 = BTriVertex[i2].vertex;
@@ -225,7 +225,7 @@ HitInfo EvalSurfaceState(
     const uint pn1 = BTriVertex[i1].packedNormal;
     const uint pn2 = BTriVertex[i2].packedNormal;
 
-    // 2) LOCAL GEOMETRY
+    //LOCAL GEOMETRY
     const float b1 = bc2.x;
     const float b2 = bc2.y;
     const float b0 = 1.0f - b1 - b2;
@@ -233,13 +233,13 @@ HitInfo EvalSurfaceState(
     const float3 p_local = p0 * b0 + p1 * b1 + p2 * b2;
     const float2 uv      = uv0 * b0 + uv1 * b1 + uv2 * b2;
 
-    // Face normal + degeneracy test without length()
+    //Face normal + degeneracy test without length()
     const float3 e1_local = p1 - p0;
     const float3 e2_local = p2 - p0;
     const float3 faceN_un = cross(e1_local, e2_local);
     const float  faceLen2 = dot(faceN_un, faceN_un);
 
-    // Normalize via rsqrt; use fallback for degenerate triangle
+    //Normalize via rsqrt; use fallback for degenerate triangle
     const float3 flatN_obj =
         (faceLen2 > 1e-20f) ? (faceN_un * rsqrt(faceLen2)) : float3(0.0f, 0.0f, 1.0f);
 
@@ -249,7 +249,6 @@ HitInfo EvalSurfaceState(
     float3 n2 = UnpackNormal_INT(pn2);
 
     // Replace degenerate / flipped / junk normals with flat normal
-    // (avoid normalize() unless needed)
     {
         const float n0l2 = dot(n0, n0);
         if (n0l2 < EPSILON) n0 = flatN_obj;
@@ -273,18 +272,18 @@ HitInfo EvalSurfaceState(
         }
     }
 
-    // Interpolate and normalize shading normal
+    //Interpolate and normalize shading normal
     float3 n_local = n0 * b0 + n1 * b1 + n2 * b2;
     n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
 
-    // Ensure shading normal points to same hemisphere as geometric normal
+    //Ensure shading normal points to same hemisphere as geometric normal
     if (dot(n_local, flatN_obj) < 0.0f)
     {
         n_local = n_local - 2.0f * dot(n_local, flatN_obj) * flatN_obj;
         n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
     }
 
-    // 3) TRANSFORM (only keep what is needed across later phases)
+    //TRANSFORM
     float3 posW;
     float3 normW;
     float3 geoNormW;
@@ -301,28 +300,28 @@ HitInfo EvalSurfaceState(
         geoNormW = mul(R, flatN_obj);
         geoNormW *= rsqrt(max(dot(geoNormW, geoNormW), 1e-20f));
 
-        // Geometric tangent in object space (from edges + UV deltas), then transform.
+        //Geometric tangent in object space (from edges + UV deltas), then transform.
         const float2 dUV1 = uv1 - uv0;
         const float2 dUV2 = uv2 - uv0;
 
         const float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
         const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
 
-        // Unnormalized object tangent
+        //Unnormalized object tangent
         const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
 
         tangentW_geom = mul(R, tanO);
-        // Normalize (safe even if det==0 -> tanO==0)
+        //Normalize (safe even if det==0 -> tanO==0)
         tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
     }
 
-    // 4) MATERIAL & TEXTURING
+    //MATERIAL & TEXTURING
     const Material mat = materials[materialID];
 
     HitInfo hit = (HitInfo)0.0f;
     hit.uv = uv;
 
-    // 5) NORMAL MAPPING (avoid TBN matrix; scope aggressively)
+    //NORMAL MAPPING
     [branch]
     if (mat.normalTexID != -1)
     {
@@ -343,7 +342,7 @@ HitInfo EvalSurfaceState(
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));
     }
 
-    // 6) FINALIZE HIT INFO
+    //FINALIZE HIT INFO
     float3 viewDir = posW - origin;
     viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
@@ -353,7 +352,7 @@ HitInfo EvalSurfaceState(
     hit.hitNormal  = isBackface ? -normW    : normW;
     hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
 
-    // Clamp (keep Vw scoped)
+    //Clamp normal to ensure that the ray has substantial chance to proceed
     {
         const float3 Vw = -viewDir;
         hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, 0.1f, 0.02f);

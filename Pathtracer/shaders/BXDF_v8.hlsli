@@ -129,7 +129,7 @@ inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s
     f += gate * f_sheen;
     gate *= Transmittance_SHEEN(matID, n_s, -s, o);
 
-    // Base COAT (fused: eval+transmittance, pdf is DCE'd)
+    // Base COAT
     {
         CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
         f += gate * cr.f;

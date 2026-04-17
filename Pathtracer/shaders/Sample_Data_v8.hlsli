@@ -31,7 +31,7 @@ uint pixelBaseAddr_SD(uint pixelIdx)
     return pixelIdx * BYTES_SD;
 }
 
-// -- OtW / WtO helpers --
+//OtW / WtO helpers
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
     return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
@@ -50,15 +50,13 @@ float3 WorldToObjectNrm(uint id, float3 Nw)
     return normalize(mul(MT, Nw));
 }
 
-// -- Individual stores --
+//Individual stores
 
-// Store instID (full 32-bit)
 void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
     buf.Store(pixelBaseAddr_SD(pixelIdx), instID);
 }
 
-// Store primID (bits 0-30) + emitter flag (bit 31)
 void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID, bool isEmitter)
 {
     uint packed = (primID & 0x7FFFFFFFu) | (isEmitter ? 0x80000000u : 0u);
@@ -70,28 +68,23 @@ void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
     buf.Store2(pixelBaseAddr_SD(pixelIdx) + 8u, asuint(bary));
 }
 
-// Store shading normal in object space (cached for neighbor MIS)
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
     float3 n1s_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackNormal(n1s_obj));
 }
 
-// Store UV (cached for neighbor MIS)
 void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
 {
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackFloat2x16(uv.x, uv.y));
 }
 
-// Bulk store for sky/miss (zeros everything except instID+emitter flag)
 void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
     buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
     buf.Store2(base + 16u, uint2(0u, 0u));
 }
-
-// -- Individual loads --
 
 uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
 {
@@ -113,7 +106,6 @@ float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
     return asfloat(buf.Load2(pixelBaseAddr_SD(pixelIdx) + 8u));
 }
 
-// Load shading normal: stored in object space, returned in world space
 float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint instID = load_instID(buf, pixelIdx);
@@ -127,7 +119,6 @@ float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID
     return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
-// Load UV (half2)
 float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint packed = buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u);

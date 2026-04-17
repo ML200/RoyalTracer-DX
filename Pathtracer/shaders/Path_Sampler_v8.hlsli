@@ -1,5 +1,4 @@
 // Volume stack and IOR management
-
 // Volume boundary matching
 
 inline bool BoundaryMatch(VolumeAux a, int slot, uint matID, uint objID)

@@ -1,9 +1,7 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
-//─────────────────────────────────────────────────────────────────────────────
-//  BOILING FILTER  GI  (groupshared post-pass for raygen temporal GI)
-//─────────────────────────────────────────────────────────────────────────────
+//  BOILING FILTER  GI
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID, uint2 localIdx : SV_GroupThreadID)
 {

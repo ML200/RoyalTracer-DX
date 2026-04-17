@@ -16,11 +16,7 @@ inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
     return true;
 }
 
-// -----------------------------------------------------------------------------
 // GGX BRDF/BXDF
-// -----------------------------------------------------------------------------
-
-// Evaluate the GGX BRDF/BTDF (supports anisotropy)
 inline float3 EvaluateBRDF_GGX(
     uint mID, float3 normal, float3 flatNormal,
     float3 incoming, float3 outgoing,
@@ -48,7 +44,7 @@ inline float3 EvaluateBRDF_GGX(
     float3 T, B;
     BuildAnisotropicFrame(N, anisoRot, T, B);
 
-    // --- Half-vector ---
+    //Half-vector
     float3 H;
     if (isReflect) {
         float3 Hun = V + L;
@@ -65,7 +61,7 @@ inline float3 EvaluateBRDF_GGX(
     float VdotH = dot(V, H);
     float LdotH = dot(L, H);
 
-    // Anisotropic NDF and masking-shadowing
+    //Anisotropic NDF and masking-shadowing
     float TdotH = dot(T, H);
     float BdotH = dot(B, H);
     float TdotV = dot(T, V);
@@ -253,7 +249,7 @@ inline GGXResult EvalGGXAll(
     r.f = 0.0f;
     r.pdf = 0.0f;
 
-    // --- Transmittance (independent of half-vector) ---
+    //Transmittance (independent of half-vector)
     float NdotV = abs(dot(N, V)) + 0.00001f;
     float NdotL = dot(N, L);
 
@@ -268,7 +264,7 @@ inline GGXResult EvalGGXAll(
         r.t = gate_t * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
     }
 
-    // --- Eval+PDF shared setup ---
+    //Eval+PDF shared setup
     bool  isReflect = NdotL > 0.0f;
     float absNdotL  = abs(NdotL);
 
@@ -280,7 +276,7 @@ inline GGXResult EvalGGXAll(
     float3 T, B;
     BuildAnisotropicFrame(N, mat.Pcr_aniso_anisor.z, T, B);
 
-    // Half vector (once)
+    //Half vector
     float3 H;
     if (isReflect) {
         float3 Hun = V + L;
@@ -293,7 +289,6 @@ inline GGXResult EvalGGXAll(
         if (dot(V, H) < 0.0f) H = -H;
     }
 
-    // All dot products (once)
     float NdotH = dot(N, H);
     float VdotH = dot(V, H);
     float LdotH = dot(L, H);
@@ -304,22 +299,22 @@ inline GGXResult EvalGGXAll(
     float TdotL = dot(T, L);
     float BdotL = dot(B, L);
 
-    // Microfacet terms (once)
+    //Microfacet terms
     float D   = D_GGX_Aniso(NdotH, TdotH, BdotH, ax, ay);
     float G1V = G1_SmithGGX_Aniso(NdotV, TdotV, BdotV, ax, ay);
     float G1L = G1_SmithGGX_Aniso(absNdotL, TdotL, BdotL, ax, ay);
     float G2  = G1V * G1L;
 
-    // Fresnel at H (once — reused by eval and pdf)
+    //Fresnel at H
     float3 F_d_vec = FresnelDielectricTIR(V, H, etai, etat);
     float  F_diel  = F_d_vec.x;
 
-    // Selection probabilities (shared between eval and pdf)
+    //Selection probabilities
     float p_refl_H = (1.0f - Pm) * F_diel + Pm;
     float p_tran_H = (1.0f - Pm) * (1.0f - F_diel) * trans_w;
     float p_sum    = p_refl_H + p_tran_H;
 
-    // --- Eval ---
+    //Eval
     if (isReflect)
     {
         float3 F0_d = ComputeF0Dielectric(etai, etat);
@@ -350,7 +345,7 @@ inline GGXResult EvalGGXAll(
         r.f = (any(isnan(spec_t)) || any(isinf(spec_t))) ? 0.0.xxx : spec_t;
     }
 
-    // --- PDF ---
+    //PDF
     if (p_sum > 0.0f)
     {
         if (isReflect)

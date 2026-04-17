@@ -9,11 +9,11 @@
 #define kInvalidPixel -1u
 
 
-// TEXTURES & LUTs
+//TEXTURES and LUTs
 #define SHEEN_LUT_INDEX 0
 #define GGX_ESS_LUT_INDEX 1
 
-// ___ DI Reuse ___
+//DI Reuse
 #define TEMP_MCAP_DI 8
 
 #define SPAT_MCAP_DI 48
@@ -23,7 +23,7 @@
 
 #define SPAT_COUNT_MAX_DI 1
 
-// ___ GI Reuse ___
+//GI Reuse
 #define TEMP_MCAP_GI 8
 
 #define SPAT_MCAP_GI 48
@@ -36,7 +36,7 @@
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
-// Boiling filter (lower strength = less aggressive clamping)
+//Boiling filter (lower strength = less aggressive clamping)
 #define GI_BOIL_STRENGTH_TEMP 0.2f
 #define GI_BOIL_MIN_AVG_TEMP  1e-8f
 

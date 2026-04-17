@@ -41,9 +41,7 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-// ============================================================================
 // TRIG-FREE NODE IMPORTANCE  (precomputed cosTheta_o / cosTheta_e in nodes)
-// ============================================================================
 
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
@@ -324,7 +322,7 @@ struct LT_LightSampleResult
     float3 position;      // World space position on light
     float3 normal;        // Geometric normal of the light triangle
     float3 emission;      // Emissive color
-    float  pdfSolidAngle; // PDF w.r.t Solid Angle (for MIS)
+    float  pdfSolidAngle; // PDF w.r.t Solid Angle
     uint   triIndex;      // The selected global triangle index
     uint   objID;         // The InstanceID of the light
 };
@@ -334,22 +332,22 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 {
     LT_LightSampleResult result;
 
-    // 1. Pick a triangle from the tree
+    //Pick a triangle from the tree
     LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
     result.triIndex = treeSample.id;
 
-    // 2. Fetch Triangle Data
+    //Fetch Triangle Data
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
     result.objID    = triData.instanceID;
     result.emission = triData.emission;
 
-    // 3. Transform Vertices
+    //Transform Vertices
     float4x4 worldMat = instanceProps[result.objID].objectToWorld;
     float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
     float3 v1 = mul(worldMat, float4(triData.y, 1.0)).xyz;
     float3 v2 = mul(worldMat, float4(triData.z, 1.0)).xyz;
 
-    // 4. Sample Point Uniformly
+    //Sample Point Uniformly
     float r1 = RandomFloatSingle(rng);
     float r2 = RandomFloatSingle(rng);
     float sqrtR1 = sqrt(r1);
@@ -358,7 +356,7 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 
     result.position = (1.0f - u - v) * v0 + u * v1 + v * v2;
 
-    // 5. Normal & Area
+    //Normal & Area
     float3 e1 = v1 - v0;
     float3 e2 = v2 - v0;
     float3 crossP = cross(e1, e2);
@@ -366,7 +364,7 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
     result.normal = crossP / area2; // Normalize
     float area = 0.5f * area2;
 
-    // 6. Calculate Solid Angle PDF
+    //Calculate Solid Angle PDF
     //    PDF_SA = PDF_Area * (dist^2 / cosTheta_Light)
     float3 toLight = result.position - refPos;
     float distSq   = dot(toLight, toLight);
@@ -387,10 +385,7 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 }
 
 
-
-// ============================================================================
 // INDIRECT LIGHT-TREE TRAVERSAL
-// ============================================================================
 
 inline float LT_NodeImportance_Common_Indirect(
     float3 x,
@@ -420,7 +415,7 @@ inline float LT_NodeImportance_BLAS_Indirect(LightBLASNodeGpu n, float3 x)
     return LT_NodeImportance_Common_Indirect(x, n.bmin, n.bmax, n.power, /*isGlobalLight=*/false);
 }
 
-// ---------- STOCHASTIC DESCENT -------------------
+//STOCHASTIC DESCENT
 
 uint LT_DescendTLAS_Stratified_Indirect(float3 x, inout float xi, out float pdfTLAS)
 {
@@ -487,7 +482,7 @@ LTLeaf LT_DescendBLAS_Stratified_Indirect(float3 x, uint blasIndex, inout float 
     }
 }
 
-// ---------- TOP-LEVEL SAMPLER -----------------------------------------
+//TOP-LEVEL SAMPLER
 
 LT_Sample LT_SampleLight_Indirect(float3 worldPos, float3 /*worldNormal*/, inout uint rng)
 {
@@ -505,7 +500,7 @@ LT_Sample LT_SampleLight_Indirect(float3 worldPos, float3 /*worldNormal*/, inout
     return s;
 }
 
-// ---------- PDF for indirect --------------------------------
+//PDF for indirect
 
 float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
 {
@@ -536,9 +531,9 @@ float LT_PdfSelectTriangle_Indirect(float3 x, uint triIndex)
         }
 
         if (childHit < 0) {
-            // Uniform fallback if the mapping isn't found
+            // Uniform fallback if the mapping isnt found
             pdfTLAS *= 1.0 / float(N.childCount);
-            tnode = N.firstChild; // deterministic fallback path
+            tnode = N.firstChild; //deterministic fallback path
             continue;
         }
 

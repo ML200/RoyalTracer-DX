@@ -1,14 +1,9 @@
-#include "Includes_raygen_v8.hlsli"
+#include "Includes_v8.hlsli"
 
-//─────────────────────────────────────────────────────────────────────────────
-//  TEMPORAL  GI  (raygen shader)
-//─────────────────────────────────────────────────────────────────────────────
+//  TEMPORAL  GI
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
-    //─────────────────────────────────────────────────────────────────────────
-    // SER: classify thread with minimal live state across reorder
-    //─────────────────────────────────────────────────────────────────────────
     uint sortKey;
     {
         const uint2 li  = DispatchRaysIndex().xy;
@@ -20,9 +15,6 @@ void Pass_temp_gi_v8()
 
     dx::MaybeReorderThread(sortKey, 2);
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Post-reorder: recompute identity, then heavy loads on coherent warps
-    //─────────────────────────────────────────────────────────────────────────
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
@@ -44,15 +36,12 @@ void Pass_temp_gi_v8()
         return;
     }
 
-    // Keep boilValue as a single scalar that survives until boil filter
     float boilValue = 0.0f;
-
-    // RNG (keep as small as possible; preserve your semantics)
     uint2 seed = GetSeed(pixelIdx, time, 3);
     uint  permSeed = GetSeed(1, time, 3).x;
 
-    // --- base reprojection ---
-    // Lightweight loads for reprojection & rejection
+    //base reprojection
+    //Lightweight loads
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
@@ -63,13 +52,13 @@ void Pass_temp_gi_v8()
     float3 myKd; float myPr, myPm;
     RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
-    // Specularity (same computation DLSS-RR gets via EnvBRDFApprox2)
+    //Specularity (same computation DLSS-RR gets via EnvBRDFApprox2)
     const float3 camPos = InitOrigin();
     const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
     const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
 
-    // Stochastic reprojection: randomly choose specular vs diffuse MV
-    // weighted by specularity. Over many frames this converges naturally.
+    //Stochastic reprojection: randomly choose specular vs diffuse MV
+    //weighted by specularity
     float4 reflData = gScratchPing[uint3(launchIndex, 4)];
     uint   reflInstID = asuint(reflData.w);
     bool   reflValid = (reflInstID < 0xFFFFFFFEu);
@@ -90,7 +79,7 @@ void Pass_temp_gi_v8()
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
 
-    // --- permuted candidate ---
+    //permuted candidate
     int2 permCoord = baseCoord;
     bool permInBounds = false;
     {
@@ -110,12 +99,12 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    // Lightweight neighbor identifiers (survive rejection -> merge)
+    //Lightweight neighbor identifiers (survive rejection -> merge)
     uint   rInstID = 0;
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    // 1) Try the permuted sample
+    //Try the permuted sample
     if (permInBounds)
         valid = TestTemporalCandidate_GI(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
                                          tempPixelIdx, rInstID, rPrimID, rBary);
@@ -141,14 +130,14 @@ void Pass_temp_gi_v8()
                 const float visReuse_c = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
                 const float p_c = rdi.F_mag_gi * visReuse_c;
 
-                // Canonical Jc: jacobian at current pixel's x1 → canonical x2
+                //Canonical Jc: jacobian at current pixel's x1 -> canonical x2
                 const float Jc_canonical = ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
 
                 float p_n = 0.0f;
                 float n_c = 0.0f;
                 float3 contrib_n_from_me = 0;
 
-                // p_n: reconnect from neighbor vertex to current GI reservoir sample
+                //p_n: reconnect from neighbor vertex to current GI reservoir sample
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
 
@@ -167,13 +156,13 @@ void Pass_temp_gi_v8()
                       p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
                 }
 
-                // n_c: reconnect from current vertex to neighbor GI reservoir sample
+                //n_c: reconnect from current vertex to neighbor GI reservoir sample
                 float J2;
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
 
-                    // Neighbor Jc: jacobian at neighbor's x1 → neighbor's x2
-                    // sv_r.x was built from rInstID/rPrimID/rBary above — reuse via ReconstructPosition
+                    // Neighbor Jc: jacobian at neighbor's x1 -> neighbor's x2
+                    // sv_r.x was built from rInstID/rPrimID/rBary above, reuse via ReconstructPosition
                     const float Jc_neighbor = ComputeJc(
                         ReconstructPosition(rInstID, rPrimID, rBary),
                         rdi_r.x2_gi, rdi_r.n2_s_gi);
@@ -262,9 +251,9 @@ void Pass_temp_gi_v8()
         }
     }
 
-    // Write boilValue to scratch for the groupshared boiling post-pass
+    //Write boilValue to scratch for the groupshared boiling post-pass
     gScratchPing[uint3(launchIndex, 5)] = float4(boilValue, 0, 0, 0);
 
-    // Store merged reservoir
+    //Store merged reservoir
     storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, rdi);
 }

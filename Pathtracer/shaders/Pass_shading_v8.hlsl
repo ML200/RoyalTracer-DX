@@ -81,17 +81,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
             biasMV = emMV;
             isEmitterSurface = true;
 
-            // Provide shading normal for DLSS-RR edge detection
+            //Provide shading normal for DLSS-RR edge detection
             float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
         {
-            // Sky: no surface, clamped to cameraFar to stay within DLSS-RRs declared range
+            //Sky: no surface, clamped to cameraFar to stay within DLSS-RRs declared range
             g_dlssDepth[DTid.xy] = 10000.0f;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-            // Camera-only motion vector: reproject current ray direction through previous VP
+            //Camera-only motion vector: reproject current ray direction through previous VP
             float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
@@ -174,11 +174,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
 
-    // Bias hint: instance-ID-based disocclusion detection
-    // Compare current instID with the previous frame's instID at the reprojected
-    // pixel. Mismatch = different object = disocclusion -> tell DLSS-RR to trust
-    // the current frame (bias=1). This provides exact object identity info that
-    // DLSS-RR cannot derive from depth/normals alone.
+    //Bias hint: instance-ID-based disocclusion detection
+    //Compare current instID with the previous frames instID at the reprojected
+    //pixel. Mismatch = different object = disocclusion -> tell DLSS-RR to trust
+    //the current frame (bias=1). This provides exact object identity info that
+    //DLSS-RR cannot derive from depth/normals alone.
     {
         float disoccBias = 1.0f;  // default: trust current (off-screen, first frame)
         float2 reprojPrev = float2(DTid.xy) + biasMV;
