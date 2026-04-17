@@ -1,13 +1,12 @@
 #include "Includes_v8.hlsli"
 
-// Layout in Pass_spat_gi_select_v8.hlsl
-static const uint GI_SEL_STRIDE = 8u;
+//Layout in Pass_spat_gi_select_v8.hlsl
+static const uint GI_SEL_STRIDE = 40u;
 uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
 
 [shader("raygeneration")]
 void Pass_spat_gi_v8_1()
 {
-    // sortKey: 0=emitter, 1=disabled, 2=no-neighbor, 3=has-neighbor
     uint sortKey;
     {
         const uint2 li  = DispatchRaysIndex().xy;
@@ -21,11 +20,11 @@ void Pass_spat_gi_v8_1()
         else
         {
             const uint selBase = gi_sel_addr(li.y * IMG_W + li.x);
-            sortKey = 2u + g_pathStateBuffer.Load(selBase); // validCount (0 or 1)
+            sortKey = 2u + g_pathStateBuffer.Load(selBase); // validCount
         }
     }
 
-    dx::MaybeReorderThread(sortKey, 2);
+    dx::MaybeReorderThread(sortKey, 3);
 
     //================================================================================
     const uint2  launchIndex = DispatchRaysIndex().xy;
@@ -52,174 +51,161 @@ void Pass_spat_gi_v8_1()
     }
 
     //Re-read neighbor selection
-    const uint linearIdx   = launchIndex.y * IMG_W + launchIndex.x;
-    const uint selBase     = gi_sel_addr(linearIdx);
-    const uint2 header     = g_pathStateBuffer.Load2(selBase);
+    const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
+    const uint selBase   = gi_sel_addr(linearIdx);
+    uint2 header         = g_pathStateBuffer.Load2(selBase);
     const uint  validCount = header.x;
-    const uint  nID        = header.y;
+    const float M_sum_nbr  = asfloat(header.y);
 
-    //Current pixel info
+    uint nIds[SPAT_COUNT_MAX_GI];
+    [unroll]
+    for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
+        nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
+
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
 
-    //Canonical M cap
+    //Canonical M cap + include in M_sum
     const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
     rdi.M_gi = M_c;
+    const float M_sum = M_sum_nbr + M_c;
 
-    //Default contrib = canonical's stored integrand, gated by stored-sample validity
-    const float  visReuse_c   = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-    float3       contrib_final = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi * visReuse_c;
-
-    //RNG for reservoir update
+    //RNG
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
-    //No neighbor: canonical passes through unchanged (single-sample MIS == 1 is implicit)
-    if (validCount == 0u)
+    //─────────────────────────────────────────────────────────────────────────
+    // Canonical contribution
+    //─────────────────────────────────────────────────────────────────────────
+    const float visReuse = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
+
+    float3 contrib_final = 0.0.xxx;
+    float  p_c           = 0.0f;
+
+    //Build canonical vertex (needed for MIS and neighbor evaluation)
+    const float3 cameraPos2 = InitOrigin();
+    SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
+
+    //Build canonical x2 vertex from reservoir (needed for MIS canonical)
+    float3 rKd; float rPr, rPm;
+    RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
+
+    //Use stored F_gi directly
     {
-        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
-        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
-        return;
+        float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi * visReuse;
+        p_c = GetPHat(contrib_c);
+        contrib_final = contrib_c;
     }
 
-    //Load neighbor reservoir + pixel info
-    Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
+    //Canonical Jc: jacobian at current pixel's x1 -> canonical x2
+    const float Jc_canonical = ComputeJc(sv1.x, rdi.x2_gi, rdi.n2_s_gi);
 
-    const uint   rInstID = load_instID(g_sample_current, nID);
-    const uint   rPrimID = load_primID(g_sample_current, nID);
-    const float2 rBary   = load_bary(g_sample_current, nID);
+    // MIS for canonical
+    const float mis_c = PairwiseMIS_Canonical_Spat_GI(
+        M_sum, p_c, M_c, nIds,
+        rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
+        rKd, rPr, rPm, rdi.eta_gi,
+        Jc_canonical
+    );
 
-    const float3 cameraPos = InitOrigin();
+    //Adjust canonical weight
+    rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
 
     //─────────────────────────────────────────────────────────────────────────
-    //  Pairwise MIS
+    // Merge neighbors
     //─────────────────────────────────────────────────────────────────────────
-
-    // p_c
-    const float p_c = rdi.F_mag_gi * visReuse_c;
-
-    //Canonical Jc: jacobian at current x1 -> canonical x2
-    const float Jc_canonical = ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
-
-    //p_n, reconnect from neighbors vertex to canonicals x2
-    float Jnc = 0.0f;
-    float p_n = 0.0f;
+    [loop]
+    for (uint k = 0; k < validCount; ++k)
     {
-        SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
+        const uint nID = nIds[k];
 
-        float3 rcKd; float rcPr, rcPm;
-        RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
+        // Load neighbor reservoir only for this iteration
+        Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
 
-        float3 c = ReconnectGI(
-            sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
-            sv_r.Kd, sv_r.Pr, sv_r.Pm,
-            rdi.matID_gi, rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi,
-            rcKd, rcPr, rcPm, rdi.eta_gi,
-            Jnc);
-
-        const float  ph   = GetPHat(c);
-        const float3 conn = rdi.x2_gi - sv_r.x;
-        const float  cd   = length(conn);
-        const float  vis  = (cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, conn / cd, cd * 0.999f)) ? 1.0f : 0.0f;
-        p_n = ph * vis;
-    }
-
-    //n_c, reconnect from current vertex to neighbors x2  (+ keep contrib for RIS)
-    float Jn = 0.0f;
-    float J2 = 0.0f;
-    float n_c = 0.0f;
-    float3 contrib_n_from_me = 0.0.xxx;
-    {
-        SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
-
-        //Neighbors own Jc: jacobian at neighbors x1 -> neighbors x2
+        // Neighbor Jc: jacobian at neighbors x1 -> neighbors x2
         const float Jc_neighbor = ComputeJc(
-            ReconstructPosition(rInstID, rPrimID, rBary),
+            ReconstructPosition(load_instID(g_sample_current, nID),
+                                load_primID(g_sample_current, nID),
+                                load_bary(g_sample_current, nID)),
             rdi_r.x2_gi, rdi_r.n2_s_gi);
 
-        float3 rrKd; float rrPr, rrPm;
-        RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
+        // Compute neighbor reconnection contribution
+        float3 contrib_n = 0.0.xxx;
+        float  p_hat_from = 0.0f;
+        float  Jn = 0.0f;
 
-        float3 c = ReconnectGI(
-            sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
-            sv_c.Kd, sv_c.Pr, sv_c.Pm,
-            rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-            rrKd, rrPr, rrPm, rdi_r.eta_gi,
-            Jn);
+        {
+            // Refetch neighbor x2 material
+            float3 rnKd; float rnPr, rnPm;
+            RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
 
-        J2 = JacobianRatio(Jn, Jc_neighbor);
+            contrib_n = ReconnectGI(
+                sv1.x, sv1.n_s, sv1.o, sv1.matID,
+                sv1.Kd, sv1.Pr, sv1.Pm,
+                rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                rnKd, rnPr, rnPm, rdi_r.eta_gi,
+                Jn);
 
-        const float  ph   = GetPHat(c);
-        const float3 conn = rdi_r.x2_gi - sv_c.x;
-        const float  cd   = length(conn);
-        const float  vis  = (cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, conn / cd, cd * 0.999f)) ? 1.0f : 0.0f;
-        n_c = ph * vis;
-        contrib_n_from_me = c * vis;
+            // Visibility after reconnection
+            {
+                float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
+                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                contrib_n *= vis;
+            }
+
+            p_hat_from = GetPHat(contrib_n) * JacobianRatio(Jn, Jc_neighbor);
+        }
+
+        // MIS weight for neighbor
+        const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
+        const float mis_n = PairwiseMIS_Neighbor_Spat_GI(
+            M_sum,
+            M_c, Mn,
+            p_hat_from,
+            rdi_r.W_gi, rdi_r.F_mag_gi
+        );
+
+        const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
+
+        // Update reservoir
+        if (UpdateReservoirGI(
+                rdi,
+                w_n,
+                min(SPAT_MCAP_GI, rdi_r.M_gi),
+                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
+                rdi_r.uv_gi,
+                rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
+                rdi_r.F_gi, rdi_r.F_mag_gi,
+                seed
+            ))
+        {
+            contrib_final = contrib_n;
+        }
     }
 
-    //n_n, neighbor's own p_hat
-    const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
-    const float n_n        = rdi_r.F_mag_gi * visReuse_n;
-
-    //M caps
-    const float M_n   = min(SPAT_MCAP_GI, rdi_r.M_gi);
-    const float M_sum = M_c + M_n;
-
-    //Jacobian-adjusted cross terms
-    const float p_nJ1 = p_n * JacobianRatio(Jnc, Jc_canonical);
-    const float n_cJ2 = n_c * J2;
-
-    //Pairwise MIS
-    const float mis_c = PairwiseMIS_Canonical_Temp(M_c, M_n, p_c, p_nJ1, M_sum);
-    const float mis_n = PairwiseMIS_Neighbour_Temp(M_c, M_n, n_cJ2, n_n, M_sum);
-
-    const float w_c = mis_c * p_c   * rdi.W_gi;
-    const float w_n = mis_n * n_cJ2 * rdi_r.W_gi;
-
-    rdi.w_sum_gi = w_c;
-
-    //Track winners F payload + p_hat used for W normalization
-    uint  F_gi_color_winner = rdi.F_gi;
-    float F_gi_mag_winner   = rdi.F_mag_gi;
-    float p_hat_final       = p_c;
-
-    if (UpdateReservoirGI(
-            rdi,
-            w_n,
-            M_n,
-            rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-            rdi_r.uv_gi,
-            rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
-            rdi_r.F_gi, rdi_r.F_mag_gi,
-            seed))
     {
-        p_hat_final   = n_c;
-        contrib_final = contrib_n_from_me;
+        const float p_hat_final = GetPHat(contrib_final);
 
-        const float  n_c_mag  = GetPHat(contrib_n_from_me);
-        const float3 n_c_norm = (n_c_mag > 1e-20f) ? contrib_n_from_me / n_c_mag : float3(0, 0, 0);
-        F_gi_color_winner = PackRGB9E5(n_c_norm);
-        F_gi_mag_winner   = n_c_mag;
+        if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f)
+        {
+            float W = rdi.w_sum_gi / p_hat_final;
+            if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
+            rdi.W_gi = W;
+        }
+        else
+        {
+            rdi.W_gi = 0.0f;
+        }
+
+        float  F_mag_final  = GetPHat(contrib_final);
+        float3 F_norm_final = (F_mag_final > 1e-20f) ? contrib_final / F_mag_final : float3(0,0,0);
+        rdi.F_gi     = PackRGB9E5(F_norm_final);
+        rdi.F_mag_gi = F_mag_final;
+
+        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
     }
 
-    //Normalize W
-    if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f)
-    {
-        float W = rdi.w_sum_gi / p_hat_final;
-        if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
-        rdi.W_gi = W;
-    }
-    else
-    {
-        rdi.W_gi = 0.0f;
-    }
-
-    rdi.F_gi     = F_gi_color_winner;
-    rdi.F_mag_gi = F_gi_mag_winner;
-
-    gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
-
-    //Store merged reservoir
+    // Store merged reservoir
     storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
 }
