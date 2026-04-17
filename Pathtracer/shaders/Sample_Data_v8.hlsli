@@ -32,20 +32,28 @@ uint pixelBaseAddr_SD(uint pixelIdx)
 }
 
 //OtW / WtO helpers
+// Unified-reservoir env/miss candidates use sentinel objIDs that have no
+// associated instance — bypass the transform (world-space storage direct).
+// Triangle-light candidates store a real instID so they still hit the
+// regular matrix path.
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
+    if (id >= MATID_LIGHT_TRI) return Pw;
     return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
 }
 float3 ObjectToWorldPos(uint id, float3 Po)
 {
+    if (id >= MATID_LIGHT_TRI) return Po;
     return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
 }
 float3 ObjectToWorldNrm(uint id, float3 No)
 {
+    if (id >= MATID_LIGHT_TRI) return No;
     return normalize(mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
 }
 float3 WorldToObjectNrm(uint id, float3 Nw)
 {
+    if (id >= MATID_LIGHT_TRI) return Nw;
     float3x3 MT = transpose((float3x3)instanceProps[id].objectToWorld);
     return normalize(mul(MT, Nw));
 }

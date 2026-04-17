@@ -130,8 +130,11 @@ void Pass_temp_gi_v8()
                 const float visReuse_c = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
                 const float p_c = rdi.F_mag_gi * visReuse_c;
 
-                //Canonical Jc: jacobian at current pixel's x1 -> canonical x2
-                const float Jc_canonical = ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
+                //Canonical Jc: jacobian at current pixel's x1 -> canonical x2.
+                //Env/miss samples preserve direction under shift, so Jc = 1.
+                const float Jc_canonical = IsSentinelMatID(rdi.matID_gi)
+                    ? ((rdi.matID_gi == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi))
+                    : ComputeJc(myPos, rdi.x2_gi, rdi.n2_s_gi);
 
                 float p_n = 0.0f;
                 float n_c = 0.0f;
@@ -141,8 +144,9 @@ void Pass_temp_gi_v8()
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
 
-                    float3 rcKd; float rcPr, rcPm;
-                    RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
+                    float3 rcKd = 0.0f; float rcPr = 0.0f, rcPm = 0.0f;
+                    if (!IsSentinelMatID(rdi.matID_gi))
+                        RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rcKd, rcPr, rcPm);
 
                     float3 c = ReconnectGI(
                         sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
@@ -162,13 +166,15 @@ void Pass_temp_gi_v8()
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
 
                     // Neighbor Jc: jacobian at neighbor's x1 -> neighbor's x2
-                    // sv_r.x was built from rInstID/rPrimID/rBary above, reuse via ReconstructPosition
-                    const float Jc_neighbor = ComputeJc(
-                        ReconstructPosition(rInstID, rPrimID, rBary),
-                        rdi_r.x2_gi, rdi_r.n2_s_gi);
+                    // Env/miss samples preserve direction under shift, Jc = 1.
+                    const float Jc_neighbor = (rdi_r.matID_gi == MATID_ENV_MISS)
+                        ? 1.0f
+                        : ComputeJc(ReconstructPosition(rInstID, rPrimID, rBary),
+                                    rdi_r.x2_gi, rdi_r.n2_s_gi);
 
-                    float3 rrKd; float rrPr, rrPm;
-                    RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
+                    float3 rrKd = 0.0f; float rrPr = 0.0f, rrPm = 0.0f;
+                    if (!IsSentinelMatID(rdi_r.matID_gi))
+                        RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rrKd, rrPr, rrPm);
 
                     float3 c = ReconnectGI(
                         sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
@@ -188,9 +194,13 @@ void Pass_temp_gi_v8()
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = rdi_r.F_mag_gi * visReuse_n;
 
-                // Dynamic M caps
+                // Dynamic M caps. DI samples (env/light) have no material
+                // roughness; treat them as fully rough so they don't get
+                // penalized by the specular cap.
                 float sdata_Pr = myPr;
-                float rdi_r_Pr = EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
+                float rdi_r_Pr = IsSentinelMatID(rdi_r.matID_gi)
+                    ? 1.0f
+                    : EvaluatePBRProperties(materials[rdi_r.matID_gi], rdi_r.uv_gi, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
                 const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f

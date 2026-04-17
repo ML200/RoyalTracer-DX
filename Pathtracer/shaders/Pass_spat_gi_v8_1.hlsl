@@ -41,6 +41,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
+    // Copy compact G-buffer for temporal reuse
+    copySampleData(g_sample_last, g_sample_current, pixelIdx);
+
     Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
 
     // Emitter early-out: no reuse

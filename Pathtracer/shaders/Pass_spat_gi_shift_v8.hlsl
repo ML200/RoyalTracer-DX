@@ -51,12 +51,19 @@ void Pass_spat_gi_shift_v8()
     const SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, InitOrigin());
 
     //MY Jc, partners read this from my scratch header for their canonical MIS.
-    //Load only the two reservoir fields ComputeJc needs — no full reservoir load.
+    //Env/miss samples (MATID_ENV_MISS) use Jc = 1 — the reconnection shift
+    //preserves direction under reparameterization. Triangle-light samples
+    //use the same geometric formula as vertex samples.
     {
-        const uint   myObjID = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
-        const float3 my_x2   = load_x2_gi   (g_Reservoirs_current_gi, pixelIdx, myObjID);
-        const float3 my_n2s  = load_n2_s_gi (g_Reservoirs_current_gi, pixelIdx, myObjID);
-        const float  my_Jc   = ComputeJc(sv.x, my_x2, my_n2s);
+        const uint myMatID = load_matID_gi(g_Reservoirs_current_gi, pixelIdx);
+        float my_Jc = 1.0f;
+        if (myMatID != MATID_ENV_MISS)
+        {
+            const uint   myObjID = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
+            const float3 my_x2   = load_x2_gi   (g_Reservoirs_current_gi, pixelIdx, myObjID);
+            const float3 my_n2s  = load_n2_s_gi (g_Reservoirs_current_gi, pixelIdx, myObjID);
+            my_Jc = ComputeJc(sv.x, my_x2, my_n2s);
+        }
         g_pathStateBuffer.Store(baseAddr + 4u, asuint(my_Jc));
     }
 
@@ -80,8 +87,12 @@ void Pass_spat_gi_shift_v8()
         const float2 p_uv    = load_uv_gi(g_Reservoirs_current_gi, nID);
         const float  p_eta   = load_eta_gi(g_Reservoirs_current_gi, nID);
 
-        float3 rKd; float rPr, rPm;
-        RefetchMaterial(p_matID, p_uv, rKd, rPr, rPm);
+        // Sentinel matIDs (env, triangle-light) have no BSDF at x2 — the
+        // unified ReconnectGI branches skip these values. Don't index the
+        // materials array with a sentinel.
+        float3 rKd = 0.0f; float rPr = 0.0f, rPm = 0.0f;
+        if (!IsSentinelMatID(p_matID))
+            RefetchMaterial(p_matID, p_uv, rKd, rPr, rPm);
 
         // MY x1 -> partner x2
         float  Jn = 0.0f;

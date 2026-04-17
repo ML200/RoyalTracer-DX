@@ -1,11 +1,23 @@
-// RIS reservoir for global illumination
+// RIS reservoir for global illumination.
+// Unified with direct lighting: matID_gi acts as the path-kind discriminator.
+//   matID_gi < MATID_LIGHT_TRI : BSDF-sampled vertex at x2 with a real
+//                                 material (classic GI path, d >= 3).
+//   matID_gi == MATID_LIGHT_TRI: emissive-triangle NEE (d = 2). x2_gi is
+//                                 the hit position on the light; n2_s_gi
+//                                 is the light's surface normal; L2_gi is
+//                                 the emission. No BSDF at x2.
+//   matID_gi == MATID_ENV_MISS : environment/sky sample (d = 2). x2_gi is
+//                                 a unit DIRECTION (not a position); L2_gi
+//                                 is the radiance from that direction. No
+//                                 geometry term, no BSDF at x2.
+// See Constants_v8.hlsli for the sentinel values.
 struct Reservoir_GI
 {
     // Constant-after-hit payload
     float3 x2_gi;
     float3 n2_s_gi;
     uint   objID_gi;
-    uint   matID_gi;
+    uint   matID_gi;    // also discriminates DI-vs-GI (see header comment)
     float2 uv_gi;
     float  eta_gi;      // transmittance IOR at x2 (stored at path creation)
 
@@ -339,17 +351,61 @@ inline float3 ReconnectGI(
     out float  Jn
 )
 {
+    Jn = 1.0f;
+
     if (length(L2) < EPSILON)
         return 0.0f;
+
+    //x1 IOR: always air / material (primary hit)
+    const float etai1 = 1.0f;
+    const float etat1 = materials[mID1].Ni;
+
+    //───────────────────────────────────────────────────────────────────────
+    // DI: environment / sky sample. x2 stores a DIRECTION. No G term, no
+    // BSDF at x2, no medium transmittance. Jn = 1 (direction is preserved
+    // under the reconnection shift).
+    //───────────────────────────────────────────────────────────────────────
+    if (mID2 == MATID_ENV_MISS)
+    {
+        const float3 wi  = normalize(x2);
+        const float3 F1  = BSDF_term(mID1, n1_s, n1_s, wi, o,
+                                     localKd1, localPr1, localPm1, etai1, etat1);
+        const float  ct  = max(1e-15f, dot(n1_s, wi));
+        float3 r = F1 * L2 * ct;
+        if (any(isnan(r)) || any(isinf(r))) return 0.0f;
+        return max(r, 0.0f);  // Jn already = 1
+    }
+
+    //───────────────────────────────────────────────────────────────────────
+    // DI: emissive-triangle NEE sample. x2 is a world position on the light,
+    // n2_s is the light's surface normal, L2 is emission. No BSDF at x2;
+    // Jn uses the same connection-edge geometric factor as the vertex case.
+    //───────────────────────────────────────────────────────────────────────
+    if (mID2 == MATID_LIGHT_TRI)
+    {
+        const float3 dirT  = x2 - x1;
+        const float  distT = length(dirT);
+        if (distT < EPSILON) return 0.0f;
+        const float3 ndirNT = normalize(-dirT);
+
+        const float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirNT, o,
+                                    localKd1, localPr1, localPm1, etai1, etat1);
+        const float  G1 = G_term(n1_s, -ndirNT);
+        float3 r = F1 * L2 * G1;
+        if (any(isnan(r)) || any(isinf(r))) r = 0.0f;
+
+        Jn = max(abs(dot(ndirNT, n2_s)) / (distT * distT), EPSILON);
+        return max(r, 0.0f);
+    }
+
+    //───────────────────────────────────────────────────────────────────────
+    // GI: BSDF-sampled vertex at x2 (original path, d >= 3). Original code.
+    //───────────────────────────────────────────────────────────────────────
 
     // Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x2 to x1
-
-    //x1 IOR: always air / material (primary hit)
-    float etai1 = 1.0f;
-    float etat1 = materials[mID1].Ni;
 
     //x2 IOR
     float etai2 = 1.0f;
@@ -428,6 +484,41 @@ bool UpdateReservoirGI(
         return true;
     }
     return false;
+}
+
+
+// Raygen convenience wrapper: accumulate a single candidate into a local
+// Reservoir_GI. Handles F_contrib -> (F_pack, F_mag) packing and the
+// `uint` <-> `uint2` seed conversion so call-sites in the path loop stay
+// compact. The underlying UpdateReservoirGI writes ALL reservoir fields on
+// RIS acceptance, which is exactly what the unified DI+GI path needs —
+// each candidate can carry its own (x2, matID, ...) including sentinel
+// matIDs for env/miss and triangle-light samples.
+inline void AddGICandidate(
+    inout Reservoir_GI res,
+    in float  wi,
+    in float3 x2,
+    in float3 n2_s,
+    in float3 L2,
+    in float3 V2,
+    in float2 uv,
+    in uint   matID,
+    in uint   objID,
+    in float  eta,
+    in float3 F_contrib,
+    inout uint seed)
+{
+    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return;
+    const float F_mag = GetPHat(F_contrib);
+    if (F_mag <= 1e-20f) return;
+    const uint  F_pack = PackRGB9E5(F_contrib / F_mag);
+
+    uint2 s2 = uint2(seed, 0u);
+    UpdateReservoirGI(res, wi, 1u,
+                      x2, n2_s, L2, V2, uv,
+                      matID, objID, eta,
+                      F_pack, F_mag, s2);
+    seed = s2.x;
 }
 
 

@@ -33,6 +33,21 @@
 
 #define SPAT_COUNT_MAX_GI 3
 
+// ─── Unified DI+GI reservoir — matID_gi discriminator ────────────────────
+// When matID_gi holds one of these sentinels, the sample is a direct-lighting
+// candidate that was formerly stored in Reservoir_DI. ReconnectGI branches
+// on these values to pick the correct reconnection formula; all x2 BSDF /
+// material fetches are skipped for sentinel samples.
+//   MATID_ENV_MISS  : x2_gi stores a DIRECTION (not a position).
+//                     No geometry term, no x2 BSDF. Jn = 1.
+//   MATID_LIGHT_TRI : x2_gi is a world position on an emissive triangle.
+//                     n2_s_gi is the light's surface normal. No x2 BSDF;
+//                     L2_gi carries the triangle's emission directly.
+// Real triangle materials occupy IDs < MATID_LIGHT_TRI.
+#define MATID_ENV_MISS  0xFFFFFFFFu
+#define MATID_LIGHT_TRI 0xFFFFFFFEu
+#define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
+
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
