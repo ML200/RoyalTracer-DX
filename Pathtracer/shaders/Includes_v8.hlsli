@@ -37,6 +37,11 @@ cbuffer Push : register(b1)
     uint  rs_reuseOffset2_x;   // [26]
     uint  rs_reuseOffset2_y;   // [27]
     uint  rs_reuseFlags2;      // [28]
+    // Neighbor-rejection thresholds (spatial select pass)
+    float rs_rejNormalDot;     // [29]  dot(n_A, n_B) must be >= this
+    float rs_rejDistance;      // [30]  |proj-on-normal| distance gate (world units)
+    float rs_rejJacobianMin;   // [31]  reject if Jn/Jc < this on either side
+    float rs_rejJacobianMax;   // [32]  reject if Jn/Jc > this on either side
 };
 
 //Image size convenience macros

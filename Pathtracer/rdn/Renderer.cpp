@@ -1027,29 +1027,26 @@ void Renderer::PopulateCommandList() {
     // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
     UINT dispW = renderW, dispH = renderH;
 
-    // Precompute ReSTIR root constants (slots 4-19, reused across all dispatches)
-    // Clamp to safe ranges: min <= max, all >= 1 to prevent uint wrap / div-by-zero
+    // Precompute ReSTIR root constants. DI-specific slots ([4], [6-9], [18])
+    // are preserved in the cbuffer layout but no longer populated — the unused
+    // DI passes read them as zero.
     auto& rs = m_restirSettings;
-    rs.tempMcapDI     = std::max(rs.tempMcapDI, 1);
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
-    rs.spatCountMaxDI = 1;
-    rs.spatCountMinDI = 1;
-    rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 4);
-    rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 4, rs.spatRadMaxDI);
     rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
     rs.spatCountMinGI = rs.spatCountMaxGI;
     rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
     rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
     rs.spatTriesGI    = std::clamp(rs.spatTriesGI, 2, 16);
-    rs.spatTriesDI    = std::clamp(rs.spatTriesDI, 1, 16);
 
-    UINT rsConsts[29] = {};
-    rsConsts[4]  = (UINT)rs.tempMcapDI;
+    // Neighbor rejection thresholds
+    rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
+    rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
+    rs.rejJacobianMin = std::clamp(rs.rejJacobianMin, 0.0001f, 1.0f);
+    rs.rejJacobianMax = std::max(rs.rejJacobianMax, rs.rejJacobianMin);
+
+    UINT rsConsts[33] = {};
+    // [4], [6-9] intentionally left as 0 (DI slots retired)
     rsConsts[5]  = (UINT)rs.tempMcapGI;
-    rsConsts[6]  = (UINT)rs.spatCountMaxDI;
-    rsConsts[7]  = (UINT)rs.spatCountMinDI;
-    rsConsts[8]  = (UINT)rs.spatRadMaxDI;
-    rsConsts[9]  = (UINT)rs.spatRadMinDI;
     rsConsts[10] = (UINT)rs.spatCountMaxGI;
     rsConsts[11] = (UINT)rs.spatCountMinGI;
     rsConsts[12] = (UINT)rs.spatRadMaxGI;
@@ -1062,7 +1059,7 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
     rsConsts[17] = (UINT)rs.spatTriesGI;
-    rsConsts[18] = (UINT)rs.spatTriesDI;
+    // [18] rs_spatTriesDI: retired
 
     // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
     // Sizes must match shaders' hardcoded values and InitReuseTextures.
@@ -1077,9 +1074,15 @@ void Renderer::PopulateCommandList() {
         }
     }
 
+    // Neighbor rejection thresholds (slots 29-32)
+    memcpy(&rsConsts[29], &rs.rejNormalDot,   4);
+    memcpy(&rsConsts[30], &rs.rejDistance,    4);
+    memcpy(&rsConsts[31], &rs.rejJacobianMin, 4);
+    memcpy(&rsConsts[32], &rs.rejJacobianMax, 4);
+
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 29, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 33, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

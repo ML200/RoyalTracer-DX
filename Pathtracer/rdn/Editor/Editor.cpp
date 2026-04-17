@@ -423,28 +423,28 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
-    ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ReSTIR")) { ImGui::End(); return; }
 
-    if (ImGui::CollapsingHeader("Temporal DI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##TempDI", &rs.enableTempDI);
-        ImGui::SliderInt("M-cap##TempDI", &rs.tempMcapDI, 0, 32);
+    if (ImGui::CollapsingHeader("Temporal", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##Temp", &rs.enableTempGI);
+        ImGui::SliderInt("M-cap##Temp", &rs.tempMcapGI, 0, 32);
     }
-    if (ImGui::CollapsingHeader("Temporal GI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##TempGI", &rs.enableTempGI);
-        ImGui::SliderInt("M-cap##TempGI", &rs.tempMcapGI, 0, 32);
+    if (ImGui::CollapsingHeader("Spatial", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
+        ImGui::SliderInt("Radius Max##Spat", &rs.spatRadMaxGI, 4, 128);
+        ImGui::SliderInt("Radius Min##Spat", &rs.spatRadMinGI, 4, 128);
+        ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
     }
-    if (ImGui::CollapsingHeader("Spatial DI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##SpatDI", &rs.enableSpatDI);
-        ImGui::SliderInt("Radius Max##SpatDI", &rs.spatRadMaxDI, 4, 128);
-        ImGui::SliderInt("Radius Min##SpatDI", &rs.spatRadMinDI, 4, 128);
-        ImGui::SliderInt("Tries##SpatDI", &rs.spatTriesDI, 1, 16);
-    }
-    if (ImGui::CollapsingHeader("Spatial GI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##SpatGI", &rs.enableSpatGI);
-        ImGui::SliderInt("Radius Max##SpatGI", &rs.spatRadMaxGI, 4, 128);
-        ImGui::SliderInt("Radius Min##SpatGI", &rs.spatRadMinGI, 4, 128);
-        ImGui::SliderInt("Tries##SpatGI", &rs.spatTriesGI, 2, 16);
+    if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Normal dot min",    &rs.rejNormalDot,   0.0f, 1.0f);
+        ImGui::SetItemTooltip("Reject neighbor if dot(nA, nB) falls below this.");
+        ImGui::SliderFloat("Distance max",      &rs.rejDistance,    0.001f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Reject neighbor if |proj onto normal| exceeds this (world units).");
+        ImGui::SliderFloat("Jacobian ratio min",&rs.rejJacobianMin, 0.0001f, 1.0f, "%.4f");
+        ImGui::SetItemTooltip("Reject if Jn/Jc < this on either shift direction.");
+        ImGui::SliderFloat("Jacobian ratio max",&rs.rejJacobianMax, 1.0f, 100.0f, "%.2f");
+        ImGui::SetItemTooltip("Reject if Jn/Jc > this on either shift direction.");
     }
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);

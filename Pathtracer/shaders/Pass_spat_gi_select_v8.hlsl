@@ -82,14 +82,53 @@ int2 SampleReuseDelta(uint2 launchIndex, uint slot)
     return d;
 }
 
-// Symmetric pair rejection
+// Symmetric material / normal / distance rejection. Thresholds come from
+// the Push cbuffer (see ReSTIRSettings).
 bool PairRejected(uint aMat, float3 aPos, float3 aN,
                   uint bMat, float3 bPos, float3 bN)
 {
     if (aMat != bMat) return true;
-    if (RejectNormal_GI(aN, bN, 0.36f)) return true;
-    if (RejectDistance_GI(aPos, bPos, aN, 0.1f)) return true;
-    if (RejectDistance_GI(bPos, aPos, bN, 0.1f)) return true;
+    if (RejectNormal_GI(aN, bN, rs_rejNormalDot)) return true;
+    if (RejectDistance_GI(aPos, bPos, aN, rs_rejDistance)) return true;
+    if (RejectDistance_GI(bPos, aPos, bN, rs_rejDistance)) return true;
+    return false;
+}
+
+// Jacobian-ratio rejection. Computes the connection-edge Jacobian ratio
+// for both shift directions (A -> B path and B -> A path) and rejects
+// the pair if either ratio is outside [rs_rejJacobianMin, rs_rejJacobianMax].
+// A ratio << 1 means the shifted edge is much "steeper" (grazing / distant),
+// a ratio >> 1 means the opposite — both are variance hazards.
+// Env/miss reservoirs (MATID_ENV_MISS) have Jc = Jn = 1 (direction is
+// preserved under the shift) so they always pass this check on their side.
+bool JacobianRejected(float myJcCanon, bool myIsEnv,
+                      float3 myX2res, float3 myN2res,
+                      float3 myPos,
+                      float3 bPos,
+                      uint   bMatRes, uint bObjRes,
+                      float3 bX2res, float3 bN2res)
+{
+    // Ratio_A: A reuses from B's sample. Jn at myPos toward B's x2, Jc at bPos.
+    float ratio_A = 1.0f;
+    if (bMatRes != MATID_ENV_MISS)
+    {
+        const float Jn_A = ComputeJc(myPos, bX2res, bN2res);
+        const float Jc_B = ComputeJc(bPos,  bX2res, bN2res);
+        ratio_A = Jn_A / max(Jc_B, EPSILON);
+    }
+    // Negated range test also rejects NaN / inf / negative (any comparison
+    // with NaN returns false, so !(...) yields true).
+    if (!(ratio_A >= rs_rejJacobianMin && ratio_A <= rs_rejJacobianMax)) return true;
+
+    // Ratio_B: B reuses from A's sample. Jn at bPos toward A's x2, Jc at myPos.
+    float ratio_B = 1.0f;
+    if (!myIsEnv)
+    {
+        const float Jn_B = ComputeJc(bPos, myX2res, myN2res);
+        ratio_B = Jn_B / max(myJcCanon, EPSILON);
+    }
+    if (!(ratio_B >= rs_rejJacobianMin && ratio_B <= rs_rejJacobianMax)) return true;
+
     return false;
 }
 
@@ -129,6 +168,16 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
+    //MY reservoir geometric fields (loaded once, used in Jacobian rejection
+    //across every slot). pack1 holds (x2 object-space, n2_s packed normal).
+    const uint   myMatRes = load_matID_gi(g_Reservoirs_current_gi, pixelIdx);
+    const uint   myObjRes = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
+    const uint4  myPack1  = g_Reservoirs_current_gi.Load4(gi_addr_pack1(pixelIdx));
+    const float3 myX2res  = ObjectToWorldPos(myObjRes, asfloat(myPack1.xyz));
+    const float3 myN2res  = ObjectToWorldNrm(myObjRes, UnpackNormal(myPack1.w));
+    const bool   myIsEnv  = (myMatRes == MATID_ENV_MISS);
+    const float  myJcCanon = myIsEnv ? 1.0f : ComputeJc(myPos, myX2res, myN2res);
+
     //Decompacted: nIds[s] is slot s partner (or 0xFFFFFFFFu if rejected)
     uint  nIds[SPAT_COUNT_MAX_GI];
     [unroll]
@@ -161,6 +210,18 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         const uint bM = load_M_gi(g_Reservoirs_current_gi, bID);
         if (bM == 0u) continue;
+
+        // Jacobian-ratio rejection: loads partner's reservoir geometry
+        // fields (pack1 + objID + matID) and tests both shift directions.
+        const uint   bMatRes = load_matID_gi(g_Reservoirs_current_gi, bID);
+        const uint   bObjRes = load_objID_gi(g_Reservoirs_current_gi, bID);
+        const uint4  bPack1  = g_Reservoirs_current_gi.Load4(gi_addr_pack1(bID));
+        const float3 bX2res  = ObjectToWorldPos(bObjRes, asfloat(bPack1.xyz));
+        const float3 bN2res  = ObjectToWorldNrm(bObjRes, UnpackNormal(bPack1.w));
+
+        if (JacobianRejected(myJcCanon, myIsEnv, myX2res, myN2res, myPos,
+                             bPos, bMatRes, bObjRes, bX2res, bN2res))
+            continue;
 
         nIds[s] = bID;
         ++validCount;

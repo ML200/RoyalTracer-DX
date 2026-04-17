@@ -103,13 +103,23 @@ void Pass_spat_gi_shift_v8()
             rKd, rPr, rPm, p_eta,
             Jn);
 
-        // Visibility — baked into the stored contribution
+        // Visibility — baked into the stored contribution. Env/miss samples
+        // store x2 as a DIRECTION, so cast a fixed-far shadow ray in that
+        // direction; triangle/vertex samples use the position-based form.
         {
-            const float3 conn = p_x2 - sv.x;
-            const float  cd   = length(conn);
-            const float  vis  = (cd > EPSILON &&
-                                 IsVisible(sv.x, sv.n_s, conn / cd, cd * 0.999f))
-                                ? 1.0f : 0.0f;
+            float vis;
+            if (p_matID == MATID_ENV_MISS)
+            {
+                vis = IsVisible(sv.x, sv.n_s, normalize(p_x2), 10000.0f) ? 1.0f : 0.0f;
+            }
+            else
+            {
+                const float3 conn = p_x2 - sv.x;
+                const float  cd   = length(conn);
+                vis = (cd > EPSILON &&
+                       IsVisible(sv.x, sv.n_s, conn / cd, cd * 0.999f))
+                      ? 1.0f : 0.0f;
+            }
             c *= vis;
         }
 

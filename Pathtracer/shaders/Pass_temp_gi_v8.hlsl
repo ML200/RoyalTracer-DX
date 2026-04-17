@@ -104,7 +104,10 @@ void Pass_temp_gi_v8()
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    //Try the permuted sample
+    //Candidate search ladder: permuted -> base reprojection -> 3x3 around base.
+    //Each step is only attempted if the prior one didn't find a valid sample.
+
+    //permuted sample
     if (permInBounds)
         valid = TestTemporalCandidate_GI(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
                                          tempPixelIdx, rInstID, rPrimID, rBary);
@@ -114,7 +117,7 @@ void Pass_temp_gi_v8()
     {
         Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_last_gi, tempPixelIdx);
 
-        // Final validity check that requires reservoir
+        //Final validity check that requires reservoir
         if (!IsValidReservoir_GI(rdi_r))
         {
             valid = false;
@@ -156,8 +159,21 @@ void Pass_temp_gi_v8()
                         Jnc);
 
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
-                      p_n = ph * ((_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f); }
+                    // Env/miss: rdi.x2_gi is a DIRECTION — cast to far distance.
+                    // Other: position-based connection + self-length shadow ray.
+                    {
+                        float vis;
+                        if (rdi.matID_gi == MATID_ENV_MISS)
+                        {
+                            vis = IsVisible(sv_r.x, sv_r.n_s, normalize(rdi.x2_gi), 10000.0f) ? 1.0f : 0.0f;
+                        }
+                        else
+                        {
+                            float3 _conn = rdi.x2_gi - sv_r.x; float _cd = length(_conn);
+                            vis = (_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                        }
+                        p_n = ph * vis;
+                    }
                 }
 
                 //n_c: reconnect from current vertex to neighbor GI reservoir sample
@@ -185,18 +201,27 @@ void Pass_temp_gi_v8()
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
                     float ph = GetPHat(c);
-                    { float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
-                      float vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
-                      n_c = ph * vis_n;
-                      contrib_n_from_me = c * vis_n; }
+                    //Env/miss
+                    {
+                        float vis_n;
+                        if (rdi_r.matID_gi == MATID_ENV_MISS)
+                        {
+                            vis_n = IsVisible(sv_c.x, sv_c.n_s, normalize(rdi_r.x2_gi), 10000.0f) ? 1.0f : 0.0f;
+                        }
+                        else
+                        {
+                            float3 _conn = rdi_r.x2_gi - sv_c.x; float _cd = length(_conn);
+                            vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                        }
+                        n_c = ph * vis_n;
+                        contrib_n_from_me = c * vis_n;
+                    }
                 }
 
                 const float visReuse_n = (rdi_r.W_gi > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = rdi_r.F_mag_gi * visReuse_n;
 
-                // Dynamic M caps. DI samples (env/light) have no material
-                // roughness; treat them as fully rough so they don't get
-                // penalized by the specular cap.
+                //M caps
                 float sdata_Pr = myPr;
                 float rdi_r_Pr = IsSentinelMatID(rdi_r.matID_gi)
                     ? 1.0f
