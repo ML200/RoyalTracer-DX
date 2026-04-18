@@ -160,28 +160,29 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-float3 EvaluateAlbedo(in Material mat, float2 uv, uint level)
+float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
 {
-    float3 albedo = mat.Kd.rgb;
-    if (mat.albedoTexID != -1)
+    float3 albedo = LoadKd_rgb(matID);
+    const int texID = LoadAlbedoTexID(matID);
+    if (texID != -1)
     {
-        float2 albedoUV = uv * mat.albedoUVScale;
-        Texture2D<float4> tex = ResourceDescriptorHeap[mat.albedoTexID];
+        float2 albedoUV = uv * LoadAlbedoUVScale(matID);
+        Texture2D<float4> tex = ResourceDescriptorHeap[texID];
         albedo = tex.SampleLevel(g_sampler, albedoUV, level).rgb;
     }
     return albedo;
 }
 
-float2 EvaluatePBRProperties(in Material mat, float2 uv, uint level)
+float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
 {
-    float2 pbrProps;
-    pbrProps.x = mat.Pr_Pm_Ps_Pc.x;
-    pbrProps.y = mat.Pr_Pm_Ps_Pc.y;
+    const float4 pbr4 = LoadPrPmPsPc(matID);
+    float2 pbrProps = pbr4.xy;
 
-    if (mat.rmaTexID != -1)
+    const int rmaID = LoadRmaTexID(matID);
+    if (rmaID != -1)
     {
-        float2 rmaUV = uv * mat.rmaUVScale;
-        Texture2D<float4> tex = ResourceDescriptorHeap[mat.rmaTexID];
+        float2 rmaUV = uv * LoadRmaUVScale(matID);
+        Texture2D<float4> tex = ResourceDescriptorHeap[rmaID];
         float4 rmaSample = tex.SampleLevel(g_sampler, rmaUV, level);
 
         pbrProps.x = rmaSample.g;
@@ -192,9 +193,8 @@ float2 EvaluatePBRProperties(in Material mat, float2 uv, uint level)
 // Refetch material properties from textures using matID + UV (level 0)
 inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm)
 {
-    Material mat = materials[matID];
-    localKd = EvaluateAlbedo(mat, uv, 0);
-    float2 pbr = EvaluatePBRProperties(mat, uv, 0);
+    localKd = EvaluateAlbedo(matID, uv, 0);
+    float2 pbr = EvaluatePBRProperties(matID, uv, 0);
     localPr = pbr.x;
     localPm = pbr.y;
 }
@@ -344,16 +344,15 @@ HitInfo EvalSurfaceState(
     }
 
     //MATERIAL & TEXTURING
-    const Material mat = materials[materialID];
-
     HitInfo hit = (HitInfo)0.0f;
     hit.uv = uv;
 
     //NORMAL MAPPING
+    const int normalTexID = LoadNormalTexID(materialID);
     [branch]
-    if (mat.normalTexID != -1)
+    if (normalTexID != -1)
     {
-        const float2 normalUV = uv * mat.normalUVScale;
+        const float2 normalUV = uv * LoadNormalUVScale(materialID);
 
         // Gram–Schmidt tangent against shading normal
         float3 tangentW = tangentW_geom - dot(tangentW_geom, normW) * normW;
@@ -361,7 +360,7 @@ HitInfo EvalSurfaceState(
 
         const float3 bitangentW = cross(normW, tangentW);
 
-        Texture2D<float4> nTex = ResourceDescriptorHeap[mat.normalTexID];
+        Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
         const float3 n_tan =
             nTex.SampleLevel(g_sampler, normalUV, level).xyz * 2.0f - 1.0f;
 

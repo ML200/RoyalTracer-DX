@@ -225,7 +225,7 @@ void Pass_temp_gi_v8()
                 float sdata_Pr = myPr;
                 float rdi_r_Pr = IsSentinelMatID(rdi_r.matID)
                     ? 1.0f
-                    : EvaluatePBRProperties(materials[rdi_r.matID], rdi_r.uv, 0).x;
+                    : EvaluatePBRProperties(rdi_r.matID, rdi_r.uv, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
                 const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f

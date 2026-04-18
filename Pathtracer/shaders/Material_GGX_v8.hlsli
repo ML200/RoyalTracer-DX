@@ -37,8 +37,8 @@ inline float3 EvaluateBRDF_GGX(
     float metalness = Pm;
 
     // Anisotropy setup
-    float aniso    = materials[mID].Pcr_aniso_anisor.y;
-    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float aniso    = LoadAniso(mID);
+    float anisoRot = LoadAnisoRot(mID);
     float ax, ay;
     ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
     float3 T, B;
@@ -102,7 +102,7 @@ inline float3 EvaluateBRDF_GGX(
         float numer = (etat * etat) * abs(VdotH) * abs(LdotH);
 
         float btdf = (oneMinusF) * D * G * numer / (denom_bsdf * denom_jac * denom_jac);
-        float gate = (1.0f - materials[mID].Kd.w) * (1.0f - metalness);
+        float gate = (1.0f - LoadKd_w(mID)) * (1.0f - metalness);
         float scalar_t = btdf * gate;
 
         float3 spec_t = max(0.0f, float3(scalar_t, scalar_t, scalar_t));
@@ -123,7 +123,7 @@ inline float Transmittance_GGX(
     float Pr,
     float Pm)
 {
-    float  Ni   = materials[mID].Ni;
+    float  Ni   = LoadNi(mID);
     float  F0   = ComputeF0Dielectric(etat, etai).x;
     float  Favg = (F0 + (1.0f - F0) * (1.0f / 21.0f)) * (1.0f/Ni);
 
@@ -134,11 +134,11 @@ inline float Transmittance_GGX(
     float  Fo = FresnelDielectric(wo, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
     float  Fi = FresnelDielectric(wi, N, etai, etat).x;
 
-    float  Kd_frac = Avg3(Kd * materials[mID].Kd.w);
+    float  Kd_frac = Avg3(Kd * LoadKd_w(mID));
 
     // No transmission for metals
     float  metalness = Pm;
-    float  gate      = materials[mID].Kd.w * (1.0f - metalness);
+    float  gate      = LoadKd_w(mID) * (1.0f - metalness);
 
     return gate * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
 }
@@ -161,7 +161,7 @@ inline float Sampling_Weight_GGX(
     float3 F_c       = FresnelConductor(Kd, wo, N);
     float  F_d       = FresnelDielectricTIR(wo, N, etai, etat).x;
 
-    return (1.0f - metalness) * F_d + metalness * Luma(F_c) + (1 - F_d) * (1.0 - materials[mID].Kd.w);
+    return (1.0f - metalness) * F_d + metalness * Luma(F_c) + (1 - F_d) * (1.0 - LoadKd_w(mID));
 }
 
 
@@ -183,15 +183,15 @@ inline float3 SampleBRDF_GGX(
     float  r         = Pr;
     float  alpha     = max(0.001f, r * r);
     float  metalness = Pm;
-    float  trans_w   = 1.0f - materials[mID].Kd.w;
+    float  trans_w   = 1.0f - LoadKd_w(mID);
 
     float3 V  = normalize(outgoing);
     float3 N  = normalize(normal);
     float3 fN = normalize(flatNormal);
 
     // Anisotropy setup
-    float aniso    = materials[mID].Pcr_aniso_anisor.y;
-    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float aniso    = LoadAniso(mID);
+    float anisoRot = LoadAnisoRot(mID);
     float ax, ay;
     ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
     float3 T, B;
@@ -242,7 +242,7 @@ struct GGXResult {
 };
 
 inline GGXResult EvalGGXAll(
-    Material mat, float3 N, float3 fN, float3 V, float3 L,
+    uint matID, float3 N, float3 fN, float3 V, float3 L,
     float etai, float etat, float3 Kd, float Pr, float Pm)
 {
     GGXResult r;
@@ -253,14 +253,15 @@ inline GGXResult EvalGGXAll(
     float NdotV = abs(dot(N, V)) + 0.00001f;
     float NdotL = dot(N, L);
 
+    const float Kd_w = LoadKd_w(matID);
     {
-        float Ni   = mat.Ni;
+        float Ni   = LoadNi(matID);
         float F0_t = ComputeF0Dielectric(etat, etai).x;
         float Favg = (F0_t + (1.0f - F0_t) * (1.0f / 21.0f)) * (1.0f / Ni);
         float Fo   = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
         float Fi   = FresnelDielectric(L, N, etai, etat).x;
-        float Kd_frac = Avg3(Kd * mat.Kd.w);
-        float gate_t  = mat.Kd.w * (1.0f - Pm);
+        float Kd_frac = Avg3(Kd * Kd_w);
+        float gate_t  = Kd_w * (1.0f - Pm);
         r.t = gate_t * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
     }
 
@@ -269,12 +270,12 @@ inline GGXResult EvalGGXAll(
     float absNdotL  = abs(NdotL);
 
     float alpha   = max(0.001f, Pr * Pr);
-    float trans_w = 1.0f - mat.Kd.w;
+    float trans_w = 1.0f - Kd_w;
 
     float ax, ay;
-    ComputeAnisotropicAlphas(alpha, mat.Pcr_aniso_anisor.y, ax, ay);
+    ComputeAnisotropicAlphas(alpha, LoadAniso(matID), ax, ay);
     float3 T, B;
-    BuildAnisotropicFrame(N, mat.Pcr_aniso_anisor.z, T, B);
+    BuildAnisotropicFrame(N, LoadAnisoRot(matID), T, B);
 
     //Half vector
     float3 H;
@@ -408,11 +409,11 @@ inline float BRDF_PDF_GGX(
     float  r         = Pr;
     float  alpha     = max(0.001f, r * r);
     float  metalness = Pm;
-    float  trans_w   = 1.0f - materials[mID].Kd.w;
+    float  trans_w   = 1.0f - LoadKd_w(mID);
 
     // Anisotropy setup
-    float aniso    = materials[mID].Pcr_aniso_anisor.y;
-    float anisoRot = materials[mID].Pcr_aniso_anisor.z;
+    float aniso    = LoadAniso(mID);
+    float anisoRot = LoadAnisoRot(mID);
     float ax, ay;
     ComputeAnisotropicAlphas(alpha, aniso, ax, ay);
     float3 T, B;

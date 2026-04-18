@@ -41,7 +41,7 @@ struct TriRef {
 
 void OmmBuilder::BakeAll(
     std::vector<MeshGPU>& meshes,
-    const std::vector<Material>& materials,
+    const MaterialSoA& materials,
     const std::vector<ScratchImage*>& albedoImages)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -71,17 +71,16 @@ void OmmBuilder::BakeAll(
         for (uint32_t t = 0; t < mesh.alphaTriCount; ++t) {
             uint32_t triIdx = alphaStart + t;
             uint32_t matID  = mesh.cpuMaterialIDs[triIdx];
-            const Material& mat = materials[matID];
 
-            int texID = mat.albedoTexID;
+            int texID = materials.albedoTexID[matID];
             if (texID < 0 || (uint32_t)texID >= albedoImages.size() || !albedoImages[texID])
                 continue; // stays FULLY_OPAQUE
 
             auto& g = globalGroups[texID];
             if (g.tris.empty()) {
                 g.texID     = texID;
-                g.threshold = mat.alphaThreshold;
-                g.uvScale   = mat.albedoUVScale;
+                g.threshold = materials.alphaThreshold[matID];
+                g.uvScale   = materials.albedoUVScale[matID];
             }
             g.tris.push_back({ (uint32_t)mi, t });
         }

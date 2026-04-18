@@ -44,5 +44,5 @@ private:
     static MeshSplitResult SplitOpaqueAlpha(
         const std::vector<UINT>& indices,
         const std::vector<UINT>& perTriMatIDs,
-        const std::vector<Material>& allMaterials);
+        const MaterialSoA& allMaterials);
 };

@@ -302,8 +302,8 @@ void Editor::DrawMaterialInspector(Scene& scene) {
     // Material list (left)
     ImGui::BeginChild("MatList", ImVec2(180, 0), true);
     for (int i = 0; i < (int)scene.materials.size(); ++i) {
-        auto& mat = scene.materials[i];
-        ImVec4 preview(mat.Kd.x, mat.Kd.y, mat.Kd.z, 1.0f);
+        const XMFLOAT4& kd = scene.materials.Kd[i];
+        ImVec4 preview(kd.x, kd.y, kd.z, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, preview);
         ImGui::Text("\xe2\x96\xa0");
         ImGui::PopStyleColor();
@@ -325,13 +325,14 @@ void Editor::DrawMaterialInspector(Scene& scene) {
     // Properties (right)
     ImGui::BeginChild("MatProps", ImVec2(0, 0), false);
     if (m_selectedMat >= 0 && m_selectedMat < (int)scene.materials.size()) {
-        auto& mat = scene.materials[m_selectedMat];
-        const char* matName = (m_selectedMat < (int)scene.materialNames.size() && !scene.materialNames[m_selectedMat].empty())
-            ? scene.materialNames[m_selectedMat].c_str() : nullptr;
+        const int i = m_selectedMat;
+        auto& mats = scene.materials;
+        const char* matName = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
+            ? scene.materialNames[i].c_str() : nullptr;
         if (matName)
-            ImGui::Text("Material %d: %s", m_selectedMat, matName);
+            ImGui::Text("Material %d: %s", i, matName);
         else
-            ImGui::Text("Material %d", m_selectedMat);
+            ImGui::Text("Material %d", i);
         ImGui::Separator();
 
         bool changed = false;
@@ -339,29 +340,29 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── Surface ──────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
-            changed |= ImGui::ColorEdit3("Albedo", &mat.Kd.x, ImGuiColorEditFlags_Float);
-            changed |= ImGui::SliderFloat("Opacity", &mat.Kd.w, 0.0f, 1.0f, "%.3f");
+            changed |= ImGui::ColorEdit3("Albedo", &mats.Kd[i].x, ImGuiColorEditFlags_Float);
+            changed |= ImGui::SliderFloat("Opacity", &mats.Kd[i].w, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("0 = fully transparent (glass)\n1 = fully opaque");
-            changed |= ImGui::DragFloat("IOR", &mat.Ni, 0.01f, 1.0f, 3.0f, "%.3f");
+            changed |= ImGui::DragFloat("IOR", &mats.Ni[i], 0.01f, 1.0f, 3.0f, "%.3f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Index of Refraction\n1.0 = air, 1.33 = water, 1.5 = glass");
         }
 
         // ── Emission ─────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
-            XMFLOAT3 prevKe = mat.Ke;
-            bool emEdit = ImGui::ColorEdit3("Emission", &mat.Ke.x,
+            XMFLOAT3& Ke = mats.Ke[i];
+            bool emEdit = ImGui::ColorEdit3("Emission", &Ke.x,
                 ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (emEdit) { changed = true; emissionChanged = true; }
 
-            if (mat.Ke.x > 0 || mat.Ke.y > 0 || mat.Ke.z > 0) {
-                float intensity = std::max({mat.Ke.x, mat.Ke.y, mat.Ke.z});
+            if (Ke.x > 0 || Ke.y > 0 || Ke.z > 0) {
+                float intensity = std::max({Ke.x, Ke.y, Ke.z});
                 float prevIntensity = intensity;
                 if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f)) {
                     if (prevIntensity > 0.001f) {
                         float s = intensity / prevIntensity;
-                        mat.Ke.x *= s; mat.Ke.y *= s; mat.Ke.z *= s;
+                        Ke.x *= s; Ke.y *= s; Ke.z *= s;
                         changed = true; emissionChanged = true;
                     }
                 }
@@ -370,45 +371,45 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── PBR ──────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("PBR", ImGuiTreeNodeFlags_DefaultOpen)) {
-            changed |= ImGui::SliderFloat("Roughness", &mat.Pr_Pm_Ps_Pc.x, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Metallic",  &mat.Pr_Pm_Ps_Pc.y, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Sheen",     &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Roughness", &mats.Pr_Pm_Ps_Pc[i].x, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Metallic",  &mats.Pr_Pm_Ps_Pc[i].y, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Sheen",     &mats.Pr_Pm_Ps_Pc[i].z, 0.0f, 1.0f);
         }
 
         // ── Clearcoat ────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Clearcoat")) {
             ImGui::PushID("coat");
-            changed |= ImGui::SliderFloat("Strength",   &mat.Pr_Pm_Ps_Pc.w,      0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Roughness",  &mat.Pcr_aniso_anisor.x,  0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Strength",   &mats.Pr_Pm_Ps_Pc[i].w,      0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Roughness",  &mats.Pcr_aniso_anisor[i].x,  0.0f, 1.0f);
             ImGui::PopID();
         }
 
         // ── Anisotropy ───────────────────────────────────────────
         if (ImGui::CollapsingHeader("Anisotropy")) {
             ImGui::PushID("aniso");
-            changed |= ImGui::SliderFloat("Strength",   &mat.Pcr_aniso_anisor.y, -1.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Rotation",   &mat.Pcr_aniso_anisor.z,  0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Strength",   &mats.Pcr_aniso_anisor[i].y, -1.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Rotation",   &mats.Pcr_aniso_anisor[i].z,  0.0f, 1.0f);
             ImGui::PopID();
         }
 
         // ── Transmission ─────────────────────────────────────────
         if (ImGui::CollapsingHeader("Transmission")) {
-            changed |= ImGui::ColorEdit3("Filter (Tf)", &mat.Tf.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Volume absorption color\nWhite = no absorption");
         }
 
         // ── Alpha ────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Alpha Test")) {
-            changed |= ImGui::SliderFloat("Threshold", &mat.alphaThreshold, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);
         }
 
         // ── Textures (read-only info) ────────────────────────────
         if (ImGui::CollapsingHeader("Textures")) {
             ImGui::TextDisabled("Assigned texture IDs:");
-            ImGui::Text("  Albedo: %s", mat.albedoTexID >= 0 ? std::to_string(mat.albedoTexID).c_str() : "none");
-            ImGui::Text("  Normal: %s", mat.normalTexID >= 0 ? std::to_string(mat.normalTexID).c_str() : "none");
-            ImGui::Text("  RMA:    %s", mat.rmaTexID    >= 0 ? std::to_string(mat.rmaTexID).c_str()    : "none");
+            ImGui::Text("  Albedo: %s", mats.albedoTexID[i] >= 0 ? std::to_string(mats.albedoTexID[i]).c_str() : "none");
+            ImGui::Text("  Normal: %s", mats.normalTexID[i] >= 0 ? std::to_string(mats.normalTexID[i]).c_str() : "none");
+            ImGui::Text("  RMA:    %s", mats.rmaTexID[i]    >= 0 ? std::to_string(mats.rmaTexID[i]).c_str()    : "none");
         }
 
         if (changed)

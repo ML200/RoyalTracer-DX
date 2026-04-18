@@ -41,11 +41,17 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
     v.uv    = h.uv;
     RefetchMaterial(v.matID, h.uv, v.Kd, v.Pr, v.Pm);
 
-    // IOR pair mirrors raygen: entering → (1, matNi), exiting → (matNi, 1).
-    // Pass-through (matNi ≈ 1) yields (1, 1) and disables medium logic naturally.
-    const float matNi = materials[v.matID].Ni;
-    v.etai = h.backface ? matNi : 1.0f;
-    v.etat = h.backface ? 1.0f  : matNi;
+    // IOR pair mirrors raygen, but only flip for actually transmissive
+    // materials. A back-hit on an opaque object (thin leaf/paper/etc.) is
+    // still geometrically "backface" but has no traversable interior, so
+    // swapping the pair would trick the Reconnect medium logic into
+    // applying Tf absorption where none belongs.
+    const float matNi = LoadNi(v.matID);
+    const float Kd_w  = LoadKd_w(v.matID);
+    const bool transmissive = (matNi > 1.0f + EPSILON) && (Kd_w < 1.0f - EPSILON);
+    const bool flipIOR = h.backface && transmissive;
+    v.etai = flipIOR ? matNi : 1.0f;
+    v.etat = flipIOR ? 1.0f  : matNi;
     return v;
 }
 
@@ -81,9 +87,13 @@ inline SurfaceVertex BuildVertexLight(
     const float3 geoNormW = ObjectToWorldNrm(instID, geoNormOb);
     const bool   backface = dot(v.o, geoNormW) < 0.0f;
 
-    const float matNi = materials[v.matID].Ni;
-    v.etai = backface ? matNi : 1.0f;
-    v.etat = backface ? 1.0f  : matNi;
+    // See BuildVertex comment — opaque backface must NOT flip the IOR pair.
+    const float matNi = LoadNi(v.matID);
+    const float Kd_w  = LoadKd_w(v.matID);
+    const bool transmissive = (matNi > 1.0f + EPSILON) && (Kd_w < 1.0f - EPSILON);
+    const bool flipIOR = backface && transmissive;
+    v.etai = flipIOR ? matNi : 1.0f;
+    v.etat = flipIOR ? 1.0f  : matNi;
     return v;
 }
 

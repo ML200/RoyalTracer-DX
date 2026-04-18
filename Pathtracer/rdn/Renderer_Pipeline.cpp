@@ -616,13 +616,15 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Buffer.NumElements = (UINT)m_scene.materialIDs.size();
       dev->CreateShaderResourceView(m_scene.materialIndexBuffer.Get(), &sd, handle); next(); }
 
-    // Slot 8: SRV t5 — Materials
+    // Slot 8: SRV t5 — Materials (compressed AoS, 40 B / material).
+    // Fields: Kd.rgb RGB9E5, Kd.w+Ni half2, Pr/Pm/Ps/Pc u8, Tf RGB9E5,
+    // Pcr/aniso/anisoRot/alphaThreshold u8, 3× texID i16, 3× UV scale half2.
     { D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
       sd.Buffer.NumElements = (UINT)m_scene.materials.size();
-      sd.Buffer.StructureByteStride = sizeof(Material);
+      sd.Buffer.StructureByteStride = 40;
       dev->CreateShaderResourceView(m_scene.materialBuffer.Get(), &sd, handle); next(); }
 
     // Slot 9: SRV t6 — Emissive triangles
@@ -655,7 +657,8 @@ void Renderer::CreateShaderResourceHeap() {
     rawUAV(m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAV(m_sampleBuffer_last,    px * sizeof(SampleData));
 
-    // Slots 16-17: placeholders
+    // Slots 16-17: placeholders (t7, t8 registered in the root signature
+    // but unused now that the material buffer is a single SRV on t5).
     nullSRV(); nullSRV();
 
     // Slot 18: scratch ping UAV

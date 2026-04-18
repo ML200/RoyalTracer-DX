@@ -349,13 +349,15 @@ inline float3 Reconnect(
                                     localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
 
-        // Absorption if the segment exits x1 into x1's medium (frontface
-        // transmission, or backface reflection back into the interior).
-        const float rayDotN1 = dot(-ndirNT, n1_s);
-        const float iorAfterX1 = (rayDotN1 >= 0.0f) ? etai1 : etat1;
+        // Absorption only when x1 is actually inside a transmissive medium.
+        // Matches the gate in the GI branch below.
+        const float rayDotN1    = dot(-ndirNT, n1_s);
+        const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
+        const bool  m1_inMedium = (iorAfterX1 > 1.0f + EPSILON)
+                                  && (LoadKd_w(mID1) < 1.0f - EPSILON);
         float3 transmittance = float3(1.0f, 1.0f, 1.0f);
-        if (iorAfterX1 > 1.0f + EPSILON) {
-            transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, distT);
+        if (m1_inMedium) {
+            transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), distT);
         }
 
         float3 r = F1 * L2 * G1 * transmittance;
@@ -378,7 +380,7 @@ inline float3 Reconnect(
     //   frontface original: (etai2, etat2) = (1, matNi2),  eta2 = matNi2
     //   backface  original: (etai2, etat2) = (matNi2, 1),  eta2 = 1
     // Disambiguate on the midpoint so tiny numerical drift doesn't flip.
-    const float matNi2 = materials[mID2].Ni;
+    const float matNi2 = LoadNi(mID2);
     float etai2;
     float etat2 = eta2;
     if (matNi2 <= 1.0f + EPSILON) {
@@ -391,14 +393,21 @@ inline float3 Reconnect(
     // "Which medium is the segment x1→x2 in?"  At x1 the ray exits toward
     // the etai1 half (dot ≥ 0) or etat1 half (dot < 0). At x2 it arrives
     // from the etai2 half (dot ≥ 0) or etat2 half (dot < 0). If either
-    // side's IOR is > 1, the segment is inside that side's medium.
+    // side's IOR is > 1 AND the material is actually transmissive, the
+    // segment is inside that side's medium. An opaque (Kd.w ≈ 1) surface
+    // has an IOR boundary but no interior — don't apply Beer-Lambert there.
     const float rayDotN1 = dot(-ndirN, n1_s);
     const float rayDotN2 = dot( ndirN, n2_s);
     const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
     const float iorBeforeX2 = (rayDotN2 >= 0.0f) ? etai2 : etat2;
 
-    const bool x1_inMedium = iorAfterX1  > 1.0f + EPSILON;
-    const bool x2_inMedium = iorBeforeX2 > 1.0f + EPSILON;
+    const float m1_Kd_w = LoadKd_w(mID1);
+    const float m2_Kd_w = LoadKd_w(mID2);
+    const bool m1_transmissive = m1_Kd_w < 1.0f - EPSILON;
+    const bool m2_transmissive = m2_Kd_w < 1.0f - EPSILON;
+
+    const bool x1_inMedium = (iorAfterX1  > 1.0f + EPSILON) && m1_transmissive;
+    const bool x2_inMedium = (iorBeforeX2 > 1.0f + EPSILON) && m2_transmissive;
 
     // If the segment is inside a medium, the incident IOR at x2 picks that
     // up instead of air. Prefer x1's medium (ray leaves x1 first).
@@ -417,9 +426,9 @@ inline float3 Reconnect(
     // means x1 and x2 bound the same medium, so only one factor is correct).
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
     if (x1_inMedium) {
-        transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
+        transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), dist);
     } else if (x2_inMedium) {
-        transmittance = CalculateAbsorptionThroughput(materials[mID2].Tf, dist);
+        transmittance = CalculateAbsorptionThroughput(LoadTf(mID2), dist);
     }
 
     // Geometric jacobian at the new x1

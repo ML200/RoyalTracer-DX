@@ -142,21 +142,28 @@ void Pass_raygen_v8()
 
         // Backface-derived IOR pair: entering → (air, matNi), exiting → (matNi, air).
         // Null-IOR boundary (matNi ≈ 1) = pure pass-through; skip the hit.
-        const float matNi = materials[matID].Ni;
+        const float matNi = LoadNi(matID);
         if (matNi <= 1.0f + EPSILON)
         {
             rayOrigin = hitPos;
             continue;
         }
 
-        const float2 iors = hinfo.backface ? float2(matNi, 1.0f) : float2(1.0f, matNi);
-        const uint   mediumMatID = hinfo.backface ? matID : MEDIUM_INVALID;
+        // Only flip the IOR pair (and declare an interior medium for
+        // absorption) when the material is actually transmissive.  An
+        // opaque backface — thin single-sided geometry (leaves, paper)
+        // or an inverted winding — has an IOR but no traversable inside;
+        // swapping would apply a phantom Tf absorption to the incoming leg.
+        const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
+        const bool flipIOR = hinfo.backface && transmissive;
+        const float2 iors = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
+        const uint   mediumMatID = flipIOR ? matID : MEDIUM_INVALID;
 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
         RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
 
         const float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
-            ? CalculateAbsorptionThroughput(materials[mediumMatID].Tf, hitT)
+            ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
             : float3(1, 1, 1);
 
         const float3 emission = GetEmissionFast(instID, primID);
@@ -206,7 +213,7 @@ void Pass_raygen_v8()
                             uint cInstID = q.CandidateInstanceIndex();
                             uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
                             uint cMatID  = GetMatIDFast(cInstID, cPrimID);
-                            float alpha  = materials[cMatID].alphaThreshold;
+                            float alpha  = LoadAlphaThreshold(cMatID);
                             if (alpha < 1.0f)
                                 q.CommitNonOpaqueTriangleHit();
                         }
@@ -282,7 +289,7 @@ void Pass_raygen_v8()
         }
 
         //─────────────────── NEE ───────────────────
-        const bool performNEE = !(mediumMatID != MEDIUM_INVALID || materials[matID].Kd.w < EPSILON);
+        const bool performNEE = !(mediumMatID != MEDIUM_INVALID || LoadKd_w(matID) < EPSILON);
 
         uint matKdPk, matPrPmPk, hitNormalPk;
         if (performNEE)

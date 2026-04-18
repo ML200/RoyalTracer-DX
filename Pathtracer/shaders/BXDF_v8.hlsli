@@ -150,7 +150,6 @@ inline float3 EvaluateBRDF_COMBINED(
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
     float3 localKd, float localPr, float localPm, float etai, float etat)
 {
-    Material mat = materials[matID];
     const float3 N  = normalize(n_s);
     const float3 fN = normalize(n_g);
     const float3 V  = normalize(o);
@@ -164,12 +163,12 @@ inline float3 EvaluateBRDF_COMBINED(
         gate *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
         f    += gate * cr.f;
         gate *= cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm);
         f    += gate * gr.f;
         gate *= gr.t;
     }
@@ -192,7 +191,6 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     res.val = 0.0f;
     res.pdf = 0.0f;
 
-    Material mat = materials[matID];
     const float3 N  = normalize(n_s);
     const float3 fN = normalize(n_g);
     const float3 V  = normalize(o);
@@ -206,13 +204,13 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate    *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
         res.val += gate * cr.f;
         res.pdf += p.Pcoat * cr.pdf;
         gate    *= cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm);
         res.val += gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         gate    *= gr.t;

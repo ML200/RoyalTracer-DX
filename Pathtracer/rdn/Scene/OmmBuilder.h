@@ -30,7 +30,7 @@ struct OmmGpuData {
 };
 
 struct MeshGPU;
-struct Material;
+struct MaterialSoA;
 
 class OmmBuilder {
 public:
@@ -38,7 +38,7 @@ public:
     // then distributes results back to per-mesh OmmBakeResult.
     static void BakeAll(
         std::vector<MeshGPU>& meshes,
-        const std::vector<Material>& materials,
+        const MaterialSoA& materials,
         const std::vector<DirectX::ScratchImage*>& albedoImages);
 
     // GPU build: create the OMM array resource and index buffer.

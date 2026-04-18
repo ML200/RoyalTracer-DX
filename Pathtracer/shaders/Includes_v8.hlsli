@@ -116,7 +116,11 @@ StructuredBuffer<int>                indices             : register(t1);
 RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
-StructuredBuffer<Material>           materials           : register(t5);
+
+// Material buffer — compressed AoS, 40 B / material (was 112 B).
+// See Data_v8.hlsli for layout and Material_Decoder_v8.hlsli for accessors.
+StructuredBuffer<MatPacked>          g_mat               : register(t5);
+
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
@@ -129,6 +133,7 @@ Buffer<float>                      gLT_LeafAliasProb: register(t16);
 Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 
 //Shading and material headers
+#include "Material_Decoder_v8.hlsli"
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
 #include "Fresnel_v8.hlsli"

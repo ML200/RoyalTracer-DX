@@ -19,14 +19,14 @@ static constexpr UINT TEXTURE_BATCH_SIZE = 4;
 MeshSplitResult AssetLoader::SplitOpaqueAlpha(
     const std::vector<UINT>& indices,
     const std::vector<UINT>& perTriMatIDs,
-    const std::vector<Material>& allMaterials)
+    const MaterialSoA& allMaterials)
 {
     MeshSplitResult r;
     const UINT triCount = (UINT)indices.size() / 3;
     std::vector<UINT> opaqueIdx, alphaIdx, opaqueMatIDs, alphaMatIDs;
 
     for (UINT t = 0; t < triCount; ++t) {
-        bool isAlpha = (allMaterials[perTriMatIDs[t]].alphaThreshold < 1.0f);
+        bool isAlpha = (allMaterials.alphaThreshold[perTriMatIDs[t]] < 1.0f);
         auto& dstIdx = isAlpha ? alphaIdx  : opaqueIdx;
         auto& dstMat = isAlpha ? alphaMatIDs : opaqueMatIDs;
         dstIdx.push_back(indices[3*t+0]);
@@ -101,8 +101,7 @@ void AssetLoader::LoadModels(
 
         // ── Merge materials ──────────────────────────────────────
         const UINT globalMatBase = (UINT)scene.materials.size();
-        scene.materials.insert(scene.materials.end(),
-            loaded.materials.begin(), loaded.materials.end());
+        scene.materials.append(loaded.materials);
         scene.materialNames.insert(scene.materialNames.end(),
             loaded.materialNames.begin(), loaded.materialNames.end());
 
@@ -190,9 +189,10 @@ void AssetLoader::LoadModels(
         }
 
         // Collect UV scales from materials that reference each texture
-        for (const auto& mat : scene.materials) {
-            if (mat.albedoTexID >= 0 && (uint32_t)mat.albedoTexID < albedoScales.size())
-                albedoScales[mat.albedoTexID] = mat.albedoUVScale;
+        for (size_t i = 0; i < scene.materials.size(); ++i) {
+            int id = scene.materials.albedoTexID[i];
+            if (id >= 0 && (uint32_t)id < albedoScales.size())
+                albedoScales[id] = scene.materials.albedoUVScale[i];
         }
 
         OmmBuilder::BakeAll(scene.meshes, scene.materials, albedoImgPtrs);
@@ -204,10 +204,13 @@ void AssetLoader::LoadModels(
     scene.bindlessRmaBase    = scene.bindlessNormalBase + (UINT)normalTextures.size();
     scene.totalBindlessTextures = (UINT)(albedoTextures.size() + normalTextures.size() + rmaTextures.size());
 
-    for (auto& mat : scene.materials) {
-        if (mat.albedoTexID >= 0) mat.albedoTexID += (int)scene.bindlessAlbedoBase;
-        if (mat.normalTexID >= 0) mat.normalTexID += (int)scene.bindlessNormalBase;
-        if (mat.rmaTexID    >= 0) mat.rmaTexID    += (int)scene.bindlessRmaBase;
+    for (size_t i = 0; i < scene.materials.size(); ++i) {
+        if (scene.materials.albedoTexID[i] >= 0)
+            scene.materials.albedoTexID[i] += (int)scene.bindlessAlbedoBase;
+        if (scene.materials.normalTexID[i] >= 0)
+            scene.materials.normalTexID[i] += (int)scene.bindlessNormalBase;
+        if (scene.materials.rmaTexID[i] >= 0)
+            scene.materials.rmaTexID[i] += (int)scene.bindlessRmaBase;
     }
 
     // Materials uploaded later by InitSceneGPU (after procedural meshes may add more)

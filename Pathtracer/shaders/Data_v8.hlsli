@@ -37,23 +37,37 @@ struct LightTriangle {
     float3 pad0;       // 16 bytes
 };
 
-struct Material
-{
-    float4 Kd;
-    float3 Ke;
-    float Ni;
-    float4 Pr_Pm_Ps_Pc;
-    float3 Pcr_aniso_anisor;
-    float3 Tf;
-
-    float2 albedoUVScale;
-    float2 normalUVScale;
-    float2 rmaUVScale;
-
-    int albedoTexID;
-    int normalTexID;
-    int rmaTexID;
-    float alphaThreshold;
+// Material is stored as a compressed AoS struct (40 B / material, was 112 B).
+// Single struct keeps one material's data in one cache line — path-tracing
+// threads hit random materials, so SoA planes would force 3 separate cache
+// line fetches per material. See Material_Decoder_v8.hlsli for accessors
+// and src/Components/Vertex.h (MaterialSoA) for the CPU packing.
+//
+// Ke dropped (CPU-only; emission travels via the LightTriangle buffer).
+//
+//  Offset   Field                     Encoding
+//  ───────  ────────────────────────  ────────────────────────────────
+//   0       Kd_rgb                    RGB9E5 (32 bit)
+//   4       w_Ni                      half Kd.w | half Ni
+//   8       PrPmPsPc                  4× uint8 in [0,1], LSB = Pr
+//  12       Tf_rgb                    RGB9E5
+//  16       Pcr_Aniso_Rot_AlphaTh     u8 Pcr | i8 aniso | u8 anisoRot | u8 alphaTh
+//  20       texIDs_01                 i16 albedoTexID | i16 normalTexID
+//  24       texIDs_2                  i16 rmaTexID    | i16 pad
+//  28       uv_albedo                 half2
+//  32       uv_normal                 half2
+//  36       uv_rma                    half2
+struct MatPacked {
+    uint Kd_rgb;
+    uint w_Ni;
+    uint PrPmPsPc;
+    uint Tf_rgb;
+    uint Pcr_Aniso_Rot_AlphaTh;
+    uint texIDs_01;
+    uint texIDs_2;
+    uint uv_albedo;
+    uint uv_normal;
+    uint uv_rma;
 };
 
 struct LightTLASNodeGpu

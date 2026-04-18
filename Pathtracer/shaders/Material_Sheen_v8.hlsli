@@ -89,7 +89,7 @@ inline float3 EvaluateBRDF_SHEEN(
     float3 L = normalize(-incoming);
 
     // Sheen weight
-    float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    float w = saturate(LoadPs(mID));
     if (w <= 0.0f) return 0.0.xxx;
 
     float NdotV = max(0.0f, dot(N, V));
@@ -122,7 +122,7 @@ inline float Transmittance_SHEEN(
     if (NdotV <= 0.0f)
         return 1.0f;
 
-    float w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    float w = saturate(LoadPs(mID));
     if (w <= 0.0f)
         return 1.0f;
 
@@ -140,7 +140,7 @@ inline float Sampling_Weight_SHEEN(
     float3 V = normalize(outgoing);
     float  NdotV = max(0.0f, dot(N, V));
 
-    float  w = saturate(materials[mID].Pr_Pm_Ps_Pc.z);
+    float  w = saturate(LoadPs(mID));
     if (w <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
     float  aV = GetSheenLUT(SHEEN_R, NdotV);
