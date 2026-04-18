@@ -56,12 +56,6 @@ struct Material
     float alphaThreshold;
 };
 
-struct [[raypayload]] ShadowHitInfo {
-    bool isHit: read(caller)
-                         : write(anyhit,closesthit,miss);
-};
-
-
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;

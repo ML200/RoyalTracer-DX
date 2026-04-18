@@ -56,15 +56,6 @@ SamplerState   g_sampler     : register(s0);
 SamplerState   g_sampler_LUT : register(s1);
 Texture2DArray g_LUT         : register(t33);
 
-//Wavefront compaction (UNUSED)
-RWByteAddressBuffer          g_GlobalCounters : register(u34);
-RWStructuredBuffer<uint3>    g_IndirectArgs   : register(u35);
-RWStructuredBuffer<uint2>    g_Stack0         : register(u36);
-RWStructuredBuffer<uint2>    g_Stack1         : register(u37);
-RWByteAddressBuffer          g_SortCount      : register(u60);
-RWByteAddressBuffer          g_SortOffset     : register(u61);
-RWByteAddressBuffer          g_SortBounds     : register(u62);
-
 //Camera
 cbuffer CameraParams : register(b0)
 {
@@ -107,7 +98,6 @@ cbuffer CameraParams : register(b0)
 #include "Data_v8.hlsli"
 #include "Random_v8.hlsli"
 #include "Compression_v8.hlsli"
-#include "HitState_v8.hlsli"
 
 //Output / scratch / reservoir buffers
 RWTexture2DArray<float4> gOutput             : register(u0);
@@ -118,7 +108,6 @@ RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
-RWByteAddressBuffer g_InitialBSDFRays        : register(u9);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
 //Scene data
@@ -154,9 +143,9 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "Clouds_v8.hlsli"
-#include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Reservoir_v8.hlsli"
+#include "Path_State_v8.hlsli"
 
 #include "Camera_ray_v8.hlsli"
 #include "MIS_v8.hlsli"

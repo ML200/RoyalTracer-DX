@@ -1,7 +1,5 @@
-#include "Includes_raygen_v8.hlsli"
+#include "Includes_v8.hlsli"
 
-[shader("miss")] void Miss(inout HitBlobPayload payload) {
-
-}
-
-//UNUSED!!!
+// Empty stub — raygen uses SER HitObject path, miss never executes.
+// D3D12 still requires a valid miss symbol in the raytracing pipeline.
+[shader("miss")] void Miss(inout TracePayload payload) {}

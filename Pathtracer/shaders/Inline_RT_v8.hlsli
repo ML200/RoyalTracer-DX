@@ -1,7 +1,20 @@
-// Minimal payload type
+// Minimal payload type (raygen uses SER HitObject path; the closest-hit
+// and miss stubs still need a nominal payload struct for the pipeline).
 struct [raypayload] TracePayload
 {
     uint dummy : read(caller) : write(caller);
+};
+
+// Sentinel for "no medium" in the raygen absorption path.
+static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
+
+// Surface-shading result returned by EvalSurfaceState.
+struct HitInfo {
+    float3 hitPos;
+    float3 hitNormal;
+    bool   backface;
+    uint   lightID;
+    float2 uv;
 };
 
 
@@ -25,9 +38,24 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-// Visibility test with RTG origin offset
+// Returns true if the input ray is well-formed. Degenerate rays (NaN/Inf
+// origin or direction, near-zero direction, non-positive tMax) can make
+// BVH traversal hang on some drivers — every TraceRay/TraceRayInline in
+// this codebase must be gated on this check.
+inline bool IsRayValid(float3 origin, float3 direction, float tMax)
+{
+    return !any(isnan(direction)) && !any(isinf(direction))
+        && dot(direction, direction) >= 1e-12f
+        && !any(isnan(origin))    && !any(isinf(origin))
+        && tMax > 0.0f;
+}
+
+// Visibility test with RTG origin offset. Returns false ("occluded") for
+// degenerate inputs — a safe default that contributes zero radiance.
 inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
+    if (!IsRayValid(P, direction, tMax)) return false;
+
     float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
 
     RayDesc ray;

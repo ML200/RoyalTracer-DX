@@ -1,9 +1,6 @@
 #include "Includes_v8.hlsli"
 
+// Empty stub — raygen uses SER HitObject path, closest-hit never executes.
+// D3D12 still requires a valid closest-hit symbol for the hit group.
 [shader("closesthit")]
-void ClosestHit(inout PathRayPayload payload, in BuiltInTriangleIntersectionAttributes attr)
-{
-
-}
-
-// UNUSED!!!
+void ClosestHit(inout TracePayload payload, in BuiltInTriangleIntersectionAttributes attr) {}

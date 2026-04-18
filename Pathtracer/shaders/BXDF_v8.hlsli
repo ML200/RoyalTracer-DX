@@ -112,61 +112,77 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
 }
 
 
-// Evaluation for the complete material model
-inline float3 EvaluateBRDF_COMBINED(uint matID, float3 n_s, float3 n_g, float3 s, float3 o, float3 localKd, float localPr, float localPm, float etai, float etat)
-{
-    Material mat = materials[matID];
-    float3 N  = normalize(n_s);
-    float3 fN = normalize(n_g);
-    float3 V  = normalize(o);
-    float3 L  = normalize(s);
-
-    float gate = 1.0f;
-    float3 f = 0.0.xxx;
-
-    // Base SHEEN
-    float3 f_sheen = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
-    f += gate * f_sheen;
-    gate *= Transmittance_SHEEN(matID, n_s, -s, o);
-
-    // Base COAT
-    {
-        CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
-        f += gate * cr.f;
-        gate *= cr.t;
-    }
-
-    // Base SPECULAR (fused: eval+transmittance, pdf is DCE'd)
-    {
-        GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
-        f += gate * gr.f;
-        gate *= gr.t;
-    }
-
-    // Base DIFFUSE
-    float3 f_diff = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
-    f += gate * f_diff;
-
-    return f;
-}
-
-// Combined PDF for all BXDF lobes
-inline float BRDF_PDF_COMBINED(SamplingP p, uint matID, float3 n_s, float3 n_g, float3 s, float3 o, float3 localKd, float localPr, float localPm, float etai, float etat)
-{
-    float pd  = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
-    float ps  = BRDF_PDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);
-    float pc  = BRDF_PDF_COAT(matID, n_s, -s, o, etai, etat);
-    float psh = BRDF_PDF_SHEEN(matID, n_s, -s, o);
-
-    return p.Pdiff * pd + p.Pspec * ps + p.Psheen * psh + p.Pcoat * pc;
-}
-
 // Small helper struct for combined data
 struct BrdfData {
     float3 val;
     float pdf;
 };
 
+// KEEP — pdf-only helper for callers that don't need the BRDF value.
+// Matches EvaluateAndPdf_COMBINED's pdf math: zero-weight lobes contribute
+// nothing to the sum, so the corresponding BRDF_PDF_* helper is skipped.
+inline float BRDF_PDF_COMBINED(
+    SamplingP p,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, float localPr, float localPm, float etai, float etat)
+{
+    float pdf = 0.0f;
+    if (p.Psheen >= EPSILON)
+        pdf += p.Psheen * BRDF_PDF_SHEEN(matID, n_s, -s, o);
+    if (p.Pcoat >= EPSILON)
+        pdf += p.Pcoat  * BRDF_PDF_COAT(matID, n_s, -s, o, etai, etat);
+    if (p.Pspec >= EPSILON)
+        pdf += p.Pspec  * BRDF_PDF_GGX(matID, n_s, n_g, -s, o, etai, etat, localKd, localPr, localPm);
+    if (p.Pdiff >= EPSILON)
+        pdf += p.Pdiff  * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+    return pdf;
+}
+
+// Evaluation for the complete material model.
+// Each lobe branches on its own sampling probability — when p.X < EPSILON
+// the lobe's evaluation, pdf, and transmittance update are all skipped.
+// SER keeps the branches coherent across materials with similar profiles.
+// Gate-propagation is safe because the individual material helpers return
+// transmittance = 1 when their raw weight is ~0 (Sheen/Coat early-outs in
+// their own impls; GGX corner-cases fall within numerical tolerance).
+inline float3 EvaluateBRDF_COMBINED(
+    SamplingP p,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, float localPr, float localPm, float etai, float etat)
+{
+    Material mat = materials[matID];
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
+
+    float  gate = 1.0f;
+    float3 f    = 0.0f;
+
+    if (p.Psheen >= EPSILON) {
+        f    += gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+        gate *= Transmittance_SHEEN(matID, n_s, -s, o);
+    }
+    if (p.Pcoat >= EPSILON) {
+        const CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+        f    += gate * cr.f;
+        gate *= cr.t;
+    }
+    if (p.Pspec >= EPSILON) {
+        const GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        f    += gate * gr.f;
+        gate *= gr.t;
+    }
+    if (p.Pdiff >= EPSILON) {
+        f += gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+    }
+    return f;
+}
+
+// Fused eval + pdf — same branching discipline as EvaluateBRDF_COMBINED.
+// The pdf sum is p.Pdiff*pd + p.Pspec*ps + p.Pcoat*pc + p.Psheen*psh, so a
+// zero weight nulls that lobe's pdf contribution and its pdf helper can be
+// skipped outright.
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -177,48 +193,33 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     res.pdf = 0.0f;
 
     Material mat = materials[matID];
-    float3 N  = normalize(n_s);
-    float3 fN = normalize(n_g);
-    float3 V  = normalize(o);
-    float3 L  = normalize(s);
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
 
     float gate = 1.0f;
 
-    // Sheen
-    {
-        float3 f = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
-        float prob = BRDF_PDF_SHEEN(matID, n_s, -s, o);
-
-        res.val += gate * f;
-        res.pdf += p.Psheen * prob;
-
-        gate *= Transmittance_SHEEN(matID, n_s, -s, o);
+    if (p.Psheen >= EPSILON) {
+        res.val += gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+        res.pdf += p.Psheen * BRDF_PDF_SHEEN(matID, n_s, -s, o);
+        gate    *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
-
-    // Coat
-    {
-        CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
+    if (p.Pcoat >= EPSILON) {
+        const CoatResult cr = EvalCoatAll(mat, N, V, L, etai, etat);
         res.val += gate * cr.f;
         res.pdf += p.Pcoat * cr.pdf;
-        gate *= cr.t;
+        gate    *= cr.t;
     }
-
-    // GGX
-    {
-        GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+    if (p.Pspec >= EPSILON) {
+        const GGXResult gr = EvalGGXAll(mat, N, fN, V, L, etai, etat, localKd, localPr, localPm);
         res.val += gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
-        gate *= gr.t;
+        gate    *= gr.t;
     }
-
-    // Diffuse
-    {
-        float3 f = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
-        float prob = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
-
-        res.val += gate * f;
-        res.pdf += p.Pdiff * prob;
+    if (p.Pdiff >= EPSILON) {
+        res.val += gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        res.pdf += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
     }
-
     return res;
 }

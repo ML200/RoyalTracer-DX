@@ -31,27 +31,9 @@ struct Reservoir
 };
 
 
-static const uint BYTES       = 56u;
-static const uint BYTES_WSUM  =  4u;
-static const uint BYTES_VPOST =  4u;
-static const uint BYTES_TPOST =  4u;
-static const uint STRIDE      = BYTES + BYTES_WSUM + BYTES_VPOST + BYTES_TPOST; // 68
-
-//Per-field sizes
+//Per-field sizes (SoA layout, 4 bytes per plane unless noted)
 static const uint SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
-static const uint SZ_L2    =  4u;
-static const uint SZ_V2    =  4u;
-static const uint SZ_OBJID =  4u;
-static const uint SZ_UV    =  4u;
-static const uint SZ_MATID =  4u;
-static const uint SZ_W     =  4u;
-static const uint SZ_F     =  4u;
-static const uint SZ_FMAG  =  4u;
-static const uint SZ_M     =  4u;
-static const uint SZ_ETA   =  4u;
-static const uint SZ_WSUM  =  4u;
-static const uint SZ_VPOST =  4u;
-static const uint SZ_TPOST =  4u;
+static const uint SZ_4     =  4u;
 
 //Plane cumulative offsets
 static const uint PLANE_PACK1 =  0u;
@@ -66,26 +48,22 @@ static const uint PLANE_FMAG  = 44u;
 static const uint PLANE_M     = 48u;
 static const uint PLANE_ETA   = 52u;
 static const uint PLANE_WSUM  = 56u;
-static const uint PLANE_VPOST = 60u;
-static const uint PLANE_TPOST = 64u;
 
 // SoA address helpers
 // Tile-aligned pixel count, must match MapPixelID's 4x8 tile swizzle.
 uint numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint addr_pack1(uint px)           { return px * SZ_PACK1; }
-uint addr_l2(uint px)              { uint N = numPx(); return N * PLANE_L2    + px * SZ_L2; }
-uint addr_v2(uint px)              { uint N = numPx(); return N * PLANE_V2    + px * SZ_V2; }
-uint addr_objid(uint px)           { uint N = numPx(); return N * PLANE_OBJID + px * SZ_OBJID; }
-uint addr_uv(uint px)              { uint N = numPx(); return N * PLANE_UV    + px * SZ_UV; }
-uint addr_matid(uint px)           { uint N = numPx(); return N * PLANE_MATID + px * SZ_MATID; }
-uint addr_w(uint px)               { uint N = numPx(); return N * PLANE_W     + px * SZ_W; }
-uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_F; }
-uint addr_fmag(uint px)            { uint N = numPx(); return N * PLANE_FMAG  + px * SZ_FMAG; }
-uint addr_m(uint px)               { uint N = numPx(); return N * PLANE_M     + px * SZ_M; }
-uint addr_eta(uint px)             { uint N = numPx(); return N * PLANE_ETA   + px * SZ_ETA; }
-uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + px * SZ_WSUM; }
-uint addr_vpost(uint px)           { uint N = numPx(); return N * PLANE_VPOST + px * SZ_VPOST; }
-uint addr_tpost(uint px)           { uint N = numPx(); return N * PLANE_TPOST + px * SZ_TPOST; }
+uint addr_l2(uint px)              { uint N = numPx(); return N * PLANE_L2    + px * SZ_4; }
+uint addr_v2(uint px)              { uint N = numPx(); return N * PLANE_V2    + px * SZ_4; }
+uint addr_objid(uint px)           { uint N = numPx(); return N * PLANE_OBJID + px * SZ_4; }
+uint addr_uv(uint px)              { uint N = numPx(); return N * PLANE_UV    + px * SZ_4; }
+uint addr_matid(uint px)           { uint N = numPx(); return N * PLANE_MATID + px * SZ_4; }
+uint addr_w(uint px)               { uint N = numPx(); return N * PLANE_W     + px * SZ_4; }
+uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_4; }
+uint addr_fmag(uint px)            { uint N = numPx(); return N * PLANE_FMAG  + px * SZ_4; }
+uint addr_m(uint px)               { uint N = numPx(); return N * PLANE_M     + px * SZ_4; }
+uint addr_eta(uint px)             { uint N = numPx(); return N * PLANE_ETA   + px * SZ_4; }
+uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + px * SZ_4; }
 
 // Scalar magnitude used throughout (luminance).
 inline float GetPHat(float3 v) {
@@ -94,6 +72,8 @@ inline float GetPHat(float3 v) {
 
 // BRDF wrappers (kept as thin aliases to isolate MIS callers from the
 // underlying BXDF module).
+// Computes the sampling-strategy probabilities inline so the BXDF module
+// can branch on inactive lobes without burdening every caller.
 float3 BSDF_term(
     uint   mID,
     float3 n_s,
@@ -106,7 +86,8 @@ float3 BSDF_term(
     float  etai,
     float  etat)
 {
-    return EvaluateBRDF_COMBINED(mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
+    const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
+    return EvaluateBRDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
 // Geometry term uses the shading normal (geometric normal has been retired).
@@ -114,28 +95,6 @@ float G_term(float3 n, float3 s)
 {
     return abs(dot(n, s));
 }
-
-// Store/load packed V_post (world-space)
-void store_Vpost(RWByteAddressBuffer b, uint pixelIdx, float3 Vpost_world)
-{
-    b.Store(addr_vpost(pixelIdx), PackNormal(normalize(Vpost_world)));
-}
-
-float3 load_Vpost(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackNormal(b.Load(addr_vpost(pixelIdx)));
-}
-
-void store_Tpost(RWByteAddressBuffer b, uint pixelIdx, float3 Tpost)
-{
-    b.Store(addr_tpost(pixelIdx), PackRGB9E5(max(Tpost, 0.0f)));
-}
-
-float3 load_Tpost(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackRGB9E5(b.Load(addr_tpost(pixelIdx)));
-}
-
 
 void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
 {
@@ -240,21 +199,9 @@ float load_F_mag(RWByteAddressBuffer b, uint pixelIdx)
     return asfloat(b.Load(addr_fmag(pixelIdx)));
 }
 
-// Reconstruct full F = normalized_color * magnitude
-float3 load_F_full(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackRGB9E5(b.Load(addr_f(pixelIdx))) * asfloat(b.Load(addr_fmag(pixelIdx)));
-}
-
 float load_eta(RWByteAddressBuffer b, uint pixelIdx)
 {
     return asfloat(b.Load(addr_eta(pixelIdx)));
-}
-
-
-float load_wsum(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return asfloat(b.Load(addr_wsum(pixelIdx)));
 }
 
 void store_wsum(RWByteAddressBuffer b, uint pixelIdx, float wsum)
@@ -284,17 +231,6 @@ void store_F(RWByteAddressBuffer b, uint pixelIdx, uint F)
 
 void store_F_mag(RWByteAddressBuffer b, uint pixelIdx, float mag)
 {
-    b.Store(addr_fmag(pixelIdx), asuint(mag));
-}
-
-// Combined store: split float3 F into normalized RGB9E5 color + float magnitude
-void store_F_combined(RWByteAddressBuffer b, uint pixelIdx, float3 F)
-{
-    if (any(isnan(F)) || any(isinf(F)))
-        F = float3(0, 0, 0);
-    float mag = GetPHat(F);
-    float3 norm = (mag > 1e-20f) ? F / mag : float3(0, 0, 0);
-    b.Store(addr_f(pixelIdx), PackRGB9E5(norm));
     b.Store(addr_fmag(pixelIdx), asuint(mag));
 }
 
@@ -504,24 +440,15 @@ bool UpdateReservoir(
 }
 
 
-// Tiny RIS accumulator kept in registers across the raygen path loop.
-// Replaces a full local Reservoir (~17 scalars -> 3 scalars of live state).
-// The winning candidate's payload (x2, n2, L2, V2, uv, matID, objID, eta)
-// is written *directly* to the reservoir buffer in AddInitialCandidate;
-// only F_pack / F_mag need to survive in registers for the final W.
-struct InitialRisState
-{
-    float wsum;
-    uint  F_pack;
-    float F_mag;
-};
-
-// Initial-resampling candidate update: accumulates wsum in registers, and
-// on RIS acceptance writes the reservoir payload straight to the buffer.
-// Sentinel objIDs (env/miss) bypass object-space transform via the
+// Initial-resampling candidate update: accumulates wsum in a register
+// (the only RIS scalar live across iterations) and, on acceptance, writes
+// the full reservoir payload — constant fields (x2, n2, matID, objID, eta,
+// uv) plus varying fields (L2, V2, F, F_mag) — straight to the SoA buffer.
+//
+// Sentinel objIDs (env/miss) bypass the object-space transform via the
 // identity shortcut in Sample_Data_v8.
 inline bool AddInitialCandidate(
-    inout InitialRisState ris,
+    inout float wsum,
     RWByteAddressBuffer buf,
     uint pixelIdx,
     float  wi,
@@ -533,12 +460,12 @@ inline bool AddInitialCandidate(
     inout uint seed)
 {
     if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return false;
-    const float F_mag_new = GetPHat(F_contrib);
-    if (F_mag_new <= 1e-20f) return false;
-    const uint F_pack_new = PackRGB9E5(F_contrib / F_mag_new);
+    const float F_mag = GetPHat(F_contrib);
+    if (F_mag <= 1e-20f) return false;
+    const uint F_pack = PackRGB9E5(F_contrib / F_mag);
 
-    ris.wsum += wi;
-    if (ris.wsum > EPSILON && RandomFloatSingle(seed) < (wi / ris.wsum))
+    wsum += wi;
+    if (wsum > EPSILON && RandomFloatSingle(seed) < (wi / wsum))
     {
         const float3 xO  = WorldToObjectPos(objID, x2);
         const float3 nSO = WorldToObjectNrm(objID, n2_s);
@@ -549,100 +476,11 @@ inline bool AddInitialCandidate(
         buf.Store (addr_matid(pixelIdx), matID);
         buf.Store (addr_eta  (pixelIdx), asuint(eta));
         buf.Store (addr_uv   (pixelIdx), PackFloat2x16(uv.x, uv.y));
-
-        ris.F_pack = F_pack_new;
-        ris.F_mag  = F_mag_new;
+        buf.Store (addr_f    (pixelIdx), F_pack);
+        buf.Store (addr_fmag (pixelIdx), asuint(F_mag));
         return true;
     }
     return false;
-}
-
-// Legacy wrapper — kept for any caller that still expects the local-struct
-// form. New raygen path uses AddInitialCandidate above.
-inline void AddCandidate(
-    inout Reservoir res,
-    in float  wi,
-    in float3 x2,
-    in float3 n2_s,
-    in float3 L2,
-    in float3 V2,
-    in float2 uv,
-    in uint   matID,
-    in uint   objID,
-    in float  eta,
-    in float3 F_contrib,
-    inout uint seed)
-{
-    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return;
-    const float F_mag = GetPHat(F_contrib);
-    if (F_mag <= 1e-20f) return;
-    const uint  F_pack = PackRGB9E5(F_contrib / F_mag);
-
-    uint2 s2 = uint2(seed, 0u);
-    UpdateReservoir(res, wi, 1u,
-                    x2, n2_s, L2, V2, uv,
-                    matID, objID, eta,
-                    F_pack, F_mag, s2);
-    seed = s2.x;
-}
-
-
-// Fast Update
-bool UpdateReservoir_Fast(
-    RWByteAddressBuffer buf,
-    uint pixelIdx,
-    float wi,
-    float3 L2_new,
-    float3 V2_new,
-
-    inout uint2 seed
-)
-{
-    float currentWSum = asfloat(buf.Load(addr_wsum(pixelIdx)));
-    float newWSum     = currentWSum + wi;
-    buf.Store(addr_wsum(pixelIdx), asuint(newWSum));
-
-    bool isAccepted = false;
-
-    if (RandomFloatSingle(seed.x) < (wi / newWSum))
-    {
-        isAccepted = true;
-
-        buf.Store(addr_l2(pixelIdx), PackRGB9E5(L2_new));
-        buf.Store(addr_v2(pixelIdx), PackNormal(normalize(V2_new)));
-    }
-
-    return isAccepted;
-}
-
-
-// Store constant hit data for reconnection
-void SetReservoir_ConstHit(
-    RWByteAddressBuffer buf,
-    uint pixelIdx,
-    float3 x2_world,
-    float3 n2s_world,
-    uint   matID,
-    uint   objID,
-    float  eta
-)
-{
-    float3 xO  = WorldToObjectPos(objID, x2_world);
-    float3 nSO = WorldToObjectNrm(objID, n2s_world);
-
-    buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
-    buf.Store (addr_objid(pixelIdx), objID);
-    buf.Store (addr_matid(pixelIdx), matID);
-    buf.Store (addr_eta(pixelIdx),   asuint(eta));
-}
-
-void SetReservoir_UV(
-    RWByteAddressBuffer buf,
-    uint pixelIdx,
-    float2 uv
-)
-{
-    buf.Store(addr_uv(pixelIdx), PackFloat2x16(uv.x, uv.y));
 }
 
 inline bool TestTemporalCandidate(

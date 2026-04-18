@@ -4,10 +4,6 @@
 #define MAX_BOUNCES 10
 #endif
 
-#ifndef MEDIUM_INVALID
-#define MEDIUM_INVALID 0xFFFFFFFFu
-#endif
-
 //─────────────────────────────────────────────────────────────────────────────
 //  RAYGEN (unified DI + GI reservoir)
 //
@@ -16,14 +12,17 @@
 //  matIDs (MATID_ENV_MISS or MATID_LIGHT_TRI) and their DI-specific x2
 //  payload; GI candidates reuse the stashed depth-1 vertex state.
 //
-//  State kept in registers across iterations:
-//    (x2_world, n2_world, uv_at_x2, matID_at_x2, objID_at_x2, eta_at_x2)
-//                                               — depth-1 vertex, for GI samples
-//    v2_world                                    — direction x3 -> x2, set at depth=2
-//    tpost                                       — post-x2 integrand accumulator
+//  Live register state (hot): seed, rayOrigin, rayDir, throughputPk,
+//  prevNormalPk, prev_pdf, pdf_product, tpost, wsum. That's it.
 //
-//  Reservoir is accumulated locally and written via storeReservoir at the
-//  end; wsum is separately stored (Pass_boil_gi reads it).
+//  Cold state pushed to memory:
+//    depth-1 vertex (x2, n2, uv, matID, objID, eta)  — write once at depth=1,
+//    v2 direction                                     — write once at depth=2,
+//    RIS F_pack / F_mag                              — written directly to
+//                                                      the reservoir buffer on
+//                                                      acceptance.
+//  All are compressed SoA in g_pathStateBuffer (raygen-only; Pass_spat_gi_*
+//  overwrites the buffer later in the frame).
 //─────────────────────────────────────────────────────────────────────────────
 
 [shader("raygeneration")]
@@ -44,34 +43,28 @@ void Pass_raygen_v8()
     // "no candidate accepted" pixels end up as empty reservoirs.
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
-    // Compact RIS state — 3 scalars instead of a full local Reservoir
-    // (~17). The winning payload is written directly to the reservoir
-    // buffer on acceptance; F_pack/F_mag/wsum are tracked here for the
-    // final W computation.
-    InitialRisState ris;
-    ris.wsum   = 0.0f;
-    ris.F_pack = 0u;
-    ris.F_mag  = 0.0f;
+    // Seed the PathVertexState slot with safe sentinel defaults. Without
+    // this, the pass-through `continue` at matNi ≤ 1+EPSILON (and any
+    // other depth=1 early-break) leaves last frame's spatial-pass scratch
+    // in the slot, which load_ps then decodes into a bogus matID/objID
+    // and hangs the driver at specific camera angles.
+    init_ps(g_pathStateBuffer, pixelIdx);
+
+    // RIS state: only wsum is live across iterations. F_pack and F_mag
+    // are written straight to the reservoir buffer on acceptance.
+    float wsum = 0.0f;
 
     uint   seed         = initRandomData(pixel, uint2(8, 4), time, 1u);
     float3 rayOrigin    = InitOrigin();
     float3 rayDir       = InitDirection(pixel, float2(imgSize), seed);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
-    float  prev_pdf       = 1.0f;
-    float  pdf_product = 1.0f;
+    float  prev_pdf     = 1.0f;
+    float  pdf_product  = 1.0f;
 
-    // Depth-1 vertex state (populated once at depth=1, reused by every
-    // GI candidate that fires at depth >= 2).
-    float3 x2_world    = float3(0, 0, 0);
-    float3 n2_world    = float3(0, 1, 0);
-    float2 uv_at_x2    = float2(0, 0);
-    uint   matID_at_x2 = 0u;
-    uint   objID_at_x2 = 0u;
-    float  eta_at_x2   = 1.0f;
-
-    float3 v2_world    = float3(0, 1, 0);  // set at depth=2
-    float3 tpost       = float3(1, 1, 1);  // post-x2 integrand accumulator
+    // tpost (post-x2 integrand accumulator) stays in registers — updated
+    // every bounce, so buffer RMW would be strictly worse than 3 scalars.
+    float3 tpost = float3(1, 1, 1);
 
     //════════════════════════════════════════════════════════════════════════
     // Path loop
@@ -79,8 +72,7 @@ void Pass_raygen_v8()
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
-        if (any(isnan(rayDir)) || any(isinf(rayDir)) || dot(rayDir, rayDir) < 1e-12f ||
-            any(isnan(rayOrigin)) || any(isinf(rayOrigin)))
+        if (!IsRayValid(rayOrigin, rayDir, 10000.0f))
             break;
 
         RayDesc ray;
@@ -116,7 +108,7 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 // DI env candidate — d=2 path, x2 stored as DIRECTION.
-                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
+                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     rayDir, float3(0, 1, 0),          // x2=dir, n2=unit default
                     envL,   float3(0, 1, 0),          // L2,     V2=unit default
                     float2(0, 0),
@@ -125,11 +117,12 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI env (x2 = stashed depth-1 vertex)
             {
-                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
-                    x2_world, n2_world,
-                    envL * tpost, v2_world,
-                    uv_at_x2,
-                    matID_at_x2, objID_at_x2, eta_at_x2,
+                const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
+                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                    ps.x2, ps.n2_s,
+                    envL * tpost, ps.v2,
+                    ps.uv,
+                    ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
             break;
@@ -182,34 +175,50 @@ void Pass_raygen_v8()
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
             }
 
-            // Specular motion vector reflection probe (unchanged)
+            // Specular motion vector reflection probe
             {
-                float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
-                float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
-                RayDesc reflRay;
-                reflRay.Origin    = reflOrigin;
-                reflRay.Direction = reflDir;
-                reflRay.TMin      = 0.00001f;
-                reflRay.TMax      = 10000.0f;
+                const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
+                const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
 
-                RayQuery<RAY_FLAG_NONE> q;
-                q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
-                while (q.Proceed())
+                bool committed = false;
+                float reflT = 0.0f;
+                if (IsRayValid(reflOrigin, reflDir, 10000.0f))
                 {
-                    if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                    RayDesc reflRay;
+                    reflRay.Origin    = reflOrigin;
+                    reflRay.Direction = reflDir;
+                    reflRay.TMin      = 0.00001f;
+                    reflRay.TMax      = 10000.0f;
+
+                    RayQuery<RAY_FLAG_NONE> q;
+                    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
+                    // Hard cap on alpha-test iterations: a grazing reflection
+                    // ray through dense foliage can produce hundreds of
+                    // non-opaque candidates, and certain driver states hit
+                    // TDR before BVH traversal finishes. 128 is far more
+                    // than any motion-vector probe needs.
+                    uint alphaIter = 0;
+                    while (q.Proceed() && alphaIter < 128u)
                     {
-                        uint cInstID = q.CandidateInstanceIndex();
-                        uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-                        uint cMatID  = GetMatIDFast(cInstID, cPrimID);
-                        float alpha  = materials[cMatID].alphaThreshold;
-                        if (alpha < 1.0f)
-                            q.CommitNonOpaqueTriangleHit();
+                        ++alphaIter;
+                        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+                        {
+                            uint cInstID = q.CandidateInstanceIndex();
+                            uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+                            uint cMatID  = GetMatIDFast(cInstID, cPrimID);
+                            float alpha  = materials[cMatID].alphaThreshold;
+                            if (alpha < 1.0f)
+                                q.CommitNonOpaqueTriangleHit();
+                        }
                     }
+
+                    committed = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
+                    if (committed) reflT = q.CommittedRayT();
                 }
 
-                if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+                if (committed)
                 {
-                    float3 reflPos    = reflOrigin + reflDir * q.CommittedRayT();
+                    float3 reflPos    = reflOrigin + reflDir * reflT;
                     float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
                     gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
                 }
@@ -239,7 +248,7 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 // DI triangle-emitter candidate — d=2 path.
-                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
+                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
                     emission, float3(0, 1, 0),        // V2 unused for DI
                     float2(0, 0),
@@ -248,30 +257,28 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI emitter (x2 = stashed depth-1 vertex)
             {
-                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
-                    x2_world, n2_world,
-                    emission * tpost, v2_world,
-                    uv_at_x2,
-                    matID_at_x2, objID_at_x2, eta_at_x2,
+                const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
+                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                    ps.x2, ps.n2_s,
+                    emission * tpost, ps.v2,
+                    ps.uv,
+                    ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
             break;
         }
 
-        //─────────────────── Stash depth-1 vertex ───────────────────
+        //─────────────────── Stash depth-1 vertex / v2 ───────────────────
         if (depth == 1)
         {
-            x2_world    = hitPos;
-            n2_world    = hinfo.hitNormal;
-            uv_at_x2    = hinfo.uv;
-            matID_at_x2 = matID;
-            objID_at_x2 = instID;
-            eta_at_x2   = iors.y;
+            store_ps_depth1(g_pathStateBuffer, pixelIdx,
+                            hitPos, hinfo.hitNormal,
+                            hinfo.uv, matID, instID, iors.y);
         }
 
         if (depth == 2)
         {
-            v2_world = -rayDir;  // direction x3 -> x2
+            store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
         }
 
         //─────────────────── NEE ───────────────────
@@ -323,7 +330,7 @@ void Pass_raygen_v8()
                         if (depth == 0)
                         {
                             // DI NEE at primary vertex — d=2 path, x2 = light.
-                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
+                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 light.position, light.normal,
                                 light.emission, float3(0, 1, 0),
                                 float2(0, 0),
@@ -333,7 +340,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             // GI NEE at depth-1 vertex — d=3 path, x2 = current hit.
-                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
+                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 light.emission, -L,
                                 hinfo.uv,
@@ -342,13 +349,14 @@ void Pass_raygen_v8()
                         }
                         else // depth >= 2: GI NEE past depth-1 vertex.
                         {
+                            const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
                             // tpost so far excludes current BSDF; NEE adds it.
                             const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
-                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
-                                x2_world, n2_world,
-                                light.emission * tpostNEE, v2_world,
-                                uv_at_x2,
-                                matID_at_x2, objID_at_x2, eta_at_x2,
+                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                                ps.x2, ps.n2_s,
+                                light.emission * tpostNEE, ps.v2,
+                                ps.uv,
+                                ps.matID, ps.objID, ps.eta,
                                 F_contrib, seed);
                         }
                     }
@@ -394,7 +402,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
+                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 sun.radiance, -sun.direction,
                                 hinfo.uv,
@@ -405,11 +413,12 @@ void Pass_raygen_v8()
                         {
                             const float  wi       = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
                             const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
-                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
-                                x2_world, n2_world,
-                                sun.radiance * tpostNEE, v2_world,
-                                uv_at_x2,
-                                matID_at_x2, objID_at_x2, eta_at_x2,
+                            const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
+                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                                ps.x2, ps.n2_s,
+                                sun.radiance * tpostNEE, ps.v2,
+                                ps.uv,
+                                ps.matID, ps.objID, ps.eta,
                                 F_contrib, seed);
                         }
                     }
@@ -435,11 +444,11 @@ void Pass_raygen_v8()
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
-        prev_pdf       = bdata.pdf;
+        prev_pdf    = bdata.pdf;
         pdf_product = min(pdf_product * bdata.pdf, 1e30f);
-        rayDir         = s;
+        rayDir      = s;
         float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
-        rayOrigin      = offset_ray(hitPos, offsetN);
+        rayOrigin   = offset_ray(hitPos, offsetN);
 
         {
             float3 throughput  = UnpackRGB9E5(throughputPk) * updateWeight;
@@ -466,23 +475,22 @@ void Pass_raygen_v8()
     }
 
     //════════════════════════════════════════════════════════════════════════
-    // Final resolve — commit RIS state to the buffer, compute W.
-    // Per-field stores only; x2/n2/matID/etc. were already written to the
-    // buffer by AddInitialCandidate on the last RIS acceptance.
+    // Final resolve — commit wsum / W / M. F_pack and F_mag were already
+    // written to the reservoir by AddInitialCandidate on the last acceptance,
+    // so read F_mag back from the buffer to compute W.
     //════════════════════════════════════════════════════════════════════════
     {
+        const float F_mag = load_F_mag(g_Reservoirs_current, pixelIdx);
         float W = 0.0f;
-        if (ris.F_mag > 1e-6f && ris.wsum > 0.0f)
+        if (F_mag > 1e-6f && wsum > 0.0f)
         {
-            W = ris.wsum / ris.F_mag;
+            W = wsum / F_mag;
             if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
         }
 
-        store_F    (g_Reservoirs_current, pixelIdx, ris.F_pack);
-        store_F_mag(g_Reservoirs_current, pixelIdx, ris.F_mag);
-        store_wsum (g_Reservoirs_current, pixelIdx, ris.wsum);
-        store_W    (g_Reservoirs_current, pixelIdx, W);
-        store_M    (g_Reservoirs_current, pixelIdx, 1u);
+        store_wsum(g_Reservoirs_current, pixelIdx, wsum);
+        store_W   (g_Reservoirs_current, pixelIdx, W);
+        store_M   (g_Reservoirs_current, pixelIdx, 1u);
 
         if (W == 0.0f)
             InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
