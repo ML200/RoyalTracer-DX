@@ -14,14 +14,14 @@
 //─────────────────────────────────────────────────────────────────────────────
 
 // Scratch layout mirrors Pass_spat_gi_select_v8.hlsl
-static const uint GI_SEL_STRIDE      = 56u;
-static const uint GI_SEL_SLOT_BASE   = 8u;
-static const uint GI_SEL_SLOT_STRIDE = 16u;
+static const uint SEL_STRIDE      = 56u;
+static const uint SEL_SLOT_BASE   = 8u;
+static const uint SEL_SLOT_STRIDE = 16u;
 
-uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
-uint gi_sel_slot_addr(uint linearIdx, uint slot)
+uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
+uint sel_slot_addr(uint linearIdx, uint slot)
 {
-    return gi_sel_addr(linearIdx) + GI_SEL_SLOT_BASE + slot * GI_SEL_SLOT_STRIDE;
+    return sel_addr(linearIdx) + SEL_SLOT_BASE + slot * SEL_SLOT_STRIDE;
 }
 
 [shader("raygeneration")]
@@ -32,14 +32,14 @@ void Pass_spat_gi_shift_v8()
     {
         const uint2 li = DispatchRaysIndex().xy;
         const uint  px = MapPixelID(uint2(IMG_W, IMG_H), int2(li));
-        sortKey = g_pathStateBuffer.Load(gi_sel_addr(px));
+        sortKey = g_pathStateBuffer.Load(sel_addr(px));
     }
     dx::MaybeReorderThread(sortKey, 2);
 
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
-    const uint   baseAddr    = gi_sel_addr(pixelIdx);
+    const uint   baseAddr    = sel_addr(pixelIdx);
 
     const uint validCount = g_pathStateBuffer.Load(baseAddr);
     if (validCount == 0u) return;
@@ -55,40 +55,40 @@ void Pass_spat_gi_shift_v8()
     //preserves direction under reparameterization. Triangle-light samples
     //use the same geometric formula as vertex samples.
     {
-        const uint myMatID = load_matID_gi(g_Reservoirs_current_gi, pixelIdx);
+        const uint myMatID = load_matID(g_Reservoirs_current, pixelIdx);
         float my_Jc = 1.0f;
         if (myMatID != MATID_ENV_MISS)
         {
-            const uint   myObjID = load_objID_gi(g_Reservoirs_current_gi, pixelIdx);
-            const float3 my_x2   = load_x2_gi   (g_Reservoirs_current_gi, pixelIdx, myObjID);
-            const float3 my_n2s  = load_n2_s_gi (g_Reservoirs_current_gi, pixelIdx, myObjID);
+            const uint   myObjID = load_objID(g_Reservoirs_current, pixelIdx);
+            const float3 my_x2   = load_x2   (g_Reservoirs_current, pixelIdx, myObjID);
+            const float3 my_n2s  = load_n2_s (g_Reservoirs_current, pixelIdx, myObjID);
             my_Jc = ComputeJc(sv.x, my_x2, my_n2s);
         }
         g_pathStateBuffer.Store(baseAddr + 4u, asuint(my_Jc));
     }
 
-    //One shift per valid slot. Partner is loaded per-field (skip M / W / F_gi /
+    //One shift per valid slot. Partner is loaded per-field (skip M / W / F /
     //F_mag / w_sum fields shift doesn't need) and pack1 is fetched once for
     //both x2 and n2_s.
     [loop]
-    for (uint s = 0u; s < SPAT_COUNT_MAX_GI; ++s)
+    for (uint s = 0u; s < SPAT_COUNT_MAX; ++s)
     {
-        const uint slotAddr = gi_sel_slot_addr(pixelIdx, s);
+        const uint slotAddr = sel_slot_addr(pixelIdx, s);
         const uint nID      = g_pathStateBuffer.Load(slotAddr);
         if (nID == 0xFFFFFFFFu) continue;
 
-        const uint   p_objID = load_objID_gi(g_Reservoirs_current_gi, nID);
-        const uint   p_matID = load_matID_gi(g_Reservoirs_current_gi, nID);
-        const uint4  pack1   = g_Reservoirs_current_gi.Load4(gi_addr_pack1(nID));
+        const uint   p_objID = load_objID(g_Reservoirs_current, nID);
+        const uint   p_matID = load_matID(g_Reservoirs_current, nID);
+        const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
         const float3 p_x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
         const float3 p_n2s   = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
-        const float3 p_L2    = load_L2_gi(g_Reservoirs_current_gi, nID);
-        const float3 p_V2    = load_V2_gi(g_Reservoirs_current_gi, nID);
-        const float2 p_uv    = load_uv_gi(g_Reservoirs_current_gi, nID);
-        const float  p_eta   = load_eta_gi(g_Reservoirs_current_gi, nID);
+        const float3 p_L2    = load_L2(g_Reservoirs_current, nID);
+        const float3 p_V2    = load_V2(g_Reservoirs_current, nID);
+        const float2 p_uv    = load_uv_res(g_Reservoirs_current, nID);
+        const float  p_eta   = load_eta(g_Reservoirs_current, nID);
 
         // Sentinel matIDs (env, triangle-light) have no BSDF at x2 — the
-        // unified ReconnectGI branches skip these values. Don't index the
+        // unified Reconnect branches skip these values. Don't index the
         // materials array with a sentinel.
         float3 rKd = 0.0f; float rPr = 0.0f, rPm = 0.0f;
         if (!IsSentinelMatID(p_matID))
@@ -96,7 +96,7 @@ void Pass_spat_gi_shift_v8()
 
         // MY x1 -> partner x2
         float  Jn = 0.0f;
-        float3 c  = ReconnectGI(
+        float3 c  = Reconnect(
             sv.x, sv.n_s, sv.o, sv.matID,
             sv.Kd, sv.Pr, sv.Pm,
             p_matID, p_x2, p_n2s, p_L2, p_V2,

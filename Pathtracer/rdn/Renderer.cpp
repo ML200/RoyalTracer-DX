@@ -1027,9 +1027,7 @@ void Renderer::PopulateCommandList() {
     // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
     UINT dispW = renderW, dispH = renderH;
 
-    // Precompute ReSTIR root constants. DI-specific slots ([4], [6-9], [18])
-    // are preserved in the cbuffer layout but no longer populated — the unused
-    // DI passes read them as zero.
+    // Precompute ReSTIR root constants.
     auto& rs = m_restirSettings;
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
     rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
@@ -1042,22 +1040,22 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[31] = {};
-    // [4], [6-9] intentionally left as 0 (DI slots retired)
-    rsConsts[5]  = (UINT)rs.tempMcapGI;
-    rsConsts[10] = (UINT)rs.spatCountMaxGI;
-    rsConsts[11] = (UINT)rs.spatCountMinGI;
-    rsConsts[12] = (UINT)rs.spatRadMaxGI;
-    rsConsts[13] = (UINT)rs.spatRadMinGI;
+    UINT rsConsts[24] = {};
+    rsConsts[4]  = (UINT)rs.tempMcapGI;
+    rsConsts[5]  = (UINT)rs.spatCountMaxGI;
+    rsConsts[6]  = (UINT)rs.spatCountMinGI;
+    rsConsts[7]  = (UINT)rs.spatRadMaxGI;
+    rsConsts[8]  = (UINT)rs.spatRadMinGI;
     // When DLSS render resolution changes, the "last" reservoir/sample buffers
-    // use a different SoA layout (gi_numPx changes).  Reading them with the new
-    // layout yields garbage positions → NaN rays → GPU hang.  Disable temporal
+    // use a different SoA layout (numPx changes). Reading them with the new
+    // layout yields garbage positions → NaN rays → GPU hang. Disable temporal
     // reuse for 2 frames so those buffers are never read with stale layout.
-    rsConsts[14] = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
-    memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
-    memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
-    rsConsts[17] = (UINT)rs.spatTriesGI;
-    // [18] rs_spatTriesDI: retired
+    // Flags() returns bit1=tempGI (0x2) and bit3=spatGI (0x8); mask off both
+    // lower bits on DLSS res change to drop the temporal pass.
+    rsConsts[9]  = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
+    memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
+    rsConsts[12] = (UINT)rs.spatTriesGI;
 
     // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
     // Sizes must match shaders' hardcoded values and InitReuseTextures.
@@ -1066,19 +1064,19 @@ void Renderer::PopulateCommandList() {
         std::mt19937 rng(static_cast<uint32_t>(m_time) * 0x9E3779B9u + 1u);
         std::uniform_int_distribution<uint32_t> dist;
         for (int i = 0; i < 3; ++i) {
-            rsConsts[20 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
-            rsConsts[20 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
-            rsConsts[20 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
+            rsConsts[13 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
+            rsConsts[13 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
+            rsConsts[13 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
         }
     }
 
-    // Neighbor rejection thresholds (slots 29-30)
-    memcpy(&rsConsts[29], &rs.rejNormalDot, 4);
-    memcpy(&rsConsts[30], &rs.rejDistance,  4);
+    // Neighbor rejection thresholds (slots 22-23)
+    memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
+    memcpy(&rsConsts[23], &rs.rejDistance,  4);
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 31, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 24, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

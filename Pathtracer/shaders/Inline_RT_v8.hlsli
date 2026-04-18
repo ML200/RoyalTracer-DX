@@ -346,16 +346,17 @@ HitInfo EvalSurfaceState(
     float3 viewDir = posW - origin;
     viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
-    const bool isBackface = (dot(viewDir, geoNormW) > 0.0f);
+    const bool   isBackface      = (dot(viewDir, geoNormW) > 0.0f);
+    const float3 geoNormOriented = isBackface ? -geoNormW : geoNormW;
 
-    hit.hitPos     = posW;
-    hit.hitNormal  = isBackface ? -normW    : normW;
-    hit.hitGNormal = isBackface ? -geoNormW : geoNormW;
+    hit.hitPos    = posW;
+    hit.hitNormal = isBackface ? -normW : normW;
+    hit.backface  = isBackface;
 
     //Clamp normal to ensure that the ray has substantial chance to proceed
     {
         const float3 Vw = -viewDir;
-        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, hit.hitGNormal, 0.1f, 0.02f);
+        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, geoNormOriented, 0.1f, 0.02f);
     }
 
     const uint baseL        = instanceProps[instID].triToLightBase;

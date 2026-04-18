@@ -11,11 +11,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
     gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
 
-    float3 output_DI  = gScratchPing[uint3(DTid.xy, 1)];
-    float3 output_GI  = gScratchPing[uint3(DTid.xy, 2)];
-    float3 sunDirect  = gScratchPing[uint3(DTid.xy, 3)].rgb;
+    float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)];
+    float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
+    float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    float3 accumulation = output_DI + output_GI + sunDirect;
+    float3 accumulation = output_primary + output_indirect + sunDirect;
 
     bool cameraChanged = false;
     [unroll]
@@ -146,8 +146,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
-        Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
-        g_dlssSpecHitDist[DTid.xy] = length(rdi.x2_gi - sv.x);
+        Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
+        g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
 
         // Specular motion vector
         // Uses the deterministic perfect-reflection ray traced in raygen (scratch slice 4).

@@ -25,14 +25,14 @@ Texture2D<int2> g_reuseTexture2 : register(t21);
 //   offset 8 + s*16 + 8:  float F_mag         (shift pass, visibility baked)
 //   offset 8 + s*16 + 12: float Jn            (shift pass)
 // M_sum is recomputed in the merge pass from per-slot partner.M loads.
-static const uint GI_SEL_STRIDE      = 56u;
-static const uint GI_SEL_SLOT_BASE   = 8u;
-static const uint GI_SEL_SLOT_STRIDE = 16u;
+static const uint SEL_STRIDE      = 56u;
+static const uint SEL_SLOT_BASE   = 8u;
+static const uint SEL_SLOT_STRIDE = 16u;
 
-uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
-uint gi_sel_slot_addr(uint linearIdx, uint slot)
+uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
+uint sel_slot_addr(uint linearIdx, uint slot)
 {
-    return gi_sel_addr(linearIdx) + GI_SEL_SLOT_BASE + slot * GI_SEL_SLOT_STRIDE;
+    return sel_addr(linearIdx) + SEL_SLOT_BASE + slot * SEL_SLOT_STRIDE;
 }
 
 // Sample slot s, applying the per-frame offset + dihedral
@@ -88,9 +88,9 @@ bool PairRejected(uint aMat, float3 aPos, float3 aN,
                   uint bMat, float3 bPos, float3 bN)
 {
     if (aMat != bMat) return true;
-    if (RejectNormal_GI(aN, bN, rs_rejNormalDot)) return true;
-    if (RejectDistance_GI(aPos, bPos, aN, rs_rejDistance)) return true;
-    if (RejectDistance_GI(bPos, aPos, bN, rs_rejDistance)) return true;
+    if (RejectNormal(aN, bN, rs_rejNormalDot)) return true;
+    if (RejectDistance(aPos, bPos, aN, rs_rejDistance)) return true;
+    if (RejectDistance(bPos, aPos, bN, rs_rejDistance)) return true;
     return false;
 }
 
@@ -105,7 +105,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
     //Scratch is indexed by pixelIdx
-    const uint baseAddr = gi_sel_addr(pixelIdx);
+    const uint baseAddr = sel_addr(pixelIdx);
 
     //Emitter or spatial GI disabled -> no neighbors
     if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u))
@@ -115,7 +115,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
 
     //Reservoir empty
-    const uint myM = load_M_gi(g_Reservoirs_current_gi, pixelIdx);
+    const uint myM = load_M(g_Reservoirs_current, pixelIdx);
     if (myM == 0u)
     {
         g_pathStateBuffer.Store(baseAddr, 0u);
@@ -131,14 +131,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     //Decompacted: nIds[s] is slot s partner (or 0xFFFFFFFFu if rejected)
-    uint  nIds[SPAT_COUNT_MAX_GI];
+    uint  nIds[SPAT_COUNT_MAX];
     [unroll]
-    for (uint i = 0u; i < SPAT_COUNT_MAX_GI; ++i) nIds[i] = 0xFFFFFFFFu;
+    for (uint i = 0u; i < SPAT_COUNT_MAX; ++i) nIds[i] = 0xFFFFFFFFu;
 
     uint validCount = 0;
 
     [loop]
-    for (uint s = 0u; s < SPAT_COUNT_MAX_GI; ++s)
+    for (uint s = 0u; s < SPAT_COUNT_MAX; ++s)
     {
         const int2 delta   = SampleReuseDelta(launchIndex, s);
         const int2 partner = int2(launchIndex) + delta;
@@ -160,7 +160,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s)) continue;
 
-        const uint bM = load_M_gi(g_Reservoirs_current_gi, bID);
+        const uint bM = load_M(g_Reservoirs_current, bID);
         if (bM == 0u) continue;
 
         nIds[s] = bID;
@@ -172,8 +172,8 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     //Write nIDs at slot positions
     [unroll]
-    for (uint k = 0u; k < SPAT_COUNT_MAX_GI; ++k)
+    for (uint k = 0u; k < SPAT_COUNT_MAX; ++k)
     {
-        g_pathStateBuffer.Store(gi_sel_slot_addr(pixelIdx, k), nIds[k]);
+        g_pathStateBuffer.Store(sel_slot_addr(pixelIdx, k), nIds[k]);
     }
 }

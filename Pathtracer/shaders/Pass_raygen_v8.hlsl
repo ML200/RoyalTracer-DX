@@ -22,7 +22,7 @@
 //    v2_world                                    — direction x3 -> x2, set at depth=2
 //    tpost                                       — post-x2 integrand accumulator
 //
-//  Reservoir is accumulated locally and written via storeReservoirGI at the
+//  Reservoir is accumulated locally and written via storeReservoir at the
 //  end; wsum is separately stored (Pass_boil_gi reads it).
 //─────────────────────────────────────────────────────────────────────────────
 
@@ -33,27 +33,18 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    // Zero-out legacy DI reservoir fields — kept for the Phase-E cleanup.
-    // The DI spatial/temporal/boil passes still run and will see an empty
-    // reservoir (no contribution to scratch slot 1).
-    storeReservoirDI(g_Reservoirs_current_di, pixelIdx, (Reservoir_DI)0);
-    store_wsum_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
-    store_W_di   (g_Reservoirs_current_di, pixelIdx, 0.0f);
-    store_phat_di(g_Reservoirs_current_di, pixelIdx, 0.0f);
-    store_M_di   (g_Reservoirs_current_di, pixelIdx, 0u);
-
-    // Clear legacy DI output slot. With the DI pipeline gone, nothing else
-    // writes slot 1 for non-emitter/non-sky pixels — shading would otherwise
-    // read stale data from the previous frame (visible as light trails).
-    // Emitter/sky pixels re-populate slot 1 below via their depth-0 writes.
+    // Clear scratch slots 1 and 3. Slot 1 carries primary emitter/sky hits
+    // (written below on depth-0 emission); slot 3 carries the depth-0 sun
+    // NEE. Without clearing, shading reads stale prior-frame values for
+    // non-emitter, non-sky pixels (visible as light trails).
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
 
-    // Zero the GI reservoir. RIS acceptance overwrites on demand; this
-    // ensures "no candidate accepted" pixels end up as empty reservoirs.
-    storeReservoirGI(g_Reservoirs_current_gi, pixelIdx, (Reservoir_GI)0);
+    // Zero the reservoir. RIS acceptance overwrites on demand; this ensures
+    // "no candidate accepted" pixels end up as empty reservoirs.
+    storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
-    // Compact RIS state — 3 scalars instead of a full local Reservoir_GI
+    // Compact RIS state — 3 scalars instead of a full local Reservoir
     // (~17). The winning payload is written directly to the reservoir
     // buffer on acceptance; F_pack/F_mag/wsum are tracked here for the
     // final W computation.
@@ -68,17 +59,7 @@ void Pass_raygen_v8()
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf       = 1.0f;
-    float  gi_pdf_product = 1.0f;
-
-    VolumeIOR_Packed viorP;
-    VolumeAux_Packed aiorP;
-    {
-        VolumeIOR v0 = InitVolumeIOR();
-        VolumeAux a0 = InitVolumeAux();
-        viorP.raw   = PackIORStackAndPtr(v0.ior_stack, v0.pointer);
-        aiorP.mat32 = PackMatStack(a0.matID_stack);
-        aiorP.obj32 = PackObjStack(a0.objID_stack);
-    }
+    float  pdf_product = 1.0f;
 
     // Depth-1 vertex state (populated once at depth=1, reused by every
     // GI candidate that fires at depth >= 2).
@@ -126,16 +107,16 @@ void Pass_raygen_v8()
             const float3 throughput = UnpackRGB9E5(throughputPk);
             const float3 envL       = EvalMissState(rayDir, float3(0, 0, 0));
 
-            // pdf-free contribution f = throughput * gi_pdf_product * envL
-            const float3 F_contrib = throughput * envL * gi_pdf_product;
+            // pdf-free contribution f = throughput * pdf_product * envL
+            const float3 F_contrib = throughput * envL * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
-            const float  p_full    = gi_pdf_product;
+            const float  p_full    = pdf_product;
             const float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
 
             if (depth == 1)
             {
                 // DI env candidate — d=2 path, x2 stored as DIRECTION.
-                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                     rayDir, float3(0, 1, 0),          // x2=dir, n2=unit default
                     envL,   float3(0, 1, 0),          // L2,     V2=unit default
                     float2(0, 0),
@@ -144,7 +125,7 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI env (x2 = stashed depth-1 vertex)
             {
-                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                     x2_world, n2_world,
                     envL * tpost, v2_world,
                     uv_at_x2,
@@ -161,20 +142,22 @@ void Pass_raygen_v8()
         const uint instID = hitObj.GetInstanceIndex();
         const uint primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
         const uint matID  = GetMatIDFast(instID, primID);
-        const float2 iors = GetIORs_packed(viorP, aiorP, matID, instID);
-
-        if (iors.y == 0.0f)
-        {
-            rayOrigin = hitPos;
-            UpdateIORStack_packed(viorP, aiorP, matID, instID);
-            continue;
-        }
-
-        const uint mediumMatID = GetCurrentMediumMaterialID_packed(viorP, aiorP);
 
         BuiltInTriangleIntersectionAttributes attr;
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
+
+        // Backface-derived IOR pair: entering → (air, matNi), exiting → (matNi, air).
+        // Null-IOR boundary (matNi ≈ 1) = pure pass-through; skip the hit.
+        const float matNi = materials[matID].Ni;
+        if (matNi <= 1.0f + EPSILON)
+        {
+            rayOrigin = hitPos;
+            continue;
+        }
+
+        const float2 iors = hinfo.backface ? float2(matNi, 1.0f) : float2(1.0f, matNi);
+        const uint   mediumMatID = hinfo.backface ? matID : MEDIUM_INVALID;
 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
         RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
@@ -248,15 +231,15 @@ void Pass_raygen_v8()
             const float  lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             const float  misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
 
-            const float3 F_contrib = throughput * emission * gi_pdf_product;
+            const float3 F_contrib = throughput * emission * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
-            const float  p_full    = gi_pdf_product;
+            const float  p_full    = pdf_product;
             const float  wi        = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
             if (depth == 1)
             {
                 // DI triangle-emitter candidate — d=2 path.
-                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
                     emission, float3(0, 1, 0),        // V2 unused for DI
                     float2(0, 0),
@@ -265,7 +248,7 @@ void Pass_raygen_v8()
             }
             else // depth >= 2: GI emitter (x2 = stashed depth-1 vertex)
             {
-                AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                     x2_world, n2_world,
                     emission * tpost, v2_world,
                     uv_at_x2,
@@ -332,15 +315,15 @@ void Pass_raygen_v8()
                     {
                         const float  misWeight       = lightPdf / (lightPdf + bsdfPdf);
                         const float3 localMeasurement = light.emission * bdataNEE.val * cosSurf;
-                        const float3 F_contrib        = throughput * localMeasurement * gi_pdf_product;
+                        const float3 F_contrib        = throughput * localMeasurement * pdf_product;
                         const float  p_hat            = GetPHat(F_contrib);
-                        const float  p_full           = gi_pdf_product * lightPdf;
+                        const float  p_full           = pdf_product * lightPdf;
                         const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
                         if (depth == 0)
                         {
                             // DI NEE at primary vertex — d=2 path, x2 = light.
-                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                                 light.position, light.normal,
                                 light.emission, float3(0, 1, 0),
                                 float2(0, 0),
@@ -350,7 +333,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             // GI NEE at depth-1 vertex — d=3 path, x2 = current hit.
-                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 light.emission, -L,
                                 hinfo.uv,
@@ -361,7 +344,7 @@ void Pass_raygen_v8()
                         {
                             // tpost so far excludes current BSDF; NEE adds it.
                             const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
-                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                                 x2_world, n2_world,
                                 light.emission * tpostNEE, v2_world,
                                 uv_at_x2,
@@ -397,9 +380,9 @@ void Pass_raygen_v8()
                     {
                         const float  misWeight       = lightPdf / (lightPdf + bsdfPdf);
                         const float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL;
-                        const float3 F_contrib        = throughput * localMeasurement * gi_pdf_product;
+                        const float3 F_contrib        = throughput * localMeasurement * pdf_product;
                         const float  p_hat            = GetPHat(F_contrib);
-                        const float  p_full           = gi_pdf_product * lightPdf;
+                        const float  p_full           = pdf_product * lightPdf;
 
                         if (depth == 0)
                         {
@@ -411,7 +394,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 sun.radiance, -sun.direction,
                                 hinfo.uv,
@@ -422,7 +405,7 @@ void Pass_raygen_v8()
                         {
                             const float  wi       = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
                             const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
-                            AddInitialCandidate(ris, g_Reservoirs_current_gi, pixelIdx, wi,
+                            AddInitialCandidate(ris, g_Reservoirs_current, pixelIdx, wi,
                                 x2_world, n2_world,
                                 sun.radiance * tpostNEE, v2_world,
                                 uv_at_x2,
@@ -441,7 +424,7 @@ void Pass_raygen_v8()
 
         //─────────────────── Sample next BSDF direction ───────────────────
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, GetVolumePtrFast_packed(viorP));
+        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y);
         BrdfData  bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
 
         const float  cosTheta     = abs(dot(hinfo.hitNormal, s));
@@ -449,16 +432,13 @@ void Pass_raygen_v8()
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
-        if (dot(hinfo.hitGNormal, s) < 0.0f)
-            UpdateIORStack_packed(viorP, aiorP, matID, instID);
-
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
         prev_pdf       = bdata.pdf;
-        gi_pdf_product = min(gi_pdf_product * bdata.pdf, 1e30f);
+        pdf_product = min(pdf_product * bdata.pdf, 1e30f);
         rayDir         = s;
-        float3 offsetN = dot(s, hinfo.hitGNormal) >= 0.0f ? hinfo.hitGNormal : -hinfo.hitGNormal;
+        float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
         rayOrigin      = offset_ray(hitPos, offsetN);
 
         {
@@ -473,7 +453,7 @@ void Pass_raygen_v8()
                 throughput  *= rrBoost;
                 tpostWeight *= rrBoost;
                 // RR survival is part of the path pdf; include in product.
-                gi_pdf_product = min(gi_pdf_product * survivalProb, 1e30f);
+                pdf_product = min(pdf_product * survivalProb, 1e30f);
             }
 
             // Accumulate tpost locally (no reservoir roundtrip).
@@ -491,20 +471,20 @@ void Pass_raygen_v8()
     // buffer by AddInitialCandidate on the last RIS acceptance.
     //════════════════════════════════════════════════════════════════════════
     {
-        float Wgi = 0.0f;
+        float W = 0.0f;
         if (ris.F_mag > 1e-6f && ris.wsum > 0.0f)
         {
-            Wgi = ris.wsum / ris.F_mag;
-            if (isnan(Wgi) || isinf(Wgi) || Wgi < 0.0f) Wgi = 0.0f;
+            W = ris.wsum / ris.F_mag;
+            if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
         }
 
-        store_F_gi    (g_Reservoirs_current_gi, pixelIdx, ris.F_pack);
-        store_F_mag_gi(g_Reservoirs_current_gi, pixelIdx, ris.F_mag);
-        store_wsum_gi (g_Reservoirs_current_gi, pixelIdx, ris.wsum);
-        store_W_gi    (g_Reservoirs_current_gi, pixelIdx, Wgi);
-        store_M_gi    (g_Reservoirs_current_gi, pixelIdx, 1u);
+        store_F    (g_Reservoirs_current, pixelIdx, ris.F_pack);
+        store_F_mag(g_Reservoirs_current, pixelIdx, ris.F_mag);
+        store_wsum (g_Reservoirs_current, pixelIdx, ris.wsum);
+        store_W    (g_Reservoirs_current, pixelIdx, W);
+        store_M    (g_Reservoirs_current, pixelIdx, 1u);
 
-        if (Wgi == 0.0f)
-            InvalidateReservoirGI_ShadingNormal(g_Reservoirs_current_gi, pixelIdx);
+        if (W == 0.0f)
+            InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
     }
 }

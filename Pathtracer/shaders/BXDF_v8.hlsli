@@ -66,13 +66,13 @@ inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 
 
 // Sample the BRDF of the given strategy
-inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat, int ior_pointer) {
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat) {
     // Select one method
     uint strategy = SelectSamplingStrategy(p, seed);
     float3 sample;
 
     bool refract = false;
-    bool canRefract = ior_pointer < 3;
+    const bool canRefract = true;
 
     //Sample from the selected strategy
     if(strategy == 0){ // diffuse

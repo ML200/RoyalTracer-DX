@@ -10,36 +10,29 @@ cbuffer Push : register(b1)
     uint2 gImageSize;          // [0-1]
     uint  g_InputStackIdx;     // [2]
     uint  g_OutputStackIdx;    // [3]
-    uint  rs_tempMcapDI;       // [4]
-    uint  rs_tempMcapGI;       // [5]
-    uint  rs_spatCountMaxDI;   // [6]
-    uint  rs_spatCountMinDI;   // [7]
-    uint  rs_spatRadMaxDI;     // [8]
-    uint  rs_spatRadMinDI;     // [9]
-    uint  rs_spatCountMaxGI;   // [10]
-    uint  rs_spatCountMinGI;   // [11]
-    uint  rs_spatRadMaxGI;     // [12]
-    uint  rs_spatRadMinGI;     // [13]
-    uint  rs_flags;            // [14] bit0=tempDI, bit1=tempGI, bit2=spatDI, bit3=spatGI
-    float rs_reuseRoughnessMin;// [15]
-    float rs_reuseRoughnessMax;// [16]
-    uint  rs_spatTriesGI;      // [17] total attempts to find GI spatial neighbors
-    uint  rs_spatTriesDI;      // [18] total attempts to find DI spatial neighbor
-    uint  _pad19;              // [19]
+    uint  rs_tempMcap;         // [4]
+    uint  rs_spatCountMax;     // [5]
+    uint  rs_spatCountMin;     // [6]
+    uint  rs_spatRadMax;       // [7]
+    uint  rs_spatRadMin;       // [8]
+    uint  rs_flags;            // [9]  bit0=temp, bit1=spat
+    float rs_reuseRoughnessMin;// [10]
+    float rs_reuseRoughnessMax;// [11]
+    uint  rs_spatTries;        // [12]
     // Paired reuse textures, per-slot randomized transforms (Lin et al. 2026 §3.2)
     // flags bits: 1=flipX, 2=flipY, 4=transpose
-    uint  rs_reuseOffset0_x;   // [20]
-    uint  rs_reuseOffset0_y;   // [21]
-    uint  rs_reuseFlags0;      // [22]
-    uint  rs_reuseOffset1_x;   // [23]
-    uint  rs_reuseOffset1_y;   // [24]
-    uint  rs_reuseFlags1;      // [25]
-    uint  rs_reuseOffset2_x;   // [26]
-    uint  rs_reuseOffset2_y;   // [27]
-    uint  rs_reuseFlags2;      // [28]
+    uint  rs_reuseOffset0_x;   // [13]
+    uint  rs_reuseOffset0_y;   // [14]
+    uint  rs_reuseFlags0;      // [15]
+    uint  rs_reuseOffset1_x;   // [16]
+    uint  rs_reuseOffset1_y;   // [17]
+    uint  rs_reuseFlags1;      // [18]
+    uint  rs_reuseOffset2_x;   // [19]
+    uint  rs_reuseOffset2_y;   // [20]
+    uint  rs_reuseFlags2;      // [21]
     // Neighbor-rejection thresholds (spatial select pass)
-    float rs_rejNormalDot;     // [29]  dot(n_A, n_B) must be >= this
-    float rs_rejDistance;      // [30]  |proj-on-normal| distance gate (world units)
+    float rs_rejNormalDot;     // [22]  dot(n_A, n_B) must be >= this
+    float rs_rejDistance;      // [23]  |proj-on-normal| distance gate (world units)
 };
 
 //Image size convenience macros
@@ -123,10 +116,8 @@ RWTexture2DArray<float4> gScratchPing        : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
+RWByteAddressBuffer g_Reservoirs_current     : register(u4);
+RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_InitialBSDFRays        : register(u9);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
@@ -151,7 +142,6 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 //Shading and material headers
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
-#include "Path_State_v8.hlsli"
 #include "Fresnel_v8.hlsli"
 #include "Material_Common_v8.hlsli"
 #include "Material_GGX_v8.hlsli"
@@ -166,11 +156,9 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Clouds_v8.hlsli"
 #include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
-#include "Reservoir_DI_v8.hlsli"
-#include "Reservoir_GI_v8.hlsli"
+#include "Reservoir_v8.hlsli"
 
 #include "Camera_ray_v8.hlsli"
-#include "VolumeStackPacked_v8.hlsli"
 #include "MIS_v8.hlsli"
 
 //DLSS-RR resources
