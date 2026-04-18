@@ -72,6 +72,28 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
+// Variant of IsVisible that takes an already-offset origin. Used by the
+// deferred NEE path in raygen: the caller stores the offset origin in the
+// shadow-ray scratch when the NEE candidate is accepted, so the visibility
+// trace at raygen end can skip the per-surface normal lookup.
+inline bool IsVisibleOffset(float3 origin, float3 direction, float tMax)
+{
+    if (!IsRayValid(origin, direction, tMax)) return false;
+
+    RayDesc ray;
+    ray.Origin    = origin;
+    ray.Direction = direction;
+    ray.TMin      = 0.0001f;
+    ray.TMax      = tMax;
+
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+       | RAY_FLAG_FORCE_OPAQUE> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+    q.Proceed();
+    return q.CommittedStatus() == COMMITTED_NOTHING;
+}
+
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
     float3 Vn  = normalize(V);

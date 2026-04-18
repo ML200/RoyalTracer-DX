@@ -105,10 +105,11 @@ void Pass_raygen_v8()
             const float  p_full    = pdf_product;
             const float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
 
+            bool accepted = false;
             if (depth == 1)
             {
                 // DI env candidate — d=2 path, x2 stored as DIRECTION.
-                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     rayDir, float3(0, 1, 0),          // x2=dir, n2=unit default
                     envL,   float3(0, 1, 0),          // L2,     V2=unit default
                     float2(0, 0),
@@ -118,13 +119,17 @@ void Pass_raygen_v8()
             else // depth >= 2: GI env (x2 = stashed depth-1 vertex)
             {
                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
                     envL * tpost, ps.v2,
                     ps.uv,
                     ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
+            // Env miss = infinitely far but known-visible (we traced the
+            // ray to get here). Clear any prior NEE-accepted shadow ray so
+            // the end-of-raygen visibility trace is skipped.
+            if (accepted) clear_shadow_ray(g_pathStateBuffer, pixelIdx);
             break;
         }
 
@@ -252,10 +257,11 @@ void Pass_raygen_v8()
             const float  p_full    = pdf_product;
             const float  wi        = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
+            bool accepted = false;
             if (depth == 1)
             {
                 // DI triangle-emitter candidate — d=2 path.
-                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
                     emission, float3(0, 1, 0),        // V2 unused for DI
                     float2(0, 0),
@@ -265,13 +271,16 @@ void Pass_raygen_v8()
             else // depth >= 2: GI emitter (x2 = stashed depth-1 vertex)
             {
                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
                     emission * tpost, ps.v2,
                     ps.uv,
                     ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
+            // BSDF-sampled ray hit an emitter — visibility is implicit
+            // (the path ray itself reached it). Clear deferred shadow.
+            if (accepted) clear_shadow_ray(g_pathStateBuffer, pixelIdx);
             break;
         }
 
@@ -299,6 +308,10 @@ void Pass_raygen_v8()
             hitNormalPk = PackNormal(hinfo.hitNormal);
 
             //─── Point light NEE ───
+            // Visibility is DEFERRED: we add the candidate assuming it's
+            // unoccluded, then if it wins RIS we stash the shadow-ray info
+            // in the path-state scratch. The end-of-raygen resolve traces
+            // exactly one shadow ray (for the final winning NEE sample).
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
 
@@ -310,8 +323,7 @@ void Pass_raygen_v8()
                 const float  cosSurf  = dot(hinfo.hitNormal, L);
                 const float  cosLightS = dot(light.normal, -L);
 
-                if (cosSurf > 1e-6f && cosLightS > 1e-6f &&
-                    IsVisible(hitPos, hinfo.hitNormal, L, dist * 0.999f))
+                if (cosSurf > 1e-6f && cosLightS > 1e-6f)
                 {
                     const float3 lKd  = UnpackRGB9E5(matKdPk);
                     const float  lPr  = f16tof32_custom(matPrPmPk & 0xFFFFu);
@@ -334,10 +346,11 @@ void Pass_raygen_v8()
                         const float  p_full           = pdf_product * lightPdf;
                         const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
+                        bool accepted = false;
                         if (depth == 0)
                         {
                             // DI NEE at primary vertex — d=2 path, x2 = light.
-                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                            accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 light.position, light.normal,
                                 light.emission, float3(0, 1, 0),
                                 float2(0, 0),
@@ -347,7 +360,7 @@ void Pass_raygen_v8()
                         else if (depth == 1)
                         {
                             // GI NEE at depth-1 vertex — d=3 path, x2 = current hit.
-                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                            accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 hitPos, hinfo.hitNormal,
                                 light.emission, -L,
                                 hinfo.uv,
@@ -359,25 +372,38 @@ void Pass_raygen_v8()
                             const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
                             // tpost so far excludes current BSDF; NEE adds it.
                             const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
-                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                            accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 ps.x2, ps.n2_s,
                                 light.emission * tpostNEE, ps.v2,
                                 ps.uv,
                                 ps.matID, ps.objID, ps.eta,
                                 F_contrib, seed);
                         }
+
+                        if (accepted)
+                        {
+                            const float3 shadowOrigin = offset_ray(
+                                hitPos,
+                                dot(L, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal);
+                            store_shadow_ray(g_pathStateBuffer, pixelIdx,
+                                             shadowOrigin, L, dist * 0.999f);
+                        }
                     }
                 }
             }
 
             //─── Sun NEE ───
+            // depth >= 1 defers visibility via the shadow-ray scratch.
+            // depth == 0 bypasses the reservoir (direct scratch write) and
+            // still traces its shadow ray inline — there's no RIS winner
+            // to gate against.
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
                 const float3 hitN_sun = UnpackNormal(hitNormalPk);
                 const float  NdotL    = dot(hitN_sun, sun.direction);
 
-                if (NdotL > 1e-6f && IsVisible(hitPos, hinfo.hitNormal, sun.direction, 10000.0f))
+                if (NdotL > 1e-6f)
                 {
                     const float3 lKd = UnpackRGB9E5(matKdPk);
                     const float  lPr = f16tof32_custom(matPrPmPk & 0xFFFFu);
@@ -402,31 +428,47 @@ void Pass_raygen_v8()
                         if (depth == 0)
                         {
                             // Sun stays excluded from the unified reservoir
-                            // (user decision: no sun in DI bounce). Write direct.
-                            float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
-                            gScratchPing[uint3(pixel, 3)] = float4(misWeight * contrib, 0);
+                            // (user decision: no sun in DI bounce). Write direct —
+                            // keep inline visibility, this path doesn't feed RIS.
+                            if (IsVisible(hitPos, hinfo.hitNormal, sun.direction, 10000.0f))
+                            {
+                                float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
+                                gScratchPing[uint3(pixel, 3)] = float4(misWeight * contrib, 0);
+                            }
                         }
-                        else if (depth == 1)
+                        else
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                hitPos, hinfo.hitNormal,
-                                sun.radiance, -sun.direction,
-                                hinfo.uv,
-                                matID, instID, iors.y,
-                                F_contrib, seed);
-                        }
-                        else // depth >= 2
-                        {
-                            const float  wi       = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-                            const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
-                            const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                            AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                ps.x2, ps.n2_s,
-                                sun.radiance * tpostNEE, ps.v2,
-                                ps.uv,
-                                ps.matID, ps.objID, ps.eta,
-                                F_contrib, seed);
+                            bool accepted = false;
+                            if (depth == 1)
+                            {
+                                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                                    hitPos, hinfo.hitNormal,
+                                    sun.radiance, -sun.direction,
+                                    hinfo.uv,
+                                    matID, instID, iors.y,
+                                    F_contrib, seed);
+                            }
+                            else // depth >= 2
+                            {
+                                const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
+                                const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
+                                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                                    ps.x2, ps.n2_s,
+                                    sun.radiance * tpostNEE, ps.v2,
+                                    ps.uv,
+                                    ps.matID, ps.objID, ps.eta,
+                                    F_contrib, seed);
+                            }
+
+                            if (accepted)
+                            {
+                                const float3 shadowOrigin = offset_ray(
+                                    hitPos,
+                                    dot(sun.direction, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal);
+                                store_shadow_ray(g_pathStateBuffer, pixelIdx,
+                                                 shadowOrigin, sun.direction, 10000.0f);
+                            }
                         }
                     }
                 }
@@ -483,16 +525,26 @@ void Pass_raygen_v8()
 
     //════════════════════════════════════════════════════════════════════════
     // Final resolve — commit wsum / W / M. F_pack and F_mag were already
-    // written to the reservoir by AddInitialCandidate on the last acceptance,
-    // so read F_mag back from the buffer to compute W.
+    // written to the reservoir by AddInitialCandidate on the last acceptance.
+    //
+    // Deferred shadow: NEE candidates are added without visibility; if the
+    // final RIS winner is an NEE sample, the shadow-ray scratch holds its
+    // origin + dir + dist (dist > 0). Trace once here; if occluded, the
+    // sample's contribution is invalidated via W = 0.
     //════════════════════════════════════════════════════════════════════════
     {
         const float F_mag = load_F_mag(g_Reservoirs_current, pixelIdx);
         float W = 0.0f;
         if (F_mag > 1e-6f && wsum > 0.0f)
         {
-            W = wsum / F_mag;
-            if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
+            const ShadowRayInfo shadow = load_shadow_ray(g_pathStateBuffer, pixelIdx);
+            const bool visible = (shadow.dist <= 0.0f)
+                              || IsVisibleOffset(shadow.origin, shadow.dir, shadow.dist);
+            if (visible)
+            {
+                W = wsum / F_mag;
+                if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
+            }
         }
 
         store_wsum(g_Reservoirs_current, pixelIdx, wsum);
