@@ -1041,10 +1041,8 @@ void Renderer::PopulateCommandList() {
     // Neighbor rejection thresholds
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
-    rs.rejJacobianMin = std::clamp(rs.rejJacobianMin, 0.0001f, 1.0f);
-    rs.rejJacobianMax = std::max(rs.rejJacobianMax, rs.rejJacobianMin);
 
-    UINT rsConsts[33] = {};
+    UINT rsConsts[31] = {};
     // [4], [6-9] intentionally left as 0 (DI slots retired)
     rsConsts[5]  = (UINT)rs.tempMcapGI;
     rsConsts[10] = (UINT)rs.spatCountMaxGI;
@@ -1074,15 +1072,13 @@ void Renderer::PopulateCommandList() {
         }
     }
 
-    // Neighbor rejection thresholds (slots 29-32)
-    memcpy(&rsConsts[29], &rs.rejNormalDot,   4);
-    memcpy(&rsConsts[30], &rs.rejDistance,    4);
-    memcpy(&rsConsts[31], &rs.rejJacobianMin, 4);
-    memcpy(&rsConsts[32], &rs.rejJacobianMax, 4);
+    // Neighbor rejection thresholds (slots 29-30)
+    memcpy(&rsConsts[29], &rs.rejNormalDot, 4);
+    memcpy(&rsConsts[30], &rs.rejDistance,  4);
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 33, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 31, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
