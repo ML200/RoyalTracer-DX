@@ -279,7 +279,11 @@ inline float JacobianRatio(float Jn, float Jc)
     return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
 }
 
-// Calculate reconnection
+// Calculate reconnection.
+//
+// etai1/etat1 are the IOR pair at x1 relative to its (possibly flipped) shading
+// normal n1_s, exactly as raygen derives them from hinfo.backface. Callers
+// pass sv.etai / sv.etat from BuildVertex* — no additional buffer loads.
 inline float3 Reconnect(
     // Vertex x1 (camera path hit)
     in float3  x1,
@@ -289,6 +293,8 @@ inline float3 Reconnect(
     in float3  localKd1,
     in float   localPr1,
     in float   localPm1,
+    in float   etai1,
+    in float   etat1,
 
     // Vertex x2 (reservoir / reconnection vertex)
     in uint    mID2,
@@ -299,7 +305,7 @@ inline float3 Reconnect(
     in float3  localKd2,
     in float   localPr2,
     in float   localPm2,
-    in float   eta2, // stored transmittance IOR at x2
+    in float   eta2, // stored transmittance-side IOR at x2 (etat2)
 
     out float  Jn
 )
@@ -309,14 +315,13 @@ inline float3 Reconnect(
     if (length(L2) < EPSILON)
         return 0.0f;
 
-    //x1 IOR: always air / material (primary hit)
-    const float etai1 = 1.0f;
-    const float etat1 = materials[mID1].Ni;
-
     //───────────────────────────────────────────────────────────────────────
     // DI: environment / sky sample. x2 stores a DIRECTION. No G term, no
-    // BSDF at x2, no medium transmittance. Jn = 1 (direction is preserved
-    // under the reconnection shift).
+    // BSDF at x2. Jn = 1 (direction is preserved under the reconnection
+    // shift). Env is treated as infinitely far, so we don't apply medium
+    // absorption here — if x1 is inside a medium, env light is effectively
+    // the transmitted sky beyond the medium and user-facing absorption
+    // tinting would require explicit thickness info we don't have.
     //───────────────────────────────────────────────────────────────────────
     if (mID2 == MATID_ENV_MISS)
     {
@@ -331,8 +336,7 @@ inline float3 Reconnect(
 
     //───────────────────────────────────────────────────────────────────────
     // DI: emissive-triangle NEE sample. x2 is a world position on the light,
-    // n2_s is the light's surface normal, L2 is emission. No BSDF at x2;
-    // Jn uses the same connection-edge geometric factor as the vertex case.
+    // n2_s is the light's surface normal, L2 is emission.
     //───────────────────────────────────────────────────────────────────────
     if (mID2 == MATID_LIGHT_TRI)
     {
@@ -344,7 +348,17 @@ inline float3 Reconnect(
         const float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirNT, o,
                                     localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
-        float3 r = F1 * L2 * G1;
+
+        // Absorption if the segment exits x1 into x1's medium (frontface
+        // transmission, or backface reflection back into the interior).
+        const float rayDotN1 = dot(-ndirNT, n1_s);
+        const float iorAfterX1 = (rayDotN1 >= 0.0f) ? etai1 : etat1;
+        float3 transmittance = float3(1.0f, 1.0f, 1.0f);
+        if (iorAfterX1 > 1.0f + EPSILON) {
+            transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, distT);
+        }
+
+        float3 r = F1 * L2 * G1 * transmittance;
         if (any(isnan(r)) || any(isinf(r))) r = 0.0f;
 
         Jn = max(abs(dot(ndirNT, n2_s)) / (distT * distT), EPSILON);
@@ -352,7 +366,7 @@ inline float3 Reconnect(
     }
 
     //───────────────────────────────────────────────────────────────────────
-    // GI: BSDF-sampled vertex at x2 (original path, d >= 3). Original code.
+    // GI: BSDF-sampled vertex at x2 (original path, d >= 3).
     //───────────────────────────────────────────────────────────────────────
 
     // Geometric prep
@@ -360,12 +374,36 @@ inline float3 Reconnect(
     float  dist  = length(dir);
     float3 ndirN = normalize(-dir); // direction from x2 to x1
 
-    //x2 IOR
-    float etai2 = 1.0f;
+    // Recover x2's IOR pair from stored etat (eta2) and material Ni.
+    //   frontface original: (etai2, etat2) = (1, matNi2),  eta2 = matNi2
+    //   backface  original: (etai2, etat2) = (matNi2, 1),  eta2 = 1
+    // Disambiguate on the midpoint so tiny numerical drift doesn't flip.
+    const float matNi2 = materials[mID2].Ni;
+    float etai2;
     float etat2 = eta2;
+    if (matNi2 <= 1.0f + EPSILON) {
+        etai2 = 1.0f;
+        etat2 = 1.0f;
+    } else {
+        etai2 = (eta2 < 0.5f * (1.0f + matNi2)) ? matNi2 : 1.0f;
+    }
 
-    if(dot(-ndirN, n1_s)<0.0f)
-        etai2 = etat1;
+    // "Which medium is the segment x1→x2 in?"  At x1 the ray exits toward
+    // the etai1 half (dot ≥ 0) or etat1 half (dot < 0). At x2 it arrives
+    // from the etai2 half (dot ≥ 0) or etat2 half (dot < 0). If either
+    // side's IOR is > 1, the segment is inside that side's medium.
+    const float rayDotN1 = dot(-ndirN, n1_s);
+    const float rayDotN2 = dot( ndirN, n2_s);
+    const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
+    const float iorBeforeX2 = (rayDotN2 >= 0.0f) ? etai2 : etat2;
+
+    const bool x1_inMedium = iorAfterX1  > 1.0f + EPSILON;
+    const bool x2_inMedium = iorBeforeX2 > 1.0f + EPSILON;
+
+    // If the segment is inside a medium, the incident IOR at x2 picks that
+    // up instead of air. Prefer x1's medium (ray leaves x1 first).
+    if      (x1_inMedium) etai2 = iorAfterX1;
+    else if (x2_inMedium) etai2 = iorBeforeX2;
 
     float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
     float3 F2 = BSDF_term(mID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
@@ -374,11 +412,14 @@ inline float3 Reconnect(
     float  G1  = G_term(n1_s, -ndirN);
     float  G2  = G_term(n2_s, -V2);
 
-    //Transmittance: if direction points against the shading normal, we are transmitting INTO the object
+    // Beer-Lambert absorption for whichever medium the segment passes
+    // through. Applied at most once (the normal case — both sides agreeing
+    // means x1 and x2 bound the same medium, so only one factor is correct).
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
-    if (dot(n1_s, -ndirN) < 0.0f)
-    {
+    if (x1_inMedium) {
         transmittance = CalculateAbsorptionThroughput(materials[mID1].Tf, dist);
+    } else if (x2_inMedium) {
+        transmittance = CalculateAbsorptionThroughput(materials[mID2].Tf, dist);
     }
 
     // Geometric jacobian at the new x1

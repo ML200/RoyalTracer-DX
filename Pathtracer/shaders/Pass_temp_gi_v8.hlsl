@@ -153,7 +153,7 @@ void Pass_temp_gi_v8()
 
                     float3 c = Reconnect(
                         sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
-                        sv_r.Kd, sv_r.Pr, sv_r.Pm,
+                        sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
                         rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
                         rcKd, rcPr, rcPm, rdi.eta,
                         Jnc);
@@ -194,7 +194,7 @@ void Pass_temp_gi_v8()
 
                     float3 c = Reconnect(
                         sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
-                        sv_c.Kd, sv_c.Pr, sv_c.Pm,
+                        sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
                         rdi_r.matID, rdi_r.x2, rdi_r.n2_s, rdi_r.L2, rdi_r.V2,
                         rrKd, rrPr, rrPm, rdi_r.eta,
                         Jn);

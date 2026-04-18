@@ -74,7 +74,7 @@ float PairwiseMIS_Canonical_Spat(
             float Jn = 0.0f;
             float p_hat_from = GetPHat(Reconnect(
                 sv_n1.x, sv_n1.n_s, sv_n1.o, sv_n1.matID,
-                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm,
+                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
                 matID_c, x2_c, n2s_c, L2_c, V2_c,
                 localKd2_c, localPr2_c, localPm2_c, eta_c,
                 Jn));

@@ -98,7 +98,7 @@ void Pass_spat_gi_shift_v8()
         float  Jn = 0.0f;
         float3 c  = Reconnect(
             sv.x, sv.n_s, sv.o, sv.matID,
-            sv.Kd, sv.Pr, sv.Pm,
+            sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat,
             p_matID, p_x2, p_n2s, p_L2, p_V2,
             rKd, rPr, rPm, p_eta,
             Jn);
