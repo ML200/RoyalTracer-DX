@@ -77,13 +77,26 @@ inline float LT_NodeImportance_Common(
 
     float orientTerm = insideCone ? 1.0 : max(cosFull, 0.0);
 
-    if (!insideCone && cosFull <= cosTheta_e) return 0.0;
-
     float ci = dot(-dir, n);
-    if (ci <= -sinU) return 0.0;
     float cosReceiver = saturate(ci + sinU);
 
     float geom = rcp(d2 + R2);
+
+    // Apply a small relative floor to the receiver term and orient term
+    // instead of hard-cutting to 0 when the cluster is just past the
+    // angular horizon (ci <= -sinU) or past the emissive cone
+    // (cosFull <= cosTheta_e). Pixels whose shading normals sit right at
+    // the cutoff would otherwise see the cluster's pdf drop from a small
+    // positive value to exactly 0, and any sample drawn in that
+    // transition band produces wi = p_hat/pdf fireflies. The floor keeps
+    // the pdf continuous and is consistent on both sampling and PDF
+    // sides, so RIS/MIS remain unbiased. Samples that are genuinely
+    // behind the receiver still get rejected at the cosSurf gate in
+    // NEE — the floor just wastes a tiny fraction of samples on them
+    // instead of producing spikes near the boundary.
+    const float kFloor = 0.01;
+    cosReceiver = max(cosReceiver, kFloor);
+    orientTerm  = max(orientTerm,  kFloor);
 
     return power * geom * orientTerm * cosReceiver;
 }
@@ -146,9 +159,14 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
 
-    // Transform shading point and normal to LOCAL space for BLAS traversal
-    float3 xLocal = mul(R.worldToLocal, float4(x, 1.0)).xyz;
-    float3 nLocal = normalize(mul((float3x3)R.worldToLocal, n));
+    // BLAS nodes store WORLD-SPACE bounds and cone axes (triangles are
+    // transformed via instance.objectToWorld at build time, see
+    // LightTree.h buildBLASes_SAOH). Query in world space — the
+    // worldToLocal field is kept in the range struct for future refit
+    // support but is not used on the current (fully-rebuilt-at-load)
+    // path.
+    float3 xLocal = x;
+    float3 nLocal = n;
 
     uint node = 0;
 
@@ -186,6 +204,12 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
 }
 
 // LEAF TRIANGLE SAMPLING
+// Power-weighted selection within the leaf. A leaf can hold up to
+// maxLeafTris triangles (LightTreeBuilder default = 16); picking them
+// uniformly wastes samples on dim triangles when one dominates the
+// leaf's emission — that was the "dominant-light still noisy" failure
+// mode. Two-pass scan: first pass sums per-triangle weight, second pass
+// picks proportionally. Matched by LT_PdfSelectTriangle's leaf case.
 uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
                                       uint blasIndex, LTLeaf leaf,
                                       inout float xi, out float pdfLeaf)
@@ -194,16 +218,41 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     uint base        = R.triIndexOffset + leaf.triFirst;
     uint count       = max(leaf.triCount, 1u);
 
-    // Uniform
-    uint  k        = min((uint)floor(xi * count), count - 1u);
-    uint  triIndex = gLT_LeafTriIndex[base + k];
+    // Pass 1: accumulate per-triangle weight (emission power).
+    float sumW = 0.0f;
+    [loop] for (uint i = 0u; i < count; ++i) {
+        const uint tj = gLT_LeafTriIndex[base + i];
+        sumW += max(g_EmissiveTriangles[tj].weight, 0.0f);
+    }
 
-    pdfLeaf = 1.0 / (float)count;
+    // Degenerate fallback: all weights zero → uniform.
+    if (sumW <= 0.0f) {
+        uint k = min((uint)floor(xi * count), count - 1u);
+        pdfLeaf = 1.0f / (float)count;
+        float start = (float)k / (float)count;
+        float width = 1.0f / (float)count;
+        xi = saturate((xi - start) / width);
+        return gLT_LeafTriIndex[base + k];
+    }
 
-    // rescale xi into chosen subinterval
-    float start = (float)k / (float)count;
-    float width = 1.0 / (float)count;
-    xi = saturate((xi - start) / width);
+    // Pass 2: pick the triangle whose cumulative weight crosses xi*sumW.
+    const float target = xi * sumW;
+    float accum = 0.0f;
+    uint  sel = count - 1u;
+    float selW = 0.0f;
+    [loop] for (uint k = 0u; k < count; ++k) {
+        const uint tk = gLT_LeafTriIndex[base + k];
+        const float w = max(g_EmissiveTriangles[tk].weight, 0.0f);
+        const float next = accum + w;
+        if (target < next) { sel = k; selW = w; break; }
+        accum = next;
+    }
+
+    pdfLeaf = selW / sumW;
+    const uint triIndex = gLT_LeafTriIndex[base + sel];
+
+    // Rescale xi into the chosen subinterval for the caller's next use.
+    xi = (selW > 0.0f) ? saturate((target - accum) / selW) : 0.0f;
     return triIndex;
 }
 
@@ -271,10 +320,11 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     }
     if (!tlasLeafReached) return 0.0f;
 
-    // BLAS path probability (in local space)
+    // BLAS path probability. BLAS nodes are in world space (see
+    // LT_DescendBLAS_Stratified for rationale); query in world space.
     BlasRangeGpu Rng = gLT_Range[blas];
-    float3 xLocal = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
-    float3 nLocal = normalize(mul((float3x3)Rng.worldToLocal, n));
+    float3 xLocal = x;
+    float3 nLocal = n;
 
     float pdfBLAS = 1.0f;
     uint  bnode   = 0;
@@ -289,8 +339,23 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
         if (N.childCount == 0)
         {
-            uint  count   = max(N.triCount, 1u);
-            float pdfLeaf = 1.0f / (float)count;
+            // Matches LT_SampleLeafTriangle_Stratified: per-triangle power
+            // weight. Sum weights over the leaf and return the target
+            // triangle's share. Degenerate fallback mirrors sampling.
+            const uint  count    = max(N.triCount, 1u);
+            const uint  leafBase = Rng.triIndexOffset + N.triFirst;
+
+            float sumW = 0.0f;
+            float myW  = 0.0f;
+            [loop] for (uint j = 0u; j < count; ++j) {
+                const uint tj = gLT_LeafTriIndex[leafBase + j];
+                const float w = max(g_EmissiveTriangles[tj].weight, 0.0f);
+                sumW += w;
+                if (tj == triIndex) myW = w;
+            }
+
+            const float pdfLeaf = (sumW > 0.0f) ? (myW / sumW)
+                                                : (1.0f / (float)count);
             return pdfTLAS * pdfBLAS * pdfLeaf;
         }
 

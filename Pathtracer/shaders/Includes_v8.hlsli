@@ -131,8 +131,10 @@ StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
 StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
-Buffer<float>                      gLT_LeafAliasProb: register(t16);
-Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
+// t16/t17/t18 are claimed by the lookup buffers declared inside
+// LightTree_v8.hlsli (TriToBLAS / TriToLeafOffset / BLASToItem). The
+// legacy LeafAlias buffers are no longer built or bound — per-leaf
+// sampling is power-weighted in place.
 
 //Shading and material headers
 #include "Material_Decoder_v8.hlsli"
