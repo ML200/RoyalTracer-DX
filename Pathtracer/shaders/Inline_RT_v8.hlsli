@@ -56,7 +56,7 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
     if (!IsRayValid(P, direction, tMax)) return false;
 
-    float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
+    float3 origin = P;//offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
 
     RayDesc ray;
     ray.Origin    = origin;

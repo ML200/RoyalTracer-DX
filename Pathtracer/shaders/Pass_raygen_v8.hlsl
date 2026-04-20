@@ -543,8 +543,7 @@ void Pass_raygen_v8()
         if (F_mag > 1e-6f && wsum > 0.0f)
         {
             const ShadowRayInfo shadow = load_shadow_ray(g_pathStateBuffer, pixelIdx);
-            const bool visible = (shadow.dist <= 0.0f)
-                              || IsVisibleOffset(shadow.origin, shadow.dir, shadow.dist);
+            const bool visible = (shadow.dist <= 0.0f) || IsVisibleOffset(shadow.origin, shadow.dir, shadow.dist);
             if (visible)
             {
                 W = wsum / F_mag;
