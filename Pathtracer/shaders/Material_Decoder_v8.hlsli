@@ -1,17 +1,21 @@
-// Material accessors over the compressed AoS g_mat buffer.
+//====================================================================
+//MATERIAL DECODER
+//====================================================================
+//Accessors over the compressed AoS g_mat buffer.
+//Each Load* function fetches exactly the field it needs from g_mat[matID].
+//The HLSL compiler CSEs same-material accesses across multiple accessors
+//in the same basic block, so call them freely, only the fields touched
+//survive after optimization.
 //
-// Each Load* function fetches exactly the field it needs from g_mat[matID].
-// The HLSL compiler CSEs same-material accesses across multiple accessors
-// in the same basic block, so call them freely — only the fields touched
-// survive after optimization.
-//
-// Buffer declaration and struct layout live in Includes_v8.hlsli and
-// Data_v8.hlsli. CPU-side packing is in src/Components/Vertex.h.
+//Buffer declaration and struct layout live in Includes_v8.hlsli and
+//Data_v8.hlsli. CPU-side packing is in src/Components/Vertex.h.
 
 #ifndef MATERIAL_DECODER_V8_HLSLI
 #define MATERIAL_DECODER_V8_HLSLI
 
-// ── Core (Kd / Ni / PBR) ────────────────────────────────────────────────────
+//====================================================================
+//CORE, KD / NI / PBR
+//====================================================================
 inline float3 LoadKd_rgb(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Kd_rgb);
@@ -63,7 +67,9 @@ inline float LoadPc(uint matID)
     return float((g_mat[matID].PrPmPsPc >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
-// ── Transmission / coat / aniso / alpha ─────────────────────────────────────
+//====================================================================
+//TRANSMISSION, COAT, ANISO, ALPHA
+//====================================================================
 inline float3 LoadTf(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Tf_rgb);
@@ -74,11 +80,11 @@ inline float LoadPcr(uint matID)
     return float(g_mat[matID].Pcr_Aniso_Rot_AlphaTh & 0xFFu) * (1.0f / 255.0f);
 }
 
-// Anisotropy stored as int8 in [-127, 127], mapped to [-1, 1].
+//Anisotropy stored as int8 in [-127, 127], mapped to [-1, 1].
 inline float LoadAniso(uint matID)
 {
     const uint raw = (g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 8) & 0xFFu;
-    const int  s   = (int)(raw << 24) >> 24;   // sign-extend
+    const int  s   = (int)(raw << 24) >> 24;   //sign-extend
     return float(s) * (1.0f / 127.0f);
 }
 
@@ -103,11 +109,13 @@ inline float LoadAlphaThreshold(uint matID)
     return float((g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
-// ── Texture IDs and UV scales ───────────────────────────────────────────────
+//====================================================================
+//TEXTURE IDS AND UV SCALES
+//====================================================================
 inline int LoadAlbedoTexID(uint matID)
 {
     const uint lo = g_mat[matID].texIDs_01 & 0xFFFFu;
-    return (int)(lo << 16) >> 16;   // sign-extend 16→32
+    return (int)(lo << 16) >> 16;   //sign-extend 16 to 32
 }
 
 inline int LoadNormalTexID(uint matID)
@@ -140,4 +148,4 @@ inline float2 LoadRmaUVScale(uint matID)
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
 }
 
-#endif // MATERIAL_DECODER_V8_HLSLI
+#endif //MATERIAL_DECODER_V8_HLSLI

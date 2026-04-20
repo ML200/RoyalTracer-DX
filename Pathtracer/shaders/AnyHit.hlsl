@@ -1,5 +1,8 @@
 #include "Includes_v8.hlsli"
 
+//====================================================================
+//ANY-HIT ALPHA TEST
+//====================================================================
 [shader("anyhit")]
 void AlphaTestAnyHit(inout TracePayload payload,
                      in BuiltInTriangleIntersectionAttributes attr)
@@ -10,11 +13,11 @@ void AlphaTestAnyHit(inout TracePayload payload,
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     const int texID = LoadAlbedoTexID(matID);
 
-    // No albedo texture -> fully opaque, accept hit
+    //no albedo texture, fully opaque, accept hit
     if (texID < 0)
         return;
 
-    // Interpolate UVs
+    //interpolate UVs
     uint baseI = instanceProps[instID].indexBase;
     uint i0 = indices[baseI + 3u * primID + 0u];
     uint i1 = indices[baseI + 3u * primID + 1u];

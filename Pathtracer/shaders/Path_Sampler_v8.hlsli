@@ -1,4 +1,6 @@
-// Beer-Lambert absorption along a ray segment.
+//====================================================================
+//BEER-LAMBERT ABSORPTION
+//====================================================================
 inline float3 CalculateAbsorptionThroughput(
     float3 tintColor,
     float distanceTraveled)

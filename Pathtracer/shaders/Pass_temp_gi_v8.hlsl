@@ -1,6 +1,8 @@
 #include "Includes_v8.hlsli"
 
-//  TEMPORAL  GI
+//====================================================================
+//TEMPORAL GI
+//====================================================================
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
@@ -19,17 +21,17 @@ void Pass_temp_gi_v8()
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
 
-    // Emitter early-out
+    //Emitter early-out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         return;
     }
 
-    // Load current reservoir (must stay alive until final store)
+    //Load current reservoir, must stay alive until final store
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    // Disabled early-out
+    //Disabled early-out
     if (!(rs_flags & 2u)) {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
@@ -40,7 +42,9 @@ void Pass_temp_gi_v8()
     uint2 seed = GetSeed(pixelIdx, time, 3);
     uint  permSeed = GetSeed(1, time, 3).x;
 
-    //base reprojection
+    //====================================================================
+    //BASE REPROJECTION
+    //====================================================================
     //Lightweight loads
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
@@ -52,7 +56,7 @@ void Pass_temp_gi_v8()
     float3 myKd; float myPr, myPm;
     RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
-    //Specularity (same computation DLSS-RR gets via EnvBRDFApprox2)
+    //Specularity, same computation DLSS-RR gets via EnvBRDFApprox2
     const float3 camPos = InitOrigin();
     const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
     const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
@@ -79,7 +83,9 @@ void Pass_temp_gi_v8()
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
 
-    //permuted candidate
+    //====================================================================
+    //PERMUTED CANDIDATE
+    //====================================================================
     int2 permCoord = baseCoord;
     bool permInBounds = false;
     {
@@ -99,7 +105,7 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    //Lightweight neighbor identifiers (survive rejection -> merge)
+    //Lightweight neighbor identifiers, survive rejection for merge
     uint   rInstID = 0;
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
@@ -107,7 +113,7 @@ void Pass_temp_gi_v8()
     //Candidate search ladder: permuted -> base reprojection -> 3x3 around base.
     //Each step is only attempted if the prior one didn't find a valid sample.
 
-    //permuted sample
+    //Permuted sample
     if (permInBounds)
         valid = TestTemporalCandidate(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
                                          tempPixelIdx, rInstID, rPrimID, rBary);
@@ -123,9 +129,9 @@ void Pass_temp_gi_v8()
             valid = false;
         }
 
-        //Jacobian-ratio rejection on the neighbor→current shift only — that's
+        //Jacobian-ratio rejection on the neighbor->current shift only, that's
         //the ratio that multiplies w_n and can spike variance in corners. The
-        //canonical→neighbor direction is self-bounded by pairwise MIS and is
+        //canonical->neighbor direction is self-bounded by pairwise MIS and is
         //not checked here.
         if (valid)
         {
@@ -145,7 +151,7 @@ void Pass_temp_gi_v8()
                 const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
                 const float p_c = GetPHat(rdi.F) * visReuse_c;
 
-                //Canonical Jc: jacobian at current pixel's x1 -> canonical x2.
+                //Canonical Jc: jacobian at current pixel's x1 to canonical x2.
                 //Env/miss samples preserve direction under shift, so Jc = 1.
                 const float Jc_canonical = IsSentinelMatID(rdi.matID)
                     ? ((rdi.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2, rdi.n2_s))
@@ -171,8 +177,8 @@ void Pass_temp_gi_v8()
                         Jnc);
 
                     float ph = GetPHat(c);
-                    // Env/miss: rdi.x2 is a DIRECTION — cast to far distance.
-                    // Other: position-based connection + self-length shadow ray.
+                    //Env/miss: rdi.x2 is a DIRECTION, cast to far distance.
+                    //Other: position-based connection + self-length shadow ray.
                     {
                         float vis;
                         if (rdi.matID == MATID_ENV_MISS)
@@ -193,8 +199,8 @@ void Pass_temp_gi_v8()
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
 
-                    // Neighbor Jc: jacobian at neighbor's x1 -> neighbor's x2
-                    // Env/miss samples preserve direction under shift, Jc = 1.
+                    //Neighbor Jc: jacobian at neighbor's x1 to neighbor's x2.
+                    //Env/miss samples preserve direction under shift, Jc = 1.
                     const float Jc_neighbor = (rdi_r.matID == MATID_ENV_MISS)
                         ? 1.0f
                         : ComputeJc(ReconstructPosition(rInstID, rPrimID, rBary),
@@ -259,9 +265,9 @@ void Pass_temp_gi_v8()
                 rdi.w_sum = w_c;
 
                 p_hat_final = p_c;
-                // UpdateReservoir writes F = contrib_n_from_me on acceptance —
-                // the shifted-to-current-pixel contribution, which is exactly
-                // what we want stored for the winner (and GetPHat of it is n_c).
+                //UpdateReservoir writes F = contrib_n_from_me on acceptance,
+                //the shifted-to-current-pixel contribution, which is exactly
+                //what we want stored for the winner, GetPHat of it is n_c.
                 if (UpdateReservoir(
                         rdi,
                         w_n,

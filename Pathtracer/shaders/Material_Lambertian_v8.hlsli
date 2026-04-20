@@ -1,4 +1,6 @@
-// Cosine-weighted hemisphere sampling
+//====================================================================
+//COSINE HEMISPHERE SAMPLING
+//====================================================================
 float3 CosineUnitVectorInHemisphere(float3 normal, inout uint seed)
 {
     float u1 = RandomFloatSingle(seed);
@@ -23,13 +25,16 @@ float3 CosineUnitVectorInHemisphere(float3 normal, inout uint seed)
     return hemisphereSample;
 }
 
+//====================================================================
+//LAMBERTIAN BRDF
+//====================================================================
 inline float3 EvaluateBRDF_Lambertian(uint mID, float3 normal, float3 flatNormal, float3 incoming, float3 outgoing, float etai, float etat, float3 Kd) {
     if(dot(-incoming, flatNormal) <= 0.0f)
         return float3(0,0,0);
     return Kd / PI;
 }
 
-// Sampling weight (always 1 for the lowest lobe)
+//Sampling weight, always 1 for the lowest lobe
 inline float Sampling_Weight_Lambertian(uint mID, float3 normal, float3 outgoing){
     return 1.0f;
 }

@@ -1,23 +1,26 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
+//====================================================================
+//SRGB GAMMA CORRECTION
+//====================================================================
 inline float3 sRGBGammaCorrection(float3 color)
 {
     float3 result;
 
-    // Red channel
+    //Red channel
     if (color.r <= 0.0031308f)
         result.r = 12.92f * color.r;
     else
         result.r = 1.055f * pow(color.r, 1.0f / 2.4f) - 0.055f;
 
-    // Green channel
+    //Green channel
     if (color.g <= 0.0031308f)
         result.g = 12.92f * color.g;
     else
         result.g = 1.055f * pow(color.g, 1.0f / 2.4f) - 0.055f;
 
-    // Blue channel
+    //Blue channel
     if (color.b <= 0.0031308f)
         result.b = 12.92f * color.b;
     else
@@ -26,6 +29,9 @@ inline float3 sRGBGammaCorrection(float3 color)
     return result;
 }
 
+//====================================================================
+//PBR NEUTRAL TONEMAP
+//====================================================================
 float3 PBRNeutral(float3 color) {
     const float startCompression = 0.8f - 0.04f;
     const float desaturation = 0.15f;
@@ -45,7 +51,9 @@ float3 PBRNeutral(float3 color) {
     return lerp(color, newPeak.xxx, g);
 }
 
-//GAMMA CORRECTION AND PP PASS
+//====================================================================
+//GAMMA CORRECTION AND POST-PROCESS PASS
+//====================================================================
 [numthreads(8, 4, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
