@@ -17,17 +17,16 @@ Texture2D<int2> g_reuseTexture0 : register(t19);
 Texture2D<int2> g_reuseTexture1 : register(t20);
 Texture2D<int2> g_reuseTexture2 : register(t21);
 
-// Per-pixel scratch layout in g_pathStateBuffer (56 bytes):
+// Per-pixel scratch layout in g_pathStateBuffer (8 + SPAT_COUNT_MAX*20 B):
 //   offset 0:   uint  validCount              (this pass)
 //   offset 4:   float my_Jc                   (filled by shift pass)
-//   offset 8 + s*16 + 0:  uint  nID           (this pass; 0xFFFFFFFFu if slot s rejected)
-//   offset 8 + s*16 + 4:  uint  F_pack        (shift pass)
-//   offset 8 + s*16 + 8:  float F_mag         (shift pass, visibility baked)
-//   offset 8 + s*16 + 12: float Jn            (shift pass)
+//   offset 8 + s*20 + 0:   uint   nID         (this pass; 0xFFFFFFFFu if slot s rejected)
+//   offset 8 + s*20 + 4:   float3 F           (shift pass; visibility baked; target mag = GetPHat(F))
+//   offset 8 + s*20 + 16:  float  Jn          (shift pass)
 // M_sum is recomputed in the merge pass from per-slot partner.M loads.
-static const uint SEL_STRIDE      = 56u;
+static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 16u;
+static const uint SEL_SLOT_STRIDE = 20u;
 
 uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
 uint sel_slot_addr(uint linearIdx, uint slot)

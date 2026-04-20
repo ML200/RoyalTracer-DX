@@ -212,11 +212,14 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     }
     return pbrProps;
 }
-// Refetch material properties from textures using matID + UV (level 0)
-inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm)
+// Refetch material properties from textures using matID + UV at the given
+// mip level. `level` defaults to 0 so existing ReSTIR-pass callers keep
+// full-resolution lookups; raygen passes `depth` to drop detail on deeper
+// bounces where the shading contribution is attenuated by throughput.
+inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, uint level = 0)
 {
-    localKd = EvaluateAlbedo(matID, uv, 0);
-    float2 pbr = EvaluatePBRProperties(matID, uv, 0);
+    localKd = EvaluateAlbedo(matID, uv, level);
+    float2 pbr = EvaluatePBRProperties(matID, uv, level);
     localPr = pbr.x;
     localPm = pbr.y;
 }

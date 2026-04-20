@@ -122,6 +122,18 @@ void Pass_temp_gi_v8()
         {
             valid = false;
         }
+
+        //Jacobian-ratio rejection on the neighbor→current shift only — that's
+        //the ratio that multiplies w_n and can spike variance in corners. The
+        //canonical→neighbor direction is self-bounded by pairwise MIS and is
+        //not checked here.
+        if (valid)
+        {
+            const float3 rPos = ReconstructPosition(rInstID, rPrimID, rBary);
+            if (JacobianRejected(myPos, rPos, rdi_r.matID, rdi_r.x2, rdi_r.n2_s))
+                valid = false;
+        }
+
         if (valid)
         {
             float p_hat_final = 0.0f;
@@ -131,7 +143,7 @@ void Pass_temp_gi_v8()
                 float Jnc = 0.0f, Jn = 0.0f;
 
                 const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
-                const float p_c = rdi.F_mag * visReuse_c;
+                const float p_c = GetPHat(rdi.F) * visReuse_c;
 
                 //Canonical Jc: jacobian at current pixel's x1 -> canonical x2.
                 //Env/miss samples preserve direction under shift, so Jc = 1.
@@ -219,7 +231,7 @@ void Pass_temp_gi_v8()
                 }
 
                 const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
-                const float n_n = rdi_r.F_mag * visReuse_n;
+                const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
                 //M caps
                 float sdata_Pr = myPr;
@@ -246,9 +258,10 @@ void Pass_temp_gi_v8()
 
                 rdi.w_sum = w_c;
 
-                uint  F_color_winner = rdi.F;
-                float F_mag_winner   = rdi.F_mag;
                 p_hat_final = p_c;
+                // UpdateReservoir writes F = contrib_n_from_me on acceptance —
+                // the shifted-to-current-pixel contribution, which is exactly
+                // what we want stored for the winner (and GetPHat of it is n_c).
                 if (UpdateReservoir(
                         rdi,
                         w_n,
@@ -256,15 +269,11 @@ void Pass_temp_gi_v8()
                         rdi_r.x2, rdi_r.n2_s, rdi_r.L2, rdi_r.V2,
                         rdi_r.uv,
                         rdi_r.matID, rdi_r.objID, rdi_r.eta,
-                        rdi_r.F, rdi_r.F_mag,
+                        contrib_n_from_me,
                         seed
                     ))
                 {
                     p_hat_final = n_c;
-                    float  n_c_mag  = GetPHat(contrib_n_from_me);
-                    float3 n_c_norm = (n_c_mag > 1e-20f) ? contrib_n_from_me / n_c_mag : float3(0,0,0);
-                    F_color_winner = PackRGB9E5(n_c_norm);
-                    F_mag_winner   = n_c_mag;
                 }
 
                 if (p_hat_final > EPSILON && rdi.w_sum > 0.0f)
@@ -279,9 +288,6 @@ void Pass_temp_gi_v8()
                 }
 
                 boilValue = p_hat_final * rdi.W;
-
-                rdi.F     = F_color_winner;
-                rdi.F_mag = F_mag_winner;
             }
         }
     }

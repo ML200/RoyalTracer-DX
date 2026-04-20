@@ -18,7 +18,7 @@
 //  Cold state pushed to memory:
 //    depth-1 vertex (x2, n2, uv, matID, objID, eta)  — write once at depth=1,
 //    v2 direction                                     — write once at depth=2,
-//    RIS F_pack / F_mag                              — written directly to
+//    RIS F (float3 contribution)                     — written directly to
 //                                                      the reservoir buffer on
 //                                                      acceptance.
 //  All are compressed SoA in g_pathStateBuffer (raygen-only; Pass_spat_gi_*
@@ -50,8 +50,8 @@ void Pass_raygen_v8()
     // and hangs the driver at specific camera angles.
     init_ps(g_pathStateBuffer, pixelIdx);
 
-    // RIS state: only wsum is live across iterations. F_pack and F_mag
-    // are written straight to the reservoir buffer on acceptance.
+    // RIS state: only wsum is live across iterations. F is written
+    // straight to the reservoir buffer on acceptance.
     float wsum = 0.0f;
 
     uint   seed         = initRandomData(pixel, uint2(8, 4), time, 1u);
@@ -80,7 +80,12 @@ void Pass_raygen_v8()
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
-        dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
+        // Depth 0 keeps 4-state OMM (unknown states fall through to the
+        // alpha any-hit). Secondary bounces force 2-state: unknown is
+        // resolved by the pre-baked micromap and any-hit is skipped, which
+        // is where the bulk of the alpha-test cost lives.
+        const uint rayFlags = (depth == 0) ? RAY_FLAG_NONE : RAY_FLAG_FORCE_OMM_2_STATE;
+        dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, rayFlags, 0xFF);
 
         //─────────────────── Miss ───────────────────
         if (!hitObj.IsHit())
@@ -165,7 +170,7 @@ void Pass_raygen_v8()
         const uint   mediumMatID = flipIOR ? matID : MEDIUM_INVALID;
 
         float3 hitLocalKd; float hitLocalPr, hitLocalPm;
-        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm);
+        RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, (uint)depth);
 
         const float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
             ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
@@ -524,8 +529,8 @@ void Pass_raygen_v8()
     }
 
     //════════════════════════════════════════════════════════════════════════
-    // Final resolve — commit wsum / W / M. F_pack and F_mag were already
-    // written to the reservoir by AddInitialCandidate on the last acceptance.
+    // Final resolve — commit wsum / W / M. F was already written to the
+    // reservoir by AddInitialCandidate on the last acceptance.
     //
     // Deferred shadow: NEE candidates are added without visibility; if the
     // final RIS winner is an NEE sample, the shadow-ray scratch holds its
@@ -533,7 +538,7 @@ void Pass_raygen_v8()
     // sample's contribution is invalidated via W = 0.
     //════════════════════════════════════════════════════════════════════════
     {
-        const float F_mag = load_F_mag(g_Reservoirs_current, pixelIdx);
+        const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float W = 0.0f;
         if (F_mag > 1e-6f && wsum > 0.0f)
         {

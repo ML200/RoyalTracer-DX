@@ -33,6 +33,8 @@ cbuffer Push : register(b1)
     // Neighbor-rejection thresholds (spatial select pass)
     float rs_rejNormalDot;     // [22]  dot(n_A, n_B) must be >= this
     float rs_rejDistance;      // [23]  |proj-on-normal| distance gate (world units)
+    float rs_rejJacobianMin;   // [24]  reject neighbor if J2 = Jn/Jc < this
+    float rs_rejJacobianMax;   // [25]  reject neighbor if J2 = Jn/Jc > this
 };
 
 //Image size convenience macros

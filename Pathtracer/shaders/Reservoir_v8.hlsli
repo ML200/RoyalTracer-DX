@@ -22,8 +22,7 @@ struct Reservoir
     // Varying payload
     float3 L2;
     float3 V2;
-    uint   F;          // RGB9E5-packed normalized color (F / Luma(F))
-    float  F_mag;      // scalar magnitude = Luma(F) = GetPHat(F)
+    float3 F;          // full RGB contribution; GetPHat(F) IS the target magnitude
 
     float  W;
     uint   M;
@@ -31,11 +30,12 @@ struct Reservoir
 };
 
 
-//Per-field sizes (SoA layout, 4 bytes per plane unless noted)
+//Per-field sizes (SoA layout, per-plane stride)
 static const uint SZ_PACK1 = 16u;  // x2(12) + n2_s_packed(4)
 static const uint SZ_4     =  4u;
+static const uint SZ_12    = 12u;  // float3 F
 
-//Plane cumulative offsets
+//Plane cumulative offsets (in bytes per pixel)
 static const uint PLANE_PACK1 =  0u;
 static const uint PLANE_L2    = 16u;
 static const uint PLANE_V2    = 20u;
@@ -43,11 +43,10 @@ static const uint PLANE_OBJID = 24u;
 static const uint PLANE_UV    = 28u;
 static const uint PLANE_MATID = 32u;
 static const uint PLANE_W     = 36u;
-static const uint PLANE_F     = 40u;
-static const uint PLANE_FMAG  = 44u;
-static const uint PLANE_M     = 48u;
-static const uint PLANE_ETA   = 52u;
-static const uint PLANE_WSUM  = 56u;
+static const uint PLANE_F     = 40u;   // float3 -> 12 bytes
+static const uint PLANE_M     = 52u;
+static const uint PLANE_ETA   = 56u;
+static const uint PLANE_WSUM  = 60u;
 
 // SoA address helpers
 // Tile-aligned pixel count, must match MapPixelID's 4x8 tile swizzle.
@@ -59,8 +58,7 @@ uint addr_objid(uint px)           { uint N = numPx(); return N * PLANE_OBJID + 
 uint addr_uv(uint px)              { uint N = numPx(); return N * PLANE_UV    + px * SZ_4; }
 uint addr_matid(uint px)           { uint N = numPx(); return N * PLANE_MATID + px * SZ_4; }
 uint addr_w(uint px)               { uint N = numPx(); return N * PLANE_W     + px * SZ_4; }
-uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_4; }
-uint addr_fmag(uint px)            { uint N = numPx(); return N * PLANE_FMAG  + px * SZ_4; }
+uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_12; }
 uint addr_m(uint px)               { uint N = numPx(); return N * PLANE_M     + px * SZ_4; }
 uint addr_eta(uint px)             { uint N = numPx(); return N * PLANE_ETA   + px * SZ_4; }
 uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + px * SZ_4; }
@@ -108,8 +106,7 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     buf.Store (addr_uv(pixelIdx),    PackFloat2x16(r.uv.x, r.uv.y));
     buf.Store (addr_matid(pixelIdx), r.matID);
     buf.Store (addr_w(pixelIdx),     asuint(r.W));
-    buf.Store (addr_f(pixelIdx),     r.F);
-    buf.Store (addr_fmag(pixelIdx),  asuint(r.F_mag));
+    buf.Store3(addr_f(pixelIdx),     asuint(r.F));
     buf.Store (addr_m(pixelIdx),     r.M);
     buf.Store (addr_eta(pixelIdx),   asuint(r.eta));
 }
@@ -133,8 +130,7 @@ Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
     UnpackFloat2x16(uv_packed, r.uv.x, r.uv.y);
 
     r.W     = asfloat(buf.Load(addr_w(pixelIdx)));
-    r.F     = buf.Load(addr_f(pixelIdx));
-    r.F_mag = asfloat(buf.Load(addr_fmag(pixelIdx)));
+    r.F     = asfloat(buf.Load3(addr_f(pixelIdx)));
 
     r.M     = buf.Load(addr_m(pixelIdx));
     r.eta   = asfloat(buf.Load(addr_eta(pixelIdx)));
@@ -189,14 +185,9 @@ float load_W(RWByteAddressBuffer b, uint pixelIdx)
     return asfloat(b.Load(addr_w(pixelIdx)));
 }
 
-uint load_F(RWByteAddressBuffer b, uint pixelIdx)
+float3 load_F(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return b.Load(addr_f(pixelIdx));
-}
-
-float load_F_mag(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return asfloat(b.Load(addr_fmag(pixelIdx)));
+    return asfloat(b.Load3(addr_f(pixelIdx)));
 }
 
 float load_eta(RWByteAddressBuffer b, uint pixelIdx)
@@ -224,14 +215,9 @@ void store_W(RWByteAddressBuffer b, uint pixelIdx, float W)
     b.Store(addr_w(pixelIdx), asuint(W));
 }
 
-void store_F(RWByteAddressBuffer b, uint pixelIdx, uint F)
+void store_F(RWByteAddressBuffer b, uint pixelIdx, float3 F)
 {
-    b.Store(addr_f(pixelIdx), F);
-}
-
-void store_F_mag(RWByteAddressBuffer b, uint pixelIdx, float mag)
-{
-    b.Store(addr_fmag(pixelIdx), asuint(mag));
+    b.Store3(addr_f(pixelIdx), asuint(F));
 }
 
 
@@ -277,6 +263,31 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
 inline float JacobianRatio(float Jn, float Jc)
 {
     return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
+}
+
+// Rejects the neighbor candidate if the neighbor→current shift Jacobian
+// ratio Jn(myPos toward bX2) / Jc(bPos toward bX2) falls outside
+// [rs_rejJacobianMin, rs_rejJacobianMax]. This is the ratio that
+// multiplies w_n directly and can spike ReSTIR variance in corners.
+// The opposite direction (canonical sample shifted into the neighbor's
+// pixel) only enters mis_c's denominator and is self-bounded by pairwise
+// MIS — m_c stays in [M_c/M_sum, 1] no matter how extreme that ratio
+// gets — so checking it would only discard usable samples.
+// Env/miss (MATID_ENV_MISS) preserves direction under shift so its ratio
+// is 1 by construction.
+inline bool JacobianRejected(float3 myPos,
+                             float3 bPos,
+                             uint   bMatRes,
+                             float3 bX2res, float3 bN2res)
+{
+    if (bMatRes == MATID_ENV_MISS) return false;
+
+    const float Jn = ComputeJc(myPos, bX2res, bN2res);
+    const float Jc = ComputeJc(bPos,  bX2res, bN2res);
+    const float ratio = Jn / max(Jc, EPSILON);
+
+    // Negated range test also catches NaN / inf / negative.
+    return !(ratio >= rs_rejJacobianMin && ratio <= rs_rejJacobianMax);
 }
 
 // Calculate reconnection.
@@ -461,8 +472,7 @@ bool UpdateReservoir(
     in uint objID,
     in float eta,
 
-    in uint  F,
-    in float F_mag,
+    in float3 F,
 
     inout uint2 seed
 )
@@ -483,7 +493,6 @@ bool UpdateReservoir(
         reservoir.L2    = L2;
         reservoir.V2    = V2;
         reservoir.F     = F;
-        reservoir.F_mag = F_mag;
         return true;
     }
     return false;
@@ -493,7 +502,9 @@ bool UpdateReservoir(
 // Initial-resampling candidate update: accumulates wsum in a register
 // (the only RIS scalar live across iterations) and, on acceptance, writes
 // the full reservoir payload — constant fields (x2, n2, matID, objID, eta,
-// uv) plus varying fields (L2, V2, F, F_mag) — straight to the SoA buffer.
+// uv) plus varying fields (L2, V2, F) — straight to the SoA buffer. F is
+// stored as the full RGB contribution (no normalize + magnitude split); the
+// target magnitude is always GetPHat(F).
 //
 // Sentinel objIDs (env/miss) bypass the object-space transform via the
 // identity shortcut in Sample_Data_v8.
@@ -510,9 +521,7 @@ inline bool AddInitialCandidate(
     inout uint seed)
 {
     if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return false;
-    const float F_mag = GetPHat(F_contrib);
-    if (F_mag <= 1e-20f) return false;
-    const uint F_pack = PackRGB9E5(F_contrib / F_mag);
+    if (GetPHat(F_contrib) <= 1e-20f) return false;
 
     wsum += wi;
     if (wsum > EPSILON && RandomFloatSingle(seed) < (wi / wsum))
@@ -526,8 +535,7 @@ inline bool AddInitialCandidate(
         buf.Store (addr_matid(pixelIdx), matID);
         buf.Store (addr_eta  (pixelIdx), asuint(eta));
         buf.Store (addr_uv   (pixelIdx), PackFloat2x16(uv.x, uv.y));
-        buf.Store (addr_f    (pixelIdx), F_pack);
-        buf.Store (addr_fmag (pixelIdx), asuint(F_mag));
+        buf.Store3(addr_f    (pixelIdx), asuint(F_contrib));
         return true;
     }
     return false;

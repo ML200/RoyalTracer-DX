@@ -14,9 +14,9 @@
 //─────────────────────────────────────────────────────────────────────────────
 
 // Scratch layout mirrors Pass_spat_gi_select_v8.hlsl
-static const uint SEL_STRIDE      = 56u;
+static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 16u;
+static const uint SEL_SLOT_STRIDE = 20u;
 
 uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
 uint sel_slot_addr(uint linearIdx, uint slot)
@@ -123,11 +123,9 @@ void Pass_spat_gi_shift_v8()
             c *= vis;
         }
 
-        const float  F_mag  = GetPHat(c);
-        const float3 F_norm = (F_mag > 1e-20f) ? c / F_mag : float3(0, 0, 0);
-        const uint   F_pack = PackRGB9E5(F_norm);
-
-        g_pathStateBuffer.Store3(slotAddr + 4u,
-            uint3(F_pack, asuint(F_mag), asuint(Jn)));
+        // Slot layout after nID: float3 F (12B) + float Jn (4B). No
+        // RGB9E5 split — the target magnitude is always GetPHat(F).
+        g_pathStateBuffer.Store4(slotAddr + 4u,
+            uint4(asuint(c), asuint(Jn)));
     }
 }

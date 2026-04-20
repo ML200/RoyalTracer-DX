@@ -20,7 +20,7 @@ void main(uint3 tid : SV_DispatchThreadID, uint2 localIdx : SV_GroupThreadID)
     if (!oob && boil && boilValue > 0.0f)
     {
         float W   = load_W(g_Reservoirs_current, pixelIdx);
-        float F   = load_F_mag(g_Reservoirs_current, pixelIdx);
+        float F   = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float scale = thrV / boilValue;
         W *= scale;
         store_W(g_Reservoirs_current, pixelIdx, W);

@@ -7,23 +7,22 @@
 //  All reconnections and visibility rays happen in the preceding shift pass;
 //  this pass is pure data work and runs as a compute shader.
 //
-//  Per-slot MIS weights use only (partner.M, partner.W, partner.F_mag)
+//  Per-slot MIS weights use only (partner.M, partner.W, GetPHat(partner.F))
 //  loaded field-by-field from the reservoir. The full partner payload
 //  (x2, n2_s, L2, V2, uv, matID, objID, eta, F) is only loaded when a
 //  partner actually wins RIS — ~25-35% of slots in practice. This cuts the
 //  dominant BW cost of the previous raygen merge.
 //─────────────────────────────────────────────────────────────────────────────
 
-// Scratch layout (56 bytes/pixel; M_sum removed vs. prior version):
+// Scratch layout (8 + SPAT_COUNT_MAX*20 bytes/pixel; M_sum recomputed here):
 //   [0]      uint  validCount
 //   [4]      float my_Jc
-//   [8 + s*16 + 0]  uint  nID
-//   [8 + s*16 + 4]  uint  F_pack      (MY shift color, RGB9E5)
-//   [8 + s*16 + 8]  float F_mag       (MY shift magnitude, visibility baked)
-//   [8 + s*16 +12]  float Jn          (MY reconnection Jacobian)
-static const uint SEL_STRIDE      = 56u;
+//   [8 + s*20 + 0]   uint   nID
+//   [8 + s*20 + 4]   float3 F         (MY shift contribution; visibility baked)
+//   [8 + s*20 + 16]  float  Jn        (MY reconnection Jacobian)
+static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 16u;
+static const uint SEL_SLOT_STRIDE = 20u;
 
 uint sel_addr(uint idx) { return idx * SEL_STRIDE; }
 uint sel_slot_addr(uint idx, uint slot)
@@ -56,9 +55,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     // Disabled early-out: canonical passthrough
     if (!(rs_flags & 8u))
     {
-        const float3 c = UnpackRGB9E5(rdi.F) * rdi.F_mag;
         const float  W = (rdi.W > 0.0f) ? rdi.W : 0.0f;
-        gScratchPing[uint3(launchIndex, 2)] = float4(c * W, 0);
+        gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * W, 0);
         storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
@@ -78,8 +76,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     rdi.M = M_c;
 
     const float  visReuse_c    = (rdi.W > 0.0f) ? 1.0f : 0.0f;
-    const float  p_c           = rdi.F_mag * visReuse_c;
-    float3       contrib_final = UnpackRGB9E5(rdi.F) * rdi.F_mag * visReuse_c;
+    const float  p_c           = GetPHat(rdi.F) * visReuse_c;
+    float3       contrib_final = rdi.F * visReuse_c;
 
     if (validCount == 0u)
     {
@@ -110,10 +108,11 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint nID = g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, i));
         if (nID == 0xFFFFFFFFu) continue;
 
-        // Partner's cached shift-to-me at their slot i (F_mag + Jn)
-        const uint2 pShift = g_pathStateBuffer.Load2(sel_slot_addr(nID, i) + 8u);
-        const float p_F_mag = asfloat(pShift.x);
-        const float p_Jn    = asfloat(pShift.y);
+        // Partner's cached shift-to-me at their slot i: float3 F + float Jn
+        const uint4  pShift  = g_pathStateBuffer.Load4(sel_slot_addr(nID, i) + 4u);
+        const float3 p_F     = asfloat(pShift.xyz);
+        const float  p_F_mag = GetPHat(p_F);
+        const float  p_Jn    = asfloat(pShift.w);
 
         // Partner's Jc from their scratch header
         const float p_Jc = asfloat(g_pathStateBuffer.Load(sel_addr(nID) + 4u));
@@ -160,18 +159,18 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint nID = slot_nID[k];
         if (nID == 0xFFFFFFFFu) continue;
 
-        // MY shift for slot k
-        const uint4 myShift   = g_pathStateBuffer.Load4(sel_slot_addr(pixelIdx, k));
-        const uint  my_F_pack = myShift.y;
-        const float my_F_mag  = asfloat(myShift.z);
-        const float my_Jn     = asfloat(myShift.w);
+        // MY shift for slot k: float3 F (offset +4) + float Jn (offset +16)
+        const uint4  myShift = g_pathStateBuffer.Load4(sel_slot_addr(pixelIdx, k) + 4u);
+        const float3 my_F    = asfloat(myShift.xyz);
+        const float  my_F_mag= GetPHat(my_F);
+        const float  my_Jn   = asfloat(myShift.w);
 
         const float p_hat_me_to_partner =
             my_F_mag * JacobianRatio(my_Jn, slot_partner_Jc[k]);
 
-        // Two fields from partner's reservoir for MIS (W, F_mag)
-        const float partner_W     = load_W    (g_Reservoirs_current, nID);
-        const float partner_F_mag = load_F_mag(g_Reservoirs_current, nID);
+        // Two fields from partner's reservoir for MIS (W, F magnitude)
+        const float partner_W     = load_W(g_Reservoirs_current, nID);
+        const float partner_F_mag = GetPHat(load_F(g_Reservoirs_current, nID));
         const float Mn            = slot_partner_Mn[k];
 
         const float mis_n = PairwiseMIS_Neighbor_Spat(
@@ -201,22 +200,23 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.L2    = load_L2(g_Reservoirs_current, nID);
             rdi.V2    = load_V2(g_Reservoirs_current, nID);
             rdi.uv    = load_uv_res(g_Reservoirs_current, nID);
-            rdi.F     = load_F (g_Reservoirs_current, nID);
-            rdi.F_mag = partner_F_mag;  // already loaded above
+            // rdi.F is overwritten below with the shift-to-me contribution
+            // (contrib_final), which IS the correct target for this pixel.
 
-            contrib_final = UnpackRGB9E5(my_F_pack) * my_F_mag;
+            contrib_final = my_F;
         }
     }
 
     //─────────────────────────────────────────────────────────────────────────
-    // Finalize: normalize W, pack F from contrib_final
+    // Finalize: store full float3 contribution in rdi.F; GetPHat(F) IS the
+    // target magnitude (invariant holds exactly — no RGB9E5 round-trip).
     //─────────────────────────────────────────────────────────────────────────
-    const float  F_mag_out  = GetPHat(contrib_final);
-    const float3 F_norm_out = (F_mag_out > 1e-20f) ? contrib_final / F_mag_out : float3(0, 0, 0);
+    rdi.F = contrib_final;
+    const float F_mag_final = GetPHat(rdi.F);
 
-    if (F_mag_out > EPSILON && rdi.w_sum > 0.0f && rdi.w_sum < 1e10f)
+    if (F_mag_final > EPSILON && rdi.w_sum > 0.0f && rdi.w_sum < 1e10f)
     {
-        float W = rdi.w_sum / F_mag_out;
+        float W = rdi.w_sum / F_mag_final;
         if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
         rdi.W = W;
     }
@@ -225,9 +225,6 @@ void main(uint3 tid : SV_DispatchThreadID)
         rdi.W = 0.0f;
     }
 
-    rdi.F     = PackRGB9E5(F_norm_out);
-    rdi.F_mag = F_mag_out;
-
-    gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W, 0);
+    gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * rdi.W, 0);
     storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
 }

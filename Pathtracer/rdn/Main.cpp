@@ -19,17 +19,17 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./twr.glb", XMMatrixIdentity() },
+            { "./bistro2/bistro2.obj", XMMatrixIdentity()*XMMatrixScaling(10,10,10) },
             //{ "./giga_sphere.obj", XMMatrixIdentity()*XMMatrixTranslation(0,2,0) },
             //{ "./car/car.obj", XMMatrixIdentity() }
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {
         /*EmissiveCubes::Params p;
-        p.count = 2000; p.emissiveFraction = 0.5f; p.cubeSize = 0.03f;
+        p.count = 100000; p.emissiveFraction = 0.01f; p.cubeSize = 0.3f;
         p.emissionMin = 0.5; p.emissionMax = 10;
-        p.speedMin = 0.5f; p.speedMax = 2.5f;
-        p.spawnMin = {-5, 0.3f, -5}; p.spawnMax = {5, 3, 5};
+        p.speedMin = 0.5f; p.speedMax = 5.5f;
+        p.spawnMin = {-120, 0.3f, -120}; p.spawnMax = {120, 90, 120};
         m_cubes.Init(p, sm, r);*/
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {

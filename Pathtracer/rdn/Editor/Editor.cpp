@@ -438,10 +438,14 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Normal dot min", &rs.rejNormalDot, 0.0f, 1.0f);
+        ImGui::SliderFloat("Normal dot min",    &rs.rejNormalDot,   0.0f, 1.0f);
         ImGui::SetItemTooltip("Reject neighbor if dot(nA, nB) falls below this.");
-        ImGui::SliderFloat("Distance max",   &rs.rejDistance,  0.001f, 1.0f, "%.3f");
+        ImGui::SliderFloat("Distance max",      &rs.rejDistance,    0.001f, 1.0f, "%.3f");
         ImGui::SetItemTooltip("Reject neighbor if |proj onto normal| exceeds this (world units).");
+        ImGui::SliderFloat("Jacobian ratio min",&rs.rejJacobianMin, 0.0001f, 1.0f, "%.4f");
+        ImGui::SetItemTooltip("Reject if Jn/Jc < this on either shift direction.");
+        ImGui::SliderFloat("Jacobian ratio max",&rs.rejJacobianMax, 1.0f, 100.0f, "%.2f");
+        ImGui::SetItemTooltip("Reject if Jn/Jc > this on either shift direction.");
     }
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
