@@ -1,34 +1,47 @@
-//Includes_v8.hlsli
-//Compute shaders:  #define COMPUTE_PASS before including.
+//====================================================================
+//INCLUDES V8
+//====================================================================
+//Compute shaders: #define COMPUTE_PASS before including.
 
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
 
-//Push constants
+//====================================================================
+//PUSH CONSTANTS
+//====================================================================
 cbuffer Push : register(b1)
 {
-    uint2 gImageSize;          // [0-1]
-    uint  g_InputStackIdx;     // [2]
-    uint  g_OutputStackIdx;    // [3]
-    uint  rs_tempMcapDI;       // [4]
-    uint  rs_tempMcapGI;       // [5]
-    uint  rs_spatCountMaxDI;   // [6]
-    uint  rs_spatCountMinDI;   // [7]
-    uint  rs_spatRadMaxDI;     // [8]
-    uint  rs_spatRadMinDI;     // [9]
-    uint  rs_spatCountMaxGI;   // [10]
-    uint  rs_spatCountMinGI;   // [11]
-    uint  rs_spatRadMaxGI;     // [12]
-    uint  rs_spatRadMinGI;     // [13]
-    uint  rs_flags;            // [14] bit0=tempDI, bit1=tempGI, bit2=spatDI, bit3=spatGI
-    float rs_reuseRoughnessMin;// [15]
-    float rs_reuseRoughnessMax;// [16]
-    uint  rs_spatTriesGI;      // [17] total attempts to find GI spatial neighbors
-    uint  rs_spatTriesDI;      // [18] total attempts to find DI spatial neighbor
-    uint  _pad19;              // [19]
+    uint2 gImageSize;          //[0-1]
+    uint  g_InputStackIdx;     //[2]
+    uint  g_OutputStackIdx;    //[3]
+    uint  rs_tempMcap;         //[4]
+    uint  rs_spatCountMax;     //[5]
+    uint  rs_spatCountMin;     //[6]
+    uint  rs_spatRadMax;       //[7]
+    uint  rs_spatRadMin;       //[8]
+    uint  rs_flags;            //[9], bit0=temp, bit1=spat
+    float rs_reuseRoughnessMin;//[10]
+    float rs_reuseRoughnessMax;//[11]
+    uint  rs_spatTries;        //[12]
+    //Paired reuse textures, per-slot randomized transforms, Lin et al. 2026 §3.2.
+    //flags bits: 1=flipX, 2=flipY, 4=transpose
+    uint  rs_reuseOffset0_x;   //[13]
+    uint  rs_reuseOffset0_y;   //[14]
+    uint  rs_reuseFlags0;      //[15]
+    uint  rs_reuseOffset1_x;   //[16]
+    uint  rs_reuseOffset1_y;   //[17]
+    uint  rs_reuseFlags1;      //[18]
+    uint  rs_reuseOffset2_x;   //[19]
+    uint  rs_reuseOffset2_y;   //[20]
+    uint  rs_reuseFlags2;      //[21]
+    //Neighbor-rejection thresholds for spatial select pass
+    float rs_rejNormalDot;     //[22], dot(n_A, n_B) must be >= this
+    float rs_rejDistance;      //[23], |proj-on-normal| gate in world units
 };
 
-//Image size convenience macros
+//====================================================================
+//IMAGE SIZE MACROS
+//====================================================================
 #define IMG_W (gImageSize.x)
 #define IMG_H (gImageSize.y)
 
@@ -44,21 +57,16 @@ cbuffer Push : register(b1)
 //Inline ray tracing support
 #define ENABLE_RAY_QUERY_INLINE
 
-//Samplers & LUTs
+//====================================================================
+//SAMPLERS AND LUTS
+//====================================================================
 SamplerState   g_sampler     : register(s0);
 SamplerState   g_sampler_LUT : register(s1);
 Texture2DArray g_LUT         : register(t33);
 
-//Wavefront compaction (UNUSED)
-RWByteAddressBuffer          g_GlobalCounters : register(u34);
-RWStructuredBuffer<uint3>    g_IndirectArgs   : register(u35);
-RWStructuredBuffer<uint2>    g_Stack0         : register(u36);
-RWStructuredBuffer<uint2>    g_Stack1         : register(u37);
-RWByteAddressBuffer          g_SortCount      : register(u60);
-RWByteAddressBuffer          g_SortOffset     : register(u61);
-RWByteAddressBuffer          g_SortBounds     : register(u62);
-
-//Camera
+//====================================================================
+//CAMERA
+//====================================================================
 cbuffer CameraParams : register(b0)
 {
     float4x4 view;
@@ -69,8 +77,8 @@ cbuffer CameraParams : register(b0)
     float4x4 prevProjection;
     float  time;
     float2 jitter;
-    float  _cbpad0;
-    // Sun settings
+    float  cameraFar;
+    //Sun settings
     float sunLatitude;
     float sunLongitude;
     float sunDayOfYear;
@@ -94,50 +102,62 @@ cbuffer CameraParams : register(b0)
 #define SKY_INTENSITY_VAL   sunSkyIntensity
 #define SKY_INTENSITY       sunSkyIntensity
 
-//Core utility headers
+//====================================================================
+//CORE UTILITY HEADERS
+//====================================================================
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
 #include "Data_v8.hlsli"
 #include "Random_v8.hlsli"
 #include "Compression_v8.hlsli"
-#include "HitState_v8.hlsli"
 
-//Output / scratch / reservoir buffers
+//====================================================================
+//OUTPUT, SCRATCH, RESERVOIR BUFFERS
+//====================================================================
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
 RWTexture2DArray<float4> gScratchPing        : register(u8);
 
 RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
-RWByteAddressBuffer g_Reservoirs_current_di  : register(u2);
-RWByteAddressBuffer g_Reservoirs_last_di     : register(u3);
-RWByteAddressBuffer g_Reservoirs_current_gi  : register(u4);
-RWByteAddressBuffer g_Reservoirs_last_gi     : register(u5);
-RWByteAddressBuffer g_InitialBSDFRays        : register(u9);
+RWByteAddressBuffer g_Reservoirs_current     : register(u4);
+RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
-//Scene data
+//====================================================================
+//SCENE DATA
+//====================================================================
 StructuredBuffer<STriVertex>         BTriVertex          : register(t2);
 StructuredBuffer<int>                indices             : register(t1);
 RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
-StructuredBuffer<Material>           materials           : register(t5);
+
+//Material buffer, compressed AoS, 40 B per material, was 112 B.
+//See Data_v8.hlsli for layout and Material_Decoder_v8.hlsli for accessors.
+StructuredBuffer<MatPacked>          g_mat               : register(t5);
+
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-//Light tree
+//====================================================================
+//LIGHT TREE
+//====================================================================
 StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
 StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
-Buffer<float>                      gLT_LeafAliasProb: register(t16);
-Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
+//t16/t17/t18 are claimed by the lookup buffers declared inside
+//LightTree_v8.hlsli: TriToBLAS / TriToLeafOffset / BLASToItem. The
+//legacy LeafAlias buffers are no longer built or bound, per-leaf
+//sampling is power-weighted in place.
 
-//Shading and material headers
+//====================================================================
+//SHADING AND MATERIAL HEADERS
+//====================================================================
+#include "Material_Decoder_v8.hlsli"
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
-#include "Path_State_v8.hlsli"
 #include "Fresnel_v8.hlsli"
 #include "Material_Common_v8.hlsli"
 #include "Material_GGX_v8.hlsli"
@@ -146,20 +166,22 @@ Buffer<uint>                       gLT_LeafAliasIdx : register(t17);
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
 
-//Sampling, reservoirs, ray tracing
+//====================================================================
+//SAMPLING, RESERVOIRS, RAY TRACING
+//====================================================================
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "Clouds_v8.hlsli"
-#include "PayloadPath_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
-#include "Reservoir_DI_v8.hlsli"
-#include "Reservoir_GI_v8.hlsli"
+#include "Reservoir_v8.hlsli"
+#include "Path_State_v8.hlsli"
 
 #include "Camera_ray_v8.hlsli"
-#include "VolumeStackPacked_v8.hlsli"
 #include "MIS_v8.hlsli"
 
-//DLSS-RR resources
+//====================================================================
+//DLSS-RR RESOURCES
+//====================================================================
 #ifdef COMPUTE_PASS
 RWTexture2D<float>  g_dlssDepth          : register(u11);
 RWTexture2D<float2> g_dlssMVec           : register(u12);
@@ -176,4 +198,4 @@ RWTexture2D<float4> g_dlssInput          : register(u22);
 RWTexture2D<float>  g_dlssBiasHint       : register(u23);
 #endif
 
-#endif // INCLUDES_V8_HLSLI
+#endif //INCLUDES_V8_HLSLI

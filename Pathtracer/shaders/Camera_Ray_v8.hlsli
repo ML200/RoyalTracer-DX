@@ -1,11 +1,13 @@
-// Camera ray generation and reprojection
+//====================================================================
+//CAMERA RAY GENERATION AND REPROJECTION
+//====================================================================
 
-// Initial ray origin
+//Initial ray origin
 float3 InitOrigin(){
     return mul(viewI, float4(0, 0, 0, 1)).xyz;
 }
 
-// Initial ray direction with subpixel jitter
+//Initial ray direction with subpixel jitter
 float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 {
     float2 pixelSample = float2(pixel) + 0.5f + jitter;
@@ -15,7 +17,9 @@ float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
     return normalize(mul(viewI, float4(target.xyz, 0)).xyz);
 }
 
-
+//====================================================================
+//PREVIOUS-FRAME REPROJECTION
+//====================================================================
 inline float2 GetLastFramePixelCoordinates_Float(
     float3 worldPos,
     float4x4 prevView,
@@ -36,17 +40,17 @@ inline float2 GetLastFramePixelCoordinates_Float(
     float2 uv = ndc * 0.5f + 0.5f;
     uv.y = 1.0f - uv.y;
 
-    // pixel-center coordinates
+    //pixel-center coordinates
     float2 px = uv * resolution - 0.5f;
 
-    // allow half-pixel margin
+    //allow half-pixel margin
     if (any(px < -0.5f) || any(px > (resolution - 0.5f))) return float2(-1.0f, -1.0f);
 
     return px;
 }
 
-// Unclamped variant for motion vectors: allows off-screen previous positions.
-// Only rejects behind-camera (w <= 0) where projection is undefined.
+//Unclamped variant for motion vectors, allows off-screen previous positions.
+//Only rejects behind-camera where projection is undefined.
 inline float2 GetLastFramePixelCoordinates_Unclamped(
     float3 worldPos,
     float4x4 prevView,
@@ -85,39 +89,3 @@ inline int2 GetBestReprojectedPixel_d(
     return p;
 }
 
-inline int MirrorCoord(int v, int extent)
-{
-    v = abs(v);
-    int  period = extent * 2;
-    int  m      = v % period;
-    return (m < extent) ? m : period - m - 1;
-}
-
-inline uint GetRandomPixelCircleWeighted(
-    uint   radius,
-    uint   w,
-    uint   h,
-    uint   x,
-    uint   y,
-    inout  uint2 threadSeed)
-{
-    if (radius == 0)
-        return MapPixelID(uint2(w, h), uint2(x, y));
-
-    int offX, offY;
-    do
-    {
-        float  u     = RandomFloatSingle(threadSeed.x);
-        float  z     = pow(u, SPAT_EXP_DI);
-        float  r     = float(radius) * z;
-        float  angle = RandomFloatSingle(threadSeed.x) * 6.2831853;
-
-        offX = int(cos(angle) * r);
-        offY = int(sin(angle) * r);
-    } while (offX == 0 && offY == 0);
-
-    int newX = MirrorCoord(int(x) + offX, int(w));
-    int newY = MirrorCoord(int(y) + offY, int(h));
-
-    return MapPixelID(uint2(w, h), uint2(newX, newY));
-}

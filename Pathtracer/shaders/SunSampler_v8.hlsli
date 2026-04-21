@@ -1,3 +1,6 @@
+//====================================================================
+//TIME AND ANGLE MACROS
+//====================================================================
 #define TAU     (2.0f * PI)
 #define DEG2RAD (PI / 180.0f)
 #define RAD2DEG (180.0f / PI)
@@ -6,6 +9,9 @@
 #define SUN_FRAMECOUNT time
 #endif
 
+//====================================================================
+//SUN DEFAULTS
+//====================================================================
 #ifndef SUN_LATITUDE_DEG
 #define SUN_LATITUDE_DEG   48.5200f
 #endif
@@ -58,8 +64,10 @@
 #define SUN_LIMB_DARKENING 1
 #endif
 
-//Atmosphere: Bruneton 2017 standard Earth parameters
-//ALL lengths in km. ALL coefficients in 1/km.
+//====================================================================
+//ATMOSPHERE, BRUNETON 2017 STANDARD EARTH
+//====================================================================
+//All lengths in km. All coefficients in 1/km.
 
 #ifndef ATMOS_BOTTOM_RADIUS
 #define ATMOS_BOTTOM_RADIUS     6360.0f
@@ -90,8 +98,8 @@
 #endif
 
 //Two-lobe Mie phase function:
-//Primary lobe: narrow forward scatter (the sun halo core)
-//Secondary lobe: wider forward scatter (soft glow around sun)
+//Primary lobe: narrow forward scatter, the sun halo core.
+//Secondary lobe: wider forward scatter, soft glow around sun.
 //The two-lobe approach gives a visible halo on short zenith paths
 //without over-accumulating scatter on long horizon paths.
 #ifndef ATMOS_MIE_G_PRIMARY
@@ -102,12 +110,12 @@
 #define ATMOS_MIE_G_SECONDARY   0.35f
 #endif
 
-//Weight of secondary lobe (0 = single lobe, 1 = all secondary)
+//Weight of secondary lobe, 0 = single lobe, 1 = all secondary.
 #ifndef ATMOS_MIE_LOBE2_WEIGHT
 #define ATMOS_MIE_LOBE2_WEIGHT  0.15f
 #endif
 
-//Turbidity multiplier on Mie (1.0 = very clear, 2-3 = clear, 5+ = hazy)
+//Turbidity multiplier on Mie, 1.0 = very clear, 2-3 = clear, 5+ = hazy.
 #ifndef SUN_TURBIDITY
 #define SUN_TURBIDITY           2.0f
 #endif
@@ -141,7 +149,9 @@
 #define SKY_INTENSITY           6.0f
 #endif
 
-// Night sky
+//====================================================================
+//NIGHT SKY
+//====================================================================
 #ifndef SKY_TWILIGHT_DEG
 #define SKY_TWILIGHT_DEG        18.0f
 #endif
@@ -174,7 +184,7 @@
 #define SKY_NIGHT_BASE          float3(0.00015f, 0.00020f, 0.00035f)
 #endif
 
-// Star config
+//Star config
 #ifndef SKY_STAR_LAYERS
 #define SKY_STAR_LAYERS         3
 #endif
@@ -187,13 +197,18 @@
 #define SKY_STAR_DAWN_LINGER    10.0f
 #endif
 
-// World orientation
+//====================================================================
+//WORLD ORIENTATION
+//====================================================================
 #ifndef WORLD_NORTH
 #define WORLD_NORTH             normalize(float3(0, 0, 1))
 #endif
 
 static const float3 WORLD_UP = float3(0, 1, 0);
 
+//====================================================================
+//SUN STRUCTS
+//====================================================================
 struct SunSampleResult
 {
     float3 direction;
@@ -221,7 +236,9 @@ struct MediumSample
     float3 extinction;
 };
 
-// Utility
+//====================================================================
+//UTILITY
+//====================================================================
 inline float3 SafeNormalize(float3 v)
 {
     return (dot(v, v) > 0.0f) ? normalize(v) : float3(0, 1, 0);
@@ -245,7 +262,9 @@ inline float Smooth01(float x)
     return x * x * (3.0f - 2.0f * x);
 }
 
-//Hashing (improved stars)
+//====================================================================
+//HASHING, IMPROVED STARS
+//====================================================================
 inline float Hash12(float2 p)
 {
     float3 p3 = frac(float3(p.xyx) * float3(0.1031f, 0.1030f, 0.0973f));
@@ -260,7 +279,9 @@ inline float2 Hash22(float2 p)
     return frac(float2((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y));
 }
 
-// Solar position
+//====================================================================
+//SOLAR POSITION
+//====================================================================
 inline float SolarDeclinationRad(float dayOfYear, float timeHours)
 {
     float gamma = TAU / 365.0f * (dayOfYear - 1.0f + (timeHours - 12.0f) / 24.0f);
@@ -342,7 +363,9 @@ inline void GetSunDirAndElev(out float3 dirWS, out float elevRad)
     elevRad = asin(clamp(up, -1.0f, 1.0f));
 }
 
-// Atmosphere medium sampling
+//====================================================================
+//ATMOSPHERE MEDIUM SAMPLING
+//====================================================================
 inline float DensityOzone(float altKm)
 {
     return (altKm < 25.0f)
@@ -372,13 +395,15 @@ inline MediumSample SampleMedium(float altKm)
     return m;
 }
 
-// Phase functions
+//====================================================================
+//PHASE FUNCTIONS
+//====================================================================
 inline float PhaseRayleigh(float cosTheta)
 {
     return (3.0f / (16.0f * PI)) * (1.0f + cosTheta * cosTheta);
 }
 
-// Cornette-Shanks phase function
+//Cornette-Shanks phase function
 inline float PhaseMieCS(float cosTheta, float g)
 {
     float g2 = g * g;
@@ -394,6 +419,9 @@ inline float PhaseMieTwoLobe(float cosTheta)
     return lerp(p1, p2, ATMOS_MIE_LOBE2_WEIGHT);
 }
 
+//====================================================================
+//RAY-SPHERE AND TRANSMITTANCE
+//====================================================================
 inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0, out float t1)
 {
     float b = dot(ro, rd);
@@ -433,6 +461,9 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
     return exp(-od);
 }
 
+//====================================================================
+//SCATTERING INTEGRATION
+//====================================================================
 float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittanceOut)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
@@ -475,7 +506,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
 
     for (int i = 0; i < ATMOS_VIEW_STEPS; i++)
     {
-        // sqrt spacing: samples cluster near the start of the ray
+        //sqrt spacing: samples cluster near the start of the ray
         float u0 = (float)i / (float)ATMOS_VIEW_STEPS;
         float u1 = (float)(i + 1) / (float)ATMOS_VIEW_STEPS;
         float s0 = u0 * u0;
@@ -494,7 +525,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
 
         float3 sunTr = TransmittanceToSun(P, L, Rb, Rt);
 
-        // Earth shadow
+        //Earth shadow
         float3 Pnorm = SafeNormalize(P);
         float sunCosZ = dot(Pnorm, L);
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
@@ -502,7 +533,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
 
-        // Analytically integrated in-scatter over the segment
+        //Analytically integrated in-scatter over the segment
         float3 scatterInteg;
         scatterInteg.x = (med.extinction.x > 1e-10f)
             ? scatterPhase.x * (1.0f - segTr.x) / med.extinction.x : scatterPhase.x * ds;
@@ -523,6 +554,9 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
     return totalInScatter;
 }
 
+//====================================================================
+//ATMOSPHERIC TRANSMITTANCE
+//====================================================================
 //Full-path transmittance from observer along a direction
 float3 AtmosphericTransmittance(float3 dir)
 {
@@ -556,6 +590,9 @@ float3 AtmosphericTransmittance(float3 dir)
     return exp(-od);
 }
 
+//====================================================================
+//LIMB DARKENING
+//====================================================================
 inline float3 LimbDarkening(float mu)
 {
     float u = 1.0f - mu;
@@ -567,6 +604,9 @@ inline float3 LimbDarkening(float mu)
     return max(ld, 0.0f);
 }
 
+//====================================================================
+//SUN STATE
+//====================================================================
 inline SunState ComputeSunState()
 {
     SunState S;
@@ -594,7 +634,9 @@ inline SunState ComputeSunState()
     return S;
 }
 
-// Public Sun API
+//====================================================================
+//PUBLIC SUN API
+//====================================================================
 SunSampleResult SampleSun(float2 u)
 {
     SunState S = ComputeSunState();
@@ -664,14 +706,16 @@ float3 EvaluateSun(float3 rayDir)
 #endif
 }
 
-// Stars
+//====================================================================
+//STARS
+//====================================================================
 inline float3 RotateAroundAxis(float3 v, float3 axis, float angle)
 {
     float s = sin(angle), c = cos(angle);
     return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0f - c);
 }
 
-// Star color from approximate B-V color index
+//Star color from approximate B-V color index
 inline float3 StarColor(float rand01)
 {
     float bv = lerp(-0.2f, 1.4f, rand01);
@@ -716,7 +760,7 @@ inline float Scintillation(float seed, float elevFactor, float frameCount)
     return 1.0f - strength * 0.5f * (flicker + 1.0f);
 }
 
-// Single star layer
+//Single star layer
 float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
                          float brightnessScale, float sunElevDeg)
 {
@@ -757,7 +801,7 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
 
     float baseRadius = lerp(0.05f, 0.08f, magnitude);
 
-    // Gaussian core + soft halo
+    //Gaussian core + soft halo
     float core = exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.08f));
     float halo = magnitude * exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.5f)) * 0.3f;
     float brightness = saturate(core + halo);
@@ -770,7 +814,7 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
     return brightness * magnitude * col * brightnessScale * scint * starTwilight;
 }
 
-// Multi-layer star field
+//Multi-layer star field
 float3 EvaluateStars(float3 rayDir, float elevDeg)
 {
     float3 v = SafeNormalize(rayDir);
@@ -799,7 +843,9 @@ float3 EvaluateStars(float3 rayDir, float elevDeg)
     return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE * horizonW;
 }
 
-// Public Sky API
+//====================================================================
+//PUBLIC SKY API
+//====================================================================
 float3 EvaluateSky(float3 rayDir)
 {
     SunState S = ComputeSunState();
@@ -811,13 +857,13 @@ float3 EvaluateSky(float3 rayDir)
     bool isGround = (upDot <= 0.0f);
     float3 vEval = isGround ? SafeNormalize(float3(v.x, 1e-4f, v.z)) : v;
 
-    // Physical atmospheric scattering
+    //Physical atmospheric scattering
     float3 viewTr;
     float3 scatter = IntegrateScattering(vEval, S.dirWS, viewTr);
 
     float3 daySky = scatter * SKY_INTENSITY;
 
-    // Night sky
+    //Night sky
     float tw = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
 
     float mu = saturate(dot(vEval, WORLD_UP));

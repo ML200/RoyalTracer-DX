@@ -1,3 +1,6 @@
+//====================================================================
+//FRESNEL, DIELECTRIC AND CONDUCTOR
+//====================================================================
 static inline float3 ComputeF0Dielectric(float eta_i, float eta_t)
 {
     float  R0s = (eta_i - eta_t) / (eta_i + eta_t);
@@ -5,7 +8,7 @@ static inline float3 ComputeF0Dielectric(float eta_i, float eta_t)
     return R0s.xxx;
 }
 
-// Schlick Fresnel for dielectrics
+//Schlick Fresnel for dielectrics
 static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float eta_t)
 {
     float ci = abs(dot(wo, n));
@@ -21,12 +24,12 @@ static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float e
 static inline float3 FresnelDielectricTIR(float3 wo, float3 n, float eta_i, float eta_t)
 {
     float ci = abs(dot(wo, n));
-    // Exact TIR test with provided indices
+    //exact TIR test with provided indices
     float eta   = eta_i / eta_t;
     float sin2I = max(0.0f, 1.0f - ci * ci);
     if (eta * eta * sin2I > 1.0f)
     {
-        return 1.0f.xxx; // total internal reflection
+        return 1.0f.xxx; //total internal reflection
     }
 
     float oneMinus  = 1.0f - ci;

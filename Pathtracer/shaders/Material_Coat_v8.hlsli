@@ -1,3 +1,6 @@
+//====================================================================
+//COAT BRDF EVALUATION
+//====================================================================
 inline float3 EvaluateBRDF_COAT(
     uint   mID,
     float3 normal,
@@ -13,16 +16,16 @@ inline float3 EvaluateBRDF_COAT(
     float NdotV = max(0.0f, dot(N, V));
     float NdotL = max(0.0f, dot(N, L));
 
-    // Coat strength
-    const float pc = saturate(materials[mID].Pr_Pm_Ps_Pc.w);
+    //Coat strength
+    const float pc = saturate(LoadPc(mID));
     if (pc <= 0.0f) return 0.0.xxx;
 
-    // Microfacet terms (GGX)
+    //Microfacet terms, GGX
     float3 H    = normalize(V + L);
     float  NdotH = max(0.0f, dot(N, H));
     float  VdotH = max(0.0f, dot(V, H));
 
-    float rough = saturate(materials[mID].Pcr_aniso_anisor.x);
+    float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
     float  D = D_GGX(NdotH, alpha);
@@ -32,7 +35,7 @@ inline float3 EvaluateBRDF_COAT(
 
     float3 spec = pc * (F * D * G) / denom;
 
-    float Pr  = materials[mID].Pcr_aniso_anisor.x;
+    float Pr  = LoadPcr(mID);
     float Ess = GetEssLUT(Pr, NdotV);
     float kms = (1.0f - Ess) / max(Ess, 1e-6f);
 
@@ -41,7 +44,10 @@ inline float3 EvaluateBRDF_COAT(
     return (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
 }
 
-// Pair-aware: T = (1 - pc * F(wo)) * (1 - pc * F(wi))
+//====================================================================
+//COAT TRANSMITTANCE
+//====================================================================
+//Pair-aware: T = (1 - pc * F(wo)) * (1 - pc * F(wi))
 inline float Transmittance_COAT(
     uint   mID,
     float3 normal,
@@ -58,18 +64,21 @@ inline float Transmittance_COAT(
     float NdotL = max(0.0f, dot(N, L));
     if (NdotV <= 0.0f || NdotL <= 0.0f) return 1.0f;
 
-    float  Pr   = materials[mID].Pcr_aniso_anisor.x;
-    float  Fo = FresnelDielectric( V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f); // wo going from etai -> etat
-    float  Fi = FresnelDielectric( L, N, etai, etat).x; // wi coming from etai -> etat
+    float  Pr   = LoadPcr(mID);
+    float  Fo = FresnelDielectric( V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f); //wo going etai to etat
+    float  Fi = FresnelDielectric( L, N, etai, etat).x; //wi coming etai to etat
 
-    float pc = saturate(materials[mID].Pr_Pm_Ps_Pc.w);
+    float pc = saturate(LoadPc(mID));
 
     float  T_in  = saturate(1.0f - pc * Fi);
     float  T_out = saturate(1.0f - pc * Fo);
     return T_in * T_out;
 }
 
-// Probability to choose the COAT reflection branch
+//====================================================================
+//COAT SAMPLING WEIGHT
+//====================================================================
+//Probability to choose the COAT reflection branch
 inline float Sampling_Weight_COAT(
     uint   mID,
     float3 normal,
@@ -81,14 +90,16 @@ inline float Sampling_Weight_COAT(
     float3 V = normalize(outgoing);
     float  NdotV = max(0.0f, dot(N, V));
 
-    float  pc = saturate(materials[mID].Pr_Pm_Ps_Pc.w);
+    float  pc = saturate(LoadPc(mID));
     if (pc <= 0.0f || NdotV <= 0.0f) return 0.0f;
 
     float Fv = FresnelDielectric(V, N, etai, etat).x;
     return saturate(pc * Fv);
 }
 
-// Fused coat eval, pdf, and transmittance
+//====================================================================
+//FUSED COAT EVAL, PDF, TRANSMITTANCE
+//====================================================================
 struct CoatResult {
     float3 f;
     float  pdf;
@@ -96,7 +107,7 @@ struct CoatResult {
 };
 
 inline CoatResult EvalCoatAll(
-    Material mat, float3 N, float3 V, float3 L,
+    uint matID, float3 N, float3 V, float3 L,
     float etai, float etat)
 {
     CoatResult r;
@@ -107,10 +118,10 @@ inline CoatResult EvalCoatAll(
     float NdotV = max(0.0f, dot(N, V));
     float NdotL = max(0.0f, dot(N, L));
 
-    float pc = saturate(mat.Pr_Pm_Ps_Pc.w);
+    float pc = saturate(LoadPc(matID));
     if (pc <= 0.0f) return r;
 
-    float Pr_coat = mat.Pcr_aniso_anisor.x;
+    float Pr_coat = LoadPcr(matID);
 
     //Transmittance
     if (NdotV > 0.0f && NdotL > 0.0f)
@@ -120,7 +131,7 @@ inline CoatResult EvalCoatAll(
         r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
     }
 
-    // Eval + PDF
+    //Eval and PDF
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);
@@ -133,7 +144,7 @@ inline CoatResult EvalCoatAll(
     float D   = D_GGX(NdotH, alpha);
     float G1V = G1_SmithGGX(NdotV, alpha);
 
-    // Eval
+    //Eval
     {
         float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
         float  denom = max(4.0f * NdotV * NdotL, EPSILON);
@@ -148,12 +159,15 @@ inline CoatResult EvalCoatAll(
         r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
     }
 
-    // PDF: p(wi) = D * G1V / (4 * NdotV)  (VdotH cancels in VNDF reflection Jacobian)
+    //PDF: p(wi) = D * G1V / (4 * NdotV), VdotH cancels in VNDF reflection Jacobian
     r.pdf = (D * G1V) / (4.0f * NdotV);
 
     return r;
 }
 
+//====================================================================
+//COAT SAMPLING
+//====================================================================
 inline float3 SampleBRDF_COAT(
     uint    mID,
     float3  outgoing,
@@ -164,23 +178,26 @@ inline float3 SampleBRDF_COAT(
     float3 N = normalize(normal);
     float3 V = normalize(outgoing);
 
-    float rough = saturate(materials[mID].Pcr_aniso_anisor.x);
+    float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    // Visible normal sampling; perfect reflection for very smooth coats
+    //Visible normal sampling, perfect reflection for very smooth coats
     float3 H;
     if (rough < SMOOTH_SPECULAR_THRESHOLD)
         H = N;
     else
         H = SampleVNDF_H(alpha, V, N, seed);
 
-    // Reflect
+    //Reflect
     float3 L = reflect(-V, H);
     if (dot(N, L) <= 0.0f) { return 0.0.xxx; }
 
     return normalize(L);
 }
 
+//====================================================================
+//COAT PDF
+//====================================================================
 inline float BRDF_PDF_COAT(
     uint   mID,
     float3 N,
@@ -202,10 +219,10 @@ inline float BRDF_PDF_COAT(
     float  VdotH = max(EPSILON, dot(V, H));
     float  NdotH = max(EPSILON, dot(N, H));
 
-    float rough = saturate(materials[mID].Pcr_aniso_anisor.x);
+    float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    // p(H) for VNDF mapped to reflection: p(wi) = p(H) / (4 V·H)
+    //p(H) for VNDF mapped to reflection: p(wi) = p(H) / (4 V.H)
     float pdf_H = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
     return pdf_H / (4.0f * VdotH);
 }

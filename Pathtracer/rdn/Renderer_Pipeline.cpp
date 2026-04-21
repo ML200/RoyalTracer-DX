@@ -7,6 +7,7 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
+#include "ReuseTextureGen.h"
 #include "Scene/OmmBuilder.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -272,9 +273,11 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Paired reuse textures (t19, t20, t21) — 3 Texture2D<int2> SRVs at heap slots 55..57
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    rootParameters[1].InitAsConstants(20, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    rootParameters[1].InitAsConstants(24, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -613,13 +616,15 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Buffer.NumElements = (UINT)m_scene.materialIDs.size();
       dev->CreateShaderResourceView(m_scene.materialIndexBuffer.Get(), &sd, handle); next(); }
 
-    // Slot 8: SRV t5 — Materials
+    // Slot 8: SRV t5 — Materials (compressed AoS, 40 B / material).
+    // Fields: Kd.rgb RGB9E5, Kd.w+Ni half2, Pr/Pm/Ps/Pc u8, Tf RGB9E5,
+    // Pcr/aniso/anisoRot/alphaThreshold u8, 3× texID i16, 3× UV scale half2.
     { D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
       sd.Buffer.NumElements = (UINT)m_scene.materials.size();
-      sd.Buffer.StructureByteStride = sizeof(Material);
+      sd.Buffer.StructureByteStride = 40;
       dev->CreateShaderResourceView(m_scene.materialBuffer.Get(), &sd, handle); next(); }
 
     // Slot 9: SRV t6 — Emissive triangles
@@ -652,7 +657,8 @@ void Renderer::CreateShaderResourceHeap() {
     rawUAV(m_sampleBuffer_current, px * sizeof(SampleData));
     rawUAV(m_sampleBuffer_last,    px * sizeof(SampleData));
 
-    // Slots 16-17: placeholders
+    // Slots 16-17: placeholders (t7, t8 registered in the root signature
+    // but unused now that the material buffer is a single SRV on t5).
     nullSRV(); nullSRV();
 
     // Slot 18: scratch ping UAV
@@ -773,6 +779,24 @@ void Renderer::CreateShaderResourceHeap() {
     { auto [c,g] = sortUAV(m_sortCountBuffer,  SORT_BUCKETS); m_sortCountCpuHandle  = c; m_sortCountGpuHandle  = g; }
     { auto [c,g] = sortUAV(m_sortOffsetBuffer, SORT_BUCKETS); m_sortOffsetCpuHandle = c; m_sortOffsetGpuHandle = g; }
     { auto [c,g] = sortUAV(m_sortBoundsBuffer, 8);            m_sortBoundsCpuHandle = c; m_sortBoundsGpuHandle = g; }
+
+    // Slots 55-57: paired reuse textures (t19, t20, t21) — R16G16_SINT
+    for (int i = 0; i < 3; ++i) {
+        if (m_reuseTexture[i]) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+            d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            d.Format                  = DXGI_FORMAT_R16G16_SINT;
+            d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+            d.Texture2D.MipLevels     = 1;
+            dev->CreateShaderResourceView(m_reuseTexture[i].Get(), &d, handle); next();
+        } else {
+            nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
+        }
+    }
+
+    // Slots 58-59: padding before bindless base at slot 60
+    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
+    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
 
     // Bindless textures
     UINT globalTexIdx = 0;
@@ -1037,6 +1061,69 @@ void Renderer::CreateAndUploadLutArray(
     auto b = CD3DX12_RESOURCE_BARRIER::Transition(tar.Get(),
         D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
     m_ctx.CmdList()->ResourceBarrier(1, &b);
+}
+
+// ═════════════════════════════════════════════════════════════════
+// Paired Spatial Reuse Textures (Lin et al. 2026)
+// ═════════════════════════════════════════════════════════════════
+
+void Renderer::InitReuseTextures() {
+    const int   kSizes[3] = { 254, 230, 210 };
+    const float kSigma    = 20.0f;
+    auto*       dev       = m_ctx.Device();
+
+    for (int i = 0; i < 3; ++i) {
+        std::vector<int16_t> rg;
+        GenerateReuseTexture(kSizes[i], kSigma,
+                             static_cast<uint32_t>(i + 1), rg);
+
+        int bad = -1;
+        if (!ValidateReuseTexture(kSizes[i], rg, &bad)) {
+            LOG(L"[ReuseTex] " << kSizes[i] << L"x" << kSizes[i]
+                << L" self-inversion FAILED at texel " << bad);
+            continue;
+        }
+        LOG(L"[ReuseTex] " << kSizes[i] << L"x" << kSizes[i]
+            << L" self-inversion OK ("
+            << (rg.size() * sizeof(int16_t)) << L" bytes)");
+
+        // Default-heap Texture2D, R16G16_SINT
+        D3D12_RESOURCE_DESC td = {};
+        td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width            = static_cast<UINT64>(kSizes[i]);
+        td.Height           = static_cast<UINT>(kSizes[i]);
+        td.DepthOrArraySize = 1;
+        td.MipLevels        = 1;
+        td.Format           = DXGI_FORMAT_R16G16_SINT;
+        td.SampleDesc.Count = 1;
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+            &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&m_reuseTexture[i])));
+        std::wstring name = L"ReuseTexture_" + std::to_wstring(i);
+        m_reuseTexture[i]->SetName(name.c_str());
+
+        // Upload heap + staged copy
+        UINT64 uploadSize = GetRequiredIntermediateSize(m_reuseTexture[i].Get(), 0, 1);
+        m_reuseTextureUploadHeaps.emplace_back();
+        auto& uh = m_reuseTextureUploadHeaps.back();
+        auto  ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+            &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&uh)));
+
+        D3D12_SUBRESOURCE_DATA sr = {};
+        sr.pData      = rg.data();
+        sr.RowPitch   = static_cast<LONG_PTR>(kSizes[i]) * sizeof(int16_t) * 2;
+        sr.SlicePitch = sr.RowPitch * kSizes[i];
+        UpdateSubresources(m_ctx.CmdList(), m_reuseTexture[i].Get(),
+                           uh.Get(), 0, 0, 1, &sr);
+
+        auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_reuseTexture[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+        m_ctx.CmdList()->ResourceBarrier(1, &bar);
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════

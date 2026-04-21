@@ -79,7 +79,7 @@ struct Scene {
     std::vector<MeshGPU>        meshes;
     std::vector<SceneInstance>  instances;
     std::vector<SceneModel>     models;
-    std::vector<Material>       materials;
+    MaterialSoA                 materials;
     std::vector<std::string>    materialNames;  // parallel to materials (CPU-only, for editor)
     std::vector<UINT>           materialIDs;
 
@@ -98,9 +98,13 @@ struct Scene {
     UINT totalVertexCount = 0;
     UINT totalIndexCount  = 0;
 
-    // Material GPU buffers
-    ComPtr<ID3D12Resource> materialBuffer;
+    // Material GPU buffer — single compressed AoS struct, 40 B / material.
+    // See Material_Decoder_v8.hlsli for the field layout.
+    ComPtr<ID3D12Resource> materialBuffer;        // t5 — StructuredBuffer<MatPacked>
     ComPtr<ID3D12Resource> materialIndexBuffer;
+
+    // CPU-side packed backing store (10 × uint32 per material).
+    std::vector<uint32_t>  materialPacked;
 
     // Instance property buffer
     ComPtr<ID3D12Resource> instanceProperties;

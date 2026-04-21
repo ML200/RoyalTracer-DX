@@ -1,15 +1,17 @@
-// Random number generation
+//====================================================================
+//RANDOM NUMBER GENERATION
+//====================================================================
 
-// 32-bit mix
+//32-bit mix
 inline uint Hash32(uint v) {
     v ^= v >> 16; v *= 0x7feb352d; v ^= v >> 15; v *= 0x846ca68b; v ^= v >> 16;
     return v;
 }
 
-// Additional constant for seed variation
+//Additional constant for seed variation
 uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
 {
-    // Per-pixel
+    //per-pixel
     if (tileSize.x == 0 || tileSize.y == 0)
     {
         return
@@ -19,7 +21,7 @@ uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
             uint2(293803u,    423977u)  * t;
     }
 
-    // Per-tile
+    //per-tile
     uint2 tile = idx / tileSize;
     uint  tileKey = (tile.y << 16) | tile.x;
     uint base = tileKey ^ (0xB5297A4Du * t) ^ (0x68E31DA4u * c);

@@ -39,7 +39,13 @@ public:
 
     // ── Editor-friendly state ────────────────────────────────────
     float   fovDegrees  = 60.0f;
-    float   nearPlane   = 0.00001f;
+    //Purely projection-matrix parameters. Primary rays are path-traced
+    //so there's no actual near-plane culling; near/far exist only to
+    //feed DLSS-RR's projection and any host-side clip-space math. Keep
+    //near above ~0.01 so DLSS's derived view/clip math stays well-
+    //conditioned (very small values collapse the z-to-NDC mapping and
+    //produce orientation-dependent stability issues in the denoiser).
+    float   nearPlane   = 0.01f;
     float   farPlane    = 10000.0f;
     float   moveSpeed   = 5.0f;
 

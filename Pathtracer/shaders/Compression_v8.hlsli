@@ -1,10 +1,15 @@
-// RGB9E5 constants
+//====================================================================
+//RGB9E5 CONSTANTS
+//====================================================================
 static const uint RGB9E5_MANTISSA_BITS = 9;
 static const uint RGB9E5_EXP_BITS       = 5;
 static const int  RGB9E5_EXP_BIAS       = 15;
 static const uint RGB9E5_MANT_MASK      = (1u << RGB9E5_MANTISSA_BITS) - 1;
 static const uint RGB9E5_EXP_MASK       = (1u << RGB9E5_EXP_BITS) - 1;
 
+//====================================================================
+//RGB9E5 PACK / UNPACK
+//====================================================================
 uint PackRGB9E5(float3 v)
 {
     //clamp to [0, sharedexp_max]
@@ -15,17 +20,17 @@ uint PackRGB9E5(float3 v)
     //pick the largest channel
     float m = max(max(c.x, c.y), c.z);
 
-    // get IEEE exponent and mantissa
+    //get IEEE exponent and mantissa
     uint bits    = asuint(m);
-    int  exp_unb = int((bits >> 23) & 0xFF) - 127;       // floor(log2(m))
-    uint frac    = bits & 0x7FFFFF;                     // mantissa bits
+    int  exp_unb = int((bits >> 23) & 0xFF) - 127;       //floor(log2(m))
+    uint frac    = bits & 0x7FFFFF;                     //mantissa bits
 
-    //compute shared biased exponent = ceil(log2(m)) + B
+    //compute shared biased exponent, ceil(log2(m)) + B
     //ceil = floor + (mantissa>0?1:0)
     int sharedExp = exp_unb + int(frac != 0) + RGB9E5_EXP_BIAS;
     sharedExp = clamp(sharedExp, 0, int(RGB9E5_EXP_MASK));
 
-    // denominator = 2^(sharedExp − B − N)
+    //denominator = 2^(sharedExp - B - N)
     float denom = exp2(float(sharedExp - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
     //quantize each channel
@@ -34,9 +39,9 @@ uint PackRGB9E5(float3 v)
     uint bm = uint(floor(c.z / denom + 0.5f));
 
     uint maxMant = max(max(rm, gm), bm);
-    if (maxMant > RGB9E5_MANT_MASK)          // ==512 after rounding?
+    if (maxMant > RGB9E5_MANT_MASK)          //==512 after rounding?
     {
-        rm >>= 1;  gm >>= 1;  bm >>= 1;      // divide all by 2
+        rm >>= 1;  gm >>= 1;  bm >>= 1;      //divide all by 2
         sharedExp = min(sharedExp + 1, int(RGB9E5_EXP_MASK));
     }
     rm &= RGB9E5_MANT_MASK;
@@ -58,12 +63,15 @@ float3 UnpackRGB9E5(uint p)
     uint bm = (p >> 18) & RGB9E5_MANT_MASK;
     int  e  = int((p >> 27) & RGB9E5_EXP_MASK);
 
-    //compute scale = 2^(e − B − N)
+    //compute scale = 2^(e - B - N)
     float scale = exp2(float(e - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
     return float3(rm * scale, gm * scale, bm * scale);
 }
 
+//====================================================================
+//NORMAL PACKING, OCTAHEDRAL
+//====================================================================
 static const uint  kMax16 = 65535;
 
 float2 signNotZero(float2 v)
@@ -80,7 +88,7 @@ uint PackNormal(float3 n)
         return PROBE_DI_NORMAL_ZERO_CODE;
     }
 
-    //Octahedral encoding
+    //octahedral encoding
     n = normalize(n);
     float3 a = abs(n);
     float2 p = n.xy / (a.x + a.y + a.z);
@@ -99,13 +107,13 @@ uint PackNormal(float3 n)
 
 float3 UnpackNormal(uint bits)
 {
-    //Zero vector sentinel
+    //zero vector sentinel
     if (bits == PROBE_DI_NORMAL_ZERO_CODE)
     {
         return float3(0.0f, 0.0f, 0.0f);
     }
 
-    //Octahedral decoding
+    //octahedral decoding
     float2 f = (float2(bits & 0xFFFF, bits >> 16) / kMax16) * 2.0f - 1.0f;
 
     float3 n = float3(f.x, f.y, 1.0f - abs(f.x) - abs(f.y));
@@ -135,7 +143,9 @@ float3 UnpackNormal_INT(uint packed)
     return normalize(n);
 }
 
-// Float16 packing
+//====================================================================
+//FLOAT16 PACKING
+//====================================================================
 uint f32tof16_custom(float val)
 {
     uint f32 = asuint(val);
@@ -143,15 +153,15 @@ uint f32tof16_custom(float val)
     uint exp = (f32 >> 23) & 0xff;
     uint mant = f32 & 0x7fffff;
 
-    if (exp == 0xff) // Inf / NaN
+    if (exp == 0xff) //Inf / NaN
         return (sign << 15) | 0x7c00 | (mant != 0 ? 0x200 : 0);
-    if (exp == 0) // Denorm
+    if (exp == 0) //denorm
         return (sign << 15);
 
     int new_exp = exp - 127;
-    if (new_exp < -14) // Underflow to zero
+    if (new_exp < -14) //underflow to zero
         return (sign << 15);
-    if (new_exp > 15) // Overflow to infinity
+    if (new_exp > 15) //overflow to infinity
         return (sign << 15) | 0x7c00;
 
     return (sign << 15) | ((new_exp + 15) << 10) | (mant >> 13);
@@ -163,9 +173,9 @@ float f16tof32_custom(uint val)
     uint exp = (val >> 10) & 0x1f;
     uint mant = val & 0x3ff;
 
-    if (exp == 0x1f) // Inf / NaN
+    if (exp == 0x1f) //Inf / NaN
         return asfloat((sign << 31) | 0x7f800000 | (mant != 0 ? 0x400000 : 0));
-    if (exp == 0) // Denorm or zero
+    if (exp == 0) //denorm or zero
     {
         if (mant == 0) return asfloat(sign << 31);
         while ((mant & 0x400) == 0) {

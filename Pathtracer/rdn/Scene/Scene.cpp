@@ -264,16 +264,16 @@ void Scene::CollectEmissiveTriangles() {
 
         for (UINT t = 0; t < tris; ++t) {
             UINT mid = mesh.cpuMaterialIDs[t];
-            const Material& mat = materials[mid];
-            if (mat.Ke.x + mat.Ke.y + mat.Ke.z <= 0.0f) continue;
+            const XMFLOAT3& Ke = materials.Ke[mid];
+            if (Ke.x + Ke.y + Ke.z <= 0.0f) continue;
 
             LightTriangle lt{};
             lt.x          = mesh.cpuVertices[mesh.cpuIndices[3*t+0]].position;
             lt.y          = mesh.cpuVertices[mesh.cpuIndices[3*t+1]].position;
             lt.z          = mesh.cpuVertices[mesh.cpuIndices[3*t+2]].position;
             lt.instanceID = (UINT)inst;
-            lt.weight     = ComputeTriangleWeight(lt.x, lt.y, lt.z, mat.Ke, si.worldTransform);
-            lt.emission   = mat.Ke;
+            lt.weight     = ComputeTriangleWeight(lt.x, lt.y, lt.z, Ke, si.worldTransform);
+            lt.emission   = Ke;
 
             triToLightId[triBase + t] = (uint32_t)emissiveTriangles.size();
             emissiveTriangles.push_back(lt);
@@ -299,17 +299,23 @@ float Scene::ComputeTriangleWeight(
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Upload the compressed material buffer (40 B / material) and the
+// per-primitive materialID buffer. See MaterialSoA::BuildGpuPacked
+// and shaders/Material_Decoder_v8.hlsli for the layout.
 void Scene::UploadMaterials(ID3D12Device* device) {
+    materials.BuildGpuPacked(materialPacked);
+
     {
-        const UINT sz = (UINT)materials.size() * sizeof(Material);
+        const UINT sz = (UINT)materialPacked.size() * sizeof(uint32_t);
         auto d = CD3DX12_RESOURCE_DESC::Buffer(sz);
         ThrowIfFailed(device->CreateCommittedResource(
             &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &d,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&materialBuffer)));
         UINT8* p; materialBuffer->Map(0, nullptr, (void**)&p);
-        memcpy(p, materials.data(), sz);
+        memcpy(p, materialPacked.data(), sz);
         materialBuffer->Unmap(0, nullptr);
     }
+
     {
         const UINT sz = (UINT)materialIDs.size() * sizeof(UINT);
         auto d = CD3DX12_RESOURCE_DESC::Buffer(sz);
@@ -324,11 +330,15 @@ void Scene::UploadMaterials(ID3D12Device* device) {
 
 void Scene::UpdateMaterialBuffer() {
     if (!materialBuffer || materials.empty()) return;
-    const UINT sz = (UINT)materials.size() * sizeof(Material);
+
+    // Repack everything; edits are infrequent and material count is small.
+    materials.BuildGpuPacked(materialPacked);
+
+    const UINT sz = (UINT)materialPacked.size() * sizeof(uint32_t);
     UINT8* p = nullptr;
     CD3DX12_RANGE readRange(0, 0);
     if (SUCCEEDED(materialBuffer->Map(0, &readRange, (void**)&p))) {
-        memcpy(p, materials.data(), sz);
+        memcpy(p, materialPacked.data(), sz);
         materialBuffer->Unmap(0, nullptr);
     }
 }

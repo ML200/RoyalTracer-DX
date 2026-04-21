@@ -71,7 +71,10 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     uint8_t* pData;
     if (FAILED(m_buffer->Map(0, nullptr, (void**)&pData))) return;
     memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
-    float extra[4] = { (float)m_jitterFrameIndex, m_jitterX, m_jitterY, 0.0f };
+    //extra[3] sits at the old cbuffer padding slot; repurposed as
+    //cameraFar so sky depth / sky spec hit distance in the shading
+    //pass can use the actual far plane instead of a hard-coded value.
+    float extra[4] = { (float)m_jitterFrameIndex, m_jitterX, m_jitterY, farPlane };
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
     m_buffer->Unmap(0, nullptr);

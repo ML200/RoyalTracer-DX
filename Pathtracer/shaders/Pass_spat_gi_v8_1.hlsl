@@ -1,211 +1,234 @@
+#define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
-//Layout in Pass_spat_gi_select_v8.hlsl
-static const uint GI_SEL_STRIDE = 40u;
-uint gi_sel_addr(uint linearIdx) { return linearIdx * GI_SEL_STRIDE; }
+//====================================================================
+//SPATIAL GI, MERGE PASS, COMPUTE, CACHED, PAIRED, LAZY-PAYLOAD
+//====================================================================
+//All reconnections and visibility rays happen in the preceding shift pass,
+//this pass is pure data work and runs as a compute shader.
+//
+//Per-slot MIS weights use only (partner.M, partner.W, GetPHat(partner.F))
+//loaded field-by-field from the reservoir. The full partner payload
+//(x2, n2_s, L2, V2, uv, matID, objID, eta, F) is only loaded when a
+//partner actually wins RIS, ~25-35% of slots in practice. This cuts the
+//dominant BW cost of the previous raygen merge.
 
-[shader("raygeneration")]
-void Pass_spat_gi_v8_1()
+//Scratch layout, 8 + SPAT_COUNT_MAX*20 bytes per pixel. M_sum recomputed here.
+//[0]      uint  validCount
+//[4]      float my_Jc
+//[8 + s*20 + 0]   uint   nID
+//[8 + s*20 + 4]   float3 F         MY shift contribution, visibility baked
+//[8 + s*20 + 16]  float  Jn        MY reconnection Jacobian
+static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
+static const uint SEL_SLOT_BASE   = 8u;
+static const uint SEL_SLOT_STRIDE = 20u;
+
+uint sel_addr(uint idx) { return idx * SEL_STRIDE; }
+uint sel_slot_addr(uint idx, uint slot)
 {
-    uint sortKey;
-    {
-        const uint2 li  = DispatchRaysIndex().xy;
-        const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
-        const bool  emi = load_isEmitter(g_sample_current, px);
+    return sel_addr(idx) + SEL_SLOT_BASE + slot * SEL_SLOT_STRIDE;
+}
 
-        if (emi || !(rs_flags & 8u))
-        {
-            sortKey = emi ? 0u : 1u;
-        }
-        else
-        {
-            const uint selBase = gi_sel_addr(li.y * IMG_W + li.x);
-            sortKey = 2u + g_pathStateBuffer.Load(selBase); // validCount
-        }
-    }
+//====================================================================
+//MERGE PASS ENTRY
+//====================================================================
+[numthreads(16, 16, 1)]
+void main(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= IMG_W || tid.y >= IMG_H) return;
+    gDispatchIdx = tid;
 
-    dx::MaybeReorderThread(sortKey, 3);
-
-    //================================================================================
-    const uint2  launchIndex = DispatchRaysIndex().xy;
+    const uint2  launchIndex = tid.xy;
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    Reservoir_GI rdi = loadReservoirGI(g_Reservoirs_current_gi, pixelIdx);
+    //Copy compact G-buffer for temporal reuse
+    copySampleData(g_sample_last, g_sample_current, pixelIdx);
 
-    //Emitter early-out
+    Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
+
+    //Emitter early-out, no reuse
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
-        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+        storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
 
-    //Disabled early-out
+    //Disabled early-out, canonical passthrough
     if (!(rs_flags & 8u))
     {
-        float3 c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi;
-        float  W = (rdi.W_gi > 0.0f) ? rdi.W_gi : 0.0f;
-        gScratchPing[uint3(launchIndex, 2)] = float4(c * W, 0);
-        storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+        const float  W = (rdi.W > 0.0f) ? rdi.W : 0.0f;
+        gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * W, 0);
+        storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
 
-    //Re-read neighbor selection
-    const uint linearIdx = launchIndex.y * IMG_W + launchIndex.x;
-    const uint selBase   = gi_sel_addr(linearIdx);
-    uint2 header         = g_pathStateBuffer.Load2(selBase);
+    //====================================================================
+    //LOAD SCRATCH HEADER, 8 BYTES
+    //====================================================================
+    const uint  baseAddr = sel_addr(pixelIdx);
+    const uint2 header   = g_pathStateBuffer.Load2(baseAddr);
     const uint  validCount = header.x;
-    const float M_sum_nbr  = asfloat(header.y);
+    const float my_Jc      = asfloat(header.y);
 
-    uint nIds[SPAT_COUNT_MAX_GI];
+    //====================================================================
+    //CANONICAL CONTRIBUTION, NO RECONNECTION, USES STORED F
+    //====================================================================
+    const float M_c = min(SPAT_MCAP, rdi.M);
+    rdi.M = M_c;
+
+    const float  visReuse_c    = (rdi.W > 0.0f) ? 1.0f : 0.0f;
+    const float  p_c           = GetPHat(rdi.F) * visReuse_c;
+    float3       contrib_final = rdi.F * visReuse_c;
+
+    if (validCount == 0u)
+    {
+        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W, 0);
+        storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
+        return;
+    }
+
+    //====================================================================
+    //GATHER PASS
+    //====================================================================
+    //Read per-slot partner info cheaply: nID, partner's Jc, partner's
+    //shift-to-me (F_mag + Jn), partner's M. Accumulate M_sum.
+    uint  slot_nID       [SPAT_COUNT_MAX];
+    float slot_partner_Jc[SPAT_COUNT_MAX];
+    float slot_partner_Mn[SPAT_COUNT_MAX];
+    float slot_p_hat_ptm [SPAT_COUNT_MAX];  //partner -> me density at my x2
+
+    float M_sum = M_c;
+
     [unroll]
-    for (uint i = 0; i < SPAT_COUNT_MAX_GI; ++i)
-        nIds[i] = g_pathStateBuffer.Load(selBase + 8u + i * 4u);
+    for (uint i = 0u; i < SPAT_COUNT_MAX; ++i)
+    {
+        slot_nID       [i] = 0xFFFFFFFFu;
+        slot_partner_Jc[i] = 0.0f;
+        slot_partner_Mn[i] = 0.0f;
+        slot_p_hat_ptm [i] = 0.0f;
 
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
+        const uint nID = g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, i));
+        if (nID == 0xFFFFFFFFu) continue;
 
-    //Canonical M cap + include in M_sum
-    const float M_c = min(SPAT_MCAP_GI, rdi.M_gi);
-    rdi.M_gi = M_c;
-    const float M_sum = M_sum_nbr + M_c;
+        //Partner's cached shift-to-me at their slot i: float3 F + float Jn
+        const uint4  pShift  = g_pathStateBuffer.Load4(sel_slot_addr(nID, i) + 4u);
+        const float3 p_F     = asfloat(pShift.xyz);
+        const float  p_F_mag = GetPHat(p_F);
+        const float  p_Jn    = asfloat(pShift.w);
 
-    //RNG
+        //Partner's Jc from their scratch header
+        const float p_Jc = asfloat(g_pathStateBuffer.Load(sel_addr(nID) + 4u));
+
+        //Partner's M from their reservoir, 1-field load
+        const float Mn = min(SPAT_MCAP, load_M(g_Reservoirs_current, nID));
+
+        slot_nID       [i] = nID;
+        slot_partner_Jc[i] = p_Jc;
+        slot_partner_Mn[i] = Mn;
+        slot_p_hat_ptm [i] = p_F_mag * JacobianRatio(p_Jn, my_Jc);
+
+        M_sum += Mn;
+    }
+
+    //====================================================================
+    //CANONICAL MIS, CACHED, O(N)
+    //====================================================================
+    float       mis_c   = M_c / max(M_sum, 1.0f);
+    const float m_num_c = M_c * p_c;
+
+    [unroll]
+    for (uint j = 0u; j < SPAT_COUNT_MAX; ++j)
+    {
+        const float Mn = slot_partner_Mn[j];
+        if (Mn <= 0.0f) continue;
+        const float m_den = m_num_c + (M_sum - M_c) * slot_p_hat_ptm[j];
+        if (m_den > EPSILON)
+        {
+            mis_c += (Mn / max(M_sum, 1.0f)) * (m_num_c / m_den);
+        }
+    }
+
+    rdi.w_sum = mis_c * p_c * rdi.W;
+
+    //====================================================================
+    //RIS, INLINE UPDATE, LAZY-LOAD PARTNER PAYLOAD ONLY ON ACCEPTANCE
+    //====================================================================
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
-    //─────────────────────────────────────────────────────────────────────────
-    // Canonical contribution
-    //─────────────────────────────────────────────────────────────────────────
-    const float visReuse = (rdi.W_gi > 0.0f) ? 1.0f : 0.0f;
-
-    float3 contrib_final = 0.0.xxx;
-    float  p_c           = 0.0f;
-
-    //Build canonical vertex (needed for MIS and neighbor evaluation)
-    const float3 cameraPos2 = InitOrigin();
-    SurfaceVertex sv1 = BuildVertex(myInstID, myPrimID, myBary, cameraPos2);
-
-    //Build canonical x2 vertex from reservoir (needed for MIS canonical)
-    float3 rKd; float rPr, rPm;
-    RefetchMaterial(rdi.matID_gi, rdi.uv_gi, rKd, rPr, rPm);
-
-    //Use stored F_gi directly
-    {
-        float3 contrib_c = UnpackRGB9E5(rdi.F_gi) * rdi.F_mag_gi * visReuse;
-        p_c = GetPHat(contrib_c);
-        contrib_final = contrib_c;
-    }
-
-    //Canonical Jc: jacobian at current pixel's x1 -> canonical x2
-    const float Jc_canonical = ComputeJc(sv1.x, rdi.x2_gi, rdi.n2_s_gi);
-
-    // MIS for canonical
-    const float mis_c = PairwiseMIS_Canonical_Spat_GI(
-        M_sum, p_c, M_c, nIds,
-        rdi.x2_gi, rdi.n2_s_gi, rdi.L2_gi, rdi.V2_gi, rdi.matID_gi,
-        rKd, rPr, rPm, rdi.eta_gi,
-        Jc_canonical
-    );
-
-    //Adjust canonical weight
-    rdi.w_sum_gi = mis_c * p_c * rdi.W_gi;
-
-    //─────────────────────────────────────────────────────────────────────────
-    // Merge neighbors
-    //─────────────────────────────────────────────────────────────────────────
     [loop]
-    for (uint k = 0; k < validCount; ++k)
+    for (uint k = 0u; k < SPAT_COUNT_MAX; ++k)
     {
-        const uint nID = nIds[k];
+        const uint nID = slot_nID[k];
+        if (nID == 0xFFFFFFFFu) continue;
 
-        // Load neighbor reservoir only for this iteration
-        Reservoir_GI rdi_r = loadReservoirGI(g_Reservoirs_current_gi, nID);
+        //MY shift for slot k: float3 F (offset +4) + float Jn (offset +16)
+        const uint4  myShift = g_pathStateBuffer.Load4(sel_slot_addr(pixelIdx, k) + 4u);
+        const float3 my_F    = asfloat(myShift.xyz);
+        const float  my_F_mag= GetPHat(my_F);
+        const float  my_Jn   = asfloat(myShift.w);
 
-        // Neighbor Jc: jacobian at neighbors x1 -> neighbors x2
-        const float Jc_neighbor = ComputeJc(
-            ReconstructPosition(load_instID(g_sample_current, nID),
-                                load_primID(g_sample_current, nID),
-                                load_bary(g_sample_current, nID)),
-            rdi_r.x2_gi, rdi_r.n2_s_gi);
+        const float p_hat_me_to_partner =
+            my_F_mag * JacobianRatio(my_Jn, slot_partner_Jc[k]);
 
-        // Compute neighbor reconnection contribution
-        float3 contrib_n = 0.0.xxx;
-        float  p_hat_from = 0.0f;
-        float  Jn = 0.0f;
+        //Two fields from partner's reservoir for MIS, W and F magnitude
+        const float partner_W     = load_W(g_Reservoirs_current, nID);
+        const float partner_F_mag = GetPHat(load_F(g_Reservoirs_current, nID));
+        const float Mn            = slot_partner_Mn[k];
 
+        const float mis_n = PairwiseMIS_Neighbor_Spat(
+            M_sum, M_c, Mn,
+            p_hat_me_to_partner,
+            partner_W, partner_F_mag);
+
+        const float w_n = mis_n * p_hat_me_to_partner * partner_W;
+
+        //Inline RIS step, matches UpdateReservoir byte-for-byte
+        rdi.w_sum += w_n;
+        rdi.M     += (uint)Mn;
+
+        if (RandomFloatSingle(seed.x) < (w_n / rdi.w_sum))
         {
-            // Refetch neighbor x2 material
-            float3 rnKd; float rnPr, rnPm;
-            RefetchMaterial(rdi_r.matID_gi, rdi_r.uv_gi, rnKd, rnPr, rnPm);
+            //Lazy payload load, only pay the cost on RIS acceptance.
+            //pack1 is fetched once for x2 + n2_s, other fields are 4 B each.
+            const uint   p_objID = load_objID(g_Reservoirs_current, nID);
+            const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
 
-            contrib_n = ReconnectGI(
-                sv1.x, sv1.n_s, sv1.o, sv1.matID,
-                sv1.Kd, sv1.Pr, sv1.Pm,
-                rdi_r.matID_gi, rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rnKd, rnPr, rnPm, rdi_r.eta_gi,
-                Jn);
+            rdi.x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
+            rdi.n2_s  = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
+            rdi.objID = p_objID;
+            rdi.matID = load_matID(g_Reservoirs_current, nID);
+            rdi.eta   = load_eta  (g_Reservoirs_current, nID);
 
-            // Visibility after reconnection
-            {
-                float3 _conn = rdi_r.x2_gi - sv1.x; float _cd = length(_conn);
-                float vis = (_cd > EPSILON && IsVisible(sv1.x, sv1.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
-                contrib_n *= vis;
-            }
+            rdi.L2    = load_L2(g_Reservoirs_current, nID);
+            rdi.V2    = load_V2(g_Reservoirs_current, nID);
+            rdi.uv    = load_uv_res(g_Reservoirs_current, nID);
+            //rdi.F is overwritten below with the shift-to-me contribution,
+            //contrib_final, which IS the correct target for this pixel.
 
-            p_hat_from = GetPHat(contrib_n) * JacobianRatio(Jn, Jc_neighbor);
-        }
-
-        // MIS weight for neighbor
-        const float Mn = min(SPAT_MCAP_GI, rdi_r.M_gi);
-        const float mis_n = PairwiseMIS_Neighbor_Spat_GI(
-            M_sum,
-            M_c, Mn,
-            p_hat_from,
-            rdi_r.W_gi, rdi_r.F_mag_gi
-        );
-
-        const float w_n = mis_n * p_hat_from * rdi_r.W_gi;
-
-        // Update reservoir
-        if (UpdateReservoirGI(
-                rdi,
-                w_n,
-                min(SPAT_MCAP_GI, rdi_r.M_gi),
-                rdi_r.x2_gi, rdi_r.n2_s_gi, rdi_r.L2_gi, rdi_r.V2_gi,
-                rdi_r.uv_gi,
-                rdi_r.matID_gi, rdi_r.objID_gi, rdi_r.eta_gi,
-                rdi_r.F_gi, rdi_r.F_mag_gi,
-                seed
-            ))
-        {
-            contrib_final = contrib_n;
+            contrib_final = my_F;
         }
     }
 
+    //====================================================================
+    //FINALIZE
+    //====================================================================
+    //Store full float3 contribution in rdi.F. GetPHat(F) IS the target
+    //magnitude, invariant holds exactly, no RGB9E5 round-trip.
+    rdi.F = contrib_final;
+    const float F_mag_final = GetPHat(rdi.F);
+
+    if (F_mag_final > EPSILON && rdi.w_sum > 0.0f && rdi.w_sum < 1e10f)
     {
-        const float p_hat_final = GetPHat(contrib_final);
-
-        if (p_hat_final > EPSILON && rdi.w_sum_gi > 0.0f && rdi.w_sum_gi < 1e10f)
-        {
-            float W = rdi.w_sum_gi / p_hat_final;
-            if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
-            rdi.W_gi = W;
-        }
-        else
-        {
-            rdi.W_gi = 0.0f;
-        }
-
-        float  F_mag_final  = GetPHat(contrib_final);
-        float3 F_norm_final = (F_mag_final > 1e-20f) ? contrib_final / F_mag_final : float3(0,0,0);
-        rdi.F_gi     = PackRGB9E5(F_norm_final);
-        rdi.F_mag_gi = F_mag_final;
-
-        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W_gi, 0);
+        float W = rdi.w_sum / F_mag_final;
+        if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
+        rdi.W = W;
+    }
+    else
+    {
+        rdi.W = 0.0f;
     }
 
-    // Store merged reservoir
-    storeReservoirGI(g_Reservoirs_last_gi, pixelIdx, rdi);
+    gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * rdi.W, 0);
+    storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
 }

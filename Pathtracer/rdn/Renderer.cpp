@@ -6,6 +6,8 @@
 #include "stdafx.h"
 #include "Renderer.h"
 #include "Windowsx.h"
+#include "ReuseTextureGen.h"
+#include <random>
 
 #undef SL_CHECK
 #define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
@@ -20,13 +22,12 @@ Renderer::Renderer(UINT width, UINT height)
     // Define the rendering pass pipeline (data-driven)
     m_passes.Build({
         L"Pass_raygen_v8.hlsl|rg",          L"barrier",
-        L"Pass_temp_di_v8.hlsl|cs:16x8",    L"barrier",
-        L"Pass_boil_di_v8.hlsl|cs:16x16", L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
-        L"Pass_boil_gi_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_di_v8.hlsl|cs:16x16",   L"barrier",
+        //L"Pass_boil_gi_v8.hlsl|cs:16x16", L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|rg", L"barrier",
+        L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",       L"barrier",
+        L"Pass_dup_gi_v8.hlsl|cs:16x16",         L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
         L"dlss",                             L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",
@@ -49,6 +50,7 @@ void Renderer::InitDevice() {
                 std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
         }
         GenerateLutTextures();
+        InitReuseTextures();
 
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
@@ -1026,46 +1028,56 @@ void Renderer::PopulateCommandList() {
     // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
     UINT dispW = renderW, dispH = renderH;
 
-    // Precompute ReSTIR root constants (slots 4-19, reused across all dispatches)
-    // Clamp to safe ranges: min <= max, all >= 1 to prevent uint wrap / div-by-zero
+    // Precompute ReSTIR root constants.
     auto& rs = m_restirSettings;
-    rs.tempMcapDI     = std::max(rs.tempMcapDI, 1);
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
-    rs.spatCountMaxDI = 1;
-    rs.spatCountMinDI = 1;
-    rs.spatRadMaxDI   = std::max(rs.spatRadMaxDI, 4);
-    rs.spatRadMinDI   = std::clamp(rs.spatRadMinDI, 4, rs.spatRadMaxDI);
     rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
     rs.spatCountMinGI = rs.spatCountMaxGI;
     rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
     rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
     rs.spatTriesGI    = std::clamp(rs.spatTriesGI, 2, 16);
-    rs.spatTriesDI    = std::clamp(rs.spatTriesDI, 1, 16);
 
-    UINT rsConsts[20] = {};
-    rsConsts[4]  = (UINT)rs.tempMcapDI;
-    rsConsts[5]  = (UINT)rs.tempMcapGI;
-    rsConsts[6]  = (UINT)rs.spatCountMaxDI;
-    rsConsts[7]  = (UINT)rs.spatCountMinDI;
-    rsConsts[8]  = (UINT)rs.spatRadMaxDI;
-    rsConsts[9]  = (UINT)rs.spatRadMinDI;
-    rsConsts[10] = (UINT)rs.spatCountMaxGI;
-    rsConsts[11] = (UINT)rs.spatCountMinGI;
-    rsConsts[12] = (UINT)rs.spatRadMaxGI;
-    rsConsts[13] = (UINT)rs.spatRadMinGI;
+    // Neighbor rejection thresholds
+    rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
+    rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
+
+    UINT rsConsts[24] = {};
+    rsConsts[4]  = (UINT)rs.tempMcapGI;
+    rsConsts[5]  = (UINT)rs.spatCountMaxGI;
+    rsConsts[6]  = (UINT)rs.spatCountMinGI;
+    rsConsts[7]  = (UINT)rs.spatRadMaxGI;
+    rsConsts[8]  = (UINT)rs.spatRadMinGI;
     // When DLSS render resolution changes, the "last" reservoir/sample buffers
-    // use a different SoA layout (gi_numPx changes).  Reading them with the new
-    // layout yields garbage positions → NaN rays → GPU hang.  Disable temporal
+    // use a different SoA layout (numPx changes). Reading them with the new
+    // layout yields garbage positions → NaN rays → GPU hang. Disable temporal
     // reuse for 2 frames so those buffers are never read with stale layout.
-    rsConsts[14] = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
-    memcpy(&rsConsts[15], &rs.reuseRoughnessMin, 4);
-    memcpy(&rsConsts[16], &rs.reuseRoughnessMax, 4);
-    rsConsts[17] = (UINT)rs.spatTriesGI;
-    rsConsts[18] = (UINT)rs.spatTriesDI;
+    // Flags() returns bit1=tempGI (0x2) and bit3=spatGI (0x8); mask off both
+    // lower bits on DLSS res change to drop the temporal pass.
+    rsConsts[9]  = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
+    memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
+    rsConsts[12] = (UINT)rs.spatTriesGI;
+
+    // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
+    // Sizes must match shaders' hardcoded values and InitReuseTextures.
+    {
+        const UINT kSizes[3] = { 254u, 230u, 210u };
+        std::mt19937 rng(static_cast<uint32_t>(m_time) * 0x9E3779B9u + 1u);
+        std::uniform_int_distribution<uint32_t> dist;
+        for (int i = 0; i < 3; ++i) {
+            rsConsts[13 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
+            rsConsts[13 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
+            rsConsts[13 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
+        }
+    }
+
+    // Neighbor rejection thresholds (slots 22-23)
+    memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
+    memcpy(&rsConsts[23], &rs.rejDistance,  4);
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 20, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 24, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

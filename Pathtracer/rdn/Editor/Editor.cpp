@@ -184,7 +184,7 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     if (!ImGui::Begin("Camera")) { ImGui::End(); return; }
 
     ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
-    ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.00001f, 0.00001f, 1.0f, "%.5f");
+    ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.001f, 0.001f, 10.0f, "%.3f");
     ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
     ImGui::DragFloat("Move Speed",       &flyCam.moveSpeed,  0.1f, 0.1f, 100.0f);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
@@ -301,15 +301,58 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
     // Material list (left)
     ImGui::BeginChild("MatList", ImVec2(180, 0), true);
+
+    // Filter box. Case-insensitive substring match against the name; a
+    // purely numeric query also matches the material index. Empty query
+    // shows everything.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##matFilter", "filter...", m_matFilter, sizeof(m_matFilter));
+
+    auto toLower = [](char c) -> char {
+        return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    };
+    auto containsCI = [&](const char* hay, const char* needle) -> bool {
+        if (!needle || !*needle) return true;
+        if (!hay) return false;
+        const size_t nLen = strlen(needle);
+        for (const char* p = hay; *p; ++p) {
+            size_t j = 0;
+            while (j < nLen && p[j] && toLower(p[j]) == toLower(needle[j])) ++j;
+            if (j == nLen) return true;
+        }
+        return false;
+    };
+
+    // Numeric-query shortcut: "12" matches material index 12 directly,
+    // without requiring the index to appear in the name string.
+    bool numericQuery = false;
+    int  numericValue = 0;
+    if (m_matFilter[0]) {
+        numericQuery = true;
+        for (const char* p = m_matFilter; *p; ++p) {
+            if (*p < '0' || *p > '9') { numericQuery = false; break; }
+            numericValue = numericValue * 10 + (*p - '0');
+        }
+    }
+
+    int matchCount = 0;
     for (int i = 0; i < (int)scene.materials.size(); ++i) {
-        auto& mat = scene.materials[i];
-        ImVec4 preview(mat.Kd.x, mat.Kd.y, mat.Kd.z, 1.0f);
+        const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
+            ? scene.materialNames[i].c_str() : nullptr;
+
+        if (m_matFilter[0]) {
+            const bool nameMatch = containsCI(name, m_matFilter);
+            const bool idxMatch  = numericQuery && (i == numericValue);
+            if (!nameMatch && !idxMatch) continue;
+        }
+        ++matchCount;
+
+        const XMFLOAT4& kd = scene.materials.Kd[i];
+        ImVec4 preview(kd.x, kd.y, kd.z, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, preview);
         ImGui::Text("\xe2\x96\xa0");
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
-            ? scene.materialNames[i].c_str() : nullptr;
         char label[128];
         if (name)
             snprintf(label, sizeof(label), "%d %s##mat", i, name);
@@ -318,6 +361,11 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
     }
+
+    if (m_matFilter[0] && matchCount == 0) {
+        ImGui::TextDisabled("(no matches)");
+    }
+
     ImGui::EndChild();
 
     ImGui::SameLine();
@@ -325,13 +373,14 @@ void Editor::DrawMaterialInspector(Scene& scene) {
     // Properties (right)
     ImGui::BeginChild("MatProps", ImVec2(0, 0), false);
     if (m_selectedMat >= 0 && m_selectedMat < (int)scene.materials.size()) {
-        auto& mat = scene.materials[m_selectedMat];
-        const char* matName = (m_selectedMat < (int)scene.materialNames.size() && !scene.materialNames[m_selectedMat].empty())
-            ? scene.materialNames[m_selectedMat].c_str() : nullptr;
+        const int i = m_selectedMat;
+        auto& mats = scene.materials;
+        const char* matName = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
+            ? scene.materialNames[i].c_str() : nullptr;
         if (matName)
-            ImGui::Text("Material %d: %s", m_selectedMat, matName);
+            ImGui::Text("Material %d: %s", i, matName);
         else
-            ImGui::Text("Material %d", m_selectedMat);
+            ImGui::Text("Material %d", i);
         ImGui::Separator();
 
         bool changed = false;
@@ -339,29 +388,29 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── Surface ──────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Surface", ImGuiTreeNodeFlags_DefaultOpen)) {
-            changed |= ImGui::ColorEdit3("Albedo", &mat.Kd.x, ImGuiColorEditFlags_Float);
-            changed |= ImGui::SliderFloat("Opacity", &mat.Kd.w, 0.0f, 1.0f, "%.3f");
+            changed |= ImGui::ColorEdit3("Albedo", &mats.Kd[i].x, ImGuiColorEditFlags_Float);
+            changed |= ImGui::SliderFloat("Opacity", &mats.Kd[i].w, 0.0f, 1.0f, "%.3f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("0 = fully transparent (glass)\n1 = fully opaque");
-            changed |= ImGui::DragFloat("IOR", &mat.Ni, 0.01f, 1.0f, 3.0f, "%.3f");
+            changed |= ImGui::DragFloat("IOR", &mats.Ni[i], 0.01f, 1.0f, 3.0f, "%.3f");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Index of Refraction\n1.0 = air, 1.33 = water, 1.5 = glass");
         }
 
         // ── Emission ─────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Emission", ImGuiTreeNodeFlags_DefaultOpen)) {
-            XMFLOAT3 prevKe = mat.Ke;
-            bool emEdit = ImGui::ColorEdit3("Emission", &mat.Ke.x,
+            XMFLOAT3& Ke = mats.Ke[i];
+            bool emEdit = ImGui::ColorEdit3("Emission", &Ke.x,
                 ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (emEdit) { changed = true; emissionChanged = true; }
 
-            if (mat.Ke.x > 0 || mat.Ke.y > 0 || mat.Ke.z > 0) {
-                float intensity = std::max({mat.Ke.x, mat.Ke.y, mat.Ke.z});
+            if (Ke.x > 0 || Ke.y > 0 || Ke.z > 0) {
+                float intensity = std::max({Ke.x, Ke.y, Ke.z});
                 float prevIntensity = intensity;
                 if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f)) {
                     if (prevIntensity > 0.001f) {
                         float s = intensity / prevIntensity;
-                        mat.Ke.x *= s; mat.Ke.y *= s; mat.Ke.z *= s;
+                        Ke.x *= s; Ke.y *= s; Ke.z *= s;
                         changed = true; emissionChanged = true;
                     }
                 }
@@ -370,24 +419,24 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── PBR ──────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("PBR", ImGuiTreeNodeFlags_DefaultOpen)) {
-            changed |= ImGui::SliderFloat("Roughness", &mat.Pr_Pm_Ps_Pc.x, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Metallic",  &mat.Pr_Pm_Ps_Pc.y, 0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Sheen",     &mat.Pr_Pm_Ps_Pc.z, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Roughness", &mats.Pr_Pm_Ps_Pc[i].x, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Metallic",  &mats.Pr_Pm_Ps_Pc[i].y, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Sheen",     &mats.Pr_Pm_Ps_Pc[i].z, 0.0f, 1.0f);
         }
 
         // ── Clearcoat ────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Clearcoat")) {
             ImGui::PushID("coat");
-            changed |= ImGui::SliderFloat("Strength",   &mat.Pr_Pm_Ps_Pc.w,      0.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Roughness",  &mat.Pcr_aniso_anisor.x,  0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Strength",   &mats.Pr_Pm_Ps_Pc[i].w,      0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Roughness",  &mats.Pcr_aniso_anisor[i].x,  0.0f, 1.0f);
             ImGui::PopID();
         }
 
         // ── Anisotropy ───────────────────────────────────────────
         if (ImGui::CollapsingHeader("Anisotropy")) {
             ImGui::PushID("aniso");
-            changed |= ImGui::SliderFloat("Strength",   &mat.Pcr_aniso_anisor.y, -1.0f, 1.0f);
-            changed |= ImGui::SliderFloat("Rotation",   &mat.Pcr_aniso_anisor.z,  0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Strength",   &mats.Pcr_aniso_anisor[i].y, -1.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Rotation",   &mats.Pcr_aniso_anisor[i].z,  0.0f, 1.0f);
             ImGui::PopID();
         }
 
@@ -400,15 +449,15 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── Alpha ────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Alpha Test")) {
-            changed |= ImGui::SliderFloat("Threshold", &mat.alphaThreshold, 0.0f, 1.0f);
+            changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);
         }
 
         // ── Textures (read-only info) ────────────────────────────
         if (ImGui::CollapsingHeader("Textures")) {
             ImGui::TextDisabled("Assigned texture IDs:");
-            ImGui::Text("  Albedo: %s", mat.albedoTexID >= 0 ? std::to_string(mat.albedoTexID).c_str() : "none");
-            ImGui::Text("  Normal: %s", mat.normalTexID >= 0 ? std::to_string(mat.normalTexID).c_str() : "none");
-            ImGui::Text("  RMA:    %s", mat.rmaTexID    >= 0 ? std::to_string(mat.rmaTexID).c_str()    : "none");
+            ImGui::Text("  Albedo: %s", mats.albedoTexID[i] >= 0 ? std::to_string(mats.albedoTexID[i]).c_str() : "none");
+            ImGui::Text("  Normal: %s", mats.normalTexID[i] >= 0 ? std::to_string(mats.normalTexID[i]).c_str() : "none");
+            ImGui::Text("  RMA:    %s", mats.rmaTexID[i]    >= 0 ? std::to_string(mats.rmaTexID[i]).c_str()    : "none");
         }
 
         if (changed)
@@ -423,28 +472,24 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
-    ImGui::SetNextWindowSize(ImVec2(320, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ReSTIR")) { ImGui::End(); return; }
 
-    if (ImGui::CollapsingHeader("Temporal DI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##TempDI", &rs.enableTempDI);
-        ImGui::SliderInt("M-cap##TempDI", &rs.tempMcapDI, 0, 32);
+    if (ImGui::CollapsingHeader("Temporal", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##Temp", &rs.enableTempGI);
+        ImGui::SliderInt("M-cap##Temp", &rs.tempMcapGI, 0, 128);
     }
-    if (ImGui::CollapsingHeader("Temporal GI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##TempGI", &rs.enableTempGI);
-        ImGui::SliderInt("M-cap##TempGI", &rs.tempMcapGI, 0, 32);
+    if (ImGui::CollapsingHeader("Spatial", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
+        ImGui::SliderInt("Radius Max##Spat", &rs.spatRadMaxGI, 4, 128);
+        ImGui::SliderInt("Radius Min##Spat", &rs.spatRadMinGI, 4, 128);
+        ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
     }
-    if (ImGui::CollapsingHeader("Spatial DI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##SpatDI", &rs.enableSpatDI);
-        ImGui::SliderInt("Radius Max##SpatDI", &rs.spatRadMaxDI, 4, 128);
-        ImGui::SliderInt("Radius Min##SpatDI", &rs.spatRadMinDI, 4, 128);
-        ImGui::SliderInt("Tries##SpatDI", &rs.spatTriesDI, 1, 16);
-    }
-    if (ImGui::CollapsingHeader("Spatial GI", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Enable##SpatGI", &rs.enableSpatGI);
-        ImGui::SliderInt("Radius Max##SpatGI", &rs.spatRadMaxGI, 4, 128);
-        ImGui::SliderInt("Radius Min##SpatGI", &rs.spatRadMinGI, 4, 128);
-        ImGui::SliderInt("Tries##SpatGI", &rs.spatTriesGI, 2, 16);
+    if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Normal dot min", &rs.rejNormalDot, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("Reject neighbor if dot(nA, nB) falls below this.");
+        ImGui::SliderFloat("Distance max",   &rs.rejDistance,  0.001f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Reject neighbor if |proj onto normal| exceeds this (world units).");
     }
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
