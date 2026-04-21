@@ -34,11 +34,13 @@ A four-lobe energy-conserving BXDF with layered evaluation:
 
 ### Light Sampling
 
-<video src="media/tlas_refit.mp4" controls muted loop width="100%">Your browser does not support the video tag.</video>
-
 A [light tree](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf) built over the scene's emissive triangles provides efficient importance sampling for many-light environments. The tree uses a TLAS/BLAS hierarchy with precomputed visibility cones and geometric importance weights (receiver cosine, distance attenuation) to guide traversal. This allows the renderer to handle scenes with hundreds of emissive primitives without per-light overhead.
 
-Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously -- the clip above shows TLAS refit keeping pace with animated emitters.
+Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously -- the clip below shows TLAS refit keeping pace with animated emitters.
+
+<video src="media/tlas_refit.mp4" controls muted loop width="100%"></video>
+
+[tlas_refit.mp4](media/tlas_refit.mp4)
 
 ### ReSTIR
 
