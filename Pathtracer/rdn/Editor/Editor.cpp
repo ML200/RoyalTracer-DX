@@ -442,7 +442,7 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
         // ── Transmission ─────────────────────────────────────────
         if (ImGui::CollapsingHeader("Transmission")) {
-            changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+            changed |= ImGui::ColorEdit3("Filter (Tf)", &mat.Tf.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Volume absorption color\nWhite = no absorption");
         }
