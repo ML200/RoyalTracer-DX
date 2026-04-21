@@ -126,9 +126,12 @@ cmake --build build --config Release
 | **Left Ctrl** | Descend |
 | **Left mouse drag** | Look around |
 
-## Future Work
+## TODO List
 
-- **Neural radiance cache**: a learned world-space radiance approximation used as a fallback / early-termination signal when path prefixes fail to connect to meaningful light.
+- Neural radiance cache
+- Modular optimal material system and light sampling for reduced register pressure
+- Modular resampling for better performance
+- Volume rendering
 
 ## References
 
