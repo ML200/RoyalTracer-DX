@@ -53,4 +53,10 @@ private:
     // Cached per-model unique materials (recomputed only on selection change)
     int m_cachedMatModel = -1;
     std::vector<UINT> m_cachedUniqueMats;
+
+    // Material-inspector name filter. Persisted so the filter text survives
+    // window close / reopen. Case-insensitive substring match against the
+    // material name; also matches the material index when the query is
+    // purely digits.
+    char m_matFilter[128] = {0};
 };

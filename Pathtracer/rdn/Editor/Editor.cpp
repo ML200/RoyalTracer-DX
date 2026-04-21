@@ -301,15 +301,58 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 
     // Material list (left)
     ImGui::BeginChild("MatList", ImVec2(180, 0), true);
+
+    // Filter box. Case-insensitive substring match against the name; a
+    // purely numeric query also matches the material index. Empty query
+    // shows everything.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##matFilter", "filter...", m_matFilter, sizeof(m_matFilter));
+
+    auto toLower = [](char c) -> char {
+        return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    };
+    auto containsCI = [&](const char* hay, const char* needle) -> bool {
+        if (!needle || !*needle) return true;
+        if (!hay) return false;
+        const size_t nLen = strlen(needle);
+        for (const char* p = hay; *p; ++p) {
+            size_t j = 0;
+            while (j < nLen && p[j] && toLower(p[j]) == toLower(needle[j])) ++j;
+            if (j == nLen) return true;
+        }
+        return false;
+    };
+
+    // Numeric-query shortcut: "12" matches material index 12 directly,
+    // without requiring the index to appear in the name string.
+    bool numericQuery = false;
+    int  numericValue = 0;
+    if (m_matFilter[0]) {
+        numericQuery = true;
+        for (const char* p = m_matFilter; *p; ++p) {
+            if (*p < '0' || *p > '9') { numericQuery = false; break; }
+            numericValue = numericValue * 10 + (*p - '0');
+        }
+    }
+
+    int matchCount = 0;
     for (int i = 0; i < (int)scene.materials.size(); ++i) {
+        const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
+            ? scene.materialNames[i].c_str() : nullptr;
+
+        if (m_matFilter[0]) {
+            const bool nameMatch = containsCI(name, m_matFilter);
+            const bool idxMatch  = numericQuery && (i == numericValue);
+            if (!nameMatch && !idxMatch) continue;
+        }
+        ++matchCount;
+
         const XMFLOAT4& kd = scene.materials.Kd[i];
         ImVec4 preview(kd.x, kd.y, kd.z, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, preview);
         ImGui::Text("\xe2\x96\xa0");
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        const char* name = (i < (int)scene.materialNames.size() && !scene.materialNames[i].empty())
-            ? scene.materialNames[i].c_str() : nullptr;
         char label[128];
         if (name)
             snprintf(label, sizeof(label), "%d %s##mat", i, name);
@@ -318,6 +361,11 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         if (ImGui::Selectable(label, m_selectedMat == i))
             m_selectedMat = i;
     }
+
+    if (m_matFilter[0] && matchCount == 0) {
+        ImGui::TextDisabled("(no matches)");
+    }
+
     ImGui::EndChild();
 
     ImGui::SameLine();
