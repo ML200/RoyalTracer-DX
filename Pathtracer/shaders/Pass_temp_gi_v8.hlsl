@@ -110,9 +110,6 @@ void Pass_temp_gi_v8()
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    //Candidate search ladder: permuted -> base reprojection -> 3x3 around base.
-    //Each step is only attempted if the prior one didn't find a valid sample.
-
     //Permuted sample
     if (permInBounds)
         valid = TestTemporalCandidate(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
