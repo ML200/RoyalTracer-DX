@@ -38,9 +38,8 @@ A [light tree](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf
 
 Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously -- the clip below shows TLAS refit keeping pace with animated emitters.
 
+<!-- For inline playback on github.com, replace the <video> tag below with a bare user-attachments URL obtained by drag-dropping tlas_refit.mp4 into any issue/PR comment. -->
 <video src="media/tlas_refit.mp4" controls muted loop width="100%"></video>
-
-[tlas_refit.mp4](media/tlas_refit.mp4)
 
 ### ReSTIR
 
