@@ -128,7 +128,7 @@ cmake --build build --config Release
 
 ## TODO List
 
-- Neural radiance cache
+- Neural radiance cache to test out new cooperative vector features in lates DX12 Agility preview
 - Modular optimal material system and light sampling for reduced register pressure
 - Modular resampling for better performance
 - Volume rendering
