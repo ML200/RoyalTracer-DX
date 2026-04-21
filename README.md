@@ -5,7 +5,7 @@
 ![API](https://img.shields.io/badge/API-DirectX%2012-76b900)
 ![Language](https://img.shields.io/badge/HLSL%20%7C%20C%2B%2B-informational)
 
-Real-time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservoir, a four-lobe layered BXDF, light-tree importance sampling, modern upscaling/denoising technology with NVIDIA DLSS.
+Real-time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservoir, a four-lobe layered BXDF, light-tree importance sampling, modern upscaling/denoising technology with NVIDIA DLSS. All images shown are rendered in real-time using DLSS Ray Reconstruction for denoising.
 
 ![Bistro exterior](media/bistro_clean.png)
 
