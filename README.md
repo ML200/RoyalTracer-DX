@@ -1,14 +1,23 @@
 # Royal Tracer DX
 
-A real-time path tracer written in HLSL using the DirectX 12 API.
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%2011-lightgrey)
+![API](https://img.shields.io/badge/API-DirectX%2012-76b900)
+![Language](https://img.shields.io/badge/HLSL%20%7C%20C%2B%2B-informational)
 
-![Bistro exterior scene](media/bistro_clean.png)
+Real-time path tracer in DirectX 12 with unbiased ReSTIR DI/GI on a unified reservoir, a four-lobe layered BXDF, light-tree importance sampling, and hardware-accelerated alpha testing via Opacity Micro-Maps.
 
-## Background
+![Bistro exterior](media/bistro_clean.png)
 
-What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real-time capabilities. Since then, the focus has shifted to implementing and evaluating state-of-the-art algorithms for improving unbiased sampling efficiency.
+## Table of Contents
 
-![Sponza interior](media/sponza_clean.png)
+- [Features](#features)
+- [Background](#background)
+- [Build](#build)
+- [Controls](#controls)
+- [Future Work](#future-work)
+- [References](#references)
+- [Acknowledgments](#acknowledgments)
 
 ## Features
 
@@ -24,7 +33,7 @@ Supports OBJ and glTF/glB formats via [tinyobjloader](https://github.com/tinyobj
   <img src="media/clearcoat_clean.png" width="24%" />
 </p>
 
-![Material model layer diagram](media/material_model.svg)
+![Material model layers](media/material_model.svg)
 
 A four-lobe energy-conserving BXDF with layered evaluation:
 - **Sheen** -- [Charlie NDF](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf) for fabric-like surfaces
@@ -36,28 +45,29 @@ A four-lobe energy-conserving BXDF with layered evaluation:
 
 A [light tree](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf) built over the scene's emissive triangles provides efficient importance sampling for many-light environments. The tree uses a TLAS/BLAS hierarchy with precomputed visibility cones and geometric importance weights (receiver cosine, distance attenuation) to guide traversal. This allows the renderer to handle scenes with hundreds of emissive primitives without per-light overhead.
 
-Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously -- the clip below shows TLAS refit keeping pace with animated emitters.
-
-<!-- For inline playback on github.com, replace the <video> tag below with a bare user-attachments URL obtained by drag-dropping tlas_refit.mp4 into any issue/PR comment. -->
-<video src="media/tlas_refit.mp4" controls muted loop width="100%"></video>
+Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously.
 
 ### ReSTIR
 
-![No ReSTIR](media/twr_norestir.png)
-*Path tracing, no ReSTIR (1 spp)*
-
-![ReSTIR raw](media/twr_restir.png)
-*ReSTIR, raw (1 spp)*
-
-![ReSTIR + DLSS Ray Reconstruction](media/twr_denoised.png)
-*ReSTIR + DLSS Ray Reconstruction*
+<table>
+  <tr>
+    <td align="center"><b>Path tracing, no ReSTIR</b><br><sub>1 spp</sub></td>
+    <td align="center"><b>ReSTIR, raw</b><br><sub>1 spp</sub></td>
+    <td align="center"><b>ReSTIR + DLSS RR</b></td>
+  </tr>
+  <tr>
+    <td><img src="media/twr_norestir.png" width="100%"></td>
+    <td><img src="media/twr_restir.png" width="100%"></td>
+    <td><img src="media/twr_denoised.png" width="100%"></td>
+  </tr>
+</table>
 
 Unbiased [ReSTIR DI/PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal cCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of persisting as fireflies (Lin et al. 2026 §5).
 
 ### Rendering Pipeline
-![Render pipeline diagram](media/pipeline.svg)
+![ReSTIR rendering pipeline](media/pipeline.svg)
 
-The path tracer is using new HitObj ray tracing with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
+The path tracer uses the DXR HitObject API with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
 1. **Raygen** -- Primary rays, multi-bounce path tracing with NEE. All candidates (NEE, env miss, path integrand) are written into a single **unified DI/GI reservoir**, keyed by sentinel matIDs. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
 2. **Temporal reuse** -- Pairwise-MIS temporal resampling on the unified reservoir. Permutation sampling breaks up temporal correlations that become very apparent in the denoiser; the temporal cCap is adaptively lowered where the previous frame's duplication map shows high sample reuse
 3. **Reuse-texture partner select** -- A stack of three precomputed self-inverting **reuse textures** (Lin, Kettunen, Wyman 2026 §3) gives every pixel a guaranteed-symmetric spatial partner in a single texture load, skipping the usual neighbor-search pass
@@ -72,21 +82,70 @@ Alpha-tested geometry (foliage, fences, etc.) uses [Opacity Micro-Maps](https://
 ### Denoiser
 NVIDIA DLSS Ray Reconstruction is used for denoising using NVIDIA [Streamline](https://github.com/NVIDIA-RTX/Streamline). On supported GPUs, DLSS frame generation can be used to improve performance.
 
-## Setting up the project
+## Background
+
+What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real-time capabilities. Since then, the focus has shifted to implementing and evaluating state-of-the-art algorithms for improving unbiased sampling efficiency.
+
+![Sponza interior](media/sponza_clean.png)
+
+## Build
 
 ### Requirements
 - Windows 11 (recent version for DirectX Agility SDK support)
-- NVIDIA RTX 40-series GPU or newer (can possibly run on older HW as well but no guarantee it works due to frame gen)
-- Visual Studio 2022 (build tools)
+- NVIDIA RTX 40-series GPU or newer. Frame generation requires 40-series; core rendering may work on earlier RTX cards but is untested.
+- Visual Studio 2022 build tools
 
-### CLion (2024.3.2 or newer)
+### Quickstart
+
+```bash
+cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+<details><summary>CLion (2024.3.2+) setup notes</summary>
+
 1. Set up the toolchain: select Visual Studio (should be auto-detected). Delete any other toolchain.
 2. Configure the CMake project: select Visual Studio as the toolchain. Name the build directory `cmake-build-debug-visual-studio`. Select "use default" for the generator and "Release" for build type.
 3. Delete the existing `cmake-build-debug-visual-studio` directory if it exists.
 4. Reload the CMake project (File > Reload CMake Project).
 5. Build and run. Includes are automatically placed in the build directory.
 
-### Visual Studio (2022 or newer)
+</details>
+
+<details><summary>Visual Studio (2022+) setup notes</summary>
+
 1. Open the project folder.
 2. VS should automatically run CMake.
 3. Build and run.
+
+</details>
+
+## Controls
+
+| Input | Action |
+| --- | --- |
+| **W / A / S / D** | Move forward / left / back / right |
+| **Space** | Ascend |
+| **Left Ctrl** | Descend |
+| **Left mouse drag** | Look around |
+
+## Future Work
+
+- **Neural radiance cache** -- a learned world-space radiance approximation used as a fallback / early-termination signal when path prefixes fail to connect to meaningful light.
+
+## References
+
+- Kulla, C., Conty Estevez, A. *Importance Sampling of Many Lights with Adaptive Tree Splitting.* HPG 2018. [[PDF]](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf)
+- Estevez, A., Kulla, C. *Production Friendly Microfacet Sheen BRDF.* SIGGRAPH 2017 Course. [[PDF]](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf)
+- Walter, B., Marschner, S. R., Li, H., Torrance, K. E. *Microfacet Models for Refraction through Rough Surfaces.* EGSR 2007. [[PDF]](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf)
+- Lin, D., Wyman, C., Yuksel, C. *Generalized Resampled Importance Sampling: Foundations of ReSTIR.* ACM TOG 2022. [[Project]](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir)
+- Wyman, C. et al. *A Gentle Introduction to ReSTIR.* SIGGRAPH 2023 Course. [[Web]](https://intro-to-restir.cwyman.org/)
+- Lin, D., Kettunen, M., Wyman, C. *ReSTIR PT Enhanced.* 2026. (§3: paired reuse textures; §5: duplication-map correlation reduction.)
+- Lanz, M. *Real-Time Path Tracing with ReSTIR.* Bachelor's Thesis, 2025. [[Write-up]](https://ml200.github.io/university/2025/05/28/thesis.html)
+
+## Acknowledgments
+
+- **Scenes**: [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) (NVIDIA ORCA), Crytek Sponza
+- **NVIDIA libraries**: [DLSS Streamline](https://github.com/NVIDIA-RTX/Streamline), [OMM SDK](https://github.com/NVIDIA-RTX/OMM)
+- **Asset loaders & texturing**: [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), [tinygltf](https://github.com/syoyo/tinygltf), [stb_image](https://github.com/nothings/stb), [DirectXTex](https://github.com/microsoft/DirectXTex)
+- **UI**: [Dear ImGui](https://github.com/ocornut/imgui)
