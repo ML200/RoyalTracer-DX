@@ -10,7 +10,7 @@
 //still produce long transmission chains under MAX_BOUNCES, but the
 //number of times the path actually reflects off a surface is limited.
 #ifndef MAX_DS_BOUNCES
-#define MAX_DS_BOUNCES 4
+#define MAX_DS_BOUNCES 3
 #endif
 
 //====================================================================
@@ -589,9 +589,18 @@ void Pass_raygen_v8()
 
             if (depth > 1)
             {
-                const float survivalProb = min(1.0f, Luma(throughput));
+                //Floor survival at 0.1 so the kill probability and the
+                //1/p_s compensation stay symmetric. An unfloored
+                //Luma(throughput) can drop to ~0, which kills almost
+                //every path while a floor on the 1/p_s boost leaves
+                //the rare survivor under-compensated by up to 10x —
+                //that asymmetry was a systematic-darkening source in
+                //the temporal reuse chain: low-energy survivors carry
+                //the missing mass, fireflies but the wrong sign, and
+                //propagate across frames via reservoir reuse.
+                const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
                 if (RandomFloatSingle(seed) >= survivalProb) break;
-                const float rrBoost = 1.0f / max(survivalProb, 0.1f);
+                const float rrBoost = 1.0f / survivalProb;
                 throughput  *= rrBoost;
                 tpostWeight *= rrBoost;
                 //RR survival is part of the path pdf, include in product.

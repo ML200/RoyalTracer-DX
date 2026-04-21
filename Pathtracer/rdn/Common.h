@@ -101,7 +101,7 @@ struct GeometryOffsets {
 // ── ReSTIR runtime settings ─────────────────────────────────────
 struct ReSTIRSettings {
     // DI+GI are unified in one reservoir; DI-specific knobs have been removed.
-    int   tempMcapGI       = 32;
+    int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;
     int   spatCountMinGI   = 2;
     int   spatRadMaxGI     = 56;
@@ -109,8 +109,8 @@ struct ReSTIRSettings {
     int   spatTriesGI      = 8;
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
-    float reuseRoughnessMin = 0.05f;
-    float reuseRoughnessMax = 0.3f;
+    float reuseRoughnessMin = 0.2f;
+    float reuseRoughnessMax = 0.5f;
 
     // Neighbor rejection thresholds (used in Pass_spat_gi_select_v8).
     float rejNormalDot     = 0.36f;   // reject if dot(nA, nB) < this
