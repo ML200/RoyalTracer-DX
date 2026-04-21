@@ -58,7 +58,7 @@ Light tree builds on the CPU. When lights move or their brightness changes, the 
 ![ReSTIR + DLSS RR](media/twr_denoised.png)
 *ReSTIR + DLSS Ray Reconstruction*
 
-Unbiased [ReSTIR PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal mCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of persisting as fireflies (Lin et al. 2026 §5).
+Unbiased [ReSTIR PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal mCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of creating correlation artifacts (Lin et al. 2026 §5).
 
 ### Rendering Pipeline
 ![ReSTIR rendering pipeline](media/pipeline.svg)
