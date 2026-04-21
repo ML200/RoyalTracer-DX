@@ -5,7 +5,7 @@
 ![API](https://img.shields.io/badge/API-DirectX%2012-76b900)
 ![Language](https://img.shields.io/badge/HLSL%20%7C%20C%2B%2B-informational)
 
-Real-time path tracer in DirectX 12 with unbiased ReSTIR DI/GI on a unified reservoir, a four-lobe layered BXDF, light-tree importance sampling, and hardware-accelerated alpha testing via Opacity Micro-Maps.
+Real-time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservoir, a four-lobe layered BXDF, light-tree importance sampling, modern upscaling/denoising technology with NVIDIA DLSS.
 
 ![Bistro exterior](media/bistro_clean.png)
 
@@ -36,10 +36,10 @@ Supports OBJ and glTF/glB formats via [tinyobjloader](https://github.com/tinyobj
 ![Material model layers](media/material_model.svg)
 
 A four-lobe energy-conserving BXDF with layered evaluation:
-- **Sheen** -- [Charlie NDF](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf) for fabric-like surfaces
-- **Clearcoat** -- Dielectric GGX with independent roughness and Fresnel
-- **[GGX](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf) Specular/Transmission** -- Anisotropic microfacet model with VNDF importance sampling, supporting reflection and refraction through nested dielectrics with per-bounce IOR stack tracking
-- **Lambertian Diffuse** -- Cosine-weighted base layer
+- **Sheen**: [Charlie NDF](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf) for fabric-like surfaces
+- **Clearcoat**: Dielectric GGX with independent roughness and Fresnel
+- **[GGX](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf) Specular/Transmission**: Anisotropic microfacet model with VNDF importance sampling, supporting reflection and refraction through nested dielectrics with per-bounce IOR stack tracking
+- **Lambertian Diffuse**: Cosine-weighted base layer
 
 ### Light Sampling
 
@@ -62,19 +62,19 @@ Light tree builds on the CPU. When lights move or their brightness changes, the 
   </tr>
 </table>
 
-Unbiased [ReSTIR DI/PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal cCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of persisting as fireflies (Lin et al. 2026 §5).
+Unbiased [ReSTIR PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal mCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of persisting as fireflies (Lin et al. 2026 §5).
 
 ### Rendering Pipeline
 ![ReSTIR rendering pipeline](media/pipeline.svg)
 
 The path tracer uses the DXR HitObject API with Shader Execution Reordering (SER) for wavefront-like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
-1. **Raygen** -- Primary rays, multi-bounce path tracing with NEE. All candidates (NEE, env miss, path integrand) are written into a single **unified DI/GI reservoir**, keyed by sentinel matIDs. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
-2. **Temporal reuse** -- Pairwise-MIS temporal resampling on the unified reservoir. Permutation sampling breaks up temporal correlations that become very apparent in the denoiser; the temporal cCap is adaptively lowered where the previous frame's duplication map shows high sample reuse
-3. **Reuse-texture partner select** -- A stack of three precomputed self-inverting **reuse textures** (Lin, Kettunen, Wyman 2026 §3) gives every pixel a guaranteed-symmetric spatial partner in a single texture load, skipping the usual neighbor-search pass
-4. **Spatial reuse** -- Pairwise-MIS reconnection-shift merge of the canonical reservoir with its paired partner, outputting combined DI+GI radiance
-5. **Duplication map** -- Compute pass that scans each pixel's 17×17 neighborhood and counts matches of the packed V2 (reconnection-vertex) identifier. Reconnection and hybrid shifts preserve V2 bit-for-bit, so a matching V2 in a neighbor reliably signals a shifted copy of the same initial candidate; the count normalized to D ∈ [0, 1] measures how far that sample has spread. Next frame's temporal reuse reads D at the permuted-neighbor coord and shrinks the effective temporal M-cap toward 1 via `lerp(tempMcap, 1, pow(D, 0.1))` -- the low exponent ramps aggressively even at small D, refreshing the chain before a firefly can persist. Environment-miss samples skip the reduction (their V2 is a pixel-unique synthetic discriminator and their bounded radiance can't amplify, so capping there would only defeat sky accumulation). Implementation uses a 32×32 groupshared cache so the 288 per-thread reads collapse to 4 cooperative loads
-6. **Shading** -- Final accumulation, motion vectors, and DLSS input preparation
-7. **Post-process** -- Tone mapping (PBR Neutral) and sRGB gamma correction (after denoising)
+1. **Raygen**: Primary rays, multi-bounce path tracing with NEE. All candidates (NEE, env miss, path integrand) are written into a single **unified DI/GI reservoir**, keyed by sentinel matIDs. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
+2. **Temporal reuse**: Pairwise-MIS temporal resampling on the unified reservoir. Permutation sampling breaks up temporal correlations that become very apparent in the denoiser; the temporal mCap is adaptively lowered where the previous frame's duplication map shows high sample reuse
+3. **Reuse-texture partner select**: A stack of three precomputed self-inverting **reuse textures** (Lin, Kettunen, Wyman 2026 §3) gives every pixel a guaranteed-symmetric spatial partner in a single texture load, replacing the usual neighbor-search pass
+4. **Spatial reuse**: Pairwise-MIS reconnection-shift merge of the canonical reservoir with its paired partner, outputting combined DI+GI radiance
+5. **Duplication map**: Compute pass that scans each pixel's 17×17 neighborhood and counts matches of the packed V2 (reconnection-vertex) identifier. Reconnection and hybrid shifts preserve V2 bit-for-bit, so a matching V2 in a neighbor reliably signals a shifted copy of the same initial candidate; the count normalized to D ∈ [0, 1] measures how far that sample has spread. Next frame's temporal reuse reads D at the permuted-neighbor coord and shrinks the effective temporal M-cap toward 1 via `lerp(tempMcap, 1, pow(D, 0.1))`. The low exponent ramps aggressively even at small D, refreshing the chain before a firefly can persist. Implementation uses a 32×32 groupshared cache so the 288 per-thread reads collapse to 4 cooperative loads
+6. **Shading**: Final accumulation, motion vectors, and DLSS input preparation
+7. **Post-process**: Tone mapping (PBR Neutral, currently disabled) and sRGB gamma correction
 
 ### Opacity Micro-Maps
 Alpha-tested geometry (foliage, fences, etc.) uses [Opacity Micro-Maps](https://github.com/NVIDIA-RTX/OMM) (OMMs) built with the NVIDIA OMM SDK. OMMs encode per-microtriangle opacity into the BVH, allowing the hardware to skip transparent regions during traversal without invoking any-hit shaders, significantly improving ray tracing performance on scenes with heavy alpha-tested content.
@@ -131,7 +131,7 @@ cmake --build build --config Release
 
 ## Future Work
 
-- **Neural radiance cache** -- a learned world-space radiance approximation used as a fallback / early-termination signal when path prefixes fail to connect to meaningful light.
+- **Neural radiance cache**: a learned world-space radiance approximation used as a fallback / early-termination signal when path prefixes fail to connect to meaningful light.
 
 ## References
 
