@@ -42,13 +42,14 @@ Light tree builds on the CPU. When lights move or their brightness changes, the 
 
 ### ReSTIR
 
-<p float="left">
-  <img src="media/twr_norestir.png" width="32%" />
-  <img src="media/twr_restir.png" width="32%" />
-  <img src="media/twr_denoised.png" width="32%" />
-</p>
+![No ReSTIR](media/twr_norestir.png)
+*Path tracing, no ReSTIR (1 spp)*
 
-*Left: path tracing, no ReSTIR. Middle: ReSTIR (raw 1 spp). Right: ReSTIR + DLSS Ray Reconstruction.*
+![ReSTIR raw](media/twr_restir.png)
+*ReSTIR, raw (1 spp)*
+
+![ReSTIR + DLSS Ray Reconstruction](media/twr_denoised.png)
+*ReSTIR + DLSS Ray Reconstruction*
 
 Unbiased [ReSTIR DI/PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path-integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal cCap is modulated by a per-pixel **duplication map** so highly-shared samples refresh quickly instead of persisting as fireflies (Lin et al. 2026 §5).
 
