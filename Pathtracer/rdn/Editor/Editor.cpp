@@ -184,7 +184,7 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     if (!ImGui::Begin("Camera")) { ImGui::End(); return; }
 
     ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
-    ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.00001f, 0.00001f, 1.0f, "%.5f");
+    ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.001f, 0.001f, 10.0f, "%.3f");
     ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
     ImGui::DragFloat("Move Speed",       &flyCam.moveSpeed,  0.1f, 0.1f, 100.0f);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");

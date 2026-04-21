@@ -88,7 +88,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         else
         {
             //Sky: no surface, clamped to cameraFar to stay within DLSS-RRs declared range
-            g_dlssDepth[DTid.xy] = 10000.0f;
+            g_dlssDepth[DTid.xy] = cameraFar;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
             //Camera-only motion vector: reproject current ray direction through previous VP
@@ -96,7 +96,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
             float3 camPos = mul(viewI, float4(0, 0, 0, 1)).xyz;
-            float3 farPoint = camPos + worldDir * 10000.0f;
+            float3 farPoint = camPos + worldDir * cameraFar;
             float4 prevClip = mul(prevProjection, mul(prevView, float4(farPoint, 1.0f)));
             float2 skyMV = float2(0.0f, 0.0f);
             if (prevClip.w > 0.0f) {
@@ -113,7 +113,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(1.0f, 1.0f, 1.0f, 0.0f);
         g_dlssRoughness[DTid.xy] = 1.0f;
-        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : 10000.0f;
+        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
         g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
     }

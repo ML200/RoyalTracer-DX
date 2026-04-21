@@ -77,7 +77,7 @@ cbuffer CameraParams : register(b0)
     float4x4 prevProjection;
     float  time;
     float2 jitter;
-    float  _cbpad0;
+    float  cameraFar;
     //Sun settings
     float sunLatitude;
     float sunLongitude;

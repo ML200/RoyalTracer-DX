@@ -235,8 +235,19 @@ void Pass_temp_gi_v8()
                 //ramp even at small D; cMin = 1 matches the paper.
                 //Introduces a small bounded bias in highly correlated
                 //regions (paper measured ~3% mean absolute in Kitchen).
+                //
+                //Env/miss (sky, depth=0 sun NEE) is direction-preserving
+                //under the reconnection shift — propagation across
+                //pixels is benign (bounded radiance, no firefly
+                //amplification), and applying the reduction there caps
+                //effMcap ~ 1 in sky regions regardless of rs_tempMcap,
+                //defeating temporal accumulation on the sky. Skip the
+                //reduction for env/miss and let the full rs_tempMcap
+                //drive the history length.
                 const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
-                const float effMcap = lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
+                const float effMcap = (rdi_r.matID == MATID_ENV_MISS)
+                    ? (float)rs_tempMcap
+                    : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
                 //M caps
                 float sdata_Pr = myPr;
