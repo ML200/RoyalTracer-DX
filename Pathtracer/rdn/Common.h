@@ -101,7 +101,7 @@ struct GeometryOffsets {
 // ── ReSTIR runtime settings ─────────────────────────────────────
 struct ReSTIRSettings {
     // DI+GI are unified in one reservoir; DI-specific knobs have been removed.
-    int   tempMcapGI       = 8;
+    int   tempMcapGI       = 16;
     int   spatCountMaxGI   = 2;
     int   spatCountMinGI   = 2;
     int   spatRadMaxGI     = 56;

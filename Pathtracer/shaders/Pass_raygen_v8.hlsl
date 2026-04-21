@@ -10,7 +10,7 @@
 //still produce long transmission chains under MAX_BOUNCES, but the
 //number of times the path actually reflects off a surface is limited.
 #ifndef MAX_DS_BOUNCES
-#define MAX_DS_BOUNCES 3
+#define MAX_DS_BOUNCES 4
 #endif
 
 //====================================================================
@@ -587,22 +587,24 @@ void Pass_raygen_v8()
             float3 throughput  = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
-            if (depth > 1)
+            if (depth > 2)
             {
-                //Floor survival at 0.1 so the kill probability and the
-                //1/p_s compensation stay symmetric. An unfloored
-                //Luma(throughput) can drop to ~0, which kills almost
-                //every path while a floor on the 1/p_s boost leaves
-                //the rare survivor under-compensated by up to 10x —
-                //that asymmetry was a systematic-darkening source in
-                //the temporal reuse chain: low-energy survivors carry
-                //the missing mass, fireflies but the wrong sign, and
-                //propagate across frames via reservoir reuse.
+                //Floor survival at 0.1 so kill-rate and 1/p_s boost stay
+                //symmetric. rrBoost belongs on throughput (which is f/q
+                //and gets 1/p_s when q shrinks via RR) and on the path
+                //pdf (pdf_product shrinks by the same p_s, keeping
+                //F_contrib = throughput * L * pdf_product RR-invariant).
+                //It must NOT touch tpostWeight: tpost is pure
+                //BSDF·cos·abs integrand (no 1/pdf term) cached into L2
+                //for reuse. Boosting it poisons reused contributions
+                //with an extra 1/p_s that can't be cancelled at the
+                //neighbor pixel, producing firefly-like overshoots
+                //whenever an RR-surviving sample propagates through
+                //temporal or spatial reservoir chains.
                 const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
                 if (RandomFloatSingle(seed) >= survivalProb) break;
                 const float rrBoost = 1.0f / survivalProb;
                 throughput  *= rrBoost;
-                tpostWeight *= rrBoost;
                 //RR survival is part of the path pdf, include in product.
                 pdf_product = min(pdf_product * survivalProb, 1e30f);
             }
