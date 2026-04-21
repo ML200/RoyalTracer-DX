@@ -126,10 +126,10 @@ cmake --build build --config Release
 | **Left Ctrl** | Descend |
 | **Left mouse drag** | Look around |
 
-## TODO List
+## Planned Features
 
 - Neural radiance cache to test out new cooperative vector features in lates DX12 Agility preview
-- Modular optimal material system and light sampling for reduced register pressure
+- Modular material system and light sampling for reduced register pressure in callable shaders
 - Modular resampling for better performance
 - Volume rendering
 
