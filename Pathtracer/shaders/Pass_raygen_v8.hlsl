@@ -1,7 +1,16 @@
 #include "Includes_v8.hlsli"
 
+//Overall depth cap, dominated by transmission chains (glass, water,
+//nested volumes). Diffuse / specular bounces have a tighter cap below.
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 10
+#define MAX_BOUNCES 32
+#endif
+
+//Non-transmission bounce cap. Caustic-like effects through glass can
+//still produce long transmission chains under MAX_BOUNCES, but the
+//number of times the path actually reflects off a surface is limited.
+#ifndef MAX_DS_BOUNCES
+#define MAX_DS_BOUNCES 4
 #endif
 
 //====================================================================
@@ -29,12 +38,12 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //Clear scratch slots 1 and 3. Slot 1 carries primary emitter/sky hits,
-    //written below on depth-0 emission. Slot 3 carries the depth-0 sun NEE.
-    //Without clearing, shading reads stale prior-frame values for
-    //non-emitter, non-sky pixels, visible as light trails.
+    //Clear scratch slot 1, primary emitter/sky hits written below on
+    //depth-0 emission. Without clearing, shading reads stale prior-frame
+    //values for non-emitter pixels, visible as light trails. Slot 3
+    //(direct-light buffer) is overwritten unconditionally at the end of
+    //the function from the directAccum register, no clear needed.
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
-    gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
 
     //Zero the reservoir. RIS acceptance overwrites on demand, this ensures
     //no-candidate-accepted pixels end up as empty reservoirs.
@@ -62,6 +71,40 @@ void Pass_raygen_v8()
     //tpost, post-x2 integrand accumulator, stays in registers. Updated
     //every bounce, so buffer RMW would be strictly worse than 3 scalars.
     float3 tpost = float3(1, 1, 1);
+
+    //Accumulator for contributions that bypass the unified reservoir
+    //and go straight into the direct-light buffer (gScratchPing slot 3):
+    //  - depth=0 sun NEE (never part of reservoir by design).
+    //  - depth=1 env miss (DI env), decoupled from the reservoir because
+    //    temporal/spatial reuse of direction-only env samples produced
+    //    heavy artifacts in convex corners.
+    //Written once at the end of the function.
+    float3 directAccum = float3(0, 0, 0);
+
+    //Diffuse / specular (non-transmission) bounce counter. The path loop
+    //terminates once MAX_DS_BOUNCES reflections have been taken, but
+    //transmission bounces stay free up to MAX_BOUNCES so glass / water
+    //chains and caustic-like effects survive.
+    int dsBounces = 0;
+
+    //Pixel-and-frame-unique unit vector used as the stored V2 for DI
+    //samples (env miss, emitter hit, NEE at d=0). Reconnect's sentinel
+    //branches ignore V2, so this is purely a dup-map discriminator for
+    //Pass_dup_gi_v8 — without it, all DI samples across the image would
+    //share the same packed V2 and flood the duplication count.
+    float3 diMarker;
+    {
+        uint h = (pixelIdx * 0x9E3779B9u) ^ (asuint(time) * 0x85EBCA6Bu);
+        h ^= h >> 16; h *= 0xC2B2AE35u;
+        h ^= h >> 13; h *= 0x27D4EB2Fu;
+        h ^= h >> 16;
+        const float u1 = (float)(h & 0xFFFFu) * (1.0f / 65535.0f);
+        const float u2 = (float)((h >> 16) & 0xFFFFu) * (1.0f / 65535.0f);
+        const float z  = 2.0f * u1 - 1.0f;
+        const float r  = sqrt(max(0.0f, 1.0f - z * z));
+        const float phi = 6.2831853f * u2;
+        diMarker = float3(r * cos(phi), r * sin(phi), z);
+    }
 
     //====================================================================
     //PATH LOOP
@@ -103,37 +146,38 @@ void Pass_raygen_v8()
             const float3 throughput = UnpackRGB9E5(throughputPk);
             const float3 envL       = EvalMissState(rayDir, float3(0, 0, 0));
 
-            //pdf-free contribution f = throughput * pdf_product * envL
-            const float3 F_contrib = throughput * envL * pdf_product;
-            const float  p_hat     = GetPHat(F_contrib);
-            const float  p_full    = pdf_product;
-            const float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
-
-            bool accepted = false;
             if (depth == 1)
             {
-                //DI env candidate, d=2 path, x2 stored as DIRECTION.
-                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                    rayDir, float3(0, 1, 0),          //x2=dir, n2=unit default
-                    envL,   float3(0, 1, 0),          //L2, V2=unit default
-                    float2(0, 0),
-                    MATID_ENV_MISS, MATID_ENV_MISS, 1.0f,
-                    F_contrib, seed);
+                //DI env miss (d=2 path). Decoupled from the unified
+                //reservoir: env samples store only a direction and
+                //temporal/spatial reuse of them caused heavy artifacts
+                //in convex corners. Written direct to the direct-light
+                //buffer via directAccum. RIS shadow ray stays untouched
+                //so any NEE candidate already in the reservoir still
+                //resolves at end-of-raygen.
+                directAccum += throughput * envL;
             }
             else //depth >= 2: GI env, x2 = stashed depth-1 vertex
             {
+                //pdf-free contribution f = throughput * pdf_product * envL
+                const float3 F_contrib = throughput * envL * pdf_product;
+                const float  p_hat     = GetPHat(F_contrib);
+                const float  p_full    = pdf_product;
+                const float  wi        = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
+
                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                bool accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
                     envL * tpost, ps.v2,
                     ps.uv,
                     ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
+                //Env miss = infinitely far but known-visible, we traced
+                //the ray to get here. Clear any prior NEE-accepted
+                //shadow ray so the end-of-raygen visibility trace is
+                //skipped when this GI env sample wins.
+                if (accepted) clear_shadow_ray(g_pathStateBuffer, pixelIdx);
             }
-            //Env miss = infinitely far but known-visible, we traced the
-            //ray to get here. Clear any prior NEE-accepted shadow ray so
-            //the end-of-raygen visibility trace is skipped.
-            if (accepted) clear_shadow_ray(g_pathStateBuffer, pixelIdx);
             break;
         }
 
@@ -271,9 +315,11 @@ void Pass_raygen_v8()
             if (depth == 1)
             {
                 //DI triangle-emitter candidate, d=2 path.
+                //V2 = diMarker as dup-map discriminator, unused by
+                //Reconnect's MATID_LIGHT_TRI branch.
                 accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
-                    emission, float3(0, 1, 0),        //V2 unused for DI
+                    emission, diMarker,               //V2 = per-pixel discriminator
                     float2(0, 0),
                     MATID_LIGHT_TRI, instID, 1.0f,
                     F_contrib, seed);
@@ -366,9 +412,11 @@ void Pass_raygen_v8()
                         if (depth == 0)
                         {
                             //DI NEE at primary vertex, d=2 path, x2 = light.
+                            //V2 = diMarker as dup-map discriminator,
+                            //unused by Reconnect's MATID_LIGHT_TRI branch.
                             accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                 light.position, light.normal,
-                                light.emission, float3(0, 1, 0),
+                                light.emission, diMarker,
                                 float2(0, 0),
                                 MATID_LIGHT_TRI, light.objID, 1.0f,
                                 F_contrib, seed);
@@ -446,12 +494,14 @@ void Pass_raygen_v8()
                         if (depth == 0)
                         {
                             //Sun stays excluded from the unified reservoir,
-                            //user decision: no sun in DI bounce. Write direct,
-                            //keep inline visibility, this path doesn't feed RIS.
+                            //user decision: no sun in DI bounce. Write
+                            //direct via directAccum (shared with depth=1
+                            //env miss), keep inline visibility, this
+                            //path doesn't feed RIS.
                             if (IsVisible(hitPos, hinfo.hitNormal, sun.direction, 10000.0f))
                             {
                                 float3 contrib = throughput * NdotL * sun.radiance * bdataNEE.val / lightPdf;
-                                gScratchPing[uint3(pixel, 3)] = float4(misWeight * contrib, 0);
+                                directAccum += misWeight * contrib;
                             }
                         }
                         else
@@ -512,6 +562,20 @@ void Pass_raygen_v8()
 
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
+
+        //Bounce classification: transmission crosses the surface
+        //(sampled direction on the opposite side of the shading normal
+        //from the incoming ray). hit.hitNormal is always oriented
+        //toward -rayDir by EvalSurfaceState, so dot(s, n) < 0 is
+        //equivalent to "s goes through the surface". Transmission
+        //bounces are free up to MAX_BOUNCES; reflections count against
+        //the tighter MAX_DS_BOUNCES quota.
+        const bool isTransmission = dot(s, hinfo.hitNormal) < 0.0f;
+        if (!isTransmission)
+        {
+            if (dsBounces >= MAX_DS_BOUNCES) break;
+            ++dsBounces;
+        }
 
         prev_pdf    = bdata.pdf;
         pdf_product = min(pdf_product * bdata.pdf, 1e30f);
@@ -574,4 +638,9 @@ void Pass_raygen_v8()
         if (W == 0.0f)
             InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
     }
+
+    //Direct-light buffer: sum of depth=0 sun NEE and depth=1 env miss.
+    //Shading (Pass_shading_v8) reads slot 3 and adds to the final output
+    //along with primary (slot 1) and reservoir contribution (slot 2).
+    gScratchPing[uint3(pixel, 3)] = float4(directAccum, 0);
 }

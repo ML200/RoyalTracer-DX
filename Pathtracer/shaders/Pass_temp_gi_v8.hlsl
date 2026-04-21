@@ -129,17 +129,6 @@ void Pass_temp_gi_v8()
             valid = false;
         }
 
-        //Jacobian-ratio rejection on the neighbor->current shift only, that's
-        //the ratio that multiplies w_n and can spike variance in corners. The
-        //canonical->neighbor direction is self-bounded by pairwise MIS and is
-        //not checked here.
-        if (valid)
-        {
-            const float3 rPos = ReconstructPosition(rInstID, rPrimID, rBary);
-            if (JacobianRejected(myPos, rPos, rdi_r.matID, rdi_r.x2, rdi_r.n2_s))
-                valid = false;
-        }
-
         if (valid)
         {
             float p_hat_final = 0.0f;
@@ -239,6 +228,19 @@ void Pass_temp_gi_v8()
                 const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
+                //Correlation-reduction cCap (Lin et al. 2026 §5). The
+                //previous frame's duplication map at the temporal
+                //neighbor's pixel counts shifted-copies in its 17x17
+                //window, normalized to D in [0, 1]. High D means this
+                //sample has already spread across many neighbors, so
+                //we lower the temporal cCap to refresh the chain and
+                //stop firefly persistence. alpha = 0.1 gives a quick
+                //ramp even at small D; cMin = 1 matches the paper.
+                //Introduces a small bounded bias in highly correlated
+                //regions (paper measured ~3% mean absolute in Kitchen).
+                const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
+                const float effMcap = lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
+
                 //M caps
                 float sdata_Pr = myPr;
                 float rdi_r_Pr = IsSentinelMatID(rdi_r.matID)
@@ -247,9 +249,9 @@ void Pass_temp_gi_v8()
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
                 const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
-                                        : min(rs_tempMcap, rs_tempMcap * tempMcapScale);
+                                        : min(effMcap, effMcap * tempMcapScale);
 
-                const float M_c   = min(rs_tempMcap, rdi.M);
+                const float M_c   = min(effMcap, rdi.M);
                 const float M_n   = min(dynTempMcap,  rdi_r.M);
                 const float M_sum = M_c + M_n;
 

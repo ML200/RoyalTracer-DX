@@ -282,31 +282,6 @@ inline float JacobianRatio(float Jn, float Jc)
     return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
 }
 
-//Rejects the neighbor candidate if the neighbor to current shift Jacobian
-//ratio Jn(myPos toward bX2) / Jc(bPos toward bX2) falls outside
-//[rs_rejJacobianMin, rs_rejJacobianMax]. This ratio multiplies w_n directly
-//and can spike ReSTIR variance in corners.
-//The opposite direction, canonical sample shifted into the neighbor's
-//pixel, only enters mis_c's denominator and is self-bounded by pairwise
-//MIS, m_c stays in [M_c/M_sum, 1] no matter how extreme that ratio gets,
-//so checking it would only discard usable samples.
-//Env/miss, MATID_ENV_MISS, preserves direction under shift so its ratio
-//is 1 by construction.
-inline bool JacobianRejected(float3 myPos,
-                             float3 bPos,
-                             uint   bMatRes,
-                             float3 bX2res, float3 bN2res)
-{
-    if (bMatRes == MATID_ENV_MISS) return false;
-
-    const float Jn = ComputeJc(myPos, bX2res, bN2res);
-    const float Jc = ComputeJc(bPos,  bX2res, bN2res);
-    const float ratio = Jn / max(Jc, EPSILON);
-
-    //Negated range test also catches NaN / inf / negative.
-    return !(ratio >= rs_rejJacobianMin && ratio <= rs_rejJacobianMax);
-}
-
 //====================================================================
 //RECONNECTION
 //====================================================================
