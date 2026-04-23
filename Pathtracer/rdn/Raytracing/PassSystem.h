@@ -11,7 +11,9 @@
 
 enum class Stage {
     RayGen, Compute, FixedCompute, Wavefront, Barrier,
-    LoopStart, LoopEnd, PingSwap, ClearSort, Callable, DLSS
+    LoopStart, LoopEnd, PingSwap, ClearSort, Callable, DLSS,
+    CudaOp   // Runs a CUDA callback registered on the Renderer by name (PassDesc::file).
+             // Token form: L"cuda:<name>" (e.g. L"cuda:nrc_infer").
 };
 
 struct PassDesc {

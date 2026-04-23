@@ -339,7 +339,8 @@ void Renderer::CreateRaytracingPipeline() {
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart ||
             p.stage == Stage::LoopEnd || p.stage == Stage::PingSwap ||
-            p.stage == Stage::ClearSort || p.stage == Stage::DLSS)
+            p.stage == Stage::ClearSort || p.stage == Stage::DLSS ||
+            p.stage == Stage::CudaOp)
             continue;
 
         // Work graph
@@ -833,7 +834,8 @@ void Renderer::CreateShaderBindingTable() {
     for (const auto& entry : m_passes.Tokens()) {
         if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 ||
             entry == L"endloop" || entry == L"pingswap" ||
-            entry == L"clearsort" || entry == L"dlss")
+            entry == L"clearsort" || entry == L"dlss" ||
+            entry.rfind(L"cuda:", 0) == 0)
             continue;
         if (entry.find(L"|cs:") != std::wstring::npos ||
             entry.find(L"|wf:") != std::wstring::npos ||

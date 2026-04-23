@@ -204,7 +204,8 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
 
     const char* stageNames[] = {
         "RayGen", "Compute", "FixedCompute", "Wavefront", "Barrier",
-        "LoopStart", "LoopEnd", "PingSwap", "ClearSort", "Callable", "DLSS"
+        "LoopStart", "LoopEnd", "PingSwap", "ClearSort", "Callable", "DLSS",
+        "CudaOp"
     };
 
     for (size_t i = 0; i < passes.Passes().size(); ++i) {
@@ -218,6 +219,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
             case Stage::Compute: color = ImVec4(0.3f,0.6f,0.9f,1); break;
             case Stage::Barrier: color = ImVec4(0.6f,0.6f,0.6f,1); break;
             case Stage::DLSS:    color = ImVec4(0.9f,0.6f,0.2f,1); break;
+            case Stage::CudaOp:  color = ImVec4(0.76f,0.46f,0.87f,1); break;
             case Stage::LoopStart: case Stage::LoopEnd: color = ImVec4(0.9f,0.9f,0.3f,1); break;
             default: break;
         }

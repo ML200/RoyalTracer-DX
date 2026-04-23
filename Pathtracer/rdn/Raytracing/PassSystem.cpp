@@ -26,6 +26,13 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
     if (token == L"clearsort") { p.stage = Stage::ClearSort;  return p; }
     if (token == L"dlss")      { p.stage = Stage::DLSS;       return p; }
 
+    // CUDA callback: "cuda:<name>" — dispatcher looks <name> up in Renderer's registry.
+    if (token.rfind(L"cuda:", 0) == 0) {
+        p.stage = Stage::CudaOp;
+        p.file  = token.substr(5);   // store the callback name in 'file' for PassIndexByFile lookup
+        return p;
+    }
+
     // Loop with count
     if (token.rfind(L"loop:", 0) == 0) {
         p.stage = Stage::LoopStart;

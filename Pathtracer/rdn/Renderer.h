@@ -8,6 +8,7 @@
 
 #include "Core/DeviceContext.h"
 #include "Core/ResourceFactory.h"
+#include "Interop/CudaInterop.h"
 #include "Scene/Scene.h"
 #include "Scene/AssetLoader.h"
 #include "Camera/Camera.h"
@@ -64,6 +65,16 @@ public:
     bool WantsKeyboard() const;
     bool WantsMouse() const;
     void HandleKeyUp(UINT8 key);
+
+    // ── CUDA interop ─────────────────────────────────────────────
+    // Register a callback invoked when the pass list hits `L"cuda:<name>"`.
+    // The callback runs on CudaInterop's internal stream between a
+    // D3D12-queue signal (pre) and a D3D12-queue wait (post) on a shared fence.
+    using CudaOpFn = std::function<void()>;
+    void RegisterCudaOp(const std::wstring& name, CudaOpFn fn) {
+        m_cudaOps[name] = std::move(fn);
+    }
+    CudaInterop& GetCudaInterop() { return m_cudaInterop; }
 
 private:
     UINT  m_width;
@@ -216,4 +227,10 @@ private:
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();
     void SaveSimulationData(uint32_t stepIndex);
+
+    // ── CUDA interop state ───────────────────────────────────────
+    CudaInterop                              m_cudaInterop;
+    CudaInterop::Fence                       m_cudaFence;     // shared D3D12/CUDA fence (empty if init failed)
+    UINT64                                   m_cudaFenceValue = 0;
+    std::unordered_map<std::wstring, CudaOpFn> m_cudaOps;
 };

@@ -129,6 +129,25 @@ void DeviceContext::FlushAndReset() {
     ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Split-submission helpers: close-submit-signal, then queue-wait-reopen.
+// Use between a D3D12 pass that writes shared buffers and a CUDA pass
+// that consumes them — no CPU stall, purely GPU-side sync on 'extFence'.
+// The allocator is NOT reset: in-flight work submitted before the split
+// is still reading from it, so we reuse the same allocator for the rest
+// of the frame. The allocator is reset on BeginFrame next frame.
+void DeviceContext::CloseExecuteAndSignal(ID3D12Fence* extFence, UINT64 value) {
+    ThrowIfFailed(cmdList->Close());
+    ID3D12CommandList* lists[] = { cmdList.Get() };
+    cmdQueue->ExecuteCommandLists(1, lists);
+    ThrowIfFailed(cmdQueue->Signal(extFence, value));
+}
+
+void DeviceContext::WaitAndReopen(ID3D12Fence* extFence, UINT64 value) {
+    ThrowIfFailed(cmdQueue->Wait(extFence, value));
+    ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
+}
+
 void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
     if (newWidth == 0 || newHeight == 0) return;
     if (newWidth == width && newHeight == height) return;

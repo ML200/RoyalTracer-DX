@@ -28,6 +28,13 @@ struct DeviceContext {
     void FlushAndReset();                  // execute current list, wait, reopen
     void Resize(UINT newWidth, UINT newHeight);  // resize swap chain, RTVs, depth
 
+    // Split-submission helpers for mid-frame interop (e.g. CUDA/tcnn):
+    // close the current list, submit it, and signal 'extFence' to 'value' — no CPU wait.
+    void CloseExecuteAndSignal(ID3D12Fence* extFence, UINT64 value);
+    // Queue-side wait on 'extFence' reaching 'value', then reopen a fresh cmd list on the
+    // current frame's allocator. GPU work queued after this will not start until the wait resolves.
+    void WaitAndReopen(ID3D12Fence* extFence, UINT64 value);
+
     // ── Accessors ────────────────────────────────────────────────
     ID3D12Device10*                Device()       const { return device.Get(); }
     ID3D12GraphicsCommandList10*   CmdList()      const { return cmdList.Get(); }

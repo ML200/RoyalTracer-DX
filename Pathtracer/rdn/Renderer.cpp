@@ -7,6 +7,7 @@
 #include "Renderer.h"
 #include "Windowsx.h"
 #include "ReuseTextureGen.h"
+#include "NRC/NrcNetwork.h"
 #include <random>
 
 #undef SL_CHECK
@@ -21,9 +22,9 @@ Renderer::Renderer(UINT width, UINT height)
 {
     // Define the rendering pass pipeline (data-driven)
     m_passes.Build({
+        L"cuda:nrc_smoke",                   L"barrier",
         L"Pass_raygen_v8.hlsl|rg",          L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
-        //L"Pass_boil_gi_v8.hlsl|cs:16x16", L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",       L"barrier",
@@ -40,6 +41,27 @@ Renderer::Renderer(UINT width, UINT height)
 void Renderer::InitDevice() {
     try {
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
+
+        // CUDA/D3D12 interop. Optional — if this fails (no CUDA device, LUID
+        // mismatch, etc.) the renderer runs fine; cuda:* passes become no-ops.
+        if (m_cudaInterop.Init(m_ctx.Device())) {
+            m_cudaFence = m_cudaInterop.CreateFence(L"Cuda_Interop_Fence");
+            LOG(L"[CUDA] Interop ready");
+
+            // Smoke test callback: exercises the fence split + tcnn once on first
+            // frame, then no-ops but still round-trips the fence every frame so
+            // the D3D12<->CUDA sync path stays live and exercised.
+            RegisterCudaOp(L"nrc_smoke", [this]{
+                static bool s_ranOnce = false;
+                if (s_ranOnce) return;
+                s_ranOnce = true;
+                const bool ok = nrc::SmokeTest(m_cudaInterop.Stream());
+                LOG(L"[NRC] SmokeTest " << (ok ? L"OK" : L"FAILED"));
+            });
+        } else {
+            LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
+        }
+
         m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
@@ -1241,6 +1263,31 @@ void Renderer::PopulateCommandList() {
             dispH = GetHeight();
 
             // Rebind our heap (DLSS may have changed it)
+            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
+            cmdList->SetDescriptorHeaps(1, h);
+            break;
+        }
+
+        case Stage::CudaOp:
+        {
+            if (!m_cudaInterop.IsReady() || !m_cudaFence.fence) break;
+            auto it = m_cudaOps.find(p.file);
+            if (it == m_cudaOps.end()) break;
+
+            // D3D12 -> CUDA: flush current list and signal fence at value N.
+            const UINT64 preVal  = ++m_cudaFenceValue;
+            m_ctx.CloseExecuteAndSignal(m_cudaFence.fence.Get(), preVal);
+            m_cudaInterop.CudaWait(m_cudaFence, preVal);
+
+            // CUDA work (tcnn kernels) enqueued on the interop stream.
+            it->second();
+
+            // CUDA -> D3D12: signal N+1 from CUDA, queue-wait, reopen list.
+            const UINT64 postVal = ++m_cudaFenceValue;
+            m_cudaInterop.CudaSignal(m_cudaFence, postVal);
+            m_ctx.WaitAndReopen(m_cudaFence.fence.Get(), postVal);
+
+            // cmdList was Reset — rebind the descriptor heap for subsequent passes.
             ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
             cmdList->SetDescriptorHeaps(1, h);
             break;
