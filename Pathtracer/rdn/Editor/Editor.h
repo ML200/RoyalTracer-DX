@@ -8,6 +8,7 @@
 #include "../Camera/Camera.h"
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
+#include "../NRC/NrcLayout.h"
 #include "../../engine/Camera/FlyCamController.h"
 
 #include "../lib/imgui/imgui.h"
@@ -24,7 +25,8 @@ public:
 
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
               PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
-              ReSTIRSettings& restir, float fps, const FrameStats& stats);
+              ReSTIRSettings& restir, nrc::Settings& nrc,
+              float fps, const FrameStats& stats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -37,6 +39,7 @@ private:
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
     void DrawMaterialInspector(Scene& scene);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
+    void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
 
     bool m_visible        = true;
@@ -45,6 +48,7 @@ private:
     bool m_showPipeline   = false;
     bool m_showDLSS       = false;
     bool m_showReSTIR     = false;
+    bool m_showNRC        = false;
     bool m_showSun        = false;
     bool m_showMaterials  = false;
     int  m_selectedModel  = -1;

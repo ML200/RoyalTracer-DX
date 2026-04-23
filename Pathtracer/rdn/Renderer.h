@@ -9,6 +9,7 @@
 #include "Core/DeviceContext.h"
 #include "Core/ResourceFactory.h"
 #include "Interop/CudaInterop.h"
+#include "NRC/NrcNetwork.h"
 #include "Scene/Scene.h"
 #include "Scene/AssetLoader.h"
 #include "Camera/Camera.h"
@@ -75,6 +76,11 @@ public:
         m_cudaOps[name] = std::move(fn);
     }
     CudaInterop& GetCudaInterop() { return m_cudaInterop; }
+
+    // Runtime NRC toggles — read by raygen / debug passes via push
+    // constants and mutated by the editor panel.
+    nrc::Settings& GetNrcSettings() { return m_nrcSettings; }
+    bool           IsNrcReady() const { return m_nrcReady; }
 
 private:
     UINT  m_width;
@@ -233,4 +239,21 @@ private:
     CudaInterop::Fence                       m_cudaFence;     // shared D3D12/CUDA fence (empty if init failed)
     UINT64                                   m_cudaFenceValue = 0;
     std::unordered_map<std::wstring, CudaOpFn> m_cudaOps;
+
+    // ── NRC state ────────────────────────────────────────────────
+    // Buffers are shared D3D12/CUDA allocations: HLSL binds them as UAVs,
+    // tcnn reads/writes them on the CUDA stream. Allocation happens after
+    // m_cudaInterop init; layout is described in rdn/NRC/NrcLayout.h.
+    // m_nrcReady gates every NRC pass — it stays false when interop or
+    // tcnn init fails, and the pipeline falls through to the existing
+    // ReSTIR PT path unchanged.
+    nrc::Network                             m_nrcNetwork;
+    CudaInterop::Buffer                      m_nrcInferenceIn;   // u40 — raw 14-dim fp32 features
+    CudaInterop::Buffer                      m_nrcInferenceOut;  // u41 — 3-dim fp32 L̂_s predictions
+    CudaInterop::Buffer                      m_nrcPendingGI;     // u42 — per-pixel reservoir continuation
+    CudaInterop::Buffer                      m_nrcTrainRecords;  // u43 — per-vertex training records
+    CudaInterop::Buffer                      m_nrcCounters;      // u44 — inference/training counters
+    uint32_t                                 m_nrcInferenceCapacity = 0;
+    bool                                     m_nrcReady = false;
+    nrc::Settings                            m_nrcSettings{};
 };

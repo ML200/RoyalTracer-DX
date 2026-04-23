@@ -37,6 +37,11 @@ cbuffer Push : register(b1)
     //Neighbor-rejection thresholds for spatial select pass
     float rs_rejNormalDot;     //[22], dot(n_A, n_B) must be >= this
     float rs_rejDistance;      //[23], |proj-on-normal| gate in world units
+    //NRC runtime controls (see Nrc_v8.hlsli for flag bits).
+    uint  nrc_flags;           //[24], bit0=enabled, bit1=trainEnabled, bit2=debugView
+    float nrc_area_spread_c;   //[25], cache-termination threshold c (paper §3.4)
+    float nrc_lr_scale;        //[26], reserved for tcnn learning-rate override
+    uint  nrc_reserved;        //[27]
 };
 
 //====================================================================

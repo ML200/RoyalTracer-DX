@@ -20,17 +20,29 @@ Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
-    // Define the rendering pass pipeline (data-driven)
+    // Define the rendering pass pipeline (data-driven).
+    // NRC integration (safe no-op while raygen is unmodified):
+    //   cuda:nrc_frame_begin   — zeros counters, invalidates PendingGI slots
+    //   <raygen>               — will append inference + training records
+    //   cuda:nrc_inference     — tcnn batched inference on appended records
+    //   Pass_nrc_resolve_v8    — stitches L̂_s into the reservoir via RIS
+    //   cuda:nrc_train         — backward tail pass + 4× training step
     m_passes.Build({
-        L"Pass_raygen_v8.hlsl|rg",          L"barrier",
-        L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
-        L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",       L"barrier",
-        L"Pass_dup_gi_v8.hlsl|cs:16x16",         L"barrier",
-        L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
-        L"dlss",                             L"barrier",
-        L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",
+        L"cuda:nrc_frame_begin",                        L"barrier",
+        L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
+        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        L"cuda:nrc_inference",                          L"barrier",
+        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
+        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
+        L"cuda:nrc_train",                              L"barrier",
+        L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
+        L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
+        L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
+        L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
+        L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
+        L"dlss",                                        L"barrier",
+        L"Pass_postprocess_v8.hlsl|cs:8x4",             L"barrier",
     });
 }
 
@@ -56,6 +68,81 @@ void Renderer::InitDevice() {
                 s_ranOnce = true;
                 const bool ok = nrc::SmokeTest(m_cudaInterop.Stream());
                 LOG(L"[NRC] SmokeTest " << (ok ? L"OK" : L"FAILED"));
+            });
+
+            // ── NRC setup ─────────────────────────────────────────
+            // Cap inference capacity at W*H (worst case: every pixel
+            // cache-terminates) and round up to tcnn's batch granularity.
+            const uint32_t pixelCount = GetWidth() * GetHeight();
+            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount);
+
+            m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
+            m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
+            m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
+            m_nrcTrainRecords = m_cudaInterop.CreateBuffer(nrc::TrainingBytes       (),                       L"NRC_TrainRecords");
+            m_nrcCounters     = m_cudaInterop.CreateBuffer(nrc::CountersBytes       (),                       L"NRC_Counters");
+
+            const bool allocOK = m_nrcInferenceIn.resource && m_nrcInferenceOut.resource
+                              && m_nrcPendingGI.resource   && m_nrcTrainRecords.resource
+                              && m_nrcCounters.resource;
+            if (!allocOK) {
+                LOG(L"[NRC] Shared buffer allocation failed — NRC disabled");
+            } else if (!m_nrcNetwork.Init()) {
+                LOG(L"[NRC] tcnn network init failed — NRC disabled");
+            } else {
+                m_nrcReady = true;
+                LOG(L"[NRC] Ready: infCapacity=" << m_nrcInferenceCapacity
+                    << L" trainingPaths="       << nrc::kMaxTrainingPaths);
+            }
+
+            // Frame start: zero the counters, invalidate every PendingGI
+            // record, and clear the training path-meta section (leaves
+            // last frame's stale numVertices=0 so the backward-fill
+            // kernel skips unused paths).
+            RegisterCudaOp(L"nrc_frame_begin", [this]{
+                if (!m_nrcReady) return;
+                void* s = m_cudaInterop.Stream();
+                nrc::Memzero(s, m_nrcCounters.cudaPtr,    m_nrcCounters.sizeBytes);
+                nrc::Memfill(s, m_nrcPendingGI.cudaPtr,   0xFF, m_nrcPendingGI.sizeBytes);
+                // Only clear the meta header — per-vertex payload is
+                // overwritten by raygen for freshly-allocated path ids.
+                nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
+            });
+
+            // Batched inference over every record raygen (and in debug
+            // mode the query pass) appended. In debug view we query one
+            // record per pixel at a deterministic slot, so the live
+            // count is W*H regardless of whatever counter raygen's
+            // cache-term wrote (cache-term is gated off in debug).
+            RegisterCudaOp(L"nrc_inference", [this]{
+                if (!m_nrcReady) return;
+                void* s = m_cudaInterop.Stream();
+
+                uint32_t count;
+                if (m_nrcSettings.debugView) {
+                    count = GetWidth() * GetHeight();
+                } else {
+                    count = nrc::ReadU32(s, m_nrcCounters.cudaPtr);
+                    if (count == 0) return;
+                }
+                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
+                const uint32_t padded  = nrc::AlignBatch(clamped);
+                m_nrcNetwork.Inference(
+                    s,
+                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
+                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
+                    padded);
+            });
+
+            // Backward-fill the training targets from the per-path meta,
+            // walk each path's bucket in reverse, emit (features, target)
+            // rows into tcnn-ready scratch, then run the four SGD steps.
+            RegisterCudaOp(L"nrc_train", [this]{
+                if (!m_nrcReady) return;
+                m_nrcNetwork.TrainFrame(
+                    m_cudaInterop.Stream(),
+                    m_nrcTrainRecords.cudaPtr,
+                    m_nrcInferenceOut.cudaPtr);
             });
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
@@ -255,7 +342,10 @@ void Renderer::UpdateRenderer(float dt) {
     // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_fps, m_frameStats);
+                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_nrcSettings,
+                  m_fps, m_frameStats);
+    // Debug-view checkbox only enables the calculation into slice 3.
+    // Cycle to it with 'C' when you want to look at it.
 
     // Prepare instance data on CPU shadow buffer (overlaps with GPU)
     auto t_instStart = hrc::now();
@@ -1062,7 +1152,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[24] = {};
+    UINT rsConsts[28] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1096,9 +1186,24 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
     memcpy(&rsConsts[23], &rs.rejDistance,  4);
 
+    // NRC control constants (slots 24-27). NRC is only driving the
+    // pipeline when the interop + tcnn stack initialised successfully —
+    // we mask out enabled/training when m_nrcReady is false so the
+    // fallback path stays exactly like the pre-NRC pipeline.
+    {
+        uint32_t nrcFlags = 0u;
+        if (m_nrcReady && m_nrcSettings.enabled)         nrcFlags |= 0x1u;
+        if (m_nrcReady && m_nrcSettings.trainingEnabled) nrcFlags |= 0x2u;
+        if (m_nrcReady && m_nrcSettings.debugView)       nrcFlags |= 0x4u;
+        rsConsts[24] = nrcFlags;
+        memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
+        memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);
+        rsConsts[27] = 0u;
+    }
+
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 24, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 28, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

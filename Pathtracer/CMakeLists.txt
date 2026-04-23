@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #   1. nvcc's own host_config.h check (-allow-unsupported-compiler)
 #   2. MSVC STL's yvals_core.h static_assert (_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+# Let NVCC parallelize its own internal passes per .cu file. Requires CUDA 11.2+.
+add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--threads=0>)
 # Compile for the installed GPU only. tcnn picks this up before its autodetect
 # runs, so Pathtracer and tcnn target the same architecture (avoids an arch
 # mismatch in tcnn's TCNN_MIN_GPU_ARCH static_assert).
@@ -67,6 +69,12 @@ message(STATUS "CUDA Toolkit : ${CUDAToolkit_VERSION}")
 set(TCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
 set(TCNN_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
 set(TCNN_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+# Skip offline compilation of every fused fwd/bwd kernel permutation — tcnn
+# instead JIT-compiles the single network config we actually instantiate via
+# tcnn::create_from_config at startup (cached on disk). Cuts tcnn build time
+# dramatically. Requires TCNN_BUILD_WITH_RTC (ON by default).
+set(TCNN_BUILD_NO_FWD_BWD ON  CACHE BOOL "" FORCE)
+set(TCNN_BUILD_WITH_RTC   ON  CACHE BOOL "" FORCE)
 add_subdirectory(third_party/tiny-cuda-nn)
 
 

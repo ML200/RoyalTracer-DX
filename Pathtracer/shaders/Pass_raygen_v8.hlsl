@@ -1,4 +1,5 @@
 #include "Includes_v8.hlsli"
+#include "Nrc_v8.hlsli"
 
 //Overall depth cap, dominated by transmission chains (glass, water,
 //nested volumes). Diffuse / specular bounces have a tighter cap below.
@@ -37,6 +38,70 @@ void Pass_raygen_v8()
     const uint2 pixel    = DispatchRaysIndex().xy;
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
+
+    //====================================================================
+    //NRC PATH CLASSIFICATION + SER SORT
+    //====================================================================
+    //Three work classes inside raygen:
+    //  0 render  — short prefix, cache-terminate after x2
+    //  1 train B — prefix + ~1-vertex suffix, cache-terminate suffix
+    //  2 train U — prefix + full RR tail, no cache query (1/16 of train)
+    //Class 2 paths are long; sorting by class groups them into coherent
+    //warps. Screen bucket keeps memory accesses coalesced within class.
+    //Runtime toggles come from the push cbuffer (see NrcSettings in the
+    //editor). Each flag is INDEPENDENT — "enable cache" controls only
+    //cache termination, "train" only training-vertex emission, "debug
+    //view" only the x1 cache-query pass. The host side already gates
+    //every flag by m_nrcReady, so an init failure zeroes them all.
+    //Debug view still overrides cache termination (mutually exclusive
+    //at the inference-slot level), enforced below on nrcCacheEligible.
+    const bool kNrcEnabled    = NrcIsEnabled();
+    const bool kNrcTrainOn    = NrcIsTrainOn();
+    const bool kNrcDebugMode  = NrcIsDebugView();
+    const uint2 nrcTileOffset = uint2(asuint(time) & (NRC_TRAINING_TILE_SIDE - 1u),
+                                      (asuint(time) >> 3) & (NRC_TRAINING_TILE_SIDE - 1u));
+    bool nrcIsTraining, nrcIsUnbiased;
+    uint nrcPathClass = NrcClassifyPixel(pixel, asuint(time), nrcTileOffset,
+                                          nrcIsTraining, nrcIsUnbiased);
+    nrcIsTraining = nrcIsTraining && kNrcTrainOn;
+    if (nrcIsTraining) nrcPathClass = NRC_CLASS_TRAIN_UNBIASED;
+    else               nrcPathClass = NRC_CLASS_RENDER;
+
+    {
+        const uint nrcSortKey =
+            (nrcPathClass << 6) |
+            (((pixel.y >> 4) & 0x7u) << 3) |
+            ((pixel.x >> 4) & 0x7u);
+        dx::MaybeReorderThread(nrcSortKey, 8);
+    }
+
+    NrcClearPendingGI(pixelIdx);
+
+    //Cache is eligible only when: NRC is enabled, we're not in debug view
+    //mode (debug takes over cache-term at x1), and this path isn't a
+    //training-unbiased runner (long trace, no cache query).
+    const bool  nrcCacheEligible = kNrcEnabled && !kNrcDebugMode &&
+                                   (nrcPathClass != NRC_CLASS_TRAIN_UNBIASED);
+    // Matches host-side nrc::AlignBatch(W*H).
+    const uint  nrcInferenceCapacity = (IMG_W * IMG_H + 255u) & ~255u;
+    float nrcA0 = 0.0f;   //paper eq. 4, primary visible area
+    float nrcA  = 0.0f;   //paper eq. 3, running √-sum (spread = nrcA²)
+    int   nrcHitIdx = 0;  //1 = x1 after first real (non-pass-through) hit
+    bool  nrcCacheTerminated = false;
+
+    // Training-path state. Allocate one path id per training pixel.
+    // If the per-frame quota is exhausted, skip training for this pixel
+    // and render as a normal (class-0) pixel.
+    uint   nrcPathId     = NRC_INVALID_PATH;
+    uint   nrcTrainVIdx  = 0u;
+    uint   nrcTailKind   = NRC_TAIL_INVALID;
+    uint   nrcTailRadPk  = 0u;
+    float3 nrcLNeeAccum  = float3(0, 0, 0);   //reset per vertex, feeds training target
+    if (nrcIsTraining)
+    {
+        nrcPathId = NrcAllocateTrainingPath();
+        if (nrcPathId == NRC_INVALID_PATH) { nrcIsTraining = false; nrcPathClass = NRC_CLASS_RENDER; }
+    }
 
     //Clear scratch slots 1 and 3. Slot 1 carries primary emitter/sky
     //hits, written below on depth-0 emission. Slot 3 (formerly the
@@ -137,6 +202,12 @@ void Pass_raygen_v8()
 
             const float3 throughput = UnpackRGB9E5(throughputPk);
             const float3 envL       = EvalMissState(rayDir, float3(0, 0, 0));
+
+            //NRC: miss on a training path becomes the backward-fill tail.
+            if (nrcIsTraining) {
+                nrcTailKind  = NRC_TAIL_MISS;
+                nrcTailRadPk = PackRGB9E5(envL);
+            }
 
             //pdf-free contribution f = throughput * pdf_product * envL
             const float3 F_contrib = throughput * envL * pdf_product;
@@ -290,6 +361,12 @@ void Pass_raygen_v8()
         //====================================================================
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
+            //NRC: emitter hit terminates training paths with tail = emission.
+            if (nrcIsTraining) {
+                nrcTailKind  = NRC_TAIL_EMITTER;
+                nrcTailRadPk = PackRGB9E5(emission);
+            }
+
             const float3 throughput = UnpackRGB9E5(throughputPk);
             const float3 prevNormal = UnpackNormal(prevNormalPk);
             const float  lightPdfArea = LT_Pdf_LightTree_Area(rayOrigin, prevNormal, hinfo.lightID, instID);
@@ -342,6 +419,53 @@ void Pass_raygen_v8()
         if (depth == 2)
         {
             store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
+        }
+
+        //====================================================================
+        //NRC AREA-SPREAD + CACHE TERMINATION
+        //====================================================================
+        //Counts only real (non-pass-through) hits; the pass-through `continue`
+        //above already skipped thin-glass boundaries. nrcHitIdx maps to the
+        //paper's path-vertex index (x1 at 1, x2 at 2, ...). Cache termination
+        //is gated at >= 3 so ReSTIR PT's reconnection at x2 always has a real
+        //BSDF to evaluate — see user design constraint.
+        ++nrcHitIdx;
+        //Reset per-vertex NEE accumulator — NEE blocks below add into it,
+        //the training-vertex write captures the sum.
+        nrcLNeeAccum = float3(0, 0, 0);
+        if (nrcHitIdx == 1)
+        {
+            const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
+            nrcA0 = NrcComputeA0(hitT, cosPrimary);
+        }
+        else
+        {
+            const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
+            NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
+
+            if (NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c))
+            {
+                //Cache-terminate here. Write the inference request + the
+                //PendingGI record that the resolve compute shader will turn
+                //into a reservoir candidate once L̂_s is known. Skip NEE and
+                //the next BSDF sample — the cache subsumes both at this
+                //vertex. Raygen's final resolve will see nrcCacheTerminated
+                //and defer W/M to Pass_nrc_resolve_v8.
+                //
+                //If the slot allocation fails (inference buffer saturated),
+                //let the path continue normally — losing one cache query is
+                //better than losing the whole pixel's GI contribution.
+                const float3 throughput = UnpackRGB9E5(throughputPk);
+                if (NrcWriteTerminationRecord(
+                        pixelIdx, nrcInferenceCapacity,
+                        hitPos, -rayDir, hinfo.hitNormal,
+                        hitLocalPr, hitLocalKd, hitLocalPm,
+                        throughput, tpost, pdf_product))
+                {
+                    nrcCacheTerminated = true;
+                    break;
+                }
+            }
         }
 
         //====================================================================
@@ -407,6 +531,13 @@ void Pass_raygen_v8()
                             const float  p_hat            = GetPHat(F_contrib);
                             const float  p_full           = pdf_product * lightPdf;
                             const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
+
+                            //NRC: local NEE estimator contribution at THIS vertex,
+                            //stripped of upstream throughput / pdf_product. Feeds
+                            //target[v] = L_nee[v] + β[v]·target[v+1] during the
+                            //backward fill.
+                            if (nrcIsTraining)
+                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
 
                             if (depth == 0)
                             {
@@ -491,6 +622,13 @@ void Pass_raygen_v8()
                         if (IsVisibleOffset(shadowOrigin, sun.direction, 10000.0f))
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
+
+                            //NRC: accumulate local sun-NEE estimator into this
+                            //vertex's L_nee. Same shape as the point-light
+                            //branch above — see comment there.
+                            if (nrcIsTraining)
+                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
+
                             if (depth == 0)
                             {
                                 //DI sun NEE at primary vertex, d=2 path.
@@ -549,6 +687,25 @@ void Pass_raygen_v8()
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
+        //NRC: emit training vertex (features + local NEE + β = updateWeight
+        //without RR boost). We write BEFORE the bad-sample break so a path
+        //that dies on a degenerate BSDF still carries the last vertex for
+        //training — its β is 0, so backward fill treats it as a terminal.
+        if (nrcIsTraining && nrcTrainVIdx < NRC_MAX_VERTICES_PER_PATH)
+        {
+            float features[14];
+            const float3 alpha = hitLocalKd * (1.0f - hitLocalPm);
+            const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), hitLocalKd, hitLocalPm);
+            NrcBuildFeatures(hitPos, -rayDir, hinfo.hitNormal,
+                             hitLocalPr, alpha, betaC, features);
+
+            NrcStoreTrainingVertex(
+                nrcPathId, nrcTrainVIdx, features,
+                PackRGB9E5(nrcLNeeAccum),
+                PackRGB9E5(updateWeight));
+            ++nrcTrainVIdx;
+        }
+
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
@@ -576,7 +733,11 @@ void Pass_raygen_v8()
             float3 throughput  = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
-            if (depth > 2)
+            //Skip RR for training paths: backward-fill uses each vertex's
+            //stored β = BSDF·cos·T / pdf without an RR 1/p_s factor, so
+            //a surviving-with-boost path would bias the training target.
+            //MAX_DS_BOUNCES still caps the trace length.
+            if (depth > 2 && !nrcIsTraining)
             {
                 //Floor survival at 0.1 so kill-rate and 1/p_s boost stay
                 //symmetric. rrBoost belongs on throughput (which is f/q
@@ -608,12 +769,36 @@ void Pass_raygen_v8()
     }
 
     //====================================================================
+    //NRC: COMMIT TRAINING PATH META
+    //====================================================================
+    //Walks through for every allocated training path regardless of length.
+    //numVertices == 0 happens when the primary miss branch was taken or
+    //the path died before any BSDF sample; meta.numVertices stays 0 and
+    //the training kernel skips it. A path that terminated without being
+    //tagged (MAX_BOUNCES, MAX_DS_BOUNCES, degenerate BSDF) gets NRC_TAIL_RR
+    //with tail radiance 0 — the backward fill treats that as tail = 0.
+    if (nrcPathId != NRC_INVALID_PATH)
+    {
+        const uint tailKind = (nrcTailKind != NRC_TAIL_INVALID) ? nrcTailKind : NRC_TAIL_RR;
+        NrcStorePathMeta(nrcPathId, nrcTrainVIdx, tailKind,
+                         NRC_INVALID_SLOT, nrcTailRadPk);
+    }
+
+    //====================================================================
     //FINAL RESOLVE
     //====================================================================
     //Commit wsum / W / M. F was already written to the reservoir by
     //AddInitialCandidate on the last acceptance. NEE candidates are now
     //visibility-tested inline before they reach RIS, so the W formula
     //is the plain RIS unbiased weight.
+    //
+    //When NRC cache termination fired, we DEFER W/M/invalidation to
+    //Pass_nrc_resolve_v8 — it will RIS the cache-terminated GI candidate
+    //(using the inferred L̂_s) against any DI/emitter candidates raygen
+    //already RIS'd in, then compute W from the merged wsum. wsum itself
+    //is still stored here so resolve can resume the RIS chain.
+    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
+    if (!nrcCacheTerminated)
     {
         const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float W = 0.0f;
@@ -623,9 +808,8 @@ void Pass_raygen_v8()
             if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
         }
 
-        store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-        store_W   (g_Reservoirs_current, pixelIdx, W);
-        store_M   (g_Reservoirs_current, pixelIdx, 1u);
+        store_W(g_Reservoirs_current, pixelIdx, W);
+        store_M(g_Reservoirs_current, pixelIdx, 1u);
 
         if (W == 0.0f)
             InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);

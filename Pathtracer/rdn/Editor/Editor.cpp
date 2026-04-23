@@ -37,7 +37,8 @@ void Editor::Shutdown() {
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
                   PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
-                  ReSTIRSettings& restir, float fps, const FrameStats& stats)
+                  ReSTIRSettings& restir, nrc::Settings& nrc,
+                  float fps, const FrameStats& stats)
 {
     if (!m_visible) return;
 
@@ -52,6 +53,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
+            ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
             ImGui::EndMenu();
@@ -83,6 +85,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
+    if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene);
 
@@ -496,6 +499,40 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+    }
+
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Editor::DrawNRCPanel(nrc::Settings& n) {
+    ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("NRC")) { ImGui::End(); return; }
+
+    if (ImGui::CollapsingHeader("Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable cache (terminate + resolve)", &n.enabled);
+        ImGui::SetItemTooltip("Off = pure ReSTIR PT. Cache termination + resolve are short-circuited.");
+
+        ImGui::Checkbox("Train", &n.trainingEnabled);
+        ImGui::SetItemTooltip("Off = weights frozen, inference still runs against whatever state was last trained.");
+    }
+
+    if (ImGui::CollapsingHeader("Debug view", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show cache at primary vertex", &n.debugView);
+        ImGui::SetItemTooltip(
+            "Queries L̂_s at x1 per pixel, writes to gOutput slice 3.\n"
+            "Cycle to slice 3 with 'C' to view it.\n"
+            "Overrides cache termination in raygen while on.");
+    }
+
+    if (ImGui::CollapsingHeader("Termination", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Area-spread c", &n.areaSpreadC, 0.001f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Paper's c (eq. 3-4). Smaller = terminate earlier (more cache, more bias).");
+    }
+
+    if (ImGui::CollapsingHeader("Optimizer")) {
+        ImGui::SliderFloat("LR scale", &n.learningRateScale, 0.01f, 10.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Reserved — a later turn will feed this into tcnn's Adam LR.");
     }
 
     ImGui::End();

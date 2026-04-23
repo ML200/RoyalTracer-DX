@@ -212,6 +212,11 @@ void store_wsum(RWByteAddressBuffer b, uint pixelIdx, float wsum)
     b.Store(addr_wsum(pixelIdx), asuint(wsum));
 }
 
+float load_wsum(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return asfloat(b.Load(addr_wsum(pixelIdx)));
+}
+
 uint load_M(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(addr_m(pixelIdx));

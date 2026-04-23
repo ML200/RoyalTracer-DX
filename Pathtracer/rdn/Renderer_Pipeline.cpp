@@ -275,9 +275,13 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Paired reuse textures (t19, t20, t21) — 3 Texture2D<int2> SRVs at heap slots 55..57
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // NRC shared D3D12/CUDA UAVs (u40..u44) at heap slots 58..62 — see
+    // shaders/Nrc_v8.hlsli for binding order.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 40, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    rootParameters[1].InitAsConstants(24, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // 24 ReSTIR constants [0..23] + 4 NRC control constants [24..27] = 28.
+    rootParameters[1].InitAsConstants(28, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -795,9 +799,33 @@ void Renderer::CreateShaderResourceHeap() {
         }
     }
 
-    // Slots 58-59: padding before bindless base at slot 60
-    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
-    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
+    // Slots 58-62: NRC shared D3D12/CUDA UAVs (u40..u44). CudaInterop has
+    // already allocated the backing buffers; here we just create views.
+    // NullUAVs when interop init failed keep the descriptor table valid
+    // so the rest of the pipeline still runs.
+    auto nrcUAV = [&](const CudaInterop::Buffer& b) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format        = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
+        ud.Buffer.NumElements = (UINT)((b.sizeBytes + 3u) / 4u);
+        dev->CreateUnorderedAccessView(b.resource.Get(), nullptr, &ud, handle);
+        next();
+    };
+    auto nullRawUAV = [&]() {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format        = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
+        ud.Buffer.NumElements = 1;
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
+        next();
+    };
+    if (m_nrcInferenceIn.resource)  nrcUAV(m_nrcInferenceIn);  else nullRawUAV();  // u40
+    if (m_nrcInferenceOut.resource) nrcUAV(m_nrcInferenceOut); else nullRawUAV();  // u41
+    if (m_nrcPendingGI.resource)    nrcUAV(m_nrcPendingGI);    else nullRawUAV();  // u42
+    if (m_nrcTrainRecords.resource) nrcUAV(m_nrcTrainRecords); else nullRawUAV();  // u43
+    if (m_nrcCounters.resource)     nrcUAV(m_nrcCounters);     else nullRawUAV();  // u44
 
     // Bindless textures
     UINT globalTexIdx = 0;

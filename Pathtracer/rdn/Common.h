@@ -62,7 +62,10 @@ static constexpr UINT  SORT_BUCKETS         = 65536;
 static constexpr int   NUM_LUTS             = 2;
 static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
-static constexpr UINT  BINDLESS_HEAP_START  = 60;
+// Bindless texture base in the SRV/UAV heap. NRC reserves 5 UAVs at heap
+// slots 58..62 for its shared D3D12/CUDA buffers (see Renderer_Pipeline.cpp
+// and Nrc_v8.hlsli), pushing bindless down to 63.
+static constexpr UINT  BINDLESS_HEAP_START  = 63;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
