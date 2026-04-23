@@ -454,25 +454,15 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
-    // Compute pipeline stack size. Multiple ray-gen shaders coexist in the
-    // same state object (Pass_primary, Pass_extend, Pass_classify, ... plus
-    // Pass_temp_gi, Pass_spat_gi_shift). Take the max stack over all of
-    // them so any chosen dispatch has enough.
-    UINT64 maxRg = 0;
-    for (const auto& p : m_passes.Passes()) {
-        if (p.stage != Stage::RayGen) continue;
-        std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
-        base = base.substr(0, base.rfind(L'.'));
-        UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(base.c_str());
-        if (sz > maxRg) maxRg = sz;
-    }
+    // Compute pipeline stack size
+    UINT64 rgStack = m_rtStateObjectProps->GetShaderStackSize(L"Pass_raygen_v8");
     UINT64 maxCallable = 0;
     for (const auto& name : m_callableShaderNames) {
         UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
         if (sz > maxCallable) maxCallable = sz;
     }
     UINT64 missStack = m_rtStateObjectProps->GetShaderStackSize(L"Miss");
-    UINT64 total = (maxRg + std::max(maxCallable, missStack) + 255) & ~255;
+    UINT64 total = (rgStack + std::max(maxCallable, missStack) + 255) & ~255;
     m_rtStateObjectProps->SetPipelineStackSize(total);
 }
 
@@ -533,11 +523,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
 
 void Renderer::CreatePathStateBuffer() {
     ResourceFactory rf(m_ctx.Device());
-    // Tile-aligned pixel count, must match ps_numPx() in Path_State_v8.hlsli
-    // (4x8 tile swizzle). 192 B/pixel fits the 176 B raygen SoA plus a 16 B
-    // pad; spat-pass AoS (68 B) runs later in the frame and overwrites.
-    const UINT pxCount = ((GetWidth() + 3u) / 4u) * ((GetHeight() + 7u) / 8u) * 32u;
-    m_pathStateBuffer = rf.CreateUAVBuffer(pxCount * 192u, L"PathStateBuffer");
+    m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
 }
 
 // ═════════════════════════════════════════════════════════════════
@@ -727,11 +713,8 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateShaderResourceView(m_lutTextureArray.Get(), &d, handle); next();
     } else { nullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY); }
 
-    // Slot 32: path state UAV (tile-aligned count * 192 B, see CreatePathStateBuffer)
-    {
-        const UINT pxCount = ((GetWidth() + 3u) / 4u) * ((GetHeight() + 7u) / 8u) * 32u;
-        rawUAV(m_pathStateBuffer, pxCount * 192u);
-    }
+    // Slot 32: path state UAV
+    rawUAV(m_pathStateBuffer, GetWidth() * GetHeight() * 88);
 
     // Slot 33: global counters UAV
     { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
