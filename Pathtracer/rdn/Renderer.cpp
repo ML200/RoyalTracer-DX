@@ -20,17 +20,34 @@ Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
-    // Define the rendering pass pipeline (data-driven)
+    // Define the rendering pass pipeline (data-driven).
+    // The path-tracing stage is now a wavefront pipeline: Primary runs
+    // once to generate the camera ray + primary hit packet, then a
+    // bounce-loop of (Classify, MatEvalShade, Extend) iterates for
+    // MAX_BOUNCES (=32). Classify at iter k processes the depth=k hit
+    // (from Primary at iter 0, from Extend at iters 1+). MatEvalShade
+    // does NEE + scatter and sets depth=k+1 in PathState flags, or
+    // TERMINATED on RR kill / invalid scatter / MAX_BOUNCES cap. Extend
+    // at the last iter is a no-op on every pixel (TERMINATED); one
+    // wasted TraceRay header is the whole overhead. Finalize commits
+    // the RIS wsum / W / M fields, matching the FINAL RESOLVE block of
+    // the old monolithic Pass_raygen_v8.
     m_passes.Build({
-        L"Pass_raygen_v8.hlsl|rg",          L"barrier",
-        L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
+        L"Pass_primary_v8.hlsl|rg",              L"barrier",
+        L"loop:32",
+          L"Pass_classify_v8.hlsl|rg",           L"barrier",
+          L"Pass_matevalshade_v8.hlsl|rg",       L"barrier",
+          L"Pass_extend_v8.hlsl|rg",             L"barrier",
+        L"endloop",
+        L"Pass_finalize_v8.hlsl|rg",             L"barrier",
+        L"Pass_temp_gi_v8.hlsl|rg",              L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",       L"barrier",
+        L"Pass_spat_gi_shift_v8.hlsl|rg",        L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",      L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",         L"barrier",
-        L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
-        L"dlss",                             L"barrier",
-        L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",
+        L"Pass_shading_v8.hlsl|cs:16x16",        L"barrier",
+        L"dlss",                                 L"barrier",
+        L"Pass_postprocess_v8.hlsl|cs:8x4",      L"barrier",
     });
 }
 
@@ -718,8 +735,11 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     // Slot 19: initial BSDF ray UAV
     rawUAVAt(19, m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay));
 
-    // Slot 32: path state UAV
-    rawUAVAt(32, m_pathStateBuffer, px * 88);
+    // Slot 32: path state UAV (tile-aligned count * 192 B, must match CreatePathStateBuffer)
+    {
+        const UINT psPxCount = ((GetWidth() + 3u) / 4u) * ((GetHeight() + 7u) / 8u) * 32u;
+        rawUAVAt(32, m_pathStateBuffer, psPxCount * 192u);
+    }
 
     // Slots 35-38: stack buffers UAV
     for (int s = 0; s < 4; ++s) {
