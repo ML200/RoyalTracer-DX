@@ -22,7 +22,6 @@ Renderer::Renderer(UINT width, UINT height)
 {
     // Define the rendering pass pipeline (data-driven)
     m_passes.Build({
-        L"cuda:nrc_smoke",                   L"barrier",
         L"Pass_raygen_v8.hlsl|rg",          L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
