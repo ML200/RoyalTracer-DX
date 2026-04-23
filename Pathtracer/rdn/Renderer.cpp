@@ -27,14 +27,26 @@ Renderer::Renderer(UINT width, UINT height)
     //   cuda:nrc_inference     — tcnn batched inference on appended records
     //   Pass_nrc_resolve_v8    — stitches L̂_s into the reservoir via RIS
     //   cuda:nrc_train         — backward tail pass + 4× training step
+    // NRC pipeline sequence:
+    //   frame_begin → raygen → inference → resolve → train
+    //     (handles cache-term queries from raygen — both class-0 rendering
+    //      pixels and class-1 training tail seeds, in the same buffer via
+    //      atomic-counter allocation)
+    //   then, if debug view is on:
+    //     debug_query → debug_inference → debug_present
+    //     (overwrites the inference buffer with one query per pixel at
+    //      slot = pixelIdx, runs inference again with count = W*H,
+    //      writes L̂_s into gOutput slice 3. Debug runs AFTER training
+    //      so self-training keeps seeing cache-tail seeds regardless.)
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
-        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
         L"cuda:nrc_inference",                          L"barrier",
         L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
-        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"cuda:nrc_train",                              L"barrier",
+        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        L"cuda:nrc_debug_inference",                    L"barrier",
+        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
@@ -109,22 +121,34 @@ void Renderer::InitDevice() {
                 nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
             });
 
-            // Batched inference over every record raygen (and in debug
-            // mode the query pass) appended. In debug view we query one
-            // record per pixel at a deterministic slot, so the live
-            // count is W*H regardless of whatever counter raygen's
-            // cache-term wrote (cache-term is gated off in debug).
+            // Batched inference over raygen's cache-term queries. Always
+            // reads the live count from the counter — the counter reflects
+            // how many InterlockedAdds fired in raygen (class-0 rendering
+            // terminations + class-1 training tail seeds). Debug view has
+            // its own separate inference op below, so this op doesn't
+            // need to know about the debug mode at all.
             RegisterCudaOp(L"nrc_inference", [this]{
                 if (!m_nrcReady) return;
                 void* s = m_cudaInterop.Stream();
+                const uint32_t count = nrc::ReadU32(s, m_nrcCounters.cudaPtr);
+                if (count == 0) return;
+                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
+                const uint32_t padded  = nrc::AlignBatch(clamped);
+                m_nrcNetwork.Inference(
+                    s,
+                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
+                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
+                    padded);
+            });
 
-                uint32_t count;
-                if (m_nrcSettings.debugView) {
-                    count = GetWidth() * GetHeight();
-                } else {
-                    count = nrc::ReadU32(s, m_nrcCounters.cudaPtr);
-                    if (count == 0) return;
-                }
+            // Second inference pass for the debug view. Runs AFTER training
+            // has already consumed the first inference's output, so it's
+            // free to overwrite the buffer. Debug_query wrote one query
+            // per pixel at slot = pixelIdx, so count is W*H.
+            RegisterCudaOp(L"nrc_debug_inference", [this]{
+                if (!m_nrcReady || !m_nrcSettings.debugView) return;
+                void* s = m_cudaInterop.Stream();
+                const uint32_t count   = GetWidth() * GetHeight();
                 const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
                 const uint32_t padded  = nrc::AlignBatch(clamped);
                 m_nrcNetwork.Inference(

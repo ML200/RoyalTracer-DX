@@ -80,11 +80,17 @@ void Pass_raygen_v8()
 
     NrcClearPendingGI(pixelIdx);
 
-    //Cache is eligible only when: NRC is enabled, we're not in debug view
-    //mode (debug takes over cache-term at x1), and this path isn't a
-    //training-unbiased runner (long trace, no cache query).
-    const bool  nrcCacheEligible = kNrcEnabled && !kNrcDebugMode &&
-                                   (nrcPathClass != NRC_CLASS_TRAIN_UNBIASED);
+    //Cache-term eligibility, per class:
+    //  CLASS_RENDER          — cache-term only when NOT in debug view
+    //                          (debug view takes over the rendering path
+    //                          and shows the raw prediction at x1).
+    //  CLASS_TRAIN_BIASED    — ALWAYS cache-term (the inference slot is
+    //                          the self-training tail seed, so training
+    //                          keeps working even in debug view).
+    //  CLASS_TRAIN_UNBIASED  — never (runs to natural termination).
+    const bool  nrcCacheEligible = kNrcEnabled &&
+        ((nrcPathClass == NRC_CLASS_TRAIN_BIASED) ||
+         (nrcPathClass == NRC_CLASS_RENDER && !kNrcDebugMode));
     // Matches host-side nrc::AlignBatch(W*H).
     const uint  nrcInferenceCapacity = (IMG_W * IMG_H + 255u) & ~255u;
     float nrcA0 = 0.0f;   //paper eq. 4, primary visible area
@@ -806,13 +812,19 @@ void Pass_raygen_v8()
     //visibility-tested inline before they reach RIS, so the W formula
     //is the plain RIS unbiased weight.
     //
-    //When NRC cache termination fired, we DEFER W/M/invalidation to
-    //Pass_nrc_resolve_v8 — it will RIS the cache-terminated GI candidate
+    //When NRC cache termination fired, we normally DEFER W/M/invalidation
+    //to Pass_nrc_resolve_v8 — it RISes the cache-terminated GI candidate
     //(using the inferred L̂_s) against any DI/emitter candidates raygen
-    //already RIS'd in, then compute W from the merged wsum. wsum itself
-    //is still stored here so resolve can resume the RIS chain.
+    //already RIS'd in, then computes W from the merged wsum.
+    //
+    //In debug view mode the resolve pass early-returns (we don't want
+    //the cache to drive rendering while the user is inspecting the raw
+    //prediction on slice 3), so raygen must finalize W itself for
+    //cache-terminated pixels too. class-1 training paths still write
+    //their inference query through — that's the self-training tail seed
+    //the fill kernel reads regardless of debug state.
     store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-    if (!nrcCacheTerminated)
+    if (!nrcCacheTerminated || kNrcDebugMode)
     {
         const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float W = 0.0f;
