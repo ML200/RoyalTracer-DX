@@ -218,7 +218,16 @@ inline void NrcLoadPendingGI(
 //====================================================================
 // CACHE-TERMINATION RECORD (Pending GI)
 //====================================================================
-inline bool NrcWriteTerminationRecord(
+// Returns the inference slot on success, NRC_INVALID_SLOT on failure.
+// The slot is useful to the caller for class-1 training paths, which
+// also record it as the cache-tail slot in their path meta.
+//
+// Reflectance factorisation (paper §5): the network predicts irradiance
+// = L_s / (α+β). To recover radiance at resolve time we'd need to
+// multiply by (α+β), but we can hoist that factor onto `throughput`
+// and `tpost` here instead — the resolve shader then treats the MLP
+// output AS radiance, no shader-side multiply required.
+inline uint NrcWriteTerminationRecord(
     uint   pixelIdx,
     uint   inferenceCapacity,
     float3 hitPos,
@@ -231,22 +240,23 @@ inline bool NrcWriteTerminationRecord(
     float3 tpost,
     float  pdfProduct)
 {
-    const float3 alpha = kd * (1.0f - metallic);
-    const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), kd, metallic);
+    const float3 alpha   = kd * (1.0f - metallic);
+    const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, metallic);
+    const float3 reflSum = alpha + betaC;
 
     float features[14];
     NrcBuildFeatures(hitPos, viewDir, hitNormal, roughness, alpha, betaC, features);
 
     const uint slot = NrcAppendInference(inferenceCapacity, features);
-    if (slot == NRC_INVALID_SLOT) return false;
+    if (slot == NRC_INVALID_SLOT) return NRC_INVALID_SLOT;
 
     NrcStorePendingGI(
         pixelIdx,
         slot,
-        PackRGB9E5(throughput),
-        PackRGB9E5(tpost),
+        PackRGB9E5(throughput * reflSum),
+        PackRGB9E5(tpost      * reflSum),
         pdfProduct);
-    return true;
+    return slot;
 }
 
 //====================================================================

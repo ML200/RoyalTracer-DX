@@ -64,8 +64,11 @@ void Pass_raygen_v8()
     uint nrcPathClass = NrcClassifyPixel(pixel, asuint(time), nrcTileOffset,
                                           nrcIsTraining, nrcIsUnbiased);
     nrcIsTraining = nrcIsTraining && kNrcTrainOn;
-    if (nrcIsTraining) nrcPathClass = NRC_CLASS_TRAIN_UNBIASED;
-    else               nrcPathClass = NRC_CLASS_RENDER;
+    if (!nrcIsTraining) nrcPathClass = NRC_CLASS_RENDER;
+    // else keep whatever NrcClassifyPixel returned — CLASS_TRAIN_BIASED
+    // (cache-terminates into both the reservoir AND the training tail,
+    // 15/16 of training pixels) or CLASS_TRAIN_UNBIASED (runs to natural
+    // termination, 1/16 of training pixels — injects ground truth).
 
     {
         const uint nrcSortKey =
@@ -96,7 +99,8 @@ void Pass_raygen_v8()
     uint   nrcTrainVIdx  = 0u;
     uint   nrcTailKind   = NRC_TAIL_INVALID;
     uint   nrcTailRadPk  = 0u;
-    float3 nrcLNeeAccum  = float3(0, 0, 0);   //reset per vertex, feeds training target
+    uint   nrcTailInfSlot = NRC_INVALID_SLOT;   //cache-termination slot for class-1 tail
+    float3 nrcLNeeAccum  = float3(0, 0, 0);     //reset per vertex, feeds training target
     if (nrcIsTraining)
     {
         nrcPathId = NrcAllocateTrainingPath();
@@ -456,13 +460,21 @@ void Pass_raygen_v8()
                 //let the path continue normally — losing one cache query is
                 //better than losing the whole pixel's GI contribution.
                 const float3 throughput = UnpackRGB9E5(throughputPk);
-                if (NrcWriteTerminationRecord(
+                const uint nrcSlot = NrcWriteTerminationRecord(
                         pixelIdx, nrcInferenceCapacity,
                         hitPos, -rayDir, hinfo.hitNormal,
                         hitLocalPr, hitLocalKd, hitLocalPm,
-                        throughput, tpost, pdf_product))
+                        throughput, tpost, pdf_product);
+                if (nrcSlot != NRC_INVALID_SLOT)
                 {
                     nrcCacheTerminated = true;
+                    // Class-1 training paths use the SAME query as the
+                    // rendering tail — the cache-terminal vertex's L̂_s
+                    // bootstraps the backward fill (self-training).
+                    if (nrcPathClass == NRC_CLASS_TRAIN_BIASED) {
+                        nrcTailKind    = NRC_TAIL_CACHE;
+                        nrcTailInfSlot = nrcSlot;
+                    }
                     break;
                 }
             }
@@ -780,8 +792,10 @@ void Pass_raygen_v8()
     if (nrcPathId != NRC_INVALID_PATH)
     {
         const uint tailKind = (nrcTailKind != NRC_TAIL_INVALID) ? nrcTailKind : NRC_TAIL_RR;
-        NrcStorePathMeta(nrcPathId, nrcTrainVIdx, tailKind,
-                         NRC_INVALID_SLOT, nrcTailRadPk);
+        // kTailCache carries its slot in inferenceSlot; other tail kinds
+        // carry their radiance in tailRadPk (fill kernel branches on kind).
+        const uint infSlot = (tailKind == NRC_TAIL_CACHE) ? nrcTailInfSlot : NRC_INVALID_SLOT;
+        NrcStorePathMeta(nrcPathId, nrcTrainVIdx, tailKind, infSlot, nrcTailRadPk);
     }
 
     //====================================================================

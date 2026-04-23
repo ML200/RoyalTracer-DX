@@ -34,20 +34,28 @@ static tcnn::json BuildNetworkConfig() {
             {"l2_reg",        1e-6f},
         }},
 
-        // Composite encoding: 14 raw dims → 62 encoded.
-        //   3 pos  → Frequency(6 freqs, sin+cos) = 36
+        // Composite encoding: 14 raw dims → 98 encoded.
+        //   3 pos  → Frequency(12 freqs, sin+cos) = 72
         //   2 ω_sph → OneBlob(4 bins)            =  8
         //   2 n_sph → OneBlob(4 bins)            =  8
         //   1 rough → OneBlob(4 bins)            =  4
         //   6 α,β  → Identity                    =  6
-        //                                        = 62 → padded to 64 by tcnn
+        //                                        = 98 → padded to 112 by tcnn
+        //
+        // Paper §3.6 specifies 12 sine functions at frequencies 2^0..2^11
+        // (sin-only, 36 dims). tcnn's Frequency encoder always emits
+        // sin+cos per frequency, so we set n_frequencies = 12 to cover
+        // the same 2^0..2^11 range (72 dims). The previous value (6) only
+        // reached 2^5, giving a ~0.2-unit positional period — the grid
+        // pattern you'd see in the debug view came from those low-freq
+        // basis sines repeating across the scene.
         {"encoding", {
             {"otype",  "Composite"},
             {"nested", tcnn::json::array({
                 tcnn::json{
                     {"n_dims_to_encode", 3u},
                     {"otype",            "Frequency"},
-                    {"n_frequencies",    6u},
+                    {"n_frequencies",    12u},
                 },
                 tcnn::json{
                     {"n_dims_to_encode", 2u},
@@ -92,6 +100,30 @@ __device__ __forceinline__ float3 unpack_rgb9e5(uint32_t p) {
     return make_float3(float(rm) * scale, float(gm) * scale, float(bm) * scale);
 }
 
+// Knuth's golden-ratio multiplier — coprime with 2^16 (odd), so
+// multiplying by it is a BIJECTIVE permutation of [0, 2^16). We use
+// it to shuffle training-record destinations across the 65536-slot
+// training buffer so consecutive vertices from the same path end up
+// in different batches.
+__device__ __forceinline__ uint32_t shuffle_train_slot(uint32_t raw) {
+    return (raw * 0x9E3779B9u) & (kTrainingRecordsPerFrame - 1u);
+}
+
+// EMA update: ema = alpha * ema + (1 - alpha) * src. Lands after each
+// training_step to produce smoothed weights for inference (paper §3.3).
+__global__ void ema_update_kernel(
+    __half*       __restrict__ ema,
+    const __half* __restrict__ src,
+    float                      alpha,
+    size_t                     n)
+{
+    const size_t i = size_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    const float e = __half2float(ema[i]);
+    const float s = __half2float(src[i]);
+    ema[i] = __float2half(alpha * e + (1.0f - alpha) * s);
+}
+
 // ── Backward-fill kernel ──────────────────────────────────────────
 // One thread per path id. Reads the TrainingPathMeta, seeds the tail
 // from tailKind, walks the per-path vertex bucket in reverse, emits
@@ -123,52 +155,74 @@ __global__ void fill_training_batch_kernel(
     const uint32_t tailRadPk    = meta[3];
     if (numVertices == 0 || tailKind == kTailInvalid) return;
 
-    // Seed the backward recursion.
+    // Per-path vertex region.
+    const uint8_t* vertBase = trainBuf + kPathMetaTotalBytes +
+                              pathId * kMaxVerticesPerPath * kTrainVertexStride;
+    const uint32_t lastV = (numVertices <= kMaxVerticesPerPath) ? (numVertices - 1u)
+                                                                : (kMaxVerticesPerPath - 1u);
+
+    // Seed the backward recursion with ACTUAL radiance at the "beyond last"
+    // vertex. Reflectance factorization lives on the training target
+    // (target_net = L_s / (α+β)), NOT on the tail — tails from emitters
+    // / misses are already in radiance units, and the cache output has to
+    // be multiplied by the terminal's (α+β) to recover radiance.
     float tail_r = 0.0f, tail_g = 0.0f, tail_b = 0.0f;
     if (tailKind == kTailEmitter || tailKind == kTailMiss) {
         float3 t = unpack_rgb9e5(tailRadPk);
         tail_r = t.x; tail_g = t.y; tail_b = t.z;
     } else if (tailKind == kTailCache && inferenceSlot != kInvalidInferenceSlot) {
+        // Multiply MLP output (irradiance) by terminal-vertex (α+β) to
+        // recover L_s. α, β are at raw[8..10] and raw[11..13] inside the
+        // last vertex record.
+        const uint8_t* vbLast = vertBase + lastV * kTrainVertexStride;
+        const float*   rawLast = reinterpret_cast<const float*>(vbLast);
         const float* p = inferenceOut + inferenceSlot * kOutputDim;
-        tail_r = p[0]; tail_g = p[1]; tail_b = p[2];
+        tail_r = p[0] * (rawLast[8]  + rawLast[11]);
+        tail_g = p[1] * (rawLast[9]  + rawLast[12]);
+        tail_b = p[2] * (rawLast[10] + rawLast[13]);
     }
     // kTailRR keeps tail = 0.
 
-    // Per-path vertex region.
-    const uint8_t* vertBase = trainBuf + kPathMetaTotalBytes +
-                              pathId * kMaxVerticesPerPath * kTrainVertexStride;
-
     // Backward walk: last vertex first.
-    const uint32_t lastV = (numVertices <= kMaxVerticesPerPath) ? (numVertices - 1u)
-                                                                : (kMaxVerticesPerPath - 1u);
     for (int32_t v = int32_t(lastV); v >= 0; --v) {
         const uint8_t* vb = vertBase + uint32_t(v) * kTrainVertexStride;
-        // Raw features sit as 14 fp32 at offset 0.
-        const float* raw = reinterpret_cast<const float*>(vb);
+        const float*   raw = reinterpret_cast<const float*>(vb);
         const uint32_t L_neePk     = *reinterpret_cast<const uint32_t*>(vb + 56);
         const uint32_t betaLocalPk = *reinterpret_cast<const uint32_t*>(vb + 60);
 
         float3 lnee = unpack_rgb9e5(L_neePk);
         float3 beta = unpack_rgb9e5(betaLocalPk);
 
-        // target = L_nee + β · tail (componentwise)
-        const float target_r = lnee.x + beta.x * tail_r;
-        const float target_g = lnee.y + beta.y * tail_g;
-        const float target_b = lnee.z + beta.z * tail_b;
+        // MC estimator for actual radiance L_s[v] = L_nee + β · tail.
+        const float ls_r = lnee.x + beta.x * tail_r;
+        const float ls_g = lnee.y + beta.y * tail_g;
+        const float ls_b = lnee.z + beta.z * tail_b;
 
-        // Emit (features, target). Drop if we're past the batch cap.
-        const uint32_t outIdx = atomicAdd(outCounter, 1u);
-        if (outIdx < kTrainingRecordsPerFrame) {
-            // Column-major: sample `outIdx` occupies contiguous 14 floats.
+        // Training target = L_s / (α+β) — irradiance. 1e-5 floor avoids
+        // blowing up on black materials; ReLU MLPs can't output negative
+        // anyway, so the zero albedo corner is effectively dropped.
+        const float rs_r = fmaxf(raw[8]  + raw[11], 1e-5f);
+        const float rs_g = fmaxf(raw[9]  + raw[12], 1e-5f);
+        const float rs_b = fmaxf(raw[10] + raw[13], 1e-5f);
+        const float tgt_r = ls_r / rs_r;
+        const float tgt_g = ls_g / rs_g;
+        const float tgt_b = ls_b / rs_b;
+
+        // LCG shuffle: raw slot → bijective permutation over the 16-bit
+        // training buffer. Consecutive vertices within a path land in
+        // widely-separated slots so SGD sees decorrelated batches.
+        const uint32_t rawIdx = atomicAdd(outCounter, 1u);
+        if (rawIdx < kTrainingRecordsPerFrame) {
+            const uint32_t outIdx = shuffle_train_slot(rawIdx);
             float* f = outFeatures + outIdx * kRawInputDim;
             #pragma unroll
             for (uint32_t i = 0; i < kRawInputDim; ++i) f[i] = raw[i];
             float* t = outTargets + outIdx * kOutputDim;
-            t[0] = target_r; t[1] = target_g; t[2] = target_b;
+            t[0] = tgt_r; t[1] = tgt_g; t[2] = tgt_b;
         }
 
-        // Roll the recursion forward (backward in path order).
-        tail_r = target_r; tail_g = target_g; tail_b = target_b;
+        // Recursion passes ACTUAL radiance forward (backward in path order).
+        tail_r = ls_r; tail_g = ls_g; tail_b = ls_b;
     }
 }
 
@@ -181,6 +235,13 @@ struct Network::Impl {
     float*    trainFeatures = nullptr;   // kTrainingRecordsPerFrame × kRawInputDim
     float*    trainTargets  = nullptr;   // kTrainingRecordsPerFrame × kOutputDim
     uint32_t* trainCounter  = nullptr;   // single u32
+
+    // EMA of network weights (paper §3.3). tcnn's `inference_params`
+    // pointer is rerouted to this buffer after init so inference sees
+    // smoothed weights while the optimizer keeps mutating the raw ones.
+    tcnn::network_precision_t* emaParams = nullptr;
+    size_t                     nParams   = 0;
+    float                      emaAlpha  = 0.99f;
 
     bool ready = false;
 };
@@ -201,6 +262,25 @@ bool Network::Init() {
         if (cudaMalloc(&m_impl->trainTargets,  tBytes) != cudaSuccess) return false;
         if (cudaMalloc(&m_impl->trainCounter,  sizeof(uint32_t)) != cudaSuccess) return false;
 
+        // ── EMA inference weights (paper §3.3) ────────────────────
+        // Allocate a second fp16 weight buffer, seed it from the freshly-
+        // initialised training weights, then reroute the Network's
+        // inference pointer to it. Training keeps updating m_params;
+        // inference reads m_emaParams. The EMA is lerp'd after each
+        // training_step in TrainFrame.
+        const size_t nParams = m_impl->model.network->n_params();
+        m_impl->nParams = nParams;
+        if (cudaMalloc(&m_impl->emaParams,
+                       nParams * sizeof(tcnn::network_precision_t)) != cudaSuccess) return false;
+        cudaMemcpy(m_impl->emaParams,
+                   m_impl->model.trainer->params(),
+                   nParams * sizeof(tcnn::network_precision_t),
+                   cudaMemcpyDeviceToDevice);
+        m_impl->model.network->set_params(
+            m_impl->model.trainer->params(),          // training reads/writes this
+            m_impl->emaParams,                        // inference reads this
+            m_impl->model.trainer->param_gradients());
+
         m_impl->ready = true;
         return true;
     } catch (const std::exception& ex) {
@@ -214,6 +294,8 @@ void Network::Shutdown() {
     if (m_impl->trainFeatures) { cudaFree(m_impl->trainFeatures); m_impl->trainFeatures = nullptr; }
     if (m_impl->trainTargets)  { cudaFree(m_impl->trainTargets);  m_impl->trainTargets  = nullptr; }
     if (m_impl->trainCounter)  { cudaFree(m_impl->trainCounter);  m_impl->trainCounter  = nullptr; }
+    if (m_impl->emaParams)     { cudaFree(m_impl->emaParams);     m_impl->emaParams     = nullptr; }
+    m_impl->nParams = 0;
     m_impl->model = tcnn::TrainableModel{};
 }
 
@@ -286,11 +368,23 @@ void Network::TrainFrame(
         m_impl->trainTargets,
         m_impl->trainCounter);
 
-    // Four SGD steps per frame on disjoint 16384-record slices.
+    // Four SGD steps per frame on disjoint 16384-record slices. After
+    // each step, roll the EMA of training weights into the inference
+    // buffer (paper §3.3, α = 0.99). tcnn's training_step mutates
+    // m_impl->model.trainer->params() in place, which is what we
+    // average over.
+    const uint32_t kEmaThreads = 256u;
+    const uint32_t kEmaBlocks  = uint32_t((m_impl->nParams + kEmaThreads - 1u) / kEmaThreads);
+    const cudaStream_t cudaStream = static_cast<cudaStream_t>(streamPtr);
     for (uint32_t b = 0; b < kTrainingBatchesPerFrame; ++b) {
         const float* fPtr = m_impl->trainFeatures + b * kTrainingBatchSize * kRawInputDim;
         const float* tPtr = m_impl->trainTargets  + b * kTrainingBatchSize * kOutputDim;
         TrainingStep(streamPtr, fPtr, tPtr);
+        ema_update_kernel<<<kEmaBlocks, kEmaThreads, 0, cudaStream>>>(
+            m_impl->emaParams,
+            m_impl->model.trainer->params(),
+            m_impl->emaAlpha,
+            m_impl->nParams);
     }
 }
 
