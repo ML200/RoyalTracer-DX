@@ -12,9 +12,9 @@
 //====================================================================
 // CONSTANTS — keep in sync with NrcLayout.h
 //====================================================================
-static const uint NRC_RAW_INPUT_DIM         = 14u;
+static const uint NRC_RAW_INPUT_DIM         = 16u;
 static const uint NRC_OUTPUT_DIM            = 3u;
-static const uint NRC_INFERENCE_IN_STRIDE   = NRC_RAW_INPUT_DIM * 4u;  // 56
+static const uint NRC_INFERENCE_IN_STRIDE   = NRC_RAW_INPUT_DIM * 4u;  // 64
 static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;   // 12
 
 // Default tile side. Used as a fallback when the renderer hasn't packed
@@ -48,11 +48,11 @@ static const uint NRC_TPM_OFF_TAILRAD  = 12u;
 // Bytes reserved for the full meta table before per-vertex records begin.
 static const uint NRC_PATH_META_TOTAL  = NRC_MAX_TRAINING_PATHS * NRC_TPM_STRIDE;  // 1048576 at 65536
 
-// TrainingVertex: 56 B features + 4 B L_neePk + 4 B betaLocalPk = 64 B.
-static const uint NRC_TV_STRIDE        = 64u;
+// TrainingVertex: 64 B features + 4 B L_neePk + 4 B betaLocalPk = 72 B.
+static const uint NRC_TV_STRIDE        = 72u;
 static const uint NRC_TV_OFF_RAW       = 0u;
-static const uint NRC_TV_OFF_LNEE      = 56u;
-static const uint NRC_TV_OFF_BETA      = 60u;
+static const uint NRC_TV_OFF_LNEE      = 64u;
+static const uint NRC_TV_OFF_BETA      = 68u;
 
 // PendingGI offsets (bytes)
 static const uint NRC_PG_STRIDE             = 16u;
@@ -71,8 +71,7 @@ static const uint NRC_CLASS_TRAIN_BIASED    = 1u;
 static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 
 // Push-constant flag bits — mirrors nrc::flags in NrcLayout.h.
-//   bits 0..3  : behavior toggles (enabled / train / debug view /
-//                aggressive cache term)
+//   bits 0..2  : behavior toggles (enabled / train / debug view)
 //   bits 8..15 : training tile side (0 = use NRC_TRAINING_TILE_SIDE
 //                fallback). Adaptive sizing per paper §3.5: renderer
 //                scales this each frame from the previous frame's
@@ -80,14 +79,12 @@ static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 static const uint NRC_FLAG_ENABLED          = 1u;
 static const uint NRC_FLAG_TRAIN            = 2u;
 static const uint NRC_FLAG_DEBUG_VIEW       = 4u;
-static const uint NRC_FLAG_AGGRESSIVE_CACHE = 8u;
 static const uint NRC_FLAG_TILE_SHIFT       = 8u;
 static const uint NRC_FLAG_TILE_MASK        = 0xFFu;
 
 inline bool NrcIsEnabled()           { return (nrc_flags & NRC_FLAG_ENABLED)          != 0u; }
 inline bool NrcIsTrainOn()           { return (nrc_flags & NRC_FLAG_TRAIN)            != 0u; }
 inline bool NrcIsDebugView()         { return (nrc_flags & NRC_FLAG_DEBUG_VIEW)       != 0u; }
-inline bool NrcIsAggressiveCache()   { return (nrc_flags & NRC_FLAG_AGGRESSIVE_CACHE) != 0u; }
 
 // Effective training tile side this frame. Falls back to the static
 // default if the renderer didn't pack a value (which is what happens
@@ -112,38 +109,22 @@ RWByteAddressBuffer g_NrcTrainRecords : register(u43);
 RWByteAddressBuffer g_NrcCounters     : register(u44);
 
 //====================================================================
-// DIRECTION ENCODING — octahedral map S² → [0,1]².
+// DIRECTION ENCODING — raw unit 3-vec, remapped to [0,1]³ for SH.
 //
-// arccos/atan2 spherical coordinates have a pole singularity at
-// d ≈ (0, 0, ±1): phi = atan2(d.y, d.x) swings by 2π under an
-// infinitesimal rotation around the pole, so two neighboring pixels
-// can produce drastically different OneBlob activations. The network
-// can't learn a smooth function across that ring, and the result is
-// a visible dark blob wherever the view direction lines up with the
-// pole axis.
+// The tcnn SphericalHarmonics encoder takes inputs in [0, 1]³ and
+// internally remaps them to [-1, 1]³ on the unit sphere before
+// evaluating the degree-4 SH basis (16 coefficients). That gives a
+// smooth, analytic, rotationally-equivariant direction encoding —
+// no octahedral seam on the lower hemisphere, no OneBlob wraparound
+// discontinuity at bin boundaries. Both the view direction and the
+// surface normal ride this encoder.
 //
-// Octahedral is bijective and smooth everywhere except a set of
-// measure zero (the four octahedron edges on the lower hemisphere),
-// which is fine because those map to a 1-D curve, not an isolated
-// point with divergent gradient. OneBlob's wraparound handles the
-// edge transitions seamlessly.
+// Inputs must be unit vectors; the callers already normalize, so this
+// is a pure affine remap.
 //====================================================================
-inline float2 NrcEncodeDir(float3 d)
+inline float3 NrcEncodeDir(float3 d)
 {
-    const float denom = abs(d.x) + abs(d.y) + abs(d.z) + 1e-20f;
-    float3 n = d / denom;
-    float2 p;
-    if (n.z >= 0.0f) {
-        p = n.xy;
-    } else {
-        // Lower hemisphere: fold onto the square's corners so the
-        // mapping stays continuous at z=0 and p.xy at the corners
-        // collapses smoothly into the upper-hemisphere values.
-        const float2 s = float2(n.x >= 0.0f ? 1.0f : -1.0f,
-                                n.y >= 0.0f ? 1.0f : -1.0f);
-        p = (1.0f - abs(n.yx)) * s;
-    }
-    return p * 0.5f + 0.5f;
+    return d * 0.5f + 0.5f;
 }
 
 inline float NrcEncodeRoughness(float r)
@@ -202,33 +183,36 @@ inline void NrcBuildFeatures(
     float3 x, float3 o, float3 n,
     float  r,
     float3 alpha, float3 beta,
-    out float features[14])
+    out float features[16])
 {
     const float3 xN   = NrcNormalizePosition(x);
-    const float2 sphO = NrcEncodeDir(o);
-    const float2 sphN = NrcEncodeDir(n);
+    const float3 shO  = NrcEncodeDir(o);
+    const float3 shN  = NrcEncodeDir(n);
 
     // Sanitize + bounds-clamp every feature. This is the one checkpoint
     // between the path tracer and tcnn — if garbage gets past here,
     // it pollutes Adam's state forever.
-    // Saturate to [0, 1] — HashGrid's hash function wraps for inputs
-    // outside this range and produces garbage features. The earlier
-    // [-8, 8] clamp was for the periodic TriangleWave encoder which
-    // tolerated overshoot.
+    // Saturate position to [0, 1] — HashGrid's hash function wraps for
+    // inputs outside this range and produces garbage features.
+    // Saturate directions to [0, 1] — SH's internal remap expects
+    // inputs there; a caller that forgets to normalize would otherwise
+    // feed SH a point off the unit sphere and get spurious coefficients.
     features[0]  = saturate(NrcCleanFinite(xN.x));
     features[1]  = saturate(NrcCleanFinite(xN.y));
     features[2]  = saturate(NrcCleanFinite(xN.z));
-    features[3]  = saturate(NrcCleanFinite(sphO.x));
-    features[4]  = saturate(NrcCleanFinite(sphO.y));
-    features[5]  = saturate(NrcCleanFinite(sphN.x));
-    features[6]  = saturate(NrcCleanFinite(sphN.y));
-    features[7]  = saturate(NrcCleanFinite(NrcEncodeRoughness(r)));
-    features[8]  = clamp(NrcCleanFinite(alpha.x), 0.0f, 1e3f);
-    features[9]  = clamp(NrcCleanFinite(alpha.y), 0.0f, 1e3f);
-    features[10] = clamp(NrcCleanFinite(alpha.z), 0.0f, 1e3f);
-    features[11] = clamp(NrcCleanFinite(beta.x),  0.0f, 1e3f);
-    features[12] = clamp(NrcCleanFinite(beta.y),  0.0f, 1e3f);
-    features[13] = clamp(NrcCleanFinite(beta.z),  0.0f, 1e3f);
+    features[3]  = saturate(NrcCleanFinite(shO.x));
+    features[4]  = saturate(NrcCleanFinite(shO.y));
+    features[5]  = saturate(NrcCleanFinite(shO.z));
+    features[6]  = saturate(NrcCleanFinite(shN.x));
+    features[7]  = saturate(NrcCleanFinite(shN.y));
+    features[8]  = saturate(NrcCleanFinite(shN.z));
+    features[9]  = saturate(NrcCleanFinite(NrcEncodeRoughness(r)));
+    features[10] = clamp(NrcCleanFinite(alpha.x), 0.0f, 1e3f);
+    features[11] = clamp(NrcCleanFinite(alpha.y), 0.0f, 1e3f);
+    features[12] = clamp(NrcCleanFinite(alpha.z), 0.0f, 1e3f);
+    features[13] = clamp(NrcCleanFinite(beta.x),  0.0f, 1e3f);
+    features[14] = clamp(NrcCleanFinite(beta.y),  0.0f, 1e3f);
+    features[15] = clamp(NrcCleanFinite(beta.z),  0.0f, 1e3f);
 }
 
 //====================================================================
@@ -254,7 +238,7 @@ inline bool NrcShouldCacheTerminate(int hitIdx, float a0, float a, bool cacheEli
 //====================================================================
 // INFERENCE INPUT / OUTPUT
 //====================================================================
-inline uint NrcAppendInference(uint capacity, float features[14])
+inline uint NrcAppendInference(uint capacity, float features[16])
 {
     uint slot;
     g_NrcCounters.InterlockedAdd(NRC_C_OFF_INFERENCE_COUNT, 1u, slot);
@@ -262,7 +246,7 @@ inline uint NrcAppendInference(uint capacity, float features[14])
 
     const uint base = slot * NRC_INFERENCE_IN_STRIDE;
     [unroll]
-    for (uint i = 0; i < 14u; ++i) {
+    for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
         g_NrcInferenceIn.Store(base + i * 4u, asuint(features[i]));
     }
     return slot;
@@ -352,7 +336,7 @@ inline uint NrcWriteTerminationRecord(
     const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, metallic);
     const float3 reflSum = alpha + betaC;
 
-    float features[14];
+    float features[16];
     NrcBuildFeatures(hitPos, viewDir, hitNormal, roughness, alpha, betaC, features);
 
     const uint slot = NrcAppendInference(inferenceCapacity, features);
@@ -399,7 +383,7 @@ inline void NrcStorePathMeta(
 inline void NrcStoreTrainingVertex(
     uint pathId,
     uint vIdx,
-    float features[14],
+    float features[16],
     uint L_neePk,
     uint betaLocalPk)
 {
@@ -407,7 +391,7 @@ inline void NrcStoreTrainingVertex(
     const uint base = NRC_PATH_META_TOTAL +
                       (pathId * NRC_MAX_VERTICES_PER_PATH + vIdx) * NRC_TV_STRIDE;
     [unroll]
-    for (uint i = 0; i < 14u; ++i) {
+    for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
         g_NrcTrainRecords.Store(base + NRC_TV_OFF_RAW + i * 4u, asuint(features[i]));
     }
     g_NrcTrainRecords.Store(base + NRC_TV_OFF_LNEE, L_neePk);

@@ -58,21 +58,12 @@ void main(uint3 dtid : SV_DispatchThreadID)
 
     const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
 
-    // Aggressive cache-term mode: tag the candidate with the NRC virtual-
-    // light sentinel so Reconnect's DI-style branch fires and skips the
-    // x2 BSDF evaluation. The cache prediction at x2 already encodes the
-    // outgoing radiance toward x1, so re-evaluating F2 under shift would
-    // double-count the directional dependence (the cache output is
-    // baked-in for the original x1 direction). See MATID_NRC_VLIGHT in
-    // Constants_v8.hlsli for the bias / perf trade-off.
-    const uint candidateMatID = NrcIsAggressiveCache() ? MATID_NRC_VLIGHT : ps.matID;
-
     AddInitialCandidate(
         wsum, g_Reservoirs_current, pixelIdx, wi,
         ps.x2, ps.n2_s,
         L2,    ps.v2,
         ps.uv,
-        candidateMatID, ps.objID, ps.eta,
+        ps.matID, ps.objID, ps.eta,
         F_contrib, seed);
 
     // Finalize — mirrors raygen's old final-resolve block.

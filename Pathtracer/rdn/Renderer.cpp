@@ -1359,7 +1359,6 @@ void Renderer::PopulateCommandList() {
         if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
         if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
         if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
-        if (m_nrcReady && m_nrcSettings.aggressiveCacheTerm) nrcFlags |= nrc::flags::kAggressiveCache;
         nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);

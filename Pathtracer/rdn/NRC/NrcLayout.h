@@ -17,14 +17,7 @@ struct Settings {
     bool  enabled            = true;  // master toggle for cache termination + resolve
     bool  trainingEnabled    = true;  // freeze weights when off
     bool  debugView          = false; // render L̂_s at primary vertex to gOutput slice 3
-    // Force every non-long-training path to terminate into the cache at
-    // the SECOND bounce (camera → x1 → x2, query cache at x2), bypassing
-    // the area-spread heuristic entirely. The HashGrid encoder makes the
-    // cache accurate enough at x2 that this is a clean win for primary
-    // shading speed; class-2 (TRAIN_UNBIASED) paths are unaffected and
-    // still inject ground-truth multi-bounce signal.
-    bool  aggressiveCacheTerm = false;
-    float areaSpreadC        = 0.01f; // paper's `c` — smaller = terminate earlier (only used when aggressiveCacheTerm == false)
+    float areaSpreadC        = 0.01f; // paper's `c` — smaller = terminate earlier
     float learningRateScale  = 1.0f;  // reserved for a tcnn-side LR override
     // Scene-space normalization for the network's position input.
     // The Frequency encoder expects inputs in roughly [0,1]; feeding
@@ -36,32 +29,39 @@ struct Settings {
 };
 
 // Push-constant flag bits — keep in sync with Nrc_v8.hlsli.
-//   bits 0..3  : behavior toggles
+//   bits 0..2  : behavior toggles
 //   bits 8..15 : training tile side (0 = use shader fallback)
 namespace flags {
     constexpr uint32_t kEnabled         = 1u << 0;
     constexpr uint32_t kTrain           = 1u << 1;
     constexpr uint32_t kDebugView       = 1u << 2;
-    constexpr uint32_t kAggressiveCache = 1u << 3;
     constexpr uint32_t kTileShift       = 8u;
     constexpr uint32_t kTileMask        = 0xFFu;
 }
 
 // ── Network dimensions ──────────────────────────────────────────────
 // Raw feature vector before tcnn's composite encoding. tcnn expands
-// this to 62 dims internally (frequency on pos, one-blob on ω/n/r,
-// identity on α/β). Layout — written by raygen, read by Inference:
-//   0..2    position
-//   3..4    scattered direction, sph(u,v) in [0,1]^2
-//   5..6    surface normal,      sph(u,v) in [0,1]^2
-//   7       roughness, mapped 1 - exp(-r)
-//   8..10   diffuse reflectance  (rgb)
-//   11..13  specular reflectance (rgb)
-constexpr uint32_t kRawInputDim  = 14;
+// this to 74 dims internally (HashGrid on pos, SphericalHarmonics on
+// ω/n, one-blob on roughness, identity on α/β). Layout — written by
+// raygen, read by Inference:
+//   0..2    position                      (HashGrid)
+//   3..5    scattered direction, unit 3-vec remapped *0.5+0.5 → [0,1]³
+//                                         (SphericalHarmonics deg 4)
+//   6..8    surface normal,      unit 3-vec remapped *0.5+0.5 → [0,1]³
+//                                         (SphericalHarmonics deg 4)
+//   9       roughness, mapped 1 - exp(-r) (OneBlob 4 bins)
+//   10..12  diffuse reflectance  (rgb)    (Identity)
+//   13..15  specular reflectance (rgb)    (Identity)
+constexpr uint32_t kRawInputDim  = 16;
 constexpr uint32_t kOutputDim    = 3;    // scattered radiance rgb
 
+// With the HashGrid encoder carrying most of the representation,
+// Instant-NGP §5.4 / Table 6 shows 2 hidden × 64 is sufficient for NRC
+// (original NRC paper used 5 hidden, which was tuned for the weaker
+// TriangleWave position encoder). Shrinks inference cost ~2.5× with
+// negligible quality loss in our measurements.
 constexpr uint32_t kHiddenWidth  = 64;
-constexpr uint32_t kHiddenLayers = 5;
+constexpr uint32_t kHiddenLayers = 2;
 
 // tcnn requires every inference / training batch to be a multiple of
 // this. Pad up in shader / host as needed.
@@ -128,7 +128,7 @@ enum TailKind : uint32_t {
 // tcnn expects column-major, so sample `i` occupies contiguous bytes
 // [i * stride, (i+1) * stride). Both input and output are fp32 —
 // tcnn's inference() overload we call takes GPUMatrix<float>.
-constexpr uint32_t kInferenceInputStride  = kRawInputDim * sizeof(float);   // 56
+constexpr uint32_t kInferenceInputStride  = kRawInputDim * sizeof(float);   // 64
 constexpr uint32_t kInferenceOutputStride = kOutputDim   * sizeof(float);   // 12
 
 // ── PendingGI ───────────────────────────────────────────────────────
@@ -175,14 +175,14 @@ static_assert(sizeof(TrainingPathMeta) == 16, "TrainingPathMeta must match Nrc_v
 //   betaLocalPk   — BSDF·cos·T / pdf at this vertex; transports radiance
 //                   FROM v+1 TO v during backward fill.
 struct TrainingVertex {
-    float    raw[kRawInputDim];   // 56 B
+    float    raw[kRawInputDim];   // 64 B
     uint32_t L_neePk;             //  4 B
     uint32_t betaLocalPk;         //  4 B
 };
-static_assert(sizeof(TrainingVertex) == 64, "TrainingVertex must match Nrc_v8.hlsli");
+static_assert(sizeof(TrainingVertex) == 72, "TrainingVertex must match Nrc_v8.hlsli");
 
 constexpr uint32_t kPathMetaStride    = sizeof(TrainingPathMeta);   // 16
-constexpr uint32_t kTrainVertexStride = sizeof(TrainingVertex);     // 64
+constexpr uint32_t kTrainVertexStride = sizeof(TrainingVertex);     // 72
 constexpr uint32_t kPathMetaTotalBytes = kMaxTrainingPaths * kPathMetaStride;  // 524288
 
 inline constexpr uint32_t TrainingMetaOffset(uint32_t pathId) {

@@ -38,7 +38,7 @@ private:
     void DrawPassPipelinePanel(PassSystem& passes);
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
     void DrawMaterialInspector(Scene& scene);
-    void DrawReSTIRPanel(ReSTIRSettings& restir, nrc::Settings& nrc);
+    void DrawReSTIRPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
 

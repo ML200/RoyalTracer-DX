@@ -41,20 +41,10 @@
 //MATID_LIGHT_TRI:   x2 is a world position on an emissive triangle.
 //                   n2_s is the light's surface normal. No x2 BSDF,
 //                   L2 carries the triangle's emission directly.
-//MATID_NRC_VLIGHT:  x2 is a real surface position (depth-1 vertex), but
-//                   L2 is the NRC cache prediction at x2 — i.e. we
-//                   treat the vertex AS a virtual light source. Same
-//                   reconnect math as MATID_LIGHT_TRI (geometric Jn,
-//                   no F2 BSDF eval). Used only when nrc::Settings::
-//                   aggressiveCacheTerm is on. Adds a small directional
-//                   bias under shift (cache prediction was for the
-//                   original x1's view direction, not the shifted one),
-//                   accepted in exchange for skipping the F2 cost.
-//Real triangle materials occupy IDs < MATID_NRC_VLIGHT.
+//Real triangle materials occupy IDs < MATID_LIGHT_TRI.
 #define MATID_ENV_MISS    0xFFFFFFFFu
 #define MATID_LIGHT_TRI   0xFFFFFFFEu
-#define MATID_NRC_VLIGHT  0xFFFFFFFDu
-#define IsSentinelMatID(mid) ((mid) >= MATID_NRC_VLIGHT)
+#define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
 
 //====================================================================
 //ROUGHNESS REUSE GATE

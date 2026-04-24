@@ -30,7 +30,7 @@ void Memfill(void* stream, void* devPtr, int value, size_t bytes);
 // inference records did raygen produce?".
 uint32_t ReadU32(void* stream, const void* devPtr);
 
-// Full network: 14-input (14 → composite encoding → 62) → 5 hidden
+// Full network: 16-input (16 → composite encoding → 74) → 2 hidden
 // layers × 64 ReLU → 3 out. Reflectance factorisation, EMA inference
 // weights, etc. live on the caller side for now; this class only owns
 // the raw training / inference machinery.

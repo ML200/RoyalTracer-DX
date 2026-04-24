@@ -379,47 +379,6 @@ inline float3 Reconnect(
     }
 
     //====================================================================
-    //DI-LIKE, NRC VIRTUAL LIGHT (cache prediction at x2)
-    //====================================================================
-    //Used when nrc::Settings::aggressiveCacheTerm forces every cache-
-    //eligible path to terminate at x2 (the first indirect bounce). x2
-    //is a real surface position with normal n2_s, but L2 is the NRC
-    //cache's prediction at x2 — treated as a direction-independent
-    //radiance source for the reconnection.
-    //
-    //We deliberately skip F2 (BSDF at x2) and the geometry term G2:
-    //  - L2 already encodes the radiance leaving x2 toward x1's direction.
-    //  - The cache prediction was computed for the ORIGINAL x1; under
-    //    a shift to neighbor x1', the actual leaving direction differs.
-    //    Re-evaluating F2 with the new direction would still be wrong
-    //    because L2 already baked the original direction into the cache
-    //    output. Skipping F2 = treating the vertex as Lambertian-like
-    //    for shift purposes, which is the same approximation a denoiser
-    //    applies when reusing a sample across pixels.
-    //  - This is the bias the user opted into via the editor toggle.
-    //
-    //No medium absorption: NRC's cache doesn't model media, and the
-    //shift is intra-pixel-neighborhood so any segment-medium effects
-    //are dwarfed by the directional-bias term anyway.
-    if (mID2 == MATID_NRC_VLIGHT)
-    {
-        const float3 dirT  = x2 - x1;
-        const float  distT = length(dirT);
-        if (distT < EPSILON) return 0.0f;
-        const float3 ndirNT = normalize(-dirT);  // x2 -> x1
-
-        const float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirNT, o,
-                                    localKd1, localPr1, localPm1, etai1, etat1);
-        const float  G1 = G_term(n1_s, -ndirNT);
-
-        float3 r = F1 * L2 * G1;
-        if (any(isnan(r)) || any(isinf(r))) r = 0.0f;
-
-        Jn = max(abs(dot(ndirNT, n2_s)) / (distT * distT), EPSILON);
-        return max(r, 0.0f);
-    }
-
-    //====================================================================
     //GI, BSDF-SAMPLED VERTEX AT X2, D >= 3
     //====================================================================
 

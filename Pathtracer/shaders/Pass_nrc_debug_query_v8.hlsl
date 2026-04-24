@@ -60,7 +60,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const float3 alpha = localKd * (1.0f - localPm);
     const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), localKd, localPm);
 
-    float features[14];
+    float features[16];
     NrcBuildFeatures(x1, viewDir, n1_s, localPr, alpha, betaC, features);
 
     // Deterministic per-pixel slot. Safe to reuse g_NrcInferenceIn
@@ -68,7 +68,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
     // consumed the main pass's contents by now.
     const uint base = pixelIdx * NRC_INFERENCE_IN_STRIDE;
     [unroll]
-    for (uint i = 0; i < 14u; ++i) {
+    for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
         g_NrcInferenceIn.Store(base + i * 4u, asuint(features[i]));
     }
 }

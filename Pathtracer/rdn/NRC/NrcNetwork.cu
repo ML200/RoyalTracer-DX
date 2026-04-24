@@ -35,23 +35,34 @@ static tcnn::json BuildNetworkConfig() {
             {"l2_reg",        1e-6f},
         }},
 
-        // Composite encoding: 14 raw dims → 58 encoded, padded to 64.
+        // Composite encoding: 16 raw dims → 74 encoded, padded to 80.
         //   3 pos  → HashGrid (16 levels × 2 features)  = 32
-        //   2 ω_sph → OneBlob(4 bins)                    =  8
-        //   2 n_sph → OneBlob(4 bins)                    =  8
+        //   3 ω    → SphericalHarmonics (degree 4)      = 16
+        //   3 n    → SphericalHarmonics (degree 4)      = 16
         //   1 rough → OneBlob(4 bins)                    =  4
         //   6 α,β  → Identity                            =  6
-        //                                                = 58 → padded to 64 by tcnn
+        //                                                = 74 → padded by tcnn
         //
-        // HashGrid (Müller et al. "Instant-NGP", 2022) replaces the paper's
-        // TriangleWave for position. Two reasons:
-        //   1) Quality. Per-level interpolated lookups capture detail at
-        //      multiple resolutions; far better than 12 fixed sinusoids
-        //      at distinguishing nearby world-space points. Less encoder
-        //      bleed-through ("grid artifacts") in the cache.
-        //   2) Adapts to scene scale. base_resolution=16 + per_level_scale=1.5
-        //      gives finest resolution ~16 · 1.5^15 ≈ 7000 cells across the
-        //      AABB — sub-cm detail for a typical 50m scene.
+        // Position: HashGrid (Müller et al. "Instant-NGP", 2022). Tuning:
+        //   - per_level_scale=1.38 (paper default for bounded scenes) so
+        //     N_max = 16·1.38^15 ≈ 1500. An aggressive 1.5 gives sub-mm
+        //     cells in a 50m scene — beyond NRC's ~cm radiance-smoothness
+        //     regime, which mostly produces hash collisions without useful
+        //     detail. 1.38 keeps the finest levels inside the regime where
+        //     colliding gradients reinforce rather than fight each other.
+        //   - Smoothstep interpolation (C1 continuous) removes the
+        //     derivative discontinuities at cell boundaries that otherwise
+        //     show up as low-frequency grid artifacts in the cache.
+        //
+        // Direction / normal: SphericalHarmonics degree 4 replaces the
+        // octahedral → OneBlob chain. Benefits:
+        //   - Analytic, smooth, rotationally equivariant — no octahedral
+        //     seam on the lower hemisphere.
+        //   - 16 coeffs per direction vs OneBlob's 8 bins — more
+        //     expressive basis for the view-dependent term.
+        //   - The HLSL side now emits the raw unit 3-vec remapped
+        //     *0.5+0.5 into [0,1]³ (tcnn's SH impl remaps back to the
+        //     sphere internally).
         //
         // ~2 MB of trainable hash params (2^19 entries × 2 features × fp16),
         // updated by Adam alongside the MLP weights.
@@ -70,18 +81,18 @@ static tcnn::json BuildNetworkConfig() {
                     {"n_features_per_level",   2u},
                     {"log2_hashmap_size",      19u},
                     {"base_resolution",        16u},
-                    {"per_level_scale",        1.5f},
-                    {"interpolation",          "Linear"},
+                    {"per_level_scale",        1.38f},
+                    {"interpolation",          "Smoothstep"},
                 },
                 tcnn::json{
-                    {"n_dims_to_encode", 2u},
-                    {"otype",            "OneBlob"},
-                    {"n_bins",           4u},
+                    {"n_dims_to_encode", 3u},
+                    {"otype",            "SphericalHarmonics"},
+                    {"degree",           4u},
                 },
                 tcnn::json{
-                    {"n_dims_to_encode", 2u},
-                    {"otype",            "OneBlob"},
-                    {"n_bins",           4u},
+                    {"n_dims_to_encode", 3u},
+                    {"otype",            "SphericalHarmonics"},
+                    {"degree",           4u},
                 },
                 tcnn::json{
                     {"n_dims_to_encode", 1u},
@@ -95,7 +106,7 @@ static tcnn::json BuildNetworkConfig() {
             })},
         }},
 
-        // Fully-fused MLP, 5 hidden × 64 ReLU, linear out.
+        // Fully-fused MLP, 2 hidden × 64 ReLU, linear out.
         {"network", {
             {"otype",             "FullyFusedMLP"},
             {"activation",        "ReLU"},
@@ -173,7 +184,7 @@ __global__ void ema_update_kernel(
 //   [0, kPathMetaTotalBytes)                                   : TrainingPathMeta[kMaxTrainingPaths]
 //   [kPathMetaTotalBytes, ...)                                  : TrainingVertex[kMaxTrainingPaths][kMaxVerticesPerPath]
 // Each TrainingPathMeta is 16 bytes (4 u32).
-// Each TrainingVertex is 64 bytes (14 floats + 2 u32).
+// Each TrainingVertex is 72 bytes (16 floats + 2 u32).
 __global__ void fill_training_batch_kernel(
     const uint8_t* __restrict__ trainBuf,
     const float*   __restrict__ inferenceOut,
@@ -236,8 +247,8 @@ __global__ void fill_training_batch_kernel(
     for (int32_t v = int32_t(lastV); v >= 0; --v) {
         const uint8_t* vb = vertBase + uint32_t(v) * kTrainVertexStride;
         const float*   raw = reinterpret_cast<const float*>(vb);
-        const uint32_t L_neePk     = *reinterpret_cast<const uint32_t*>(vb + 56);
-        const uint32_t betaLocalPk = *reinterpret_cast<const uint32_t*>(vb + 60);
+        const uint32_t L_neePk     = *reinterpret_cast<const uint32_t*>(vb + 64);
+        const uint32_t betaLocalPk = *reinterpret_cast<const uint32_t*>(vb + 68);
 
         float3 lnee = unpack_rgb9e5(L_neePk);
         float3 beta = unpack_rgb9e5(betaLocalPk);
@@ -253,9 +264,10 @@ __global__ void fill_training_batch_kernel(
         // one-bad-value-kills-the-entire-network failure) and caps
         // the magnitude so a legitimate extreme sample doesn't spike
         // Adam's moments.
-        const float rs_r = fmaxf(raw[8]  + raw[11], 1e-5f);
-        const float rs_g = fmaxf(raw[9]  + raw[12], 1e-5f);
-        const float rs_b = fmaxf(raw[10] + raw[13], 1e-5f);
+        // Reflectance indices per new layout: α @ raw[10..12], β @ raw[13..15].
+        const float rs_r = fmaxf(raw[10] + raw[13], 1e-5f);
+        const float rs_g = fmaxf(raw[11] + raw[14], 1e-5f);
+        const float rs_b = fmaxf(raw[12] + raw[15], 1e-5f);
         const float tgt_r = safe_target(ls_r / rs_r);
         const float tgt_g = safe_target(ls_g / rs_g);
         const float tgt_b = safe_target(ls_b / rs_b);

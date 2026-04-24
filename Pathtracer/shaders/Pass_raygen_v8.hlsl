@@ -445,25 +445,16 @@ void Pass_raygen_v8()
         //above already skipped thin-glass boundaries. nrcHitIdx maps to the
         //paper's path-vertex index (x1 at 1, x2 at 2, ...).
         //
-        //Two termination modes:
-        //  - DEFAULT: Bekaert area-spread heuristic, gated at hitIdx >= 3
-        //    so ReSTIR PT's reconnection at x2 always has a real BSDF to
-        //    evaluate. Specular bounces are skipped via nrcPrevSpecular
-        //    so that glass/mirror chains don't short-circuit onto the
-        //    first diffuse they hit (paper §3.4).
-        //  - AGGRESSIVE: cache-eligible paths fire UNCONDITIONALLY at the
-        //    second hit (hitIdx == 2, i.e. x2 the first indirect bounce).
-        //    Skips area spread + specular gating entirely. The HashGrid
-        //    encoder gives the cache enough fidelity at x2 that paying
-        //    for further bounces is wasted work for shading. Class-2
-        //    (TRAIN_UNBIASED) paths are not cache-eligible and continue
-        //    to natural termination.
+        //Bekaert area-spread heuristic, gated at hitIdx >= 3 so ReSTIR PT's
+        //reconnection at x2 always has a real BSDF to evaluate. Specular
+        //bounces are skipped via nrcPrevSpecular so that glass/mirror
+        //chains don't short-circuit onto the first diffuse they hit
+        //(paper §3.4). Class-2 (TRAIN_UNBIASED) paths are not cache-
+        //eligible and continue to natural termination.
         ++nrcHitIdx;
         //Reset per-vertex NEE accumulator — NEE blocks below add into it,
         //the training-vertex write captures the sum.
         nrcLNeeAccum = float3(0, 0, 0);
-
-        const bool nrcAggressive = NrcIsAggressiveCache();
 
         if (nrcHitIdx == 1)
         {
@@ -472,24 +463,17 @@ void Pass_raygen_v8()
         }
         else
         {
-            // Aggressive-mode early fire at x2 (hitIdx == 2). Bypasses the
-            // standard area-spread accumulation since we're going to fire
-            // anyway. nrcCacheEligible is class-0 OR class-1; class-2 is
-            // false here so unbiased ground-truth paths still run long.
-            const bool aggressiveFire =
-                nrcAggressive && nrcCacheEligible && nrcHitIdx == 2u;
-
-            if (!nrcPrevSpecular && !aggressiveFire)
+            if (!nrcPrevSpecular)
             {
                 const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
                 NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
             }
 
-            const bool standardFire =
+            const bool shouldFire =
                 !nrcPrevSpecular &&
                 NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
 
-            if (aggressiveFire || standardFire)
+            if (shouldFire)
             {
                 //Cache-terminate here. Write the inference request + the
                 //PendingGI record that the resolve compute shader will turn
@@ -760,7 +744,7 @@ void Pass_raygen_v8()
         //training — its β is 0, so backward fill treats it as a terminal.
         if (nrcIsTraining && nrcTrainVIdx < NRC_MAX_VERTICES_PER_PATH)
         {
-            float features[14];
+            float features[16];
             const float3 alpha = hitLocalKd * (1.0f - hitLocalPm);
             const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), hitLocalKd, hitLocalPm);
             NrcBuildFeatures(hitPos, -rayDir, hinfo.hitNormal,
