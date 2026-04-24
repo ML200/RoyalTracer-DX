@@ -49,13 +49,12 @@ cbuffer Push : register(b1)
     //scale_inv = 0 (every position collapses to 0.5 of normalized
     //space) and the global-constant cache output that caused this bug.
     uint   nrc_pad27;          //[27], DO NOT read from shader
-    //Scene-space → [0,1]³ mapping applied to positions before the
-    //Frequency encoding. Without this, tcnn's sin(x · 2^d · π) lowest
-    //period is 2 world units — for any scene larger than a couple of
-    //meters that produces a visible grid because every frequency bin
-    //repeats many times across the scene.
+    //Scene-space → [0,1]³ mapping applied to positions before tcnn's
+    //HashGrid encoder, which is only defined for inputs in [0, 1].
+    //Renderer sets scale_inv = 0.5 / halfExtent so a vertex at the
+    //AABB extents lands at 0.0 / 1.0 exactly.
     float3 nrc_scene_center;   //[28..30], world-space scene center
-    float  nrc_scene_scale_inv;//[31], 1 / maxExtent; x_norm = (x - c) * this + 0.5
+    float  nrc_scene_scale_inv;//[31], 0.5 / halfExtent; x_norm = (x - c) * this + 0.5
 };
 
 //====================================================================

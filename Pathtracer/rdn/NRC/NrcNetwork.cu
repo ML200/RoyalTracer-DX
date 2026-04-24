@@ -35,34 +35,43 @@ static tcnn::json BuildNetworkConfig() {
             {"l2_reg",        1e-6f},
         }},
 
-        // Composite encoding: 14 raw dims → 62 encoded, padded to 64.
-        //   3 pos  → TriangleWave(12 freqs)     = 36
-        //   2 ω_sph → OneBlob(4 bins)            =  8
-        //   2 n_sph → OneBlob(4 bins)            =  8
-        //   1 rough → OneBlob(4 bins)            =  4
-        //   6 α,β  → Identity                    =  6
-        //                                        = 62 → padded to 64 by tcnn
+        // Composite encoding: 14 raw dims → 58 encoded, padded to 64.
+        //   3 pos  → HashGrid (16 levels × 2 features)  = 32
+        //   2 ω_sph → OneBlob(4 bins)                    =  8
+        //   2 n_sph → OneBlob(4 bins)                    =  8
+        //   1 rough → OneBlob(4 bins)                    =  4
+        //   6 α,β  → Identity                            =  6
+        //                                                = 58 → padded to 64 by tcnn
         //
-        // Matches paper §3.6 + §5 exactly. TriangleWave is tcnn's own
-        // implementation of the NRC paper's per-frequency triangle-wave
-        // encoding (sin-only equivalent + quartic approximation of sinf,
-        // §5's perf trick). The previous Frequency encoder emitted
-        // sin+cos per frequency (72 dims), which meant the first layer's
-        // GEMM was 112×64 instead of 64×64 — ~1.75× more FLOPs with no
-        // quality benefit.
+        // HashGrid (Müller et al. "Instant-NGP", 2022) replaces the paper's
+        // TriangleWave for position. Two reasons:
+        //   1) Quality. Per-level interpolated lookups capture detail at
+        //      multiple resolutions; far better than 12 fixed sinusoids
+        //      at distinguishing nearby world-space points. Less encoder
+        //      bleed-through ("grid artifacts") in the cache.
+        //   2) Adapts to scene scale. base_resolution=16 + per_level_scale=1.5
+        //      gives finest resolution ~16 · 1.5^15 ≈ 7000 cells across the
+        //      AABB — sub-cm detail for a typical 50m scene.
         //
-        // Positions must be normalized to roughly [0, 1] before this
-        // encoder — NrcNormalizePosition in Nrc_v8.hlsli does that using
-        // the live scene AABB. Without it, the encoder's period-2 lowest
-        // frequency wraps many times across any real-size scene and the
-        // network degenerates to a grid pattern.
+        // ~2 MB of trainable hash params (2^19 entries × 2 features × fp16),
+        // updated by Adam alongside the MLP weights.
+        //
+        // IMPORTANT: HashGrid expects positions in [0, 1]³ — the renderer
+        // configures nrc_scene_scale_inv accordingly so x_norm lands in
+        // exactly [0, 1] across the scene AABB.
         {"encoding", {
             {"otype",  "Composite"},
             {"nested", tcnn::json::array({
                 tcnn::json{
-                    {"n_dims_to_encode", 3u},
-                    {"otype",            "TriangleWave"},
-                    {"n_frequencies",    12u},
+                    {"n_dims_to_encode",       3u},
+                    {"otype",                  "Grid"},
+                    {"type",                   "Hash"},
+                    {"n_levels",               16u},
+                    {"n_features_per_level",   2u},
+                    {"log2_hashmap_size",      19u},
+                    {"base_resolution",        16u},
+                    {"per_level_scale",        1.5f},
+                    {"interpolation",          "Linear"},
                 },
                 tcnn::json{
                     {"n_dims_to_encode", 2u},
@@ -293,6 +302,17 @@ struct Network::Impl {
     // to drive the adaptive-tile feedback loop. 0 before first frame.
     uint32_t                   lastValidVertices = 0;
 
+    // Async readback for trainCounter. Pinned host memory + a CUDA event
+    // let us overlap the copy with the rest of the frame instead of
+    // stalling the CPU on cudaStreamSynchronize. The pending readback is
+    // drained at the START of the next TrainFrame — by that point the
+    // 4-byte DMA has long finished, so cudaEventSynchronize is a no-op.
+    // Trade-off: batch sizing is sourced from the previous frame's
+    // count (1-frame lag), which only matters during sharp transitions.
+    uint32_t*                  hostCounterReadback   = nullptr;   // pinned
+    cudaEvent_t                counterReadbackEvent  = nullptr;
+    bool                       counterReadbackPending = false;
+
     bool ready = false;
 };
 
@@ -311,6 +331,15 @@ bool Network::Init() {
         if (cudaMalloc(&m_impl->trainFeatures, fBytes) != cudaSuccess) return false;
         if (cudaMalloc(&m_impl->trainTargets,  tBytes) != cudaSuccess) return false;
         if (cudaMalloc(&m_impl->trainCounter,  sizeof(uint32_t)) != cudaSuccess) return false;
+
+        // Pinned host buffer + event for async trainCounter readback.
+        // cudaEventDisableTiming skips the timing slot (we only use it
+        // for ordering, not measurement).
+        if (cudaMallocHost(&m_impl->hostCounterReadback, sizeof(uint32_t)) != cudaSuccess) return false;
+        *m_impl->hostCounterReadback = 0u;
+        if (cudaEventCreateWithFlags(&m_impl->counterReadbackEvent,
+                                     cudaEventDisableTiming) != cudaSuccess) return false;
+        m_impl->counterReadbackPending = false;
 
         // ── EMA inference weights (paper §3.3) ────────────────────
         // Allocate a second fp16 weight buffer and reroute the Network's
@@ -337,6 +366,20 @@ bool Network::Init() {
             m_impl->emaParams,                        // inference reads this
             m_impl->model.trainer->param_gradients());
 
+        // JIT fusion (NVRTC) — compiles the entire encoder + MLP pipeline
+        // into a SINGLE CUDA kernel at first invocation, instead of one
+        // launch per encoder + one for the MLP. For our Composite encoder
+        // with 5 nested sub-encoders this collapses 6 kernel launches per
+        // inference into 1, which is the bulk of the inference cost on
+        // modern GPUs (compute is fast, launch overhead × 6 is not).
+        // Requires TCNN_RTC at build time (already enabled). The first
+        // inference call pays a one-time NVRTC compile (~tens of ms);
+        // every subsequent call uses the cached fused kernel. Falls back
+        // gracefully to the non-fused path if the device or build doesn't
+        // support it (set_jit_fusion clears m_jit_fusion internally on
+        // any failure during kernel materialization).
+        m_impl->model.network->set_jit_fusion(true);
+
         m_impl->ready = true;
         return true;
     } catch (const std::exception& ex) {
@@ -351,6 +394,15 @@ void Network::Shutdown() {
     if (m_impl->trainTargets)  { cudaFree(m_impl->trainTargets);  m_impl->trainTargets  = nullptr; }
     if (m_impl->trainCounter)  { cudaFree(m_impl->trainCounter);  m_impl->trainCounter  = nullptr; }
     if (m_impl->emaParams)     { cudaFree(m_impl->emaParams);     m_impl->emaParams     = nullptr; }
+    if (m_impl->hostCounterReadback) {
+        cudaFreeHost(m_impl->hostCounterReadback);
+        m_impl->hostCounterReadback = nullptr;
+    }
+    if (m_impl->counterReadbackEvent) {
+        cudaEventDestroy(m_impl->counterReadbackEvent);
+        m_impl->counterReadbackEvent = nullptr;
+    }
+    m_impl->counterReadbackPending = false;
     m_impl->nParams = 0;
     m_impl->emaStep = 0;
     m_impl->model = tcnn::TrainableModel{};
@@ -433,16 +485,34 @@ void Network::TrainFrame(
         m_impl->trainTargets,
         m_impl->trainCounter);
 
-    // Read back the actual vertex count so we can size the four SGD
-    // batches to ONLY the rows we filled. ReadU32 stalls the stream,
-    // which is the price for not training Adam on the zero-padded tail
-    // (a `(features=0, target=0)` row is a real gradient step pulling
-    // the network toward 0 at the all-zeros encoded input — see paper
-    // §3.5 on adaptive tiles, which keeps the trainer saturated).
-    uint32_t validVertices = ReadU32(streamPtr, m_impl->trainCounter);
-    if (validVertices > kTrainingRecordsPerFrame)
-        validVertices = kTrainingRecordsPerFrame;
-    m_impl->lastValidVertices = validVertices;
+    // Drain the previous frame's async readback BEFORE issuing a new one.
+    // The 4-byte D2H DMA finishes in microseconds; with a frame interval
+    // of many ms, the event is virtually always already signaled here, so
+    // cudaEventSynchronize is a no-op. Worst case (first call after a
+    // long stall) this waits a few μs — far better than the per-frame
+    // cudaStreamSynchronize the synchronous ReadU32 used to do.
+    if (m_impl->counterReadbackPending) {
+        cudaEventSynchronize(m_impl->counterReadbackEvent);
+        uint32_t v = *m_impl->hostCounterReadback;
+        if (v > kTrainingRecordsPerFrame) v = kTrainingRecordsPerFrame;
+        m_impl->lastValidVertices = v;
+        m_impl->counterReadbackPending = false;
+    }
+
+    // Queue the readback for THIS frame's count — drained by next frame's
+    // call. Recording an event AFTER the memcpy on the same stream lets
+    // us synchronize on it without serializing the rest of the pipeline.
+    cudaMemcpyAsync(m_impl->hostCounterReadback, m_impl->trainCounter,
+                    sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+    cudaEventRecord(m_impl->counterReadbackEvent, stream);
+    m_impl->counterReadbackPending = true;
+
+    // Size THIS frame's training batches from the PREVIOUS frame's count.
+    // For stable scenes this is essentially the same as the current count;
+    // for fast-changing ones, batch size lags by one frame which is
+    // acceptable (a few hundred vertices over- or under-trained out of
+    // tens of thousands). The trade-off buys back the per-frame stall.
+    const uint32_t validVertices = m_impl->lastValidVertices;
 
     // Split across kTrainingBatchesPerFrame disjoint slices, each
     // rounded DOWN to kBatchGranularity. Round-down is required because

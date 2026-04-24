@@ -182,15 +182,14 @@ inline float3 NrcCleanRadiance(float3 v)
 //====================================================================
 // FEATURE PACK
 //====================================================================
-// Position is normalized to roughly [0, 1]³ (actually [-0.5, 1.5]
-// for points at the extremes of the scene AABB, which is fine — the
-// Frequency encoding is periodic). tcnn's Frequency encoder applies
-// sin(x · 2^d · π), so the lowest-frequency period is 2 *in the
-// encoder's input space*. Without normalization, that's 2 world
-// units — for any scene wider than ~a meter the whole encoding
-// degenerates into a repeating grid pattern because every
-// frequency bin cycles many times across the scene. The grid the
-// debug visualization shows is exactly this artifact.
+// Position normalization — maps the scene AABB to exactly [0, 1]³.
+// The renderer sets nrc_scene_scale_inv = 0.5 / halfExtent so a
+// vertex at +halfExtent lands at 1.0 and at -halfExtent at 0.0.
+// HashGrid (the position encoder used by tcnn) is undefined outside
+// [0, 1] — its hash function wraps and produces garbage features —
+// so we saturate downstream in NrcBuildFeatures as a safety net for
+// any vertex slightly outside the AABB (sub-mm offsets from
+// transform jitter, etc.).
 inline float3 NrcNormalizePosition(float3 x)
 {
     return (x - nrc_scene_center) * nrc_scene_scale_inv + 0.5f;
@@ -209,9 +208,13 @@ inline void NrcBuildFeatures(
     // Sanitize + bounds-clamp every feature. This is the one checkpoint
     // between the path tracer and tcnn — if garbage gets past here,
     // it pollutes Adam's state forever.
-    features[0]  = clamp(NrcCleanFinite(xN.x), -8.0f, 8.0f);
-    features[1]  = clamp(NrcCleanFinite(xN.y), -8.0f, 8.0f);
-    features[2]  = clamp(NrcCleanFinite(xN.z), -8.0f, 8.0f);
+    // Saturate to [0, 1] — HashGrid's hash function wraps for inputs
+    // outside this range and produces garbage features. The earlier
+    // [-8, 8] clamp was for the periodic TriangleWave encoder which
+    // tolerated overshoot.
+    features[0]  = saturate(NrcCleanFinite(xN.x));
+    features[1]  = saturate(NrcCleanFinite(xN.y));
+    features[2]  = saturate(NrcCleanFinite(xN.z));
     features[3]  = saturate(NrcCleanFinite(sphO.x));
     features[4]  = saturate(NrcCleanFinite(sphO.y));
     features[5]  = saturate(NrcCleanFinite(sphN.x));

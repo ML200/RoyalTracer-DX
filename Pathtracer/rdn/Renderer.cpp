@@ -1299,7 +1299,13 @@ void Renderer::PopulateCommandList() {
         // silently dropped by HLSL's cbuffer packing rules and the
         // shader would read a shifted, zero-valued scale_inv.
         rsConsts[27] = 0u;
-        const float sceneScaleInv = 1.0f / m_nrcSettings.sceneExtent;
+        // 0.5 / halfExtent maps the scene AABB to exactly [0, 1]³ via
+        // x_norm = (x - center) * scale_inv + 0.5. HashGrid's lookup
+        // table is indexed in [0, 1] — anything outside that range
+        // wraps via the hash function and produces nonsensical features.
+        // (Old factor was 1.0 / halfExtent for [-0.5, 1.5] which the
+        // periodic TriangleWave tolerated; HashGrid does not.)
+        const float sceneScaleInv = 0.5f / m_nrcSettings.sceneExtent;
         memcpy(&rsConsts[28], &m_nrcSettings.sceneCenter.x, 4);
         memcpy(&rsConsts[29], &m_nrcSettings.sceneCenter.y, 4);
         memcpy(&rsConsts[30], &m_nrcSettings.sceneCenter.z, 4);
