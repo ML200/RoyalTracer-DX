@@ -97,6 +97,13 @@ public:
     // saturated. Returns 0 before the first TrainFrame call.
     uint32_t LastValidVertexCount() const;
 
+    // Block until any in-flight training on the auxiliary stream finishes.
+    // Required before tearing down or reallocating CUDA-shared buffers
+    // (resize), since training kernels reference inferenceOut /
+    // trainRecords / counters and would race or read freed memory if the
+    // renderer recreated those buffers underneath them.
+    void WaitIdle();
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

@@ -229,6 +229,10 @@ private:
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
     void RebuildDLSSDescriptors();
     void RebuildResolutionDependentDescriptors();
+    // Re-binds the NRC UAV descriptors at slots 58-60 after the
+    // resolution-dependent NRC buffers (InferenceIn/Out, PendingGI)
+    // get reallocated on resize. Called from OnResize.
+    void RebuildNrcDescriptors();
 
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();

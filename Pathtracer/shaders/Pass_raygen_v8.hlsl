@@ -443,15 +443,28 @@ void Pass_raygen_v8()
         //====================================================================
         //Counts only real (non-pass-through) hits; the pass-through `continue`
         //above already skipped thin-glass boundaries. nrcHitIdx maps to the
-        //paper's path-vertex index (x1 at 1, x2 at 2, ...). Cache termination
-        //is gated at >= 3 so ReSTIR PT's reconnection at x2 always has a real
-        //BSDF to evaluate; we additionally defer termination across specular
-        //bounces via nrcPrevSpecular (see its declaration) so that glass/
-        //mirror chains don't short-circuit onto the first diffuse they hit.
+        //paper's path-vertex index (x1 at 1, x2 at 2, ...).
+        //
+        //Two termination modes:
+        //  - DEFAULT: Bekaert area-spread heuristic, gated at hitIdx >= 3
+        //    so ReSTIR PT's reconnection at x2 always has a real BSDF to
+        //    evaluate. Specular bounces are skipped via nrcPrevSpecular
+        //    so that glass/mirror chains don't short-circuit onto the
+        //    first diffuse they hit (paper §3.4).
+        //  - AGGRESSIVE: cache-eligible paths fire UNCONDITIONALLY at the
+        //    second hit (hitIdx == 2, i.e. x2 the first indirect bounce).
+        //    Skips area spread + specular gating entirely. The HashGrid
+        //    encoder gives the cache enough fidelity at x2 that paying
+        //    for further bounces is wasted work for shading. Class-2
+        //    (TRAIN_UNBIASED) paths are not cache-eligible and continue
+        //    to natural termination.
         ++nrcHitIdx;
         //Reset per-vertex NEE accumulator — NEE blocks below add into it,
         //the training-vertex write captures the sum.
         nrcLNeeAccum = float3(0, 0, 0);
+
+        const bool nrcAggressive = NrcIsAggressiveCache();
+
         if (nrcHitIdx == 1)
         {
             const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
@@ -459,24 +472,24 @@ void Pass_raygen_v8()
         }
         else
         {
-            // Specular bounce incoming: per paper §3.4 a true specular
-            // pdf is δ → ∞ and the segment's contribution to `a` is
-            // zero. We emulate that by skipping the accumulation (and
-            // the termination check) whenever the prior sample came
-            // off a smooth-specular surface. This is what makes a path
-            // like camera → glass-front → glass-back → diffuse NOT
-            // cache-terminate immediately on the diffuse — it forces
-            // one more real (non-specular) bounce before the heuristic
-            // fires, which is how the paper behaves for refraction /
-            // mirror chains.
-            if (!nrcPrevSpecular)
+            // Aggressive-mode early fire at x2 (hitIdx == 2). Bypasses the
+            // standard area-spread accumulation since we're going to fire
+            // anyway. nrcCacheEligible is class-0 OR class-1; class-2 is
+            // false here so unbiased ground-truth paths still run long.
+            const bool aggressiveFire =
+                nrcAggressive && nrcCacheEligible && nrcHitIdx == 2u;
+
+            if (!nrcPrevSpecular && !aggressiveFire)
             {
                 const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
                 NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
             }
 
-            if (!nrcPrevSpecular &&
-                NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c))
+            const bool standardFire =
+                !nrcPrevSpecular &&
+                NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
+
+            if (aggressiveFire || standardFire)
             {
                 //Cache-terminate here. Write the inference request + the
                 //PendingGI record that the resolve compute shader will turn

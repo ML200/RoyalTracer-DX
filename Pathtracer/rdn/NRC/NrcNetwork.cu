@@ -313,6 +313,23 @@ struct Network::Impl {
     cudaEvent_t                counterReadbackEvent  = nullptr;
     bool                       counterReadbackPending = false;
 
+    // Pipelined training: a private CUDA stream that runs the entire
+    // training pass in parallel with the next frame's raygen.
+    //   inferenceDoneEvent — recorded on the main (interop) stream after
+    //                        the inference launch; auxStream waits on it
+    //                        before reading inferenceOut for class-1 tail
+    //                        seeds.
+    //   trainDoneEvent     — recorded on auxStream after the EMA update
+    //                        for the last batch; the main stream waits
+    //                        on it at the START of the next inference so
+    //                        emaParams reads see the freshly-trained
+    //                        weights instead of mid-write torn data.
+    // Net effect: training (~1ms) overlaps with frame N+1's raygen
+    // (~3.5ms) and disappears from the wall-clock budget.
+    cudaStream_t               auxStream             = nullptr;
+    cudaEvent_t                inferenceDoneEvent    = nullptr;
+    cudaEvent_t                trainDoneEvent        = nullptr;
+
     bool ready = false;
 };
 
@@ -340,6 +357,16 @@ bool Network::Init() {
         if (cudaEventCreateWithFlags(&m_impl->counterReadbackEvent,
                                      cudaEventDisableTiming) != cudaSuccess) return false;
         m_impl->counterReadbackPending = false;
+
+        // Auxiliary stream + sync events for pipelined training.
+        // cudaStreamNonBlocking lets auxStream overlap with the default
+        // stream and the interop stream without implicit synchronization.
+        if (cudaStreamCreateWithFlags(&m_impl->auxStream,
+                                      cudaStreamNonBlocking) != cudaSuccess) return false;
+        if (cudaEventCreateWithFlags(&m_impl->inferenceDoneEvent,
+                                     cudaEventDisableTiming) != cudaSuccess) return false;
+        if (cudaEventCreateWithFlags(&m_impl->trainDoneEvent,
+                                     cudaEventDisableTiming) != cudaSuccess) return false;
 
         // ── EMA inference weights (paper §3.3) ────────────────────
         // Allocate a second fp16 weight buffer and reroute the Network's
@@ -403,6 +430,21 @@ void Network::Shutdown() {
         m_impl->counterReadbackEvent = nullptr;
     }
     m_impl->counterReadbackPending = false;
+    // Drain any in-flight training before tearing down the aux stream
+    // so we don't destroy events that the GPU might still be waiting on.
+    if (m_impl->auxStream) {
+        cudaStreamSynchronize(m_impl->auxStream);
+        cudaStreamDestroy(m_impl->auxStream);
+        m_impl->auxStream = nullptr;
+    }
+    if (m_impl->inferenceDoneEvent) {
+        cudaEventDestroy(m_impl->inferenceDoneEvent);
+        m_impl->inferenceDoneEvent = nullptr;
+    }
+    if (m_impl->trainDoneEvent) {
+        cudaEventDestroy(m_impl->trainDoneEvent);
+        m_impl->trainDoneEvent = nullptr;
+    }
     m_impl->nParams = 0;
     m_impl->emaStep = 0;
     m_impl->model = tcnn::TrainableModel{};
@@ -427,9 +469,22 @@ void Network::Inference(
     }
     cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
+    // Pipelined training: wait for the previous frame's training pass to
+    // finish updating emaParams before reading them here. The wait is
+    // recorded on the inference stream and is a no-op once the aux
+    // stream's event has fired (which is virtually always — training
+    // takes ~1 ms and runs entirely behind the next frame's raygen).
+    // First call does nothing because the event has never been recorded.
+    cudaStreamWaitEvent(stream, m_impl->trainDoneEvent, 0);
+
     tcnn::GPUMatrix<float> input (const_cast<float*>(inputDevPtr),  kRawInputDim, count);
     tcnn::GPUMatrix<float> output(                  outputDevPtr,   kOutputDim,   count);
     m_impl->model.network->inference(stream, input, output);
+
+    // Signal that inferenceOut is now valid for the training pass to
+    // consume (class-1 paths use this frame's predictions as their
+    // backward-fill tail). TrainFrame waits on this event on auxStream.
+    cudaEventRecord(m_impl->inferenceDoneEvent, stream);
 }
 
 float Network::TrainingStep(
@@ -452,6 +507,21 @@ uint32_t Network::LastValidVertexCount() const {
     return m_impl ? m_impl->lastValidVertices : 0u;
 }
 
+void Network::WaitIdle() {
+    if (!m_impl || !m_impl->auxStream) return;
+    cudaStreamSynchronize(m_impl->auxStream);
+    // Drain the pending counter readback too — once we return, the host
+    // can safely reallocate buffers without worrying about a kernel still
+    // referencing them.
+    if (m_impl->counterReadbackPending) {
+        cudaEventSynchronize(m_impl->counterReadbackEvent);
+        uint32_t v = *m_impl->hostCounterReadback;
+        if (v > kTrainingRecordsPerFrame) v = kTrainingRecordsPerFrame;
+        m_impl->lastValidVertices = v;
+        m_impl->counterReadbackPending = false;
+    }
+}
+
 void Network::TrainFrame(
     void*       streamPtr,
     const void* trainRecordsDevPtr,
@@ -459,7 +529,19 @@ void Network::TrainFrame(
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
-    cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
+    // streamPtr is the renderer's main interop stream; we ignore it for
+    // training and run everything on auxStream so this whole pass can
+    // overlap with the next frame's raygen / inference. The cross-stream
+    // sync below makes the dependency on inferenceOut explicit.
+    (void)streamPtr;
+    cudaStream_t stream = m_impl->auxStream;
+
+    // Wait for THIS frame's inference to finish writing inferenceOut —
+    // class-1 (TRAIN_BIASED) paths' backward fill seeds their tail from
+    // the network's own prediction at the cache-term vertex, so the
+    // fill kernel below reads those float3 outputs and would race with
+    // the inference write without this barrier.
+    cudaStreamWaitEvent(stream, m_impl->inferenceDoneEvent, 0);
 
     // We size the per-batch row count from the actually-produced vertex
     // count below. The `cudaMemset` of features/targets is therefore
@@ -521,19 +603,24 @@ void Network::TrainFrame(
     // round-down (the dropped tail is ≤256 rows).
     const uint32_t perBatchRaw = validVertices / kTrainingBatchesPerFrame;
     const uint32_t perBatch    = (perBatchRaw / kBatchGranularity) * kBatchGranularity;
-    if (perBatch == 0) return;   // nothing usable this frame
+    if (perBatch == 0) {
+        // Even when there's nothing to train, signal trainDoneEvent so
+        // the next inference doesn't wait on a stale event from a prior
+        // training pass that may have referenced different emaParams.
+        cudaEventRecord(m_impl->trainDoneEvent, stream);
+        return;
+    }
 
     // SGD + bias-corrected EMA per paper §3.3. tcnn's training_step
     // mutates m_impl->model.trainer->params() in place; we EMA those
     // raw weights into m_impl->emaParams which inference reads from.
     const uint32_t kEmaThreads = 256u;
     const uint32_t kEmaBlocks  = uint32_t((m_impl->nParams + kEmaThreads - 1u) / kEmaThreads);
-    const cudaStream_t cudaStream = static_cast<cudaStream_t>(streamPtr);
     const float alpha = m_impl->emaAlpha;
     for (uint32_t b = 0; b < kTrainingBatchesPerFrame; ++b) {
         const float* fPtr = m_impl->trainFeatures + b * perBatch * kRawInputDim;
         const float* tPtr = m_impl->trainTargets  + b * perBatch * kOutputDim;
-        TrainingStep(streamPtr, fPtr, tPtr, perBatch);
+        TrainingStep((void*)stream, fPtr, tPtr, perBatch);
 
         // Bias-correction per paper §3.3:
         //   η_t = 1 - α^t
@@ -549,13 +636,17 @@ void Network::TrainFrame(
         const float  coefNew = (float)((1.0 - da) / etaT);
         const float  coefOld = (float)(da * etaP / etaT);
 
-        ema_update_kernel<<<kEmaBlocks, kEmaThreads, 0, cudaStream>>>(
+        ema_update_kernel<<<kEmaBlocks, kEmaThreads, 0, stream>>>(
             m_impl->emaParams,
             m_impl->model.trainer->params(),
             coefNew,
             coefOld,
             m_impl->nParams);
     }
+
+    // Signal that emaParams is fully updated for this frame — the next
+    // frame's inference will wait on this event before reading.
+    cudaEventRecord(m_impl->trainDoneEvent, stream);
 }
 
 // ── CUDA helpers ──────────────────────────────────────────────────

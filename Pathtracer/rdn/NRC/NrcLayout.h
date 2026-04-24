@@ -14,11 +14,18 @@ struct Float3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 // ── Runtime-tunable settings (Editor) ───────────────────────────────
 // Mirrored into push constants every frame (see Renderer.cpp).
 struct Settings {
-    bool  enabled          = true;   // master toggle for cache termination + resolve
-    bool  trainingEnabled  = true;   // freeze weights when off
-    bool  debugView        = false;  // render L̂_s at primary vertex to gOutput slice 3
-    float areaSpreadC      = 0.01f;  // paper's `c` — smaller = terminate earlier
-    float learningRateScale = 1.0f;  // reserved for a tcnn-side LR override
+    bool  enabled            = true;  // master toggle for cache termination + resolve
+    bool  trainingEnabled    = true;  // freeze weights when off
+    bool  debugView          = false; // render L̂_s at primary vertex to gOutput slice 3
+    // Force every non-long-training path to terminate into the cache at
+    // the SECOND bounce (camera → x1 → x2, query cache at x2), bypassing
+    // the area-spread heuristic entirely. The HashGrid encoder makes the
+    // cache accurate enough at x2 that this is a clean win for primary
+    // shading speed; class-2 (TRAIN_UNBIASED) paths are unaffected and
+    // still inject ground-truth multi-bounce signal.
+    bool  aggressiveCacheTerm = false;
+    float areaSpreadC        = 0.01f; // paper's `c` — smaller = terminate earlier (only used when aggressiveCacheTerm == false)
+    float learningRateScale  = 1.0f;  // reserved for a tcnn-side LR override
     // Scene-space normalization for the network's position input.
     // The Frequency encoder expects inputs in roughly [0,1]; feeding
     // raw world-space meters makes every frequency bin wrap many
@@ -29,14 +36,15 @@ struct Settings {
 };
 
 // Push-constant flag bits — keep in sync with Nrc_v8.hlsli.
-//   bits 0..2  : behavior toggles
+//   bits 0..3  : behavior toggles
 //   bits 8..15 : training tile side (0 = use shader fallback)
 namespace flags {
-    constexpr uint32_t kEnabled     = 1u << 0;
-    constexpr uint32_t kTrain       = 1u << 1;
-    constexpr uint32_t kDebugView   = 1u << 2;
-    constexpr uint32_t kTileShift   = 8u;
-    constexpr uint32_t kTileMask    = 0xFFu;
+    constexpr uint32_t kEnabled         = 1u << 0;
+    constexpr uint32_t kTrain           = 1u << 1;
+    constexpr uint32_t kDebugView       = 1u << 2;
+    constexpr uint32_t kAggressiveCache = 1u << 3;
+    constexpr uint32_t kTileShift       = 8u;
+    constexpr uint32_t kTileMask        = 0xFFu;
 }
 
 // ── Network dimensions ──────────────────────────────────────────────
@@ -59,10 +67,14 @@ constexpr uint32_t kHiddenLayers = 5;
 // this. Pad up in shader / host as needed.
 constexpr uint32_t kBatchGranularity = 256;
 
-// Training schedule per frame (paper §3.5).
-constexpr uint32_t kTrainingBatchSize       = 16384;
+// Training schedule per frame (paper §3.5 uses 4 × 16384 = 65536).
+// We've halved the per-frame target to 32768 since the HashGrid encoder
+// converges fast enough that an extra 32k records per frame is wasted
+// optimization work — speeds up the training pass substantially with no
+// observable quality loss. Still 4 SGD steps per frame to match paper.
+constexpr uint32_t kTrainingBatchSize       = 8192;
 constexpr uint32_t kTrainingBatchesPerFrame = 4;
-constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame; // 65536
+constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame; // 32768
 
 // NRC training tile: one training pixel per tile. 8×8 = 64 pixels per
 // tile → ~32k training pixels at 1080p → ~32–100k records depending on
@@ -77,10 +89,14 @@ constexpr uint32_t kInitialTrainingTileSide = 8u;
 constexpr uint32_t kMinTrainingTileSide     = 4u;
 constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
-// First-pass training uses ONLY fully unbiased (Russian-roulette-terminated
-// or emitter-hit) paths so we can skip the class-1 suffix machinery.
-// kUnbiasedDenom still determines the bias/unbiased mix once class 1 lands.
-constexpr uint32_t kUnbiasedDenom = 16u;
+// 1 in kUnbiasedDenom training pixels takes the long, fully Russian-
+// roulette-terminated path that injects ground-truth multi-bounce
+// radiance into the cache (class-2 / TRAIN_UNBIASED). Doubled from the
+// paper's 1/16 to 1/8 because we halved kTrainingRecordsPerFrame and
+// want to keep the absolute number of ground-truth long paths roughly
+// constant — long paths are the only source of unbiased far-bounce
+// signal, so their absolute count matters more than their fraction.
+constexpr uint32_t kUnbiasedDenom = 8u;
 
 // Per-path bucket cap. Paths deeper than this get their tail vertices
 // dropped — training still captures the prefix correctly. Paper averages

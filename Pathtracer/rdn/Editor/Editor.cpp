@@ -84,7 +84,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showCamera)    DrawCameraPanel(camera, flyCam);
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
-    if (m_showReSTIR)    DrawReSTIRPanel(restir);
+    if (m_showReSTIR)    DrawReSTIRPanel(restir, nrc);
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene);
@@ -476,7 +476,7 @@ void Editor::DrawMaterialInspector(Scene& scene) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
+void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, nrc::Settings& nrc) {
     ImGui::SetNextWindowSize(ImVec2(340, 460), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ReSTIR")) { ImGui::End(); return; }
 
@@ -499,6 +499,16 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+    }
+    if (ImGui::CollapsingHeader("NRC integration", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Aggressive cache term (x2)", &nrc.aggressiveCacheTerm);
+        ImGui::SetItemTooltip(
+            "Force every cache-eligible path (class-0 RENDER + class-1 TRAIN_BIASED)\n"
+            "to terminate into the cache at the second hit (x2 = first indirect bounce),\n"
+            "bypassing the area-spread heuristic. Class-2 (TRAIN_UNBIASED) ground-truth\n"
+            "paths are unaffected and still run to natural termination.\n\n"
+            "Off = standard paper behaviour (Bekaert area spread + specular gating)."
+        );
     }
 
     ImGui::End();

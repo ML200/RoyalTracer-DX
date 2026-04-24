@@ -23,7 +23,7 @@ static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;   // 12
 static const uint NRC_TRAINING_TILE_SIDE    = 8u;
 static const uint NRC_TRAINING_TILE_MIN     = 4u;
 static const uint NRC_TRAINING_TILE_MAX     = 32u;
-static const uint NRC_UNBIASED_DENOM        = 16u;
+static const uint NRC_UNBIASED_DENOM        = 8u;
 
 static const uint NRC_MAX_TRAINING_PATHS    = 65536u;
 static const uint NRC_MAX_VERTICES_PER_PATH = 8u;
@@ -71,20 +71,23 @@ static const uint NRC_CLASS_TRAIN_BIASED    = 1u;
 static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 
 // Push-constant flag bits — mirrors nrc::flags in NrcLayout.h.
-//   bits 0..2  : behavior toggles (enabled / train / debug view)
+//   bits 0..3  : behavior toggles (enabled / train / debug view /
+//                aggressive cache term)
 //   bits 8..15 : training tile side (0 = use NRC_TRAINING_TILE_SIDE
 //                fallback). Adaptive sizing per paper §3.5: renderer
 //                scales this each frame from the previous frame's
 //                vertex count to keep the trainer saturated.
-static const uint NRC_FLAG_ENABLED      = 1u;
-static const uint NRC_FLAG_TRAIN        = 2u;
-static const uint NRC_FLAG_DEBUG_VIEW   = 4u;
-static const uint NRC_FLAG_TILE_SHIFT   = 8u;
-static const uint NRC_FLAG_TILE_MASK    = 0xFFu;
+static const uint NRC_FLAG_ENABLED          = 1u;
+static const uint NRC_FLAG_TRAIN            = 2u;
+static const uint NRC_FLAG_DEBUG_VIEW       = 4u;
+static const uint NRC_FLAG_AGGRESSIVE_CACHE = 8u;
+static const uint NRC_FLAG_TILE_SHIFT       = 8u;
+static const uint NRC_FLAG_TILE_MASK        = 0xFFu;
 
-inline bool NrcIsEnabled()   { return (nrc_flags & NRC_FLAG_ENABLED)    != 0u; }
-inline bool NrcIsTrainOn()   { return (nrc_flags & NRC_FLAG_TRAIN)      != 0u; }
-inline bool NrcIsDebugView() { return (nrc_flags & NRC_FLAG_DEBUG_VIEW) != 0u; }
+inline bool NrcIsEnabled()           { return (nrc_flags & NRC_FLAG_ENABLED)          != 0u; }
+inline bool NrcIsTrainOn()           { return (nrc_flags & NRC_FLAG_TRAIN)            != 0u; }
+inline bool NrcIsDebugView()         { return (nrc_flags & NRC_FLAG_DEBUG_VIEW)       != 0u; }
+inline bool NrcIsAggressiveCache()   { return (nrc_flags & NRC_FLAG_AGGRESSIVE_CACHE) != 0u; }
 
 // Effective training tile side this frame. Falls back to the static
 // default if the renderer didn't pack a value (which is what happens

@@ -722,6 +722,11 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     m_ctx.WaitForGPU();
+    // The CUDA aux stream runs training in parallel with raygen and is
+    // not covered by WaitForGPU. We must drain it before reallocating
+    // any NRC buffers below — otherwise an in-flight training kernel
+    // could be reading inferenceOut / trainRecords while we free them.
+    if (m_nrcReady) m_nrcNetwork.WaitIdle();
 
     m_width       = newWidth;
     m_height      = newHeight;
@@ -748,12 +753,41 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateRaytracingOutputBuffer();
     CreateStreamingCompactionBuffers();
 
+    // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
+    // sized to W·H (worst case: every pixel cache-terminates) and PendingGI
+    // is one slot per pixel — both grow if the user enlarges the window
+    // and raygen would otherwise scribble past the end of the old buffer.
+    // TrainRecords and Counters are fixed-size and don't need recreation.
+    if (m_nrcReady) {
+        const uint32_t pixelCount = newWidth * newHeight;
+        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount);
+
+        // Reset old buffers FIRST so the cudaInterop allocator releases
+        // the backing D3D12 / CUDA imports before we ask it for new ones
+        // — avoids a momentary 2× VRAM peak on large windows.
+        m_nrcInferenceIn  = {};
+        m_nrcInferenceOut = {};
+        m_nrcPendingGI    = {};
+
+        m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
+        m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
+        m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
+
+        if (!m_nrcInferenceIn.resource || !m_nrcInferenceOut.resource || !m_nrcPendingGI.resource) {
+            LOG(L"[NRC] Resize realloc failed — disabling NRC");
+            m_nrcReady = false;
+        }
+    }
+
     // Recreate DLSS resources at new display resolution
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
 
-    // Update descriptors for all resolution-dependent resources
+    // Update descriptors for all resolution-dependent resources. Includes
+    // a re-bind of NRC slots 58-60 (the resolution-dependent NRC UAVs)
+    // so the descriptor table doesn't dangle on the freed resources.
     RebuildResolutionDependentDescriptors();
     RebuildDLSSDescriptors();
+    RebuildNrcDescriptors();
 
     // Disable temporal reuse for 2 frames (old reservoirs are stale)
     m_dlssModeChangedFrames = 2;
@@ -773,6 +807,42 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     LOG(L"[Resize] " << newWidth << L"x" << newHeight);
+}
+
+// Re-creates the UAV descriptors for the resolution-dependent NRC
+// buffers (slots 58, 59, 60). The fixed-size train records / counters
+// at slots 61-62 are unchanged so we leave their descriptors alone.
+// Mirrors the layout in CreateShaderResourceHeap (Renderer_Pipeline.cpp
+// slots 58..62).
+void Renderer::RebuildNrcDescriptors() {
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    auto writeRawUAVAt = [&](UINT slot, const CudaInterop::Buffer& b) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        if (b.resource) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
+            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
+            ud.Buffer.NumElements = (UINT)((b.sizeBytes + 3u) / 4u);
+            dev->CreateUnorderedAccessView(b.resource.Get(), nullptr, &ud, h);
+        } else {
+            // Null-UAV fallback so the table stays valid if interop init failed.
+            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
+            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
+            ud.Buffer.NumElements = 1;
+            dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+        }
+    };
+
+    writeRawUAVAt(58, m_nrcInferenceIn);   // u40
+    writeRawUAVAt(59, m_nrcInferenceOut);  // u41
+    writeRawUAVAt(60, m_nrcPendingGI);     // u42
+    // Slots 61 (TrainRecords) and 62 (Counters) are fixed-size buffers
+    // whose descriptors set up at init are still valid after a resize.
 }
 
 void Renderer::RebuildResolutionDependentDescriptors() {
@@ -1286,9 +1356,10 @@ void Renderer::PopulateCommandList() {
         }
 
         uint32_t nrcFlags = 0u;
-        if (m_nrcReady && m_nrcSettings.enabled)         nrcFlags |= nrc::flags::kEnabled;
-        if (m_nrcReady && m_nrcSettings.trainingEnabled) nrcFlags |= nrc::flags::kTrain;
-        if (m_nrcReady && m_nrcSettings.debugView)       nrcFlags |= nrc::flags::kDebugView;
+        if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
+        if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
+        if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
+        if (m_nrcReady && m_nrcSettings.aggressiveCacheTerm) nrcFlags |= nrc::flags::kAggressiveCache;
         nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
