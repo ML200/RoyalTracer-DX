@@ -256,4 +256,8 @@ private:
     uint32_t                                 m_nrcInferenceCapacity = 0;
     bool                                     m_nrcReady = false;
     nrc::Settings                            m_nrcSettings{};
+    // Adaptive training-tile side (paper §3.5). Updated each frame from
+    // the previous frame's vertex count via Network::LastValidVertexCount,
+    // then packed into nrc_flags bits 8..15 for the shader to read.
+    uint32_t                                 m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
 };

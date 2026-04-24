@@ -120,14 +120,12 @@ __device__ __forceinline__ float safe_target(float v) {
     return fminf(fmaxf(v, 0.0f), kTargetMax);
 }
 
-// Knuth's golden-ratio multiplier — coprime with 2^16 (odd), so
-// multiplying by it is a BIJECTIVE permutation of [0, 2^16). We use
-// it to shuffle training-record destinations across the 65536-slot
-// training buffer so consecutive vertices from the same path end up
-// in different batches.
-__device__ __forceinline__ uint32_t shuffle_train_slot(uint32_t raw) {
-    return (raw * 0x9E3779B9u) & (kTrainingRecordsPerFrame - 1u);
-}
+// (Removed the golden-ratio shuffle — it scattered records across the
+// full 65536-slot range, which broke contiguous per-batch slicing once
+// we started training only on the actually-produced vertex count. The
+// atomic counter already interleaves vertices from different paths
+// across warps, so consecutive output slots come from different threads
+// in practice — adequate decorrelation for SGD.)
 
 // EMA update with bias correction (paper §3.3, eq. 2):
 //
@@ -253,12 +251,14 @@ __global__ void fill_training_batch_kernel(
         const float tgt_g = safe_target(ls_g / rs_g);
         const float tgt_b = safe_target(ls_b / rs_b);
 
-        // LCG shuffle: raw slot → bijective permutation over the 16-bit
-        // training buffer. Consecutive vertices within a path land in
-        // widely-separated slots so SGD sees decorrelated batches.
-        const uint32_t rawIdx = atomicAdd(outCounter, 1u);
-        if (rawIdx < kTrainingRecordsPerFrame) {
-            const uint32_t outIdx = shuffle_train_slot(rawIdx);
+        // Pack contiguously by atomic counter — slot N gets the N-th
+        // record produced (in atomic-order). Critical for the
+        // adaptive-batch sizing in TrainFrame: it slices the buffer
+        // into kTrainingBatchesPerFrame contiguous chunks of perBatch
+        // records, and that's only well-defined if every slot below
+        // validVertices is filled.
+        const uint32_t outIdx = atomicAdd(outCounter, 1u);
+        if (outIdx < kTrainingRecordsPerFrame) {
             float* f = outFeatures + outIdx * kRawInputDim;
             #pragma unroll
             for (uint32_t i = 0; i < kRawInputDim; ++i) f[i] = raw[i];
@@ -288,6 +288,10 @@ struct Network::Impl {
     size_t                     nParams   = 0;
     float                      emaAlpha  = 0.99f;
     uint64_t                   emaStep   = 0;   // t in η_t = 1 - α^t
+
+    // Last frame's valid vertex count (post-cap). Read by the renderer
+    // to drive the adaptive-tile feedback loop. 0 before first frame.
+    uint32_t                   lastValidVertices = 0;
 
     bool ready = false;
 };
@@ -379,16 +383,21 @@ void Network::Inference(
 float Network::TrainingStep(
     void*        streamPtr,
     const float* inputDevPtr,
-    const float* targetDevPtr)
+    const float* targetDevPtr,
+    uint32_t     count)
 {
-    if (!m_impl->ready) return -1.0f;
+    if (!m_impl->ready || count == 0) return -1.0f;
     cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
-    tcnn::GPUMatrix<float> input (const_cast<float*>(inputDevPtr),  kRawInputDim,  kTrainingBatchSize);
-    tcnn::GPUMatrix<float> target(const_cast<float*>(targetDevPtr), kOutputDim,    kTrainingBatchSize);
+    tcnn::GPUMatrix<float> input (const_cast<float*>(inputDevPtr),  kRawInputDim, count);
+    tcnn::GPUMatrix<float> target(const_cast<float*>(targetDevPtr), kOutputDim,   count);
     auto ctx = m_impl->model.trainer->training_step(stream, input, target);
     (void)ctx;
     return -1.0f;
+}
+
+uint32_t Network::LastValidVertexCount() const {
+    return m_impl ? m_impl->lastValidVertices : 0u;
 }
 
 void Network::TrainFrame(
@@ -400,8 +409,11 @@ void Network::TrainFrame(
     if (!trainRecordsDevPtr) return;
     cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
 
-    // Zero the training scratch — any vertices we fail to fill stay at
-    // (features=0, target=0) which is a harmless no-op row for Adam.
+    // We size the per-batch row count from the actually-produced vertex
+    // count below. The `cudaMemset` of features/targets is therefore
+    // optional now (Adam never reads past `perBatch`), but we keep it
+    // so a partial-fill scenario can't leak last frame's bytes into
+    // the unused tail in case downstream code ever inspects the buffer.
     const size_t fBytes = size_t(kTrainingRecordsPerFrame) * kRawInputDim * sizeof(float);
     const size_t tBytes = size_t(kTrainingRecordsPerFrame) * kOutputDim   * sizeof(float);
     cudaMemsetAsync(m_impl->trainFeatures, 0, fBytes, stream);
@@ -421,19 +433,37 @@ void Network::TrainFrame(
         m_impl->trainTargets,
         m_impl->trainCounter);
 
-    // Four SGD steps per frame on disjoint 16384-record slices. After
-    // each step, roll the bias-corrected EMA of training weights into
-    // the inference buffer (paper §3.3, eq. 2; α = 0.99). tcnn's
-    // training_step mutates m_impl->model.trainer->params() in place,
-    // which is what we average over.
+    // Read back the actual vertex count so we can size the four SGD
+    // batches to ONLY the rows we filled. ReadU32 stalls the stream,
+    // which is the price for not training Adam on the zero-padded tail
+    // (a `(features=0, target=0)` row is a real gradient step pulling
+    // the network toward 0 at the all-zeros encoded input — see paper
+    // §3.5 on adaptive tiles, which keeps the trainer saturated).
+    uint32_t validVertices = ReadU32(streamPtr, m_impl->trainCounter);
+    if (validVertices > kTrainingRecordsPerFrame)
+        validVertices = kTrainingRecordsPerFrame;
+    m_impl->lastValidVertices = validVertices;
+
+    // Split across kTrainingBatchesPerFrame disjoint slices, each
+    // rounded DOWN to kBatchGranularity. Round-down is required because
+    // the trainer's matrix dim must equal the granularity multiple; if
+    // we get e.g. 51000 vertices, that's 12750/batch → 12544 after
+    // round-down (the dropped tail is ≤256 rows).
+    const uint32_t perBatchRaw = validVertices / kTrainingBatchesPerFrame;
+    const uint32_t perBatch    = (perBatchRaw / kBatchGranularity) * kBatchGranularity;
+    if (perBatch == 0) return;   // nothing usable this frame
+
+    // SGD + bias-corrected EMA per paper §3.3. tcnn's training_step
+    // mutates m_impl->model.trainer->params() in place; we EMA those
+    // raw weights into m_impl->emaParams which inference reads from.
     const uint32_t kEmaThreads = 256u;
     const uint32_t kEmaBlocks  = uint32_t((m_impl->nParams + kEmaThreads - 1u) / kEmaThreads);
     const cudaStream_t cudaStream = static_cast<cudaStream_t>(streamPtr);
     const float alpha = m_impl->emaAlpha;
     for (uint32_t b = 0; b < kTrainingBatchesPerFrame; ++b) {
-        const float* fPtr = m_impl->trainFeatures + b * kTrainingBatchSize * kRawInputDim;
-        const float* tPtr = m_impl->trainTargets  + b * kTrainingBatchSize * kOutputDim;
-        TrainingStep(streamPtr, fPtr, tPtr);
+        const float* fPtr = m_impl->trainFeatures + b * perBatch * kRawInputDim;
+        const float* tPtr = m_impl->trainTargets  + b * perBatch * kOutputDim;
+        TrainingStep(streamPtr, fPtr, tPtr, perBatch);
 
         // Bias-correction per paper §3.3:
         //   η_t = 1 - α^t

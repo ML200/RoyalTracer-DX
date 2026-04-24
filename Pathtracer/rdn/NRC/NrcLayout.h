@@ -29,10 +29,14 @@ struct Settings {
 };
 
 // Push-constant flag bits — keep in sync with Nrc_v8.hlsli.
+//   bits 0..2  : behavior toggles
+//   bits 8..15 : training tile side (0 = use shader fallback)
 namespace flags {
     constexpr uint32_t kEnabled     = 1u << 0;
     constexpr uint32_t kTrain       = 1u << 1;
     constexpr uint32_t kDebugView   = 1u << 2;
+    constexpr uint32_t kTileShift   = 8u;
+    constexpr uint32_t kTileMask    = 0xFFu;
 }
 
 // ── Network dimensions ──────────────────────────────────────────────
@@ -62,8 +66,16 @@ constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatc
 
 // NRC training tile: one training pixel per tile. 8×8 = 64 pixels per
 // tile → ~32k training pixels at 1080p → ~32–100k records depending on
-// suffix length. Kept simple for now; adaptive sizing is a later pass.
-constexpr uint32_t kTrainingTileSide = 8u;
+// suffix length. The renderer adapts this each frame from the previous
+// frame's vertex count (paper §3.5) — keeping the trainer saturated
+// (close to kTrainingRecordsPerFrame) without overshooting and dropping
+// records on the floor. The bounds are conservative: 4 means every 16th
+// pixel is a training pixel (~130k pixels at 1080p), 32 means every
+// 1024th (~2k). The first frame uses kInitialTrainingTileSide before
+// any vertex count is available.
+constexpr uint32_t kInitialTrainingTileSide = 8u;
+constexpr uint32_t kMinTrainingTileSide     = 4u;
+constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
 // First-pass training uses ONLY fully unbiased (Russian-roulette-terminated
 // or emitter-hit) paths so we can skip the class-1 suffix machinery.

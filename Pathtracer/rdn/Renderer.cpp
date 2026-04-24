@@ -1263,10 +1263,33 @@ void Renderer::PopulateCommandList() {
             m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
         }
 
+        // Adaptive tile side per paper §3.5. With T = target records,
+        // V = previous frame's actual records, and S = previous tile
+        // side, the new side is S · sqrt(V/T) — vertex count scales
+        // ~quadratically with 1/tile_side (training pixel density).
+        // Damp by averaging with the old side so transient variance
+        // (sky-dominant frames, big visibility changes) doesn't yank
+        // the size around. First frame uses the initial value because
+        // LastValidVertexCount returns 0 before TrainFrame ever ran.
+        if (m_nrcReady && m_nrcSettings.trainingEnabled) {
+            const uint32_t prev = m_nrcNetwork.LastValidVertexCount();
+            if (prev > 0u) {
+                const float target  = (float)nrc::kTrainingRecordsPerFrame;
+                const float ratio   = (float)prev / target;
+                const float scaled  = (float)m_nrcTrainTileSide * sqrtf(ratio);
+                const float blended = 0.5f * (float)m_nrcTrainTileSide + 0.5f * scaled;
+                int32_t s = (int32_t)(blended + 0.5f);
+                if (s < (int32_t)nrc::kMinTrainingTileSide) s = (int32_t)nrc::kMinTrainingTileSide;
+                if (s > (int32_t)nrc::kMaxTrainingTileSide) s = (int32_t)nrc::kMaxTrainingTileSide;
+                m_nrcTrainTileSide = (uint32_t)s;
+            }
+        }
+
         uint32_t nrcFlags = 0u;
-        if (m_nrcReady && m_nrcSettings.enabled)         nrcFlags |= 0x1u;
-        if (m_nrcReady && m_nrcSettings.trainingEnabled) nrcFlags |= 0x2u;
-        if (m_nrcReady && m_nrcSettings.debugView)       nrcFlags |= 0x4u;
+        if (m_nrcReady && m_nrcSettings.enabled)         nrcFlags |= nrc::flags::kEnabled;
+        if (m_nrcReady && m_nrcSettings.trainingEnabled) nrcFlags |= nrc::flags::kTrain;
+        if (m_nrcReady && m_nrcSettings.debugView)       nrcFlags |= nrc::flags::kDebugView;
+        nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
         memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);

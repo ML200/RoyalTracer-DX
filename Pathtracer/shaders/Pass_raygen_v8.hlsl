@@ -50,10 +50,15 @@ void Pass_raygen_v8()
     //the three debug-chain passes scheduled after training.
     const bool kNrcEnabled    = NrcIsEnabled();
     const bool kNrcTrainOn    = NrcIsTrainOn();
-    const uint2 nrcTileOffset = uint2(asuint(time) & (NRC_TRAINING_TILE_SIDE - 1u),
-                                      (asuint(time) >> 3) & (NRC_TRAINING_TILE_SIDE - 1u));
+    // Dynamic tile side per paper §3.5 — renderer adjusts each frame
+    // from the previous frame's vertex count. Modulo (not bitmask)
+    // because the side may not be a power of 2 once the feedback loop
+    // settles on a non-power scaling.
+    const uint  nrcTileSide   = NrcTrainingTileSide();
+    const uint2 nrcTileOffset = uint2(asuint(time) % nrcTileSide,
+                                      (asuint(time) / nrcTileSide) % nrcTileSide);
     bool nrcIsTraining, nrcIsUnbiased;
-    uint nrcPathClass = NrcClassifyPixel(pixel, asuint(time), nrcTileOffset,
+    uint nrcPathClass = NrcClassifyPixel(pixel, asuint(time), nrcTileSide, nrcTileOffset,
                                           nrcIsTraining, nrcIsUnbiased);
     nrcIsTraining = nrcIsTraining && kNrcTrainOn;
     if (!nrcIsTraining) nrcPathClass = NRC_CLASS_RENDER;
@@ -98,6 +103,19 @@ void Pass_raygen_v8()
     uint   nrcTailRadPk  = 0u;
     uint   nrcTailInfSlot = NRC_INVALID_SLOT;   //cache-termination slot for class-1 tail
     float3 nrcLNeeAccum  = float3(0, 0, 0);     //reset per vertex, feeds training target
+    //Tracks whether the BSDF sample at the PREVIOUS vertex was a
+    //smooth-specular (mirror / refraction). Paper §3.4 uses the
+    //angular density p(ω) in the area-spread formula; for a
+    //truly specular BSDF p→∞ and the segment's contribution to
+    //the running spread is zero. Our GGX pdf is finite even at
+    //r=0 (α²≥10⁻³ clamp), so if we didn't filter, every
+    //glass-through-to-diffuse path would trip the cache-term
+    //condition immediately. This flag makes specular segments
+    //"free" in the spread accumulation and defers the termination
+    //check by one vertex after a specular bounce — which matches
+    //the paper's intent and fixes the "one extra bounce needed
+    //after a car window" case.
+    bool   nrcPrevSpecular = false;
     if (nrcIsTraining)
     {
         nrcPathId = NrcAllocateTrainingPath();
@@ -427,7 +445,9 @@ void Pass_raygen_v8()
         //above already skipped thin-glass boundaries. nrcHitIdx maps to the
         //paper's path-vertex index (x1 at 1, x2 at 2, ...). Cache termination
         //is gated at >= 3 so ReSTIR PT's reconnection at x2 always has a real
-        //BSDF to evaluate — see user design constraint.
+        //BSDF to evaluate; we additionally defer termination across specular
+        //bounces via nrcPrevSpecular (see its declaration) so that glass/
+        //mirror chains don't short-circuit onto the first diffuse they hit.
         ++nrcHitIdx;
         //Reset per-vertex NEE accumulator — NEE blocks below add into it,
         //the training-vertex write captures the sum.
@@ -439,10 +459,24 @@ void Pass_raygen_v8()
         }
         else
         {
-            const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
-            NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
+            // Specular bounce incoming: per paper §3.4 a true specular
+            // pdf is δ → ∞ and the segment's contribution to `a` is
+            // zero. We emulate that by skipping the accumulation (and
+            // the termination check) whenever the prior sample came
+            // off a smooth-specular surface. This is what makes a path
+            // like camera → glass-front → glass-back → diffuse NOT
+            // cache-terminate immediately on the diffuse — it forces
+            // one more real (non-specular) bounce before the heuristic
+            // fires, which is how the paper behaves for refraction /
+            // mirror chains.
+            if (!nrcPrevSpecular)
+            {
+                const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
+                NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
+            }
 
-            if (NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c))
+            if (!nrcPrevSpecular &&
+                NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c))
             {
                 //Cache-terminate here. Write the inference request + the
                 //PendingGI record that the resolve compute shader will turn
@@ -731,6 +765,13 @@ void Pass_raygen_v8()
 
         prev_pdf    = bdata.pdf;
         pdf_product = min(pdf_product * bdata.pdf, 1e30f);
+        // Classify THIS vertex's BSDF sample as specular for the next
+        // iteration's area-spread logic. Uses the same threshold the
+        // GGX sampler uses to degenerate to a perfect-specular H=N
+        // branch (SMOOTH_SPECULAR_THRESHOLD = 0.06), so what we treat
+        // as "specular for NRC purposes" matches what the BSDF itself
+        // treats as specular for sampling.
+        nrcPrevSpecular = (hitLocalPr < SMOOTH_SPECULAR_THRESHOLD);
         rayDir      = s;
         float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);

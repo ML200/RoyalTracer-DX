@@ -17,7 +17,12 @@ static const uint NRC_OUTPUT_DIM            = 3u;
 static const uint NRC_INFERENCE_IN_STRIDE   = NRC_RAW_INPUT_DIM * 4u;  // 56
 static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;   // 12
 
+// Default tile side. Used as a fallback when the renderer hasn't packed
+// a dynamic value into nrc_flags yet (e.g. first frame). The runtime
+// value is read via NrcTrainingTileSide() below.
 static const uint NRC_TRAINING_TILE_SIDE    = 8u;
+static const uint NRC_TRAINING_TILE_MIN     = 4u;
+static const uint NRC_TRAINING_TILE_MAX     = 32u;
 static const uint NRC_UNBIASED_DENOM        = 16u;
 
 static const uint NRC_MAX_TRAINING_PATHS    = 65536u;
@@ -66,13 +71,30 @@ static const uint NRC_CLASS_TRAIN_BIASED    = 1u;
 static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 
 // Push-constant flag bits — mirrors nrc::flags in NrcLayout.h.
-static const uint NRC_FLAG_ENABLED    = 1u;
-static const uint NRC_FLAG_TRAIN      = 2u;
-static const uint NRC_FLAG_DEBUG_VIEW = 4u;
+//   bits 0..2  : behavior toggles (enabled / train / debug view)
+//   bits 8..15 : training tile side (0 = use NRC_TRAINING_TILE_SIDE
+//                fallback). Adaptive sizing per paper §3.5: renderer
+//                scales this each frame from the previous frame's
+//                vertex count to keep the trainer saturated.
+static const uint NRC_FLAG_ENABLED      = 1u;
+static const uint NRC_FLAG_TRAIN        = 2u;
+static const uint NRC_FLAG_DEBUG_VIEW   = 4u;
+static const uint NRC_FLAG_TILE_SHIFT   = 8u;
+static const uint NRC_FLAG_TILE_MASK    = 0xFFu;
 
 inline bool NrcIsEnabled()   { return (nrc_flags & NRC_FLAG_ENABLED)    != 0u; }
 inline bool NrcIsTrainOn()   { return (nrc_flags & NRC_FLAG_TRAIN)      != 0u; }
 inline bool NrcIsDebugView() { return (nrc_flags & NRC_FLAG_DEBUG_VIEW) != 0u; }
+
+// Effective training tile side this frame. Falls back to the static
+// default if the renderer didn't pack a value (which is what happens
+// before the first TrainFrame produces a vertex count to feed the
+// adaptive loop).
+inline uint NrcTrainingTileSide()
+{
+    const uint packed = (nrc_flags >> NRC_FLAG_TILE_SHIFT) & NRC_FLAG_TILE_MASK;
+    return (packed == 0u) ? NRC_TRAINING_TILE_SIDE : packed;
+}
 
 //====================================================================
 // BUFFER BINDINGS
@@ -402,11 +424,12 @@ inline void NrcUpdateTrainingVertexBeta(uint pathId, uint vIdx, uint betaLocalPk
 inline uint NrcClassifyPixel(
     uint2 pixel,
     uint  frameIndex,
+    uint  tileSide,
     uint2 perFrameTileOffset,
     out bool isTraining,
     out bool isUnbiased)
 {
-    const uint2 tileOrigin = (pixel / NRC_TRAINING_TILE_SIDE) * NRC_TRAINING_TILE_SIDE;
+    const uint2 tileOrigin = (pixel / tileSide) * tileSide;
     const uint2 local      = pixel - tileOrigin;
     isTraining = all(local == perFrameTileOffset);
 

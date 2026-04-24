@@ -62,14 +62,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //Load output slices
     float3 noisy = gOutput[uint3(DTid.xy, 0)].xyz;
     float3 clean = g_dlssOutput[DTid.xy].xyz;
-    float3 gt = gOutput[uint3(DTid.xy, 2)].xyz;
+    float3 gt    = gOutput[uint3(DTid.xy, 2)].xyz;
+    float3 nrc   = gOutput[uint3(DTid.xy, 3)].xyz;
 
     //Apply gamma correction
     noisy = sRGBGammaCorrection(noisy);
-    clean =  sRGBGammaCorrection(clean);
-    gt =  sRGBGammaCorrection(gt);
+    clean = sRGBGammaCorrection(clean);
+    gt    = sRGBGammaCorrection(gt);
+    nrc   = sRGBGammaCorrection(nrc);
 
     gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
+    gOutput[uint3(DTid.xy, 3)] = float4(nrc, 0.0f);
 }

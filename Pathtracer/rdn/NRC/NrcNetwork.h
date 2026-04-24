@@ -61,13 +61,15 @@ public:
         float*       outputDevPtr,
         uint32_t     count);
 
-    // One training step on exactly kTrainingBatchSize rows. Caller is
-    // responsible for shuffling and selecting the subset. Returns the
-    // reported loss (or -1 if the loss wasn't scalar).
+    // One training step on `count` rows (must be a multiple of
+    // kBatchGranularity). Caller is responsible for shuffling and
+    // selecting the subset. Returns the reported loss (or -1 if the
+    // loss wasn't scalar).
     float TrainingStep(
         void*        stream,
         const float* inputDevPtr,
-        const float* targetDevPtr);
+        const float* targetDevPtr,
+        uint32_t     count);
 
     // Per-frame end-to-end training pipeline, given the shared D3D/CUDA
     // training buffer (meta + vertex sections) and the frame's inference
@@ -79,11 +81,21 @@ public:
     // Runs: clear output counters → backward-fill kernel (one thread per
     // path, walks buckets in reverse, emits (features, target) rows into
     // the internal training buffer) → kTrainingBatchesPerFrame calls to
-    // TrainingStep. Silently no-ops when no paths were produced.
+    // TrainingStep, sized to the actually-produced vertex count so we
+    // never train on the zero-padded tail of an underfull batch (which
+    // would bias the network toward predicting 0 for the all-zeros
+    // encoded input). Silently no-ops when no paths were produced.
     void TrainFrame(
         void*       stream,
         const void* trainRecordsDevPtr,
         const void* inferenceOutDevPtr);
+
+    // Number of valid training vertices (records) the previous TrainFrame
+    // observed, after capping to kTrainingRecordsPerFrame. Drives the
+    // adaptive-tile feedback loop in the renderer (paper §3.5): scale
+    // tile size by sqrt(target/actual) each frame to keep the trainer
+    // saturated. Returns 0 before the first TrainFrame call.
+    uint32_t LastValidVertexCount() const;
 
 private:
     struct Impl;
