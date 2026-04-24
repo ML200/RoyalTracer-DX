@@ -10,10 +10,6 @@
 #include "OmmBuilder.h"
 #include "../DXRHelper.h"
 
-// How many textures to upload per command-list submission.
-// Each 4K RGBA mip chain is ~85 MB of upload + default-heap traffic.
-// 4 textures ≈ 340 MB per batch — well under the 2-second TDR window
-// on any modern GPU, and keeps peak staging memory around 340 MB.
 static constexpr UINT TEXTURE_BATCH_SIZE = 4;
 
 MeshSplitResult AssetLoader::SplitOpaqueAlpha(
