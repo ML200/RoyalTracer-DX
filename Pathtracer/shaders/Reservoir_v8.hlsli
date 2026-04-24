@@ -576,14 +576,14 @@ inline bool TestTemporalCandidate(
     uint rI = load_instID(sampleBuf, tpx);
     uint rP = load_primID(sampleBuf, tpx);
 
-    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
-    if (RejectNormal(myN1s, ns, 0.36f))
-        return false;
+    //float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
+    /*if (RejectNormal(myN1s, ns, 0.36f))
+        return false;*/
 
     float2 rB = load_bary(sampleBuf, tpx);
-    float3 xr = ReconstructPosition(rI, rP, rB);
-    if (RejectDistance(myPos, xr, myN1s, 0.4f))
-        return false;
+    //float3 xr = ReconstructPosition(rI, rP, rB);
+    /*if (RejectDistance(myPos, xr, myN1s, 0.4f))
+        return false;*/
 
     outPixelIdx = tpx;
     outInstID   = rI;
