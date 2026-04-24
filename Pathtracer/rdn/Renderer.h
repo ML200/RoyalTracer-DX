@@ -1,7 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Renderer.h — Low-level DXR rendering module. Owned by EngineApp.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//LOW-LEVEL DXR RENDERER
+//====================================
+//owned by EngineApp
 
 #include "Common.h"
 #include "DXSample.h"
@@ -26,7 +27,7 @@
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
-// CPU-side sizing stubs matching shader-side SoA layout sizes
+//CPU-side sizing stubs matching shader SoA sizes
 struct Reservoir_DI  { uint8_t pad[100]; };
 struct Reservoir_GI  { uint8_t pad[100]; };
 struct SampleData    { uint8_t pad[100]; };
@@ -36,7 +37,9 @@ class Renderer {
 public:
     Renderer(UINT width, UINT height);
 
-    // ── Public API (called by EngineApp) ────────────────────────
+    //====================================
+    //PUBLIC API
+    //====================================
     void InitDevice();
     void LoadScene(const std::vector<ModelEntry>& models);
     void InitSceneGPU();
@@ -53,13 +56,12 @@ public:
     UINT           GetHeight() const{ return m_height; }
     float          GetAspectRatio() const { return m_aspectRatio; }
 
-    // Create a new procedural mesh with its own BLAS. Call between LoadScene/InitSceneGPU.
+    //new procedural mesh with its own BLAS, call between LoadScene and InitSceneGPU
     UINT CreateProceduralMesh(const std::vector<Vertex>& vertices,
                               const std::vector<UINT>& indices,
                               const Material& material);
 
-    // Create a mesh entry that shares geometry (BLAS/VB/IB) with an existing mesh
-    // but has its own material. Much cheaper than CreateProceduralMesh.
+    //mesh sharing geometry with existing mesh, own material, cheap
     UINT CreateMeshInstance(UINT sourceMeshIndex, const Material& material);
     void HandleSceneStructuralChange();
 
@@ -67,18 +69,17 @@ public:
     bool WantsMouse() const;
     void HandleKeyUp(UINT8 key);
 
-    // ── CUDA interop ─────────────────────────────────────────────
-    // Register a callback invoked when the pass list hits `L"cuda:<name>"`.
-    // The callback runs on CudaInterop's internal stream between a
-    // D3D12-queue signal (pre) and a D3D12-queue wait (post) on a shared fence.
+    //====================================
+    //CUDA INTEROP
+    //====================================
+    //callback for L"cuda:<name>" pass entries, runs on CudaInterop stream, fence-gated
     using CudaOpFn = std::function<void()>;
     void RegisterCudaOp(const std::wstring& name, CudaOpFn fn) {
         m_cudaOps[name] = std::move(fn);
     }
     CudaInterop& GetCudaInterop() { return m_cudaInterop; }
 
-    // Runtime NRC toggles — read by raygen / debug passes via push
-    // constants and mutated by the editor panel.
+    //NRC runtime toggles, read by raygen/debug via push constants
     nrc::Settings& GetNrcSettings() { return m_nrcSettings; }
     bool           IsNrcReady() const { return m_nrcReady; }
 
@@ -87,7 +88,9 @@ private:
     UINT  m_height;
     float m_aspectRatio;
 
-    // ── Modules ──────────────────────────────────────────────────
+    //====================================
+    //MODULES
+    //====================================
     DeviceContext       m_ctx;
     Scene               m_scene;
     Camera              m_camera;
@@ -128,7 +131,9 @@ private:
     CameraRecorder      m_recorder;
     CameraPathSimulator m_simulator;
 
-    // AS
+    //====================================
+    //ACCELERATION STRUCTURES
+    //====================================
     struct AccelerationStructureBuffers {
         ComPtr<ID3D12Resource> pScratch, pResult, pResultUncompacted, pInstanceDesc;
     };
@@ -205,7 +210,7 @@ private:
     void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
-    // Paired spatial reuse textures (Lin et al. 2026)
+    //paired spatial reuse textures (Lin et al. 2026)
     ComPtr<ID3D12Resource> m_reuseTexture[3];
     std::vector<ComPtr<ID3D12Resource>> m_reuseTextureUploadHeaps;
     void InitReuseTextures();
@@ -216,7 +221,7 @@ private:
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
-    int m_dlssModeChangedFrames = 0;  // >0 = skip temporal reuse for this many frames
+    int m_dlssModeChangedFrames = 0;
     bool m_reflexAvailable = false;
     DLSSGSettings m_dlssG;
     FrameStats m_frameStats;
@@ -229,39 +234,35 @@ private:
     std::vector<InstanceXformCPU> BuildXformsFromScene() const;
     void RebuildDLSSDescriptors();
     void RebuildResolutionDependentDescriptors();
-    // Re-binds the NRC UAV descriptors at slots 58-60 after the
-    // resolution-dependent NRC buffers (InferenceIn/Out, PendingGI)
-    // get reallocated on resize. Called from OnResize.
+    //rebinds NRC UAV descriptors 58-60 after reallocating InferenceIn/Out/PendingGI on resize
     void RebuildNrcDescriptors();
 
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();
     void SaveSimulationData(uint32_t stepIndex);
 
-    // ── CUDA interop state ───────────────────────────────────────
+    //====================================
+    //CUDA INTEROP STATE
+    //====================================
     CudaInterop                              m_cudaInterop;
-    CudaInterop::Fence                       m_cudaFence;     // shared D3D12/CUDA fence (empty if init failed)
+    CudaInterop::Fence                       m_cudaFence;
     UINT64                                   m_cudaFenceValue = 0;
     std::unordered_map<std::wstring, CudaOpFn> m_cudaOps;
 
-    // ── NRC state ────────────────────────────────────────────────
-    // Buffers are shared D3D12/CUDA allocations: HLSL binds them as UAVs,
-    // tcnn reads/writes them on the CUDA stream. Allocation happens after
-    // m_cudaInterop init; layout is described in rdn/NRC/NrcLayout.h.
-    // m_nrcReady gates every NRC pass — it stays false when interop or
-    // tcnn init fails, and the pipeline falls through to the existing
-    // ReSTIR PT path unchanged.
+    //====================================
+    //NRC STATE
+    //====================================
+    //shared D3D12/CUDA buffers, layout in rdn/NRC/NrcLayout.h
+    //m_nrcReady gates every NRC pass, false on interop/tcnn init failure
     nrc::Network                             m_nrcNetwork;
-    CudaInterop::Buffer                      m_nrcInferenceIn;   // u40 — raw 14-dim fp32 features
-    CudaInterop::Buffer                      m_nrcInferenceOut;  // u41 — 3-dim fp32 L̂_s predictions
-    CudaInterop::Buffer                      m_nrcPendingGI;     // u42 — per-pixel reservoir continuation
-    CudaInterop::Buffer                      m_nrcTrainRecords;  // u43 — per-vertex training records
-    CudaInterop::Buffer                      m_nrcCounters;      // u44 — inference/training counters
+    CudaInterop::Buffer                      m_nrcInferenceIn;
+    CudaInterop::Buffer                      m_nrcInferenceOut;
+    CudaInterop::Buffer                      m_nrcPendingGI;
+    CudaInterop::Buffer                      m_nrcTrainRecords;
+    CudaInterop::Buffer                      m_nrcCounters;
     uint32_t                                 m_nrcInferenceCapacity = 0;
     bool                                     m_nrcReady = false;
     nrc::Settings                            m_nrcSettings{};
-    // Adaptive training-tile side (paper §3.5). Updated each frame from
-    // the previous frame's vertex count via Network::LastValidVertexCount,
-    // then packed into nrc_flags bits 8..15 for the shader to read.
+    //adaptive training tile, updated each frame from LastValidVertexCount, packed into nrc_flags bits 8..15
     uint32_t                                 m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
 };

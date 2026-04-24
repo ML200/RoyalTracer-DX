@@ -11,7 +11,7 @@
 #include <cctype>
 #include <cstdint>
 
-// GLM Extensions for vector rotation
+//GLM extensions for vector rotation
 #define GLM_ENABLE_EXPERIMENTAL
 #include "glm/gtx/rotate_vector.hpp"
 #include "glm/gtc/constants.hpp"
@@ -32,14 +32,12 @@ static std::wstring ToWString(const std::string& str) {
     return wstrTo;
 }
 
-// Parses numeric index from filename stem (handles non-numeric files safely)
+//parses trailing digit run from filename stem, safe on non-numeric files
 static bool TryParseIndexFromFilename(const std::filesystem::path& p, uint64_t& outIdx)
 {
-    // Avoid narrow conversion (can throw on Windows); parse wstring.
-    std::wstring stem = p.stem().wstring(); // "000123" or "frame_000123"
+    std::wstring stem = p.stem().wstring();
     if (stem.empty()) return false;
 
-    // Find last contiguous digit-run in the stem
     int end = (int)stem.size() - 1;
     while (end >= 0 && !iswdigit((wint_t)stem[end])) --end;
     if (end < 0) return false;
@@ -67,9 +65,7 @@ CameraPathSimulator::CameraPathSimulator()
 }
 
 void CameraPathSimulator::PromptUserConfiguration() {
-    // ---------------------------------------------------------
-    // 1. OPEN NEW CONSOLE WINDOW (For Status Output)
-    // ---------------------------------------------------------
+    //console for status output
     if (AllocConsole()) {
         FILE* fpDummy;
         freopen_s(&fpDummy, "CONIN$", "r", stdin);
@@ -91,9 +87,7 @@ void CameraPathSimulator::PromptUserConfiguration() {
     std::wcout << L"       CAMERA SIMULATOR CONFIGURATION       \n";
     std::wcout << L"============================================\n";
 
-    // ---------------------------------------------------------
-    // 2. LOAD CONFIGURATION FROM FILE
-    // ---------------------------------------------------------
+    //load config from file
     const std::string configFileName = "sim_config.txt";
     std::ifstream configFile(configFileName);
 
@@ -102,7 +96,6 @@ void CameraPathSimulator::PromptUserConfiguration() {
         m_isActive = false;
         std::wcout << L">> Closing Console in 2 seconds...\n";
         Sleep(2000);
-        //FreeConsole();
         return;
     }
 
@@ -112,7 +105,6 @@ void CameraPathSimulator::PromptUserConfiguration() {
     std::string key;
     bool runSim = false;
 
-    // Default values before parsing
     m_configMaxSteps   = 100;
     m_configWaitTime   = 0.5f;
     m_configRollSteps  = 1;
@@ -120,7 +112,7 @@ void CameraPathSimulator::PromptUserConfiguration() {
     m_configYawSteps   = 1;
 
     while (std::getline(configFile, line)) {
-        if (line.empty() || line[0] == '#') continue; // Skip comments
+        if (line.empty() || line[0] == '#') continue;
         std::stringstream ss(line);
         ss >> key;
 
@@ -132,19 +124,16 @@ void CameraPathSimulator::PromptUserConfiguration() {
         else if (key == "KeyframeFile") ss >> keyframeFileStr;
         else if (key == "TotalPathSteps") ss >> m_configMaxSteps;
         else if (key == "WaitTime") ss >> m_configWaitTime;
-        else if (key == "ForwardRollSteps") ss >> m_configRollSteps; // 360 rotation
-        else if (key == "UpRotationAngle") ss >> m_configYawAngle;   // degrees
-        else if (key == "UpRotationSteps") ss >> m_configYawSteps;   // steps
-        else if (key == "OutputDir") ss >> outputDirStr;             // optional
+        else if (key == "ForwardRollSteps") ss >> m_configRollSteps;
+        else if (key == "UpRotationAngle") ss >> m_configYawAngle;
+        else if (key == "UpRotationSteps") ss >> m_configYawSteps;
+        else if (key == "OutputDir") ss >> outputDirStr;
     }
     configFile.close();
 
-    // Apply output directory
     m_outputDir = ToWString(outputDirStr);
 
-    // ---------------------------------------------------------
-    // 3. APPLY CONFIGURATION
-    // ---------------------------------------------------------
+    //apply config
     if (runSim) {
         m_isActive = true;
         std::wstring wFilename = ToWString(keyframeFileStr);
@@ -159,21 +148,13 @@ void CameraPathSimulator::PromptUserConfiguration() {
         LoadKeyframes(wFilename);
         GeneratePathPoints();
 
-        // --- DATASET EXTENSION LOGIC ---
-
-        // 1. Look at disk to see where the previous batch ended
+        //dataset extension, pick up past end of prev batch
         size_t nextDiskIndex = InferNextIndexFromOutputDir();
-
-        // 2. Set the offset.
-        //    If disk has files 0..99, nextDiskIndex is 100.
-        //    So Internal Step 0 will be saved as File 100.
         m_fileIndexOffset = nextDiskIndex;
 
-        // 3. FORCE start at 0.
-        //    We are running a NEW scene/path, so we must start at the beginning of THIS path.
+        //new scene/path, start at beginning
         m_currentStepIndex = 0;
 
-        // 4. Reset Wait Timers
         m_isWaitingForConvergence = false;
         m_currentWaitTimer = 0.0f;
 
@@ -195,8 +176,6 @@ void CameraPathSimulator::PromptUserConfiguration() {
         std::wcout << L">> Closing Console...\n";
         Sleep(1000);
     }
-
-    //FreeConsole();
 }
 
 void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
@@ -210,7 +189,7 @@ void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
 
     m_keyframes.clear();
     std::string line;
-    std::getline(file, line); // Skip header
+    std::getline(file, line);
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue;
@@ -224,7 +203,7 @@ void CameraPathSimulator::LoadKeyframes(const std::wstring& filename) {
         m_keyframes.push_back(k);
     }
 
-    // Ensure we have at least 2 keyframes to interpolate
+    //need >=2 for interpolation
     if (m_keyframes.size() < 2 && !m_keyframes.empty()) {
         m_keyframes.push_back(m_keyframes[0]);
     }
@@ -238,7 +217,7 @@ void CameraPathSimulator::GeneratePathPoints() {
 
     m_interpolatedPath.clear();
 
-    // 1. Calculate total distance for normalizing speed
+    //total distance to normalize speed
     float totalDistance = 0.0f;
     for (size_t i = 0; i < m_keyframes.size() - 1; ++i) {
         float d = glm::distance(m_keyframes[i].eye, m_keyframes[i + 1].eye);
@@ -246,7 +225,7 @@ void CameraPathSimulator::GeneratePathPoints() {
         totalDistance += d;
     }
 
-    // 2. Generate Base Points (Linear Interpolation)
+    //linear interp base points
     std::vector<SimKeyframe> basePoints;
 
     for (size_t i = 0; i < m_keyframes.size() - 1; ++i) {
@@ -268,33 +247,33 @@ void CameraPathSimulator::GeneratePathPoints() {
     }
     basePoints.push_back(m_keyframes.back());
 
-    // 3. Generate Rotational Variations for each Base Point
+    //rotational variations per base point
     for (const auto& base : basePoints) {
 
         glm::vec3 forward = glm::normalize(base.center - base.eye);
         float lookDist = glm::distance(base.center, base.eye);
         glm::vec3 originalUp = glm::normalize(base.up);
 
-        // --- Variation Loop 1: Yaw (rotate FORWARD around UP axis) ---
+        //yaw, rotate FORWARD around UP
         int ySteps = (int)std::fmax(1.0f, (float)m_configYawSteps);
 
         for (int y = 0; y < ySteps; ++y) {
             float yawAngleDeg = 0.0f;
 
             if (ySteps > 1) {
-                float t = (float)y / (float)(ySteps - 1); // 0..1
+                float t = (float)y / (float)(ySteps - 1);
                 yawAngleDeg = glm::mix(-m_configYawAngle, m_configYawAngle, t);
             }
 
             glm::vec3 yawedForward = glm::rotate(forward, glm::radians(yawAngleDeg), originalUp);
             glm::vec3 yawedCenter = base.eye + (yawedForward * lookDist);
 
-            // --- Variation Loop 2: Roll (rotate UP around (yawed) FORWARD axis) ---
+            //roll, rotate UP around yawed FORWARD
             int rSteps = (int)std::fmax(1.0f, (float)m_configRollSteps);
 
             for (int r = 0; r < rSteps; ++r) {
-                // Completely random roll for every variation frame
-                const float rollAngleDeg = m_rollDist(m_rng); // [0, 360)
+                //random roll per variation
+                const float rollAngleDeg = m_rollDist(m_rng);
 
                 glm::vec3 finalUp = glm::rotate(originalUp, glm::radians(rollAngleDeg), yawedForward);
 
@@ -315,7 +294,7 @@ size_t CameraPathSimulator::InferNextIndexFromOutputDir() const
     namespace fs = std::filesystem;
     std::error_code ec;
 
-    // Ensure directory exists; if it fails, just start at 0 (don't crash).
+    //ensure dir, never throw
     fs::create_directories(m_outputDir, ec);
     if (ec) return 0;
 
@@ -349,14 +328,12 @@ bool CameraPathSimulator::Update(float deltaTime, nv_helpers_dx12::Manipulator& 
 
     if (!m_isActive) return false;
 
-    // Finished?
+    //finished
     if (m_currentStepIndex >= m_interpolatedPath.size()) {
-        return true; // app should close
+        return true;
     }
 
-    // State machine:
-    // - If not waiting: move camera to currentStepIndex and start waiting
-    // - If waiting: accumulate time; once >= waitTime, request capture, then advance index
+    //state machine, move -> wait -> capture -> advance
     if (!m_isWaitingForConvergence) {
         const SimKeyframe& target = m_interpolatedPath[m_currentStepIndex];
         camera.setLookat(target.eye, target.center, target.up);
@@ -365,18 +342,15 @@ bool CameraPathSimulator::Update(float deltaTime, nv_helpers_dx12::Manipulator& 
         return false;
     }
 
-    // Waiting for convergence
     m_currentWaitTimer += deltaTime;
 
     if (m_currentWaitTimer >= m_configWaitTime) {
-        // Request capture of the CURRENT frame index
         outShouldCapture = true;
         m_lastCaptureIndex = m_currentStepIndex;
 
-        // Advance to next frame
         m_currentWaitTimer = 0.0f;
         m_currentStepIndex++;
-        m_isWaitingForConvergence = false; // next Update will move camera to the new index
+        m_isWaitingForConvergence = false;
     }
 
     return false;

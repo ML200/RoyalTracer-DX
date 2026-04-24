@@ -1,21 +1,10 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Interop/CudaInterop.h — CUDA/D3D12 interop for NRC (tiny-cuda-nn).
-//
-// Exposes shared D3D12 buffers as raw CUDA device pointers, plus
-// shared fences for queue-level synchronization. Designed so a caller
-// never sees a single CUDA header — all CUDA types are hidden behind
-// an opaque pimpl.
-//
-// Typical setup:
-//     m_cuda.Init(device);
-//     auto q = m_cuda.CreateBuffer(W*H*sizeof(QueryRecord), L"NRC_Queries");
-//     auto f = m_cuda.CreateFence(L"NRC_Fence");
-//     // HLSL:   bind q.resource as UAV
-//     // tcnn:   pass q.cudaPtr
-//     // D3D12:  cmdQueue->Signal(f.fence.Get(), v);
-//     // CUDA:   m_cuda.CudaWait(f, v);
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//CUDA D3D12 INTEROP FOR NRC
+//====================================
+//shared D3D12 buffers as raw CUDA device pointers + shared fences
+//callers never see a CUDA header, types hidden behind opaque pimpl
+//typical setup, Init -> CreateBuffer+CreateFence, HLSL binds as UAV, tcnn uses cudaPtr
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -24,16 +13,18 @@
 
 class CudaInterop {
 public:
-    // ── Public, CUDA-free types ───────────────────────────────────
+    //====================================
+    //PUBLIC CUDA-FREE TYPES
+    //====================================
     struct Buffer {
-        Microsoft::WRL::ComPtr<ID3D12Resource> resource;   // bind as UAV/SRV in HLSL
-        void*  cudaPtr   = nullptr;                        // pass to tcnn / CUDA kernels
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+        void*  cudaPtr   = nullptr;
         size_t sizeBytes = 0;
     };
 
     struct Fence {
-        Microsoft::WRL::ComPtr<ID3D12Fence> fence;         // signal/wait from D3D12 queue
-        uint64_t id = 0;                                   // opaque handle into Impl
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        uint64_t id = 0;
     };
 
     CudaInterop();
@@ -41,31 +32,35 @@ public:
     CudaInterop(const CudaInterop&)            = delete;
     CudaInterop& operator=(const CudaInterop&) = delete;
 
-    // ── Lifetime ─────────────────────────────────────────────────
-    // Matches the CUDA device to the D3D12 adapter via adapter LUID.
-    // Returns false if no matching CUDA device exists — caller should
-    // fall back to a non-CUDA code path.
+    //====================================
+    //LIFETIME
+    //====================================
+    //matches CUDA device to D3D12 adapter via LUID
+    //returns false if no matching CUDA device, caller falls back to non-CUDA path
     bool Init(ID3D12Device10* device);
     void Shutdown();
     bool IsReady() const;
 
-    // ── Resource creation ────────────────────────────────────────
-    // Allocates a SHARED D3D12 committed buffer (UAV-capable) and
-    // imports it to CUDA. Empty Buffer on failure (resource == null).
+    //====================================
+    //RESOURCE CREATION
+    //====================================
+    //shared D3D12 UAV buffer, imported to CUDA, empty Buffer on failure
     Buffer CreateBuffer(size_t bytes, const wchar_t* debugName = nullptr);
 
-    // Allocates a SHARED D3D12 fence and imports it as a CUDA external
-    // semaphore. Signal/Wait from CUDA via CudaSignal/CudaWait below;
-    // from D3D12 via cmdQueue->Signal(fence, v) or cmdQueue->Wait.
+    //shared D3D12 fence + CUDA external semaphore
+    //signal/wait from CUDA via CudaSignal/CudaWait, from D3D12 via cmdQueue->Signal/Wait
     Fence CreateFence(const wchar_t* debugName = nullptr);
 
-    // ── CUDA-side sync (on internal stream) ──────────────────────
+    //====================================
+    //CUDA-SIDE SYNC ON INTERNAL STREAM
+    //====================================
     void CudaWait  (const Fence& f, uint64_t value);
     void CudaSignal(const Fence& f, uint64_t value);
 
-    // ── Stream accessor ──────────────────────────────────────────
-    // Returns cudaStream_t as void* to keep CUDA headers out.
-    // Reinterpret on the CUDA side: auto s = (cudaStream_t)interop.Stream();
+    //====================================
+    //STREAM ACCESSOR
+    //====================================
+    //cudaStream_t as void*, CUDA side reinterprets, auto s = (cudaStream_t)interop.Stream()
     void* Stream() const;
 
 private:

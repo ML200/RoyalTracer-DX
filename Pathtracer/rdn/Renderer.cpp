@@ -1,7 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════
-// Renderer.cpp — Slim orchestrator: init, update, render, destroy.
-//                All heavy logic lives in the modules.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//RENDERER ORCHESTRATOR
+//====================================
+//init, update, render, destroy, heavy logic in modules
 
 #include "stdafx.h"
 #include "Renderer.h"
@@ -55,9 +55,9 @@ Renderer::Renderer(UINT width, UINT height)
     });
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Init
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//INIT
+//====================================
 void Renderer::InitDevice() {
     try {
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
@@ -296,9 +296,9 @@ void Renderer::InitSceneGPU() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Update
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//UPDATE
+//====================================
 void Renderer::UpdateRenderer(float dt) {
     using hrc = std::chrono::high_resolution_clock;
 
@@ -707,9 +707,9 @@ void Renderer::RebuildDLSSDescriptors() {
     dlssUAV(m_dlss.BiasHint(),         DXGI_FORMAT_R8_UNORM);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Resize
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RESIZE
+//====================================
 void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     if (newWidth == 0 || newHeight == 0) return;
     if (newWidth == m_width && newHeight == m_height) return;
@@ -917,9 +917,9 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Render
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RENDER
+//====================================
 void Renderer::RenderFrame() {
     using hrc = std::chrono::high_resolution_clock;
     static auto s_lastTime = hrc::now();
@@ -970,9 +970,9 @@ void Renderer::RenderFrame() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Destroy
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//DESTROY
+//====================================
 void Renderer::DestroyRenderer() {
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
@@ -985,7 +985,9 @@ void Renderer::DestroyRenderer() {
     m_ctx.Shutdown();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PROCEDURAL MESH CREATION
+//====================================
 UINT Renderer::CreateProceduralMesh(
     const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
     const Material& material)
@@ -1024,7 +1026,9 @@ UINT Renderer::CreateProceduralMesh(
     return meshIndex;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//MESH INSTANCE CREATION
+//====================================
 UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material)
 {
     const auto& src = m_scene.meshes[sourceMeshIndex];
@@ -1054,7 +1058,9 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     return meshIndex;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SCENE STRUCTURAL CHANGE
+//====================================
 void Renderer::HandleSceneStructuralChange() {
     m_scene.RebuildTLASInstanceList();
     m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
@@ -1083,7 +1089,9 @@ void Renderer::HandleSceneStructuralChange() {
     m_scene.lightTreeDirty   = true;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//INPUT CAPTURE AND KEY HANDLERS
+//====================================
 bool Renderer::WantsKeyboard() const { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard; }
 bool Renderer::WantsMouse() const    { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse; }
 void Renderer::HandleKeyUp(UINT8 key) {
@@ -1092,9 +1100,10 @@ void Renderer::HandleKeyUp(UINT8 key) {
     if (key == VK_F1) m_editor.ToggleVisibility();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// PopulateCommandList — the frame's GPU work
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//POPULATE COMMAND LIST
+//====================================
+//the frame's GPU work
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 

@@ -32,7 +32,7 @@ inline void GetAssetsPath(_Out_writes_(pathSize) WCHAR* path, UINT pathSize)
 	DWORD size = GetModuleFileName(nullptr, reinterpret_cast<LPSTR>(path), pathSize);
 	if (size == 0 || size == pathSize)
 	{
-		// Method failed or path was truncated.
+		//failed or truncated
 		throw std::exception();
 	}
 
@@ -83,7 +83,7 @@ inline HRESULT ReadDataFromFile(LPCWSTR filename, byte** data, UINT* size)
 	return S_OK;
 }
 
-// Assign a name to the object to aid with debugging.
+//debug naming helpers
 #if defined(_DEBUG)
 inline void SetName(ID3D12Object* pObject, LPCWSTR name)
 {
@@ -106,8 +106,6 @@ inline void SetNameIndexed(ID3D12Object*, LPCWSTR, UINT)
 }
 #endif
 
-// Naming helper for ComPtr<T>.
-// Assigns the name of the variable as the name of the object.
-// The indexed variant will include the index in the name of the object.
+//ComPtr naming helpers, use variable name as object name
 #define NAME_D3D12_OBJECT(x) SetName(x.Get(), L#x)
 #define NAME_D3D12_OBJECT_INDEXED(x, n) SetNameIndexed(x[n].Get(), L#x, n)

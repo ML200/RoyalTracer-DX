@@ -1,8 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════
-// Scene/AssetLoader.cpp — Creates SceneModel + SceneInstance entries
-//                         Batched texture uploads to avoid TDR on
-//                         large scenes (e.g. 4K Sponza).
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//ASSET LOADER
+//====================================
+//creates SceneModel + SceneInstance entries
+//batched texture uploads to avoid TDR on large scenes
 
 #include "../stdafx.h"
 #include <fstream>

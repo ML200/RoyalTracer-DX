@@ -1,7 +1,7 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// PostProcess/DLSSManager.h
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//DLSS MANAGER
+//====================================
 
 #include "../Common.h"
 #include "../Core/ResourceFactory.h"
@@ -16,7 +16,7 @@ class DLSSManager {
 public:
     void CreateResources(ID3D12Device* device, UINT displayWidth, UINT displayHeight);
 
-    // Returns true if resources were recreated (caller should rebuild SRV heap entries)
+    //returns true if resources were recreated, caller should rebuild SRV heap
     bool UpdateMode(ID3D12Device* device);
 
     void Evaluate(
@@ -32,14 +32,18 @@ public:
         uint32_t jitterFrameIndex,
         float fov, float nearZ, float farZ);
 
-    // ── Resolution accessors ──────────────────────────────────────
+    //====================================
+    //RESOLUTION ACCESSORS
+    //====================================
     UINT RenderWidth()  const { return m_renderWidth; }
     UINT RenderHeight() const { return m_renderHeight; }
     UINT DisplayWidth() const { return m_displayWidth; }
     UINT DisplayHeight()const { return m_displayHeight; }
     sl::DLSSMode ActiveMode() const { return m_activeMode; }
 
-    // ── Resource accessors for SRV/UAV heap setup ─────────────────
+    //====================================
+    //RESOURCE ACCESSORS
+    //====================================
     ID3D12Resource* Input()            const { return m_input.Get(); }
     ID3D12Resource* Depth()            const { return m_depth.Get(); }
     ID3D12Resource* MVec()             const { return m_mvec.Get(); }
@@ -54,7 +58,7 @@ public:
     ID3D12Resource* ColorBeforeTrans() const { return m_colorBeforeTrans.Get(); }
     ID3D12Resource* BiasHint()         const { return m_biasHint.Get(); }
 
-    // Editor-exposed settings
+    //editor-exposed
     sl::DLSSMode mode = sl::DLSSMode::eDLAA;
 
 private:
@@ -71,8 +75,8 @@ private:
 
     UINT m_displayWidth  = 0, m_displayHeight = 0;
     UINT m_renderWidth   = 0, m_renderHeight  = 0;
-    sl::DLSSMode m_activeMode = sl::DLSSMode::eOff;  // mode resources were built for
-    bool m_forceReset = false;  // force DLSS temporal reset on next evaluate
+    sl::DLSSMode m_activeMode = sl::DLSSMode::eOff;
+    bool m_forceReset = false;
 
     XMMATRIX m_dlssPrevView = XMMatrixIdentity();
     XMMATRIX m_dlssPrevProj = XMMatrixIdentity();

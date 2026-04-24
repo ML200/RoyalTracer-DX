@@ -1,9 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════
-// Renderer_Pipeline.cpp — Acceleration structures, RT pipeline,
-//                         descriptor heap, SBT, LUT, compaction,
-//                         readback. Split from Renderer.cpp for
-//                         readability. Same translation unit.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//RENDERER PIPELINE
+//====================================
+//accel structures, RT pipeline, descriptor heap, SBT, LUT, compaction, readback
+//split from Renderer.cpp, same TU
 
 #include "stdafx.h"
 #include "Renderer.h"
@@ -17,9 +16,9 @@
 #include <random>
 #include <d3dcompiler.h>
 
-// ═════════════════════════════════════════════════════════════════
-// Acceleration Structures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//ACCELERATION STRUCTURES
+//====================================
 
 static constexpr bool kUseBlasCompaction = true;
 
@@ -233,9 +232,9 @@ void Renderer::CreateAccelerationStructures() {
     m_lightTree.ReleaseStaging();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Root Signatures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//ROOT SIGNATURES
+//====================================
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     CD3DX12_ROOT_PARAMETER1 rootParameters[2];
@@ -325,9 +324,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
     return rsc.Generate(m_ctx.Device(), true);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Raytracing Pipeline
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RAYTRACING PIPELINE
+//====================================
 
 void Renderer::CreateRaytracingPipeline() {
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_ctx.Device());
@@ -472,9 +471,9 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObjectProps->SetPipelineStackSize(total);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Render Targets & Path State
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RENDER TARGETS AND PATH STATE
+//====================================
 
 void Renderer::CreateRaytracingOutputBuffer() {
     auto* dev = m_ctx.Device();
@@ -532,9 +531,9 @@ void Renderer::CreatePathStateBuffer() {
     m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Shader Resource Heap (descriptor layout)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SHADER RESOURCE HEAP DESCRIPTOR LAYOUT
+//====================================
 
 void Renderer::CreateShaderResourceHeap() {
     auto* dev = m_ctx.Device();
@@ -852,9 +851,9 @@ void Renderer::CreateShaderResourceHeap() {
     writeBatch(m_scene.bindlessRmaBase,    rmaCount);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Shader Binding Table
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SHADER BINDING TABLE
+//====================================
 
 void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.Reset();
@@ -910,9 +909,9 @@ void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Streaming Compaction & Indirect Dispatch
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//STREAMING COMPACTION AND INDIRECT DISPATCH
+//====================================
 
 void Renderer::CreateStreamingCompactionBuffers() {
     auto* dev = m_ctx.Device();
@@ -1018,9 +1017,9 @@ void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &b2);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// LUT Textures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//LUT TEXTURES
+//====================================
 
 void Renderer::GenerateLutTextures() {
     SCOPE_TIMER("GenerateLutTextures");
@@ -1095,9 +1094,10 @@ void Renderer::CreateAndUploadLutArray(
     m_ctx.CmdList()->ResourceBarrier(1, &b);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Paired Spatial Reuse Textures (Lin et al. 2026)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PAIRED SPATIAL REUSE TEXTURES
+//====================================
+//Lin et al. 2026
 
 void Renderer::InitReuseTextures() {
     const int   kSizes[3] = { 254, 230, 210 };
@@ -1158,9 +1158,9 @@ void Renderer::InitReuseTextures() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Readback & Simulation Data
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//READBACK AND SIMULATION DATA
+//====================================
 
 void Renderer::CreateReadbackBuffer() {
     D3D12_RESOURCE_DESC td = m_scratchPing->GetDesc();

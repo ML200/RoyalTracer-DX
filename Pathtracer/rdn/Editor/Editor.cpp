@@ -1,6 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════
-// Editor/Editor.cpp — Model-level scene hierarchy, live materials
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//EDITOR
+//====================================
+//model-level scene hierarchy, live materials
 
 #include "../stdafx.h"
 #include "Editor.h"
@@ -98,9 +99,10 @@ void Editor::Render(ID3D12GraphicsCommandList* cmdList) {
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Scene Panel — one entry per loaded model
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SCENE PANEL
+//====================================
+//one entry per loaded model
 void Editor::DrawScenePanel(Scene& scene) {
     ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 450), ImGuiCond_FirstUseEver);
@@ -179,7 +181,9 @@ void Editor::DrawScenePanel(Scene& scene) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//CAMERA PANEL
+//====================================
 void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::SetNextWindowPos(ImVec2(10, 490), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 180), ImGuiCond_FirstUseEver);
@@ -198,7 +202,9 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PASS PIPELINE PANEL
+//====================================
 void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::SetNextWindowPos(ImVec2(380, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, 400), ImGuiCond_FirstUseEver);
@@ -243,7 +249,9 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//DLSS PANEL
+//====================================
 void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::SetNextWindowPos(ImVec2(380, 440), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, 200), ImGuiCond_FirstUseEver);
@@ -295,9 +303,9 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Material Inspector
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//MATERIAL INSPECTOR
+//====================================
 void Editor::DrawMaterialInspector(Scene& scene) {
     ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 700), ImGuiCond_FirstUseEver);

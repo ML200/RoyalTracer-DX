@@ -1,10 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Raytracing/PassSystem.h — Data-driven pass pipeline. Parses a
-//                           sequence of pass tokens into executable
-//                           stages. Self-contained; dispatch logic
-//                           lives separately in Renderer.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//PASS SYSTEM
+//====================================
+//data-driven pass pipeline, parses tokens into stages, dispatch in Renderer
 
 #include "../Common.h"
 #include <dxcapi.h>
@@ -12,8 +10,8 @@
 enum class Stage {
     RayGen, Compute, FixedCompute, Wavefront, Barrier,
     LoopStart, LoopEnd, PingSwap, ClearSort, Callable, DLSS,
-    CudaOp   // Runs a CUDA callback registered on the Renderer by name (PassDesc::file).
-             // Token form: L"cuda:<name>" (e.g. L"cuda:nrc_infer").
+    //CudaOp runs callback registered on Renderer, token L"cuda:<name>"
+    CudaOp
 };
 
 struct PassDesc {
@@ -28,13 +26,12 @@ struct PassDesc {
     int32_t       targetIdx  = -1;
 };
 
-// ═════════════════════════════════════════════════════════════════
 class PassSystem {
 public:
-    // Parse a token list like { L"raygen.hlsl|rg", L"barrier", L"cs.hlsl|cs:16x16", ... }
+    //parse tokens like L"raygen.hlsl|rg", L"barrier", L"cs.hlsl|cs:16x16"
     void Build(const std::vector<std::wstring>& tokens);
 
-    // Accessors
+    //accessors
     const std::vector<PassDesc>&    Passes()    const { return m_passes; }
     std::vector<PassDesc>&          Passes()          { return m_passes; }
     const std::vector<std::wstring>& Tokens()   const { return m_tokens; }
@@ -48,7 +45,7 @@ public:
         m_passIndex[file] = index;
     }
 
-    // Editor: rebuild from modified token list
+    //editor rebuild
     void Rebuild(const std::vector<std::wstring>& newTokens) { Build(newTokens); }
 
 private:

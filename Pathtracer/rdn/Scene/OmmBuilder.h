@@ -1,13 +1,13 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Scene/OmmBuilder.h — Opacity Micro-Map baking via NVIDIA OMM SDK
-//                      and D3D12 GPU build.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//OPACITY MICRO-MAP BUILDER
+//====================================
+//NVIDIA OMM SDK bake + D3D12 GPU build
 
 #include "../Common.h"
 #include <DirectXTex.h>
 
-// ── CPU bake result (one per mesh that has alpha triangles) ─────
+//CPU bake result, one per mesh with alpha triangles
 struct OmmBakeResult {
     std::vector<uint8_t> rawData;
     std::vector<D3D12_RAYTRACING_OPACITY_MICROMAP_DESC> ommDescs;
@@ -18,7 +18,7 @@ struct OmmBakeResult {
     bool     empty() const { return alphaTriCount == 0; }
 };
 
-// ── GPU resources produced by BuildGPU ──────────────────────────
+//GPU resources produced by BuildGPU
 struct OmmGpuData {
     ComPtr<ID3D12Resource> ommArray;
     ComPtr<ID3D12Resource> ommIndexBuffer;
@@ -34,14 +34,13 @@ struct MaterialSoA;
 
 class OmmBuilder {
 public:
-    // Batch-bake all meshes at once. Bakes once per unique texture,
-    // then distributes results back to per-mesh OmmBakeResult.
+    //batch bake, one per unique texture, redistributed to per-mesh results
     static void BakeAll(
         std::vector<MeshGPU>& meshes,
         const MaterialSoA& materials,
         const std::vector<DirectX::ScratchImage*>& albedoImages);
 
-    // GPU build: create the OMM array resource and index buffer.
+    //GPU build, OMM array + index buffer
     static OmmGpuData BuildGPU(
         const OmmBakeResult& bake,
         ID3D12Device5* device,
