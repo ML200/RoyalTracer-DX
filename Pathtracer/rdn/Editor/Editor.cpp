@@ -530,6 +530,17 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
         ImGui::SetItemTooltip("Paper's c (eq. 3-4). Smaller = terminate earlier (more cache, more bias).");
     }
 
+    if (ImGui::CollapsingHeader("Scene bounds (position encoding)")) {
+        // Auto-recomputed every frame from the scene AABB; shown here
+        // purely for diagnostic purposes, edits get overwritten.
+        ImGui::BeginDisabled(true);
+        ImGui::DragFloat3("Center (auto)",     &n.sceneCenter.x, 0.0f);
+        ImGui::DragFloat ("Half extent (auto)", &n.sceneExtent,  0.0f);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled(
+            "Derived from mesh localAabbs \u00d7 live instance transforms.");
+    }
+
     if (ImGui::CollapsingHeader("Optimizer")) {
         ImGui::SliderFloat("LR scale", &n.learningRateScale, 0.01f, 10.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Reserved — a later turn will feed this into tcnn's Adam LR.");

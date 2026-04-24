@@ -1,14 +1,21 @@
 //====================================================================
 // Pass_nrc_debug_query_v8 — per-pixel cache inference query at x1.
 //
-// Runs BEFORE cuda:nrc_inference when NrcIsDebugView() is true. Raygen
-// is already short-circuited in this mode (kNrcDebugMode → no cache
-// termination), so the inference buffer is otherwise empty and every
-// pixel gets a deterministic slot = pixelIdx.
+// Purely additive: raygen's normal cache-termination + tail-seed
+// inference runs first (resolve stitches it into the reservoir,
+// train consumes the class-1 tail predictions). Only AFTER that
+// does this pass write a W×H batch of camera-hit queries into the
+// inference buffers for cuda:nrc_debug_inference to run, feeding
+// Pass_nrc_debug_present_v8 on slice 3.
 //
-// Features are built from the primary-hit data already stashed in
-// g_sample_current during raygen. Sky / emissive pixels skip the write
-// (the present pass checks isEmitter too and leaves them at 0).
+// Because the main inference's results have already been consumed
+// by the time we reach this pass, it's safe to reuse the shared
+// g_NrcInferenceIn / g_NrcInferenceOut buffers — the second
+// inference call just overwrites them with per-pixel predictions.
+//
+// Features come from the primary-hit data raygen stashed into
+// g_sample_current. Sky / emitter pixels skip the write; the
+// present pass checks isEmitter too and leaves them at 0.
 //====================================================================
 
 #define COMPUTE_PASS
@@ -25,9 +32,8 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const uint  pixelIdx = MapPixelID(gImageSize, pixel);
     if (pixelIdx == 0xFFFFFFFFu) return;
 
-    // Sky / emitter primaries: no meaningful cache query — we leave
-    // inference input at whatever the previous frame wrote (garbage),
-    // and the present pass overrides to black for these pixels.
+    // Sky / emitter primaries: no meaningful cache query — leave the
+    // slot untouched. The present pass overrides these pixels to black.
     if (load_isEmitter(g_sample_current, pixelIdx)) return;
 
     const uint instID = load_instID(g_sample_current, pixelIdx);
@@ -57,9 +63,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
     float features[14];
     NrcBuildFeatures(x1, viewDir, n1_s, localPr, alpha, betaC, features);
 
-    // Deterministic slot assignment — no atomic. This relies on debug
-    // view disabling raygen's cache termination so the inference buffer
-    // isn't concurrently populated by other threads.
+    // Deterministic per-pixel slot. Safe to reuse g_NrcInferenceIn
+    // because cuda:nrc_inference + resolve + train have all already
+    // consumed the main pass's contents by now.
     const uint base = pixelIdx * NRC_INFERENCE_IN_STRIDE;
     [unroll]
     for (uint i = 0; i < 14u; ++i) {

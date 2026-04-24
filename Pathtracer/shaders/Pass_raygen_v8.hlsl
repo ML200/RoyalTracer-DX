@@ -1,17 +1,12 @@
 #include "Includes_v8.hlsli"
 #include "Nrc_v8.hlsli"
 
-//Overall depth cap, dominated by transmission chains (glass, water,
-//nested volumes). Diffuse / specular bounces have a tighter cap below.
+//Overall depth cap — only fires as a safety net; Russian roulette
+//(starting at depth > 2) is the actual termination mechanism for
+//both rendering and training paths now. The NRC cache further
+//shortens rendering paths via area-spread termination.
 #ifndef MAX_BOUNCES
 #define MAX_BOUNCES 32
-#endif
-
-//Non-transmission bounce cap. Caustic-like effects through glass can
-//still produce long transmission chains under MAX_BOUNCES, but the
-//number of times the path actually reflects off a surface is limited.
-#ifndef MAX_DS_BOUNCES
-#define MAX_DS_BOUNCES 4
 #endif
 
 //====================================================================
@@ -50,14 +45,11 @@ void Pass_raygen_v8()
     //warps. Screen bucket keeps memory accesses coalesced within class.
     //Runtime toggles come from the push cbuffer (see NrcSettings in the
     //editor). Each flag is INDEPENDENT — "enable cache" controls only
-    //cache termination, "train" only training-vertex emission, "debug
-    //view" only the x1 cache-query pass. The host side already gates
-    //every flag by m_nrcReady, so an init failure zeroes them all.
-    //Debug view still overrides cache termination (mutually exclusive
-    //at the inference-slot level), enforced below on nrcCacheEligible.
+    //cache termination, "train" only training-vertex emission. Raygen
+    //no longer reads the "debug view" flag; that toggle only affects
+    //the three debug-chain passes scheduled after training.
     const bool kNrcEnabled    = NrcIsEnabled();
     const bool kNrcTrainOn    = NrcIsTrainOn();
-    const bool kNrcDebugMode  = NrcIsDebugView();
     const uint2 nrcTileOffset = uint2(asuint(time) & (NRC_TRAINING_TILE_SIDE - 1u),
                                       (asuint(time) >> 3) & (NRC_TRAINING_TILE_SIDE - 1u));
     bool nrcIsTraining, nrcIsUnbiased;
@@ -81,16 +73,15 @@ void Pass_raygen_v8()
     NrcClearPendingGI(pixelIdx);
 
     //Cache-term eligibility, per class:
-    //  CLASS_RENDER          — cache-term only when NOT in debug view
-    //                          (debug view takes over the rendering path
-    //                          and shows the raw prediction at x1).
-    //  CLASS_TRAIN_BIASED    — ALWAYS cache-term (the inference slot is
-    //                          the self-training tail seed, so training
-    //                          keeps working even in debug view).
-    //  CLASS_TRAIN_UNBIASED  — never (runs to natural termination).
+    //  CLASS_RENDER          — cache-term (driver of rendering quality)
+    //  CLASS_TRAIN_BIASED    — cache-term (terminal slot seeds self-training)
+    //  CLASS_TRAIN_UNBIASED  — never (runs to natural termination)
+    // Debug view does NOT gate this. The debug path is a separate
+    // W×H inference pass scheduled after resolve + train, so it never
+    // needs to short-circuit the main cache-termination logic.
     const bool  nrcCacheEligible = kNrcEnabled &&
-        ((nrcPathClass == NRC_CLASS_TRAIN_BIASED) ||
-         (nrcPathClass == NRC_CLASS_RENDER && !kNrcDebugMode));
+        (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
+         nrcPathClass == NRC_CLASS_RENDER);
     // Matches host-side nrc::AlignBatch(W*H).
     const uint  nrcInferenceCapacity = (IMG_W * IMG_H + 255u) & ~255u;
     float nrcA0 = 0.0f;   //paper eq. 4, primary visible area
@@ -147,12 +138,6 @@ void Pass_raygen_v8()
     //tpost, post-x2 integrand accumulator, stays in registers. Updated
     //every bounce, so buffer RMW would be strictly worse than 3 scalars.
     float3 tpost = float3(1, 1, 1);
-
-    //Diffuse / specular (non-transmission) bounce counter. The path loop
-    //terminates once MAX_DS_BOUNCES reflections have been taken, but
-    //transmission bounces stay free up to MAX_BOUNCES so glass / water
-    //chains and caustic-like effects survive.
-    int dsBounces = 0;
 
     //Pixel-and-frame-unique unit vector used as the stored V2 for DI
     //samples (env miss, emitter hit, NEE at d=0). Reconnect's sentinel
@@ -216,7 +201,7 @@ void Pass_raygen_v8()
             //NRC: miss on a training path becomes the backward-fill tail.
             if (nrcIsTraining) {
                 nrcTailKind  = NRC_TAIL_MISS;
-                nrcTailRadPk = PackRGB9E5(envL);
+                nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(envL));
             }
 
             //pdf-free contribution f = throughput * pdf_product * envL
@@ -371,12 +356,6 @@ void Pass_raygen_v8()
         //====================================================================
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
-            //NRC: emitter hit terminates training paths with tail = emission.
-            if (nrcIsTraining) {
-                nrcTailKind  = NRC_TAIL_EMITTER;
-                nrcTailRadPk = PackRGB9E5(emission);
-            }
-
             const float3 throughput = UnpackRGB9E5(throughputPk);
             const float3 prevNormal = UnpackNormal(prevNormalPk);
             const float  lightPdfArea = LT_Pdf_LightTree_Area(rayOrigin, prevNormal, hinfo.lightID, instID);
@@ -384,6 +363,16 @@ void Pass_raygen_v8()
             const float  dist2        = max(hitT * hitT, EPSILON);
             const float  lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             const float  misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
+
+            //NRC: emitter hit terminates training paths. Tail must be
+            //MIS_BSDF-weighted (misWeight above) — the previous vertex's
+            //L_nee is already MIS_NEE-weighted, and combining both with
+            //MIS weights that sum to 1 is the only way to avoid
+            //double-counting this emitter in the backward-fill target.
+            if (nrcIsTraining) {
+                nrcTailKind  = NRC_TAIL_EMITTER;
+                nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(emission * misWeight));
+            }
 
             const float3 F_contrib = throughput * emission * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
@@ -477,9 +466,22 @@ void Pass_raygen_v8()
                     // Class-1 training paths use the SAME query as the
                     // rendering tail — the cache-terminal vertex's L̂_s
                     // bootstraps the backward fill (self-training).
+                    //
+                    // Reflectance factorisation lives in the network:
+                    // MLP output = L_s / (α+β) at the queried vertex, so
+                    // recovering radiance from the prediction requires
+                    // multiplying by (α+β) *at that same vertex*, not
+                    // at the last training vertex before it. We pack
+                    // (α+β)(cache-term) into the TailRadiance slot of
+                    // the path meta (unused for kTailCache otherwise)
+                    // so the fill kernel can apply the right factor.
                     if (nrcPathClass == NRC_CLASS_TRAIN_BIASED) {
                         nrcTailKind    = NRC_TAIL_CACHE;
                         nrcTailInfSlot = nrcSlot;
+                        const float3 alphaCT = hitLocalKd * (1.0f - hitLocalPm);
+                        const float3 betaCT  = lerp(float3(0.04f, 0.04f, 0.04f),
+                                                    hitLocalKd, hitLocalPm);
+                        nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(alphaCT + betaCT));
                     }
                     break;
                 }
@@ -719,27 +721,13 @@ void Pass_raygen_v8()
 
             NrcStoreTrainingVertex(
                 nrcPathId, nrcTrainVIdx, features,
-                PackRGB9E5(nrcLNeeAccum),
-                PackRGB9E5(updateWeight));
+                PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
+                PackRGB9E5(NrcCleanRadiance(updateWeight)));
             ++nrcTrainVIdx;
         }
 
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
-
-        //Bounce classification: transmission crosses the surface
-        //(sampled direction on the opposite side of the shading normal
-        //from the incoming ray). hit.hitNormal is always oriented
-        //toward -rayDir by EvalSurfaceState, so dot(s, n) < 0 is
-        //equivalent to "s goes through the surface". Transmission
-        //bounces are free up to MAX_BOUNCES; reflections count against
-        //the tighter MAX_DS_BOUNCES quota.
-        const bool isTransmission = dot(s, hinfo.hitNormal) < 0.0f;
-        if (!isTransmission)
-        {
-            if (dsBounces >= MAX_DS_BOUNCES) break;
-            ++dsBounces;
-        }
 
         prev_pdf    = bdata.pdf;
         pdf_product = min(pdf_product * bdata.pdf, 1e30f);
@@ -751,30 +739,43 @@ void Pass_raygen_v8()
             float3 throughput  = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
-            //Skip RR for training paths: backward-fill uses each vertex's
-            //stored β = BSDF·cos·T / pdf without an RR 1/p_s factor, so
-            //a surviving-with-boost path would bias the training target.
-            //MAX_DS_BOUNCES still caps the trace length.
-            if (depth > 2 && !nrcIsTraining)
+            //Russian roulette — now applied to BOTH rendering and training
+            //paths (paper §3.2 uses RR for class-2 unbiased training
+            //termination). On survival we boost `throughput` by 1/p AND
+            //patch the last-written training vertex's β with the same
+            //factor. Without that β patch, paths surviving RR would carry
+            //an under-weighted tail in the backward fill and systematically
+            //darken the cache target — which is what we were seeing
+            //before this change.
+            //
+            //It must NOT touch tpostWeight: tpost is pure BSDF·cos·abs
+            //integrand (no 1/pdf term) cached into L2 for reuse. Boosting
+            //it poisons reused contributions with an extra 1/p that can't
+            //be cancelled at the neighbor pixel, producing firefly-like
+            //overshoots whenever an RR-surviving sample propagates
+            //through temporal or spatial reservoir chains.
+            if (depth > 2)
             {
-                //Floor survival at 0.1 so kill-rate and 1/p_s boost stay
-                //symmetric. rrBoost belongs on throughput (which is f/q
-                //and gets 1/p_s when q shrinks via RR) and on the path
-                //pdf (pdf_product shrinks by the same p_s, keeping
-                //F_contrib = throughput * L * pdf_product RR-invariant).
-                //It must NOT touch tpostWeight: tpost is pure
-                //BSDF·cos·abs integrand (no 1/pdf term) cached into L2
-                //for reuse. Boosting it poisons reused contributions
-                //with an extra 1/p_s that can't be cancelled at the
-                //neighbor pixel, producing firefly-like overshoots
-                //whenever an RR-surviving sample propagates through
-                //temporal or spatial reservoir chains.
                 const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
                 if (RandomFloatSingle(seed) >= survivalProb) break;
                 const float rrBoost = 1.0f / survivalProb;
                 throughput  *= rrBoost;
                 //RR survival is part of the path pdf, include in product.
                 pdf_product = min(pdf_product * survivalProb, 1e30f);
+
+                //Update the training vertex we just emitted for THIS hit
+                //so its stored β = BSDF·cos·T/pdf · (1/p_rr). That keeps
+                //E[β_stored · tail(v+1)] = β_unboosted · L_s(v+1) over
+                //the survive/die randomness and the backward fill stays
+                //unbiased. If the path dies here (the break above), the
+                //stored β is irrelevant — tail is 0 so β · 0 = 0 either
+                //way.
+                if (nrcIsTraining && nrcTrainVIdx > 0u)
+                {
+                    NrcUpdateTrainingVertexBeta(
+                        nrcPathId, nrcTrainVIdx - 1u,
+                        PackRGB9E5(NrcCleanRadiance(updateWeight * rrBoost)));
+                }
             }
 
             //Accumulate tpost locally, no reservoir roundtrip.
@@ -792,9 +793,11 @@ void Pass_raygen_v8()
     //Walks through for every allocated training path regardless of length.
     //numVertices == 0 happens when the primary miss branch was taken or
     //the path died before any BSDF sample; meta.numVertices stays 0 and
-    //the training kernel skips it. A path that terminated without being
-    //tagged (MAX_BOUNCES, MAX_DS_BOUNCES, degenerate BSDF) gets NRC_TAIL_RR
-    //with tail radiance 0 — the backward fill treats that as tail = 0.
+    //the training kernel skips it. A path that terminated via Russian
+    //roulette or MAX_BOUNCES safety cap without being tagged (degenerate
+    //BSDF, etc.) gets NRC_TAIL_RR — the fill kernel treats that as
+    //tail = 0, which is unbiased because each vertex's stored β already
+    //includes its RR-survival 1/p factor.
     if (nrcPathId != NRC_INVALID_PATH)
     {
         const uint tailKind = (nrcTailKind != NRC_TAIL_INVALID) ? nrcTailKind : NRC_TAIL_RR;
@@ -812,19 +815,14 @@ void Pass_raygen_v8()
     //visibility-tested inline before they reach RIS, so the W formula
     //is the plain RIS unbiased weight.
     //
-    //When NRC cache termination fired, we normally DEFER W/M/invalidation
-    //to Pass_nrc_resolve_v8 — it RISes the cache-terminated GI candidate
-    //(using the inferred L̂_s) against any DI/emitter candidates raygen
-    //already RIS'd in, then computes W from the merged wsum.
-    //
-    //In debug view mode the resolve pass early-returns (we don't want
-    //the cache to drive rendering while the user is inspecting the raw
-    //prediction on slice 3), so raygen must finalize W itself for
-    //cache-terminated pixels too. class-1 training paths still write
-    //their inference query through — that's the self-training tail seed
-    //the fill kernel reads regardless of debug state.
+    //When NRC cache termination fired, we DEFER W/M/invalidation to
+    //Pass_nrc_resolve_v8 — it RISes the cache-terminated GI candidate
+    //(using the inferred L̂_s) against any DI/emitter candidates
+    //raygen already RIS'd in, then computes W from the merged wsum.
+    //The debug view runs as a separate inference chain after resolve,
+    //so it has no bearing on the main finalization here.
     store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-    if (!nrcCacheTerminated || kNrcDebugMode)
+    if (!nrcCacheTerminated)
     {
         const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float W = 0.0f;

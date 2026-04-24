@@ -125,6 +125,17 @@ void AssetLoader::LoadModels(
             gpu.alphaTriCount  = split.alphaTriCount;
             gpu.materialIDBase = (UINT)scene.materialIDs.size();
 
+            // Object-space AABB — one pass over vertices, caches the
+            // bounds NRC needs for its position normalization.
+            for (const auto& v : gpu.cpuVertices) {
+                gpu.localAabbMin.x = std::min(gpu.localAabbMin.x, v.position.x);
+                gpu.localAabbMin.y = std::min(gpu.localAabbMin.y, v.position.y);
+                gpu.localAabbMin.z = std::min(gpu.localAabbMin.z, v.position.z);
+                gpu.localAabbMax.x = std::max(gpu.localAabbMax.x, v.position.x);
+                gpu.localAabbMax.y = std::max(gpu.localAabbMax.y, v.position.y);
+                gpu.localAabbMax.z = std::max(gpu.localAabbMax.z, v.position.z);
+            }
+
             scene.materialIDs.insert(scene.materialIDs.end(),
                 gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end());
 

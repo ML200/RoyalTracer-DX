@@ -27,6 +27,13 @@ struct MeshGPU {
     std::vector<UINT>    cpuIndices;
     std::vector<UINT>    cpuMaterialIDs;
 
+    // Object-space AABB over cpuVertices. Computed once at load time
+    // by AssetLoader; used by Renderer to derive the scene-wide world
+    // AABB that feeds NRC's position normalization (the Frequency
+    // encoding expects inputs roughly in [0, 1]).
+    XMFLOAT3 localAabbMin = {  FLT_MAX,  FLT_MAX,  FLT_MAX };
+    XMFLOAT3 localAabbMax = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+
     // Opacity Micro-Maps
     OmmBakeResult          ommBake;
     ComPtr<ID3D12Resource> ommArray;

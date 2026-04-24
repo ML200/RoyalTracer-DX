@@ -22,12 +22,6 @@ void main(uint3 dtid : SV_DispatchThreadID)
 {
     if (dtid.x >= IMG_W || dtid.y >= IMG_H) return;
 
-    // In debug view mode raygen finalizes W for every pixel (cache or
-    // not), and the debug view shows the raw prediction on slice 3 —
-    // we deliberately skip the cache→reservoir stitch here so slice 0
-    // stays pure ReSTIR PT for A/B comparison.
-    if (NrcIsDebugView()) return;
-
     const uint2 pixel    = dtid.xy;
     const uint  pixelIdx = MapPixelID(gImageSize, pixel);
     if (pixelIdx == 0xFFFFFFFFu) return;

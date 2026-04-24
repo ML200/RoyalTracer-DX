@@ -87,15 +87,38 @@ RWByteAddressBuffer g_NrcTrainRecords : register(u43);
 RWByteAddressBuffer g_NrcCounters     : register(u44);
 
 //====================================================================
-// SPHERICAL DIRECTION ENCODING
+// DIRECTION ENCODING — octahedral map S² → [0,1]².
+//
+// arccos/atan2 spherical coordinates have a pole singularity at
+// d ≈ (0, 0, ±1): phi = atan2(d.y, d.x) swings by 2π under an
+// infinitesimal rotation around the pole, so two neighboring pixels
+// can produce drastically different OneBlob activations. The network
+// can't learn a smooth function across that ring, and the result is
+// a visible dark blob wherever the view direction lines up with the
+// pole axis.
+//
+// Octahedral is bijective and smooth everywhere except a set of
+// measure zero (the four octahedron edges on the lower hemisphere),
+// which is fine because those map to a 1-D curve, not an isolated
+// point with divergent gradient. OneBlob's wraparound handles the
+// edge transitions seamlessly.
 //====================================================================
-inline float2 NrcEncodeSphDir(float3 d)
+inline float2 NrcEncodeDir(float3 d)
 {
-    const float theta = acos(clamp(d.z, -1.0f, 1.0f));
-    const float phi   = atan2(d.y, d.x);
-    const float u = theta * (1.0f / 3.14159265358979f);
-    const float v = (phi + 3.14159265358979f) * (1.0f / 6.28318530717959f);
-    return float2(saturate(u), saturate(v));
+    const float denom = abs(d.x) + abs(d.y) + abs(d.z) + 1e-20f;
+    float3 n = d / denom;
+    float2 p;
+    if (n.z >= 0.0f) {
+        p = n.xy;
+    } else {
+        // Lower hemisphere: fold onto the square's corners so the
+        // mapping stays continuous at z=0 and p.xy at the corners
+        // collapses smoothly into the upper-hemisphere values.
+        const float2 s = float2(n.x >= 0.0f ? 1.0f : -1.0f,
+                                n.y >= 0.0f ? 1.0f : -1.0f);
+        p = (1.0f - abs(n.yx)) * s;
+    }
+    return p * 0.5f + 0.5f;
 }
 
 inline float NrcEncodeRoughness(float r)
@@ -104,31 +127,80 @@ inline float NrcEncodeRoughness(float r)
 }
 
 //====================================================================
+// NaN / Inf SANITIZATION
+//====================================================================
+// A single non-finite value reaching the trainer turns every Adam
+// moment into NaN in one update step, after which the entire network
+// is permanently dead — no amount of later clean data can resurrect
+// it. The upstream path tracer deals with edge cases (degenerate
+// BSDFs, denormal pdfs, zero-area triangles, texture fetches outside
+// the mip pyramid, etc.) that CAN produce NaN/Inf, so we scrub every
+// value that crosses into the NRC boundary.
+//
+// Ranges are chosen wide enough that legitimate values never hit the
+// clamp: [-8, 8] for the normalized position (scene wraps at ±0.5
+// already, so 8 periods of headroom), [0, 1] for angle/roughness
+// encodings, [0, 1e3] for reflectances (physical values ≤1 but some
+// authored materials push past that).
+inline float NrcCleanFinite(float v)
+{
+    return (isnan(v) || isinf(v)) ? 0.0f : v;
+}
+inline float3 NrcCleanFinite3(float3 v)
+{
+    return float3(NrcCleanFinite(v.x), NrcCleanFinite(v.y), NrcCleanFinite(v.z));
+}
+inline float3 NrcCleanRadiance(float3 v)
+{
+    // Non-negative + finite. Caller packs via RGB9E5 (clamps to ~65k)
+    // so we don't need an explicit upper bound here.
+    return max(NrcCleanFinite3(v), float3(0, 0, 0));
+}
+
+//====================================================================
 // FEATURE PACK
 //====================================================================
+// Position is normalized to roughly [0, 1]³ (actually [-0.5, 1.5]
+// for points at the extremes of the scene AABB, which is fine — the
+// Frequency encoding is periodic). tcnn's Frequency encoder applies
+// sin(x · 2^d · π), so the lowest-frequency period is 2 *in the
+// encoder's input space*. Without normalization, that's 2 world
+// units — for any scene wider than ~a meter the whole encoding
+// degenerates into a repeating grid pattern because every
+// frequency bin cycles many times across the scene. The grid the
+// debug visualization shows is exactly this artifact.
+inline float3 NrcNormalizePosition(float3 x)
+{
+    return (x - nrc_scene_center) * nrc_scene_scale_inv + 0.5f;
+}
+
 inline void NrcBuildFeatures(
     float3 x, float3 o, float3 n,
     float  r,
     float3 alpha, float3 beta,
     out float features[14])
 {
-    const float2 sphO = NrcEncodeSphDir(o);
-    const float2 sphN = NrcEncodeSphDir(n);
+    const float3 xN   = NrcNormalizePosition(x);
+    const float2 sphO = NrcEncodeDir(o);
+    const float2 sphN = NrcEncodeDir(n);
 
-    features[0]  = x.x;
-    features[1]  = x.y;
-    features[2]  = x.z;
-    features[3]  = sphO.x;
-    features[4]  = sphO.y;
-    features[5]  = sphN.x;
-    features[6]  = sphN.y;
-    features[7]  = NrcEncodeRoughness(r);
-    features[8]  = alpha.x;
-    features[9]  = alpha.y;
-    features[10] = alpha.z;
-    features[11] = beta.x;
-    features[12] = beta.y;
-    features[13] = beta.z;
+    // Sanitize + bounds-clamp every feature. This is the one checkpoint
+    // between the path tracer and tcnn — if garbage gets past here,
+    // it pollutes Adam's state forever.
+    features[0]  = clamp(NrcCleanFinite(xN.x), -8.0f, 8.0f);
+    features[1]  = clamp(NrcCleanFinite(xN.y), -8.0f, 8.0f);
+    features[2]  = clamp(NrcCleanFinite(xN.z), -8.0f, 8.0f);
+    features[3]  = saturate(NrcCleanFinite(sphO.x));
+    features[4]  = saturate(NrcCleanFinite(sphO.y));
+    features[5]  = saturate(NrcCleanFinite(sphN.x));
+    features[6]  = saturate(NrcCleanFinite(sphN.y));
+    features[7]  = saturate(NrcCleanFinite(NrcEncodeRoughness(r)));
+    features[8]  = clamp(NrcCleanFinite(alpha.x), 0.0f, 1e3f);
+    features[9]  = clamp(NrcCleanFinite(alpha.y), 0.0f, 1e3f);
+    features[10] = clamp(NrcCleanFinite(alpha.z), 0.0f, 1e3f);
+    features[11] = clamp(NrcCleanFinite(beta.x),  0.0f, 1e3f);
+    features[12] = clamp(NrcCleanFinite(beta.y),  0.0f, 1e3f);
+    features[13] = clamp(NrcCleanFinite(beta.z),  0.0f, 1e3f);
 }
 
 //====================================================================
@@ -173,7 +245,15 @@ inline float3 NrcLoadInferenceOutput(uint slot)
     if (slot == NRC_INVALID_SLOT) return float3(0, 0, 0);
     const uint base = slot * NRC_INFERENCE_OUT_STRIDE;
     const uint3 raw = g_NrcInferenceOut.Load3(base);
-    return asfloat(raw);
+    // NaN/Inf-safe non-negativity clamp. If the network somehow
+    // output a non-finite value (shouldn't happen once features
+    // are sanitized in NrcBuildFeatures, but belt-and-suspenders),
+    // return 0 rather than letting NaN propagate into the reservoir,
+    // the class-1 tail seed, or the debug view. `max(NaN, 0)` is
+    // not NaN-safe on GPU (implementation-defined), so we handle
+    // the NaN case explicitly.
+    const float3 f = NrcCleanFinite3(asfloat(raw));
+    return max(f, float3(0, 0, 0));
 }
 
 //====================================================================
@@ -253,9 +333,9 @@ inline uint NrcWriteTerminationRecord(
     NrcStorePendingGI(
         pixelIdx,
         slot,
-        PackRGB9E5(throughput * reflSum),
-        PackRGB9E5(tpost      * reflSum),
-        pdfProduct);
+        PackRGB9E5(NrcCleanRadiance(throughput * reflSum)),
+        PackRGB9E5(NrcCleanRadiance(tpost      * reflSum)),
+        NrcCleanFinite(pdfProduct));
     return slot;
 }
 

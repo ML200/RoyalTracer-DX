@@ -280,8 +280,10 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 40, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    // 24 ReSTIR constants [0..23] + 4 NRC control constants [24..27] = 28.
-    rootParameters[1].InitAsConstants(28, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
+    // (Last 5 of the NRC block are scene-bounds normalization for the
+    // position input, see Includes_v8.hlsli.)
+    rootParameters[1].InitAsConstants(32, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,

@@ -9,6 +9,8 @@
 
 namespace nrc {
 
+struct Float3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
+
 // ── Runtime-tunable settings (Editor) ───────────────────────────────
 // Mirrored into push constants every frame (see Renderer.cpp).
 struct Settings {
@@ -17,6 +19,13 @@ struct Settings {
     bool  debugView        = false;  // render L̂_s at primary vertex to gOutput slice 3
     float areaSpreadC      = 0.01f;  // paper's `c` — smaller = terminate earlier
     float learningRateScale = 1.0f;  // reserved for a tcnn-side LR override
+    // Scene-space normalization for the network's position input.
+    // The Frequency encoder expects inputs in roughly [0,1]; feeding
+    // raw world-space meters makes every frequency bin wrap many
+    // times across the scene and produces a persistent grid in the
+    // debug visualization. x_norm = (x - sceneCenter)/sceneExtent + 0.5
+    Float3 sceneCenter   = {};       // world-space center of scene AABB
+    float  sceneExtent   = 50.0f;    // max half-extent (world units)
 };
 
 // Push-constant flag bits — keep in sync with Nrc_v8.hlsli.
@@ -111,7 +120,16 @@ static_assert(sizeof(PendingGI) == 16, "PendingGI must match Nrc_v8.hlsli");
 //   numVertices == 0  → path slot unused (ignored by training kernel)
 //   tailKind          → picks the base value for the backward recursion
 //   inferenceSlot     → valid iff tailKind == kTailCache
-//   tailRadiancePk    → packed RGB9E5; valid iff tailKind in {Emitter,Miss}
+//   tailRadiancePk    → packed RGB9E5, meaning depends on tailKind:
+//                         kTailEmitter/kTailMiss → tail radiance
+//                                                  (emission / env)
+//                         kTailCache             → (α+β) at the cache-
+//                                                  term vertex, used by
+//                                                  the fill kernel to
+//                                                  recover radiance from
+//                                                  the MLP's irradiance
+//                                                  prediction
+//                         kTailRR                → unused (tail = 0)
 struct TrainingPathMeta {
     uint32_t numVertices;
     uint32_t tailKind;

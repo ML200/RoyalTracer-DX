@@ -2,10 +2,14 @@
 // Pass_nrc_debug_present_v8 — copy the cache's prediction at x1 into
 // gOutput slice 3 for editor inspection.
 //
-// Runs AFTER cuda:nrc_inference (which fills g_NrcInferenceOut[pixel])
-// and AFTER Pass_nrc_resolve_v8 (which is a no-op in debug mode). The
-// value written matches paper Fig. 4's "Visualization at first
-// non-specular vertex".
+// Runs at the tail of the NRC debug chain:
+//   debug_query → cuda:nrc_debug_inference → THIS pass
+// The main inference + resolve + train have all already run and
+// consumed g_NrcInferenceOut; nrc_debug_inference then overwrote
+// those outputs with per-pixel predictions at slot = pixelIdx. We
+// just reconstitute radiance with the reflectance factorisation and
+// write slice 3. Value matches paper Fig. 4's "Visualization at
+// first non-specular vertex".
 //====================================================================
 
 #define COMPUTE_PASS

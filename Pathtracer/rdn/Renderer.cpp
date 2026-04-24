@@ -21,23 +21,20 @@ Renderer::Renderer(UINT width, UINT height)
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
     // Define the rendering pass pipeline (data-driven).
-    // NRC integration (safe no-op while raygen is unmodified):
-    //   cuda:nrc_frame_begin   — zeros counters, invalidates PendingGI slots
-    //   <raygen>               — will append inference + training records
-    //   cuda:nrc_inference     — tcnn batched inference on appended records
-    //   Pass_nrc_resolve_v8    — stitches L̂_s into the reservoir via RIS
+    // NRC integration. Main chain always runs — debug view is purely
+    // additive, a W×H per-pixel inference tacked on after training.
+    //   cuda:nrc_frame_begin   — zero counters, invalidate PendingGI
+    //   <raygen>               — append cache-term + training records
+    //   cuda:nrc_inference     — tcnn inference on raygen's records
+    //                            (class-0 cache-term + class-1 tail seeds)
+    //   Pass_nrc_resolve_v8    — stitch L̂_s into the reservoir via RIS
     //   cuda:nrc_train         — backward tail pass + 4× training step
-    // NRC pipeline sequence:
-    //   frame_begin → raygen → inference → resolve → train
-    //     (handles cache-term queries from raygen — both class-0 rendering
-    //      pixels and class-1 training tail seeds, in the same buffer via
-    //      atomic-counter allocation)
-    //   then, if debug view is on:
-    //     debug_query → debug_inference → debug_present
-    //     (overwrites the inference buffer with one query per pixel at
-    //      slot = pixelIdx, runs inference again with count = W*H,
-    //      writes L̂_s into gOutput slice 3. Debug runs AFTER training
-    //      so self-training keeps seeing cache-tail seeds regardless.)
+    //   (debug view only, scheduled regardless — shaders self-gate:)
+    //     Pass_nrc_debug_query   — write per-pixel x1 features into the
+    //                              now-consumed inference buffer
+    //     cuda:nrc_debug_inference — one additional inference for the
+    //                                per-pixel camera-hit queries
+    //     Pass_nrc_debug_present — copy L̂_s into gOutput slice 3
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
@@ -85,6 +82,8 @@ void Renderer::InitDevice() {
             // ── NRC setup ─────────────────────────────────────────
             // Cap inference capacity at W*H (worst case: every pixel
             // cache-terminates) and round up to tcnn's batch granularity.
+            // The debug view's inference reuses these buffers — it runs
+            // after the main chain has already consumed them.
             const uint32_t pixelCount = GetWidth() * GetHeight();
             m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount);
 
@@ -121,12 +120,11 @@ void Renderer::InitDevice() {
                 nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
             });
 
-            // Batched inference over raygen's cache-term queries. Always
-            // reads the live count from the counter — the counter reflects
-            // how many InterlockedAdds fired in raygen (class-0 rendering
-            // terminations + class-1 training tail seeds). Debug view has
-            // its own separate inference op below, so this op doesn't
-            // need to know about the debug mode at all.
+            // Main-chain inference. Count comes from raygen's atomic
+            // InterlockedAdd on the inference counter, covering both
+            // class-0 cache-term slots and class-1 training tail seeds
+            // in one batch. Unaffected by debug view — the debug chain
+            // runs its own inference below.
             RegisterCudaOp(L"nrc_inference", [this]{
                 if (!m_nrcReady) return;
                 void* s = m_cudaInterop.Stream();
@@ -141,10 +139,12 @@ void Renderer::InitDevice() {
                     padded);
             });
 
-            // Second inference pass for the debug view. Runs AFTER training
-            // has already consumed the first inference's output, so it's
-            // free to overwrite the buffer. Debug_query wrote one query
-            // per pixel at slot = pixelIdx, so count is W*H.
+            // Additional inference for the debug view only. Runs AFTER
+            // training, so main inferenceOut has already been consumed
+            // by resolve + train — we're free to overwrite the buffers
+            // with per-pixel predictions for Pass_nrc_debug_present.
+            // Debug_query wrote one query per pixel at slot = pixelIdx,
+            // so count is W*H.
             RegisterCudaOp(L"nrc_debug_inference", [this]{
                 if (!m_nrcReady || !m_nrcSettings.debugView) return;
                 void* s = m_cudaInterop.Stream();
@@ -1176,7 +1176,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[28] = {};
+    UINT rsConsts[32] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1214,7 +1214,55 @@ void Renderer::PopulateCommandList() {
     // pipeline when the interop + tcnn stack initialised successfully —
     // we mask out enabled/training when m_nrcReady is false so the
     // fallback path stays exactly like the pre-NRC pipeline.
+    //
+    // Scene AABB is auto-recomputed every frame from mesh localAabbs +
+    // live instance transforms. Cost is O(N_instances · 8) corner
+    // transforms, a handful of microseconds even for dense scenes, so
+    // dynamic content (moving instances, live-edited transforms) keeps
+    // NRC's position normalization in lockstep with the actual world.
     {
+        using namespace DirectX;
+        XMVECTOR bMin = XMVectorReplicate(+FLT_MAX);
+        XMVECTOR bMax = XMVectorReplicate(-FLT_MAX);
+        bool anyBounds = false;
+        for (const auto& inst : m_scene.instances) {
+            if (inst.meshIndex >= m_scene.meshes.size()) continue;
+            const MeshGPU& mesh = m_scene.meshes[inst.meshIndex];
+            // Skip unset / empty meshes.
+            if (mesh.localAabbMin.x > mesh.localAabbMax.x) continue;
+            const XMFLOAT3 lm = mesh.localAabbMin;
+            const XMFLOAT3 lM = mesh.localAabbMax;
+            const XMFLOAT3 corners[8] = {
+                {lm.x, lm.y, lm.z}, {lM.x, lm.y, lm.z},
+                {lm.x, lM.y, lm.z}, {lM.x, lM.y, lm.z},
+                {lm.x, lm.y, lM.z}, {lM.x, lm.y, lM.z},
+                {lm.x, lM.y, lM.z}, {lM.x, lM.y, lM.z},
+            };
+            const XMMATRIX& w = inst.worldTransform;
+            for (int k = 0; k < 8; ++k) {
+                XMVECTOR c = XMLoadFloat3(&corners[k]);
+                c = XMVector3Transform(c, w);
+                bMin = XMVectorMin(bMin, c);
+                bMax = XMVectorMax(bMax, c);
+            }
+            anyBounds = true;
+        }
+
+        if (anyBounds) {
+            const XMVECTOR center  = XMVectorScale(XMVectorAdd(bMin, bMax), 0.5f);
+            const XMVECTOR halfExt = XMVectorScale(XMVectorSubtract(bMax, bMin), 0.5f);
+            const float ext = std::max({
+                XMVectorGetX(halfExt),
+                XMVectorGetY(halfExt),
+                XMVectorGetZ(halfExt)
+            });
+            XMFLOAT3 c3; XMStoreFloat3(&c3, center);
+            m_nrcSettings.sceneCenter = { c3.x, c3.y, c3.z };
+            // Floor at 1.0 so empty / single-point scenes don't divide
+            // by zero in the shader normalization.
+            m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
+        }
+
         uint32_t nrcFlags = 0u;
         if (m_nrcReady && m_nrcSettings.enabled)         nrcFlags |= 0x1u;
         if (m_nrcReady && m_nrcSettings.trainingEnabled) nrcFlags |= 0x2u;
@@ -1222,12 +1270,22 @@ void Renderer::PopulateCommandList() {
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
         memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);
+        // Slot 27 is explicit padding — the shader's float3
+        // nrc_scene_center starts at slot 28 (next 16-byte-aligned
+        // cbuffer register). Writing the center at 27 would be
+        // silently dropped by HLSL's cbuffer packing rules and the
+        // shader would read a shifted, zero-valued scale_inv.
         rsConsts[27] = 0u;
+        const float sceneScaleInv = 1.0f / m_nrcSettings.sceneExtent;
+        memcpy(&rsConsts[28], &m_nrcSettings.sceneCenter.x, 4);
+        memcpy(&rsConsts[29], &m_nrcSettings.sceneCenter.y, 4);
+        memcpy(&rsConsts[30], &m_nrcSettings.sceneCenter.z, 4);
+        memcpy(&rsConsts[31], &sceneScaleInv, 4);
     }
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 28, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 32, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

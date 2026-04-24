@@ -41,7 +41,21 @@ cbuffer Push : register(b1)
     uint  nrc_flags;           //[24], bit0=enabled, bit1=trainEnabled, bit2=debugView
     float nrc_area_spread_c;   //[25], cache-termination threshold c (paper §3.4)
     float nrc_lr_scale;        //[26], reserved for tcnn learning-rate override
-    uint  nrc_reserved;        //[27]
+    //[27] intentionally padded so the float3 below lands on a 16-byte
+    //boundary (register 7). HLSL cbuffer rules bump a float3 that
+    //would straddle a 16-byte boundary to the next register — without
+    //this explicit pad, our linear 32-DWORD root-constant upload is
+    //offset-shifted against what the shader reads, producing
+    //scale_inv = 0 (every position collapses to 0.5 of normalized
+    //space) and the global-constant cache output that caused this bug.
+    uint   nrc_pad27;          //[27], DO NOT read from shader
+    //Scene-space → [0,1]³ mapping applied to positions before the
+    //Frequency encoding. Without this, tcnn's sin(x · 2^d · π) lowest
+    //period is 2 world units — for any scene larger than a couple of
+    //meters that produces a visible grid because every frequency bin
+    //repeats many times across the scene.
+    float3 nrc_scene_center;   //[28..30], world-space scene center
+    float  nrc_scene_scale_inv;//[31], 1 / maxExtent; x_norm = (x - c) * this + 0.5
 };
 
 //====================================================================
