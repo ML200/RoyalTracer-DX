@@ -1,38 +1,25 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
-//====================================================================
-//DUPLICATION MAP, CORRELATION REDUCTION
-//====================================================================
-//Post-spat pass that counts shared V2 packed uints in each pixel's
-//17x17 neighborhood of g_Reservoirs_last. Next frame's temporal reuse
-//reads this map at the backprojected coord to adaptively lower the
-//temporal cCap in highly correlated regions, preventing firefly
-//persistence. Lin, Kettunen, Wyman 2026, "ReSTIR PT Enhanced", §5.
-//
-//Sample-identifier proxy: raw packed-uint V2. Reconnection / hybrid
-//shifts preserve V2 bit-for-bit, so matching V2 strongly indicates
-//shifted copies of the same initial candidate. DI samples (env miss,
-//emitter hit, NEE at d=0) ordinarily lack a meaningful V2; raygen
-//writes a pixel-and-frame-unique unit vector into their V2 slot as a
-//dup-map discriminator (see Pass_raygen_v8.hlsl:diMarker).
-//
-//Output: gScratchPing slot 6, .x = D in [0, 1].
-//
-//Uses a 32x32 groupshared cache to collapse the 288 per-thread global
-//reads into 4 cooperative loads per thread, and also cuts the 288
-//MapPixelID calls per thread down to 4. Compute-bound, so the inner
-//loop is the hot path; interior tiles skip the per-iter bounds check
-//entirely.
+//====================================
+//DUPLICATION MAP CORRELATION REDUCTION
+//====================================
+//counts shared V2 packed uints in 17x17 neighborhood of g_Reservoirs_last
+//next frame's temporal reuse reads map at backprojected coord to lower cCap
+//Lin, Kettunen, Wyman 2026 "ReSTIR PT Enhanced" §5
+//V2 preserved bit-exact under reconnection/hybrid shift, matching V2 = shifted copy
+//DI samples use per-pixel diMarker as discriminator (raygen)
+//output, gScratchPing slot 6 .x = D in [0,1]
+//32x32 groupshared cache collapses 288 global reads into 4 per thread
 
 static const uint TILE_W  = 16u;
 static const uint TILE_H  = 16u;
-static const uint WIN_R   = 8u;                     //17x17 radius
-static const uint CACHE_W = TILE_W + 2u * WIN_R;    //32
-static const uint CACHE_H = TILE_H + 2u * WIN_R;    //32
-static const uint CACHE_N = CACHE_W * CACHE_H;      //1024
-static const uint TILE_N  = TILE_W * TILE_H;        //256
-static const uint LOADS_PER_THREAD = CACHE_N / TILE_N; //4
+static const uint WIN_R   = 8u;
+static const uint CACHE_W = TILE_W + 2u * WIN_R;
+static const uint CACHE_H = TILE_H + 2u * WIN_R;
+static const uint CACHE_N = CACHE_W * CACHE_H;
+static const uint TILE_N  = TILE_W * TILE_H;
+static const uint LOADS_PER_THREAD = CACHE_N / TILE_N;
 
 groupshared uint s_V2[CACHE_H][CACHE_W];
 
@@ -44,11 +31,10 @@ void main(
 {
     gDispatchIdx = tid;
 
-    //Tile top-left in pixel space, shifted by WIN_R so the cache covers
-    //[tile-8, tile+16+8) = 32 pixels in each axis.
+    //tile origin shifted by WIN_R, cache covers 32x32 around tile
     const int2 tileOrigin = int2(gid.xy * uint2(TILE_W, TILE_H)) - int2(WIN_R, WIN_R);
 
-    //Cooperative load: 256 threads fetch 4 cache entries each
+    //256 threads fetch 4 cache entries each
     const uint tlin = ltid.y * TILE_W + ltid.x;
     [unroll]
     for (uint i = 0u; i < LOADS_PER_THREAD; ++i)
@@ -71,16 +57,13 @@ void main(
 
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
 
-    //My center in the cache, offset by WIN_R
+    //my cache center, offset by WIN_R
     const int cx = (int)ltid.x + (int)WIN_R;
     const int cy = (int)ltid.y + (int)WIN_R;
     const uint myV2 = s_V2[cy][cx];
 
-    //Interior-tile detection: every thread's 17x17 window lies fully
-    //in-bounds when the tile's outermost pixel's window does. Saves 4
-    //compares per inner iter (~1K compares per thread) on the common
-    //path. All threads in the group take the same branch, so there's
-    //no wavefront divergence here.
+    //interior tile, full 17x17 in bounds, skip per-iter bounds check
+    //same branch for all threads in group, no wavefront divergence
     const bool interior =
         (gid.x >= 1u) && (gid.y >= 1u) &&
         (gid.x * TILE_W + TILE_W - 1u + WIN_R < IMG_W) &&
@@ -107,9 +90,7 @@ void main(
             {
                 if (dx == 0 && dy == 0) continue;
 
-                //LDS at image-border neighbors holds 0; skip so that
-                //an invalidated canonical (V2 = 0) at the edge doesn't
-                //get a spuriously high duplicate count.
+                //LDS at border holds 0, skip so invalidated canonical V2=0 doesn't inflate count
                 const int2 gpx = int2(tid.xy) + int2(dx, dy);
                 if (gpx.x < 0 || gpx.y < 0 || gpx.x >= (int)IMG_W || gpx.y >= (int)IMG_H)
                     continue;

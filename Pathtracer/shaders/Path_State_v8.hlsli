@@ -1,40 +1,25 @@
-//====================================================================
+//====================================
 //PER-PIXEL PATH VERTEX STATE SCRATCH
-//====================================================================
-//Wavefront pipeline: Pass_primary -> (Extend -> Classify -> MatEvalShade)*
-//-> Pass_finalize. All per-pixel state that crosses stage boundaries
-//lives here, SoA so each plane is a single contiguous range.
+//====================================
+//wavefront, Pass_primary -> (Extend -> Classify -> MatEvalShade)* -> Pass_finalize
+//SoA, all cross-stage per-pixel state here, overwritten by spat_gi_select later
 //
-//Raygen-side usage, overwritten by Pass_spat_gi_select_v8 later in the frame.
-//
-//Existing stash planes (kept, also used by spatial reuse path):
-//plane 0  PACK1   16B  x2.xyz + n2_pk             depth-1 vertex
-//plane 1  PACK2   16B  uv_pk + matID + objID+eta  depth-1 vertex
+//plane 0  PACK1   16B  x2 + n2_pk                 depth-1 vertex
+//plane 1  PACK2   16B  uv + matID + objID + eta   depth-1 vertex
 //plane 2  V2       4B  v2_pk                      depth-2 direction
-//
-//Hot register spill (every stage reads, Scatter writes):
-//plane 3  HOT1    16B  throughputPk + prevNormalPk + prev_pdf + pdf_product
-//plane 4  HOT2    16B  tpostPk + wsum + flags + _pad
-//plane 5  SEED     4B  seed
-//
-//Next-bounce ray (Scatter/Primary writes, Extend reads):
+//plane 3  HOT1    16B  throughput + prevNormal + prev_pdf + pdf_product
+//plane 4  HOT2    16B  tpost + wsum + flags + pad
+//plane 5  SEED     4B
 //plane 6  RAY_O   12B  rayOrigin
 //plane 7  RAY_D   12B  rayDir
-//
-//Hit packet (Extend writes, Classify/MatEvalShade read):
 //plane 8  HP      16B  hitT + instID + primID + baryPk
-//
-//Classify output (Classify writes, MatEvalShade reads):
-//plane 9  CLAS1   16B  hitNormalPk + matID + etaOut + uvPk
-//plane 10 CLAS2    4B  absTintPk (medium absorption for Scatter throughput)
-//
-//Candidate descriptor (sampling stages write, MatEval stages read):
-//plane 11 CAND_WI 12B  wiDir
-//plane 12 CAND_M  16B  L_pk + lightPdf + meta + lightObjID
-//plane 13 CAND_LP 12B  lightPos
-//plane 14 CAND_LN  4B  lightN_pk
-//
-//Total: 176 B/pixel (tile-aligned via ps_numPx()).
+//plane 9  CLAS1   16B  hitNormal + matID + etaOut + uv
+//plane 10 CLAS2    4B  absTintPk
+//plane 11 CAND_WI 12B
+//plane 12 CAND_M  16B  L + lightPdf + meta + lightObjID
+//plane 13 CAND_LP 12B
+//plane 14 CAND_LN  4B
+//total 176B/pixel, tile-aligned via ps_numPx
 static const uint PS_SZ_PACK1    = 16u;
 static const uint PS_SZ_PACK2    = 16u;
 static const uint PS_SZ_V2       =  4u;
@@ -67,8 +52,7 @@ static const uint PS_PLANE_CAND_M   = 144u;
 static const uint PS_PLANE_CAND_LP  = 160u;
 static const uint PS_PLANE_CAND_LN  = 172u;
 
-//Tile-aligned pixel count, matches MapPixelID's 4x8 tile swizzle. Host
-//allocation must use the same formula to size m_pathStateBuffer.
+//tile-aligned pixel count, matches MapPixelID 4x8 swizzle
 uint ps_numPx() { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 
 uint ps_addr_pack1   (uint px) { return px * PS_SZ_PACK1; }
@@ -88,19 +72,18 @@ uint ps_addr_cand_lp (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_L
 uint ps_addr_cand_ln (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_LN  + px * PS_SZ_CAND_LN; }
 
 
-//====================================================================
+//====================================
 //FLAGS BIT LAYOUT
-//====================================================================
-//bits  0-5  depth (0..63)
-//bits  6-9  dsBounces (0..15)
-//bit   10   TERMINATED         path killed, downstream stages skip
-//bit   11   PERFORM_NEE        Classify set; MatEvalShade gates NEE
-//bit   12   HAS_VALID_HIT      Classify set for real hits
-//bit   13   IS_BACKFACE        for material routing
-//bit   14   FLIP_IOR           backface && transmissive
-//bit   15   TRANSMISSIVE       Kd.w < 1-EPS
-//bit   16   IS_EMITTER         emitter hit, candidate already filed
-//bits 17-31 reserved
+//====================================
+//bits 0-5   depth (0..63)
+//bits 6-9   dsBounces (0..15)
+//bit  10    TERMINATED
+//bit  11    PERFORM_NEE
+//bit  12    HAS_VALID_HIT
+//bit  13    IS_BACKFACE
+//bit  14    FLIP_IOR
+//bit  15    TRANSMISSIVE
+//bit  16    IS_EMITTER
 #define PS_FLAG_TERMINATED     (1u << 10)
 #define PS_FLAG_PERFORM_NEE    (1u << 11)
 #define PS_FLAG_HAS_VALID_HIT  (1u << 12)
@@ -126,9 +109,9 @@ uint ps_set_dsBounces(uint flags, uint n)
 }
 
 
-//====================================================================
-//PATH VERTEX STATE (existing, used by the depth-1 GI branch)
-//====================================================================
+//====================================
+//PATH VERTEX STATE
+//====================================
 struct PathVertexState {
     float3 x2;
     float3 n2_s;
@@ -174,13 +157,10 @@ PathVertexState load_ps(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
-//PATH STATE INIT (per-frame, Pass_primary)
-//====================================================================
-//Seeds the depth-1 stash with MATID_ENV_MISS sentinels so any sentinel-
-//branch in Reconnect doesn't read prior-frame spat-pass scratch.
-//Callers follow up with store_hot1 / store_hot2 / store_seed / store_ray
-//to write the per-pixel initial hot state.
+//====================================
+//PATH STATE INIT
+//====================================
+//MATID_ENV_MISS sentinel so Reconnect doesn't read stale prior-frame spat data
 void init_ps(RWByteAddressBuffer buf, uint pixelIdx)
 {
     buf.Store4(ps_addr_pack1(pixelIdx),
@@ -192,18 +172,18 @@ void init_ps(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
+//====================================
 //HOT REGISTER PLANES
-//====================================================================
+//====================================
 struct HotState {
-    uint   throughputPk;   //RGB9E5 throughput
-    uint   prevNormalPk;   //packed normal of previous vertex (for emitter MIS)
-    float  prev_pdf;       //BSDF pdf at previous vertex
-    float  pdf_product;    //cumulative product of BSDF pdfs along path
-    uint   tpostPk;        //RGB9E5 post-x2 integrand accumulator
-    float  wsum;           //RIS running sum
-    uint   flags;          //bit-packed, see PS_FLAG_* macros
-    uint   seed;           //RNG state
+    uint   throughputPk;
+    uint   prevNormalPk;
+    float  prev_pdf;
+    float  pdf_product;
+    uint   tpostPk;
+    float  wsum;
+    uint   flags;
+    uint   seed;
 };
 
 void store_hot1(RWByteAddressBuffer buf, uint pixelIdx,
@@ -225,9 +205,9 @@ void store_seed(RWByteAddressBuffer buf, uint pixelIdx, uint seed)
     buf.Store(ps_addr_seed(pixelIdx), seed);
 }
 
+//HOT2 layout is [tpost, wsum, flags, pad], rewrite only flags word
 void store_flags(RWByteAddressBuffer buf, uint pixelIdx, uint flags)
 {
-    //HOT2 layout: [tpost, wsum, flags, _pad]. Rewrite only the flags word.
     buf.Store(ps_addr_hot2(pixelIdx) + 8u, flags);
 }
 
@@ -286,9 +266,9 @@ float load_wsum_ps(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
+//====================================
 //RAY PLANES
-//====================================================================
+//====================================
 void store_ray(RWByteAddressBuffer buf, uint pixelIdx, float3 rayOrigin, float3 rayDir)
 {
     buf.Store3(ps_addr_ray_o(pixelIdx), asuint(rayOrigin));
@@ -311,15 +291,15 @@ float3 load_ray_dir(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
+//====================================
 //HIT PACKET
-//====================================================================
+//====================================
 struct HitPacket {
     float  hitT;
     uint   instID;
     uint   primID;
     float2 bary;
-    bool   isHit;  //encoded via instID == 0xFFFFFFFFu
+    bool   isHit;
 };
 
 void store_hp(RWByteAddressBuffer buf, uint pixelIdx,
@@ -330,8 +310,7 @@ void store_hp(RWByteAddressBuffer buf, uint pixelIdx,
                      PackFloat2x16(bary.x, bary.y)));
 }
 
-//Encodes a miss by writing instID = 0xFFFFFFFF sentinel. Other fields
-//don't matter; downstream reads only the sentinel on miss.
+//miss sentinel, instID = 0xFFFFFFFF, other fields don't matter
 void store_hp_miss(RWByteAddressBuffer buf, uint pixelIdx)
 {
     buf.Store(ps_addr_hp(pixelIdx) + 4u, 0xFFFFFFFFu);
@@ -350,15 +329,15 @@ HitPacket load_hp(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
+//====================================
 //CLASSIFY OUTPUT
-//====================================================================
+//====================================
 struct ClassifyState {
     uint   hitNormalPk;
     uint   matID;
-    float  etaOut;      //iors.y, "outgoing medium" IOR for Scatter/NEE BSDF evals
-    float2 uv;          //surface uv at the hit
-    uint   absTintPk;   //RGB9E5 absorption throughput for the just-traversed segment
+    float  etaOut;
+    float2 uv;
+    uint   absTintPk;
 };
 
 void store_clas(RWByteAddressBuffer buf, uint pixelIdx,
@@ -382,11 +361,10 @@ ClassifyState load_clas(RWByteAddressBuffer buf, uint pixelIdx)
 }
 
 
-//====================================================================
-//CANDIDATE DESCRIPTOR (scratch, overwritten per sampling->MatEval pair)
-//====================================================================
-//meta: bit 0 = VALID, bits 1-2 = KIND. KIND_INVALID = 0, KIND_POINT_TRI = 1,
-//KIND_SUN = 2. On invalid lanes, downstream MatEval early-returns.
+//====================================
+//CANDIDATE DESCRIPTOR
+//====================================
+//meta bit 0 VALID, bits 1-2 KIND, invalid lanes early-return in MatEval
 #define CAND_META_VALID      (1u << 0)
 #define CAND_META_KIND_SHIFT 1u
 #define CAND_META_KIND_MASK  0x3u
@@ -399,13 +377,13 @@ struct CandidateDesc {
     float  lightPdf;
     uint   meta;
     uint   lightObjID;
-    float3 lightPos;    //only meaningful for KIND_POINT_TRI
-    float3 lightN;      //only meaningful for KIND_POINT_TRI
+    float3 lightPos;
+    float3 lightN;
 };
 
 void store_cand_invalid(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    //Only clearing the meta word is necessary; rest is don't-care.
+    //only meta word matters, rest is don't-care
     buf.Store(ps_addr_cand_m(pixelIdx) + 8u, 0u);
 }
 
@@ -429,7 +407,7 @@ void store_cand_sun(RWByteAddressBuffer buf, uint pixelIdx,
     const uint meta = CAND_META_VALID | (CAND_KIND_SUN << CAND_META_KIND_SHIFT);
     buf.Store4(ps_addr_cand_m(pixelIdx),
                uint4(PackRGB9E5(radiance), asuint(lightPdf), meta, 0u));
-    //lightPos / lightN unused for sun; leave whatever's there.
+    //lightPos/lightN unused for sun
 }
 
 CandidateDesc load_cand(RWByteAddressBuffer buf, uint pixelIdx)
@@ -458,11 +436,10 @@ bool cand_valid(uint meta) { return (meta & CAND_META_VALID) != 0u; }
 uint cand_kind (uint meta) { return (meta >> CAND_META_KIND_SHIFT) & CAND_META_KIND_MASK; }
 
 
-//====================================================================
-//DI MARKER (per-pixel per-frame, unit vector, dup-map discriminator)
-//====================================================================
-//Closed-form hash from (pixelIdx, time) -> unit vector. Regenerated in
-//any stage that needs it for DI candidate V2 payloads; no storage.
+//====================================
+//DI MARKER
+//====================================
+//per-pixel unit vec for dup-map discrimination, closed-form hash, no storage
 inline float3 diMarkerFor(uint pixelIdx, float frameTime)
 {
     uint h = (pixelIdx * 0x9E3779B9u) ^ (asuint(frameTime) * 0x85EBCA6Bu);

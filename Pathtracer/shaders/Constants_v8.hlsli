@@ -1,8 +1,8 @@
-//====================================================================
+//====================================
 //NUMERIC CONSTANTS
-//====================================================================
+//====================================
 #define EPSILON 0.00003
-#define ONE_MINUS_EPSILON 0x1.fffffep-1f //~0.99999994
+#define ONE_MINUS_EPSILON 0x1.fffffep-1f
 #define SBIAS 0.0008
 #define PI 3.1415926535
 #define INV_PI 0.3183098861
@@ -12,15 +12,15 @@
 #define kInvalidPixel -1u
 
 
-//====================================================================
+//====================================
 //TEXTURE AND LUT INDICES
-//====================================================================
+//====================================
 #define SHEEN_LUT_INDEX 0
 #define GGX_ESS_LUT_INDEX 1
 
-//====================================================================
+//====================================
 //REUSE CAPS
-//====================================================================
+//====================================
 #define TEMP_MCAP 8
 
 #define SPAT_MCAP 48
@@ -30,31 +30,26 @@
 
 #define SPAT_COUNT_MAX 3
 
-//====================================================================
-//UNIFIED DI+GI RESERVOIR, MATID DISCRIMINATOR
-//====================================================================
-//Sentinel matIDs flag direct-lighting candidates inside the unified reservoir.
-//Reconnect branches on these values to pick the correct reconnection formula,
-//all x2 BSDF / material fetches are skipped for sentinel samples.
-//MATID_ENV_MISS:    x2 stores a DIRECTION, not a position. No geometry
-//                   term, no x2 BSDF. Jn = 1.
-//MATID_LIGHT_TRI:   x2 is a world position on an emissive triangle.
-//                   n2_s is the light's surface normal. No x2 BSDF,
-//                   L2 carries the triangle's emission directly.
-//Real triangle materials occupy IDs < MATID_LIGHT_TRI.
+//====================================
+//UNIFIED DI+GI RESERVOIR MATID DISCRIMINATOR
+//====================================
+//sentinels flag DI candidates, Reconnect branches on value
+//MATID_ENV_MISS, x2 is direction, Jn=1, no geom term, no x2 BSDF
+//MATID_LIGHT_TRI, x2 is emissive triangle position, no x2 BSDF, L2 is emission
+//real materials occupy IDs < MATID_LIGHT_TRI
 #define MATID_ENV_MISS    0xFFFFFFFFu
 #define MATID_LIGHT_TRI   0xFFFFFFFEu
 #define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
 
-//====================================================================
+//====================================
 //ROUGHNESS REUSE GATE
-//====================================================================
+//====================================
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
-//====================================================================
+//====================================
 //BOILING FILTER
-//====================================================================
-//Lower strength means less aggressive clamping.
+//====================================
+//lower strength means less clamping
 #define BOIL_STRENGTH_TEMP 0.2f
 #define BOIL_MIN_AVG_TEMP  1e-8f

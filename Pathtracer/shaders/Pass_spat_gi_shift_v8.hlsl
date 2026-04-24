@@ -1,18 +1,13 @@
 #include "Includes_v8.hlsli"
 
-//====================================================================
-//SPATIAL GI, SHIFT PASS
-//====================================================================
-//For each pair produced by the select pass, compute this pixel's shift to
-//the paired partner's x2 once and cache the result in scratch. The merge
-//pass then reads both sides' cached shifts without performing any
-//reconnection or visibility rays.
-//
-//By the reuse-texture self-inversion property, if this pixel writes its
-//shift for slot s, the partner writes ITS shift for slot s in its own
-//scratch. Merge cross-references at the same slot index on both sides.
+//====================================
+//SPATIAL GI SHIFT PASS
+//====================================
+//for each pair from select, cache this pixel's shift to partner x2
+//merge pass reads both sides' cached shifts without further rays
+//reuse-texture self-inversion guarantees partner writes matching slot s
 
-//Scratch layout mirrors Pass_spat_gi_select_v8.hlsl
+//scratch layout mirrors Pass_spat_gi_select_v8.hlsl
 static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
 static const uint SEL_SLOT_STRIDE = 20u;
@@ -23,13 +18,13 @@ uint sel_slot_addr(uint linearIdx, uint slot)
     return sel_addr(linearIdx) + SEL_SLOT_BASE + slot * SEL_SLOT_STRIDE;
 }
 
-//====================================================================
+//====================================
 //SHIFT PASS ENTRY
-//====================================================================
+//====================================
 [shader("raygeneration")]
 void Pass_spat_gi_shift_v8()
 {
-    //Sort by validCount (0..3) so pixels with similar work pair up.
+    //sort by validCount so similar-work pixels pair up
     uint sortKey;
     {
         const uint2 li = DispatchRaysIndex().xy;
@@ -46,16 +41,14 @@ void Pass_spat_gi_shift_v8()
     const uint validCount = g_pathStateBuffer.Load(baseAddr);
     if (validCount == 0u) return;
 
-    //MY vertex, persists across slots
+    //my vertex, persists across slots
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, InitOrigin());
 
-    //MY Jc, partners read this from my scratch header for their canonical MIS.
-    //Env/miss samples (MATID_ENV_MISS) use Jc = 1, the reconnection shift
-    //preserves direction under reparameterization. Triangle-light samples
-    //use the same geometric formula as vertex samples.
+    //my Jc, partners read from my scratch header for canonical MIS
+    //env/miss uses Jc=1, shift preserves direction under reparameterization
     {
         const uint myMatID = load_matID(g_Reservoirs_current, pixelIdx);
         float my_Jc = 1.0f;
@@ -69,9 +62,7 @@ void Pass_spat_gi_shift_v8()
         g_pathStateBuffer.Store(baseAddr + 4u, asuint(my_Jc));
     }
 
-    //One shift per valid slot. Partner is loaded per-field, skip M / W / F /
-    //F_mag / w_sum fields shift doesn't need, and pack1 is fetched once for
-    //both x2 and n2_s.
+    //one shift per valid slot, partner loaded per-field, pack1 fetched once
     [loop]
     for (uint s = 0u; s < SPAT_COUNT_MAX; ++s)
     {
@@ -89,14 +80,12 @@ void Pass_spat_gi_shift_v8()
         const float2 p_uv    = load_uv_res(g_Reservoirs_current, nID);
         const float  p_eta   = load_eta(g_Reservoirs_current, nID);
 
-        //Sentinel matIDs (env, triangle-light) have no BSDF at x2. The
-        //unified Reconnect branches skip these values. Don't index the
-        //materials array with a sentinel.
+        //sentinel matIDs have no BSDF at x2, skip material load
         float3 rKd = 0.0f; float rPr = 0.0f, rPm = 0.0f;
         if (!IsSentinelMatID(p_matID))
             RefetchMaterial(p_matID, p_uv, rKd, rPr, rPm);
 
-        //MY x1 to partner x2
+        //my x1 to partner x2
         float  Jn = 0.0f;
         float3 c  = Reconnect(
             sv.x, sv.n_s, sv.o, sv.matID,
@@ -105,9 +94,8 @@ void Pass_spat_gi_shift_v8()
             rKd, rPr, rPm, p_eta,
             Jn);
 
-        //Visibility, baked into the stored contribution. Env/miss samples
-        //store x2 as a DIRECTION, so cast a fixed-far shadow ray in that
-        //direction. Triangle/vertex samples use the position-based form.
+        //visibility baked into stored contribution
+        //env/miss casts far shadow, others use position-based connection
         {
             float vis;
             if (p_matID == MATID_ENV_MISS)
@@ -125,8 +113,7 @@ void Pass_spat_gi_shift_v8()
             c *= vis;
         }
 
-        //Slot layout after nID: float3 F (12B) + float Jn (4B). No
-        //RGB9E5 split, the target magnitude is always GetPHat(F).
+        //slot layout, float3 F (12B) + float Jn (4B), target mag is GetPHat(F)
         g_pathStateBuffer.Store4(slotAddr + 4u,
             uint4(asuint(c), asuint(Jn)));
     }

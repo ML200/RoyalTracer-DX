@@ -1,13 +1,13 @@
-//====================================================================
+//====================================
 //LIGHT TREE LOOKUP BUFFERS
-//====================================================================
+//====================================
 Buffer<uint> gLT_TriToBLAS       : register(t16);
 Buffer<uint> gLT_TriToLeafOffset : register(t17);
 Buffer<uint> gLT_BLASToItem      : register(t18);
 
-//====================================================================
+//====================================
 //CONSTANTS AND HELPERS
-//====================================================================
+//====================================
 static const uint  LT_SENTINEL = 0xFFFFFFFFu;
 static const float LT_PI = 3.14159265358979323846;
 
@@ -46,10 +46,9 @@ inline uint LT_PickAndRescale(in float w[4], uint n, float xi_in,
 
 struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 
-//====================================================================
+//====================================
 //TRIG-FREE NODE IMPORTANCE
-//====================================================================
-//Precomputed cosTheta_o / cosTheta_e in nodes.
+//====================================
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
     float3 bmin, float3 bmax,
@@ -89,18 +88,8 @@ inline float LT_NodeImportance_Common(
 
     float geom = rcp(d2 + R2);
 
-    //Apply a small relative floor to the receiver term and orient term
-    //instead of hard-cutting to 0 when the cluster is just past the
-    //angular horizon (ci <= -sinU) or past the emissive cone
-    //(cosFull <= cosTheta_e). Pixels whose shading normals sit right at
-    //the cutoff would otherwise see the cluster's pdf drop from a small
-    //positive value to exactly 0, and any sample drawn in that transition
-    //band produces wi = p_hat/pdf fireflies. The floor keeps the pdf
-    //continuous and is consistent on both sampling and PDF sides, so
-    //RIS/MIS remain unbiased. Samples genuinely behind the receiver still
-    //get rejected at the cosSurf gate in NEE, the floor just wastes a
-    //tiny fraction of samples on them instead of producing spikes near
-    //the boundary.
+    //relative floor on receiver/orient, hard-cut at boundaries produces RIS fireflies
+    //consistent on sampling and PDF sides, RIS/MIS stay unbiased
     const float kFloor = 0.01;
     cosReceiver = max(cosReceiver, kFloor);
     orientTerm  = max(orientTerm,  kFloor);
@@ -124,22 +113,20 @@ inline float LT_BranchProb(float IL, float IR)
     return clamp(prob, 0.0001f, 0.9999f);
 }
 
-//====================================================================
+//====================================
 //STOCHASTIC DESCENT
-//====================================================================
+//====================================
 uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS)
 {
     pdfTLAS = 1.0;
     uint node = 0;
 
-    //Depth cap: a malformed tree, stale childCount or cyclic firstChild,
-    //would otherwise hang the GPU. 64 is far above any realistic tree
-    //depth, zero pdf on overflow invalidates the sample downstream.
+    //depth cap, malformed tree could hang GPU, zero pdf invalidates sample
     [loop] for (uint iter = 0u; iter < 64u; ++iter)
     {
         LightTLASNodeGpu N = gLT_TLAS[node];
         if (N.childCount == 0) {
-            return N.blasIndex; //leaf
+            return N.blasIndex;
         }
 
         float w[4];
@@ -156,7 +143,7 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
         pdfTLAS *= p;
         node = N.firstChild + idx;
-        xi   = xi_next; //rescaled for the next level
+        xi   = xi_next;
     }
 
     pdfTLAS = 0.0f;
@@ -168,19 +155,14 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
 
-    //BLAS nodes store WORLD-SPACE bounds and cone axes, triangles are
-    //transformed via instance.objectToWorld at build time, see
-    //LightTree.h buildBLASes_SAOH. Query in world space, the worldToLocal
-    //field is kept in the range struct for future refit support but is
-    //not used on the current fully-rebuilt-at-load path.
+    //BLAS nodes in world space, triangles transformed via instance.objectToWorld at build
+    //worldToLocal kept for future refit, unused on fully-rebuilt-at-load path
     float3 xLocal = x;
     float3 nLocal = n;
 
     uint node = 0;
 
-    //Depth cap, see LT_DescendTLAS_Stratified. Zero pdf on overflow
-    //invalidates the sample, returning a zero-count leaf is a safe token
-    //since LT_SampleLeafTriangle_Stratified clamps triCount via max(..., 1u).
+    //depth cap, zero pdf on overflow, zero-count leaf is safe since LeafTriangle clamps
     [loop] for (uint iter = 0u; iter < 64u; ++iter)
     {
         LightBLASNodeGpu N = gLT_BLAS[R.nodeOffset + node];
@@ -211,15 +193,11 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     return L;
 }
 
-//====================================================================
+//====================================
 //LEAF TRIANGLE SAMPLING
-//====================================================================
-//Power-weighted selection within the leaf. A leaf can hold up to
-//maxLeafTris triangles, LightTreeBuilder default = 16, picking them
-//uniformly wastes samples on dim triangles when one dominates the leaf's
-//emission, that was the dominant-light-still-noisy failure mode. Two-pass
-//scan: first pass sums per-triangle weight, second pass picks
-//proportionally. Matched by LT_PdfSelectTriangle's leaf case.
+//====================================
+//power-weighted within leaf, uniform picks waste samples on dim tris when one dominates
+//2-pass, sum weights then pick proportionally, matches LT_PdfSelectTriangle's leaf
 uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
                                       uint blasIndex, LTLeaf leaf,
                                       inout float xi, out float pdfLeaf)
@@ -228,14 +206,14 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     uint base        = R.triIndexOffset + leaf.triFirst;
     uint count       = max(leaf.triCount, 1u);
 
-    //Pass 1: accumulate per-triangle weight, emission power.
+    //pass 1, sum per-tri weights
     float sumW = 0.0f;
     [loop] for (uint i = 0u; i < count; ++i) {
         const uint tj = gLT_LeafTriIndex[base + i];
         sumW += max(g_EmissiveTriangles[tj].weight, 0.0f);
     }
 
-    //Degenerate fallback: all weights zero -> uniform.
+    //degenerate fallback, uniform
     if (sumW <= 0.0f) {
         uint k = min((uint)floor(xi * count), count - 1u);
         pdfLeaf = 1.0f / (float)count;
@@ -245,7 +223,7 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
         return gLT_LeafTriIndex[base + k];
     }
 
-    //Pass 2: pick the triangle whose cumulative weight crosses xi*sumW.
+    //pass 2, pick on cumulative cross
     const float target = xi * sumW;
     float accum = 0.0f;
     uint  sel = count - 1u;
@@ -261,17 +239,16 @@ uint LT_SampleLeafTriangle_Stratified(float3 x, float3 n,
     pdfLeaf = selW / sumW;
     const uint triIndex = gLT_LeafTriIndex[base + sel];
 
-    //Rescale xi into the chosen subinterval for the caller's next use.
     xi = (selW > 0.0f) ? saturate((target - accum) / selW) : 0.0f;
     return triIndex;
 }
 
-//====================================================================
+//====================================
 //TOP-LEVEL SAMPLER
-//====================================================================
+//====================================
 LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 {
-    //Draw ONE random number and reuse/rescale it through TLAS -> BLAS -> Leaf
+    //one random per stratum, reused/rescaled down TLAS -> BLAS -> Leaf
     float xiT = RandomFloatSingle(rng);
     float xiB = RandomFloatSingle(rng);
     float xiL = RandomFloatSingle(rng);
@@ -287,9 +264,9 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 }
 
 
-//====================================================================
+//====================================
 //PDF
-//====================================================================
+//====================================
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {
     uint blas = gLT_TriToBLAS[triIndex];
@@ -301,8 +278,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     float pdfTLAS = 1.0f;
     uint  tnode   = 0;
 
-    //Depth cap, see LT_DescendTLAS_Stratified. On overflow the sample
-    //is invalidated by returning zero pdf.
+    //depth cap, zero pdf on overflow
     bool tlasLeafReached = false;
     [loop] for (uint iterT = 0u; iterT < 64u; ++iterT)
     {
@@ -322,9 +298,9 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         }
 
         if (childHit < 0) {
-            //shouldn't happen, uniform fallback
+            //uniform fallback
             pdfTLAS *= 1.0 / float(N.childCount);
-            tnode = N.firstChild; //pick first for determinism
+            tnode = N.firstChild;
             continue;
         }
 
@@ -334,8 +310,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     }
     if (!tlasLeafReached) return 0.0f;
 
-    //BLAS path probability. BLAS nodes are in world space, see
-    //LT_DescendBLAS_Stratified for rationale. Query in world space.
+    //BLAS path probability, world space
     BlasRangeGpu Rng = gLT_Range[blas];
     float3 xLocal = x;
     float3 nLocal = n;
@@ -345,17 +320,13 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
     uint localIdx = gLT_TriToLeafOffset[triIndex];
 
-    //Depth cap, see LT_DescendTLAS_Stratified. If the loop exits without
-    //finding a leaf, fall through to the trailing return 0.0f.
     [loop] for (uint iterB = 0u; iterB < 64u; ++iterB)
     {
         LightBLASNodeGpu N = gLT_BLAS[Rng.nodeOffset + bnode];
 
         if (N.childCount == 0)
         {
-            //Matches LT_SampleLeafTriangle_Stratified: per-triangle power
-            //weight. Sum weights over the leaf and return the target
-            //triangle's share. Degenerate fallback mirrors sampling.
+            //matches LT_SampleLeafTriangle_Stratified power-weight form
             const uint  count    = max(N.triCount, 1u);
             const uint  leafBase = Rng.triIndexOffset + N.triFirst;
 
@@ -373,7 +344,6 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
             return pdfTLAS * pdfBLAS * pdfLeaf;
         }
 
-        //Find which child contains localIdx
         float w[4]; float sum = 0.0;
         int childHit = -1;
 
@@ -415,41 +385,36 @@ float LT_Pdf_LightTree_Area(float3 x, float3 n, uint tri, uint objID)
     return p_select / area;
 }
 
-//====================================================================
+//====================================
 //LIGHT SAMPLE RESULT
-//====================================================================
-//Helper to select a light source, pick a point on it, return point and pdf.
+//====================================
 struct LT_LightSampleResult
 {
-    float3 position;      //world space position on light
-    float3 normal;        //geometric normal of the light triangle
-    float3 emission;      //emissive color
-    float  pdfSolidAngle; //PDF w.r.t Solid Angle
-    uint   triIndex;      //selected global triangle index
-    uint   objID;         //InstanceID of the light
+    float3 position;
+    float3 normal;
+    float3 emission;
+    float  pdfSolidAngle;
+    uint   triIndex;
+    uint   objID;
 };
 
-//Requires: g_EmissiveTriangles, instanceProps
 LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
 {
     LT_LightSampleResult result;
 
-    //Pick a triangle from the tree
     LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
     result.triIndex = treeSample.id;
 
-    //Fetch Triangle Data
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
     result.objID    = triData.instanceID;
     result.emission = triData.emission;
 
-    //Transform Vertices
     float4x4 worldMat = instanceProps[result.objID].objectToWorld;
     float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
     float3 v1 = mul(worldMat, float4(triData.y, 1.0)).xyz;
     float3 v2 = mul(worldMat, float4(triData.z, 1.0)).xyz;
 
-    //Sample Point Uniformly
+    //uniform tri sample
     float r1 = RandomFloatSingle(rng);
     float r2 = RandomFloatSingle(rng);
     float sqrtR1 = sqrt(r1);
@@ -458,21 +423,18 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 
     result.position = (1.0f - u - v) * v0 + u * v1 + v * v2;
 
-    //Normal and Area
     float3 e1 = v1 - v0;
     float3 e2 = v2 - v0;
     float3 crossP = cross(e1, e2);
     float area2 = length(crossP);
-    result.normal = crossP / area2; //normalize
+    result.normal = crossP / area2;
     float area = 0.5f * area2;
 
-    //Calculate Solid Angle PDF
-    //PDF_SA = PDF_Area * (dist^2 / cosTheta_Light)
+    //PDF_SA = PDF_Area * dist^2 / cosTheta_Light
     float3 toLight = result.position - refPos;
     float distSq   = dot(toLight, toLight);
     float dist     = sqrt(distSq);
 
-    //Check for valid geometry, avoid divide by zero
     float cosLight = max(dot(result.normal, -toLight / dist), 0.0f);
 
     float pdfArea = treeSample.pdf / max(area, 1e-10f);

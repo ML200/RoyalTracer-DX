@@ -1,6 +1,6 @@
-//====================================================================
+//====================================
 //COAT BRDF EVALUATION
-//====================================================================
+//====================================
 inline float3 EvaluateBRDF_COAT(
     uint   mID,
     float3 normal,
@@ -16,11 +16,10 @@ inline float3 EvaluateBRDF_COAT(
     float NdotV = max(0.0f, dot(N, V));
     float NdotL = max(0.0f, dot(N, L));
 
-    //Coat strength
     const float pc = saturate(LoadPc(mID));
     if (pc <= 0.0f) return 0.0.xxx;
 
-    //Microfacet terms, GGX
+    //GGX microfacet
     float3 H    = normalize(V + L);
     float  NdotH = max(0.0f, dot(N, H));
     float  VdotH = max(0.0f, dot(V, H));
@@ -44,10 +43,10 @@ inline float3 EvaluateBRDF_COAT(
     return (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
 }
 
-//====================================================================
+//====================================
 //COAT TRANSMITTANCE
-//====================================================================
-//Pair-aware: T = (1 - pc * F(wo)) * (1 - pc * F(wi))
+//====================================
+//pair-aware, T = (1 - pc*F(wo)) * (1 - pc*F(wi))
 inline float Transmittance_COAT(
     uint   mID,
     float3 normal,
@@ -65,8 +64,8 @@ inline float Transmittance_COAT(
     if (NdotV <= 0.0f || NdotL <= 0.0f) return 1.0f;
 
     float  Pr   = LoadPcr(mID);
-    float  Fo = FresnelDielectric( V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f); //wo going etai to etat
-    float  Fi = FresnelDielectric( L, N, etai, etat).x; //wi coming etai to etat
+    float  Fo = FresnelDielectric( V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
+    float  Fi = FresnelDielectric( L, N, etai, etat).x;
 
     float pc = saturate(LoadPc(mID));
 
@@ -75,10 +74,9 @@ inline float Transmittance_COAT(
     return T_in * T_out;
 }
 
-//====================================================================
+//====================================
 //COAT SAMPLING WEIGHT
-//====================================================================
-//Probability to choose the COAT reflection branch
+//====================================
 inline float Sampling_Weight_COAT(
     uint   mID,
     float3 normal,
@@ -97,9 +95,9 @@ inline float Sampling_Weight_COAT(
     return saturate(pc * Fv);
 }
 
-//====================================================================
-//FUSED COAT EVAL, PDF, TRANSMITTANCE
-//====================================================================
+//====================================
+//FUSED COAT EVAL PDF TRANSMITTANCE
+//====================================
 struct CoatResult {
     float3 f;
     float  pdf;
@@ -123,7 +121,7 @@ inline CoatResult EvalCoatAll(
 
     float Pr_coat = LoadPcr(matID);
 
-    //Transmittance
+    //transmittance
     if (NdotV > 0.0f && NdotL > 0.0f)
     {
         float Fo = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr_coat * 0.7f) * (1.0f - Pr_coat * 0.7f);
@@ -131,7 +129,7 @@ inline CoatResult EvalCoatAll(
         r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
     }
 
-    //Eval and PDF
+    //eval + pdf
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);
@@ -144,7 +142,6 @@ inline CoatResult EvalCoatAll(
     float D   = D_GGX(NdotH, alpha);
     float G1V = G1_SmithGGX(NdotV, alpha);
 
-    //Eval
     {
         float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
         float  denom = max(4.0f * NdotV * NdotL, EPSILON);
@@ -159,15 +156,15 @@ inline CoatResult EvalCoatAll(
         r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
     }
 
-    //PDF: p(wi) = D * G1V / (4 * NdotV), VdotH cancels in VNDF reflection Jacobian
+    //p(wi) = D*G1V/(4*NdotV), VdotH cancels in VNDF reflection Jacobian
     r.pdf = (D * G1V) / (4.0f * NdotV);
 
     return r;
 }
 
-//====================================================================
+//====================================
 //COAT SAMPLING
-//====================================================================
+//====================================
 inline float3 SampleBRDF_COAT(
     uint    mID,
     float3  outgoing,
@@ -181,23 +178,22 @@ inline float3 SampleBRDF_COAT(
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    //Visible normal sampling, perfect reflection for very smooth coats
+    //VNDF, force perfect reflection for very smooth coats
     float3 H;
     if (rough < SMOOTH_SPECULAR_THRESHOLD)
         H = N;
     else
         H = SampleVNDF_H(alpha, V, N, seed);
 
-    //Reflect
     float3 L = reflect(-V, H);
     if (dot(N, L) <= 0.0f) { return 0.0.xxx; }
 
     return normalize(L);
 }
 
-//====================================================================
+//====================================
 //COAT PDF
-//====================================================================
+//====================================
 inline float BRDF_PDF_COAT(
     uint   mID,
     float3 N,
@@ -222,7 +218,7 @@ inline float BRDF_PDF_COAT(
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    //p(H) for VNDF mapped to reflection: p(wi) = p(H) / (4 V.H)
+    //VNDF -> reflection, p(wi) = p(H)/(4*V.H)
     float pdf_H = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
     return pdf_H / (4.0f * VdotH);
 }

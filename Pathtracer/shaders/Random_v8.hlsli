@@ -1,6 +1,6 @@
-//====================================================================
+//====================================
 //RANDOM NUMBER GENERATION
-//====================================================================
+//====================================
 
 //32-bit mix
 inline uint Hash32(uint v) {
@@ -8,7 +8,6 @@ inline uint Hash32(uint v) {
     return v;
 }
 
-//Additional constant for seed variation
 uint2 GetSeed(uint2 idx, uint t, uint c, uint2 tileSize = uint2(0,0))
 {
     //per-pixel

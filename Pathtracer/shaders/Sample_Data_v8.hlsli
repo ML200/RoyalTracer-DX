@@ -1,28 +1,12 @@
-//====================================================================
-//COMPACT G-BUFFER, 24 BYTES PER PIXEL
-//====================================================================
-//Stores minimal identifiers + cached normals/UV to avoid scattered vertex
-//buffer access during per-neighbor MIS evaluation.
-//
-//Layout per pixel:
-//Offset  0: instID, full 32-bit                          [uint32]
-//Offset  4: primID (bits 0-30) + emitter flag (bit 31)   [uint32]
-//Offset  8: bary.x                                       [float32]
-//Offset 12: bary.y                                       [float32]
-//Offset 16: n1_s shading normal in object space, packed  [uint32]
-//Offset 20: uv texture coordinates, half2                [uint32]
-//Total: 24 bytes.
-//
-//n1_s + uv are cached to allow BuildVertexLight (neighbor reconstruction)
-//to skip 12 scattered vertex-buffer loads (normals + UVs) per neighbor.
-//
-//Emitter flag, bit 31 of word 1 / primID:
-//Set when the primary hit is an emitter or sky/miss.
-//When set, L1 has already been written to gScratchPing[pixel, 1] and [pixel, 2]
-//by the raygen/hit shader. Temporal/spatial passes check this flag and skip.
-//
-//Sky sentinel:
-//instID == 0xFFFFFFFF with emitter flag set means sky/miss, no surface geometry.
+//====================================
+//COMPACT G-BUFFER 24 BYTES PER PIXEL
+//====================================
+//cached normals/UV so BuildVertexLight skips scattered vertex loads per neighbor
+//offset 0  instID, offset 4 primID bits 0-30 + emitter flag bit 31
+//offset 8  bary.x, offset 12 bary.y
+//offset 16 n1_s object-space packed, offset 20 uv half2
+//emitter flag set, primary hit is emitter or sky, L1 already in gScratchPing
+//sky sentinel, instID=0xFFFFFFFF with emitter flag
 
 static const uint BYTES_SD = 24u;
 
@@ -31,13 +15,10 @@ uint pixelBaseAddr_SD(uint pixelIdx)
     return pixelIdx * BYTES_SD;
 }
 
-//====================================================================
-//OBJECT TO WORLD, WORLD TO OBJECT HELPERS
-//====================================================================
-//Unified-reservoir env/miss candidates use sentinel objIDs that have no
-//associated instance, bypass the transform, world-space storage direct.
-//Triangle-light candidates store a real instID so they still hit the
-//regular matrix path.
+//====================================
+//OBJECT-WORLD HELPERS
+//====================================
+//env/miss sentinels skip the transform, triangle-light uses its real instID
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
     if (id >= MATID_LIGHT_TRI) return Pw;
@@ -60,9 +41,9 @@ float3 WorldToObjectNrm(uint id, float3 Nw)
     return normalize(mul(MT, Nw));
 }
 
-//====================================================================
-//INDIVIDUAL STORES
-//====================================================================
+//====================================
+//STORES
+//====================================
 
 void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
@@ -98,9 +79,9 @@ void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
     buf.Store2(base + 16u, uint2(0u, 0u));
 }
 
-//====================================================================
-//INDIVIDUAL LOADS
-//====================================================================
+//====================================
+//LOADS
+//====================================
 uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return buf.Load(pixelBaseAddr_SD(pixelIdx));
@@ -142,9 +123,9 @@ float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
     return float2(a, b);
 }
 
-//====================================================================
+//====================================
 //SAMPLE DATA COPY FOR TEMPORAL REUSE
-//====================================================================
+//====================================
 void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);

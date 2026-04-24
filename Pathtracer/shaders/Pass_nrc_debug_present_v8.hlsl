@@ -1,16 +1,7 @@
-//====================================================================
-// Pass_nrc_debug_present_v8 — copy the cache's prediction at x1 into
-// gOutput slice 3 for editor inspection.
-//
-// Runs at the tail of the NRC debug chain:
-//   debug_query → cuda:nrc_debug_inference → THIS pass
-// The main inference + resolve + train have all already run and
-// consumed g_NrcInferenceOut; nrc_debug_inference then overwrote
-// those outputs with per-pixel predictions at slot = pixelIdx. We
-// just reconstitute radiance with the reflectance factorisation and
-// write slice 3. Value matches paper Fig. 4's "Visualization at
-// first non-specular vertex".
-//====================================================================
+//====================================
+//NRC DEBUG VIEW PRESENT
+//====================================
+//writes cache prediction at x1 to gOutput slice 3, runs after debug inference
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -32,8 +23,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
         const uint primID = load_primID(g_sample_current, pixelIdx);
         if (primID != 0xFFFFFFFFu)
         {
-            // Reflectance factorisation: MLP predicts irradiance, recover
-            // radiance by multiplying by (α+β) at the query vertex.
+            //MLP predicts irradiance, recover radiance via (alpha+beta)
             const uint    instID = load_instID(g_sample_current, pixelIdx);
             const uint    matID  = GetMatIDFast(instID, primID);
             const float2  uv     = load_uv(g_sample_current, pixelIdx);

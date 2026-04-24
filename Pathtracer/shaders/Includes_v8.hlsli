@@ -1,70 +1,63 @@
-//====================================================================
+//====================================
 //INCLUDES V8
-//====================================================================
-//Compute shaders: #define COMPUTE_PASS before including.
+//====================================
+//compute shaders, #define COMPUTE_PASS before including
 
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
 
-//====================================================================
+//====================================
 //PUSH CONSTANTS
-//====================================================================
+//====================================
 cbuffer Push : register(b1)
 {
-    uint2 gImageSize;          //[0-1]
-    uint  g_InputStackIdx;     //[2]
-    uint  g_OutputStackIdx;    //[3]
-    uint  rs_tempMcap;         //[4]
-    uint  rs_spatCountMax;     //[5]
-    uint  rs_spatCountMin;     //[6]
-    uint  rs_spatRadMax;       //[7]
-    uint  rs_spatRadMin;       //[8]
-    uint  rs_flags;            //[9], bit0=temp, bit1=spat
-    float rs_reuseRoughnessMin;//[10]
-    float rs_reuseRoughnessMax;//[11]
-    uint  rs_spatTries;        //[12]
-    //Paired reuse textures, per-slot randomized transforms, Lin et al. 2026 §3.2.
-    //flags bits: 1=flipX, 2=flipY, 4=transpose
-    uint  rs_reuseOffset0_x;   //[13]
-    uint  rs_reuseOffset0_y;   //[14]
-    uint  rs_reuseFlags0;      //[15]
-    uint  rs_reuseOffset1_x;   //[16]
-    uint  rs_reuseOffset1_y;   //[17]
-    uint  rs_reuseFlags1;      //[18]
-    uint  rs_reuseOffset2_x;   //[19]
-    uint  rs_reuseOffset2_y;   //[20]
-    uint  rs_reuseFlags2;      //[21]
-    //Neighbor-rejection thresholds for spatial select pass
-    float rs_rejNormalDot;     //[22], dot(n_A, n_B) must be >= this
-    float rs_rejDistance;      //[23], |proj-on-normal| gate in world units
-    //NRC runtime controls (see Nrc_v8.hlsli for flag bits).
-    uint  nrc_flags;           //[24], bit0=enabled, bit1=trainEnabled, bit2=debugView
-    float nrc_area_spread_c;   //[25], cache-termination threshold c (paper §3.4)
-    float nrc_lr_scale;        //[26], reserved for tcnn learning-rate override
-    //[27] intentionally padded so the float3 below lands on a 16-byte
-    //boundary (register 7). HLSL cbuffer rules bump a float3 that
-    //would straddle a 16-byte boundary to the next register — without
-    //this explicit pad, our linear 32-DWORD root-constant upload is
-    //offset-shifted against what the shader reads, producing
-    //scale_inv = 0 (every position collapses to 0.5 of normalized
-    //space) and the global-constant cache output that caused this bug.
-    uint   nrc_pad27;          //[27], DO NOT read from shader
-    //Scene-space → [0,1]³ mapping applied to positions before tcnn's
-    //HashGrid encoder, which is only defined for inputs in [0, 1].
-    //Renderer sets scale_inv = 0.5 / halfExtent so a vertex at the
-    //AABB extents lands at 0.0 / 1.0 exactly.
-    float3 nrc_scene_center;   //[28..30], world-space scene center
-    float  nrc_scene_scale_inv;//[31], 0.5 / halfExtent; x_norm = (x - c) * this + 0.5
+    uint2 gImageSize;
+    uint  g_InputStackIdx;
+    uint  g_OutputStackIdx;
+    uint  rs_tempMcap;
+    uint  rs_spatCountMax;
+    uint  rs_spatCountMin;
+    uint  rs_spatRadMax;
+    uint  rs_spatRadMin;
+    uint  rs_flags;
+    float rs_reuseRoughnessMin;
+    float rs_reuseRoughnessMax;
+    uint  rs_spatTries;
+    //paired reuse textures, per-slot transforms, Lin et al. 2026 §3.2
+    //flags bits, 1=flipX 2=flipY 4=transpose
+    uint  rs_reuseOffset0_x;
+    uint  rs_reuseOffset0_y;
+    uint  rs_reuseFlags0;
+    uint  rs_reuseOffset1_x;
+    uint  rs_reuseOffset1_y;
+    uint  rs_reuseFlags1;
+    uint  rs_reuseOffset2_x;
+    uint  rs_reuseOffset2_y;
+    uint  rs_reuseFlags2;
+    //neighbor rejection thresholds for spatial select
+    float rs_rejNormalDot;
+    float rs_rejDistance;
+    //NRC runtime, see Nrc_v8.hlsli for flag bits
+    uint  nrc_flags;
+    float nrc_area_spread_c;
+    float nrc_lr_scale;
+    //[27] explicit pad so float3 below lands on 16-byte boundary
+    //HLSL cbuffer rules bump a straddling float3 to next register
+    //without this pad, root-constant upload is offset-shifted vs shader reads
+    uint   nrc_pad27;
+    //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5 / halfExtent
+    float3 nrc_scene_center;
+    float  nrc_scene_scale_inv;
 };
 
-//====================================================================
+//====================================
 //IMAGE SIZE MACROS
-//====================================================================
+//====================================
 #define IMG_W (gImageSize.x)
 #define IMG_H (gImageSize.y)
 
 #ifdef COMPUTE_PASS
-    //Compute shaders emulate DispatchRaysIndex/Dimensions for shared code
+    //emulate DispatchRaysIndex/Dimensions for shared code
     #define gImageWidth  (gImageSize.x)
     #define gImageHeight (gImageSize.y)
     #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
@@ -72,19 +65,18 @@ cbuffer Push : register(b1)
     #define DispatchRaysIndex()      gDispatchIdx
 #endif
 
-//Inline ray tracing support
 #define ENABLE_RAY_QUERY_INLINE
 
-//====================================================================
+//====================================
 //SAMPLERS AND LUTS
-//====================================================================
+//====================================
 SamplerState   g_sampler     : register(s0);
 SamplerState   g_sampler_LUT : register(s1);
 Texture2DArray g_LUT         : register(t33);
 
-//====================================================================
+//====================================
 //CAMERA
-//====================================================================
+//====================================
 cbuffer CameraParams : register(b0)
 {
     float4x4 view;
@@ -96,7 +88,7 @@ cbuffer CameraParams : register(b0)
     float  time;
     float2 jitter;
     float  cameraFar;
-    //Sun settings
+    //sun settings
     float sunLatitude;
     float sunLongitude;
     float sunDayOfYear;
@@ -120,18 +112,18 @@ cbuffer CameraParams : register(b0)
 #define SKY_INTENSITY_VAL   sunSkyIntensity
 #define SKY_INTENSITY       sunSkyIntensity
 
-//====================================================================
+//====================================
 //CORE UTILITY HEADERS
-//====================================================================
+//====================================
 #include "Constants_v8.hlsli"
 #include "Common_v8.hlsli"
 #include "Data_v8.hlsli"
 #include "Random_v8.hlsli"
 #include "Compression_v8.hlsli"
 
-//====================================================================
-//OUTPUT, SCRATCH, RESERVOIR BUFFERS
-//====================================================================
+//====================================
+//OUTPUT SCRATCH RESERVOIR BUFFERS
+//====================================
 RWTexture2DArray<float4> gOutput             : register(u0);
 RWTexture2D<float4>      gPermanentData      : register(u1);
 RWTexture2DArray<float4> gScratchPing        : register(u8);
@@ -142,37 +134,33 @@ RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
-//====================================================================
+//====================================
 //SCENE DATA
-//====================================================================
+//====================================
 StructuredBuffer<STriVertex>         BTriVertex          : register(t2);
 StructuredBuffer<int>                indices             : register(t1);
 RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
 
-//Material buffer, compressed AoS, 40 B per material, was 112 B.
-//See Data_v8.hlsli for layout and Material_Decoder_v8.hlsli for accessors.
+//40B compressed AoS material, accessors in Material_Decoder_v8.hlsli
 StructuredBuffer<MatPacked>          g_mat               : register(t5);
 
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-//====================================================================
+//====================================
 //LIGHT TREE
-//====================================================================
+//====================================
 StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
 StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
-//t16/t17/t18 are claimed by the lookup buffers declared inside
-//LightTree_v8.hlsli: TriToBLAS / TriToLeafOffset / BLASToItem. The
-//legacy LeafAlias buffers are no longer built or bound, per-leaf
-//sampling is power-weighted in place.
+//t16/t17/t18 claimed by lookup buffers in LightTree_v8.hlsli
 
-//====================================================================
+//====================================
 //SHADING AND MATERIAL HEADERS
-//====================================================================
+//====================================
 #include "Material_Decoder_v8.hlsli"
 #include "LightTree_v8.hlsli"
 #include "Sample_Data_v8.hlsli"
@@ -184,9 +172,9 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "Material_Sheen_v8.hlsli"
 #include "BXDF_v8.hlsli"
 
-//====================================================================
-//SAMPLING, RESERVOIRS, RAY TRACING
-//====================================================================
+//====================================
+//SAMPLING RESERVOIRS RT
+//====================================
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
@@ -196,9 +184,9 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "Camera_ray_v8.hlsli"
 #include "MIS_v8.hlsli"
 
-//====================================================================
+//====================================
 //DLSS-RR RESOURCES
-//====================================================================
+//====================================
 #ifdef COMPUTE_PASS
 RWTexture2D<float>  g_dlssDepth          : register(u11);
 RWTexture2D<float2> g_dlssMVec           : register(u12);
@@ -215,4 +203,4 @@ RWTexture2D<float4> g_dlssInput          : register(u22);
 RWTexture2D<float>  g_dlssBiasHint       : register(u23);
 #endif
 
-#endif //INCLUDES_V8_HLSLI
+#endif

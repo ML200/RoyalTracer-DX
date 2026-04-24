@@ -1,8 +1,8 @@
 #include "Includes_v8.hlsli"
 
-//====================================================================
+//====================================
 //TEMPORAL GI
-//====================================================================
+//====================================
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
@@ -21,17 +21,17 @@ void Pass_temp_gi_v8()
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
 
-    //Emitter early-out
+    //emitter early-out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         return;
     }
 
-    //Load current reservoir, must stay alive until final store
+    //keep current reservoir alive until final store
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //Disabled early-out
+    //disabled early-out
     if (!(rs_flags & 2u)) {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
@@ -42,10 +42,10 @@ void Pass_temp_gi_v8()
     uint2 seed = GetSeed(pixelIdx, time, 3);
     uint  permSeed = GetSeed(1, time, 3).x;
 
-    //====================================================================
+    //====================================
     //BASE REPROJECTION
-    //====================================================================
-    //Lightweight loads
+    //====================================
+    //lightweight loads
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
@@ -56,13 +56,12 @@ void Pass_temp_gi_v8()
     float3 myKd; float myPr, myPm;
     RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
-    //Specularity, same computation DLSS-RR gets via EnvBRDFApprox2
+    //specularity, matches DLSS-RR's EnvBRDFApprox2
     const float3 camPos = InitOrigin();
     const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
     const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
 
-    //Stochastic reprojection: randomly choose specular vs diffuse MV
-    //weighted by specularity
+    //stochastic reprojection, specular vs diffuse MV weighted by specularity
     float4 reflData = gScratchPing[uint3(launchIndex, 4)];
     uint   reflInstID = asuint(reflData.w);
     bool   reflValid = (reflInstID < 0xFFFFFFFEu);
@@ -83,9 +82,9 @@ void Pass_temp_gi_v8()
     if (baseCoord.x == -1 && baseCoord.y == -1)
         baseCoord = (int2)launchIndex;
 
-    //====================================================================
+    //====================================
     //PERMUTED CANDIDATE
-    //====================================================================
+    //====================================
     int2 permCoord = baseCoord;
     bool permInBounds = false;
     {
@@ -105,12 +104,11 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    //Lightweight neighbor identifiers, survive rejection for merge
+    //lightweight neighbor ids survive rejection for merge
     uint   rInstID = 0;
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
 
-    //Permuted sample
     if (permInBounds)
         valid = TestTemporalCandidate(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
                                          tempPixelIdx, rInstID, rPrimID, rBary);
@@ -120,7 +118,6 @@ void Pass_temp_gi_v8()
     {
         Reservoir rdi_r = loadReservoir(g_Reservoirs_last, tempPixelIdx);
 
-        //Final validity check that requires reservoir
         if (!IsValidReservoir(rdi_r))
         {
             valid = false;
@@ -137,8 +134,7 @@ void Pass_temp_gi_v8()
                 const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
                 const float p_c = GetPHat(rdi.F) * visReuse_c;
 
-                //Canonical Jc: jacobian at current pixel's x1 to canonical x2.
-                //Env/miss samples preserve direction under shift, so Jc = 1.
+                //canonical Jc, env/miss direction-preserving so Jc=1
                 const float Jc_canonical = IsSentinelMatID(rdi.matID)
                     ? ((rdi.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2, rdi.n2_s))
                     : ComputeJc(myPos, rdi.x2, rdi.n2_s);
@@ -147,7 +143,7 @@ void Pass_temp_gi_v8()
                 float n_c = 0.0f;
                 float3 contrib_n_from_me = 0;
 
-                //p_n: reconnect from neighbor vertex to current GI reservoir sample
+                //p_n, reconnect from neighbor vertex to current GI sample
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
 
@@ -163,8 +159,7 @@ void Pass_temp_gi_v8()
                         Jnc);
 
                     float ph = GetPHat(c);
-                    //Env/miss: rdi.x2 is a DIRECTION, cast to far distance.
-                    //Other: position-based connection + self-length shadow ray.
+                    //env/miss casts to far distance, others use self-length shadow ray
                     {
                         float vis;
                         if (rdi.matID == MATID_ENV_MISS)
@@ -180,13 +175,11 @@ void Pass_temp_gi_v8()
                     }
                 }
 
-                //n_c: reconnect from current vertex to neighbor GI reservoir sample
+                //n_c, reconnect from current vertex to neighbor GI sample
                 float J2;
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
 
-                    //Neighbor Jc: jacobian at neighbor's x1 to neighbor's x2.
-                    //Env/miss samples preserve direction under shift, Jc = 1.
                     const float Jc_neighbor = (rdi_r.matID == MATID_ENV_MISS)
                         ? 1.0f
                         : ComputeJc(ReconstructPosition(rInstID, rPrimID, rBary),
@@ -205,7 +198,6 @@ void Pass_temp_gi_v8()
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
                     float ph = GetPHat(c);
-                    //Env/miss
                     {
                         float vis_n;
                         if (rdi_r.matID == MATID_ENV_MISS)
@@ -225,31 +217,15 @@ void Pass_temp_gi_v8()
                 const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
-                //Correlation-reduction cCap (Lin et al. 2026 §5). The
-                //previous frame's duplication map at the temporal
-                //neighbor's pixel counts shifted-copies in its 17x17
-                //window, normalized to D in [0, 1]. High D means this
-                //sample has already spread across many neighbors, so
-                //we lower the temporal cCap to refresh the chain and
-                //stop firefly persistence. alpha = 0.1 gives a quick
-                //ramp even at small D; cMin = 1 matches the paper.
-                //Introduces a small bounded bias in highly correlated
-                //regions (paper measured ~3% mean absolute in Kitchen).
-                //
-                //Env/miss (sky, depth=0 sun NEE) is direction-preserving
-                //under the reconnection shift — propagation across
-                //pixels is benign (bounded radiance, no firefly
-                //amplification), and applying the reduction there caps
-                //effMcap ~ 1 in sky regions regardless of rs_tempMcap,
-                //defeating temporal accumulation on the sky. Skip the
-                //reduction for env/miss and let the full rs_tempMcap
-                //drive the history length.
+                //correlation-reduction cCap (Lin et al. 2026 §5)
+                //high dup-count D lowers cCap to refresh the chain and stop firefly persistence
+                //skip for env/miss, direction-preserving shift is benign and would defeat accumulation
                 const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
                 const float effMcap = (rdi_r.matID == MATID_ENV_MISS)
                     ? (float)rs_tempMcap
                     : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
-                //M caps
+                //M caps, roughness-dependent
                 float sdata_Pr = myPr;
                 float rdi_r_Pr = IsSentinelMatID(rdi_r.matID)
                     ? 1.0f
@@ -275,9 +251,7 @@ void Pass_temp_gi_v8()
                 rdi.w_sum = w_c;
 
                 p_hat_final = p_c;
-                //UpdateReservoir writes F = contrib_n_from_me on acceptance,
-                //the shifted-to-current-pixel contribution, which is exactly
-                //what we want stored for the winner, GetPHat of it is n_c.
+                //on acceptance UpdateReservoir writes F=contrib_n_from_me, GetPHat(F)=n_c
                 if (UpdateReservoir(
                         rdi,
                         w_n,
@@ -308,9 +282,8 @@ void Pass_temp_gi_v8()
         }
     }
 
-    //Write boilValue to scratch for the groupshared boiling post-pass
+    //boilValue to scratch for groupshared boiling pass
     gScratchPing[uint3(launchIndex, 5)] = float4(boilValue, 0, 0, 0);
 
-    //Store merged reservoir
     storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
 }

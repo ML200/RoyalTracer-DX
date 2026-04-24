@@ -1,10 +1,10 @@
 #ifndef SURFACE_VERTEX_V8_HLSLI
 #define SURFACE_VERTEX_V8_HLSLI
 
-//====================================================================
+//====================================
 //SURFACE VERTEX
-//====================================================================
-//Clean wrapper for reconnection functions.
+//====================================
+//wrapper for reconnection functions
 
 struct SurfaceVertex {
     float3 x;
@@ -19,9 +19,9 @@ struct SurfaceVertex {
     float2 uv;
 };
 
-//====================================================================
+//====================================
 //POSITION RECONSTRUCTION
-//====================================================================
+//====================================
 inline float3 ReconstructPosition(uint instID, uint primID, float2 bary)
 {
     const uint baseI = instanceProps[instID].indexBase;
@@ -36,9 +36,9 @@ inline float3 ReconstructPosition(uint instID, uint primID, float2 bary)
     return mul(instanceProps[instID].objectToWorld, float4(pLocal, 1.0f)).xyz;
 }
 
-//====================================================================
+//====================================
 //VERTEX BUILDERS
-//====================================================================
+//====================================
 inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 viewOrigin)
 {
     SurfaceVertex v;
@@ -50,11 +50,7 @@ inline SurfaceVertex BuildVertex(uint instID, uint primID, float2 bary, float3 v
     v.uv    = h.uv;
     RefetchMaterial(v.matID, h.uv, v.Kd, v.Pr, v.Pm);
 
-    //IOR pair mirrors raygen, but only flip for actually transmissive
-    //materials. A back-hit on an opaque object, thin leaf or paper, is
-    //still geometrically backface but has no traversable interior, so
-    //swapping the pair would trick the Reconnect medium logic into
-    //applying Tf absorption where none belongs.
+    //only flip IOR for transmissive backfaces, opaque backface has no interior
     const float matNi = LoadNi(v.matID);
     const float Kd_w  = LoadKd_w(v.matID);
     const bool transmissive = (matNi > 1.0f + EPSILON) && (Kd_w < 1.0f - EPSILON);
@@ -70,9 +66,7 @@ inline SurfaceVertex BuildVertexLight(
 {
     SurfaceVertex v;
 
-    //Inline the triangle-vertex fetch so the geometric normal falls out
-    //for free, backface detection then matches EvalSurfaceState without
-    //a second round of index/vertex loads.
+    //inline tri fetch so geometric normal falls out, matches EvalSurfaceState without second loads
     const uint baseI = instanceProps[instID].indexBase;
     const uint i0 = indices[baseI + 3u * primID + 0u];
     const uint i1 = indices[baseI + 3u * primID + 1u];
@@ -91,12 +85,11 @@ inline SurfaceVertex BuildVertexLight(
     v.uv    = uv;
     RefetchMaterial(v.matID, uv, v.Kd, v.Pr, v.Pm);
 
-    //Same backface test as EvalSurfaceState, view direction hit to camera
-    //vs geometric normal. Length of geoNormOb doesn't matter, only sign of dot.
+    //same backface test as EvalSurfaceState, only sign of dot matters
     const float3 geoNormW = ObjectToWorldNrm(instID, geoNormOb);
     const bool   backface = dot(v.o, geoNormW) < 0.0f;
 
-    //See BuildVertex comment, opaque backface must NOT flip the IOR pair.
+    //opaque backface must NOT flip IOR
     const float matNi = LoadNi(v.matID);
     const float Kd_w  = LoadKd_w(v.matID);
     const bool transmissive = (matNi > 1.0f + EPSILON) && (Kd_w < 1.0f - EPSILON);
@@ -106,4 +99,4 @@ inline SurfaceVertex BuildVertexLight(
     return v;
 }
 
-#endif //SURFACE_VERTEX_V8_HLSLI
+#endif

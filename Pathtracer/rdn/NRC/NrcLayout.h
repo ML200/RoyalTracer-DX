@@ -1,9 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// NRC/NrcLayout.h — buffer layout contracts shared across C++, CUDA,
-// and HLSL. Any struct or constant that crosses the language boundary
-// lives here; the HLSL side mirrors the same offsets in Nrc_v8.hlsli.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//NRC BUFFER LAYOUT CONTRACTS
+//====================================
+//shared across C++, CUDA, HLSL, HLSL side mirrors offsets in Nrc_v8.hlsli
 
 #include <cstdint>
 
@@ -11,26 +10,22 @@ namespace nrc {
 
 struct Float3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 
-// ── Runtime-tunable settings (Editor) ───────────────────────────────
-// Mirrored into push constants every frame (see Renderer.cpp).
+//====================================
+//RUNTIME SETTINGS
+//====================================
+//mirrored into push constants every frame
 struct Settings {
-    bool  enabled            = true;  // master toggle for cache termination + resolve
-    bool  trainingEnabled    = true;  // freeze weights when off
-    bool  debugView          = false; // render L̂_s at primary vertex to gOutput slice 3
-    float areaSpreadC        = 0.01f; // paper's `c` — smaller = terminate earlier
-    float learningRateScale  = 1.0f;  // reserved for a tcnn-side LR override
-    // Scene-space normalization for the network's position input.
-    // The Frequency encoder expects inputs in roughly [0,1]; feeding
-    // raw world-space meters makes every frequency bin wrap many
-    // times across the scene and produces a persistent grid in the
-    // debug visualization. x_norm = (x - sceneCenter)/sceneExtent + 0.5
-    Float3 sceneCenter   = {};       // world-space center of scene AABB
-    float  sceneExtent   = 50.0f;    // max half-extent (world units)
+    bool  enabled            = true;
+    bool  trainingEnabled    = true;
+    bool  debugView          = false;
+    float areaSpreadC        = 0.01f;
+    float learningRateScale  = 1.0f;
+    //scene AABB normalization, x_norm = (x-center)/extent + 0.5
+    Float3 sceneCenter   = {};
+    float  sceneExtent   = 50.0f;
 };
 
-// Push-constant flag bits — keep in sync with Nrc_v8.hlsli.
-//   bits 0..2  : behavior toggles
-//   bits 8..15 : training tile side (0 = use shader fallback)
+//push-constant flag bits, bits 0..2 toggles, bits 8..15 tile side
 namespace flags {
     constexpr uint32_t kEnabled         = 1u << 0;
     constexpr uint32_t kTrain           = 1u << 1;
@@ -39,125 +34,83 @@ namespace flags {
     constexpr uint32_t kTileMask        = 0xFFu;
 }
 
-// ── Network dimensions ──────────────────────────────────────────────
-// Raw feature vector before tcnn's composite encoding. tcnn expands
-// this to 74 dims internally (HashGrid on pos, SphericalHarmonics on
-// ω/n, one-blob on roughness, identity on α/β). Layout — written by
-// raygen, read by Inference:
-//   0..2    position                      (HashGrid)
-//   3..5    scattered direction, unit 3-vec remapped *0.5+0.5 → [0,1]³
-//                                         (SphericalHarmonics deg 4)
-//   6..8    surface normal,      unit 3-vec remapped *0.5+0.5 → [0,1]³
-//                                         (SphericalHarmonics deg 4)
-//   9       roughness, mapped 1 - exp(-r) (OneBlob 4 bins)
-//   10..12  diffuse reflectance  (rgb)    (Identity)
-//   13..15  specular reflectance (rgb)    (Identity)
+//====================================
+//NETWORK DIMENSIONS
+//====================================
+//raw feature vector, tcnn composite expands to 74 dims internally
+//0..2 position (HashGrid)
+//3..5 scattered dir, unit 3-vec *0.5+0.5 (SH deg 4)
+//6..8 normal, unit 3-vec *0.5+0.5 (SH deg 4)
+//9    roughness 1-exp(-r) (OneBlob 4 bins)
+//10..12 diffuse refl (Identity)
+//13..15 specular refl (Identity)
 constexpr uint32_t kRawInputDim  = 16;
-constexpr uint32_t kOutputDim    = 3;    // scattered radiance rgb
+constexpr uint32_t kOutputDim    = 3;
 
-// With the HashGrid encoder carrying most of the representation,
-// Instant-NGP §5.4 / Table 6 shows 2 hidden × 64 is sufficient for NRC
-// (original NRC paper used 5 hidden, which was tuned for the weaker
-// TriangleWave position encoder). Shrinks inference cost ~2.5× with
-// negligible quality loss in our measurements.
+//2 hidden x 64 per Instant-NGP Table 6, HashGrid carries the representation
 constexpr uint32_t kHiddenWidth  = 64;
 constexpr uint32_t kHiddenLayers = 2;
 
-// tcnn requires every inference / training batch to be a multiple of
-// this. Pad up in shader / host as needed.
+//tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
 
-// Training schedule per frame (paper §3.5 uses 4 × 16384 = 65536).
-// We've halved the per-frame target to 32768 since the HashGrid encoder
-// converges fast enough that an extra 32k records per frame is wasted
-// optimization work — speeds up the training pass substantially with no
-// observable quality loss. Still 4 SGD steps per frame to match paper.
+//per-frame training schedule, halved from paper, HashGrid converges fast
 constexpr uint32_t kTrainingBatchSize       = 8192;
 constexpr uint32_t kTrainingBatchesPerFrame = 4;
-constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame; // 32768
+constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame;
 
-// NRC training tile: one training pixel per tile. 8×8 = 64 pixels per
-// tile → ~32k training pixels at 1080p → ~32–100k records depending on
-// suffix length. The renderer adapts this each frame from the previous
-// frame's vertex count (paper §3.5) — keeping the trainer saturated
-// (close to kTrainingRecordsPerFrame) without overshooting and dropping
-// records on the floor. The bounds are conservative: 4 means every 16th
-// pixel is a training pixel (~130k pixels at 1080p), 32 means every
-// 1024th (~2k). The first frame uses kInitialTrainingTileSide before
-// any vertex count is available.
+//training tile side adapts per frame to saturate trainer
 constexpr uint32_t kInitialTrainingTileSide = 8u;
 constexpr uint32_t kMinTrainingTileSide     = 4u;
 constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
-// 1 in kUnbiasedDenom training pixels takes the long, fully Russian-
-// roulette-terminated path that injects ground-truth multi-bounce
-// radiance into the cache (class-2 / TRAIN_UNBIASED). Doubled from the
-// paper's 1/16 to 1/8 because we halved kTrainingRecordsPerFrame and
-// want to keep the absolute number of ground-truth long paths roughly
-// constant — long paths are the only source of unbiased far-bounce
-// signal, so their absolute count matters more than their fraction.
+//1 in N training pixels takes long RR-terminated path for ground truth
 constexpr uint32_t kUnbiasedDenom = 8u;
 
-// Per-path bucket cap. Paths deeper than this get their tail vertices
-// dropped — training still captures the prefix correctly. Paper averages
-// 1–3 vertices / training path, so 8 is comfortable.
+//per-path bucket cap, deeper paths drop tail vertices
 constexpr uint32_t kMaxVerticesPerPath = 8u;
 
-// Maximum number of training paths per frame. Sized with headroom above
-// 1920×1080 with 8×8 tiles (~32k training pixels) so higher resolutions
-// don't clip and the atomic allocator has slack. Buffer cost scales
-// roughly as kMaxTrainingPaths * kMaxVerticesPerPath * 64 B.
+//max training paths per frame, headroom above 1080p 8x8 tiles
 constexpr uint32_t kMaxTrainingPaths   = 65536u;
 
-// Sentinels.
 constexpr uint32_t kInvalidInferenceSlot = 0xFFFFFFFFu;
 constexpr uint32_t kInvalidTrainPath     = 0xFFFFFFFFu;
 
-// Tail kinds — how a training path's terminal vertex ended. Determines
-// the base value for the backward-fill recursion:
-//   target[v] = L_nee[v] + β[v] · target[v+1], target[last+1] = tail.
+//tail kind, sets base for backward recursion, target[v] = L_nee[v] + beta*target[v+1]
 enum TailKind : uint32_t {
-    kTailInvalid = 0u,   // path never terminated correctly (skip)
-    kTailRR      = 1u,   // Russian-roulette killed — tail = 0
-    kTailEmitter = 2u,   // hit emitter — tail = emission
-    kTailMiss    = 3u,   // missed geometry — tail = env radiance
-    kTailCache   = 4u,   // (class-1 only, later) tail = L̂_s[slot]
+    kTailInvalid = 0u,
+    kTailRR      = 1u,
+    kTailEmitter = 2u,
+    kTailMiss    = 3u,
+    kTailCache   = 4u,
 };
 
-// ── Per-record strides (bytes) ──────────────────────────────────────
-// tcnn expects column-major, so sample `i` occupies contiguous bytes
-// [i * stride, (i+1) * stride). Both input and output are fp32 —
-// tcnn's inference() overload we call takes GPUMatrix<float>.
-constexpr uint32_t kInferenceInputStride  = kRawInputDim * sizeof(float);   // 64
-constexpr uint32_t kInferenceOutputStride = kOutputDim   * sizeof(float);   // 12
+//====================================
+//PER-RECORD STRIDES
+//====================================
+//tcnn column-major, fp32
+constexpr uint32_t kInferenceInputStride  = kRawInputDim * sizeof(float);
+constexpr uint32_t kInferenceOutputStride = kOutputDim   * sizeof(float);
 
-// ── PendingGI ───────────────────────────────────────────────────────
-// Per-pixel state written by raygen on cache termination, consumed by
-// the NRC resolve compute shader once inference has filled in L̂_s.
+//====================================
+//PENDING GI
+//====================================
+//raygen writes on cache-term, resolve consumes after inference
 struct PendingGI {
-    uint32_t inferenceSlot;   // kInvalidInferenceSlot = no pending record
-    uint32_t throughputPk;    // RGB9E5, β at terminal vertex excluding L̂_s
-    uint32_t tpostPk;         // RGB9E5, Π(BSDF·cos·T) from x2 to terminal
-    float    pdfProduct;      // full-path sampling pdf so far
+    uint32_t inferenceSlot;
+    uint32_t throughputPk;
+    uint32_t tpostPk;
+    float    pdfProduct;
 };
 static_assert(sizeof(PendingGI) == 16, "PendingGI must match Nrc_v8.hlsli");
 
-// ── TrainingPathMeta ────────────────────────────────────────────────
-// One per training path. Lives in the first kPathMetaTotalBytes of the
-// training buffer so no separate UAV is needed.
-//   numVertices == 0  → path slot unused (ignored by training kernel)
-//   tailKind          → picks the base value for the backward recursion
-//   inferenceSlot     → valid iff tailKind == kTailCache
-//   tailRadiancePk    → packed RGB9E5, meaning depends on tailKind:
-//                         kTailEmitter/kTailMiss → tail radiance
-//                                                  (emission / env)
-//                         kTailCache             → (α+β) at the cache-
-//                                                  term vertex, used by
-//                                                  the fill kernel to
-//                                                  recover radiance from
-//                                                  the MLP's irradiance
-//                                                  prediction
-//                         kTailRR                → unused (tail = 0)
+//====================================
+//TRAINING PATH META
+//====================================
+//one per training path, at head of training buffer
+//tailRadiancePk semantics, emitter/miss hold tail radiance
+//cache holds (alpha+beta) at cache-term vertex for radiance recovery
+//RR unused, tail=0
 struct TrainingPathMeta {
     uint32_t numVertices;
     uint32_t tailKind;
@@ -166,24 +119,22 @@ struct TrainingPathMeta {
 };
 static_assert(sizeof(TrainingPathMeta) == 16, "TrainingPathMeta must match Nrc_v8.hlsli");
 
-// ── TrainingVertex ──────────────────────────────────────────────────
-// Per-vertex record, indexed by [pathId * kMaxVerticesPerPath + vIdx],
-// offset into the training buffer by kPathMetaTotalBytes.
-//   raw           — network input features at this vertex
-//   L_neePk       — ΣNEE estimator contribution local to this vertex
-//                   (already free of upstream throughput / pdf chain)
-//   betaLocalPk   — BSDF·cos·T / pdf at this vertex; transports radiance
-//                   FROM v+1 TO v during backward fill.
+//====================================
+//TRAINING VERTEX
+//====================================
+//indexed by [pathId * kMaxVerticesPerPath + vIdx] after kPathMetaTotalBytes
+//L_neePk, NEE estimator local to this vertex, no upstream chain
+//betaLocalPk, BSDF*cos*T/pdf at this vertex, transports radiance v+1 -> v
 struct TrainingVertex {
-    float    raw[kRawInputDim];   // 64 B
-    uint32_t L_neePk;             //  4 B
-    uint32_t betaLocalPk;         //  4 B
+    float    raw[kRawInputDim];
+    uint32_t L_neePk;
+    uint32_t betaLocalPk;
 };
 static_assert(sizeof(TrainingVertex) == 72, "TrainingVertex must match Nrc_v8.hlsli");
 
-constexpr uint32_t kPathMetaStride    = sizeof(TrainingPathMeta);   // 16
-constexpr uint32_t kTrainVertexStride = sizeof(TrainingVertex);     // 72
-constexpr uint32_t kPathMetaTotalBytes = kMaxTrainingPaths * kPathMetaStride;  // 524288
+constexpr uint32_t kPathMetaStride    = sizeof(TrainingPathMeta);
+constexpr uint32_t kTrainVertexStride = sizeof(TrainingVertex);
+constexpr uint32_t kPathMetaTotalBytes = kMaxTrainingPaths * kPathMetaStride;
 
 inline constexpr uint32_t TrainingMetaOffset(uint32_t pathId) {
     return pathId * kPathMetaStride;
@@ -192,16 +143,20 @@ inline constexpr uint32_t TrainingVertexOffset(uint32_t pathId, uint32_t vIdx) {
     return kPathMetaTotalBytes + (pathId * kMaxVerticesPerPath + vIdx) * kTrainVertexStride;
 }
 
-// ── Counters ────────────────────────────────────────────────────────
+//====================================
+//COUNTERS
+//====================================
 struct Counters {
-    uint32_t inferenceCount;    // next inference slot to allocate
-    uint32_t trainingPathCount; // next training path id to allocate
+    uint32_t inferenceCount;
+    uint32_t trainingPathCount;
     uint32_t pad0;
     uint32_t pad1;
 };
 static_assert(sizeof(Counters) == 16, "Counters must match Nrc_v8.hlsli");
 
-// ── Buffer byte totals ──────────────────────────────────────────────
+//====================================
+//BUFFER BYTE TOTALS
+//====================================
 inline uint64_t InferenceInputBytes (uint32_t maxInferenceRecords) {
     return uint64_t(maxInferenceRecords) * kInferenceInputStride;
 }
@@ -211,7 +166,7 @@ inline uint64_t InferenceOutputBytes(uint32_t maxInferenceRecords) {
 inline uint64_t PendingGIBytes      (uint32_t pixelCount) {
     return uint64_t(pixelCount) * sizeof(PendingGI);
 }
-// Per-path meta section + per-vertex bucket section, contiguous.
+//meta section + per-vertex bucket section, contiguous
 inline uint64_t TrainingBytes       () {
     return uint64_t(kPathMetaTotalBytes) +
            uint64_t(kMaxTrainingPaths) * kMaxVerticesPerPath * kTrainVertexStride;
@@ -220,9 +175,9 @@ inline uint64_t CountersBytes       () {
     return sizeof(Counters);
 }
 
-// Round a batch count up to the tcnn granularity.
+//round batch up to tcnn granularity
 constexpr uint32_t AlignBatch(uint32_t n) {
     return (n + kBatchGranularity - 1u) / kBatchGranularity * kBatchGranularity;
 }
 
-} // namespace nrc
+}

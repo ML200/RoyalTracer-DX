@@ -1,11 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// NRC/NrcNetwork.h — C++ entry points for the NRC network.
-//
-// Implementation lives in NrcNetwork.cu. Callers see no CUDA / tcnn
-// headers; streams and device pointers are passed as void*/float*.
-// Buffer layout contracts live in NrcLayout.h.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//NRC NETWORK ENTRY POINTS
+//====================================
+//callers see only void* and float*, impl in NrcNetwork.cu, contracts in NrcLayout.h
 
 #include "NrcLayout.h"
 
@@ -14,26 +11,22 @@
 
 namespace nrc {
 
-// Legacy smoke test — constructs a toy model and runs one step. Kept
-// for tcnn/CUDA toolchain validation at boot.
+//tcnn toolchain validation at boot
 bool SmokeTest(void* stream);
 
-// ── CUDA helpers (thin wrappers so callers don't need cuda_runtime) ──
-// Asynchronously zero-fill `bytes` at `devPtr` on `stream`.
+//====================================
+//CUDA HELPERS
+//====================================
 void Memzero(void* stream, void* devPtr, size_t bytes);
-
-// Asynchronously fill `bytes` at `devPtr` with `value` byte on `stream`.
 void Memfill(void* stream, void* devPtr, int value, size_t bytes);
 
-// Read one u32 from `devPtr`, stalling `stream` to the host. Returns 0
-// on error. Intended for small per-frame dispatch gates like "how many
-// inference records did raygen produce?".
+//stalls stream to host, returns 0 on error
 uint32_t ReadU32(void* stream, const void* devPtr);
 
-// Full network: 16-input (16 → composite encoding → 74) → 2 hidden
-// layers × 64 ReLU → 3 out. Reflectance factorisation, EMA inference
-// weights, etc. live on the caller side for now; this class only owns
-// the raw training / inference machinery.
+//====================================
+//NETWORK
+//====================================
+//16-input, composite encoding to 74 dims, 2 hidden x 64 ReLU, 3 out
 class Network {
 public:
     Network();
@@ -41,67 +34,35 @@ public:
     Network(const Network&)            = delete;
     Network& operator=(const Network&) = delete;
 
-    // Initialize tcnn with the NRC config. Safe to call once.
     bool Init();
     void Shutdown();
     bool IsReady() const;
 
-    // Run inference on `count` packed rows of kRawInputDim fp32. Output
-    // is `count` rows of kOutputDim fp32. `count` MUST be a multiple of
-    // kBatchGranularity (use AlignBatch() to pad). Inputs beyond the
-    // real record count contain garbage but are cheap.
-    //
-    //   stream       : cudaStream_t (use CudaInterop::Stream())
-    //   inputDevPtr  : device ptr into g_NrcInferenceIn  (same buffer
-    //                  the HLSL side appends to)
-    //   outputDevPtr : device ptr into g_NrcInferenceOut
+    //count must be multiple of kBatchGranularity, caller pads
     void Inference(
         void*        stream,
         const float* inputDevPtr,
         float*       outputDevPtr,
         uint32_t     count);
 
-    // One training step on `count` rows (must be a multiple of
-    // kBatchGranularity). Caller is responsible for shuffling and
-    // selecting the subset. Returns the reported loss (or -1 if the
-    // loss wasn't scalar).
+    //one SGD step, caller shuffles and sizes, returns loss or -1
     float TrainingStep(
         void*        stream,
         const float* inputDevPtr,
         const float* targetDevPtr,
         uint32_t     count);
 
-    // Per-frame end-to-end training pipeline, given the shared D3D/CUDA
-    // training buffer (meta + vertex sections) and the frame's inference
-    // output buffer (unused until class-1 suffix training lands).
-    //
-    //   trainRecordsDevPtr : device ptr to g_NrcTrainRecords backing memory
-    //   inferenceOutDevPtr : device ptr to g_NrcInferenceOut (for class-1)
-    //
-    // Runs: clear output counters → backward-fill kernel (one thread per
-    // path, walks buckets in reverse, emits (features, target) rows into
-    // the internal training buffer) → kTrainingBatchesPerFrame calls to
-    // TrainingStep, sized to the actually-produced vertex count so we
-    // never train on the zero-padded tail of an underfull batch (which
-    // would bias the network toward predicting 0 for the all-zeros
-    // encoded input). Silently no-ops when no paths were produced.
+    //end-to-end per-frame training, clear then backward-fill then kTrainingBatchesPerFrame steps
+    //sized to actual vertex count to avoid training on zero-padded tail
     void TrainFrame(
         void*       stream,
         const void* trainRecordsDevPtr,
         const void* inferenceOutDevPtr);
 
-    // Number of valid training vertices (records) the previous TrainFrame
-    // observed, after capping to kTrainingRecordsPerFrame. Drives the
-    // adaptive-tile feedback loop in the renderer (paper §3.5): scale
-    // tile size by sqrt(target/actual) each frame to keep the trainer
-    // saturated. Returns 0 before the first TrainFrame call.
+    //valid vertex count after last TrainFrame, drives adaptive tile feedback
     uint32_t LastValidVertexCount() const;
 
-    // Block until any in-flight training on the auxiliary stream finishes.
-    // Required before tearing down or reallocating CUDA-shared buffers
-    // (resize), since training kernels reference inferenceOut /
-    // trainRecords / counters and would race or read freed memory if the
-    // renderer recreated those buffers underneath them.
+    //block on auxStream, required before reallocating shared buffers
     void WaitIdle();
 
 private:
@@ -109,4 +70,4 @@ private:
     std::unique_ptr<Impl> m_impl;
 };
 
-} // namespace nrc
+}
