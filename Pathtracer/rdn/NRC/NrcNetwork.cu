@@ -20,13 +20,21 @@ namespace nrc {
 //====================================
 static tcnn::json BuildNetworkConfig() {
     return tcnn::json{
-        //RelativeL2, unbiased gradient under noisy signal (Lehtinen 2018)
+        //RelativeL2 per Müller et al. 2021 §5: (pred - tgt)^2 / (sg(pred)^2 + eps).
+        //Plain L2 gradient scales with target magnitude, so across a shuffled
+        //batch mixing direct-illumination targets (O(1000)) with indirect
+        //targets (O(0.01-1)), the bright samples dominate Adam's updates and
+        //the MLP underfits dark regions. RelativeL2's per-sample normalization
+        //by prediction magnitude makes gradient contributions scale-invariant,
+        //giving dark samples equal pull. Linear target (no sqrt/log) keeps
+        //the optimum unbiased at E[L/r]; safe_target's kTargetMax=1e4 cap
+        //keeps sg(pred)^2 in fp16-safe range (max 6.5e4).
         {"loss", {{"otype", "RelativeL2"}}},
 
-        //Adam, aggressive LR smoothed by EMA
+        //Conservative LR matching the prior stable baseline.
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1e-2f},
+            {"learning_rate", 1e-3f},
             {"beta1",         0.9f},
             {"beta2",         0.99f},
             {"epsilon",       1e-8f},
@@ -49,6 +57,11 @@ static tcnn::json BuildNetworkConfig() {
                     {"type",                   "Hash"},
                     {"n_levels",               16u},
                     {"n_features_per_level",   2u},
+                    //log2=19 -- the bump to 21 was added to give the encoder
+                    //extra capacity for reconciling v=0 vs v>0 distributions
+                    //before per-path decorrelation existed. With one-row-per-path
+                    //the joint-distribution conflict is gone, so 19 (4x less
+                    //memory, proportionally less gradient scatter) suffices.
                     {"log2_hashmap_size",      19u},
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
@@ -76,7 +89,12 @@ static tcnn::json BuildNetworkConfig() {
             })},
         }},
 
-        //fully-fused MLP, 2 hidden x 64 ReLU, linear out
+        //fully-fused MLP, 4 hidden x 64 ReLU, LINEAR output.
+        //Target is L/reflSum directly (no transform). RelativeL2 + linear
+        //gives an unbiased optimum at E[L/r]; the prior sqrt-target was
+        //Jensen-biased low (converged to (E[sqrt(L/r)])^2), and log1p was
+        //worse still. fp16 safety holds because safe_target caps L/r at
+        //kTargetMax=1e4, well under fp16 max 6.5e4.
         {"network", {
             {"otype",             "FullyFusedMLP"},
             {"activation",        "ReLU"},
@@ -101,6 +119,9 @@ __device__ __forceinline__ float3 unpack_rgb9e5(uint32_t p) {
 }
 
 //NaN/Inf -> 0, negatives -> 0, caps magnitude to prevent Adam moment spikes
+//With sqrt target transform, sqrt(kTargetMax) must stay within fp16-safe range
+//for the L2 loss: (pred - sqrt_target)^2 is computed on-device. sqrt(1e4)=100,
+//worst-case diff^2 = 1e4, comfortably under fp16 max (6.5e4).
 constexpr float kTargetMax = 1.0e4f;
 __device__ __forceinline__ float safe_target(float v) {
     if (!isfinite(v)) return 0.0f;
@@ -154,6 +175,31 @@ __global__ void fill_training_batch_kernel(
     const uint32_t lastV = (numVertices <= kMaxVerticesPerPath) ? (numVertices - 1u)
                                                                 : (kMaxVerticesPerPath - 1u);
 
+    //resolve emit depth: single-depth uses kTrainingEmitDepthOnly directly,
+    //decorrelated multi-depth picks one depth from kTrainingDepthMask via
+    //pathId hash so each path emits at most one row -- killing intra-path
+    //target correlation while preserving the multi-depth feature distribution.
+    //sentinel 0xFFFFFFFFu means "no valid depth", path emits nothing.
+    uint32_t chosenDepth = kTrainingEmitDepthOnly;
+    if (kTrainingDecorrelatePaths) {
+        const uint32_t mask  = kTrainingDepthMask;
+        const uint32_t count = static_cast<uint32_t>(__popc(mask));
+        if (count == 0u) {
+            chosenDepth = 0xFFFFFFFFu;
+        } else {
+            uint32_t h = pathId * 0x9E3779B9u;
+            h ^= h >> 16; h *= 0xC2B2AE35u;
+            h ^= h >> 13; h *= 0x27D4EB2Fu;
+            h ^= h >> 16;
+            const uint32_t target = h % count;
+            uint32_t cursor = mask;
+            //clear the `target` lowest set bits, leaving the picked one as the new lowest
+            for (uint32_t i = 0u; i < target; ++i) cursor &= cursor - 1u;
+            //__ffs returns 1-indexed position of lowest set bit, cursor != 0 here
+            chosenDepth = static_cast<uint32_t>(__ffs(static_cast<int>(cursor)) - 1);
+        }
+    }
+
     //seed backward recursion, tailRadPk semantics depend on tailKind
     //emitter/miss, direct radiance, cache, (alpha+beta) at cache-term vertex, RR tail=0
     //using wrong vertex reflectance biases by the ratio, visible as view-dependent instability
@@ -164,9 +210,12 @@ __global__ void fill_training_batch_kernel(
     } else if (tailKind == kTailCache && inferenceSlot != kInvalidInferenceSlot) {
         const float3 reflCT = unpack_rgb9e5(tailRadPk);
         const float* p = inferenceOut + inferenceSlot * kOutputDim;
-        tail_r = safe_target(p[0] * reflCT.x);
-        tail_g = safe_target(p[1] * reflCT.y);
-        tail_b = safe_target(p[2] * reflCT.z);
+        //MLP output is L/reflSum directly. Clamp negatives from the linear
+        //output layer (upstream ReLU is non-negative; only the final linear
+        //layer can emit small negative values).
+        tail_r = safe_target(fmaxf(p[0], 0.0f) * reflCT.x);
+        tail_g = safe_target(fmaxf(p[1], 0.0f) * reflCT.y);
+        tail_b = safe_target(fmaxf(p[2], 0.0f) * reflCT.z);
     }
 
     //backward walk
@@ -184,8 +233,13 @@ __global__ void fill_training_batch_kernel(
         const float ls_g = lnee.y + beta.y * tail_g;
         const float ls_b = lnee.z + beta.z * tail_b;
 
-        //target = L_s/(alpha+beta), 1e-5 floor avoids blowing up on black materials
-        //alpha @ raw[10..12], beta @ raw[13..15]
+        //target = L_s/(alpha+beta), LINEAR (no transform). RelativeL2 + linear
+        //gives an unbiased optimum at E[L/r]; the prior sqrt transform converged
+        //to (E[sqrt(L/r)])^2 which is strictly <= E[L/r] by Jensen, producing a
+        //uniform darkening proportional to per-cell MC variance. Output is
+        //fp16-safe because safe_target caps at kTargetMax=1e4 < fp16 max 6.5e4.
+        //alpha @ raw[10..12], beta @ raw[13..15]. 1e-5 floor avoids div-by-zero
+        //on black materials.
         const float rs_r = fmaxf(raw[10] + raw[13], 1e-5f);
         const float rs_g = fmaxf(raw[11] + raw[14], 1e-5f);
         const float rs_b = fmaxf(raw[12] + raw[15], 1e-5f);
@@ -193,14 +247,32 @@ __global__ void fill_training_batch_kernel(
         const float tgt_g = safe_target(ls_g / rs_g);
         const float tgt_b = safe_target(ls_b / rs_b);
 
-        //contiguous atomic packing, required for TrainFrame's adaptive batch slicing
-        const uint32_t outIdx = atomicAdd(outCounter, 1u);
-        if (outIdx < kTrainingRecordsPerFrame) {
-            float* f = outFeatures + outIdx * kRawInputDim;
-            #pragma unroll
-            for (uint32_t i = 0; i < kRawInputDim; ++i) f[i] = raw[i];
-            float* t = outTargets + outIdx * kOutputDim;
-            t[0] = tgt_r; t[1] = tgt_g; t[2] = tgt_b;
+        //Per-path single-row emission: row at chosenDepth (resolved above)
+        //enters the batch, all other vertices contribute only via backward
+        //fill. Decorrelated multi-depth gives chosenDepth a uniform pick from
+        //kTrainingDepthSet per pathId; otherwise chosenDepth = kTrainingEmitDepthOnly.
+        const bool shouldEmit = kDebugConstantTraining
+            ? true
+            : (static_cast<uint32_t>(v) == chosenDepth);
+        if (shouldEmit) {
+            const uint32_t localCount = atomicAdd(outCounter, 1u);
+            if (localCount < kTrainingRecordsPerFrame) {
+                static_assert((kTrainingRecordsPerFrame & (kTrainingRecordsPerFrame - 1u)) == 0u,
+                              "kTrainingRecordsPerFrame must be a power of two for the bijective scatter");
+                const uint32_t outIdx =
+                    (localCount * 2654435761u + 0x9E3779B1u) & (kTrainingRecordsPerFrame - 1u);
+                float* f = outFeatures + outIdx * kRawInputDim;
+                #pragma unroll
+                for (uint32_t i = 0; i < kRawInputDim; ++i) f[i] = raw[i];
+                float* t = outTargets + outIdx * kOutputDim;
+                if (kDebugConstantTraining) {
+                    t[0] = 1.0f;
+                    t[1] = 0.5f;
+                    t[2] = 0.25f;
+                } else {
+                    t[0] = tgt_r; t[1] = tgt_g; t[2] = tgt_b;
+                }
+            }
         }
 
         //pass actual radiance forward in path order
@@ -335,6 +407,55 @@ bool Network::IsReady() const {
     return m_impl->ready;
 }
 
+bool Network::ReinitWeights() {
+    if (!m_impl->ready) return false;
+    try {
+        //drain any in-flight training/inference on auxStream before rebuild
+        WaitIdle();
+        if (m_impl->counterReadbackPending) {
+            cudaEventSynchronize(m_impl->counterReadbackEvent);
+            m_impl->counterReadbackPending = false;
+        }
+
+        //tcnn::create_from_config reseeds internally, no manual seed plumbing required
+        //keep CUDA buffers/events/stream untouched, only model + EMA get reset
+        m_impl->model = tcnn::create_from_config(kRawInputDim, kOutputDim, BuildNetworkConfig());
+        if (!m_impl->model.network || !m_impl->model.trainer) {
+            m_impl->ready = false;
+            return false;
+        }
+
+        const size_t nParams = m_impl->model.network->n_params();
+        if (nParams != m_impl->nParams) {
+            //config changed params count -- reallocate EMA buffer
+            if (m_impl->emaParams) cudaFree(m_impl->emaParams);
+            if (cudaMalloc(&m_impl->emaParams,
+                           nParams * sizeof(tcnn::network_precision_t)) != cudaSuccess) {
+                m_impl->emaParams = nullptr;
+                m_impl->nParams   = 0;
+                m_impl->ready     = false;
+                return false;
+            }
+            m_impl->nParams = nParams;
+        }
+        cudaMemset(m_impl->emaParams, 0,
+                   m_impl->nParams * sizeof(tcnn::network_precision_t));
+        m_impl->emaStep = 0;
+        m_impl->lastValidVertices = 0;
+
+        m_impl->model.network->set_params(
+            m_impl->model.trainer->params(),
+            m_impl->emaParams,
+            m_impl->model.trainer->param_gradients());
+        m_impl->model.network->set_jit_fusion(true);
+        return true;
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "[NRC] ReinitWeights threw: %s\n", ex.what());
+        m_impl->ready = false;
+        return false;
+    }
+}
+
 void Network::Inference(
     void*        streamPtr,
     const float* inputDevPtr,
@@ -427,20 +548,28 @@ void Network::TrainFrame(
         m_impl->trainTargets,
         m_impl->trainCounter);
 
-    //drain prev frame's readback before issuing new one
+    //non-blocking consume of prev readback, lastValidVertices only feeds adaptive
+    //tile feedback + batch sizing -- both already tolerate multi-frame lag, so a
+    //pending event just means we reuse the previous cached value this frame.
+    //Blocking here (old cudaEventSynchronize) made auxStream spikes turn into
+    //main-thread stalls that showed up as random long frame drops.
     if (m_impl->counterReadbackPending) {
-        cudaEventSynchronize(m_impl->counterReadbackEvent);
-        uint32_t v = *m_impl->hostCounterReadback;
-        if (v > kTrainingRecordsPerFrame) v = kTrainingRecordsPerFrame;
-        m_impl->lastValidVertices = v;
-        m_impl->counterReadbackPending = false;
+        if (cudaEventQuery(m_impl->counterReadbackEvent) == cudaSuccess) {
+            uint32_t v = *m_impl->hostCounterReadback;
+            if (v > kTrainingRecordsPerFrame) v = kTrainingRecordsPerFrame;
+            m_impl->lastValidVertices = v;
+            m_impl->counterReadbackPending = false;
+        }
     }
 
-    //queue this frame's readback, drained next frame
-    cudaMemcpyAsync(m_impl->hostCounterReadback, m_impl->trainCounter,
-                    sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
-    cudaEventRecord(m_impl->counterReadbackEvent, stream);
-    m_impl->counterReadbackPending = true;
+    //only issue a new readback when the previous one has landed -- otherwise the
+    //event would be re-recorded while still referenced and the prior value lost
+    if (!m_impl->counterReadbackPending) {
+        cudaMemcpyAsync(m_impl->hostCounterReadback, m_impl->trainCounter,
+                        sizeof(uint32_t), cudaMemcpyDeviceToHost, stream);
+        cudaEventRecord(m_impl->counterReadbackEvent, stream);
+        m_impl->counterReadbackPending = true;
+    }
 
     //size this frame's batches from prev frame's count, 1-frame lag acceptable
     const uint32_t validVertices = m_impl->lastValidVertices;

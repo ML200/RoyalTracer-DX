@@ -522,6 +522,13 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
 
         ImGui::Checkbox("Train", &n.trainingEnabled);
         ImGui::SetItemTooltip("Off = weights frozen, inference still runs against whatever state was last trained.");
+
+        if (ImGui::Button("Reinitialize weights")) {
+            n.requestReinit = true;
+        }
+        ImGui::SetItemTooltip(
+            "Reseed the MLP and clear the EMA. Use this when the cache has\n"
+            "collapsed to all-zero / all-black and won't recover on its own.");
     }
 
     if (ImGui::CollapsingHeader("Debug view", ImGuiTreeNodeFlags_DefaultOpen)) {

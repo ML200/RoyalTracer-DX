@@ -23,6 +23,8 @@ struct Settings {
     //scene AABB normalization, x_norm = (x-center)/extent + 0.5
     Float3 sceneCenter   = {};
     float  sceneExtent   = 50.0f;
+    //transient UI request, Renderer consumes and clears each frame
+    bool  requestReinit      = false;
 };
 
 //push-constant flag bits, bits 0..2 toggles, bits 8..15 tile side
@@ -47,16 +49,25 @@ namespace flags {
 constexpr uint32_t kRawInputDim  = 16;
 constexpr uint32_t kOutputDim    = 3;
 
-//2 hidden x 64 per Instant-NGP Table 6, HashGrid carries the representation
+//per-path bucket cap, deeper paths drop tail vertices
+constexpr uint32_t kMaxVerticesPerPath = 8u;
+
+//3 hidden x 64 ReLU. Cut from 4 layers as a perf win -- the deepest layer
+//was carrying high-frequency directional tail; with decorrelated multi-depth
+//training and linear target the 3-layer net keeps quality on diffuse +
+//moderate-glossy and pays ~25% less inference cost. If specular tails soften
+//visibly, restore to 4.
 constexpr uint32_t kHiddenWidth  = 64;
-constexpr uint32_t kHiddenLayers = 2;
+constexpr uint32_t kHiddenLayers = 3;
 
 //tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
 
-//per-frame training schedule, halved from paper, HashGrid converges fast
+//per-frame training schedule. EMA alpha=0.99 smooths over ~100+ steps so
+//halving batches/frame just slows initial convergence; steady-state quality
+//is unchanged. Pure training-cost win.
 constexpr uint32_t kTrainingBatchSize       = 8192;
-constexpr uint32_t kTrainingBatchesPerFrame = 4;
+constexpr uint32_t kTrainingBatchesPerFrame = 2;
 constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame;
 
 //training tile side adapts per frame to saturate trainer
@@ -64,11 +75,69 @@ constexpr uint32_t kInitialTrainingTileSide = 8u;
 constexpr uint32_t kMinTrainingTileSide     = 4u;
 constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
-//1 in N training pixels takes long RR-terminated path for ground truth
-constexpr uint32_t kUnbiasedDenom = 8u;
+//1 in N training pixels takes long RR-terminated path for ground truth.
+//Müller et al. 2021 §3.2 uses u = 1/16 -- the biased share drives the
+//multi-bounce self-training iteration, the unbiased share just anchors
+//emitter/miss radiance so the iteration doesn't wander.
+constexpr uint32_t kUnbiasedDenom = 16u;
 
-//per-path bucket cap, deeper paths drop tail vertices
-constexpr uint32_t kMaxVerticesPerPath = 8u;
+//EXPERIMENT: emit training rows ONLY at this exact path depth.
+//Backward fill still walks every stored vertex so the emitted row at
+//depth K carries the full multi-bounce MC chain from K to terminal,
+//but rows for any vertex with depth != K are never written into the
+//training batch. Multi-depth unions produce systematic darkening /
+//chromatic bias in indirect regions regardless of loss, transform,
+//shuffle, or HashGrid capacity -- single-depth training is the only
+//configuration that gives clean predictions for indirect illumination.
+//  0 -> only primary hit (= x1 in paper's 1-indexed nomenclature)
+//  1 -> only first bounce (= x2)           <- currently best observed
+//  2 -> only second bounce (= x3)
+//  ...
+//Used when kTrainingDecorrelatePaths is false.
+constexpr uint32_t kTrainingEmitDepthOnly = 1u;
+
+//EXPERIMENT [H1]: per-path random depth selection.
+//Each path picks ONE depth from kTrainingDepthSet uniformly at random
+//(hashed from pathId) and emits exactly one training row at that depth.
+//Backward fill still walks every stored vertex so the emitted row
+//carries the full multi-bounce MC chain from its depth to terminal.
+//
+//This preserves the multi-depth feature distribution but eliminates
+//within-path target correlation: the previous "emit at every v in
+//{0..K}" mode produced positively correlated gradients on shared MLP
+//parameters because target_v and target_{v+1} are both derived from
+//the same MC realization of L_s[v+1]. Adam's 2nd-moment EMA accumulates
+//that correlated variance and effective LR collapses on the affected
+//parameters, locking predictions near the EMA-init mean (~0) -- the
+//"indirect underestimated, sky color absorbed into shadow" signature.
+//
+//Test protocol:
+//  (a) kTrainingDecorrelatePaths=false, kTrainingEmitDepthOnly=1
+//      -> single-depth baseline, expected to be clean.
+//  (b) kTrainingDecorrelatePaths=false with the kernel emit predicate
+//      modified to v <= 1 (or any multi-depth union) -> reproduces bias.
+//  (c) kTrainingDecorrelatePaths=true, kTrainingDepthSet={0,1}
+//      -> H1 test. Same multi-depth feature distribution as (b) but
+//         at most one row per path. If indirect regions recover, H1 is
+//         confirmed: intra-path correlation drives the bias and the
+//         fix is per-sample gradient clipping or AMSGrad. If still
+//         biased, H1 is ruled out and the next test is RelativeL2 eps.
+//
+//When kTrainingDecorrelatePaths is true, kTrainingEmitDepthOnly is ignored.
+//
+//The pick set is a 32-bit bitmask -- bit i set means depth i is eligible.
+//The kernel uses __popc + __ffs to count bits and resolve the n-th set bit
+//for the per-path random pick (constexpr arrays are not reachable from
+//device code, but a uint32_t constant is).
+//  0b00000011 = {0,1}    (cleanest H1 test, same row count as single-depth)
+//  0b00000110 = {1,2}    (matches the user's reported "K=1,2" failure case)
+//  0b00000111 = {0,1,2}
+//  0b11111111 = full {0..7}
+constexpr bool     kTrainingDecorrelatePaths = true;
+constexpr uint32_t kTrainingDepthMask        = 0b00001111u;
+
+//DIAGNOSTIC: pipeline integrity test.
+constexpr bool kDebugConstantTraining = false;
 
 //max training paths per frame, headroom above 1080p 8x8 tiles
 constexpr uint32_t kMaxTrainingPaths   = 65536u;

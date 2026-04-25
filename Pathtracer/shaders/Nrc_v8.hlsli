@@ -18,7 +18,11 @@ static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;
 static const uint NRC_TRAINING_TILE_SIDE    = 8u;
 static const uint NRC_TRAINING_TILE_MIN     = 4u;
 static const uint NRC_TRAINING_TILE_MAX     = 32u;
-static const uint NRC_UNBIASED_DENOM        = 8u;
+//Müller et al. 2021 §3.2 uses u = 1/16. Raising the biased share speeds up
+//the self-training iteration that carries multi-bounce radiance across frames;
+//too much unbiased mass starves the iteration (each unbiased path lacks the
+//cache-as-tail that would have fed the next frame's chain).
+static const uint NRC_UNBIASED_DENOM        = 16u;
 
 static const uint NRC_MAX_TRAINING_PATHS    = 65536u;
 static const uint NRC_MAX_VERTICES_PER_PATH = 8u;
@@ -205,9 +209,10 @@ inline float3 NrcLoadInferenceOutput(uint slot)
     if (slot == NRC_INVALID_SLOT) return float3(0, 0, 0);
     const uint base = slot * NRC_INFERENCE_OUT_STRIDE;
     const uint3 raw = g_NrcInferenceOut.Load3(base);
-    //max(NaN,0) is impl-defined on GPU, handle NaN explicitly
-    const float3 f = NrcCleanFinite3(asfloat(raw));
-    return max(f, float3(0, 0, 0));
+    //MLP predicts L/reflSum directly (linear output, RelativeL2 loss).
+    //NrcCleanRadiance sanitizes NaN/Inf and clamps negatives from the
+    //final linear layer (upstream ReLU stays non-negative).
+    return NrcCleanRadiance(asfloat(raw));
 }
 
 //====================================

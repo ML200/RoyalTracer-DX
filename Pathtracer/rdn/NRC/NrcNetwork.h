@@ -38,6 +38,10 @@ public:
     void Shutdown();
     bool IsReady() const;
 
+    //reseed weights, zero EMA, keep buffers/stream/events alive
+    //caller must ensure no in-flight NRC ops on the main stream
+    bool ReinitWeights();
+
     //count must be multiple of kBatchGranularity, caller pads
     void Inference(
         void*        stream,

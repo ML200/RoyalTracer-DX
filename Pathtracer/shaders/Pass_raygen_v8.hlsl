@@ -3,7 +3,7 @@
 
 //safety net, RR at depth>2 is the real termination, NRC cache shortens rendering paths
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 32
+#define MAX_BOUNCES 8
 #endif
 
 //====================================
@@ -48,7 +48,13 @@ void Pass_raygen_v8()
 
     NrcClearPendingGI(pixelIdx);
 
-    //render and train-biased are cache-eligible, train-unbiased runs to natural term
+    //Per Müller et al. 2021 §3.2: biased training paths terminate into the
+    //cache and use the cache prediction at the terminal vertex as the tail.
+    //This is how multi-bounce indirect illumination is captured -- each
+    //frame, radiance learned at previously-trained positions propagates one
+    //bounce further back through the next frame's training paths. A small
+    //fraction of unbiased paths (§3.2, u=1/16) injects ground-truth source
+    //values so the iteration doesn't collapse to an undertrained interior.
     const bool  nrcCacheEligible = kNrcEnabled &&
         (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
          nrcPathClass == NRC_CLASS_RENDER);
@@ -144,7 +150,22 @@ void Pass_raygen_v8()
             }
 
             const float3 throughput = UnpackRGB9E5(throughputPk);
-            const float3 envL       = EvalMissState(rayDir, float3(0, 0, 0));
+
+            //GI miss tail: sky scatter + BSDF-MIS'd sun disk. EvalMissState
+            //returns sky only; sun-NEE at the prev vertex already MIS'd sun with
+            //nee_weight = sunPdf/(sunPdf+bsdfPdf). The complementary BSDF-side
+            //weight bsdfPdf/(sunPdf+bsdfPdf) must come from here when the
+            //BSDF-sampled direction lands in the sun cone and misses geometry.
+            //Without this, every training path that BSDF-samples into the sun
+            //(common on glossy / moderately-smooth surfaces where bsdfPdf is
+            //concentrated) silently drops the sun contribution from its tail,
+            //cascading dim backwards through the entire upstream training chain.
+            const float  sunSAPdf   = GetSunPdf(rayDir);
+            const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir)
+                                                        : float3(0, 0, 0);
+            const float  sunMisBsdf = (sunSAPdf > 0.0f)
+                ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
+            const float3 envL       = EvaluateSky(rayDir) + sunRad * sunMisBsdf;
 
             //miss on training path, backward-fill tail
             if (nrcIsTraining) {
@@ -370,8 +391,11 @@ void Pass_raygen_v8()
                 NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
             }
 
+            //current-vertex roughness gate, SH deg-4 directional encoding cannot
+            //represent mirror lobes, caching at glossy surfaces loses reflections
             const bool shouldFire =
                 !nrcPrevSpecular &&
+                (hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD) &&
                 NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
 
             if (shouldFire)

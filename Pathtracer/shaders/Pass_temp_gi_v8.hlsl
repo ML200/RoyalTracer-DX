@@ -232,8 +232,8 @@ void Pass_temp_gi_v8()
                     : EvaluatePBRProperties(rdi_r.matID, rdi_r.uv, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
-                                        : min(effMcap, effMcap * tempMcapScale);
+                const float dynTempMcap   = effMcap;/*(minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
+                                        : min(effMcap, effMcap * tempMcapScale);*/
 
                 const float M_c   = min(effMcap, rdi.M);
                 const float M_n   = min(dynTempMcap,  rdi_r.M);

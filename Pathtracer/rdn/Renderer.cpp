@@ -120,18 +120,21 @@ void Renderer::InitDevice() {
                 nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
             });
 
-            // Main-chain inference. Count comes from raygen's atomic
-            // InterlockedAdd on the inference counter, covering both
-            // class-0 cache-term slots and class-1 training tail seeds
-            // in one batch. Unaffected by debug view — the debug chain
-            // runs its own inference below.
+            // Main-chain inference. Size the batch by inference capacity rather
+            // than the device-side counter. ReadU32 used to do a host
+            // cudaStreamSynchronize every frame, which turned any main-stream
+            // backlog (raygen, interop fence waits, driver preemption) into a
+            // CPU stall on the hot path -- the classic source of random
+            // multi-ms frame drops. Slots past the actual raygen write count
+            // have stale features, but nothing downstream reads their outputs:
+            // resolve only touches slots referenced by PendingGI (all < count),
+            // debug_query overwrites its own slots before its own inference.
+            // Extra compute cost is deterministic (cap - actual) samples, worth
+            // the zero-stall guarantee.
             RegisterCudaOp(L"nrc_inference", [this]{
                 if (!m_nrcReady) return;
                 void* s = m_cudaInterop.Stream();
-                const uint32_t count = nrc::ReadU32(s, m_nrcCounters.cudaPtr);
-                if (count == 0) return;
-                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
-                const uint32_t padded  = nrc::AlignBatch(clamped);
+                const uint32_t padded = nrc::AlignBatch(m_nrcInferenceCapacity);
                 m_nrcNetwork.Inference(
                     s,
                     static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
@@ -1340,6 +1343,20 @@ void Renderer::PopulateCommandList() {
             // Floor at 1.0 so empty / single-point scenes don't divide
             // by zero in the shader normalization.
             m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
+        }
+
+        // Consume editor-requested weight reinit before any NRC work fires
+        // on this frame. Network::ReinitWeights drains auxStream internally
+        // and the follow-up cudaMemset on EMA forces a global device sync,
+        // so the main interop stream's prior-frame work is also flushed by
+        // the time the new weights land. Keep this BEFORE the adaptive-tile
+        // block so the post-reset lastValidVertices=0 is the value the
+        // tile-size feedback reads.
+        if (m_nrcReady && m_nrcSettings.requestReinit) {
+            const bool ok = m_nrcNetwork.ReinitWeights();
+            LOG(L"[NRC] ReinitWeights " << (ok ? L"OK" : L"FAILED"));
+            m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
+            m_nrcSettings.requestReinit = false;
         }
 
         // Adaptive tile side per paper §3.5. With T = target records,
