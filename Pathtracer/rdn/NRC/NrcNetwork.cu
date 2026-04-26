@@ -57,12 +57,12 @@ static tcnn::json BuildNetworkConfig() {
                     {"type",                   "Hash"},
                     {"n_levels",               16u},
                     {"n_features_per_level",   2u},
-                    //log2=19 -- the bump to 21 was added to give the encoder
-                    //extra capacity for reconciling v=0 vs v>0 distributions
-                    //before per-path decorrelation existed. With one-row-per-path
-                    //the joint-distribution conflict is gone, so 19 (4x less
-                    //memory, proportionally less gradient scatter) suffices.
-                    {"log2_hashmap_size",      19u},
+                    //log2=21 -- 4x more buckets than 19. With one-row-per-path
+                    //the gradient-scatter cost of a larger table is contained,
+                    //so the extra capacity buys cleaner spatial detail at
+                    //higher hash-grid levels (~mm regime). Pairs with the
+                    //deeper 5-layer net.
+                    {"log2_hashmap_size",      21u},
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
                     {"interpolation",          "Smoothstep"},
@@ -89,7 +89,7 @@ static tcnn::json BuildNetworkConfig() {
             })},
         }},
 
-        //fully-fused MLP, 4 hidden x 64 ReLU, LINEAR output.
+        //fully-fused MLP, 5 hidden x 64 ReLU, LINEAR output (kHiddenLayers).
         //Target is L/reflSum directly (no transform). RelativeL2 + linear
         //gives an unbiased optimum at E[L/r]; the prior sqrt-target was
         //Jensen-biased low (converged to (E[sqrt(L/r)])^2), and log1p was

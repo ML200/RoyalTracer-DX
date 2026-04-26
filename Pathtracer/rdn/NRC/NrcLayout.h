@@ -52,22 +52,20 @@ constexpr uint32_t kOutputDim    = 3;
 //per-path bucket cap, deeper paths drop tail vertices
 constexpr uint32_t kMaxVerticesPerPath = 8u;
 
-//3 hidden x 64 ReLU. Cut from 4 layers as a perf win -- the deepest layer
-//was carrying high-frequency directional tail; with decorrelated multi-depth
-//training and linear target the 3-layer net keeps quality on diffuse +
-//moderate-glossy and pays ~25% less inference cost. If specular tails soften
-//visibly, restore to 4.
+//5 hidden x 64 ReLU. Deeper net to recover specular/glossy tail detail
+//that the 3-layer config softened; combined with the bumped HashGrid
+//capacity (log2_hashmap_size=21) and the doubled training batches/frame.
 constexpr uint32_t kHiddenWidth  = 64;
-constexpr uint32_t kHiddenLayers = 3;
+constexpr uint32_t kHiddenLayers = 5;
 
 //tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
 
 //per-frame training schedule. EMA alpha=0.99 smooths over ~100+ steps so
-//halving batches/frame just slows initial convergence; steady-state quality
-//is unchanged. Pure training-cost win.
+//batches/frame mostly affects initial convergence; pushed to 4 to drive
+//faster catch-up after camera cuts and reseed events.
 constexpr uint32_t kTrainingBatchSize       = 8192;
-constexpr uint32_t kTrainingBatchesPerFrame = 2;
+constexpr uint32_t kTrainingBatchesPerFrame = 4;
 constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame;
 
 //training tile side adapts per frame to saturate trainer
