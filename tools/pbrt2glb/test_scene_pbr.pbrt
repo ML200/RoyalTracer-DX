@@ -1,0 +1,55 @@
+# A PBRT v4 scene exercising baseColor texture, normal map, roughness
+# texture, and UV transform on the texture mapping.
+
+LookAt 0 1.5 5   0 0 0   0 1 0
+Camera "perspective" "float fov" 35
+Film "rgb" "integer xresolution" 1024 "integer yresolution" 768
+
+WorldBegin
+
+LightSource "distant" "point3 from" [5 5 5] "point3 to" [0 0 0] "rgb L" [3 3 3]
+
+# Color texture with 2x UV scale
+Texture "albedo"  "spectrum" "imagemap"
+    "string filename" "test_textures/checker.png"
+    "float uscale" 2 "float vscale" 2
+
+# Roughness texture (alpha values)
+Texture "rough"   "float" "imagemap"
+    "string filename" "test_textures/rough_a.png"
+
+# A textured coated-diffuse plane (baseColor + roughness + normal map)
+AttributeBegin
+  Translate 0 0 0
+  Rotate -90 1 0 0
+  Material "coateddiffuse"
+      "texture reflectance" "albedo"
+      "texture roughness"   "rough"
+      "string normalmap"    "test_textures/bump_n.png"
+  Shape "trianglemesh"
+      "point3 P"   [-1.5 0 -1.5   1.5 0 -1.5   1.5 0 1.5  -1.5 0 1.5]
+      "normal3 N"  [ 0 1 0  0 1 0  0 1 0  0 1 0 ]
+      "point2 uv"  [ 0 0   1 0   1 1   0 1 ]
+      "integer indices" [0 1 2  0 2 3]
+AttributeEnd
+
+# A gold conductor sphere using a roughness texture
+MakeNamedMaterial "gold_rough"
+    "string type" "conductor"
+    "rgb reflectance" [1.0 0.78 0.34]
+    "texture roughness" "rough"
+
+AttributeBegin
+  NamedMaterial "gold_rough"
+  Translate -1 0.7 0
+  Shape "sphere" "float radius" 0.6
+AttributeEnd
+
+# A plain plastic sphere with a normal map only
+AttributeBegin
+  Material "diffuse"
+      "rgb reflectance" [0.2 0.4 0.7]
+      "string normalmap" "test_textures/bump_n.png"
+  Translate 1 0.7 0
+  Shape "sphere" "float radius" 0.6
+AttributeEnd

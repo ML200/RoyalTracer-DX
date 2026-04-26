@@ -1,0 +1,5 @@
+numpy>=1.24
+pygltflib>=1.16
+plyfile>=1.0
+Pillow>=10.0
+imageio>=2.31
