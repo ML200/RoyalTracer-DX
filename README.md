@@ -18,6 +18,7 @@ Real-time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservo
 - [Future Work](#future-work)
 - [References](#references)
 - [Acknowledgments](#acknowledgments)
+- [Gallery](#gallery)
 
 ## Features
 
@@ -149,3 +150,14 @@ cmake --build build --config Release
 - **NVIDIA libraries**: [DLSS Streamline](https://github.com/NVIDIA-RTX/Streamline), [OMM SDK](https://github.com/NVIDIA-RTX/OMM)
 - **Asset loaders & texturing**: [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), [tinygltf](https://github.com/syoyo/tinygltf), [stb_image](https://github.com/nothings/stb), [DirectXTex](https://github.com/microsoft/DirectXTex)
 - **UI**: [Dear ImGui](https://github.com/ocornut/imgui)
+
+## Gallery
+
+<p float="left">
+  <img src="media/staircase.png" width="49%" />
+  <img src="media/coffee.png" width="49%" />
+</p>
+<p float="left">
+  <img src="media/kitchen.png" width="49%" />
+  <img src="media/spaceship.png" width="49%" />
+</p>
