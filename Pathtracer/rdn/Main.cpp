@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./veach-ajar.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
+            { "./twr.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         };
     }
     void Init(SceneManager& sm, Renderer& r) override {

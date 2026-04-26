@@ -80,6 +80,21 @@ Alpha-tested geometry (foliage, fences, etc.) uses [Opacity Micro-Maps](https://
 ### Denoiser
 NVIDIA DLSS Ray Reconstruction is used for denoising using NVIDIA [Streamline](https://github.com/NVIDIA-RTX/Streamline). On supported GPUs, DLSS frame generation can be used to improve performance.
 
+### Neural Radiance Cache
+
+Following [Müller et al. 2021](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing): a small MLP trained online every frame predicts residual radiance from short path prefixes. Paths terminate at a fixed depth and query the cache for the remainder of the integral. The network runs through [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn) (tcnn) on a separate CUDA stream alongside the DX12 raster, sharing GPU memory via CUDA-D3D12 interop.
+
+**Network**: fully-fused MLP, 3 hidden × 64 neurons, ReLU activations, linear 3-channel output. 16 raw inputs (position, scattered direction, surface normal, roughness, diffuse + specular reflectance) expand to 74 dims through a composite encoding:
+
+- **Position** → HashGrid, 16 levels × 2 features, log₂ hashmap = 19, smoothstep interpolation
+- **Direction & normal** → Spherical Harmonics, degree 4
+- **Roughness** → OneBlob, 4 bins
+- **Reflectance** → Identity passthrough
+
+**Training**: RelativeL2 loss (Müller 2021 §5) on a *linear* target — sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 2 batches × 8192 records per frame. **One row per path** at a randomized depth — multi-row-per-path emission produces intra-path correlated gradients that Adam's 2nd-moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR-terminated paths to anchor emitter/miss radiance; the remainder use cache-recursive multi-bounce targets.
+
+**Engineering**: tcnn lives behind a thin C++/CUDA wall in [Pathtracer/rdn/NRC/](Pathtracer/rdn/NRC/); DXR/HLSL only ever sees the byte-for-byte buffer layout in `NrcLayout.h`, mirrored in `Nrc_v8.hlsli`. An auxiliary CUDA stream + events keep training off the render-critical path, and an adaptive training tile size (4×4 to 32×32 per frame) keeps the trainer saturated independent of resolution.
+
 ## Background
 
 What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real-time capabilities. Since then, the focus has shifted to implementing and evaluating state-of-the-art algorithms for improving unbiased sampling efficiency.
@@ -129,7 +144,7 @@ cmake --build build --config Release
 
 ## Planned Features
 
-- Neural radiance cache to test out new cooperative vector features in lates DX12 Agility preview
+- Port NRC to DX12 cooperative vector intrinsics (latest Agility SDK preview) to remove the CUDA dependency
 - Modular material system and light sampling for reduced register pressure in callable shaders
 - Modular resampling for better performance
 - Volume rendering
@@ -142,6 +157,7 @@ cmake --build build --config Release
 - Lin, D., Wyman, C., Yuksel, C. *Generalized Resampled Importance Sampling: Foundations of ReSTIR.* ACM TOG 2022. [[Project]](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir)
 - Wyman, C. et al. *A Gentle Introduction to ReSTIR.* SIGGRAPH 2023 Course. [[Web]](https://intro-to-restir.cwyman.org/)
 - Lin, D., Kettunen, M., Wyman, C. *ReSTIR PT Enhanced.* 2026. (§3: paired reuse textures; §5: duplication-map correlation reduction.)
+- Müller, T., Rousselle, F., Novák, J., Keller, A. *Real-time Neural Radiance Caching for Path Tracing.* SIGGRAPH 2021. [[Project]](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing)
 - Lanz, M. *Real-Time Path Tracing with ReSTIR.* Bachelor's Thesis, 2025. [[Write-up]](https://ml200.github.io/university/2025/05/28/thesis.html)
 
 ## Acknowledgments
@@ -153,11 +169,10 @@ cmake --build build --config Release
 
 ## Gallery
 
-<p float="left">
-  <img src="media/staircase.png" width="49%" />
-  <img src="media/coffee.png" width="49%" />
-</p>
-<p float="left">
-  <img src="media/kitchen.png" width="49%" />
-  <img src="media/spaceship.png" width="49%" />
-</p>
+![Staircase](media/staircase.png)
+
+![Coffee](media/coffee.png)
+
+![Kitchen](media/kitchen.png)
+
+![Spaceship](media/spaceship.png)
