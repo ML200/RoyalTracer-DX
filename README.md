@@ -91,7 +91,7 @@ Following [Müller et al. 2021](https://research.nvidia.com/publication/2021-06_
 - **Roughness** → OneBlob, 4 bins
 - **Reflectance** → Identity passthrough
 
-**Training**: RelativeL2 loss (Müller 2021 §5) on a *linear* target — sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 2 batches × 8192 records per frame. **One row per path** at a randomized depth — multi-row-per-path emission produces intra-path correlated gradients that Adam's 2nd-moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR-terminated paths to anchor emitter/miss radiance; the remainder use cache-recursive multi-bounce targets.
+**Training**: RelativeL2 loss (Müller 2021 §5) on a *linear* target - sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 2 batches × 8192 records per frame. **One row per path** at a randomized depth - multi-row-per-path emission produces intra-path correlated gradients that Adam's 2nd-moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR-terminated paths to anchor emitter/miss radiance; the remainder use cache-recursive multi-bounce targets.
 
 **Engineering**: tcnn lives behind a thin C++/CUDA wall in [Pathtracer/rdn/NRC/](Pathtracer/rdn/NRC/); DXR/HLSL only ever sees the byte-for-byte buffer layout in `NrcLayout.h`, mirrored in `Nrc_v8.hlsli`. An auxiliary CUDA stream + events keep training off the render-critical path, and an adaptive training tile size (4×4 to 32×32 per frame) keeps the trainer saturated independent of resolution.
 
@@ -109,11 +109,6 @@ What started as a port of the [RoyalTracer university project](https://github.co
 - Visual Studio 2022 build tools
 
 ### Quickstart
-
-```bash
-cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
-```
 
 <details><summary>CLion (2024.3.2+) setup notes</summary>
 
