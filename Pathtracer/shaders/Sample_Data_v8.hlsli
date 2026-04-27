@@ -50,9 +50,15 @@ void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
     buf.Store(pixelBaseAddr_SD(pixelIdx), instID);
 }
 
-void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID, bool isEmitter)
+//bit 31: isEmitter, bit 30: backface, bits 0..29: primID (1B triangles cap)
+//backface lets the NRC debug query pass the correct side bit at the primary
+//hit, matching what the main raygen path passes for cache training/inference
+void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID,
+                  bool isEmitter, bool backface)
 {
-    uint packed = (primID & 0x7FFFFFFFu) | (isEmitter ? 0x80000000u : 0u);
+    uint packed = (primID & 0x3FFFFFFFu)
+                | (isEmitter ? 0x80000000u : 0u)
+                | (backface  ? 0x40000000u : 0u);
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, packed);
 }
 
@@ -94,7 +100,12 @@ bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
 
 uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x7FFFFFFFu;
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x3FFFFFFFu;
+}
+
+bool load_backface(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x40000000u) != 0u;
 }
 
 float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)

@@ -246,7 +246,7 @@ void Pass_raygen_v8()
         {
             const bool isEmitter = any(emission > 0.0f);
             store_instID(g_sample_current, pixelIdx, instID);
-            store_primID(g_sample_current, pixelIdx, primID, isEmitter);
+            store_primID(g_sample_current, pixelIdx, primID, isEmitter, hinfo.backface);
             store_bary  (g_sample_current, pixelIdx, attr.barycentrics);
             store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
             store_uv    (g_sample_current, pixelIdx, hinfo.uv);
@@ -391,11 +391,22 @@ void Pass_raygen_v8()
                 NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
             }
 
-            //current-vertex roughness gate, SH deg-4 directional encoding cannot
-            //represent mirror lobes, caching at glossy surfaces loses reflections
+            //multilobe-aware roughness gate. SH deg-4 cannot represent narrow
+            //spec lobes, but a glossy plastic is mostly diffuse and the cache
+            //handles that fine, only the small spec contribution gets smeared.
+            //Weight roughness by spec dominance so dielectrics with strong
+            //diffuse pass the gate while metals (all spec, no diffuse) skip.
+            const float3 alphaG  = hitLocalKd * (1.0f - hitLocalPm);
+            const float3 betaG   = lerp(float3(0.04f, 0.04f, 0.04f),
+                                        hitLocalKd, hitLocalPm);
+            const float  alphaL  = GetPHat(alphaG);
+            const float  betaL   = GetPHat(betaG);
+            const float  specW   = betaL / (alphaL + betaL + EPSILON);
+            const float  effRough = lerp(1.0f, hitLocalPr, specW);
+
             const bool shouldFire =
                 !nrcPrevSpecular &&
-                (hitLocalPr >= SMOOTH_SPECULAR_THRESHOLD) &&
+                (effRough >= NRC_CACHE_ROUGHNESS_MIN) &&
                 NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
 
             if (shouldFire)
@@ -406,6 +417,7 @@ void Pass_raygen_v8()
                         pixelIdx, nrcInferenceCapacity,
                         hitPos, -rayDir, hinfo.hitNormal,
                         hitLocalPr, hitLocalKd, hitLocalPm,
+                        hinfo.backface,
                         throughput, tpost, pdf_product);
                 if (nrcSlot != NRC_INVALID_SLOT)
                 {
@@ -618,11 +630,11 @@ void Pass_raygen_v8()
         //emit training vertex before bad-sample break, beta=0 terminates fill
         if (nrcIsTraining && nrcTrainVIdx < NRC_MAX_VERTICES_PER_PATH)
         {
-            float features[16];
+            float features[17];
             const float3 alpha = hitLocalKd * (1.0f - hitLocalPm);
             const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), hitLocalKd, hitLocalPm);
             NrcBuildFeatures(hitPos, -rayDir, hinfo.hitNormal,
-                             hitLocalPr, alpha, betaC, features);
+                             hitLocalPr, alpha, betaC, hinfo.backface, features);
 
             NrcStoreTrainingVertex(
                 nrcPathId, nrcTrainVIdx, features,

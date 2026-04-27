@@ -39,14 +39,16 @@ namespace flags {
 //====================================
 //NETWORK DIMENSIONS
 //====================================
-//raw feature vector, tcnn composite expands to 74 dims internally
+//raw feature vector, tcnn composite expands to 75 dims internally
 //0..2 position (HashGrid)
 //3..5 scattered dir, unit 3-vec *0.5+0.5 (SH deg 4)
 //6..8 normal, unit 3-vec *0.5+0.5 (SH deg 4)
 //9    roughness 1-exp(-r) (OneBlob 4 bins)
 //10..12 diffuse refl (Identity)
 //13..15 specular refl (Identity)
-constexpr uint32_t kRawInputDim  = 16;
+//16     side bit, +1 front / -1 back (Identity), folded into the
+//       same Identity slab as 10..15 so the composite stays 5 entries
+constexpr uint32_t kRawInputDim  = 17;
 constexpr uint32_t kOutputDim    = 3;
 
 //per-path bucket cap, deeper paths drop tail vertices
@@ -197,7 +199,7 @@ struct TrainingVertex {
     uint32_t L_neePk;
     uint32_t betaLocalPk;
 };
-static_assert(sizeof(TrainingVertex) == 72, "TrainingVertex must match Nrc_v8.hlsli");
+static_assert(sizeof(TrainingVertex) == 76, "TrainingVertex must match Nrc_v8.hlsli");
 
 constexpr uint32_t kPathMetaStride    = sizeof(TrainingPathMeta);
 constexpr uint32_t kTrainVertexStride = sizeof(TrainingVertex);

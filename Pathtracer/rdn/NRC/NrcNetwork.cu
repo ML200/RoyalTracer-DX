@@ -41,10 +41,14 @@ static tcnn::json BuildNetworkConfig() {
             {"l2_reg",        1e-6f},
         }},
 
-        //composite encoding, 16 raw -> 74 encoded
+        //composite encoding, 17 raw -> 75 encoded
         //3 pos HashGrid 16 levels x 2 features = 32
         //3 dir SH deg 4 = 16, 3 normal SH deg 4 = 16
-        //1 rough OneBlob 4 bins = 4, 6 alpha/beta Identity = 6
+        //1 rough OneBlob 4 bins = 4, 7 alpha/beta+sidebit Identity = 7
+        //sidebit = +1 front / -1 back is folded into the trailing Identity
+        //slab so the orient flip surfaces as an explicit linear feature the
+        //first hidden layer can latch onto immediately, instead of being
+        //buried in the SH-encoded normal where the MLP has to learn it.
         //HashGrid per_level_scale 1.38 bounds N_max to ~cm regime, Smoothstep C1 for clean gradients
         //SH replaces octahedral+OneBlob, analytic smooth rotation-equivariant
         //HashGrid requires positions in [0,1]^3, renderer normalizes via nrc_scene_scale_inv
@@ -83,7 +87,7 @@ static tcnn::json BuildNetworkConfig() {
                     {"n_bins",           4u},
                 },
                 tcnn::json{
-                    {"n_dims_to_encode", 6u},
+                    {"n_dims_to_encode", 7u},
                     {"otype",            "Identity"},
                 },
             })},
@@ -222,8 +226,12 @@ __global__ void fill_training_batch_kernel(
     for (int32_t v = int32_t(lastV); v >= 0; --v) {
         const uint8_t* vb = vertBase + uint32_t(v) * kTrainVertexStride;
         const float*   raw = reinterpret_cast<const float*>(vb);
-        const uint32_t L_neePk     = *reinterpret_cast<const uint32_t*>(vb + 64);
-        const uint32_t betaLocalPk = *reinterpret_cast<const uint32_t*>(vb + 68);
+        //offsets shift with kRawInputDim: raw is kRawInputDim*4 bytes,
+        //then L_neePk (4) then betaLocalPk (4)
+        constexpr uint32_t kLNeeOffset  = kRawInputDim * sizeof(float);
+        constexpr uint32_t kBetaOffset  = kLNeeOffset + sizeof(uint32_t);
+        const uint32_t L_neePk     = *reinterpret_cast<const uint32_t*>(vb + kLNeeOffset);
+        const uint32_t betaLocalPk = *reinterpret_cast<const uint32_t*>(vb + kBetaOffset);
 
         float3 lnee = unpack_rgb9e5(L_neePk);
         float3 beta = unpack_rgb9e5(betaLocalPk);

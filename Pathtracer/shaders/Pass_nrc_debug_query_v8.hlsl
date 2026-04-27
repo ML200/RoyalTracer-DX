@@ -43,8 +43,12 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const float3 alpha = localKd * (1.0f - localPm);
     const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), localKd, localPm);
 
-    float features[16];
-    NrcBuildFeatures(x1, viewDir, n1_s, localPr, alpha, betaC, features);
+    //load the primary hit's backface flag so the debug query passes the
+    //same side bit the main raygen passes for cache training/inference
+    const bool backface = load_backface(g_sample_current, pixelIdx);
+
+    float features[17];
+    NrcBuildFeatures(x1, viewDir, n1_s, localPr, alpha, betaC, backface, features);
 
     //deterministic per-pixel slot, safe to reuse since main inference already consumed
     const uint base = pixelIdx * NRC_INFERENCE_IN_STRIDE;

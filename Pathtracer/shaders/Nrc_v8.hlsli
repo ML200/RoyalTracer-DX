@@ -9,7 +9,9 @@
 //====================================
 //CONSTANTS
 //====================================
-static const uint NRC_RAW_INPUT_DIM         = 16u;
+//bumped to 17 to add an explicit side bit (+1 front / -1 back) at index 16
+//for thin-sheet front/back disambiguation, fed through Identity encoding
+static const uint NRC_RAW_INPUT_DIM         = 17u;
 static const uint NRC_OUTPUT_DIM            = 3u;
 static const uint NRC_INFERENCE_IN_STRIDE   = NRC_RAW_INPUT_DIM * 4u;
 static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;
@@ -47,11 +49,11 @@ static const uint NRC_TPM_OFF_TAILRAD  = 12u;
 //meta table byte size before per-vertex records start
 static const uint NRC_PATH_META_TOTAL  = NRC_MAX_TRAINING_PATHS * NRC_TPM_STRIDE;
 
-//TrainingVertex, 64B features + 4B L_neePk + 4B betaLocalPk
-static const uint NRC_TV_STRIDE        = 72u;
+//TrainingVertex, 68B features (17 floats) + 4B L_neePk + 4B betaLocalPk
+static const uint NRC_TV_STRIDE        = 76u;
 static const uint NRC_TV_OFF_RAW       = 0u;
-static const uint NRC_TV_OFF_LNEE      = 64u;
-static const uint NRC_TV_OFF_BETA      = 68u;
+static const uint NRC_TV_OFF_LNEE      = 68u;
+static const uint NRC_TV_OFF_BETA      = 72u;
 
 //PendingGI offsets in bytes
 static const uint NRC_PG_STRIDE             = 16u;
@@ -143,7 +145,8 @@ inline void NrcBuildFeatures(
     float3 x, float3 o, float3 n,
     float  r,
     float3 alpha, float3 beta,
-    out float features[16])
+    bool   backface,
+    out float features[17])
 {
     const float3 xN   = NrcNormalizePosition(x);
     const float3 shO  = NrcEncodeDir(o);
@@ -165,6 +168,9 @@ inline void NrcBuildFeatures(
     features[13] = clamp(NrcCleanFinite(beta.x),  0.0f, 1e3f);
     features[14] = clamp(NrcCleanFinite(beta.y),  0.0f, 1e3f);
     features[15] = clamp(NrcCleanFinite(beta.z),  0.0f, 1e3f);
+    //+1 front / -1 back, centered around 0 so the first hidden layer's
+    //weighted sum has a clean zero crossing on indeterminate inputs
+    features[16] = backface ? -1.0f : 1.0f;
 }
 
 //====================================
@@ -190,7 +196,7 @@ inline bool NrcShouldCacheTerminate(int hitIdx, float a0, float a, bool cacheEli
 //====================================
 //INFERENCE INPUT OUTPUT
 //====================================
-inline uint NrcAppendInference(uint capacity, float features[16])
+inline uint NrcAppendInference(uint capacity, float features[17])
 {
     uint slot;
     g_NrcCounters.InterlockedAdd(NRC_C_OFF_INFERENCE_COUNT, 1u, slot);
@@ -268,6 +274,7 @@ inline uint NrcWriteTerminationRecord(
     float  roughness,
     float3 kd,
     float  metallic,
+    bool   backface,
     float3 throughput,
     float3 tpost,
     float  pdfProduct)
@@ -276,8 +283,9 @@ inline uint NrcWriteTerminationRecord(
     const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, metallic);
     const float3 reflSum = alpha + betaC;
 
-    float features[16];
-    NrcBuildFeatures(hitPos, viewDir, hitNormal, roughness, alpha, betaC, features);
+    float features[17];
+    NrcBuildFeatures(hitPos, viewDir, hitNormal, roughness, alpha, betaC,
+                     backface, features);
 
     const uint slot = NrcAppendInference(inferenceCapacity, features);
     if (slot == NRC_INVALID_SLOT) return NRC_INVALID_SLOT;
@@ -322,7 +330,7 @@ inline void NrcStorePathMeta(
 inline void NrcStoreTrainingVertex(
     uint pathId,
     uint vIdx,
-    float features[16],
+    float features[17],
     uint L_neePk,
     uint betaLocalPk)
 {

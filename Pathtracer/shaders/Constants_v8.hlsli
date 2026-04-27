@@ -8,7 +8,11 @@
 #define INV_PI 0.3183098861
 #define LUT_SIZE 16
 #define MIN_NORMAL_INT 0.33f
+//BSDF delta-lobe gate, kept low so VNDF sampling stays unbiased
 #define SMOOTH_SPECULAR_THRESHOLD 0.06f
+//NRC cache eligibility gate, well above SH deg-4's representable lobe width
+//so the cache only fires on surfaces it can actually model
+#define NRC_CACHE_ROUGHNESS_MIN 0.25f
 #define kInvalidPixel -1u
 
 
