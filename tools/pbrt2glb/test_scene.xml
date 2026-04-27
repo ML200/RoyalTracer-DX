@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tiny Mitsuba 3 smoke-test scene mirroring test_scene.pbrt.
+
+  - perspective sensor looking at the origin from (0, 2, 6)
+  - constant emitter (skipped on export) + a directional emitter
+  - a red diffuse cube on the left
+  - a gold conductor sphere on the right
+  - an emissive area-light plane above
+  - a tiny instanced box duplicated twice
+-->
+<scene version="3.0.0">
+
+  <integrator type="path"/>
+
+  <sensor type="perspective">
+    <float name="fov" value="35"/>
+    <string name="fov_axis" value="smaller"/>
+    <transform name="to_world">
+      <lookat origin="0, 2, 6" target="0, 0, 0" up="0, 1, 0"/>
+    </transform>
+    <film type="hdrfilm">
+      <integer name="width" value="1024"/>
+      <integer name="height" value="768"/>
+    </film>
+  </sensor>
+
+  <emitter type="constant">
+    <rgb name="radiance" value="0.4, 0.45, 0.5"/>
+  </emitter>
+
+  <emitter type="directional">
+    <vector name="direction" value="-1, -1, -1"/>
+    <rgb name="irradiance" value="3, 3, 2.8"/>
+  </emitter>
+
+  <bsdf type="conductor" id="gold">
+    <rgb name="specular_reflectance" value="1.0, 0.78, 0.34"/>
+    <float name="alpha" value="0.04"/>
+  </bsdf>
+
+  <shape type="cube" id="red_cube">
+    <transform name="to_world">
+      <scale value="0.5"/>
+      <translate x="-1.5" y="0" z="0"/>
+    </transform>
+    <bsdf type="diffuse">
+      <rgb name="reflectance" value="0.7, 0.15, 0.1"/>
+    </bsdf>
+  </shape>
+
+  <shape type="sphere">
+    <float name="radius" value="0.7"/>
+    <transform name="to_world">
+      <translate x="1.5" y="0" z="0"/>
+    </transform>
+    <ref id="gold"/>
+  </shape>
+
+  <shape type="rectangle">
+    <transform name="to_world">
+      <rotate x="1" angle="-90"/>
+      <translate x="0" y="2.5" z="0"/>
+    </transform>
+    <bsdf type="diffuse">
+      <rgb name="reflectance" value="0.9, 0.9, 0.9"/>
+    </bsdf>
+    <emitter type="area">
+      <rgb name="radiance" value="10, 10, 9"/>
+    </emitter>
+  </shape>
+
+  <shape type="shapegroup" id="tinybox">
+    <shape type="cube">
+      <transform name="to_world">
+        <scale value="0.2"/>
+      </transform>
+      <bsdf type="diffuse">
+        <rgb name="reflectance" value="0.2, 0.4, 0.7"/>
+      </bsdf>
+    </shape>
+  </shape>
+
+  <shape type="instance">
+    <ref id="tinybox"/>
+    <transform name="to_world">
+      <translate x="-0.5" y="-0.7" z="1"/>
+    </transform>
+  </shape>
+
+  <shape type="instance">
+    <ref id="tinybox"/>
+    <transform name="to_world">
+      <translate x="0.5" y="-0.7" z="1"/>
+    </transform>
+  </shape>
+
+</scene>

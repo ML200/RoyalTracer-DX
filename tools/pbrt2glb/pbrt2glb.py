@@ -1,7 +1,8 @@
-"""Scene converter - PBRT v4 (.pbrt or .zip) -> glTF (.glb) and/or OBJ.
+"""Scene converter - PBRT v4 / Mitsuba 3 (.pbrt, .xml, .zip) -> glTF (.glb)
+and/or OBJ.
 
 Usage:
-    pbrt2glb [path/to/scene.{pbrt,zip}] [--format glb|obj|both]
+    pbrt2glb [path/to/scene.{pbrt,xml,zip}] [--format glb|obj|both]
 
 If no path is given, prompts on stdin and presents a format-selection
 menu after the input is chosen. Outputs go into a `<stem>_export/`
@@ -23,10 +24,14 @@ _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+import mitsuba_scene
 import pbrt_scene
 from gltf_export import export_to_glb
 from obj_export import export_to_obj
 from pbrt_scene import Scene
+
+
+_SCENE_EXTS = (".pbrt", ".xml")
 
 
 # -------------------------------------------------------------------------
@@ -37,24 +42,38 @@ def _is_pbrt(path: Path) -> bool:
     return path.suffix.lower() == ".pbrt"
 
 
+def _is_mitsuba(path: Path) -> bool:
+    return path.suffix.lower() == ".xml"
+
+
+def _build_scene(path: Path) -> Scene:
+    """Dispatch to the parser appropriate for the file extension."""
+    if _is_pbrt(path):
+        return pbrt_scene.build_scene(path)
+    if _is_mitsuba(path):
+        return mitsuba_scene.build_scene(path)
+    raise ValueError(f"unrecognised input format (expected .pbrt or .xml): {path}")
+
+
 # -------------------------------------------------------------------------
 # Zip handling
 # -------------------------------------------------------------------------
 
 def _extract_zip(zip_path: Path) -> Tuple[Path, Path]:
-    """Extract `zip_path` and locate a .pbrt scene file. Returns
-    (extract_dir, scene_path). Caller is responsible for cleaning up
-    the extract_dir.
+    """Extract `zip_path` and locate a scene file (.pbrt or .xml).
+    Returns (extract_dir, scene_path). Caller is responsible for
+    cleaning up the extract_dir.
     """
     tmp = Path(tempfile.mkdtemp(prefix=f"pbrt2glb_{zip_path.stem}_"))
     print(f"  extracting zip to: {tmp}")
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(tmp)
 
-    candidates: List[Path] = sorted(tmp.rglob("*.pbrt"))
+    candidates: List[Path] = sorted(
+        p for ext in _SCENE_EXTS for p in tmp.rglob(f"*{ext}"))
     if not candidates:
         raise FileNotFoundError(
-            f"no .pbrt scene found inside {zip_path.name}")
+            f"no .pbrt or .xml scene found inside {zip_path.name}")
 
     if len(candidates) == 1:
         return tmp, candidates[0]
@@ -138,16 +157,17 @@ def _convert_one(input_path: Path, formats: Optional[List[str]]):
         anchor_stem = input_path.stem
 
     try:
-        if not _is_pbrt(actual_path):
+        if not (_is_pbrt(actual_path) or _is_mitsuba(actual_path)):
             raise ValueError(
-                f"unrecognised input format (expected .pbrt): {actual_path}")
+                f"unrecognised input format (expected .pbrt or .xml): {actual_path}")
 
         out_dir = anchor_dir / f"{anchor_stem}_export"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         t0 = time.perf_counter()
-        print(f"  parsing: {actual_path}")
-        scene = pbrt_scene.build_scene(actual_path)
+        fmt_name = "PBRT" if _is_pbrt(actual_path) else "Mitsuba"
+        print(f"  parsing ({fmt_name}): {actual_path}")
+        scene = _build_scene(actual_path)
         t_parse = time.perf_counter() - t0
         print(f"  parsed in {t_parse:.2f}s "
               f"(shapes={len(scene.shapes)}, "
@@ -186,8 +206,8 @@ def _convert_one(input_path: Path, formats: Optional[List[str]]):
 
 def _prompt_for_path() -> str:
     print()
-    print("=== pbrt2glb ===  PBRT v4 -> glTF / OBJ converter")
-    print("  Inputs : .pbrt or .zip (containing one .pbrt)")
+    print("=== pbrt2glb ===  PBRT v4 / Mitsuba 3 -> glTF / OBJ converter")
+    print("  Inputs : .pbrt, .xml, or .zip (containing a .pbrt or .xml)")
     print("  Outputs: .glb (binary glTF) and/or .obj + .mtl (Wavefront PBR)")
     print()
     print("Drop the input path below (with or without quotes).")
@@ -211,10 +231,10 @@ def _prompt_for_path() -> str:
 def main():
     ap = argparse.ArgumentParser(
         prog="pbrt2glb",
-        description="Convert PBRT v4 scenes to glTF (.glb) "
+        description="Convert PBRT v4 or Mitsuba 3 scenes to glTF (.glb) "
                     "and/or Wavefront OBJ.")
     ap.add_argument("input", nargs="?",
-                    help=".pbrt or .zip (containing a .pbrt)")
+                    help=".pbrt, .xml, or .zip (containing one of those)")
     ap.add_argument("--format", "-f",
                     choices=("glb", "obj", "both"),
                     help="output format (skip the menu prompt)")

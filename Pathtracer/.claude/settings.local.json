@@ -20,7 +20,19 @@
       "PowerShell($vc = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\"; $cudaRoot = \"C:\\\\Program Files\\\\NVIDIA GPU Computing Toolkit\\\\CUDA\\\\v12.9\"; cmd.exe /c \"set CUDA_PATH=$cudaRoot&& set CUDA_PATH_V12_9=$cudaRoot&& `\"$vc`\" >nul && cmake --build C:\\\\Users\\\\m\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\cmake-build-release-visual-studio --config Release --target Pathtracer 2>&1\" | Select-Object -Last 10)",
       "PowerShell($vc = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\"; $cudaRoot = \"C:\\\\Program Files\\\\NVIDIA GPU Computing Toolkit\\\\CUDA\\\\v12.9\"; cmd.exe /c \"set CUDA_PATH=$cudaRoot&& set CUDA_PATH_V12_9=$cudaRoot&& `\"$vc`\" >nul && cmake --build C:\\\\Users\\\\m\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\cmake-build-release-visual-studio --config Release --target Pathtracer 2>&1\" | Select-Object -Last 12)",
       "PowerShell($vc = \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\VC\\\\Auxiliary\\\\Build\\\\vcvars64.bat\"; $cudaRoot = \"C:\\\\Program Files\\\\NVIDIA GPU Computing Toolkit\\\\CUDA\\\\v12.9\"; cmd.exe /c \"set CUDA_PATH=$cudaRoot&& set CUDA_PATH_V12_9=$cudaRoot&& `\"$vc`\" >nul && cmake --build C:\\\\Users\\\\m\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\Pathtracer\\\\cmake-build-release-visual-studio --config Release --target Pathtracer 2>&1\" | Select-Object -Last 5)",
-      "Bash(grep -E \"\\\\.\\(cpp|h\\)$\")"
+      "Bash(grep -E \"\\\\.\\(cpp|h\\)$\")",
+      "Bash(py -3 -c \"import sys; sys.path.insert\\(0, '.'\\); import mitsuba_scene; s = mitsuba_scene.build_scene\\('test_scene.xml'\\); print\\('shapes:', len\\(s.shapes\\)\\); print\\('objects:', list\\(s.objects\\)\\); print\\('materials:', list\\(s.materials_by_name\\)\\); print\\('lights:', [\\(l.kind\\) for l in s.lights]\\); print\\('camera:', s.camera.kind if s.camera else None, 'film:', s.film_width, 'x', s.film_height\\); print\\('film fov param:', s.camera.params.get\\('fov'\\).values if s.camera else None\\)\")",
+      "Bash(py -3 -m pip install -q -r \"C:\\\\Users\\\\m\\\\Documents\\\\GitHub\\\\RoyalTracer-DX\\\\tools\\\\pbrt2glb\\\\requirements.txt\")",
+      "Bash(py -3 -c \"import sys; sys.path.insert\\(0, '.'\\); import mitsuba_scene; s = mitsuba_scene.build_scene\\('test_scene.xml'\\); print\\('shapes:', len\\(s.shapes\\)\\); print\\('objects:', list\\(s.objects\\)\\); print\\('materials:', list\\(s.materials_by_name\\)\\); print\\('lights:', [l.kind for l in s.lights]\\); print\\('camera:', s.camera.kind if s.camera else None, 'film:', s.film_width, 'x', s.film_height\\); print\\('camera fov param:', s.camera.params.get\\('fov'\\).values if s.camera else None\\)\")",
+      "Bash(py -3 pbrt2glb.py test_scene.xml --format glb --once)",
+      "Bash(py -3 -c \"from pygltflib import GLTF2; g = GLTF2\\(\\).load\\('test_scene_export/test_scene.glb'\\); print\\('nodes:', len\\(g.nodes\\)\\); print\\('meshes:', len\\(g.meshes\\)\\); print\\('materials:', [m.name for m in g.materials]\\); print\\('cameras:', len\\(g.cameras\\)\\); print\\('lights via ext:', g.extensions.get\\('KHR_lights_punctual', {}\\).get\\('lights'\\) if g.extensions else None\\); root = g.scenes[0].nodes; print\\('scene roots:', root\\)\")",
+      "Bash(py -3 pbrt2glb.py test_scene.xml --format obj --once)",
+      "Bash(py -3 -c ' *)",
+      "Bash(py -3 pbrt2glb.py test_scene.xml --format both --once)",
+      "Bash(py -3 pbrt2glb.py test_scene.pbrt --format glb --once)",
+      "Bash(py -3 pbrt2glb.py _obj_smoketest.xml --format both --once)",
+      "Bash(rm -rf _obj_smoketest.obj _obj_smoketest.xml _obj_smoketest_export test_scene_export)",
+      "Bash(py -3 pbrt2glb.py test_scene_pbr.pbrt --format glb --once)"
     ]
   }
 }

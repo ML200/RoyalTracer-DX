@@ -30,6 +30,7 @@ from pbrt_parser import Param
 from pbrt_scene import Material, Scene, ShapeEntry
 from gltf_export import (
     _first_str,
+    _mesh_from_objmesh,
     _mesh_from_plymesh,
     _mesh_from_sphere,
     _mesh_from_trianglemesh,
@@ -127,6 +128,8 @@ class OBJExporter:
             return _mesh_from_trianglemesh(shape.shape_params)
         if st == "plymesh":
             return _mesh_from_plymesh(shape.shape_params, self.scene.base_dir)
+        if st == "objmesh":
+            return _mesh_from_objmesh(shape.shape_params, self.scene.base_dir)
         if st == "sphere":
             return _mesh_from_sphere(shape.shape_params)
         return None
@@ -276,6 +279,16 @@ class OBJExporter:
                 ior = _opt_float(params, "eta") or _opt_float(params, "ior")
                 if ior is not None:
                     self.mtl.append(f"Ni {ior:.4f}")
+
+            elif kind in ("principled", "principledthin"):
+                # Mitsuba `principled` roughness is already perceptual,
+                # so we pass it through (sqrt_alpha=False).
+                self._mtl_color("Kd", "map_Kd", params, "reflectance",
+                                default=(0.5, 0.5, 0.5))
+                self._mtl_float("Pm", "map_Pm", params, "metallic",
+                                default=0.0, sqrt_alpha=False)
+                self._mtl_float("Pr", "map_Pr", params, "roughness",
+                                default=0.5, sqrt_alpha=False)
 
             else:  # subsurface, measured, interface, unknown
                 self._mtl_color("Kd", "map_Kd", params, "reflectance",

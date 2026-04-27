@@ -176,6 +176,109 @@ def _mesh_from_plymesh(params: Dict[str, Param], base_dir: Path):
     return positions, idx, normals, uvs
 
 
+def _mesh_from_objmesh(params: Dict[str, Param], base_dir: Path):
+    """Load a Wavefront OBJ file referenced by `filename` into the
+    parallel-array form the rest of the exporter expects.
+
+    OBJ allows separate streams of v/vt/vn that are recombined per face
+    vertex; we deduplicate (vi, ti, ni) tuples into a single combined
+    index so positions/normals/uvs all share the same vertex index space.
+    """
+    fname = _first_str(params.get("filename"))
+    if fname is None:
+        return None
+    path = (base_dir / fname).resolve()
+    if not path.exists():
+        print(f"  warning: OBJ file not found: {path}")
+        return None
+
+    raw_v: List[Tuple[float, float, float]] = []
+    raw_vt: List[Tuple[float, float]] = []
+    raw_vn: List[Tuple[float, float, float]] = []
+    combined: Dict[Tuple[int, int, int], int] = {}
+    out_pos: List[Tuple[float, float, float]] = []
+    out_uv: List[Tuple[float, float]] = []
+    out_n: List[Tuple[float, float, float]] = []
+    out_tris: List[Tuple[int, int, int]] = []
+    saw_uv = False
+    saw_n = False
+
+    def get_combined(vi: int, ti: int, ni: int) -> int:
+        key = (vi, ti, ni)
+        idx = combined.get(key)
+        if idx is not None:
+            return idx
+        idx = len(out_pos)
+        combined[key] = idx
+        out_pos.append(raw_v[vi] if 0 <= vi < len(raw_v) else (0.0, 0.0, 0.0))
+        out_uv.append(raw_vt[ti] if 0 <= ti < len(raw_vt) else (0.0, 0.0))
+        out_n.append(raw_vn[ni] if 0 <= ni < len(raw_vn) else (0.0, 0.0, 0.0))
+        return idx
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                tag = parts[0]
+                if tag == "v" and len(parts) >= 4:
+                    raw_v.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                elif tag == "vt" and len(parts) >= 2:
+                    u = float(parts[1])
+                    v = float(parts[2]) if len(parts) >= 3 else 0.0
+                    raw_vt.append((u, v))
+                    saw_uv = True
+                elif tag == "vn" and len(parts) >= 4:
+                    raw_vn.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                    saw_n = True
+                elif tag == "f" and len(parts) >= 4:
+                    face_idx = []
+                    for vstr in parts[1:]:
+                        sp = vstr.split("/")
+                        try:
+                            vi = int(sp[0]) - 1 if sp[0] else -1
+                        except ValueError:
+                            vi = -1
+                        ti = -1
+                        ni = -1
+                        if len(sp) > 1 and sp[1]:
+                            try:
+                                ti = int(sp[1]) - 1
+                            except ValueError:
+                                pass
+                        if len(sp) > 2 and sp[2]:
+                            try:
+                                ni = int(sp[2]) - 1
+                            except ValueError:
+                                pass
+                        # OBJ allows negative indices for "relative to end"
+                        if vi < 0 and vi != -1:
+                            vi = len(raw_v) + vi + 1
+                        if ti < 0 and ti != -1:
+                            ti = len(raw_vt) + ti + 1
+                        if ni < 0 and ni != -1:
+                            ni = len(raw_vn) + ni + 1
+                        face_idx.append(get_combined(vi, ti, ni))
+                    # Fan-triangulate
+                    for i in range(1, len(face_idx) - 1):
+                        out_tris.append((face_idx[0], face_idx[i], face_idx[i + 1]))
+                # ignore o/g/s/usemtl/mtllib
+    except OSError as e:
+        print(f"  warning: could not read OBJ {path}: {e}")
+        return None
+
+    if not out_pos or not out_tris:
+        return None
+
+    positions = np.array(out_pos, dtype=np.float32)
+    indices = np.array(out_tris, dtype=np.uint32)
+    normals = np.array(out_n, dtype=np.float32) if saw_n else None
+    uvs = np.array(out_uv, dtype=np.float32) if saw_uv else None
+    return positions, indices, normals, uvs
+
+
 def _mesh_from_sphere(params: Dict[str, Param]):
     """Tessellate a unit sphere centered at origin (radius from 'radius')."""
     radius = float(params["radius"].values[0]) if "radius" in params else 1.0
@@ -525,6 +628,8 @@ class GLTFExporter:
             return _mesh_from_trianglemesh(shape.shape_params)
         if st == "plymesh":
             return _mesh_from_plymesh(shape.shape_params, self.base_dir)
+        if st == "objmesh":
+            return _mesh_from_objmesh(shape.shape_params, self.base_dir)
         if st == "sphere":
             return _mesh_from_sphere(shape.shape_params)
         # bilinearmesh, curve, disk, cylinder etc. unsupported for now
@@ -609,6 +714,28 @@ class GLTFExporter:
                     if sub is not None:
                         return self._convert_material(sub, area_light)
             self._apply_color(mr, params, "reflectance", default=(0.5, 0.5, 0.5))
+        elif kind in ("principled", "principledthin"):
+            # Mitsuba's principled BSDF lines up with glTF's Disney-style
+            # metallic-roughness model. Roughness is already perceptual
+            # (no sqrt), and `metallic` maps to metallicFactor directly.
+            self._apply_color(mr, params, "reflectance", default=(0.5, 0.5, 0.5))
+            metallic_const = 0.0
+            mp = params.get("metallic")
+            if mp is not None and mp.values and not isinstance(mp.values[0], str):
+                metallic_const = float(mp.values[0])
+            mr.metallicFactor = max(0.0, min(1.0, metallic_const))
+            rough_p = params.get("roughness")
+            wrote_rough_tex = False
+            if rough_p is not None and rough_p.values:
+                first = rough_p.values[0]
+                if isinstance(first, str):
+                    metallic_b = int(round(255 * mr.metallicFactor))
+                    wrote_rough_tex = self._apply_roughness_texture(
+                        mr, params, metallic_b=metallic_b, sqrt_alpha=False)
+                else:
+                    mr.roughnessFactor = max(0.0, min(1.0, float(first)))
+            if not wrote_rough_tex and rough_p is None:
+                mr.roughnessFactor = 0.5
         elif kind == "subsurface":
             self._apply_color(mr, params, "reflectance", default=(0.7, 0.6, 0.5))
             mr.metallicFactor = 0.0
