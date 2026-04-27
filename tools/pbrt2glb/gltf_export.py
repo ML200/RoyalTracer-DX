@@ -574,7 +574,8 @@ class GLTFExporter:
             return None
         positions, indices, normals, uvs = mesh_data
 
-        material_idx = self._convert_material(shape.material, shape.area_light)
+        material_idx = self._convert_material(
+            shape.material, shape.area_light, shape.shape_params)
         mesh_idx = self._emit_mesh(
             positions, indices, normals, uvs,
             material_idx=material_idx,
@@ -599,7 +600,8 @@ class GLTFExporter:
                 if mesh_data is None:
                     continue
                 positions, indices, normals, uvs = mesh_data
-                material_idx = self._convert_material(sub.material, sub.area_light)
+                material_idx = self._convert_material(
+                    sub.material, sub.area_light, sub.shape_params)
                 mesh_idx = self._emit_mesh(
                     positions, indices, normals, uvs,
                     material_idx=material_idx,
@@ -652,7 +654,8 @@ class GLTFExporter:
         return self._default_material_idx
 
     def _convert_material(self, pmat: Optional[PMaterial],
-                          area_light: Optional[Tuple[str, Dict[str, Param]]]
+                          area_light: Optional[Tuple[str, Dict[str, Param]]],
+                          shape_params: Optional[Dict[str, Param]] = None
                           ) -> int:
         if pmat is None and area_light is None:
             return self._ensure_default_material()
@@ -777,6 +780,14 @@ class GLTFExporter:
         # Normal map (any material kind)
         self._apply_normal_map(mat, params)
 
+        # Alpha cutout / opacity. Sources, in priority order:
+        #   shape_params["alpha"]  (PBRT v4 shape-level)
+        #   pmat.params["_opacity"] (Mitsuba mask BSDF wrapper)
+        # A texture source becomes glTF MASK with cutoff 0.5; a scalar
+        # < 1 becomes BLEND with baseColorFactor[3] = scalar (or MASK
+        # cutoff 0.5 when ~0).
+        self._apply_alpha(mr, mat, params, shape_params)
+
         self.g.materials.append(mat)
         return len(self.g.materials) - 1
 
@@ -838,6 +849,168 @@ class GLTFExporter:
         nti = self._wrap_texture_info(tex_idx, tex_name_for_xform,
                                       cls=NormalMaterialTexture)
         mat.normalTexture = nti
+
+    def _apply_alpha(self, mr: PbrMetallicRoughness, mat: Material,
+                     mat_params: Dict[str, Param],
+                     shape_params: Optional[Dict[str, Param]]):
+        """Set glTF alphaMode/alphaCutoff and bake alpha into the
+        baseColor RGBA when an alpha source is present."""
+        alpha = self._resolve_alpha_source(mat_params, shape_params)
+        if alpha is None:
+            return
+
+        kind, val = alpha
+
+        if kind == "float":
+            a = max(0.0, min(1.0, float(val)))
+            if a >= 0.999:
+                return
+            r, g, b, _ = mr.baseColorFactor
+            if a <= 0.001:
+                # Effectively invisible: write a clean MASK at cutoff 0.5
+                # so the renderer culls the surface entirely.
+                mr.baseColorFactor = [r, g, b, 0.0]
+                mat.alphaMode = "MASK"
+                mat.alphaCutoff = 0.5
+                return
+            mr.baseColorFactor = [r, g, b, a]
+            mat.alphaMode = "BLEND"
+            return
+
+        # Texture source -> bake into baseColor RGBA, MASK at 0.5.
+        alpha_tex_name = val
+        alpha_path = self._resolve_texture_to_path(alpha_tex_name)
+        if alpha_path is None or not alpha_path.exists():
+            print(f"  warning: alpha texture not found: {alpha_tex_name}")
+            return
+
+        # Find the existing baseColor source so we can preserve its RGB
+        # in the packed texture.
+        base_tex_name: Optional[str] = None
+        ref = mat_params.get("reflectance") if mat_params else None
+        if ref is not None and ref.values and isinstance(ref.values[0], str):
+            base_tex_name = ref.values[0]
+        base_path = (self._resolve_texture_to_path(base_tex_name)
+                     if base_tex_name else None)
+        base_rgb = (float(mr.baseColorFactor[0]), float(mr.baseColorFactor[1]),
+                    float(mr.baseColorFactor[2]))
+
+        img_idx = self._pack_albedo_alpha_image(base_path, base_rgb, alpha_path)
+        if img_idx is None:
+            return
+
+        sampler_idx = self._ensure_default_sampler()
+        tex_key = ("albedo_alpha",
+                   str(base_path) if base_path else None,
+                   base_rgb, str(alpha_path))
+        tex_idx = self._tex_index_cache.get(tex_key)
+        if tex_idx is None:
+            tex = Texture(source=img_idx, sampler=sampler_idx,
+                          name=f"{alpha_path.stem}_albedo_alpha")
+            self.g.textures.append(tex)
+            tex_idx = len(self.g.textures) - 1
+            self._tex_index_cache[tex_key] = tex_idx
+
+        # Preserve any UV transform from the base or alpha texture.
+        xform_name = base_tex_name or alpha_tex_name
+        mr.baseColorTexture = self._wrap_texture_info(tex_idx, xform_name)
+        mr.baseColorFactor = [1.0, 1.0, 1.0, 1.0]
+        mat.alphaMode = "MASK"
+        mat.alphaCutoff = 0.5
+
+    def _resolve_alpha_source(self, mat_params: Optional[Dict[str, Param]],
+                              shape_params: Optional[Dict[str, Param]]
+                              ) -> Optional[Tuple[str, object]]:
+        """Return the alpha/opacity source as ('texture', tex_name) or
+        ('float', value). PBRT's shape-level ``alpha`` wins over a Mitsuba
+        mask wrapper's ``_opacity`` carried on the material."""
+        for src, key in ((shape_params, "alpha"), (mat_params, "_opacity")):
+            if not src:
+                continue
+            p = src.get(key)
+            if p is None or not p.values:
+                continue
+            v = p.values[0]
+            if isinstance(v, str):
+                return ("texture", v)
+            try:
+                return ("float", float(v))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _resolve_texture_to_path(self, tex_name: Optional[str]) -> Optional[Path]:
+        """Resolve a named PBRT/Mitsuba texture down to its source image
+        on disk. Returns None if the texture isn't an imagemap or its
+        ``filename`` is missing."""
+        if not tex_name:
+            return None
+        tdef = self.scene.textures.get(tex_name)
+        if tdef is None or (tdef.tclass or "").lower() != "imagemap":
+            return None
+        fname = _first_str(tdef.params.get("filename"))
+        if not fname:
+            return None
+        return (self.base_dir / fname).resolve()
+
+    def _pack_albedo_alpha_image(self, base_path: Optional[Path],
+                                 base_rgb: Tuple[float, float, float],
+                                 alpha_path: Path) -> Optional[int]:
+        """Build an RGBA PNG with RGB from ``base_path`` (or solid
+        ``base_rgb`` when no base texture exists) and A from
+        ``alpha_path``. Cached by source paths and base color."""
+        key = ("albedo_alpha", str(base_path) if base_path else None,
+               tuple(base_rgb), str(alpha_path))
+        if key in self._tex_image_cache:
+            return self._tex_image_cache[key]
+
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(alpha_path) as a_im:
+                a_im.load()
+                # If the alpha source is RGBA, prefer its alpha channel;
+                # otherwise treat the image's luminance as the mask.
+                if a_im.mode == "RGBA":
+                    alpha_arr = np.asarray(a_im.split()[-1], dtype=np.uint8)
+                else:
+                    alpha_arr = np.asarray(a_im.convert("L"), dtype=np.uint8)
+            h, w = alpha_arr.shape
+
+            if base_path is not None and base_path.exists():
+                with PILImage.open(base_path) as b_im:
+                    b_im.load()
+                    b_rgb = b_im.convert("RGB")
+                    if b_rgb.size != (w, h):
+                        b_rgb = b_rgb.resize((w, h), PILImage.LANCZOS)
+                    rgb_arr = np.asarray(b_rgb, dtype=np.uint8)
+            else:
+                r = int(round(255 * max(0.0, min(1.0, base_rgb[0]))))
+                g = int(round(255 * max(0.0, min(1.0, base_rgb[1]))))
+                b = int(round(255 * max(0.0, min(1.0, base_rgb[2]))))
+                rgb_arr = np.empty((h, w, 3), dtype=np.uint8)
+                rgb_arr[:, :, 0] = r
+                rgb_arr[:, :, 1] = g
+                rgb_arr[:, :, 2] = b
+
+            rgba = np.empty((h, w, 4), dtype=np.uint8)
+            rgba[..., :3] = rgb_arr
+            rgba[..., 3] = alpha_arr
+            out = PILImage.fromarray(rgba, mode="RGBA")
+            buf = io.BytesIO()
+            out.save(buf, format="PNG")
+            data = buf.getvalue()
+        except Exception as e:
+            print(f"  warning: could not pack albedo+alpha "
+                  f"({alpha_path.name}): {e}")
+            return None
+
+        bv_idx = self._add_buffer_view(data)
+        image = Image(mimeType="image/png", bufferView=bv_idx,
+                      name=alpha_path.stem + "_albedo_alpha")
+        self.g.images.append(image)
+        idx = len(self.g.images) - 1
+        self._tex_image_cache[key] = idx
+        return idx
 
     def _apply_roughness_texture(self, mr: PbrMetallicRoughness,
                                  params: Dict[str, Param],

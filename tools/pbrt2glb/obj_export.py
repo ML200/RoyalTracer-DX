@@ -163,7 +163,8 @@ class OBJExporter:
             if norm_world is not None:
                 norm_world = -norm_world
 
-        mat_name = self._emit_material(shape.material, shape.area_light)
+        mat_name = self._emit_material(
+            shape.material, shape.area_light, shape.shape_params)
 
         self._shape_counter += 1
         obj_name = f"{mat_name}_{self._shape_counter}"
@@ -223,12 +224,18 @@ class OBJExporter:
         self._used_mat_names.add(new)
         return new
 
-    def _emit_material(self, mat: Optional[Material], area_light) -> str:
-        # Cache key spans both the material identity and the area-light tuple,
-        # since the same Material object is reused across many shapes that may
-        # disagree on emission state.
+    def _emit_material(self, mat: Optional[Material], area_light,
+                       shape_params: Optional[Dict[str, Param]] = None) -> str:
+        # Cache key spans the material identity, area-light tuple, and the
+        # shape-level alpha source -- two shapes sharing a Material but
+        # carrying different alpha cutout textures must emit distinct MTL
+        # entries.
         cache_key = id(mat) if mat is not None else 0
-        cache_key = hash((cache_key, repr(area_light) if area_light else None))
+        alpha_repr = self._alpha_repr(
+            shape_params, mat.params if mat is not None else None)
+        cache_key = hash((cache_key,
+                          repr(area_light) if area_light else None,
+                          alpha_repr))
         if cache_key in self._mat_names:
             return self._mat_names[cache_key]
 
@@ -299,6 +306,12 @@ class OBJExporter:
             # Normal map (file path or texture ref)
             self._maybe_emit_normal_map(params)
 
+            # Alpha cutout / opacity (PBRT shape-level `alpha` or Mitsuba
+            # mask wrapper's `_opacity`). The renderer's MTL loader reads
+            # `d`/`map_d` for the channel and a custom `alpha_cutoff` key
+            # for the threshold (ObjLoader.h:857).
+            self._maybe_emit_alpha(params, shape_params)
+
         # Emissive color (from area light)
         if area_light is not None:
             _, lp = area_light
@@ -360,6 +373,46 @@ class OBJExporter:
         if sqrt_alpha:
             v = math.sqrt(max(0.0, v))
         self.mtl.append(f"{factor_key} {v:.4f}")
+
+    @staticmethod
+    def _alpha_repr(shape_params: Optional[Dict[str, Param]],
+                    mat_params: Optional[Dict[str, Param]]):
+        """Stable cache-key fragment for the alpha source on a shape."""
+        for src, key in ((shape_params, "alpha"), (mat_params, "_opacity")):
+            if not src:
+                continue
+            p = src.get(key)
+            if p is None or not p.values:
+                continue
+            return (key, p.type, tuple(p.values))
+        return None
+
+    def _maybe_emit_alpha(self, mat_params: Dict[str, Param],
+                          shape_params: Optional[Dict[str, Param]]):
+        """Write `d`, `map_d`, and the renderer's `alpha_cutoff` MTL key
+        when an alpha source is present. PBRT shape-level `alpha` wins
+        over Mitsuba mask `_opacity`."""
+        for src, key in ((shape_params, "alpha"), (mat_params, "_opacity")):
+            if not src:
+                continue
+            p = src.get(key)
+            if p is None or not p.values:
+                continue
+            v = p.values[0]
+            if isinstance(v, str):
+                rel = self._resolve_named_texture(v)
+                if rel is not None:
+                    self.mtl.append(f"map_d {rel}")
+                    self.mtl.append("alpha_cutoff 0.5")
+                return
+            try:
+                a = float(v)
+            except (TypeError, ValueError):
+                return
+            a = max(0.0, min(1.0, a))
+            if a < 0.999:
+                self.mtl.append(f"d {a:.4f}")
+            return
 
     def _maybe_emit_normal_map(self, params: Dict[str, Param]):
         nm = params.get("normalmap")

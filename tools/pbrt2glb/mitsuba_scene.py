@@ -17,7 +17,8 @@ Mappings used:
                                                    style PBR material)
                     twosided                    -> inner BSDF + ``_twosided``
                     bumpmap/normalmap           -> inner BSDF + ``normalmap``
-                    mask                        -> inner BSDF
+                    mask                        -> inner BSDF + ``_opacity``
+                                                   (drives glTF MASK alpha mode)
                     blendbsdf/blend             -> first sub-BSDF
     Shape           ply                         -> "plymesh" (lazy)
                     obj                         -> "objmesh" (lazy)
@@ -473,7 +474,12 @@ class MitsubaSceneBuilder:
         if btype in ("mask",):
             inner = self._first_child_bsdf(elem)
             if inner is None:
-                return Material(kind="diffuse", params={})
+                inner = Material(kind="diffuse", params={})
+            op = self._extract_opacity(elem)
+            if op is not None:
+                ptype, val = op
+                inner.params["_opacity"] = Param(
+                    type=ptype, name="_opacity", values=[val])
             return inner
 
         if btype in ("blendbsdf", "blend"):
@@ -530,6 +536,41 @@ class MitsubaSceneBuilder:
                 rid = child.attrib.get("id")
                 if rid and rid in self._material_ids:
                     return self._material_ids[rid]
+        return None
+
+    def _extract_opacity(self, elem: ET.Element
+                         ) -> Optional[Tuple[str, Any]]:
+        """For ``<bsdf type="mask">``: pull the ``opacity`` child as
+        ('texture', tex_name) or ('float', value). RGB/spectrum opacities
+        collapse to luminance. Returns None when no opacity is given."""
+        for child in elem:
+            ctag = _strip_ns(child.tag).lower()
+            if child.attrib.get("name") != "opacity":
+                continue
+            if ctag == "texture":
+                tdef = self._build_texture(child)
+                if tdef is not None:
+                    self._register_texture(child.attrib.get("id"), tdef)
+                    return ("texture", tdef.name)
+            elif ctag == "ref":
+                rid = child.attrib.get("id")
+                if rid and rid in self._texture_ids:
+                    return ("texture", rid)
+            elif ctag == "float":
+                try:
+                    return ("float", float(_resolve_default(
+                        child.attrib.get("value", "1"), self._defaults)))
+                except ValueError:
+                    pass
+            elif ctag in ("rgb", "spectrum"):
+                nums = _split_floats(_resolve_default(
+                    child.attrib.get("value", "1"), self._defaults))
+                if not nums:
+                    continue
+                if len(nums) == 1:
+                    return ("float", float(nums[0]))
+                return ("float", 0.2126 * nums[0] + 0.7152 * nums[1]
+                        + 0.0722 * nums[2])
         return None
 
     def _first_texture_value(self, elem: ET.Element
