@@ -114,6 +114,53 @@ inline float LT_BranchProb(float IL, float IR)
 }
 
 //====================================
+//Q-SMOOTHED PER-NODE DESCENT PROBABILITY
+//====================================
+//gain=0 makes the helpers no-ops, so the descent collapses to the original importance pick
+//q_i = s + (1-s)*a_i, normalized: balanced children -> near-uniform, dominated children -> stay biased
+//removes cluster-boundary banding without splitting/reservoir register cost
+static const float LT_SPLIT_GAIN = 1.0f;
+static const float LT_SPLIT_MAX  = 0.5f;
+
+//s rises with min/max child importance ratio, capped to keep dominated paths concentrated
+inline float LT_SmoothS(float w[4], uint n)
+{
+    if (LT_SPLIT_GAIN <= 0.0f) return 0.0f;
+    float lo = 1e30f;
+    float hi = 0.0f;
+    [unroll] for (uint i=0;i<4;i++) {
+        if (i >= n) break;
+        if (w[i] > 0.0f) {
+            lo = min(lo, w[i]);
+            hi = max(hi, w[i]);
+        }
+    }
+    if (hi <= 0.0f || lo >= 1e29f) return 0.0f;
+    float r = saturate(lo / hi);
+    return clamp(r * LT_SPLIT_GAIN, 0.0f, LT_SPLIT_MAX);
+}
+
+//in-place: replaces importance weights with un-normalized q values
+//LT_PickAndRescale normalizes by sum(w) so passing q yields p = q_i / sum(q), the smoothed descent prob
+inline void LT_QSmoothInPlace(inout float w[4], uint n)
+{
+    if (LT_SPLIT_GAIN <= 0.0f) return;
+    float s = LT_SmoothS(w, n);
+    if (s <= 0.0f) return;
+
+    float sumW = 0.0f;
+    [unroll] for (uint i=0;i<4;i++) if (i<n) sumW += max(w[i], 0.0f);
+    if (sumW <= 0.0f) return;
+
+    [unroll] for (uint i=0;i<4;i++) {
+        if (i < n && w[i] > 0.0f) {
+            float a_i = w[i] / sumW;
+            w[i] = s + (1.0f - s) * a_i;
+        }
+    }
+}
+
+//====================================
 //STOCHASTIC DESCENT
 //====================================
 uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS)
@@ -138,6 +185,9 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
                 w[i] = 0.0;
             }
         }
+
+        //smooth near-balanced clusters to remove visible cut-boundary banding
+        LT_QSmoothInPlace(w, N.childCount);
 
         float p, xi_next;
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
@@ -180,6 +230,9 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
                 w[i] = 0.0;
             }
         }
+
+        //smooth near-balanced clusters to remove visible cut-boundary banding
+        LT_QSmoothInPlace(w, N.childCount);
 
         float p, xi_next;
         uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
@@ -298,13 +351,17 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         }
 
         if (childHit < 0) {
-            //uniform fallback
+            //uniform fallback for malformed itemFirst/itemCount, no q correction
             pdfTLAS *= 1.0 / float(N.childCount);
             tnode = N.firstChild;
             continue;
         }
 
-        float p = (sum > 0.0) ? (w[childHit] / sum) : (1.0 / float(N.childCount));
+        //mirror sampler: replace w with q in-place, then p = w[hit] / sum(w) is the smoothed prob
+        LT_QSmoothInPlace(w, N.childCount);
+        float sumQ = 0.0f;
+        [unroll] for (uint i=0;i<4;i++) if (i<N.childCount) sumQ += max(w[i], 0.0f);
+        float p = (sumQ > 0.0f && w[childHit] > 0.0f) ? (w[childHit] / sumQ) : 0.0f;
         pdfTLAS *= p;
         tnode = N.firstChild + (uint)childHit;
     }
@@ -362,7 +419,10 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
             continue;
         }
 
-        float p = (sum > 0.0) ? (w[childHit] / sum) : (1.0 / float(N.childCount));
+        LT_QSmoothInPlace(w, N.childCount);
+        float sumQ = 0.0f;
+        [unroll] for (uint i=0;i<4;i++) if (i<N.childCount) sumQ += max(w[i], 0.0f);
+        float p = (sumQ > 0.0f && w[childHit] > 0.0f) ? (w[childHit] / sumQ) : 0.0f;
         pdfBLAS *= p;
         bnode = N.firstChild + (uint)childHit;
     }
