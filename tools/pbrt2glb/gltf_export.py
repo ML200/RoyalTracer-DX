@@ -133,24 +133,31 @@ def _mesh_from_plymesh(params: Dict[str, Param], base_dir: Path):
 
     ply = PlyData.read(str(path))
     verts = ply["vertex"].data
-    names = verts.dtype.names
+    # Case-insensitive lookup: lowered name -> original property name.
+    name_map = {n.lower(): n for n in verts.dtype.names}
 
-    positions = np.stack(
-        [verts["x"], verts["y"], verts["z"]], axis=1).astype(np.float32)
+    def _stack(*candidates):
+        """Return float32 columns from the first candidate tuple all present
+        in the vertex element (case-insensitive); else None."""
+        for cand in candidates:
+            if all(c in name_map for c in cand):
+                cols = [verts[name_map[c]] for c in cand]
+                return np.stack(cols, axis=1).astype(np.float32)
+        return None
 
-    normals = None
-    if all(n in names for n in ("nx", "ny", "nz")):
-        normals = np.stack(
-            [verts["nx"], verts["ny"], verts["nz"]], axis=1).astype(np.float32)
+    positions = _stack(("x", "y", "z"))
 
-    uvs = None
-    if "u" in names and "v" in names:
-        uvs = np.stack([verts["u"], verts["v"]], axis=1).astype(np.float32)
-    elif "s" in names and "t" in names:
-        uvs = np.stack([verts["s"], verts["t"]], axis=1).astype(np.float32)
-    elif "texture_u" in names and "texture_v" in names:
-        uvs = np.stack(
-            [verts["texture_u"], verts["texture_v"]], axis=1).astype(np.float32)
+    normals = _stack(
+        ("nx", "ny", "nz"),
+        ("normal_x", "normal_y", "normal_z"),
+    )
+
+    uvs = _stack(
+        ("u", "v"),
+        ("s", "t"),
+        ("texture_u", "texture_v"),
+        ("texture_s", "texture_t"),
+    )
 
     if "face" in [el.name for el in ply.elements]:
         face_data = ply["face"].data
@@ -194,12 +201,96 @@ def _mesh_from_sphere(params: Dict[str, Param]):
         for j in range(slices):
             a = i * (slices + 1) + j
             b = a + slices + 1
-            indices.append((a, b, a + 1))
-            indices.append((a + 1, b, b + 1))
+            # At the top pole (i==0) the (a, b, a+1) triangle collapses
+            # because vertices a and a+1 share the pole position. Likewise
+            # (a+1, b, b+1) collapses at the bottom pole (i==stacks-1).
+            if i != 0:
+                indices.append((a, b, a + 1))
+            if i != stacks - 1:
+                indices.append((a + 1, b, b + 1))
     return (np.array(positions, dtype=np.float32),
             np.array(indices, dtype=np.uint32),
             np.array(normals, dtype=np.float32),
             np.array(uvs, dtype=np.float32))
+
+
+# -------------------------------------------------------------------------
+# Tangent generation (glTF 2.0 TANGENT VEC4, .w = handedness)
+# -------------------------------------------------------------------------
+
+def _arbitrary_tangent(normals: np.ndarray) -> np.ndarray:
+    """Pick a unit tangent perpendicular to each row in `normals`.
+
+    Used for vertices where neighboring triangles couldn't contribute a
+    well-defined tangent (degenerate UVs, isolated verts), so the VEC4
+    we emit is still valid.
+    """
+    abs_n = np.abs(normals)
+    smallest = np.argmin(abs_n, axis=1)
+    axis = np.zeros_like(normals)
+    axis[np.arange(len(normals)), smallest] = 1.0
+    t = axis - normals * np.einsum("ij,ij->i", axis, normals)[:, None]
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    return t
+
+
+def _generate_tangents(positions: np.ndarray, indices: np.ndarray,
+                       normals: np.ndarray, uvs: np.ndarray) -> np.ndarray:
+    """Per-vertex glTF tangents (VEC4) with handedness in .w.
+
+    Lengyel-style: accumulate per-triangle tangent/bitangent at each
+    vertex, Gram-Schmidt against the vertex normal, then derive the
+    handedness sign from the accumulated bitangent. This is what every
+    glTF 2.0 viewer expects when TANGENT is supplied; renderers that
+    would otherwise fall back to MikkTSpace will use these directly.
+    """
+    p0 = positions[indices[:, 0]]
+    p1 = positions[indices[:, 1]]
+    p2 = positions[indices[:, 2]]
+    uv0 = uvs[indices[:, 0]]
+    uv1 = uvs[indices[:, 1]]
+    uv2 = uvs[indices[:, 2]]
+
+    e1 = p1 - p0
+    e2 = p2 - p0
+    duv1 = uv1 - uv0
+    duv2 = uv2 - uv0
+    det = duv1[:, 0] * duv2[:, 1] - duv1[:, 1] * duv2[:, 0]
+    safe = np.abs(det) > 1e-8
+    inv_det = np.where(safe, 1.0 / np.where(safe, det, 1.0), 0.0)
+
+    tri_t = (e1 * duv2[:, 1:2] - e2 * duv1[:, 1:2]) * inv_det[:, None]
+    tri_b = (e2 * duv1[:, 0:1] - e1 * duv2[:, 0:1]) * inv_det[:, None]
+
+    n_vert = len(positions)
+    t_sum = np.zeros((n_vert, 3), dtype=np.float64)
+    b_sum = np.zeros((n_vert, 3), dtype=np.float64)
+    tri_t64 = tri_t.astype(np.float64)
+    tri_b64 = tri_b.astype(np.float64)
+    for k in range(3):
+        np.add.at(t_sum, indices[:, k], tri_t64)
+        np.add.at(b_sum, indices[:, k], tri_b64)
+
+    n = normals.astype(np.float64)
+    # Gram-Schmidt against the vertex normal so the tangent lies in the
+    # tangent plane (consumers assume this when reconstructing TBN).
+    n_dot_t = np.einsum("ij,ij->i", n, t_sum)
+    t = t_sum - n * n_dot_t[:, None]
+    t_len = np.linalg.norm(t, axis=1, keepdims=True)
+    bad = (t_len[:, 0] < 1e-8)
+    if bad.any():
+        t[bad] = _arbitrary_tangent(n[bad])
+        t_len[bad] = 1.0
+    t = t / t_len
+
+    # Sign convention (glTF): bitangent = cross(N, T) * tangent.w
+    handed = np.where(
+        np.einsum("ij,ij->i", np.cross(n, t), b_sum) < 0.0, -1.0, 1.0)
+
+    out = np.empty((n_vert, 4), dtype=np.float32)
+    out[:, :3] = t.astype(np.float32)
+    out[:, 3] = handed.astype(np.float32)
+    return out
 
 
 # -------------------------------------------------------------------------
@@ -311,7 +402,13 @@ class GLTFExporter:
         positions = np.ascontiguousarray(positions, dtype=np.float32)
         indices = np.ascontiguousarray(indices, dtype=np.uint32)
         if flip_winding:
+            # PBRT's ReverseOrientation reverses both the geometric and the
+            # shading normal. Flipping the winding flips the geometric one;
+            # we also negate per-vertex normals so the shading frame stays
+            # consistent for any spec-conformant glTF consumer.
             indices = indices[:, ::-1].copy()
+            if normals is not None and len(normals) == len(positions):
+                normals = -np.ascontiguousarray(normals, dtype=np.float32)
         idx_flat = indices.reshape(-1)
 
         bv_pos = self._add_buffer_view(positions.tobytes(), TARGET_ARRAY)
@@ -322,6 +419,7 @@ class GLTFExporter:
 
         attrs = Attributes(POSITION=acc_pos)
 
+        normals_for_tangent: Optional[np.ndarray] = None
         if normals is not None and len(normals) == len(positions):
             normals = np.ascontiguousarray(normals, dtype=np.float32)
             # Normalize
@@ -330,12 +428,27 @@ class GLTFExporter:
             normals = normals / lens
             bv_n = self._add_buffer_view(normals.tobytes(), TARGET_ARRAY)
             attrs.NORMAL = self._add_accessor(bv_n, len(normals), COMP_FLOAT, "VEC3")
+            normals_for_tangent = normals
 
+        uvs_for_tangent: Optional[np.ndarray] = None
         if uvs is not None and len(uvs) == len(positions):
             uvs = np.ascontiguousarray(uvs, dtype=np.float32)
             bv_uv = self._add_buffer_view(uvs.tobytes(), TARGET_ARRAY)
             attrs.TEXCOORD_0 = self._add_accessor(
                 bv_uv, len(uvs), COMP_FLOAT, "VEC2")
+            uvs_for_tangent = uvs
+
+        # Per glTF 2.0: when TANGENT is supplied, consumers must use it
+        # (avoids the per-triangle on-the-fly derivation that breaks at
+        # degenerate or mirrored UVs). Skip when normals or UVs are
+        # missing -- the spec says tangent only makes sense with both.
+        if normals_for_tangent is not None and uvs_for_tangent is not None:
+            tangents = _generate_tangents(
+                positions, indices, normals_for_tangent, uvs_for_tangent)
+            tangents = np.ascontiguousarray(tangents, dtype=np.float32)
+            bv_t = self._add_buffer_view(tangents.tobytes(), TARGET_ARRAY)
+            attrs.TANGENT = self._add_accessor(
+                bv_t, len(tangents), COMP_FLOAT, "VEC4")
 
         bv_idx = self._add_buffer_view(idx_flat.tobytes(), TARGET_ELEM)
         acc_idx = self._add_accessor(bv_idx, len(idx_flat), COMP_UINT, "SCALAR")
