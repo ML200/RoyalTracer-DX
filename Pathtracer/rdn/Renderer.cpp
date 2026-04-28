@@ -45,6 +45,7 @@ Renderer::Renderer(UINT width, UINT height)
         L"cuda:nrc_debug_inference",                    L"barrier",
         L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
+        L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
