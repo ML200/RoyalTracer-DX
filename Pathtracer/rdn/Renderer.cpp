@@ -80,12 +80,15 @@ void Renderer::InitDevice() {
             });
 
             // ── NRC setup ─────────────────────────────────────────
-            // Cap inference capacity at W*H (worst case: every pixel
-            // cache-terminates) and round up to tcnn's batch granularity.
-            // The debug view's inference reuses these buffers — it runs
-            // after the main chain has already consumed them.
+            // Cap inference capacity at 2 × W*H so each pixel can fit a
+            // cache-termination record AND a depth-0 sharp-reflection record
+            // (raygen splits the BSDF on smooth dielectric x1 hits and queries
+            // NRC at the perfect-mirror reflection's hit point). Round up to
+            // tcnn's batch granularity. The debug view's inference reuses
+            // these buffers — it runs after the main chain has already
+            // consumed them.
             const uint32_t pixelCount = GetWidth() * GetHeight();
-            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount);
+            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
 
             m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
             m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
@@ -757,13 +760,14 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateStreamingCompactionBuffers();
 
     // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
-    // sized to W·H (worst case: every pixel cache-terminates) and PendingGI
-    // is one slot per pixel — both grow if the user enlarges the window
-    // and raygen would otherwise scribble past the end of the old buffer.
-    // TrainRecords and Counters are fixed-size and don't need recreation.
+    // sized to 2·W·H (worst case: every pixel issues a cache-termination
+    // record AND a depth-0 sharp-reflection record), and PendingGI is one
+    // slot per pixel — both grow if the user enlarges the window and raygen
+    // would otherwise scribble past the end of the old buffer. TrainRecords
+    // and Counters are fixed-size and don't need recreation.
     if (m_nrcReady) {
         const uint32_t pixelCount = newWidth * newHeight;
-        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount);
+        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
 
         // Reset old buffers FIRST so the cudaInterop allocator releases
         // the backing D3D12 / CUDA imports before we ask it for new ones
@@ -1385,6 +1389,7 @@ void Renderer::PopulateCommandList() {
         if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
         if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
         if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
+        if (m_nrcReady && m_nrcSettings.sharpReflections)    nrcFlags |= nrc::flags::kSharpReflections;
         nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);

@@ -2,7 +2,12 @@
 //NRC RESOLVE AND RESERVOIR FINALIZE
 //====================================
 //per pending cache-term pixel, merge cache candidate into reservoir via RIS
-//pixels without pending record already finalized in raygen
+//pixels without pending record already finalized in raygen.
+//
+//Also resolves the depth-0 sharp-reflection inference (slot 7 / 8 in scratch
+//ping) into a single RGB contribution stashed back into slot 8. Doing the
+//resolve here means it lands BEFORE the debug-view passes scribble over
+//g_NrcInferenceOut for their per-pixel debug query.
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -16,6 +21,39 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const uint2 pixel    = dtid.xy;
     const uint  pixelIdx = MapPixelID(gImageSize, pixel);
     if (pixelIdx == 0xFFFFFFFFu) return;
+
+    //====================================
+    //x1 SHARP-REFLECTION RESOLVE
+    //====================================
+    //Collapses {Fresnel, NRC slot id, env miss radiance} stored across
+    //scratch slots 7 and 8 into a single resolved RGB contribution in slot 8.
+    //The .w channel doubles as a validity marker (>0 = resolved, =0 = no
+    //contribution). Shading reads slot 8 directly with no further inference
+    //buffer access.
+    {
+        const float4 reflPack = gScratchPing[uint3(pixel, 7)];
+        const float3 fresnelP = reflPack.rgb;
+        const uint   reflSlot = asuint(reflPack.w);
+        float3 reflRGB = float3(0, 0, 0);
+        float  reflW   = 0.0f;
+        if (any(fresnelP > 0.0f))
+        {
+            float3 reflRad;
+            if (reflSlot != NRC_INVALID_SLOT)
+            {
+                reflRad = NrcLoadInferenceOutput(reflSlot);
+            }
+            else
+            {
+                //raygen stored env miss radiance in slot 8.rgb; .w=1 marker
+                const float4 envPack = gScratchPing[uint3(pixel, 8)];
+                reflRad = (envPack.w > 0.0f) ? envPack.rgb : float3(0, 0, 0);
+            }
+            reflRGB = NrcCleanRadiance(fresnelP * reflRad);
+            reflW   = 1.0f;
+        }
+        gScratchPing[uint3(pixel, 8)] = float4(reflRGB, reflW);
+    }
 
     uint  slot;
     uint  throughputPk;

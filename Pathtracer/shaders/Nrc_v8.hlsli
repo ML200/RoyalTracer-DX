@@ -72,16 +72,18 @@ static const uint NRC_CLASS_TRAIN_BIASED    = 1u;
 static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 
 //push-constant flag bits, mirrors nrc::flags
-//bits 0..2, behavior toggles, bits 8..15, training tile side
+//bits 0..3, behavior toggles, bits 8..15, training tile side
 static const uint NRC_FLAG_ENABLED          = 1u;
 static const uint NRC_FLAG_TRAIN            = 2u;
 static const uint NRC_FLAG_DEBUG_VIEW       = 4u;
+static const uint NRC_FLAG_SHARP_REFL       = 8u;
 static const uint NRC_FLAG_TILE_SHIFT       = 8u;
 static const uint NRC_FLAG_TILE_MASK        = 0xFFu;
 
 inline bool NrcIsEnabled()           { return (nrc_flags & NRC_FLAG_ENABLED)          != 0u; }
 inline bool NrcIsTrainOn()           { return (nrc_flags & NRC_FLAG_TRAIN)            != 0u; }
 inline bool NrcIsDebugView()         { return (nrc_flags & NRC_FLAG_DEBUG_VIEW)       != 0u; }
+inline bool NrcIsSharpReflectionsOn(){ return (nrc_flags & NRC_FLAG_SHARP_REFL)       != 0u; }
 
 //effective tile side, falls back to static default when flags unpacked
 inline uint NrcTrainingTileSide()

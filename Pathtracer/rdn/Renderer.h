@@ -216,7 +216,7 @@ private:
     void InitReuseTextures();
 
     UINT m_currentDisplayLevel = 0;
-    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3 };
+    std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4 };
 
     static constexpr UINT IMGUI_FONT_HEAP_SLOT = 999999;
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;

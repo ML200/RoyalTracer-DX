@@ -28,6 +28,9 @@ void Pass_raygen_v8()
     //sort by class groups long class-2 into coherent warps
     const bool kNrcEnabled    = NrcIsEnabled();
     const bool kNrcTrainOn    = NrcIsTrainOn();
+    //x1 sharp-reflection split: editor-toggleable, requires NRC enabled
+    //(otherwise we have no replacement radiance for the dropped delta lobes)
+    const bool kSharpRefl     = kNrcEnabled && NrcIsSharpReflectionsOn();
     //adaptive tile side from renderer feedback loop
     const uint  nrcTileSide   = NrcTrainingTileSide();
     const uint2 nrcTileOffset = uint2(asuint(time) % nrcTileSide,
@@ -58,7 +61,9 @@ void Pass_raygen_v8()
     const bool  nrcCacheEligible = kNrcEnabled &&
         (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
          nrcPathClass == NRC_CLASS_RENDER);
-    const uint  nrcInferenceCapacity = (IMG_W * IMG_H + 255u) & ~255u;
+    //2x pixel count: each pixel can fit a cache-term record AND a depth-0
+    //sharp-reflection record. Round up to tcnn's 256-batch granularity.
+    const uint  nrcInferenceCapacity = (2u * IMG_W * IMG_H + 255u) & ~255u;
     float nrcA0 = 0.0f;
     float nrcA  = 0.0f;
     int   nrcHitIdx = 0;
@@ -81,6 +86,14 @@ void Pass_raygen_v8()
     //slot 1, primary emitter/sky, slot 3, former DI scratch, now always zero
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
+    //slot 7, x1 sharp-reflection control: rgb=Fresnel weight, w=NRC slot id
+    //  (NRC_INVALID_SLOT means no split was performed, or split fell back to
+    //  slot 8 with a precomputed sky/sun radiance). Always reset so previous
+    //  frames' state never leaks into pixels that don't take the split path.
+    //slot 8, x1 sharp-reflection direct radiance for reflection-ray miss case
+    //  rgb=envL (sky+sun) precomputed in raygen, .w=marker (>0 means valid)
+    gScratchPing[uint3(pixel, 7)] = float4(0, 0, 0, asfloat(NRC_INVALID_SLOT));
+    gScratchPing[uint3(pixel, 8)] = float4(0, 0, 0, 0);
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
@@ -114,6 +127,7 @@ void Pass_raygen_v8()
         const float phi = 6.2831853f * u2;
         diMarker = float3(r * cos(phi), r * sin(phi), z);
     }
+
 
     //====================================
     //PATH LOOP
@@ -255,13 +269,33 @@ void Pass_raygen_v8()
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
             }
 
-            //specular motion vector probe
+            //specular motion vector probe + sharp-reflection NRC inference fire
+            //One reflection ray serves double duty: DLSS-RR specular MV input and
+            //(when the primary surface has a delta lobe to peel off) the NRC
+            //inference query for the radiance returned along the perfect-mirror
+            //direction. The RayQuery commit data feeds both branches.
             {
                 const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
                 const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
 
-                bool committed = false;
-                float reflT = 0.0f;
+                //Decide whether to split the BSDF for this primary hit. Gated
+                //on roughness AND kSharpRefl — when the user toggles the
+                //sharp-reflection system off (or NRC is unavailable) we must
+                //leave the delta lobes in the BSDF so reflections aren't
+                //silently dropped. GGX side fires for any smooth non-metal
+                //(opaque AND transmissive); coat side just needs a smooth
+                //coat layer. The opaque/transmissive distinction is handled
+                //downstream when modifying the SamplingP.
+                const bool dropGGX  = kSharpRefl && ShouldDropDeltaGGX (hitLocalPr, hitLocalPm);
+                const bool dropCoat = kSharpRefl && ShouldDropDeltaCoat(matID);
+                const bool splitRefl = (dropGGX || dropCoat);
+
+                bool  committed = false;
+                float reflT     = 0.0f;
+                uint  cmtInstID = 0u;
+                uint  cmtGeomID = 0u;
+                uint  cmtPrimID = 0u;
+                float2 cmtBary  = float2(0, 0);
                 if (IsRayValid(reflOrigin, reflDir, 10000.0f))
                 {
                     RayDesc reflRay;
@@ -289,18 +323,83 @@ void Pass_raygen_v8()
                     }
 
                     committed = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
-                    if (committed) reflT = q.CommittedRayT();
+                    if (committed) {
+                        reflT     = q.CommittedRayT();
+                        cmtInstID = q.CommittedInstanceIndex();
+                        cmtGeomID = q.CommittedGeometryIndex();
+                        cmtPrimID = q.CommittedPrimitiveIndex();
+                        cmtBary   = q.CommittedTriangleBarycentrics();
+                    }
                 }
 
                 if (committed)
                 {
-                    float3 reflPos    = reflOrigin + reflDir * reflT;
-                    float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
+                    const float3 reflPos    = reflOrigin + reflDir * reflT;
+                    const float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
                     gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
                 }
                 else
                 {
                     gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
+                }
+
+                //Per-pixel weight stashed in slot 7 for the resolve step.
+                //  hit  : weight = Fresnel * (alpha+beta) at the reflected
+                //         hit, because the MLP predicts radiance demodulated
+                //         by that surface's reflectance (matches both the
+                //         cache-term path's NrcWriteTerminationRecord and
+                //         Pass_nrc_debug_present's L_s * reflSum recovery).
+                //         Without this multiply smooth metal/coat surfaces
+                //         render brighter and whiter than the cache debug.
+                //  miss : weight = Fresnel only, slot 8 already holds raw
+                //         sky+sun radiance which is not demodulated.
+                if (splitRefl)
+                {
+                    const float3 V_prim    = -rayDir;
+                    const float3 fresnelP  = ComputeSharpReflectionFresnel(
+                                                matID, V_prim, hinfo.hitNormal,
+                                                iors.x, iors.y, hitLocalPm,
+                                                dropGGX, dropCoat);
+
+                    uint   reflSlot = NRC_INVALID_SLOT;
+                    float3 weight   = fresnelP;
+                    if (committed)
+                    {
+                        //Reconstruct the reflected hit's surface state from the
+                        //RayQuery commit data so we can build NRC features and
+                        //recover the demodulation factor.
+                        const uint reflFlatPrim = FlatPrimID(cmtInstID, cmtGeomID, cmtPrimID);
+                        const uint reflMatID    = GetMatIDFast(cmtInstID, reflFlatPrim);
+
+                        HitInfo reflHit = EvalSurfaceState(
+                            cmtInstID, reflFlatPrim, cmtBary, reflOrigin, 0u);
+
+                        float3 reflKd; float reflPr, reflPm;
+                        RefetchMaterial(reflMatID, reflHit.uv, reflKd, reflPr, reflPm, 0u);
+
+                        const float3 reflAlpha = reflKd * (1.0f - reflPm);
+                        const float3 reflBeta  = lerp(float3(0.04f, 0.04f, 0.04f), reflKd, reflPm);
+                        const float3 reflSum   = reflAlpha + reflBeta;
+
+                        float features[17];
+                        NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
+                                         reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+
+                        reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
+                        weight   = fresnelP * reflSum;
+                    }
+                    else
+                    {
+                        //Reflection ray missed: precompute sky+sun radiance and
+                        //stash it in slot 8. Resolve step will multiply by the
+                        //primary Fresnel (no NRC inference involved).
+                        const float3 sun  = EvaluateSun(reflDir);
+                        float3       envL = EvalMissState(reflDir, sun);
+                        if (length(sun) > 0.0f) envL = sun;
+                        gScratchPing[uint3(pixel, 8)] = float4(NrcCleanRadiance(envL), 1.0f);
+                    }
+
+                    gScratchPing[uint3(pixel, 7)] = float4(weight, asfloat(reflSlot));
                 }
             }
         }
@@ -619,8 +718,32 @@ void Pass_raygen_v8()
         //SAMPLE NEXT BSDF DIRECTION
         //====================================
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y);
-        BrdfData  bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+        //x1 split-integral: peel delta GGX/coat lobes off the sampler when the
+        //primary surface is smooth dielectric/coat. Their contribution is added
+        //post-DLSS as Fresnel * NRC(reflected ray). Sampling and eval must use
+        //the same split sp so pdf and val stay self-consistent for MIS. Gated
+        //on kSharpRefl — when the toggle is off (or NRC unavailable) we leave
+        //the BSDF intact and let DLSS-RR denoise the reflection as before.
+        //
+        //Two flavors of GGX split:
+        //  - opaque non-metal smooth: delta GGX is reflection-only, so we zero
+        //    Pspec entirely and let diffuse / sheen carry the rest.
+        //  - smooth transmissive (glass): GGX still owns refraction, so we
+        //    keep Pspec at full strength and instead route the GGX sampler
+        //    into the refract branch via ggxNoReflect. The reflection delta
+        //    is supplied by the NRC tap above.
+        bool ggxNoReflect = false;
+        if (depth == 0 && kSharpRefl)
+        {
+            const bool dropGGX0       = ShouldDropDeltaGGX (hitLocalPr, hitLocalPm);
+            const bool dropCoat0      = ShouldDropDeltaCoat(matID);
+            const bool transmissive_x1 = LoadKd_w(matID) < (1.0f - EPSILON);
+            const bool spDropGGX      = dropGGX0 && !transmissive_x1;
+            ggxNoReflect              = dropGGX0 &&  transmissive_x1;
+            sp = DropDeltaLobes(sp, spDropGGX, dropCoat0);
+        }
+        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, ggxNoReflect);
+        BrdfData  bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y, ggxNoReflect);
 
         const float  cosTheta     = abs(dot(hinfo.hitNormal, s));
         const float3 updateWeight = (bdata.pdf > 1e-6f)

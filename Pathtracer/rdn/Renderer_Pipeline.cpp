@@ -479,9 +479,10 @@ void Renderer::CreateRaytracingOutputBuffer() {
     auto* dev = m_ctx.Device();
     UINT w = GetWidth(), h = GetHeight(), px = w * h;
 
-    // Main output array (4 layers: noisy, denoised, accumulated, debug)
+    // Main output array (5 layers: 0=noisy, 1=denoised, 2=accumulated,
+    // 3=NRC debug, 4=x1 sharp-reflection contribution)
     D3D12_RESOURCE_DESC rd = {};
-    rd.DepthOrArraySize = 4;
+    rd.DepthOrArraySize = 5;
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;

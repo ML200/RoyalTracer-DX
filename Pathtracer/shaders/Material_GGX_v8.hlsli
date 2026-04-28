@@ -176,6 +176,11 @@ inline float Sampling_Weight_GGX(
 //====================================
 //GGX VNDF SAMPLING
 //====================================
+//noReflect = true forces the sampler into the refract branch (smooth-transmissive
+//x1 case where the reflection delta is being supplied by an external NRC tap).
+//Pre-condition: canRefract must hold and the geometry must permit refraction
+//(no TIR). Caller (raygen) only enables this at depth==0 air→material hits
+//where TIR cannot occur.
 inline float3 SampleBRDF_GGX(
     uint   mID,
     float3 outgoing,
@@ -188,7 +193,8 @@ inline float3 SampleBRDF_GGX(
     float3 Kd,
     float Pr,
     float Pm,
-    bool canRefract)
+    bool canRefract,
+    bool noReflect = false)
 {
     float  r         = Pr;
     float  alpha     = max(0.001f, r * r);
@@ -214,15 +220,17 @@ inline float3 SampleBRDF_GGX(
         H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
-    //reflect vs transmit probabilities
+    //reflect vs transmit probabilities. Always consume the random draw so the
+    //RNG advances identically whether or not the noReflect override engages.
     float  F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
     float  p_sum     = p_refl_H + p_tran_H;
-    float  pick_refl = p_refl_H / p_sum;
+    float  pick_refl = noReflect ? 0.0f : (p_refl_H / p_sum);
+    float  r_pick    = RandomFloatSingle(seed);
 
     float3 L;
-    if (RandomFloatSingle(seed) < pick_refl || !canRefract)
+    if (r_pick < pick_refl || !canRefract)
     {
         L = reflect(-V, H);
         refract = false;
@@ -250,9 +258,13 @@ struct GGXResult {
     float  t;
 };
 
+//noReflect = true mirrors SampleBRDF_GGX's no-reflect mode: the reflection
+//branch is treated as having zero contribution and zero pdf, and the transmit
+//pdf drops the (p_tran_H / p_sum) factor since transmit is now the only choice.
 inline GGXResult EvalGGXAll(
     uint matID, float3 N, float3 fN, float3 V, float3 L,
-    float etai, float etat, float3 Kd, float Pr, float Pm)
+    float etai, float etat, float3 Kd, float Pr, float Pm,
+    bool noReflect = false)
 {
     GGXResult r;
     r.f = 0.0f;
@@ -324,20 +336,28 @@ inline GGXResult EvalGGXAll(
     //eval
     if (isReflect)
     {
-        float3 F0_d = ComputeF0Dielectric(etai, etat);
-        float3 F_c  = FresnelConductor(Kd, V, H);
+        if (noReflect)
+        {
+            //reflection branch is owned by the external NRC tap
+            r.f = 0.0.xxx;
+        }
+        else
+        {
+            float3 F0_d = ComputeF0Dielectric(etai, etat);
+            float3 F_c  = FresnelConductor(Kd, V, H);
 
-        float denom = 4.0f * NdotV * NdotL;
+            float denom = 4.0f * NdotV * NdotL;
 
-        float3 specular_d = (F_d_vec * D * G2) / denom;
-        float3 specular_c = (F_c * D * G2) / denom;
+            float3 specular_d = (F_d_vec * D * G2) / denom;
+            float3 specular_c = (F_c * D * G2) / denom;
 
-        float Ess = GetEssLUT(Pr, NdotV);
-        float kms = (1.0f - Ess) / max(Ess, 1e-6f);
+            float Ess = GetEssLUT(Pr, NdotV);
+            float kms = (1.0f - Ess) / max(Ess, 1e-6f);
 
-        float3 spec = (1.0f - Pm) * specular_d * (1.0f + F0_d * kms)
-                    + Pm          * specular_c * (1.0f + Kd  * kms);
-        r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
+            float3 spec = (1.0f - Pm) * specular_d * (1.0f + F0_d * kms)
+                        + Pm          * specular_c * (1.0f + Kd  * kms);
+            r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
+        }
     }
     else
     {
@@ -357,15 +377,22 @@ inline GGXResult EvalGGXAll(
     {
         if (isReflect)
         {
-            float VdotH_pos = max(1e-6f, VdotH);
-            float pdf_H     = (D * G1V * VdotH_pos) / max(1e-6f, NdotV);
+            if (noReflect)
+            {
+                r.pdf = 0.0f;
+            }
+            else
+            {
+                float VdotH_pos = max(1e-6f, VdotH);
+                float pdf_H     = (D * G1V * VdotH_pos) / max(1e-6f, NdotV);
 
-            float p_sel = p_refl_H;
-            float eta   = etai / etat;
-            float cos2_t = 1.0f - (eta * eta) * (1.0f - VdotH_pos * VdotH_pos);
-            if (cos2_t < 0.0f) p_sel += p_tran_H;
+                float p_sel = p_refl_H;
+                float eta   = etai / etat;
+                float cos2_t = 1.0f - (eta * eta) * (1.0f - VdotH_pos * VdotH_pos);
+                if (cos2_t < 0.0f) p_sel += p_tran_H;
 
-            r.pdf = max(0.0f, (p_sel / p_sum) * pdf_H / (4.0f * VdotH_pos));
+                r.pdf = max(0.0f, (p_sel / p_sum) * pdf_H / (4.0f * VdotH_pos));
+            }
         }
         else
         {
@@ -375,7 +402,9 @@ inline GGXResult EvalGGXAll(
             float denom_jac = etai * VdotH + etat * LdotH;
             float jacobian  = (etat * etat * abs(LdotH)) / (denom_jac * denom_jac);
 
-            r.pdf = max(0.0f, (p_tran_H / p_sum) * pdf_H * jacobian);
+            //noReflect collapses pick_tran to 1 — sampler always selects refract
+            const float pTranScale = noReflect ? 1.0f : (p_tran_H / p_sum);
+            r.pdf = max(0.0f, pTranScale * pdf_H * jacobian);
         }
     }
 

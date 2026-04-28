@@ -18,6 +18,9 @@ struct Settings {
     bool  enabled            = true;
     bool  trainingEnabled    = true;
     bool  debugView          = false;
+    //x1 sharp-reflection split: NRC tap on the perfect-mirror reflection ray
+    //plus BSDF specialisation at the primary hit. Off = legacy DLSS-RR-only path.
+    bool  sharpReflections   = true;
     float areaSpreadC        = 0.01f;
     float learningRateScale  = 1.0f;
     //scene AABB normalization, x_norm = (x-center)/extent + 0.5
@@ -27,11 +30,12 @@ struct Settings {
     bool  requestReinit      = false;
 };
 
-//push-constant flag bits, bits 0..2 toggles, bits 8..15 tile side
+//push-constant flag bits, bits 0..3 toggles, bits 8..15 tile side
 namespace flags {
     constexpr uint32_t kEnabled         = 1u << 0;
     constexpr uint32_t kTrain           = 1u << 1;
     constexpr uint32_t kDebugView       = 1u << 2;
+    constexpr uint32_t kSharpReflections = 1u << 3;
     constexpr uint32_t kTileShift       = 8u;
     constexpr uint32_t kTileMask        = 0xFFu;
 }

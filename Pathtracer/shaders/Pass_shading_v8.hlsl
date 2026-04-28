@@ -15,7 +15,25 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    float3 accumulation = output_primary + output_indirect + sunDirect;
+    //====================================
+    //x1 SHARP-REFLECTION CONTRIBUTION
+    //====================================
+    //Pass_nrc_resolve_v8 collapses the raygen-time Fresnel + NRC inference
+    //slot into a single resolved RGB in scratch slot 8.rgb (with .w>0 marker).
+    //We can't read NRC inference here because the debug-view passes overwrite
+    //g_NrcInferenceOut between resolve and shading — slot 8 is the durable
+    //hand-off lane.
+    float3 reflContrib = float3(0, 0, 0);
+    {
+        const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
+        if (reflPack.w > 0.0f)
+            reflContrib = max(float3(0, 0, 0), reflPack.rgb);
+    }
+    //Mirror to gOutput slice 4 for inspection / debug overlays. Linear here,
+    //postprocess applies sRGB to keep parity with the other gOutput slices.
+    gOutput[uint3(DTid.xy, 4)] = float4(reflContrib, 1.0f);
+
+    float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
 
     bool cameraChanged = false;
     [unroll]
@@ -186,10 +204,34 @@ void main(uint3 DTid : SV_DispatchThreadID)
             disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
         }
         float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
-        float bias = max(disoccBias, emitterBias);
+
+        //Sharp-reflection bias: pixels whose color is dominated by the NRC
+        //reflection contribution should lean toward the input (i.e., bypass
+        //DLSS denoising) so the reflection edges stay crisp. Smooth lerp on
+        //reflection's share of total luminance keeps weakly reflective pixels
+        //in the denoising regime.
+        float reflectionBias = 0.0f;
+        {
+            const float reflLuma  = Luma(reflContrib);
+            const float totalLuma = Luma(accumulation);
+            if (totalLuma > 1e-5f && reflLuma > 1e-5f) {
+                reflectionBias = saturate(reflLuma / totalLuma);
+            }
+        }
+
+        float bias = max(disoccBias, max(emitterBias, reflectionBias));
         g_dlssBiasHint[DTid.xy] = bias;
         if (disoccBias > 0.5f && !isEmissiveOrSky) {
             g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
         }
     }
+
+    //====================================
+    //DLSS TRANSPARENCY OVERLAY HOOK
+    //====================================
+    //Mirror the reflection contribution into g_dlssTransparency so the host can
+    //wire it up later as a true post-denoise overlay (kBufferType_Transparency
+    //via Streamline). Until that wiring lands, it's a benign side write — the
+    //real composite is the bias-hinted accumulation above.
+    g_dlssTransparency[DTid.xy] = float4(reflContrib, 0.0f);
 }

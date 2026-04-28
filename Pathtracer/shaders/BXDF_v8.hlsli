@@ -70,7 +70,10 @@ inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 //====================================
 //BRDF SAMPLING
 //====================================
-inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat) {
+//ggxNoReflect: forwards to SampleBRDF_GGX. Use at the x1 split path on smooth
+//transmissive dielectrics so the GGX strategy stays in the sampler (refraction
+//survives) while the reflection delta is handled externally by the NRC tap.
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat, bool ggxNoReflect = false) {
     uint strategy = SelectSamplingStrategy(p, seed);
     float3 sample;
 
@@ -81,7 +84,7 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
         sample = SampleBRDF_Lambertian(matID, o, n_s, n_g, seed);
     }
     else if(strategy == 1){
-        sample = SampleBRDF_GGX(matID, o, n_s, n_g, etai, etat, refract, seed, localKd, localPr, localPm, canRefract);
+        sample = SampleBRDF_GGX(matID, o, n_s, n_g, etai, etat, refract, seed, localKd, localPr, localPm, canRefract, ggxNoReflect);
     }
     else if(strategy == 2){
         sample = SampleBRDF_COAT(matID, o, n_s, n_g, seed);
@@ -181,10 +184,14 @@ inline float3 EvaluateBRDF_COMBINED(
 //====================================
 //FUSED EVAL AND PDF
 //====================================
+//ggxNoReflect mirrors SampleBRDF's flag — see SampleBRDF_GGX/EvalGGXAll for
+//semantics. Eval and sample at the same vertex MUST pass the same value here
+//or the pdf seen by the integrator desyncs from how the direction was drawn.
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, float localPr, float localPm, float etai, float etat)
+    float3 localKd, float localPr, float localPm, float etai, float etat,
+    bool ggxNoReflect = false)
 {
     BrdfData res;
     res.val = 0.0f;
@@ -209,7 +216,7 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate    *= cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
         res.val += gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         gate    *= gr.t;
@@ -219,4 +226,96 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         res.pdf += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
     }
     return res;
+}
+
+
+//====================================
+//x1 SHARP REFLECTION SPLIT-INTEGRAL SUPPORT
+//====================================
+//At the primary (depth==0) hit, smooth dielectric/clearcoat surfaces have their
+//delta GGX/coat reflection lobes peeled off the BSDF sampler and replaced by an
+//explicit perfect-mirror reflection ray whose tail is approximated by NRC. The
+//remaining BSDF (sheen, diffuse, transmission, plus delta GGX for metals which
+//we do not split) is sampled normally.
+//
+//ShouldDropDeltaGGX flags the GGX *reflection* delta as eligible for the NRC
+//replacement. The caller decides how to act on it:
+//  - opaque non-metal: zero Pspec entirely (DropDeltaLobes), since the GGX
+//    lobe was reflection-only here.
+//  - smooth transmissive: keep Pspec at full strength but pass ggxNoReflect to
+//    SampleBRDF / EvaluateAndPdf_COMBINED so the GGX sampler stays in the
+//    refraction branch and the reflection delta is owned by NRC.
+
+inline bool ShouldDropDeltaGGX(float Pr, float Pm)
+{
+    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (Pm < 0.5f);
+}
+
+inline bool IsSmoothTransmissive(uint matID, float Pr)
+{
+    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (LoadKd_w(matID) < (1.0f - EPSILON));
+}
+
+inline bool ShouldDropDeltaCoat(uint matID)
+{
+    return (LoadPc(matID) > 0.0f) && (LoadPcr(matID) < SMOOTH_SPECULAR_THRESHOLD);
+}
+
+//Drops the requested lobes from the strategy distribution and renormalises so
+//the surviving lobes' probabilities still sum to one. Use the returned sp for
+//both sample direction selection and BSDF eval/pdf at the same vertex so the
+//two stay self-consistent (Veach Eq 8.7 partition).
+inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
+{
+    if (dropGGX)  sp.Pspec = 0.0f;
+    if (dropCoat) sp.Pcoat = 0.0f;
+
+    float total = sp.Psheen + sp.Pcoat + sp.Pspec + sp.Pdiff;
+    if (total > 0.0f) {
+        const float inv = 1.0f / total;
+        sp.Psheen *= inv;
+        sp.Pcoat  *= inv;
+        sp.Pspec  *= inv;
+        sp.Pdiff  *= inv;
+    } else {
+        sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f; sp.Pdiff = 1.0f;
+    }
+    return sp;
+}
+
+//Combined RGB Fresnel for the dropped delta lobes at the primary surface.
+//Layered as coat-on-top: coat consumes (pc * F_coat); the base GGX dielectric
+//gets what passes through. Result multiplies the NRC reflection radiance at
+//composite time. Inputs V and N are the unit view vector and shading normal at
+//the primary hit; etai/etat match the layer's IOR pair.
+inline float3 ComputeSharpReflectionFresnel(
+    uint   matID,
+    float3 V,
+    float3 N,
+    float  etai,
+    float  etat,
+    float  Pm,
+    bool   dropGGX,
+    bool   dropCoat)
+{
+    float3 F              = float3(0, 0, 0);
+    float3 transAfterCoat = float3(1, 1, 1);
+
+    if (dropCoat)
+    {
+        const float  pc    = saturate(LoadPc(matID));
+        const float3 F_c   = FresnelDielectricTIR(V, N, etai, etat);
+        const float3 lobeC = pc * F_c;
+        F             += lobeC;
+        transAfterCoat = max(float3(0, 0, 0), float3(1, 1, 1) - lobeC);
+    }
+
+    if (dropGGX)
+    {
+        //delta limit collapses H to N, so Fresnel evaluates at the view angle
+        const float3 F_d = FresnelDielectricTIR(V, N, etai, etat);
+        F += transAfterCoat * (1.0f - Pm) * F_d;
+    }
+
+    return max(float3(0, 0, 0), F);
 }
