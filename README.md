@@ -82,16 +82,16 @@ NVIDIA DLSS Ray Reconstruction is used for denoising using NVIDIA [Streamline](h
 
 ### Neural Radiance Cache
 
-Following [Müller et al. 2021](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing): a small MLP trained online every frame predicts residual radiance from short path prefixes. Paths terminate at a fixed depth and query the cache for the remainder of the integral. The network runs through [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn) (tcnn) on a separate CUDA stream alongside the DX12 raster, sharing GPU memory through CUDA/D3D12 interop.
+Following [Müller et al. 2021](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing): a small MLP trained online every frame predicts residual radiance from short path prefixes. Paths terminate at a fixed depth and query the cache for the remainder of the integral. The network runs through [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn) (tcnn) on a separate CUDA stream alongside the DX12 hybrid pipeline, sharing GPU memory through CUDA/D3D12 interop.
 
 **Network**: fully fused MLP, 5 hidden × 64 neurons, ReLU activations, linear 3 channel output. 16 raw inputs (position, scattered direction, surface normal, roughness, diffuse + specular reflectance) expand to 74 dims through a composite encoding:
 
-- **Position** → HashGrid, 16 levels × 2 features, log₂ hashmap = 21, smoothstep interpolation
-- **Direction & normal** → Spherical Harmonics, degree 4
-- **Roughness** → OneBlob, 4 bins
-- **Reflectance** → Identity passthrough
+- **Position** -> HashGrid, 16 levels × 2 features, log₂ hashmap = 21, smoothstep interpolation
+- **Direction & normal** -> Spherical Harmonics, degree 4
+- **Roughness** -> OneBlob, 4 bins
+- **Reflectance** -> Identity passthrough
 
-**Training**: RelativeL2 loss (Müller 2021 §5) on a *linear* target. Sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 4 batches × 8192 records per frame. **One row per path** at a randomized depth, since multi row per path emission produces intra path correlated gradients that Adam's 2nd moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR terminated paths to anchor emitter/miss radiance; the remainder use cache recursive multi bounce targets.
+**Training**: RelativeL2 loss (Müller 2021 §5) on a linear target. Sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 4 batches × 8192 records per frame trained asynchronously during the ReSTIR reuse passes. One row per path at a randomized depth, since multi row per path emission produces intra path correlated gradients that Adam's 2nd moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR terminated paths to anchor emitter/miss radiance; the remainder use cache recursive multi bounce targets.
 
 **Engineering**: tcnn lives behind a thin C++/CUDA wall in [Pathtracer/rdn/NRC/](Pathtracer/rdn/NRC/); DXR/HLSL only ever sees the byte for byte buffer layout in `NrcLayout.h`, mirrored in `Nrc_v8.hlsli`. An auxiliary CUDA stream + events keep training off the render critical path, and an adaptive training tile size (4×4 to 32×32 per frame) keeps the trainer saturated independent of resolution.
 
