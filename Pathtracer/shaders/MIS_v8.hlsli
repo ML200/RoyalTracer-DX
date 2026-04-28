@@ -1,7 +1,6 @@
-//====================================================================
-//PAIRWISE MIS, TEMPORAL
-//====================================================================
-//Canonical sample, defensive
+//====================================
+//PAIRWISE MIS TEMPORAL
+//====================================
 inline float PairwiseMIS_Canonical_Temp(
     float M_c,
     float M_n,
@@ -20,7 +19,6 @@ inline float PairwiseMIS_Canonical_Temp(
     return m_c;
 }
 
-//Neighbor sample, defensive
 inline float PairwiseMIS_Neighbour_Temp(
     float M_c,
     float M_n,
@@ -38,17 +36,15 @@ inline float PairwiseMIS_Neighbour_Temp(
 }
 
 
-//====================================================================
-//PAIRWISE MIS, SPATIAL
-//====================================================================
+//====================================
+//PAIRWISE MIS SPATIAL
+//====================================
 #ifdef ENABLE_RAY_QUERY_INLINE
-//Canonical spatial
 float PairwiseMIS_Canonical_Spat(
     in float M_sum_in,
     in float p_c,
     in float M_c,
-    in uint nIds[SPAT_COUNT_MAX], //IDs of the candidates, early out if id is invalid
-    //data needed from the canonical reservoir, we don't want to load the complete struct in here
+    in uint nIds[SPAT_COUNT_MAX],
     in float3 x2_c,
     in float3 n2s_c,
     in float3 L2_c,
@@ -66,7 +62,7 @@ float PairwiseMIS_Canonical_Spat(
     float m_num = M_c * p_c;
 
     [unroll]
-    for(int i = 0; i < SPAT_COUNT_MAX; i++){ //iterate over all spatial neighbor candidates, skip invalid entries
+    for(int i = 0; i < SPAT_COUNT_MAX; i++){
         if(nIds[i] != 0xFFFFFFFF){
             uint id = nIds[i];
             uint nInstID = load_instID(g_sample_current, id);
@@ -96,7 +92,7 @@ float PairwiseMIS_Canonical_Spat(
     }
     return m_c;
 }
-#endif //ENABLE_RAY_QUERY_INLINE
+#endif
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE
@@ -105,7 +101,6 @@ float PairwiseMIS_Neighbor_Spat(
     in float M_c,
     in float M_n,
     in float p_hat_from,
-    //data needed from the canonical reservoir, we don't want to load the complete struct in here
     in float W_n,
     in float F_n
     )
@@ -119,4 +114,4 @@ float PairwiseMIS_Neighbor_Spat(
         return (M_n/M_sum) * (m_num/m_den);
     return 0.0f;
 }
-#endif //ENABLE_RAY_QUERY_INLINE
+#endif

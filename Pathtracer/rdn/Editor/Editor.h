@@ -1,13 +1,14 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Editor/Editor.h
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//EDITOR
+//====================================
 
 #include "../Common.h"
 #include "../Scene/Scene.h"
 #include "../Camera/Camera.h"
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
+#include "../NRC/NrcLayout.h"
 #include "../../engine/Camera/FlyCamController.h"
 
 #include "../lib/imgui/imgui.h"
@@ -24,7 +25,8 @@ public:
 
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
               PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
-              ReSTIRSettings& restir, float fps, const FrameStats& stats);
+              ReSTIRSettings& restir, nrc::Settings& nrc,
+              float fps, const FrameStats& stats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -37,6 +39,7 @@ private:
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
     void DrawMaterialInspector(Scene& scene);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
+    void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
 
     bool m_visible        = true;
@@ -45,18 +48,16 @@ private:
     bool m_showPipeline   = false;
     bool m_showDLSS       = false;
     bool m_showReSTIR     = false;
+    bool m_showNRC        = false;
     bool m_showSun        = false;
     bool m_showMaterials  = false;
     int  m_selectedModel  = -1;
     int  m_selectedMat    = -1;
 
-    // Cached per-model unique materials (recomputed only on selection change)
+    //cached per-model unique materials, recomputed on selection change
     int m_cachedMatModel = -1;
     std::vector<UINT> m_cachedUniqueMats;
 
-    // Material-inspector name filter. Persisted so the filter text survives
-    // window close / reopen. Case-insensitive substring match against the
-    // material name; also matches the material index when the query is
-    // purely digits.
+    //persisted name filter, case-insensitive substring, digits match index
     char m_matFilter[128] = {0};
 };

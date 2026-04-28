@@ -1,6 +1,6 @@
-//====================================================================
-//LAYERED BXDF EVALUATION AND SAMPLING
-//====================================================================
+//====================================
+//LAYERED BXDF
+//====================================
 
 struct SamplingP{
     float Psheen;
@@ -9,9 +9,10 @@ struct SamplingP{
     float Pdiff;
 };
 
-//====================================================================
+//====================================
 //STRATEGY PROBABILITIES
-//====================================================================
+//====================================
+//cheap energy cascade approximating the actual distribution
 inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, float etai, float etat, float3 Kd, float Pm)
 {
     float r_sheen = Sampling_Weight_SHEEN(mID, normal, outgoing);
@@ -19,19 +20,16 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
     float r_ggx   = Sampling_Weight_GGX(mID, normal, outgoing, etai, etat, Kd, Pm);
     float r_lamb   = Sampling_Weight_Lambertian(mID, normal, outgoing);
 
-    //Energy cascade approximating actual energy distribution.
-    //Not completely optimal, but cheap.
     SamplingP sp;
 
     sp.Psheen = r_sheen;
     float energy_after_sheen = 1.0f - sp.Psheen;
     sp.Pcoat = energy_after_sheen * r_coat * 3.0f;
     float energy_after_coat = energy_after_sheen * (1.0f - r_coat);
-    sp.Pspec = energy_after_coat * r_ggx * 5.0f; //cheap boost for specular surfaces, better denoising
+    sp.Pspec = energy_after_coat * r_ggx * 5.0f; //boosted to denoise better
     float energy_after_ggx = energy_after_coat * (1.0f - r_ggx);
     sp.Pdiff = energy_after_ggx * r_lamb;
 
-    //Safely normalize to ensure correct weights summing to 1
     float total_prob = sp.Psheen + sp.Pcoat + sp.Pspec + sp.Pdiff;
     if (total_prob > 0.0f)
     {
@@ -40,7 +38,7 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
         sp.Pspec  /= total_prob;
         sp.Pdiff  /= total_prob;
     }
-    else //no div by 0
+    else
     {
         sp.Psheen = 0.0f;
         sp.Pcoat  = 0.0f;
@@ -51,68 +49,60 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 }
 
 
-//====================================================================
+//====================================
 //STRATEGY SELECTION
-//====================================================================
-//Select a sampling strategy for the given material:
-//0 = Diffuse
-//1 = Specular GGX
-//2 = Clearcoat
-//3 = Sheen
+//====================================
+//0 diffuse, 1 GGX, 2 coat, 3 sheen
 inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 {
     float r = RandomFloatSingle(seed);
 
     float c = p.Pdiff;
-    if (r < c) return 0;                 //Diffuse
+    if (r < c) return 0;
     c += p.Pspec;
-    if (r < c) return 1;                 //GGX
+    if (r < c) return 1;
     c += p.Pcoat;
-    if (r < c) return 2;                 //Coat
-    return 3;                            //Sheen
+    if (r < c) return 2;
+    return 3;
 }
 
 
-//====================================================================
+//====================================
 //BRDF SAMPLING
-//====================================================================
-//Sample the BRDF of the given strategy
-inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat) {
-    //Select one method
+//====================================
+//ggxNoReflect routes the GGX sampler into the refract branch, NRC owns the reflection delta
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat, bool ggxNoReflect = false) {
     uint strategy = SelectSamplingStrategy(p, seed);
     float3 sample;
 
     bool refract = false;
     const bool canRefract = true;
 
-    //Sample from the selected strategy
-    if(strategy == 0){ //diffuse
+    if(strategy == 0){
         sample = SampleBRDF_Lambertian(matID, o, n_s, n_g, seed);
     }
-    else if(strategy == 1){ //specular
-        sample = SampleBRDF_GGX(matID, o, n_s, n_g, etai, etat, refract, seed, localKd, localPr, localPm, canRefract);
+    else if(strategy == 1){
+        sample = SampleBRDF_GGX(matID, o, n_s, n_g, etai, etat, refract, seed, localKd, localPr, localPm, canRefract, ggxNoReflect);
     }
-    else if(strategy == 2){ //coat
+    else if(strategy == 2){
         sample = SampleBRDF_COAT(matID, o, n_s, n_g, seed);
     }
-    else if(strategy == 3){ //sheen
+    else if(strategy == 3){
         sample = SampleBRDF_SHEEN(matID, o, n_s, n_g, seed);
     }
     else{
         sample = SampleBRDF_Lambertian(matID, o, n_s, n_g, seed);
     }
 
-    //Reject invalid below-surface samples
+    //reject below surface samples
     float  Ng_wi  = dot(sample, n_g);
 
     if (!refract) {
-        //reflection
         if (Ng_wi <= 0.0f) {
             sample = reflect(sample, n_g);
             Ng_wi  = -Ng_wi;
         }
     } else {
-        //transmission wants
         if (Ng_wi >= 0.0f) {
             sample = reflect(sample, n_g);
             Ng_wi  = -Ng_wi;
@@ -123,17 +113,15 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
 }
 
 
-//====================================================================
+//====================================
 //COMBINED BRDF DATA
-//====================================================================
+//====================================
 struct BrdfData {
     float3 val;
     float pdf;
 };
 
-//KEEP, pdf-only helper for callers that don't need the BRDF value.
-//Matches EvaluateAndPdf_COMBINED's pdf math: zero-weight lobes contribute
-//nothing to the sum, so the corresponding BRDF_PDF_* helper is skipped.
+//pdf only path, mirrors EvaluateAndPdf_COMBINED's pdf math
 inline float BRDF_PDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -151,16 +139,10 @@ inline float BRDF_PDF_COMBINED(
     return pdf;
 }
 
-//====================================================================
+//====================================
 //COMBINED BRDF EVALUATION
-//====================================================================
-//Full material model evaluation.
-//Each lobe branches on its own sampling probability, when p.X < EPSILON
-//the lobe's evaluation, pdf, and transmittance update are all skipped.
-//SER keeps the branches coherent across materials with similar profiles.
-//Gate-propagation is safe, individual material helpers return
-//transmittance = 1 when their raw weight is ~0. Sheen/Coat early-out in
-//their own impls, GGX corner-cases fall within numerical tolerance.
+//====================================
+//each lobe skips eval, pdf, transmittance when p.X < EPSILON, SER keeps branches coherent
 inline float3 EvaluateBRDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -194,17 +176,15 @@ inline float3 EvaluateBRDF_COMBINED(
     return f;
 }
 
-//====================================================================
+//====================================
 //FUSED EVAL AND PDF
-//====================================================================
-//Same branching discipline as EvaluateBRDF_COMBINED.
-//The pdf sum is p.Pdiff*pd + p.Pspec*ps + p.Pcoat*pc + p.Psheen*psh, so a
-//zero weight nulls that lobe's pdf contribution and its pdf helper can be
-//skipped outright.
+//====================================
+//ggxNoReflect must match the value passed to SampleBRDF at the same vertex
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, float localPr, float localPm, float etai, float etat)
+    float3 localKd, float localPr, float localPm, float etai, float etat,
+    bool ggxNoReflect = false)
 {
     BrdfData res;
     res.val = 0.0f;
@@ -229,7 +209,7 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate    *= cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
         res.val += gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         gate    *= gr.t;
@@ -239,4 +219,77 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         res.pdf += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
     }
     return res;
+}
+
+
+//====================================
+//X1 SHARP REFLECTION SPLIT INTEGRAL
+//====================================
+//peel delta GGX/coat off the primary BSDF, the explicit reflection ray and NRC carry the tail
+
+inline bool ShouldDropDeltaGGX(float Pr, float Pm)
+{
+    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (Pm < 0.5f);
+}
+
+inline bool IsSmoothTransmissive(uint matID, float Pr)
+{
+    return (Pr < SMOOTH_SPECULAR_THRESHOLD) && (LoadKd_w(matID) < (1.0f - EPSILON));
+}
+
+inline bool ShouldDropDeltaCoat(uint matID)
+{
+    return (LoadPc(matID) > 0.0f) && (LoadPcr(matID) < SMOOTH_SPECULAR_THRESHOLD);
+}
+
+//drops the requested lobes and renormalises, must use the same sp for sample and eval
+inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
+{
+    if (dropGGX)  sp.Pspec = 0.0f;
+    if (dropCoat) sp.Pcoat = 0.0f;
+
+    float total = sp.Psheen + sp.Pcoat + sp.Pspec + sp.Pdiff;
+    if (total > 0.0f) {
+        const float inv = 1.0f / total;
+        sp.Psheen *= inv;
+        sp.Pcoat  *= inv;
+        sp.Pspec  *= inv;
+        sp.Pdiff  *= inv;
+    } else {
+        sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f; sp.Pdiff = 1.0f;
+    }
+    return sp;
+}
+
+//combined Fresnel for the dropped delta lobes, coat on top, GGX gets what passes through
+inline float3 ComputeSharpReflectionFresnel(
+    uint   matID,
+    float3 V,
+    float3 N,
+    float  etai,
+    float  etat,
+    float  Pm,
+    bool   dropGGX,
+    bool   dropCoat)
+{
+    float3 F              = float3(0, 0, 0);
+    float3 transAfterCoat = float3(1, 1, 1);
+
+    if (dropCoat)
+    {
+        const float  pc    = saturate(LoadPc(matID));
+        const float3 F_c   = FresnelDielectricTIR(V, N, etai, etat);
+        const float3 lobeC = pc * F_c;
+        F             += lobeC;
+        transAfterCoat = max(float3(0, 0, 0), float3(1, 1, 1) - lobeC);
+    }
+
+    if (dropGGX)
+    {
+        //delta limit collapses H to N, Fresnel evaluates at the view angle
+        const float3 F_d = FresnelDielectricTIR(V, N, etai, etat);
+        F += transAfterCoat * (1.0f - Pm) * F_d;
+    }
+
+    return max(float3(0, 0, 0), F);
 }

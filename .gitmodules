@@ -1,0 +1,3 @@
+[submodule "Pathtracer/third_party/tiny-cuda-nn"]
+	path = Pathtracer/third_party/tiny-cuda-nn
+	url = https://github.com/NVlabs/tiny-cuda-nn.git

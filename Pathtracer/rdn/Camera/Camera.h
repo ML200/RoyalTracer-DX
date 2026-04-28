@@ -1,8 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Camera/Camera.h — Camera state, GPU buffer, jitter, and input.
-//                   Self-contained; knows nothing about rendering.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//CAMERA STATE GPU BUFFER JITTER INPUT
+//====================================
+//self-contained, no rendering knowledge
 
 #include "../Common.h"
 #include "../glm/gtc/type_ptr.hpp"
@@ -13,16 +13,22 @@ class Camera {
 public:
     void Init(ID3D12Device* device, UINT width, UINT height);
 
-    // ── Per-frame ────────────────────────────────────────────────
+    //====================================
+    //PER-FRAME
+    //====================================
     void Update(float dt, bool keysDown[256], float aspectRatio);
     void UploadGPUBuffer(float aspectRatio);
     void AdvanceFrame();
 
-    // ── Input ────────────────────────────────────────────────────
+    //====================================
+    //INPUT
+    //====================================
     void OnMouseButton(int x, int y);
     void OnMouseMove(int x, int y, bool lmb, bool rmb, bool mmb);
 
-    // ── Accessors ────────────────────────────────────────────────
+    //====================================
+    //ACCESSORS
+    //====================================
     ID3D12Resource*           GPUBuffer()    const { return m_buffer.Get(); }
     UINT                      BufferSize()   const { return m_bufferSize; }
     XMMATRIX                  ViewMatrix()   const { return m_viewMatrix; }
@@ -37,14 +43,12 @@ public:
 
     nv_helpers_dx12::Manipulator& Manipulator() { return nv_helpers_dx12::CameraManip; }
 
-    // ── Editor-friendly state ────────────────────────────────────
+    //====================================
+    //EDITOR-FRIENDLY STATE
+    //====================================
     float   fovDegrees  = 60.0f;
-    //Purely projection-matrix parameters. Primary rays are path-traced
-    //so there's no actual near-plane culling; near/far exist only to
-    //feed DLSS-RR's projection and any host-side clip-space math. Keep
-    //near above ~0.01 so DLSS's derived view/clip math stays well-
-    //conditioned (very small values collapse the z-to-NDC mapping and
-    //produce orientation-dependent stability issues in the denoiser).
+    //projection-matrix params only, paths traced so no near-plane culling
+    //keep near above ~0.01 so DLSS-RR projection stays well-conditioned
     float   nearPlane   = 0.01f;
     float   farPlane    = 10000.0f;
     float   moveSpeed   = 5.0f;
@@ -57,10 +61,10 @@ private:
     UINT                           m_bufferSize = 0;
 
     XMMATRIX m_viewMatrix          = XMMatrixIdentity();
-    XMMATRIX m_projMatrix          = XMMatrixIdentity(); // jittered
+    XMMATRIX m_projMatrix          = XMMatrixIdentity();
     XMMATRIX m_projMatrixUnjittered= XMMatrixIdentity();
     XMMATRIX m_prevView            = XMMatrixIdentity();
-    XMMATRIX m_prevProj            = XMMatrixIdentity(); // jittered
+    XMMATRIX m_prevProj            = XMMatrixIdentity();
     XMMATRIX m_prevProjUnjittered  = XMMatrixIdentity();
 
     float    m_jitterX = 0.0f, m_jitterY = 0.0f;

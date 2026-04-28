@@ -1,8 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════
-// Scene/AssetLoader.cpp — Creates SceneModel + SceneInstance entries
-//                         Batched texture uploads to avoid TDR on
-//                         large scenes (e.g. 4K Sponza).
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//ASSET LOADER
+//====================================
+//creates SceneModel + SceneInstance entries
+//batched texture uploads to avoid TDR on large scenes
 
 #include "../stdafx.h"
 #include <fstream>
@@ -10,10 +10,6 @@
 #include "OmmBuilder.h"
 #include "../DXRHelper.h"
 
-// How many textures to upload per command-list submission.
-// Each 4K RGBA mip chain is ~85 MB of upload + default-heap traffic.
-// 4 textures ≈ 340 MB per batch — well under the 2-second TDR window
-// on any modern GPU, and keeps peak staging memory around 340 MB.
 static constexpr UINT TEXTURE_BATCH_SIZE = 4;
 
 MeshSplitResult AssetLoader::SplitOpaqueAlpha(
@@ -124,6 +120,17 @@ void AssetLoader::LoadModels(
             gpu.opaqueTriCount = split.opaqueTriCount;
             gpu.alphaTriCount  = split.alphaTriCount;
             gpu.materialIDBase = (UINT)scene.materialIDs.size();
+
+            // Object-space AABB — one pass over vertices, caches the
+            // bounds NRC needs for its position normalization.
+            for (const auto& v : gpu.cpuVertices) {
+                gpu.localAabbMin.x = std::min(gpu.localAabbMin.x, v.position.x);
+                gpu.localAabbMin.y = std::min(gpu.localAabbMin.y, v.position.y);
+                gpu.localAabbMin.z = std::min(gpu.localAabbMin.z, v.position.z);
+                gpu.localAabbMax.x = std::max(gpu.localAabbMax.x, v.position.x);
+                gpu.localAabbMax.y = std::max(gpu.localAabbMax.y, v.position.y);
+                gpu.localAabbMax.z = std::max(gpu.localAabbMax.z, v.position.z);
+            }
 
             scene.materialIDs.insert(scene.materialIDs.end(),
                 gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end());

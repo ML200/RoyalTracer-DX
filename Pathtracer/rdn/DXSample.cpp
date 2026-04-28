@@ -31,13 +31,12 @@ DXSample::~DXSample()
 {
 }
 
-// Helper function for resolving the full path of assets.
 std::wstring DXSample::GetAssetFullPath(LPCWSTR assetName)
 {
 	return m_assetsPath + assetName;
 }
 
-// Acquire the first available hardware adapter that supports D3D12.
+//first D3D12-capable hardware adapter
 _Use_decl_annotations_
 void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAdapter)
 {
@@ -51,26 +50,23 @@ void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAda
         adapter->GetDesc1(&desc);
 
 
-        // Convert the adapter name to a wide string and print it
         std::wstring adapterName(desc.Description);
         std::wstring message = L"Enumerating Adapter: " + adapterName + L"\n";
         OutputDebugString(reinterpret_cast<LPCSTR>(message.c_str()));
 
         if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
         {
-            // Don't select the Basic Render Driver adapter.
+            //skip Basic Render Driver
             continue;
         }
 
-        // Check to see if the adapter supports Direct3D 12.
         ComPtr<ID3D12Device> testDevice;
         if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, _uuidof(ID3D12Device), reinterpret_cast<void**>(testDevice.GetAddressOf()))))
         {
-            // Now check for raytracing support.
+            //DXR support check
             D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
             if (SUCCEEDED(testDevice->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))))
             {
-                // This adapter supports DXR.
                 dxrGPU = L"Enumerating Adapter: " + adapterName + L"\n";
                 break;
             }
@@ -84,20 +80,18 @@ void DXSample::GetHardwareAdapter(IDXGIFactory2* pFactory, IDXGIAdapter1** ppAda
 }
 
 
-// Helper function for setting the window's title text.
 void DXSample::SetCustomWindowText(LPCWSTR text)
 {
 	std::wstring windowText = m_title + L": " + text;
 	SetWindowText(Win32Application::GetHwnd(), reinterpret_cast<LPCSTR>(windowText.c_str()));
 }
 
-// Helper function for parsing any supplied command line args.
 _Use_decl_annotations_
 void DXSample::ParseCommandLineArgs(WCHAR* argv[], int argc)
 {
 	for (int i = 1; i < argc; ++i)
 	{
-		if (_wcsnicmp(argv[i], L"-warp", wcslen(argv[i])) == 0 || 
+		if (_wcsnicmp(argv[i], L"-warp", wcslen(argv[i])) == 0 ||
 			_wcsnicmp(argv[i], L"/warp", wcslen(argv[i])) == 0)
 		{
 			m_useWarpDevice = true;

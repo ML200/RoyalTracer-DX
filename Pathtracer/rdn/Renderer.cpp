@@ -1,12 +1,13 @@
-// ═══════════════════════════════════════════════════════════════════
-// Renderer.cpp — Slim orchestrator: init, update, render, destroy.
-//                All heavy logic lives in the modules.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//RENDERER ORCHESTRATOR
+//====================================
+//init, update, render, destroy, heavy logic in modules
 
 #include "stdafx.h"
 #include "Renderer.h"
 #include "Windowsx.h"
 #include "ReuseTextureGen.h"
+#include "NRC/NrcNetwork.h"
 #include <random>
 
 #undef SL_CHECK
@@ -19,27 +20,165 @@ Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
-    // Define the rendering pass pipeline (data-driven)
+    // Define the rendering pass pipeline (data-driven).
+    // NRC integration. Main chain always runs — debug view is purely
+    // additive, a W×H per-pixel inference tacked on after training.
+    //   cuda:nrc_frame_begin   — zero counters, invalidate PendingGI
+    //   <raygen>               — append cache-term + training records
+    //   cuda:nrc_inference     — tcnn inference on raygen's records
+    //                            (class-0 cache-term + class-1 tail seeds)
+    //   Pass_nrc_resolve_v8    — stitch L̂_s into the reservoir via RIS
+    //   cuda:nrc_train         — backward tail pass + 4× training step
+    //   (debug view only, scheduled regardless — shaders self-gate:)
+    //     Pass_nrc_debug_query   — write per-pixel x1 features into the
+    //                              now-consumed inference buffer
+    //     cuda:nrc_debug_inference — one additional inference for the
+    //                                per-pixel camera-hit queries
+    //     Pass_nrc_debug_present — copy L̂_s into gOutput slice 3
     m_passes.Build({
-        L"Pass_raygen_v8.hlsl|rg",          L"barrier",
-        L"Pass_temp_gi_v8.hlsl|rg",     L"barrier",
-        //L"Pass_boil_gi_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_select_v8.hlsl|cs:16x16", L"barrier",
-        L"Pass_spat_gi_shift_v8.hlsl|rg",         L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",       L"barrier",
-        L"Pass_dup_gi_v8.hlsl|cs:16x16",         L"barrier",
-        L"Pass_shading_v8.hlsl|cs:16x16",   L"barrier",
-        L"dlss",                             L"barrier",
-        L"Pass_postprocess_v8.hlsl|cs:8x4",  L"barrier",
+        L"cuda:nrc_frame_begin",                        L"barrier",
+        L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
+        L"cuda:nrc_inference",                          L"barrier",
+        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
+        L"cuda:nrc_train",                              L"barrier",
+        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        L"cuda:nrc_debug_inference",                    L"barrier",
+        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
+        L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
+        L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
+        L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
+        L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
+        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
+        L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
+        L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
+        L"dlss",                                        L"barrier",
+        L"Pass_postprocess_v8.hlsl|cs:8x4",             L"barrier",
     });
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Init
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//INIT
+//====================================
 void Renderer::InitDevice() {
     try {
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
+
+        // CUDA/D3D12 interop. Optional — if this fails (no CUDA device, LUID
+        // mismatch, etc.) the renderer runs fine; cuda:* passes become no-ops.
+        if (m_cudaInterop.Init(m_ctx.Device())) {
+            m_cudaFence = m_cudaInterop.CreateFence(L"Cuda_Interop_Fence");
+            LOG(L"[CUDA] Interop ready");
+
+            // Smoke test callback: exercises the fence split + tcnn once on first
+            // frame, then no-ops but still round-trips the fence every frame so
+            // the D3D12<->CUDA sync path stays live and exercised.
+            RegisterCudaOp(L"nrc_smoke", [this]{
+                static bool s_ranOnce = false;
+                if (s_ranOnce) return;
+                s_ranOnce = true;
+                const bool ok = nrc::SmokeTest(m_cudaInterop.Stream());
+                LOG(L"[NRC] SmokeTest " << (ok ? L"OK" : L"FAILED"));
+            });
+
+            // ── NRC setup ─────────────────────────────────────────
+            // Cap inference capacity at 2 × W*H so each pixel can fit a
+            // cache-termination record AND a depth-0 sharp-reflection record
+            // (raygen splits the BSDF on smooth dielectric x1 hits and queries
+            // NRC at the perfect-mirror reflection's hit point). Round up to
+            // tcnn's batch granularity. The debug view's inference reuses
+            // these buffers — it runs after the main chain has already
+            // consumed them.
+            const uint32_t pixelCount = GetWidth() * GetHeight();
+            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
+
+            m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
+            m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
+            m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
+            m_nrcTrainRecords = m_cudaInterop.CreateBuffer(nrc::TrainingBytes       (),                       L"NRC_TrainRecords");
+            m_nrcCounters     = m_cudaInterop.CreateBuffer(nrc::CountersBytes       (),                       L"NRC_Counters");
+
+            const bool allocOK = m_nrcInferenceIn.resource && m_nrcInferenceOut.resource
+                              && m_nrcPendingGI.resource   && m_nrcTrainRecords.resource
+                              && m_nrcCounters.resource;
+            if (!allocOK) {
+                LOG(L"[NRC] Shared buffer allocation failed — NRC disabled");
+            } else if (!m_nrcNetwork.Init()) {
+                LOG(L"[NRC] tcnn network init failed — NRC disabled");
+            } else {
+                m_nrcReady = true;
+                LOG(L"[NRC] Ready: infCapacity=" << m_nrcInferenceCapacity
+                    << L" trainingPaths="       << nrc::kMaxTrainingPaths);
+            }
+
+            // Frame start: zero the counters, invalidate every PendingGI
+            // record, and clear the training path-meta section (leaves
+            // last frame's stale numVertices=0 so the backward-fill
+            // kernel skips unused paths).
+            RegisterCudaOp(L"nrc_frame_begin", [this]{
+                if (!m_nrcReady) return;
+                void* s = m_cudaInterop.Stream();
+                nrc::Memzero(s, m_nrcCounters.cudaPtr,    m_nrcCounters.sizeBytes);
+                nrc::Memfill(s, m_nrcPendingGI.cudaPtr,   0xFF, m_nrcPendingGI.sizeBytes);
+                // Only clear the meta header — per-vertex payload is
+                // overwritten by raygen for freshly-allocated path ids.
+                nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
+            });
+
+            // Main-chain inference. Size the batch by inference capacity rather
+            // than the device-side counter. ReadU32 used to do a host
+            // cudaStreamSynchronize every frame, which turned any main-stream
+            // backlog (raygen, interop fence waits, driver preemption) into a
+            // CPU stall on the hot path -- the classic source of random
+            // multi-ms frame drops. Slots past the actual raygen write count
+            // have stale features, but nothing downstream reads their outputs:
+            // resolve only touches slots referenced by PendingGI (all < count),
+            // debug_query overwrites its own slots before its own inference.
+            // Extra compute cost is deterministic (cap - actual) samples, worth
+            // the zero-stall guarantee.
+            RegisterCudaOp(L"nrc_inference", [this]{
+                if (!m_nrcReady) return;
+                void* s = m_cudaInterop.Stream();
+                const uint32_t padded = nrc::AlignBatch(m_nrcInferenceCapacity);
+                m_nrcNetwork.Inference(
+                    s,
+                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
+                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
+                    padded);
+            });
+
+            // Additional inference for the debug view only. Runs AFTER
+            // training, so main inferenceOut has already been consumed
+            // by resolve + train — we're free to overwrite the buffers
+            // with per-pixel predictions for Pass_nrc_debug_present.
+            // Debug_query wrote one query per pixel at slot = pixelIdx,
+            // so count is W*H.
+            RegisterCudaOp(L"nrc_debug_inference", [this]{
+                if (!m_nrcReady || !m_nrcSettings.debugView) return;
+                void* s = m_cudaInterop.Stream();
+                const uint32_t count   = GetWidth() * GetHeight();
+                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
+                const uint32_t padded  = nrc::AlignBatch(clamped);
+                m_nrcNetwork.Inference(
+                    s,
+                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
+                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
+                    padded);
+            });
+
+            // Backward-fill the training targets from the per-path meta,
+            // walk each path's bucket in reverse, emit (features, target)
+            // rows into tcnn-ready scratch, then run the four SGD steps.
+            RegisterCudaOp(L"nrc_train", [this]{
+                if (!m_nrcReady) return;
+                m_nrcNetwork.TrainFrame(
+                    m_cudaInterop.Stream(),
+                    m_nrcTrainRecords.cudaPtr,
+                    m_nrcInferenceOut.cudaPtr);
+            });
+        } else {
+            LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
+        }
+
         m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
@@ -164,9 +303,9 @@ void Renderer::InitSceneGPU() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Update
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//UPDATE
+//====================================
 void Renderer::UpdateRenderer(float dt) {
     using hrc = std::chrono::high_resolution_clock;
 
@@ -234,7 +373,10 @@ void Renderer::UpdateRenderer(float dt) {
     // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_fps, m_frameStats);
+                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_nrcSettings,
+                  m_fps, m_frameStats);
+    // Debug-view checkbox only enables the calculation into slice 3.
+    // Cycle to it with 'C' when you want to look at it.
 
     // Prepare instance data on CPU shadow buffer (overlaps with GPU)
     auto t_instStart = hrc::now();
@@ -572,9 +714,9 @@ void Renderer::RebuildDLSSDescriptors() {
     dlssUAV(m_dlss.BiasHint(),         DXGI_FORMAT_R8_UNORM);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Resize
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RESIZE
+//====================================
 void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     if (newWidth == 0 || newHeight == 0) return;
     if (newWidth == m_width && newHeight == m_height) return;
@@ -587,6 +729,11 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     m_ctx.WaitForGPU();
+    // The CUDA aux stream runs training in parallel with raygen and is
+    // not covered by WaitForGPU. We must drain it before reallocating
+    // any NRC buffers below — otherwise an in-flight training kernel
+    // could be reading inferenceOut / trainRecords while we free them.
+    if (m_nrcReady) m_nrcNetwork.WaitIdle();
 
     m_width       = newWidth;
     m_height      = newHeight;
@@ -613,12 +760,42 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateRaytracingOutputBuffer();
     CreateStreamingCompactionBuffers();
 
+    // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
+    // sized to 2·W·H (worst case: every pixel issues a cache-termination
+    // record AND a depth-0 sharp-reflection record), and PendingGI is one
+    // slot per pixel — both grow if the user enlarges the window and raygen
+    // would otherwise scribble past the end of the old buffer. TrainRecords
+    // and Counters are fixed-size and don't need recreation.
+    if (m_nrcReady) {
+        const uint32_t pixelCount = newWidth * newHeight;
+        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
+
+        // Reset old buffers FIRST so the cudaInterop allocator releases
+        // the backing D3D12 / CUDA imports before we ask it for new ones
+        // — avoids a momentary 2× VRAM peak on large windows.
+        m_nrcInferenceIn  = {};
+        m_nrcInferenceOut = {};
+        m_nrcPendingGI    = {};
+
+        m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
+        m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
+        m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
+
+        if (!m_nrcInferenceIn.resource || !m_nrcInferenceOut.resource || !m_nrcPendingGI.resource) {
+            LOG(L"[NRC] Resize realloc failed — disabling NRC");
+            m_nrcReady = false;
+        }
+    }
+
     // Recreate DLSS resources at new display resolution
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
 
-    // Update descriptors for all resolution-dependent resources
+    // Update descriptors for all resolution-dependent resources. Includes
+    // a re-bind of NRC slots 58-60 (the resolution-dependent NRC UAVs)
+    // so the descriptor table doesn't dangle on the freed resources.
     RebuildResolutionDependentDescriptors();
     RebuildDLSSDescriptors();
+    RebuildNrcDescriptors();
 
     // Disable temporal reuse for 2 frames (old reservoirs are stale)
     m_dlssModeChangedFrames = 2;
@@ -638,6 +815,42 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     LOG(L"[Resize] " << newWidth << L"x" << newHeight);
+}
+
+// Re-creates the UAV descriptors for the resolution-dependent NRC
+// buffers (slots 58, 59, 60). The fixed-size train records / counters
+// at slots 61-62 are unchanged so we leave their descriptors alone.
+// Mirrors the layout in CreateShaderResourceHeap (Renderer_Pipeline.cpp
+// slots 58..62).
+void Renderer::RebuildNrcDescriptors() {
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    auto writeRawUAVAt = [&](UINT slot, const CudaInterop::Buffer& b) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        if (b.resource) {
+            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
+            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
+            ud.Buffer.NumElements = (UINT)((b.sizeBytes + 3u) / 4u);
+            dev->CreateUnorderedAccessView(b.resource.Get(), nullptr, &ud, h);
+        } else {
+            // Null-UAV fallback so the table stays valid if interop init failed.
+            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
+            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
+            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
+            ud.Buffer.NumElements = 1;
+            dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+        }
+    };
+
+    writeRawUAVAt(58, m_nrcInferenceIn);   // u40
+    writeRawUAVAt(59, m_nrcInferenceOut);  // u41
+    writeRawUAVAt(60, m_nrcPendingGI);     // u42
+    // Slots 61 (TrainRecords) and 62 (Counters) are fixed-size buffers
+    // whose descriptors set up at init are still valid after a resize.
 }
 
 void Renderer::RebuildResolutionDependentDescriptors() {
@@ -712,9 +925,9 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Render
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RENDER
+//====================================
 void Renderer::RenderFrame() {
     using hrc = std::chrono::high_resolution_clock;
     static auto s_lastTime = hrc::now();
@@ -765,9 +978,9 @@ void Renderer::RenderFrame() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Destroy
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//DESTROY
+//====================================
 void Renderer::DestroyRenderer() {
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
@@ -780,7 +993,9 @@ void Renderer::DestroyRenderer() {
     m_ctx.Shutdown();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PROCEDURAL MESH CREATION
+//====================================
 UINT Renderer::CreateProceduralMesh(
     const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
     const Material& material)
@@ -819,7 +1034,9 @@ UINT Renderer::CreateProceduralMesh(
     return meshIndex;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//MESH INSTANCE CREATION
+//====================================
 UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material)
 {
     const auto& src = m_scene.meshes[sourceMeshIndex];
@@ -849,7 +1066,9 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     return meshIndex;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SCENE STRUCTURAL CHANGE
+//====================================
 void Renderer::HandleSceneStructuralChange() {
     m_scene.RebuildTLASInstanceList();
     m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
@@ -878,7 +1097,9 @@ void Renderer::HandleSceneStructuralChange() {
     m_scene.lightTreeDirty   = true;
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//INPUT CAPTURE AND KEY HANDLERS
+//====================================
 bool Renderer::WantsKeyboard() const { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard; }
 bool Renderer::WantsMouse() const    { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse; }
 void Renderer::HandleKeyUp(UINT8 key) {
@@ -887,9 +1108,10 @@ void Renderer::HandleKeyUp(UINT8 key) {
     if (key == VK_F1) m_editor.ToggleVisibility();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// PopulateCommandList — the frame's GPU work
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//POPULATE COMMAND LIST
+//====================================
+//the frame's GPU work
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 
@@ -1041,7 +1263,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[24] = {};
+    UINT rsConsts[32] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1075,9 +1297,126 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
     memcpy(&rsConsts[23], &rs.rejDistance,  4);
 
+    // NRC control constants (slots 24-27). NRC is only driving the
+    // pipeline when the interop + tcnn stack initialised successfully —
+    // we mask out enabled/training when m_nrcReady is false so the
+    // fallback path stays exactly like the pre-NRC pipeline.
+    //
+    // Scene AABB is auto-recomputed every frame from mesh localAabbs +
+    // live instance transforms. Cost is O(N_instances · 8) corner
+    // transforms, a handful of microseconds even for dense scenes, so
+    // dynamic content (moving instances, live-edited transforms) keeps
+    // NRC's position normalization in lockstep with the actual world.
+    {
+        using namespace DirectX;
+        XMVECTOR bMin = XMVectorReplicate(+FLT_MAX);
+        XMVECTOR bMax = XMVectorReplicate(-FLT_MAX);
+        bool anyBounds = false;
+        for (const auto& inst : m_scene.instances) {
+            if (inst.meshIndex >= m_scene.meshes.size()) continue;
+            const MeshGPU& mesh = m_scene.meshes[inst.meshIndex];
+            // Skip unset / empty meshes.
+            if (mesh.localAabbMin.x > mesh.localAabbMax.x) continue;
+            const XMFLOAT3 lm = mesh.localAabbMin;
+            const XMFLOAT3 lM = mesh.localAabbMax;
+            const XMFLOAT3 corners[8] = {
+                {lm.x, lm.y, lm.z}, {lM.x, lm.y, lm.z},
+                {lm.x, lM.y, lm.z}, {lM.x, lM.y, lm.z},
+                {lm.x, lm.y, lM.z}, {lM.x, lm.y, lM.z},
+                {lm.x, lM.y, lM.z}, {lM.x, lM.y, lM.z},
+            };
+            const XMMATRIX& w = inst.worldTransform;
+            for (int k = 0; k < 8; ++k) {
+                XMVECTOR c = XMLoadFloat3(&corners[k]);
+                c = XMVector3Transform(c, w);
+                bMin = XMVectorMin(bMin, c);
+                bMax = XMVectorMax(bMax, c);
+            }
+            anyBounds = true;
+        }
+
+        if (anyBounds) {
+            const XMVECTOR center  = XMVectorScale(XMVectorAdd(bMin, bMax), 0.5f);
+            const XMVECTOR halfExt = XMVectorScale(XMVectorSubtract(bMax, bMin), 0.5f);
+            const float ext = std::max({
+                XMVectorGetX(halfExt),
+                XMVectorGetY(halfExt),
+                XMVectorGetZ(halfExt)
+            });
+            XMFLOAT3 c3; XMStoreFloat3(&c3, center);
+            m_nrcSettings.sceneCenter = { c3.x, c3.y, c3.z };
+            // Floor at 1.0 so empty / single-point scenes don't divide
+            // by zero in the shader normalization.
+            m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
+        }
+
+        // Consume editor-requested weight reinit before any NRC work fires
+        // on this frame. Network::ReinitWeights drains auxStream internally
+        // and the follow-up cudaMemset on EMA forces a global device sync,
+        // so the main interop stream's prior-frame work is also flushed by
+        // the time the new weights land. Keep this BEFORE the adaptive-tile
+        // block so the post-reset lastValidVertices=0 is the value the
+        // tile-size feedback reads.
+        if (m_nrcReady && m_nrcSettings.requestReinit) {
+            const bool ok = m_nrcNetwork.ReinitWeights();
+            LOG(L"[NRC] ReinitWeights " << (ok ? L"OK" : L"FAILED"));
+            m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
+            m_nrcSettings.requestReinit = false;
+        }
+
+        // Adaptive tile side per paper §3.5. With T = target records,
+        // V = previous frame's actual records, and S = previous tile
+        // side, the new side is S · sqrt(V/T) — vertex count scales
+        // ~quadratically with 1/tile_side (training pixel density).
+        // Damp by averaging with the old side so transient variance
+        // (sky-dominant frames, big visibility changes) doesn't yank
+        // the size around. First frame uses the initial value because
+        // LastValidVertexCount returns 0 before TrainFrame ever ran.
+        if (m_nrcReady && m_nrcSettings.trainingEnabled) {
+            const uint32_t prev = m_nrcNetwork.LastValidVertexCount();
+            if (prev > 0u) {
+                const float target  = (float)nrc::kTrainingRecordsPerFrame;
+                const float ratio   = (float)prev / target;
+                const float scaled  = (float)m_nrcTrainTileSide * sqrtf(ratio);
+                const float blended = 0.5f * (float)m_nrcTrainTileSide + 0.5f * scaled;
+                int32_t s = (int32_t)(blended + 0.5f);
+                if (s < (int32_t)nrc::kMinTrainingTileSide) s = (int32_t)nrc::kMinTrainingTileSide;
+                if (s > (int32_t)nrc::kMaxTrainingTileSide) s = (int32_t)nrc::kMaxTrainingTileSide;
+                m_nrcTrainTileSide = (uint32_t)s;
+            }
+        }
+
+        uint32_t nrcFlags = 0u;
+        if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
+        if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
+        if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
+        if (m_nrcReady && m_nrcSettings.sharpReflections)    nrcFlags |= nrc::flags::kSharpReflections;
+        nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
+        rsConsts[24] = nrcFlags;
+        memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
+        memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);
+        // Slot 27 is explicit padding — the shader's float3
+        // nrc_scene_center starts at slot 28 (next 16-byte-aligned
+        // cbuffer register). Writing the center at 27 would be
+        // silently dropped by HLSL's cbuffer packing rules and the
+        // shader would read a shifted, zero-valued scale_inv.
+        rsConsts[27] = 0u;
+        // 0.5 / halfExtent maps the scene AABB to exactly [0, 1]³ via
+        // x_norm = (x - center) * scale_inv + 0.5. HashGrid's lookup
+        // table is indexed in [0, 1] — anything outside that range
+        // wraps via the hash function and produces nonsensical features.
+        // (Old factor was 1.0 / halfExtent for [-0.5, 1.5] which the
+        // periodic TriangleWave tolerated; HashGrid does not.)
+        const float sceneScaleInv = 0.5f / m_nrcSettings.sceneExtent;
+        memcpy(&rsConsts[28], &m_nrcSettings.sceneCenter.x, 4);
+        memcpy(&rsConsts[29], &m_nrcSettings.sceneCenter.y, 4);
+        memcpy(&rsConsts[30], &m_nrcSettings.sceneCenter.z, 4);
+        memcpy(&rsConsts[31], &sceneScaleInv, 4);
+    }
+
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 24, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 32, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
@@ -1241,6 +1580,31 @@ void Renderer::PopulateCommandList() {
             dispH = GetHeight();
 
             // Rebind our heap (DLSS may have changed it)
+            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
+            cmdList->SetDescriptorHeaps(1, h);
+            break;
+        }
+
+        case Stage::CudaOp:
+        {
+            if (!m_cudaInterop.IsReady() || !m_cudaFence.fence) break;
+            auto it = m_cudaOps.find(p.file);
+            if (it == m_cudaOps.end()) break;
+
+            // D3D12 -> CUDA: flush current list and signal fence at value N.
+            const UINT64 preVal  = ++m_cudaFenceValue;
+            m_ctx.CloseExecuteAndSignal(m_cudaFence.fence.Get(), preVal);
+            m_cudaInterop.CudaWait(m_cudaFence, preVal);
+
+            // CUDA work (tcnn kernels) enqueued on the interop stream.
+            it->second();
+
+            // CUDA -> D3D12: signal N+1 from CUDA, queue-wait, reopen list.
+            const UINT64 postVal = ++m_cudaFenceValue;
+            m_cudaInterop.CudaSignal(m_cudaFence, postVal);
+            m_ctx.WaitAndReopen(m_cudaFence.fence.Get(), postVal);
+
+            // cmdList was Reset — rebind the descriptor heap for subsequent passes.
             ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
             cmdList->SetDescriptorHeaps(1, h);
             break;

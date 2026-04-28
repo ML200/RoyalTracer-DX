@@ -1,6 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════
-// Editor/Editor.cpp — Model-level scene hierarchy, live materials
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//EDITOR
+//====================================
+//model-level scene hierarchy, live materials
 
 #include "../stdafx.h"
 #include "Editor.h"
@@ -37,7 +38,8 @@ void Editor::Shutdown() {
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
                   PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
-                  ReSTIRSettings& restir, float fps, const FrameStats& stats)
+                  ReSTIRSettings& restir, nrc::Settings& nrc,
+                  float fps, const FrameStats& stats)
 {
     if (!m_visible) return;
 
@@ -52,6 +54,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
+            ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
             ImGui::EndMenu();
@@ -83,6 +86,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
+    if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene);
 
@@ -95,9 +99,10 @@ void Editor::Render(ID3D12GraphicsCommandList* cmdList) {
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Scene Panel — one entry per loaded model
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SCENE PANEL
+//====================================
+//one entry per loaded model
 void Editor::DrawScenePanel(Scene& scene) {
     ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 450), ImGuiCond_FirstUseEver);
@@ -176,7 +181,9 @@ void Editor::DrawScenePanel(Scene& scene) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//CAMERA PANEL
+//====================================
 void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::SetNextWindowPos(ImVec2(10, 490), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(360, 180), ImGuiCond_FirstUseEver);
@@ -195,7 +202,9 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PASS PIPELINE PANEL
+//====================================
 void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::SetNextWindowPos(ImVec2(380, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, 400), ImGuiCond_FirstUseEver);
@@ -204,7 +213,8 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
 
     const char* stageNames[] = {
         "RayGen", "Compute", "FixedCompute", "Wavefront", "Barrier",
-        "LoopStart", "LoopEnd", "PingSwap", "ClearSort", "Callable", "DLSS"
+        "LoopStart", "LoopEnd", "PingSwap", "ClearSort", "Callable", "DLSS",
+        "CudaOp"
     };
 
     for (size_t i = 0; i < passes.Passes().size(); ++i) {
@@ -218,6 +228,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
             case Stage::Compute: color = ImVec4(0.3f,0.6f,0.9f,1); break;
             case Stage::Barrier: color = ImVec4(0.6f,0.6f,0.6f,1); break;
             case Stage::DLSS:    color = ImVec4(0.9f,0.6f,0.2f,1); break;
+            case Stage::CudaOp:  color = ImVec4(0.76f,0.46f,0.87f,1); break;
             case Stage::LoopStart: case Stage::LoopEnd: color = ImVec4(0.9f,0.9f,0.3f,1); break;
             default: break;
         }
@@ -238,7 +249,9 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//DLSS PANEL
+//====================================
 void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::SetNextWindowPos(ImVec2(380, 440), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, 200), ImGuiCond_FirstUseEver);
@@ -290,9 +303,9 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::End();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Material Inspector
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//MATERIAL INSPECTOR
+//====================================
 void Editor::DrawMaterialInspector(Scene& scene) {
     ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 700), ImGuiCond_FirstUseEver);
@@ -494,6 +507,57 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+    }
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Editor::DrawNRCPanel(nrc::Settings& n) {
+    ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("NRC")) { ImGui::End(); return; }
+
+    if (ImGui::CollapsingHeader("Pipeline", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable cache (terminate + resolve)", &n.enabled);
+        ImGui::SetItemTooltip("Off = pure ReSTIR PT. Cache termination + resolve are short-circuited.");
+
+        ImGui::Checkbox("Train", &n.trainingEnabled);
+        ImGui::SetItemTooltip("Off = weights frozen, inference still runs against whatever state was last trained.");
+
+        if (ImGui::Button("Reinitialize weights")) {
+            n.requestReinit = true;
+        }
+        ImGui::SetItemTooltip(
+            "Reseed the MLP and clear the EMA. Use this when the cache has\n"
+            "collapsed to all-zero / all-black and won't recover on its own.");
+    }
+
+    if (ImGui::CollapsingHeader("Debug view", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Show cache at primary vertex", &n.debugView);
+        ImGui::SetItemTooltip(
+            "Queries L̂_s at x1 per pixel, writes to gOutput slice 3.\n"
+            "Cycle to slice 3 with 'C' to view it.\n"
+            "Overrides cache termination in raygen while on.");
+    }
+
+    if (ImGui::CollapsingHeader("Termination", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Area-spread c", &n.areaSpreadC, 0.001f, 0.1f, "%.4f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Paper's c (eq. 3-4). Smaller = terminate earlier (more cache, more bias).");
+    }
+
+    if (ImGui::CollapsingHeader("Scene bounds (position encoding)")) {
+        // Auto-recomputed every frame from the scene AABB; shown here
+        // purely for diagnostic purposes, edits get overwritten.
+        ImGui::BeginDisabled(true);
+        ImGui::DragFloat3("Center (auto)",     &n.sceneCenter.x, 0.0f);
+        ImGui::DragFloat ("Half extent (auto)", &n.sceneExtent,  0.0f);
+        ImGui::EndDisabled();
+        ImGui::TextDisabled(
+            "Derived from mesh localAabbs \u00d7 live instance transforms.");
+    }
+
+    if (ImGui::CollapsingHeader("Optimizer")) {
+        ImGui::SliderFloat("LR scale", &n.learningRateScale, 0.01f, 10.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Reserved — a later turn will feed this into tcnn's Adam LR.");
     }
 
     ImGui::End();

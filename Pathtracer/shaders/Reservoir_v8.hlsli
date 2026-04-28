@@ -1,43 +1,38 @@
-//====================================================================
-//RIS RESERVOIR, UNIFIED DI + GI
-//====================================================================
-//matID acts as the path-kind discriminator:
-//matID < MATID_LIGHT_TRI: BSDF-sampled vertex at x2 with a real material, classic GI path, d >= 3.
-//matID == MATID_LIGHT_TRI: emissive-triangle NEE, d = 2. x2 is the hit position on the light,
-//n2_s is the light's surface normal, L2 is the emission.
-//matID == MATID_ENV_MISS: environment / sky sample, d = 2. x2 is a unit DIRECTION,
-//not a position. L2 is the radiance from that direction.
-//See Constants_v8.hlsli for the sentinel values.
+//====================================
+//RIS RESERVOIR UNIFIED DI+GI
+//====================================
+//matID discriminates path kind
+//matID < MATID_LIGHT_TRI, BSDF-sampled GI vertex at x2, d>=3
+//matID == MATID_LIGHT_TRI, NEE to emissive triangle, x2 is hit position, L2 is emission
+//matID == MATID_ENV_MISS, env/sky, x2 is unit direction, L2 is radiance
 struct Reservoir
 {
-    //Constant-after-hit payload
+    //constant-after-hit payload
     float3 x2;
     float3 n2_s;
     uint   objID;
-    uint   matID;      //discriminates path kind, see header comment
+    uint   matID;
     float2 uv;
-    float  eta;        //transmittance IOR at x2, stored at path creation
+    float  eta;
 
-    //Varying payload
+    //varying payload
     float3 L2;
     float3 V2;
-    float3 F;          //full RGB contribution, GetPHat(F) is the target magnitude
+    float3 F;
 
     float  W;
     uint   M;
-    float  w_sum;      //raygen-only, merge passes overwrite before use
+    float  w_sum;
 };
 
 
-//====================================================================
+//====================================
 //SOA FIELD SIZES AND PLANE OFFSETS
-//====================================================================
-//Per-field sizes, SoA layout, per-plane stride
-static const uint SZ_PACK1 = 16u;  //x2(12) + n2_s_packed(4)
+//====================================
+static const uint SZ_PACK1 = 16u;
 static const uint SZ_4     =  4u;
-static const uint SZ_12    = 12u;  //float3 F
+static const uint SZ_12    = 12u;
 
-//Plane cumulative offsets, bytes per pixel
 static const uint PLANE_PACK1 =  0u;
 static const uint PLANE_L2    = 16u;
 static const uint PLANE_V2    = 20u;
@@ -45,15 +40,15 @@ static const uint PLANE_OBJID = 24u;
 static const uint PLANE_UV    = 28u;
 static const uint PLANE_MATID = 32u;
 static const uint PLANE_W     = 36u;
-static const uint PLANE_F     = 40u;   //float3 -> 12 bytes
+static const uint PLANE_F     = 40u;
 static const uint PLANE_M     = 52u;
 static const uint PLANE_ETA   = 56u;
 static const uint PLANE_WSUM  = 60u;
 
-//====================================================================
+//====================================
 //SOA ADDRESS HELPERS
-//====================================================================
-//Tile-aligned pixel count, must match MapPixelID's 4x8 tile swizzle.
+//====================================
+//tile-aligned pixel count, must match MapPixelID's 4x8 swizzle
 uint numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
 uint addr_pack1(uint px)           { return px * SZ_PACK1; }
 uint addr_l2(uint px)              { uint N = numPx(); return N * PLANE_L2    + px * SZ_4; }
@@ -67,17 +62,15 @@ uint addr_m(uint px)               { uint N = numPx(); return N * PLANE_M     + 
 uint addr_eta(uint px)             { uint N = numPx(); return N * PLANE_ETA   + px * SZ_4; }
 uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + px * SZ_4; }
 
-//Scalar magnitude used throughout, luminance.
+//luminance
 inline float GetPHat(float3 v) {
     return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
 }
 
-//====================================================================
+//====================================
 //BRDF WRAPPERS
-//====================================================================
-//Thin aliases to isolate MIS callers from the underlying BXDF module.
-//Computes the sampling-strategy probabilities inline so the BXDF module
-//can branch on inactive lobes without burdening every caller.
+//====================================
+//thin aliases to isolate MIS callers from BXDF module
 float3 BSDF_term(
     uint   mID,
     float3 n_s,
@@ -94,15 +87,15 @@ float3 BSDF_term(
     return EvaluateBRDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
-//Geometry term uses the shading normal. Geometric normal has been retired.
+//geometry term uses shading normal
 float G_term(float3 n, float3 s)
 {
     return abs(dot(n, s));
 }
 
-//====================================================================
+//====================================
 //RESERVOIR STORE AND LOAD
-//====================================================================
+//====================================
 void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
 {
     float3 xO  = WorldToObjectPos(r.objID, r.x2);
@@ -143,15 +136,15 @@ Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
 
     r.M     = buf.Load(addr_m(pixelIdx));
     r.eta   = asfloat(buf.Load(addr_eta(pixelIdx)));
-    r.w_sum = 0.0f; //raygen-only, merge passes overwrite before use
+    r.w_sum = 0.0f;
 
     return r;
 }
 
 
-//====================================================================
+//====================================
 //PER-FIELD LOADS AND STORES
-//====================================================================
+//====================================
 uint load_objID(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(addr_objid(pixelIdx));
@@ -184,7 +177,7 @@ float3 load_V2(RWByteAddressBuffer b, uint pixelIdx)
     return UnpackNormal(b.Load(addr_v2(pixelIdx)));
 }
 
-//Distinct from Sample_Data's load_uv, which reads the sample G-buffer.
+//distinct from Sample_Data's load_uv which reads G-buffer
 float2 load_uv_res(RWByteAddressBuffer b, uint pixelIdx)
 {
     float2 r;
@@ -212,6 +205,11 @@ void store_wsum(RWByteAddressBuffer b, uint pixelIdx, float wsum)
     b.Store(addr_wsum(pixelIdx), asuint(wsum));
 }
 
+float load_wsum(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return asfloat(b.Load(addr_wsum(pixelIdx)));
+}
+
 uint load_M(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(addr_m(pixelIdx));
@@ -232,9 +230,9 @@ void store_F(RWByteAddressBuffer b, uint pixelIdx, float3 F)
     b.Store3(addr_f(pixelIdx), asuint(F));
 }
 
-//====================================================================
+//====================================
 //REJECTION AND VALIDITY
-//====================================================================
+//====================================
 inline bool RejectNormal(float3 n1, float3 n2, float threshold) {
     return dot(n1, n2) < threshold;
 }
@@ -257,16 +255,16 @@ inline void InvalidateReservoir_ShadingNormal(
     uint pixelIdx
 )
 {
-    //n2_s is stored in PACK1.w
+    //n2_s stored in PACK1.w
     buf.Store(addr_pack1(pixelIdx) + 12u, 0u);
 }
 
 
 
-//====================================================================
+//====================================
 //JACOBIAN HELPERS
-//====================================================================
-//Geometric jacobian, recomputable from positions and shading normal
+//====================================
+//geometric jacobian, recomputable from positions and shading normal
 inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
 {
     float3 d = x1 - x2;
@@ -276,20 +274,17 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
-//Safe jacobian ratio
 inline float JacobianRatio(float Jn, float Jc)
 {
     return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
 }
 
-//====================================================================
+//====================================
 //RECONNECTION
-//====================================================================
-//etai1/etat1 are the IOR pair at x1 relative to its possibly-flipped shading
-//normal n1_s, exactly as raygen derives them from hinfo.backface. Callers
-//pass sv.etai / sv.etat from BuildVertex*, no additional buffer loads.
+//====================================
+//etai1/etat1 are the IOR pair at x1 per raygen's hinfo.backface derivation
 inline float3 Reconnect(
-    //Vertex x1, camera path hit
+    //x1 camera path hit
     in float3  x1,
     in float3  n1_s,
     in float3  o,
@@ -300,7 +295,7 @@ inline float3 Reconnect(
     in float   etai1,
     in float   etat1,
 
-    //Vertex x2, reservoir / reconnection vertex
+    //x2 reservoir / reconnection vertex
     in uint    mID2,
     in float3  x2,
     in float3  n2_s,
@@ -309,7 +304,7 @@ inline float3 Reconnect(
     in float3  localKd2,
     in float   localPr2,
     in float   localPm2,
-    in float   eta2, //stored transmittance-side IOR at x2, etat2
+    in float   eta2,
 
     out float  Jn
 )
@@ -319,15 +314,11 @@ inline float3 Reconnect(
     if (length(L2) < EPSILON)
         return 0.0f;
 
-    //====================================================================
-    //DI, ENVIRONMENT / SKY SAMPLE
-    //====================================================================
-    //x2 stores a DIRECTION. No G term, no BSDF at x2. Jn = 1, direction is
-    //preserved under the reconnection shift. Env is treated as infinitely
-    //far, so we don't apply medium absorption here, if x1 is inside a medium
-    //env light is effectively the transmitted sky beyond the medium and
-    //user-facing absorption tinting would require explicit thickness info
-    //we don't have.
+    //====================================
+    //DI ENV SKY
+    //====================================
+    //x2 is direction, no G, no BSDF at x2, Jn=1
+    //env treated as infinitely far, no medium absorption applied
     if (mID2 == MATID_ENV_MISS)
     {
         const float3 wi  = normalize(x2);
@@ -336,14 +327,13 @@ inline float3 Reconnect(
         const float  ct  = max(1e-15f, dot(n1_s, wi));
         float3 r = F1 * L2 * ct;
         if (any(isnan(r)) || any(isinf(r))) return 0.0f;
-        return max(r, 0.0f);  //Jn already = 1
+        return max(r, 0.0f);
     }
 
-    //====================================================================
-    //DI, EMISSIVE TRIANGLE NEE SAMPLE
-    //====================================================================
-    //x2 is a world position on the light, n2_s is the light's surface
-    //normal, L2 is emission.
+    //====================================
+    //DI EMISSIVE TRIANGLE NEE
+    //====================================
+    //x2 is light position, n2_s is light normal, L2 is emission
     if (mID2 == MATID_LIGHT_TRI)
     {
         const float3 dirT  = x2 - x1;
@@ -355,8 +345,7 @@ inline float3 Reconnect(
                                     localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
 
-        //Absorption only when x1 is actually inside a transmissive medium.
-        //Matches the gate in the GI branch below.
+        //absorption only when x1 is inside transmissive medium
         const float rayDotN1    = dot(-ndirNT, n1_s);
         const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
         const bool  m1_inMedium = (iorAfterX1 > 1.0f + EPSILON)
@@ -373,19 +362,15 @@ inline float3 Reconnect(
         return max(r, 0.0f);
     }
 
-    //====================================================================
-    //GI, BSDF-SAMPLED VERTEX AT X2, D >= 3
-    //====================================================================
+    //====================================
+    //GI BSDF-SAMPLED VERTEX AT X2
+    //====================================
 
-    //Geometric prep
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir); //direction from x2 to x1
+    float3 ndirN = normalize(-dir);
 
-    //Recover x2's IOR pair from stored etat (eta2) and material Ni.
-    //frontface original: (etai2, etat2) = (1, matNi2), eta2 = matNi2
-    //backface  original: (etai2, etat2) = (matNi2, 1), eta2 = 1
-    //Disambiguate on the midpoint so tiny numerical drift doesn't flip.
+    //recover x2 IOR pair from stored etat and material Ni, disambiguate on midpoint
     const float matNi2 = LoadNi(mID2);
     float etai2;
     float etat2 = eta2;
@@ -396,12 +381,8 @@ inline float3 Reconnect(
         etai2 = (eta2 < 0.5f * (1.0f + matNi2)) ? matNi2 : 1.0f;
     }
 
-    //Which medium is the segment x1->x2 in? At x1 the ray exits toward
-    //the etai1 half (dot >= 0) or etat1 half (dot < 0). At x2 it arrives
-    //from the etai2 half (dot >= 0) or etat2 half (dot < 0). If either
-    //side's IOR is > 1 AND the material is actually transmissive, the
-    //segment is inside that side's medium. An opaque surface, Kd.w ~= 1,
-    //has an IOR boundary but no interior, don't apply Beer-Lambert there.
+    //segment medium detection, x1 side preferred
+    //opaque surface (Kd.w~=1) has IOR boundary but no interior, skip Beer-Lambert
     const float rayDotN1 = dot(-ndirN, n1_s);
     const float rayDotN2 = dot( ndirN, n2_s);
     const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
@@ -415,21 +396,17 @@ inline float3 Reconnect(
     const bool x1_inMedium = (iorAfterX1  > 1.0f + EPSILON) && m1_transmissive;
     const bool x2_inMedium = (iorBeforeX2 > 1.0f + EPSILON) && m2_transmissive;
 
-    //If the segment is inside a medium, the incident IOR at x2 picks that
-    //up instead of air. Prefer x1's medium, ray leaves x1 first.
+    //if segment inside medium, override incident IOR at x2
     if      (x1_inMedium) etai2 = iorAfterX1;
     else if (x2_inMedium) etai2 = iorBeforeX2;
 
     float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
     float3 F2 = BSDF_term(mID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
-    //Geometry term
     float  G1  = G_term(n1_s, -ndirN);
     float  G2  = G_term(n2_s, -V2);
 
-    //Beer-Lambert absorption for whichever medium the segment passes
-    //through. Applied at most once, the normal case: both sides agreeing
-    //means x1 and x2 bound the same medium, so only one factor is correct.
+    //Beer-Lambert applied at most once, same medium bounds both sides
     float3 transmittance = float3(1.0f, 1.0f, 1.0f);
     if (x1_inMedium) {
         transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), dist);
@@ -437,9 +414,7 @@ inline float3 Reconnect(
         transmittance = CalculateAbsorptionThroughput(LoadTf(mID2), dist);
     }
 
-    //Geometric jacobian at the new x1
     Jn = max(abs(dot(ndirN, n2_s)) / (dist * dist), EPSILON);
-    //contribution
     float3 r = F1 * F2 * L2 * G1 * G2 * transmittance;
 
     if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
@@ -450,9 +425,9 @@ inline float3 Reconnect(
 
 
 
-//====================================================================
+//====================================
 //RESERVOIR UPDATE
-//====================================================================
+//====================================
 bool UpdateReservoir(
     inout Reservoir reservoir,
     in float wi,
@@ -496,17 +471,12 @@ bool UpdateReservoir(
 }
 
 
-//====================================================================
+//====================================
 //INITIAL RESAMPLING CANDIDATE
-//====================================================================
-//Accumulates wsum in a register, the only RIS scalar live across iterations,
-//and on acceptance writes the full reservoir payload, constant fields
-//(x2, n2, matID, objID, eta, uv) plus varying fields (L2, V2, F), straight
-//to the SoA buffer. F is stored as the full RGB contribution with no
-//normalize + magnitude split, the target magnitude is always GetPHat(F).
-//
-//Sentinel objIDs (env/miss) bypass the object-space transform via the
-//identity shortcut in Sample_Data_v8.
+//====================================
+//wsum lives in a register, on acceptance writes full reservoir payload to SoA buffer
+//F stored as full RGB, target magnitude is GetPHat(F)
+//sentinel objIDs bypass object-space transform via Sample_Data_v8 identity shortcut
 inline bool AddInitialCandidate(
     inout float wsum,
     RWByteAddressBuffer buf,
@@ -540,9 +510,9 @@ inline bool AddInitialCandidate(
     return false;
 }
 
-//====================================================================
+//====================================
 //TEMPORAL CANDIDATE TEST
-//====================================================================
+//====================================
 inline bool TestTemporalCandidate(
     int2   coord,
     float2 dims,
@@ -571,14 +541,7 @@ inline bool TestTemporalCandidate(
     uint rI = load_instID(sampleBuf, tpx);
     uint rP = load_primID(sampleBuf, tpx);
 
-    float3 ns = load_n1_s_with_instID(sampleBuf, tpx, rI);
-    if (RejectNormal(myN1s, ns, 0.36f))
-        return false;
-
     float2 rB = load_bary(sampleBuf, tpx);
-    float3 xr = ReconstructPosition(rI, rP, rB);
-    if (RejectDistance(myPos, xr, myN1s, 0.4f))
-        return false;
 
     outPixelIdx = tpx;
     outInstID   = rI;

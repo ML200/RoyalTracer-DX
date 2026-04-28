@@ -1,9 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════
-// Renderer_Pipeline.cpp — Acceleration structures, RT pipeline,
-//                         descriptor heap, SBT, LUT, compaction,
-//                         readback. Split from Renderer.cpp for
-//                         readability. Same translation unit.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//RENDERER PIPELINE
+//====================================
+//accel structures, RT pipeline, descriptor heap, SBT, LUT, compaction, readback
+//split from Renderer.cpp, same TU
 
 #include "stdafx.h"
 #include "Renderer.h"
@@ -17,9 +16,9 @@
 #include <random>
 #include <d3dcompiler.h>
 
-// ═════════════════════════════════════════════════════════════════
-// Acceleration Structures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//ACCELERATION STRUCTURES
+//====================================
 
 static constexpr bool kUseBlasCompaction = true;
 
@@ -233,9 +232,9 @@ void Renderer::CreateAccelerationStructures() {
     m_lightTree.ReleaseStaging();
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Root Signatures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//ROOT SIGNATURES
+//====================================
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     CD3DX12_ROOT_PARAMETER1 rootParameters[2];
@@ -275,9 +274,15 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Paired reuse textures (t19, t20, t21) — 3 Texture2D<int2> SRVs at heap slots 55..57
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // NRC shared D3D12/CUDA UAVs (u40..u44) at heap slots 58..62 — see
+    // shaders/Nrc_v8.hlsli for binding order.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 40, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    rootParameters[1].InitAsConstants(24, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
+    // (Last 5 of the NRC block are scene-bounds normalization for the
+    // position input, see Includes_v8.hlsli.)
+    rootParameters[1].InitAsConstants(32, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[2];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -319,9 +324,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
     return rsc.Generate(m_ctx.Device(), true);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Raytracing Pipeline
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RAYTRACING PIPELINE
+//====================================
 
 void Renderer::CreateRaytracingPipeline() {
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_ctx.Device());
@@ -339,7 +344,8 @@ void Renderer::CreateRaytracingPipeline() {
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart ||
             p.stage == Stage::LoopEnd || p.stage == Stage::PingSwap ||
-            p.stage == Stage::ClearSort || p.stage == Stage::DLSS)
+            p.stage == Stage::ClearSort || p.stage == Stage::DLSS ||
+            p.stage == Stage::CudaOp)
             continue;
 
         // Work graph
@@ -465,17 +471,18 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObjectProps->SetPipelineStackSize(total);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Render Targets & Path State
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//RENDER TARGETS AND PATH STATE
+//====================================
 
 void Renderer::CreateRaytracingOutputBuffer() {
     auto* dev = m_ctx.Device();
     UINT w = GetWidth(), h = GetHeight(), px = w * h;
 
-    // Main output array (4 layers: noisy, denoised, accumulated, debug)
+    // Main output array (6 layers: 0=noisy, 1=denoised, 2=accumulated,
+    // 3=NRC debug, 4=x1 sharp-reflection contribution, 5=DLSS albedo debug)
     D3D12_RESOURCE_DESC rd = {};
-    rd.DepthOrArraySize = 4;
+    rd.DepthOrArraySize = 6;
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -525,9 +532,9 @@ void Renderer::CreatePathStateBuffer() {
     m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Shader Resource Heap (descriptor layout)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SHADER RESOURCE HEAP DESCRIPTOR LAYOUT
+//====================================
 
 void Renderer::CreateShaderResourceHeap() {
     auto* dev = m_ctx.Device();
@@ -794,9 +801,33 @@ void Renderer::CreateShaderResourceHeap() {
         }
     }
 
-    // Slots 58-59: padding before bindless base at slot 60
-    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
-    nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
+    // Slots 58-62: NRC shared D3D12/CUDA UAVs (u40..u44). CudaInterop has
+    // already allocated the backing buffers; here we just create views.
+    // NullUAVs when interop init failed keep the descriptor table valid
+    // so the rest of the pipeline still runs.
+    auto nrcUAV = [&](const CudaInterop::Buffer& b) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format        = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
+        ud.Buffer.NumElements = (UINT)((b.sizeBytes + 3u) / 4u);
+        dev->CreateUnorderedAccessView(b.resource.Get(), nullptr, &ud, handle);
+        next();
+    };
+    auto nullRawUAV = [&]() {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format        = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
+        ud.Buffer.NumElements = 1;
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
+        next();
+    };
+    if (m_nrcInferenceIn.resource)  nrcUAV(m_nrcInferenceIn);  else nullRawUAV();  // u40
+    if (m_nrcInferenceOut.resource) nrcUAV(m_nrcInferenceOut); else nullRawUAV();  // u41
+    if (m_nrcPendingGI.resource)    nrcUAV(m_nrcPendingGI);    else nullRawUAV();  // u42
+    if (m_nrcTrainRecords.resource) nrcUAV(m_nrcTrainRecords); else nullRawUAV();  // u43
+    if (m_nrcCounters.resource)     nrcUAV(m_nrcCounters);     else nullRawUAV();  // u44
 
     // Bindless textures
     UINT globalTexIdx = 0;
@@ -821,9 +852,9 @@ void Renderer::CreateShaderResourceHeap() {
     writeBatch(m_scene.bindlessRmaBase,    rmaCount);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Shader Binding Table
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//SHADER BINDING TABLE
+//====================================
 
 void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.Reset();
@@ -833,7 +864,8 @@ void Renderer::CreateShaderBindingTable() {
     for (const auto& entry : m_passes.Tokens()) {
         if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 ||
             entry == L"endloop" || entry == L"pingswap" ||
-            entry == L"clearsort" || entry == L"dlss")
+            entry == L"clearsort" || entry == L"dlss" ||
+            entry.rfind(L"cuda:", 0) == 0)
             continue;
         if (entry.find(L"|cs:") != std::wstring::npos ||
             entry.find(L"|wf:") != std::wstring::npos ||
@@ -878,9 +910,9 @@ void Renderer::CreateShaderBindingTable() {
     m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Streaming Compaction & Indirect Dispatch
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//STREAMING COMPACTION AND INDIRECT DISPATCH
+//====================================
 
 void Renderer::CreateStreamingCompactionBuffers() {
     auto* dev = m_ctx.Device();
@@ -986,9 +1018,9 @@ void Renderer::ClearSortBuffers(ID3D12GraphicsCommandList* cmdList) {
     cmdList->ResourceBarrier(1, &b2);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// LUT Textures
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//LUT TEXTURES
+//====================================
 
 void Renderer::GenerateLutTextures() {
     SCOPE_TIMER("GenerateLutTextures");
@@ -1063,9 +1095,10 @@ void Renderer::CreateAndUploadLutArray(
     m_ctx.CmdList()->ResourceBarrier(1, &b);
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Paired Spatial Reuse Textures (Lin et al. 2026)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//PAIRED SPATIAL REUSE TEXTURES
+//====================================
+//Lin et al. 2026
 
 void Renderer::InitReuseTextures() {
     const int   kSizes[3] = { 254, 230, 210 };
@@ -1126,9 +1159,9 @@ void Renderer::InitReuseTextures() {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Readback & Simulation Data
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//READBACK AND SIMULATION DATA
+//====================================
 
 void Renderer::CreateReadbackBuffer() {
     D3D12_RESOURCE_DESC td = m_scratchPing->GetDesc();

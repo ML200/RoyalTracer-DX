@@ -1,13 +1,12 @@
-//====================================================================
-//CAMERA RAY GENERATION AND REPROJECTION
-//====================================================================
+//====================================
+//CAMERA RAY GENERATION
+//====================================
 
-//Initial ray origin
 float3 InitOrigin(){
     return mul(viewI, float4(0, 0, 0, 1)).xyz;
 }
 
-//Initial ray direction with subpixel jitter
+//direction with subpixel jitter
 float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 {
     float2 pixelSample = float2(pixel) + 0.5f + jitter;
@@ -17,9 +16,9 @@ float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
     return normalize(mul(viewI, float4(target.xyz, 0)).xyz);
 }
 
-//====================================================================
+//====================================
 //PREVIOUS-FRAME REPROJECTION
-//====================================================================
+//====================================
 inline float2 GetLastFramePixelCoordinates_Float(
     float3 worldPos,
     float4x4 prevView,
@@ -40,17 +39,15 @@ inline float2 GetLastFramePixelCoordinates_Float(
     float2 uv = ndc * 0.5f + 0.5f;
     uv.y = 1.0f - uv.y;
 
-    //pixel-center coordinates
     float2 px = uv * resolution - 0.5f;
 
-    //allow half-pixel margin
+    //half-pixel margin
     if (any(px < -0.5f) || any(px > (resolution - 0.5f))) return float2(-1.0f, -1.0f);
 
     return px;
 }
 
-//Unclamped variant for motion vectors, allows off-screen previous positions.
-//Only rejects behind-camera where projection is undefined.
+//unclamped variant for MV, allows off-screen previous pos, only rejects behind-camera
 inline float2 GetLastFramePixelCoordinates_Unclamped(
     float3 worldPos,
     float4x4 prevView,
@@ -88,4 +85,3 @@ inline int2 GetBestReprojectedPixel_d(
 
     return p;
 }
-

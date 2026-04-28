@@ -5,6 +5,23 @@ project(Pathtracer)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Enable CUDA as a first-class language so `.cu` files compile natively
+# and tiny-cuda-nn's CMake can configure itself. These two overrides are
+# no-ops when CUDA is new enough for the installed MSVC (CUDA 12.9+ for
+# VS 17.14), but kept so older-toolkit builds still compile:
+#   1. nvcc's own host_config.h check (-allow-unsupported-compiler)
+#   2. MSVC STL's yvals_core.h static_assert (_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+# Let NVCC parallelize its own internal passes per .cu file. Requires CUDA 11.2+.
+add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:--threads=0>)
+# Compile for the installed GPU only. tcnn picks this up before its autodetect
+# runs, so Pathtracer and tcnn target the same architecture (avoids an arch
+# mismatch in tcnn's TCNN_MIN_GPU_ARCH static_assert).
+set(CMAKE_CUDA_ARCHITECTURES native)
+enable_language(CUDA)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
 # ───────────────────────── DirectX Agility SDK ─────────────────────────────
 set(D3D12_AGILITY_ROOT "${CMAKE_SOURCE_DIR}/microsoft.direct3D.d3d12.1.719.0-preview/build/native")
 set(D3D12_AGILITY_INCLUDE "${D3D12_AGILITY_ROOT}/include")
@@ -43,6 +60,22 @@ message(STATUS "ORT include : ${ORT_INCLUDE_DIR}")
 message(STATUS "ORT lib dir : ${ORT_LIB_DIR}")
 message(STATUS "ORT bin dir : ${ORT_BIN_DIR}")
 
+# ───────────────────────── CUDA Toolkit (CUDA/D3D12 interop) ─────────────────
+find_package(CUDAToolkit REQUIRED)
+message(STATUS "CUDA Toolkit : ${CUDAToolkit_VERSION}")
+
+# ───────────────────────── tiny-cuda-nn (vendored submodule) ─────────────────
+# Build tcnn as a static lib, no examples/benchmarks/tests.
+set(TCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(TCNN_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
+set(TCNN_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+# Skip offline compilation of every fused fwd/bwd kernel permutation — tcnn
+# instead JIT-compiles the single network config we actually instantiate via
+# tcnn::create_from_config at startup (cached on disk). Cuts tcnn build time
+# dramatically. Requires TCNN_BUILD_WITH_RTC (ON by default).
+set(TCNN_BUILD_NO_FWD_BWD ON  CACHE BOOL "" FORCE)
+set(TCNN_BUILD_WITH_RTC   ON  CACHE BOOL "" FORCE)
+add_subdirectory(third_party/tiny-cuda-nn)
 
 
 # ────────────────────────── extra assets to copy ─────────────────────────────
@@ -100,6 +133,10 @@ add_executable(Pathtracer WIN32
         rdn/Core/DeviceContext.h
         rdn/Core/DeviceContext.cpp
         rdn/Core/ResourceFactory.h
+        rdn/Interop/CudaInterop.h
+        rdn/Interop/CudaInterop.cpp
+        rdn/NRC/NrcNetwork.h
+        rdn/NRC/NrcNetwork.cu
         rdn/Camera/Camera.h
         rdn/Camera/Camera.cpp
         rdn/Editor/Editor.h
@@ -189,6 +226,8 @@ target_link_libraries(Pathtracer PRIVATE
         sl_interposer
         onnxruntime
         omm_sdk omm_lz4 omm_xxhash
+        CUDA::cudart_static
+        tiny-cuda-nn
         d3d12.lib
         dxgi.lib dxguid.lib
         dxcompiler.lib d3dcompiler.lib windowsapp)

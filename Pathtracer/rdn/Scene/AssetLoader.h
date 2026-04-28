@@ -1,8 +1,8 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Scene/AssetLoader.h — Loads models into Scene, creating
-//                       SceneModel entries for editor control.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//ASSET LOADER
+//====================================
+//loads models into Scene, creates SceneModel entries for editor
 
 #include "Scene.h"
 #include "../src/Util/ObjLoader.h"

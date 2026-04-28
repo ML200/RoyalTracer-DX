@@ -1,7 +1,7 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Common.h — Shared types, macros, and forward declarations
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//SHARED TYPES MACROS FORWARD DECLS
+//====================================
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -27,7 +27,9 @@
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 
-// ── Logging ──────────────────────────────────────────────────────
+//====================================
+//LOGGING
+//====================================
 #ifndef LT_ENABLE_LOGS
 #define LT_ENABLE_LOGS 1
 #endif
@@ -40,7 +42,9 @@ using namespace DirectX;
   #define WARN(expr) do {} while(0)
 #endif
 
-// ── Scoped CPU Timer ─────────────────────────────────────────────
+//====================================
+//SCOPED CPU TIMER
+//====================================
 struct ScopedTimer {
     const char* name;
     std::chrono::high_resolution_clock::time_point t0;
@@ -53,29 +57,36 @@ struct ScopedTimer {
 };
 #define SCOPE_TIMER(label) ScopedTimer _scopedTimer_##__LINE__(label)
 
-// ── Constants ────────────────────────────────────────────────────
+//====================================
+//CONSTANTS
+//====================================
 static constexpr UINT  FRAME_COUNT          = 3;
-static constexpr UINT  MAX_BACK_BUFFERS     = 6;   // DLSS-G may add extra back buffers beyond FRAME_COUNT
+static constexpr UINT  MAX_BACK_BUFFERS     = 6;
 static constexpr UINT  MAX_STACKS           = 4;
 static constexpr UINT  MAX_INDIRECT_COMMANDS = MAX_STACKS;
 static constexpr UINT  SORT_BUCKETS         = 65536;
 static constexpr int   NUM_LUTS             = 2;
 static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
-static constexpr UINT  BINDLESS_HEAP_START  = 60;
+//NRC reserves 5 UAVs at heap 58..62, bindless starts at 63
+static constexpr UINT  BINDLESS_HEAP_START  = 63;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
-// ── GPU Vertex Layout (for global buffers) ───────────────────────
+//====================================
+//GPU VERTEX LAYOUT
+//====================================
 struct BTriVertex {
     XMFLOAT3                       vertex;
     UINT                           packedNormal;
     PackedVector::XMHALF2         texCoord;
 };
 
-// ── Per-Instance data uploaded to GPU ────────────────────────────
+//====================================
+//PER-INSTANCE GPU DATA
+//====================================
 struct InstanceProperties {
     XMMATRIX objectToWorld;
     XMMATRIX objectToWorldInverse;
@@ -91,16 +102,20 @@ struct InstanceProperties {
     UINT     _pad[3];
 };
 
-// ── Geometry offsets for SRV setup ───────────────────────────────
+//====================================
+//GEOMETRY OFFSETS
+//====================================
 struct GeometryOffsets {
     UINT vertexBase;
     UINT indexBase;
     UINT materialBase;
 };
 
-// ── ReSTIR runtime settings ─────────────────────────────────────
+//====================================
+//RESTIR RUNTIME SETTINGS
+//====================================
+//DI+GI unified, DI knobs removed
 struct ReSTIRSettings {
-    // DI+GI are unified in one reservoir; DI-specific knobs have been removed.
     int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;
     int   spatCountMinGI   = 2;
@@ -112,60 +127,70 @@ struct ReSTIRSettings {
     float reuseRoughnessMin = 0.2f;
     float reuseRoughnessMax = 0.5f;
 
-    // Neighbor rejection thresholds (used in Pass_spat_gi_select_v8).
-    float rejNormalDot     = 0.36f;   // reject if dot(nA, nB) < this
-    float rejDistance      = 0.10f;   // reject if |proj onto normal| > this (world units)
+    //neighbor rejection thresholds for Pass_spat_gi_select_v8
+    float rejNormalDot     = 0.36f;
+    float rejDistance      = 0.10f;
 
     UINT Flags() const {
-        // Bits 0 (tempDI) and 2 (spatDI) stay zero — the DI pipeline is gone.
+        //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u);
     }
 };
 
-// ── DLSS-G (Frame Generation) settings ──────────────────────────
+//====================================
+//DLSS-G FRAME GEN SETTINGS
+//====================================
 struct DLSSGSettings {
     bool available        = false;
     bool enabled          = false;
-    int  framesToGenerate = 1;   // 1=2x, 2=3x, 3=4x
-    int  maxFrames        = 1;   // queried from DLSSGState::numFramesToGenerateMax
+    int  framesToGenerate = 1;
+    int  maxFrames        = 1;
 };
 
-// ── Sun / time-of-day settings (uploaded to GPU via camera buffer) ──
+//====================================
+//SUN TIME-OF-DAY SETTINGS
+//====================================
 struct SunSettings {
-    float latitude      = 48.52f;    // degrees
-    float longitude     = 11.405f;   // degrees
-    float dayOfYear     = 172.0f;    // 1-365
-    float simSpeed      = 10.0f;     // simulation speed multiplier
-    float startUTCHours = 6.0f;      // start time in UTC hours
-    float nightSpeedup  = 2.0f;      // speed multiplier during night
-    float turbidity     = 2.0f;      // Mie turbidity (1=clear, 5+=hazy)
-    float sunIntensity  = 5.0f;      // sun disk intensity
-    float skyIntensity  = 8.5f;      // sky/atmosphere intensity multiplier
-    float _pad0 = 0, _pad1 = 0, _pad2 = 0; // pad to 48 bytes (12 floats)
+    float latitude      = 48.52f;
+    float longitude     = 11.405f;
+    float dayOfYear     = 172.0f;
+    float simSpeed      = 10.0f;
+    float startUTCHours = 6.0f;
+    float nightSpeedup  = 2.0f;
+    float turbidity     = 2.0f;
+    float sunIntensity  = 5.0f;
+    float skyIntensity  = 8.5f;
+    float _pad0 = 0, _pad1 = 0, _pad2 = 0;
 };
 
-// ── Per-frame performance stats ─────────────────────────────────
+//====================================
+//PER-FRAME STATS
+//====================================
 struct FrameStats {
-    float cpuFrameMs      = 0;   // total CPU frame time
-    float cpuUpdateMs     = 0;   // UpdateRenderer
-    float cpuInstanceMs   = 0;   // UpdateInstanceProperties
-    float cpuPopulateMs   = 0;   // PopulateCommandList (CPU side)
-    float tlasMs          = 0;   // TLAS rebuild/refit (CPU record time)
-    float gpuMs           = 0;   // GPU execution (present-to-present)
+    float cpuFrameMs      = 0;
+    float cpuUpdateMs     = 0;
+    float cpuInstanceMs   = 0;
+    float cpuPopulateMs   = 0;
+    float tlasMs          = 0;
+    float gpuMs           = 0;
     UINT  instanceCount   = 0;
     UINT  meshCount       = 0;
     bool  tlasWasRefit    = false;
     bool  tlasWasRebuilt  = false;
 };
 
-// ── Halton sequence for jitter ───────────────────────────────────
+//====================================
+//HALTON SEQUENCE FOR JITTER
+//====================================
 inline float Halton(uint32_t index, uint32_t base) {
     float f = 1.0f, r = 0.0f;
     while (index > 0) { f /= base; r += f * (index % base); index /= base; }
     return r;
 }
 
-// ── Octahedral normal encoding ───────────────────────────────────
+//====================================
+//OCTAHEDRAL NORMAL ENCODE
+//====================================
 inline UINT EncodeNormalOct(const XMVECTOR& n) {
     XMVECTOR p = n / (abs(XMVectorGetX(n)) + abs(XMVectorGetY(n)) + abs(XMVectorGetZ(n)));
     if (XMVectorGetZ(p) < 0.0f) {

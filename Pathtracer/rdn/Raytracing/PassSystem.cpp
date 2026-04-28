@@ -1,6 +1,6 @@
-// ═══════════════════════════════════════════════════════════════════
-// Raytracing/PassSystem.cpp
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//PASS SYSTEM
+//====================================
 
 #include "PassSystem.h"
 
@@ -15,18 +15,27 @@ void PassSystem::Build(const std::vector<std::wstring>& tokens) {
     LinkLoops();
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//PARSE TOKEN
+//====================================
 PassDesc PassSystem::ParseToken(const std::wstring& token) {
     PassDesc p{};
 
-    // Simple keywords
+    //keywords
     if (token == L"barrier")   { p.stage = Stage::Barrier;   return p; }
     if (token == L"pingswap")  { p.stage = Stage::PingSwap;  return p; }
     if (token == L"endloop")   { p.stage = Stage::LoopEnd;   return p; }
     if (token == L"clearsort") { p.stage = Stage::ClearSort;  return p; }
     if (token == L"dlss")      { p.stage = Stage::DLSS;       return p; }
 
-    // Loop with count
+    //cuda:<name>, name stored in 'file' for PassIndexByFile lookup
+    if (token.rfind(L"cuda:", 0) == 0) {
+        p.stage = Stage::CudaOp;
+        p.file  = token.substr(5);
+        return p;
+    }
+
+    //loop with count
     if (token.rfind(L"loop:", 0) == 0) {
         p.stage = Stage::LoopStart;
         if (swscanf_s(token.c_str() + 5, L"%u", &p.loopCount) != 1)
@@ -34,10 +43,10 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
         return p;
     }
 
-    // File-based pass: "file.hlsl|stage_spec"
+    //file|stage_spec
     const size_t bar = token.find(L'|');
     p.file = token.substr(0, bar);
-    if (bar == std::wstring::npos) return p;  // default: RayGen
+    if (bar == std::wstring::npos) return p;
 
     const std::wstring tail = token.substr(bar + 1);
 
@@ -71,7 +80,9 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
     throw std::runtime_error("Unknown stage spec in pass string");
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//LINK LOOPS
+//====================================
 void PassSystem::LinkLoops() {
     std::vector<size_t> stack;
     for (size_t i = 0; i < m_passes.size(); ++i) {

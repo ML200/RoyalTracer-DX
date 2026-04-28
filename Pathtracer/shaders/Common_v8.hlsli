@@ -1,16 +1,14 @@
-//====================================================================
+//====================================
 //COMMON UTILITIES
-//====================================================================
+//====================================
 
-//Estimated luminance
 inline float Luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
-//Average
 inline float Avg3(float3 c) { return dot(c, float3(0.33333f, 0.33333f, 0.33333f)); }
 
-//====================================================================
+//====================================
 //PIXEL ID SWIZZLE
-//====================================================================
-//Map pixel coordinate to tile-swizzled linear index
+//====================================
+//tile swizzled linear index
 inline uint MapPixelID(uint2 dims, int2 lIndex)
 {
     if (lIndex.x < 0 || lIndex.y < 0 ||
@@ -45,7 +43,7 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
 
     const uint tileWidth  = 4;
     const uint tileHeight = 8;
-    const uint tileSize   = tileWidth * tileHeight; //32
+    const uint tileSize   = tileWidth * tileHeight;
 
     uint tileIndex  = pixelID / tileSize;
     uint localIndex = pixelID % tileSize;
@@ -61,7 +59,7 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
     uint globalX = tileX * tileWidth + localX;
     uint globalY = tileY * tileHeight + localY;
 
-    //padding check
+    //padding
     if (globalX >= dims.x || globalY >= dims.y)
     {
         return int2(-1, -1);
@@ -81,21 +79,18 @@ void ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber)
     prevPixelPos -= offset;
 }
 
-//====================================================================
+//====================================
 //ENV BRDF APPROXIMATION
-//====================================================================
-//DLSS-RR provided function to estimate specular albedo
+//====================================
+//DLSS RR specular albedo estimate, Ray Tracing Gems ch 32
 float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 {
-    //Compute F0 (specular albedo) from metallic workflow inputs
     float3 SpecularColor = lerp(0.04.xxx, Kd, saturate(Pm));
 
-    //Convert perceptual roughness to GGX alpha
     float alpha = Pr * Pr;
 
     NoV = abs(NoV);
 
-    //Ray Tracing Gems, Chapter 32
     float4 X;
     X.x = 1.f;
     X.y = NoV;
@@ -130,14 +125,14 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
     return mad(SpecularColor, max(0, scale), max(0, bias));
 }
 
-//====================================================================
+//====================================
 //BOILING FILTER
-//====================================================================
+//====================================
 #define BOIL_GROUP_X 16
 #define BOIL_GROUP_Y 16
-#define BOIL_THREADS (BOIL_GROUP_X * BOIL_GROUP_Y) //256
+#define BOIL_THREADS (BOIL_GROUP_X * BOIL_GROUP_Y)
 
-//Per-thread storage for the 16x16 reduction, one float per thread in the group
+//one float per thread in a 16x16 group
 groupshared float gBoilValues[BOIL_THREADS];
 
 float BoilMultiplier(float strength)
@@ -152,9 +147,9 @@ bool BoilingFilter(
     out float avgNonzero,
     out float threshold)
 {
-    uint gsIdx = localIndex.x + localIndex.y * BOIL_GROUP_X; //0..255
+    uint gsIdx = localIndex.x + localIndex.y * BOIL_GROUP_X;
 
-    //Sum reduction over full 16x16 group
+    //sum reduction
     gBoilValues[gsIdx] = v;
     GroupMemoryBarrierWithGroupSync();
 
@@ -170,10 +165,10 @@ bool BoilingFilter(
 
     float groupSum = gBoilValues[0];
 
-    //Barrier: all threads must read groupSum before the array is reused
+    //all threads must read groupSum before the array is reused
     GroupMemoryBarrierWithGroupSync();
 
-    //Count reduction over full 16x16 group
+    //count reduction
     gBoilValues[gsIdx] = (v > 0.0f) ? 1.0f : 0.0f;
     GroupMemoryBarrierWithGroupSync();
 
@@ -195,12 +190,12 @@ bool BoilingFilter(
     return (v > threshold);
 }
 
-//====================================================================
+//====================================
 //DLSS LINEAR DEPTH
-//====================================================================
+//====================================
 float DLSS_LinearDepthFromWorldPos(float3 worldPos)
 {
-    //view is world->view. With RH projection, forward is -Z.
+    //RH projection, forward is negative Z
     float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
     return max(0.0f, -viewPos.z);
 }

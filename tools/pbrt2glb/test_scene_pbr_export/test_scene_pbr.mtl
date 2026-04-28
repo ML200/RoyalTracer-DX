@@ -1,0 +1,31 @@
+newmtl mat_1
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+Kd 1.0000 1.0000 1.0000
+map_Kd textures/checker_1.png
+Pm 0.0
+Pr 1.0000
+map_Pr textures/rough_a_perceptual_1.png
+norm textures/bump_n_1.png
+map_bump textures/bump_n_1.png
+illum 2
+
+newmtl gold_rough
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+Kd 1.0000 0.7800 0.3400
+Pm 1.0
+Pr 1.0000
+map_Pr textures/rough_a_perceptual_1.png
+illum 2
+
+newmtl mat_3
+Ka 0.0 0.0 0.0
+Ks 0.0 0.0 0.0
+Kd 0.2000 0.4000 0.7000
+Pm 0.0
+Pr 1.0
+norm textures/bump_n_1.png
+map_bump textures/bump_n_1.png
+illum 2
+

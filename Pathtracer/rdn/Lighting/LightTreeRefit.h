@@ -1,15 +1,10 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Lighting/LightTreeRefit.h — Async light-tree TLAS rebuilder.
-//
-// When instances move, only the TLAS needs rebuilding (BLASes are
-// per-instance in object space; their internal nodes are approximate
-// for importance sampling). This runs on a background thread and
-// produces new TLAS nodes for GPU upload.
-//
-// REQUIRES: Add this one-line accessor to LightTree.h's public section:
-//   ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//ASYNC LIGHT-TREE TLAS REBUILDER
+//====================================
+//moved instances rebuild TLAS only, BLASes per-instance in object space
+//runs on background thread, produces TLAS nodes for GPU upload
+//requires LightTree.h to expose GetTLASGpuBuffer()
 
 #include "../Common.h"
 #include "../LightTree.h"
@@ -37,10 +32,11 @@ struct TLASRefitResult {
     std::vector<XMFLOAT4X4>      blasWorldToLocal;  // updated inverse transforms
 };
 
-// ═════════════════════════════════════════════════════════════════
-// Compute local-space BLAS root info from scene emissive triangles.
-// Call once at init, and again if emission values change.
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//BLAS LOCAL ROOTS
+//====================================
+//local-space BLAS root info from scene emissive triangles
+//call once at init, again if emission changes
 inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(
     const std::vector<LightTriangle>& tris)
 {
@@ -92,9 +88,10 @@ inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(
     return roots;
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Transform a local AABB to world space (8-corner method)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//TRANSFORM AABB
+//====================================
+//local AABB to world, 8-corner method
 inline Aabb TransformAabb(const Aabb& local, const XMFLOAT4X4& world) {
     XMFLOAT3 corners[8] = {
         { local.mn.x, local.mn.y, local.mn.z },
@@ -117,10 +114,11 @@ inline Aabb TransformAabb(const Aabb& local, const XMFLOAT4X4& world) {
     return result;
 }
 
-// ═════════════════════════════════════════════════════════════════
-// Standalone TLAS builder (same SAOH algorithm as LightTreeBuilder
-// but operates on pre-computed BLAS root info + world transforms)
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//STANDALONE TLAS BUILDER
+//====================================
+//same SAOH algo as LightTreeBuilder
+//operates on pre-computed BLAS root info + world transforms
 class TLASRebuilder {
 public:
     TLASRefitResult Build(
@@ -303,9 +301,10 @@ private:
     }
 };
 
-// ═════════════════════════════════════════════════════════════════
-// Async refit manager — kicks off CPU rebuild, polls completion
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//ASYNC REFIT MANAGER
+//====================================
+//kicks off CPU rebuild, polls completion
 class LightTreeRefitManager {
 public:
     // Kick off an async TLAS rebuild (non-blocking)

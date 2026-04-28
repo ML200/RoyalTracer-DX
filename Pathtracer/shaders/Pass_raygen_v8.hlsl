@@ -1,35 +1,15 @@
 #include "Includes_v8.hlsli"
+#include "Nrc_v8.hlsli"
 
-//Overall depth cap, dominated by transmission chains (glass, water,
-//nested volumes). Diffuse / specular bounces have a tighter cap below.
+//safety net, real termination is RR at depth>2 plus NRC cache short circuit
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 32
+#define MAX_BOUNCES 8
 #endif
 
-//Non-transmission bounce cap. Caustic-like effects through glass can
-//still produce long transmission chains under MAX_BOUNCES, but the
-//number of times the path actually reflects off a surface is limited.
-#ifndef MAX_DS_BOUNCES
-#define MAX_DS_BOUNCES 4
-#endif
-
-//====================================================================
-//RAYGEN, UNIFIED DI + GI RESERVOIR
-//====================================================================
-//Direct-lighting samples, d = 2 (x0 -> x1 -> light), now compete with GI
-//samples, d >= 3, in the same reservoir. DI candidates carry sentinel
-//matIDs (MATID_ENV_MISS or MATID_LIGHT_TRI) and their DI-specific x2
-//payload, GI candidates reuse the stashed depth-1 vertex state.
-//
-//Live register state (hot): seed, rayOrigin, rayDir, throughputPk,
-//prevNormalPk, prev_pdf, pdf_product, tpost, wsum. That's it.
-//
-//Cold state pushed to memory:
-//depth-1 vertex (x2, n2, uv, matID, objID, eta): write once at depth=1
-//v2 direction: write once at depth=2
-//RIS F (float3 contribution): written directly to the reservoir buffer on acceptance.
-//All are compressed SoA in g_pathStateBuffer. Raygen-only, Pass_spat_gi_*
-//overwrites the buffer later in the frame.
+//====================================
+//RAYGEN UNIFIED DI+GI RESERVOIR
+//====================================
+//DI at d=2 and GI at d>=3 compete in one reservoir, cold state stashed in g_pathStateBuffer
 
 [shader("raygeneration")]
 void Pass_raygen_v8()
@@ -38,27 +18,71 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //Clear scratch slots 1 and 3. Slot 1 carries primary emitter/sky
-    //hits, written below on depth-0 emission. Slot 3 (formerly the
-    //separate direct-light buffer) is now always zero — depth=0 sun
-    //NEE and depth=1 env miss both feed the unified reservoir. The
-    //clear prevents shading from reading last frame's contents.
+    //====================================
+    //NRC CLASSIFICATION AND SER SORT
+    //====================================
+    //class 0 render, 1 train biased, 2 train unbiased, sort groups long class 2 in warps
+    const bool kNrcEnabled    = NrcIsEnabled();
+    const bool kNrcTrainOn    = NrcIsTrainOn();
+    //x1 sharp reflection split needs NRC for the replacement radiance
+    const bool kSharpRefl     = kNrcEnabled && NrcIsSharpReflectionsOn();
+    //adaptive tile side from renderer feedback
+    const uint  nrcTileSide   = NrcTrainingTileSide();
+    const uint2 nrcTileOffset = uint2(asuint(time) % nrcTileSide,
+                                      (asuint(time) / nrcTileSide) % nrcTileSide);
+    bool nrcIsTraining, nrcIsUnbiased;
+    uint nrcPathClass = NrcClassifyPixel(pixel, asuint(time), nrcTileSide, nrcTileOffset,
+                                          nrcIsTraining, nrcIsUnbiased);
+    nrcIsTraining = nrcIsTraining && kNrcTrainOn;
+    if (!nrcIsTraining) nrcPathClass = NRC_CLASS_RENDER;
+
+    {
+        const uint nrcSortKey =
+            (nrcPathClass << 6) |
+            (((pixel.y >> 4) & 0x7u) << 3) |
+            ((pixel.x >> 4) & 0x7u);
+        dx::MaybeReorderThread(nrcSortKey, 8);
+    }
+
+    NrcClearPendingGI(pixelIdx);
+
+    //biased paths terminate into the cache, unbiased paths inject ground truth
+    const bool  nrcCacheEligible = kNrcEnabled &&
+        (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
+         nrcPathClass == NRC_CLASS_RENDER);
+    //2x pixel count, cache term plus depth 0 sharp refl, rounded to tcnn 256 batch
+    const uint  nrcInferenceCapacity = (2u * IMG_W * IMG_H + 255u) & ~255u;
+    float nrcA0 = 0.0f;
+    float nrcA  = 0.0f;
+    int   nrcHitIdx = 0;
+    bool  nrcCacheTerminated = false;
+
+    uint   nrcPathId     = NRC_INVALID_PATH;
+    uint   nrcTrainVIdx  = 0u;
+    uint   nrcTailKind   = NRC_TAIL_INVALID;
+    uint   nrcTailRadPk  = 0u;
+    uint   nrcTailInfSlot = NRC_INVALID_SLOT;
+    float3 nrcLNeeAccum  = float3(0, 0, 0);
+    //specular BSDF samples defer area spread by one vertex
+    bool   nrcPrevSpecular = false;
+    if (nrcIsTraining)
+    {
+        nrcPathId = NrcAllocateTrainingPath();
+        if (nrcPathId == NRC_INVALID_PATH) { nrcIsTraining = false; nrcPathClass = NRC_CLASS_RENDER; }
+    }
+
+    //slot 1 primary emitter/sky, slot 3 unused
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
+    //slot 7 sharp refl control rgb=Fresnel w=NRC slot, slot 8 raw env radiance
+    gScratchPing[uint3(pixel, 7)] = float4(0, 0, 0, asfloat(NRC_INVALID_SLOT));
+    gScratchPing[uint3(pixel, 8)] = float4(0, 0, 0, 0);
 
-    //Zero the reservoir. RIS acceptance overwrites on demand, this ensures
-    //no-candidate-accepted pixels end up as empty reservoirs.
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
-    //Seed the PathVertexState slot with safe sentinel defaults. Without
-    //this, the pass-through continue at matNi <= 1+EPSILON, and any other
-    //depth=1 early-break, leaves last frame's spatial-pass scratch in the
-    //slot, which load_ps then decodes into a bogus matID/objID and hangs
-    //the driver at specific camera angles.
+    //safe defaults, otherwise pass through continues leave stale state in the slot
     init_ps(g_pathStateBuffer, pixelIdx);
 
-    //RIS state, only wsum is live across iterations. F is written
-    //straight to the reservoir buffer on acceptance.
     float wsum = 0.0f;
 
     uint   seed         = initRandomData(pixel, uint2(8, 4), time, 1u);
@@ -69,21 +93,10 @@ void Pass_raygen_v8()
     float  prev_pdf     = 1.0f;
     float  pdf_product  = 1.0f;
 
-    //tpost, post-x2 integrand accumulator, stays in registers. Updated
-    //every bounce, so buffer RMW would be strictly worse than 3 scalars.
+    //tpost, post x2 integrand, register resident
     float3 tpost = float3(1, 1, 1);
 
-    //Diffuse / specular (non-transmission) bounce counter. The path loop
-    //terminates once MAX_DS_BOUNCES reflections have been taken, but
-    //transmission bounces stay free up to MAX_BOUNCES so glass / water
-    //chains and caustic-like effects survive.
-    int dsBounces = 0;
-
-    //Pixel-and-frame-unique unit vector used as the stored V2 for DI
-    //samples (env miss, emitter hit, NEE at d=0). Reconnect's sentinel
-    //branches ignore V2, so this is purely a dup-map discriminator for
-    //Pass_dup_gi_v8 — without it, all DI samples across the image would
-    //share the same packed V2 and flood the duplication count.
+    //dup map discriminator for DI samples, unique per pixel and frame
     float3 diMarker;
     {
         uint h = (pixelIdx * 0x9E3779B9u) ^ (asuint(time) * 0x85EBCA6Bu);
@@ -98,9 +111,10 @@ void Pass_raygen_v8()
         diMarker = float3(r * cos(phi), r * sin(phi), z);
     }
 
-    //====================================================================
+
+    //====================================
     //PATH LOOP
-    //====================================================================
+    //====================================
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
@@ -112,16 +126,13 @@ void Pass_raygen_v8()
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
         ray.TMax      = 10000.0f;
-        //Depth 0 keeps 4-state OMM, unknown states fall through to the
-        //alpha any-hit. Secondary bounces force 2-state: unknown is
-        //resolved by the pre-baked micromap and any-hit is skipped, which
-        //is where the bulk of the alpha-test cost lives.
+        //depth 0 uses 4 state OMM, secondaries force 2 state to skip alpha any hit
         const uint rayFlags = (depth == 0) ? RAY_FLAG_NONE : RAY_FLAG_FORCE_OMM_2_STATE;
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, rayFlags, 0xFF);
 
-        //====================================================================
+        //====================================
         //MISS
-        //====================================================================
+        //====================================
         if (!hitObj.IsHit())
         {
             if (depth == 0)
@@ -136,9 +147,21 @@ void Pass_raygen_v8()
             }
 
             const float3 throughput = UnpackRGB9E5(throughputPk);
-            const float3 envL       = EvalMissState(rayDir, float3(0, 0, 0));
 
-            //pdf-free contribution f = throughput * pdf_product * envL
+            //GI miss tail, sky scatter plus BSDF MIS sun disk
+            const float  sunSAPdf   = GetSunPdf(rayDir);
+            const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir)
+                                                        : float3(0, 0, 0);
+            const float  sunMisBsdf = (sunSAPdf > 0.0f)
+                ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
+            const float3 envL       = EvaluateSky(rayDir) + sunRad * sunMisBsdf;
+
+            //miss on training path, backward fill tail
+            if (nrcIsTraining) {
+                nrcTailKind  = NRC_TAIL_MISS;
+                nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(envL));
+            }
+
             const float3 F_contrib = throughput * envL * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
             const float  p_full    = pdf_product;
@@ -146,22 +169,17 @@ void Pass_raygen_v8()
 
             if (depth == 1)
             {
-                //DI env miss (d=2 path), x2 stored as a DIRECTION.
-                //MATID_ENV_MISS makes Reconnect's env-miss branch
-                //preserve direction under shift, so reuse is cheap
-                //and Jacobian = 1. V2 = diMarker is the dup-map
-                //discriminator (Reconnect's sentinel branch ignores V2).
-                //Visibility is implicit: the BSDF-sampled ray already
-                //reached the environment.
+                //DI env miss, x2 is direction, V2 is per pixel dup discriminator
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                    rayDir, float3(0, 1, 0),          //x2=dir, n2=unit default
-                    envL,   diMarker,                 //L2, V2=per-pixel discriminator
+                    rayDir, float3(0, 1, 0),
+                    envL,   diMarker,
                     float2(0, 0),
                     MATID_ENV_MISS, MATID_ENV_MISS, 1.0f,
                     F_contrib, seed);
             }
-            else //depth >= 2: GI env, x2 = stashed depth-1 vertex
+            else
             {
+                //GI env, x2 is stashed depth 1 vertex
                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
@@ -173,9 +191,9 @@ void Pass_raygen_v8()
             break;
         }
 
-        //====================================================================
+        //====================================
         //HIT SETUP
-        //====================================================================
+        //====================================
         const float  hitT   = hitObj.GetRayTCurrent();
         const float3 hitPos = rayOrigin + rayDir * hitT;
 
@@ -187,8 +205,7 @@ void Pass_raygen_v8()
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
 
-        //Backface-derived IOR pair: entering -> (air, matNi), exiting -> (matNi, air).
-        //Null-IOR boundary, matNi ~= 1, is pure pass-through, skip the hit.
+        //null IOR boundary is pass through
         const float matNi = LoadNi(matID);
         if (matNi <= 1.0f + EPSILON)
         {
@@ -196,11 +213,7 @@ void Pass_raygen_v8()
             continue;
         }
 
-        //Only flip the IOR pair, and declare an interior medium for
-        //absorption, when the material is actually transmissive. An
-        //opaque backface, thin single-sided geometry like leaves or paper,
-        //or an inverted winding, has an IOR but no traversable inside,
-        //swapping would apply a phantom Tf absorption to the incoming leg.
+        //flip IOR and set interior medium only for transmissive backfaces
         const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
         const bool flipIOR = hinfo.backface && transmissive;
         const float2 iors = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
@@ -215,14 +228,17 @@ void Pass_raygen_v8()
 
         const float3 emission = GetEmissionFast(instID, primID);
 
-        //====================================================================
-        //DEPTH 0, PRIMARY HIT STORAGE
-        //====================================================================
+
+        //====================================
+        //DEPTH 0 PRIMARY HIT STORAGE
+        //====================================
+        //true means the reflection probe hit a cache ineligible surface, keep delta lobes in the BSDF
+        bool nrcReflFallback = false;
         if (depth == 0)
         {
             const bool isEmitter = any(emission > 0.0f);
             store_instID(g_sample_current, pixelIdx, instID);
-            store_primID(g_sample_current, pixelIdx, primID, isEmitter);
+            store_primID(g_sample_current, pixelIdx, primID, isEmitter, hinfo.backface);
             store_bary  (g_sample_current, pixelIdx, attr.barycentrics);
             store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
             store_uv    (g_sample_current, pixelIdx, hinfo.uv);
@@ -231,13 +247,22 @@ void Pass_raygen_v8()
                 gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
             }
 
-            //Specular motion vector reflection probe
+            //specular MV probe and sharp reflection NRC fire share one ray
             {
                 const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
                 const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
 
-                bool committed = false;
-                float reflT = 0.0f;
+                //gate split on roughness and kSharpRefl, keep delta lobes if NRC is off
+                const bool dropGGX  = kSharpRefl && ShouldDropDeltaGGX (hitLocalPr, hitLocalPm);
+                const bool dropCoat = kSharpRefl && ShouldDropDeltaCoat(matID);
+                const bool splitRefl = (dropGGX || dropCoat);
+
+                bool  committed = false;
+                float reflT     = 0.0f;
+                uint  cmtInstID = 0u;
+                uint  cmtGeomID = 0u;
+                uint  cmtPrimID = 0u;
+                float2 cmtBary  = float2(0, 0);
                 if (IsRayValid(reflOrigin, reflDir, 10000.0f))
                 {
                     RayDesc reflRay;
@@ -248,11 +273,7 @@ void Pass_raygen_v8()
 
                     RayQuery<RAY_FLAG_NONE> q;
                     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
-                    //Hard cap on alpha-test iterations, a grazing reflection
-                    //ray through dense foliage can produce hundreds of
-                    //non-opaque candidates, and certain driver states hit
-                    //TDR before BVH traversal finishes. 128 is far more
-                    //than any motion-vector probe needs.
+                    //cap alpha test iterations to avoid TDR on dense foliage
                     uint alphaIter = 0;
                     while (q.Proceed() && alphaIter < 128u)
                     {
@@ -269,25 +290,106 @@ void Pass_raygen_v8()
                     }
 
                     committed = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
-                    if (committed) reflT = q.CommittedRayT();
+                    if (committed) {
+                        reflT     = q.CommittedRayT();
+                        cmtInstID = q.CommittedInstanceIndex();
+                        cmtGeomID = q.CommittedGeometryIndex();
+                        cmtPrimID = q.CommittedPrimitiveIndex();
+                        cmtBary   = q.CommittedTriangleBarycentrics();
+                    }
                 }
 
                 if (committed)
                 {
-                    float3 reflPos    = reflOrigin + reflDir * reflT;
-                    float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
+                    const float3 reflPos    = reflOrigin + reflDir * reflT;
+                    const float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
                     gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
                 }
                 else
                 {
                     gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
                 }
+
+                //slot 7 weight, hit non emitter uses Fresnel*(alpha+beta), emitter and miss use Fresnel only
+                if (splitRefl)
+                {
+                    const float3 V_prim    = -rayDir;
+                    const float3 fresnelP  = ComputeSharpReflectionFresnel(
+                                                matID, V_prim, hinfo.hitNormal,
+                                                iors.x, iors.y, hitLocalPm,
+                                                dropGGX, dropCoat);
+
+                    uint   reflSlot = NRC_INVALID_SLOT;
+                    float3 weight   = fresnelP;
+                    if (committed)
+                    {
+                        const uint reflFlatPrim = FlatPrimID(cmtInstID, cmtGeomID, cmtPrimID);
+                        const float3 reflEmission = GetEmissionFast(cmtInstID, reflFlatPrim);
+
+                        if (any(reflEmission > 0.0f))
+                        {
+                            //emissive hit, route raw emission through slot 8, weight stays Fresnel only
+                            gScratchPing[uint3(pixel, 8)] =
+                                float4(NrcCleanRadiance(reflEmission), 1.0f);
+                        }
+                        else
+                        {
+                            //rebuild reflected surface state from RayQuery for NRC features
+                            const uint reflMatID = GetMatIDFast(cmtInstID, reflFlatPrim);
+
+                            HitInfo reflHit = EvalSurfaceState(
+                                cmtInstID, reflFlatPrim, cmtBary, reflOrigin, 0u);
+
+                            float3 reflKd; float reflPr, reflPm;
+                            RefetchMaterial(reflMatID, reflHit.uv, reflKd, reflPr, reflPm, 0u);
+
+                            const float3 reflAlpha = reflKd * (1.0f - reflPm);
+                            const float3 reflBeta  = lerp(float3(0.04f, 0.04f, 0.04f), reflKd, reflPm);
+                            const float3 reflSum   = reflAlpha + reflBeta;
+
+                            //mirror the cache training gate, smooth specular and transmissive fall back to MIS
+                            const float reflAlphaL = GetPHat(reflAlpha);
+                            const float reflBetaL  = GetPHat(reflBeta);
+                            const float reflSpecW  = reflBetaL / (reflAlphaL + reflBetaL + EPSILON);
+                            const float reflEffR   = lerp(1.0f, reflPr, reflSpecW);
+                            const bool  reflInferEligible =
+                                (reflEffR >= NRC_CACHE_ROUGHNESS_MIN) &&
+                                (LoadKd_w(reflMatID) >= (1.0f - EPSILON));
+
+                            if (reflInferEligible)
+                            {
+                                float features[17];
+                                NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
+                                                 reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+
+                                reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
+                                weight   = fresnelP * reflSum;
+                            }
+                            else
+                            {
+                                //zero weight, the path traced reflection carries the contribution
+                                nrcReflFallback = true;
+                                weight = float3(0, 0, 0);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        //refl ray missed, stash sky+sun into slot 8, resolve multiplies by Fresnel
+                        const float3 sun  = EvaluateSun(reflDir);
+                        float3       envL = EvalMissState(reflDir, sun);
+                        if (length(sun) > 0.0f) envL = sun;
+                        gScratchPing[uint3(pixel, 8)] = float4(NrcCleanRadiance(envL), 1.0f);
+                    }
+
+                    gScratchPing[uint3(pixel, 7)] = float4(weight, asfloat(reflSlot));
+                }
             }
         }
 
-        //====================================================================
+        //====================================
         //EMITTER HIT
-        //====================================================================
+        //====================================
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
             const float3 throughput = UnpackRGB9E5(throughputPk);
@@ -298,6 +400,12 @@ void Pass_raygen_v8()
             const float  lightPdfSA   = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             const float  misWeight    = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
 
+            //BSDF MIS weighted tail matches prev vertex's NEE MIS weighted L_nee
+            if (nrcIsTraining) {
+                nrcTailKind  = NRC_TAIL_EMITTER;
+                nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(emission * misWeight));
+            }
+
             const float3 F_contrib = throughput * emission * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
             const float  p_full    = pdf_product;
@@ -306,18 +414,17 @@ void Pass_raygen_v8()
             bool accepted = false;
             if (depth == 1)
             {
-                //DI triangle-emitter candidate, d=2 path.
-                //V2 = diMarker as dup-map discriminator, unused by
-                //Reconnect's MATID_LIGHT_TRI branch.
+                //DI triangle emitter, V2 is diMarker for dup discriminator
                 accepted = AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     hitPos, hinfo.hitNormal,
-                    emission, diMarker,               //V2 = per-pixel discriminator
+                    emission, diMarker,
                     float2(0, 0),
                     MATID_LIGHT_TRI, instID, 1.0f,
                     F_contrib, seed);
             }
-            else //depth >= 2: GI emitter, x2 = stashed depth-1 vertex
+            else
             {
+                //GI emitter, x2 is stashed depth 1 vertex
                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
@@ -329,9 +436,9 @@ void Pass_raygen_v8()
             break;
         }
 
-        //====================================================================
-        //STASH DEPTH-1 VERTEX / V2
-        //====================================================================
+        //====================================
+        //STASH DEPTH 1 VERTEX AND V2
+        //====================================
         if (depth == 1)
         {
             store_ps_depth1(g_pathStateBuffer, pixelIdx,
@@ -344,9 +451,71 @@ void Pass_raygen_v8()
             store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
         }
 
-        //====================================================================
+        //====================================
+        //NRC AREA SPREAD AND CACHE TERMINATION
+        //====================================
+        //Bekaert area spread, gated at hitIdx>=3, class 2 runs to natural term
+        ++nrcHitIdx;
+        //reset per vertex NEE accumulator, NEE blocks below add into it
+        nrcLNeeAccum = float3(0, 0, 0);
+
+        if (nrcHitIdx == 1)
+        {
+            const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
+            nrcA0 = NrcComputeA0(hitT, cosPrimary);
+        }
+        else
+        {
+            if (!nrcPrevSpecular)
+            {
+                const float cosHit = max(abs(dot(-rayDir, hinfo.hitNormal)), 1e-6f);
+                NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
+            }
+
+            //multilobe roughness gate, weight roughness by spec dominance
+            const float3 alphaG  = hitLocalKd * (1.0f - hitLocalPm);
+            const float3 betaG   = lerp(float3(0.04f, 0.04f, 0.04f),
+                                        hitLocalKd, hitLocalPm);
+            const float  alphaL  = GetPHat(alphaG);
+            const float  betaL   = GetPHat(betaG);
+            const float  specW   = betaL / (alphaL + betaL + EPSILON);
+            const float  effRough = lerp(1.0f, hitLocalPr, specW);
+
+            const bool shouldFire =
+                !nrcPrevSpecular &&
+                (effRough >= NRC_CACHE_ROUGHNESS_MIN) &&
+                NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
+
+            if (shouldFire)
+            {
+                //on slot alloc fail continue normally instead of losing the pixel
+                const float3 throughput = UnpackRGB9E5(throughputPk);
+                const uint nrcSlot = NrcWriteTerminationRecord(
+                        pixelIdx, nrcInferenceCapacity,
+                        hitPos, -rayDir, hinfo.hitNormal,
+                        hitLocalPr, hitLocalKd, hitLocalPm,
+                        hinfo.backface,
+                        throughput, tpost, pdf_product);
+                if (nrcSlot != NRC_INVALID_SLOT)
+                {
+                    nrcCacheTerminated = true;
+                    //class 1 self trains via the rendering query, store alpha+beta for recovery
+                    if (nrcPathClass == NRC_CLASS_TRAIN_BIASED) {
+                        nrcTailKind    = NRC_TAIL_CACHE;
+                        nrcTailInfSlot = nrcSlot;
+                        const float3 alphaCT = hitLocalKd * (1.0f - hitLocalPm);
+                        const float3 betaCT  = lerp(float3(0.04f, 0.04f, 0.04f),
+                                                    hitLocalKd, hitLocalPm);
+                        nrcTailRadPk = PackRGB9E5(NrcCleanRadiance(alphaCT + betaCT));
+                    }
+                    break;
+                }
+            }
+        }
+
+        //====================================
         //NEE
-        //====================================================================
+        //====================================
         const bool performNEE = !(mediumMatID != MEDIUM_INVALID || LoadKd_w(matID) < EPSILON);
 
         uint matKdPk, matPrPmPk, hitNormalPk;
@@ -356,13 +525,10 @@ void Pass_raygen_v8()
             matPrPmPk   = f32tof16_custom(hitLocalPr) | (f32tof16_custom(hitLocalPm) << 16u);
             hitNormalPk = PackNormal(hinfo.hitNormal);
 
-            //====================================================================
+            //====================================
             //POINT LIGHT NEE
-            //====================================================================
-            //Visibility is DEFERRED, we add the candidate assuming it's
-            //unoccluded, then if it wins RIS we stash the shadow-ray info
-            //in the path-state scratch. The end-of-raygen resolve traces
-            //exactly one shadow ray, for the final winning NEE sample.
+            //====================================
+            //visibility inline per candidate, handles infinite sun distance
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
 
@@ -390,12 +556,6 @@ void Pass_raygen_v8()
 
                     if (lightPdf > 1e-20f && bsdfPdf > 0.0f)
                     {
-                        //Inline visibility. The previous design stashed the
-                        //shadow ray and only traced it at raygen end for the
-                        //RIS winner; that saved rays but didn't cope well
-                        //with the sun's infinite-distance ray, so now every
-                        //accepted NEE candidate traces its own shadow ray
-                        //before landing in the reservoir.
                         const float3 shadowOrigin = offset_ray(
                             hitPos,
                             dot(L, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal);
@@ -408,11 +568,13 @@ void Pass_raygen_v8()
                             const float  p_full           = pdf_product * lightPdf;
                             const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
+                            //local NEE estimator feeds backward fill target
+                            if (nrcIsTraining)
+                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
+
                             if (depth == 0)
                             {
-                                //DI NEE at primary vertex, d=2 path, x2 = light.
-                                //V2 = diMarker as dup-map discriminator,
-                                //unused by Reconnect's MATID_LIGHT_TRI branch.
+                                //DI NEE at primary, x2 is the light
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     light.position, light.normal,
                                     light.emission, diMarker,
@@ -422,7 +584,7 @@ void Pass_raygen_v8()
                             }
                             else if (depth == 1)
                             {
-                                //GI NEE at depth-1 vertex, d=3 path, x2 = current hit.
+                                //GI NEE at depth 1, x2 is current hit
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     hitPos, hinfo.hitNormal,
                                     light.emission, -L,
@@ -430,10 +592,10 @@ void Pass_raygen_v8()
                                     matID, instID, iors.y,
                                     F_contrib, seed);
                             }
-                            else //depth >= 2: GI NEE past depth-1 vertex.
+                            else
                             {
+                                //GI NEE past depth 1, fold BSDF*cos into tpost
                                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                                //tpost so far excludes current BSDF, NEE adds it.
                                 const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ps.x2, ps.n2_s,
@@ -447,13 +609,9 @@ void Pass_raygen_v8()
                 }
             }
 
-            //====================================================================
+            //====================================
             //SUN NEE
-            //====================================================================
-            //depth >= 1 defers visibility via the shadow-ray scratch.
-            //depth == 0 bypasses the reservoir, direct scratch write, and
-            //still traces its shadow ray inline, there's no RIS winner
-            //to gate against.
+            //====================================
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
@@ -482,26 +640,22 @@ void Pass_raygen_v8()
                         const float  p_hat            = GetPHat(F_contrib);
                         const float  p_full           = pdf_product * lightPdf;
 
-                        //Inline sun-shadow check before the candidate lands
-                        //in the reservoir (same offset / tMax for all
-                        //depths, only the stored sample shape differs).
                         const float3 shadowOrigin = offset_ray(
                             hitPos,
                             dot(sun.direction, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal);
                         if (IsVisibleOffset(shadowOrigin, sun.direction, 10000.0f))
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
+
+                            if (nrcIsTraining)
+                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
+
                             if (depth == 0)
                             {
-                                //DI sun NEE at primary vertex, d=2 path.
-                                //x2 = sun.direction stored as a DIRECTION,
-                                //matID = MATID_ENV_MISS so Reconnect's
-                                //sentinel branch preserves direction under
-                                //shift (same as env miss). V2 = diMarker
-                                //for dup-map discrimination only.
+                                //DI sun NEE, x2 is direction, sentinel preserves it under shift
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    sun.direction, float3(0, 1, 0),   //x2=dir, n2=unit default
-                                    sun.radiance, diMarker,           //L2, V2=per-pixel discriminator
+                                    sun.direction, float3(0, 1, 0),
+                                    sun.radiance, diMarker,
                                     float2(0, 0),
                                     MATID_ENV_MISS, MATID_ENV_MISS, 1.0f,
                                     F_contrib, seed);
@@ -515,7 +669,7 @@ void Pass_raygen_v8()
                                     matID, instID, iors.y,
                                     F_contrib, seed);
                             }
-                            else //depth >= 2
+                            else
                             {
                                 const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
                                 const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
@@ -537,37 +691,53 @@ void Pass_raygen_v8()
             hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
-        //====================================================================
+        //====================================
         //SAMPLE NEXT BSDF DIRECTION
-        //====================================================================
+        //====================================
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
-        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y);
-        BrdfData  bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y);
+        //x1 split integral, peel delta GGX/coat lobes when smooth, NRC supplies the reflection radiance
+        bool ggxNoReflect = false;
+        //skip the lobe drop on reflection probe fallback so the BSDF carries the reflection
+        if (depth == 0 && kSharpRefl && !nrcReflFallback)
+        {
+            const bool dropGGX0       = ShouldDropDeltaGGX (hitLocalPr, hitLocalPm);
+            const bool dropCoat0      = ShouldDropDeltaCoat(matID);
+            const bool transmissive_x1 = LoadKd_w(matID) < (1.0f - EPSILON);
+            const bool spDropGGX      = dropGGX0 && !transmissive_x1;
+            ggxNoReflect              = dropGGX0 &&  transmissive_x1;
+            sp = DropDeltaLobes(sp, spDropGGX, dropCoat0);
+        }
+        float3    s  = SampleBRDF(sp, matID, -rayDir, hinfo.hitNormal, hinfo.hitNormal, hitLocalKd, hitLocalPr, hitLocalPm, seed, iors.x, iors.y, ggxNoReflect);
+        BrdfData  bdata = EvaluateAndPdf_COMBINED(sp, matID, hinfo.hitNormal, hinfo.hitNormal, s, -rayDir, hitLocalKd, hitLocalPr, hitLocalPm, iors.x, iors.y, ggxNoReflect);
 
         const float  cosTheta     = abs(dot(hinfo.hitNormal, s));
         const float3 updateWeight = (bdata.pdf > 1e-6f)
             ? (bdata.val * absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
+        //emit training vertex before any bad sample break, beta=0 terminates fill
+        if (nrcIsTraining && nrcTrainVIdx < NRC_MAX_VERTICES_PER_PATH)
+        {
+            float features[17];
+            const float3 alpha = hitLocalKd * (1.0f - hitLocalPm);
+            const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), hitLocalKd, hitLocalPm);
+            NrcBuildFeatures(hitPos, -rayDir, hinfo.hitNormal,
+                             hitLocalPr, alpha, betaC, hinfo.backface, features);
+
+            NrcStoreTrainingVertex(
+                nrcPathId, nrcTrainVIdx, features,
+                PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
+                PackRGB9E5(NrcCleanRadiance(updateWeight)));
+            ++nrcTrainVIdx;
+        }
+
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
-        //Bounce classification: transmission crosses the surface
-        //(sampled direction on the opposite side of the shading normal
-        //from the incoming ray). hit.hitNormal is always oriented
-        //toward -rayDir by EvalSurfaceState, so dot(s, n) < 0 is
-        //equivalent to "s goes through the surface". Transmission
-        //bounces are free up to MAX_BOUNCES; reflections count against
-        //the tighter MAX_DS_BOUNCES quota.
-        const bool isTransmission = dot(s, hinfo.hitNormal) < 0.0f;
-        if (!isTransmission)
-        {
-            if (dsBounces >= MAX_DS_BOUNCES) break;
-            ++dsBounces;
-        }
-
         prev_pdf    = bdata.pdf;
         pdf_product = min(pdf_product * bdata.pdf, 1e30f);
+        //matches BSDF sampler SMOOTH_SPECULAR_THRESHOLD
+        nrcPrevSpecular = (hitLocalPr < SMOOTH_SPECULAR_THRESHOLD);
         rayDir      = s;
         float3 offsetN = dot(s, hinfo.hitNormal) >= 0.0f ? hinfo.hitNormal : -hinfo.hitNormal;
         rayOrigin   = offset_ray(hitPos, offsetN);
@@ -576,29 +746,25 @@ void Pass_raygen_v8()
             float3 throughput  = UnpackRGB9E5(throughputPk) * updateWeight;
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
+            //RR applies to render and training, survival boost patched into stored beta only
             if (depth > 2)
             {
-                //Floor survival at 0.1 so kill-rate and 1/p_s boost stay
-                //symmetric. rrBoost belongs on throughput (which is f/q
-                //and gets 1/p_s when q shrinks via RR) and on the path
-                //pdf (pdf_product shrinks by the same p_s, keeping
-                //F_contrib = throughput * L * pdf_product RR-invariant).
-                //It must NOT touch tpostWeight: tpost is pure
-                //BSDF·cos·abs integrand (no 1/pdf term) cached into L2
-                //for reuse. Boosting it poisons reused contributions
-                //with an extra 1/p_s that can't be cancelled at the
-                //neighbor pixel, producing firefly-like overshoots
-                //whenever an RR-surviving sample propagates through
-                //temporal or spatial reservoir chains.
                 const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
                 if (RandomFloatSingle(seed) >= survivalProb) break;
                 const float rrBoost = 1.0f / survivalProb;
                 throughput  *= rrBoost;
-                //RR survival is part of the path pdf, include in product.
                 pdf_product = min(pdf_product * survivalProb, 1e30f);
+
+                //patch just emitted vertex beta so E[beta_stored*tail] stays unbiased
+                if (nrcIsTraining && nrcTrainVIdx > 0u)
+                {
+                    NrcUpdateTrainingVertexBeta(
+                        nrcPathId, nrcTrainVIdx - 1u,
+                        PackRGB9E5(NrcCleanRadiance(updateWeight * rrBoost)));
+                }
             }
 
-            //Accumulate tpost locally, no reservoir roundtrip.
+            //tpost accumulates locally without a reservoir RMW
             if (depth >= 2)
                 tpost *= tpostWeight;
 
@@ -607,13 +773,24 @@ void Pass_raygen_v8()
         prevNormalPk = PackNormal(hinfo.hitNormal);
     }
 
-    //====================================================================
+    //====================================
+    //COMMIT TRAINING PATH META
+    //====================================
+    //numVertices=0 paths are skipped, untagged long paths get NRC_TAIL_RR, tail=0 is unbiased
+    if (nrcPathId != NRC_INVALID_PATH)
+    {
+        const uint tailKind = (nrcTailKind != NRC_TAIL_INVALID) ? nrcTailKind : NRC_TAIL_RR;
+        //tail cache uses inferenceSlot, others use tailRadPk
+        const uint infSlot = (tailKind == NRC_TAIL_CACHE) ? nrcTailInfSlot : NRC_INVALID_SLOT;
+        NrcStorePathMeta(nrcPathId, nrcTrainVIdx, tailKind, infSlot, nrcTailRadPk);
+    }
+
+    //====================================
     //FINAL RESOLVE
-    //====================================================================
-    //Commit wsum / W / M. F was already written to the reservoir by
-    //AddInitialCandidate on the last acceptance. NEE candidates are now
-    //visibility-tested inline before they reach RIS, so the W formula
-    //is the plain RIS unbiased weight.
+    //====================================
+    //cache terminated pixels defer W/M/invalidation to Pass_nrc_resolve_v8
+    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
+    if (!nrcCacheTerminated)
     {
         const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
         float W = 0.0f;
@@ -623,9 +800,8 @@ void Pass_raygen_v8()
             if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
         }
 
-        store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-        store_W   (g_Reservoirs_current, pixelIdx, W);
-        store_M   (g_Reservoirs_current, pixelIdx, 1u);
+        store_W(g_Reservoirs_current, pixelIdx, W);
+        store_M(g_Reservoirs_current, pixelIdx, 1u);
 
         if (W == 0.0f)
             InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);

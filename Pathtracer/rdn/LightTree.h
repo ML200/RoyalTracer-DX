@@ -261,7 +261,9 @@ static Aabb triAabbWorld(const ::LightTriangle& t, const XMFLOAT4X4& world)
     return a;
 }
 
-// --------------------------- CPU Node ----------------------------------------
+//====================================
+//CPU NODE
+//====================================
     struct BLASNode {
     Aabb aabb{}; float power = 0.f;
     Cone cone{};
@@ -280,7 +282,9 @@ struct BLASBuild {
     std::vector<uint32_t> leafTriList;  // concatenation of per-leaf triangle lists
 };
 
-// --------------------------- Light Tree ---------------------------
+//====================================
+//LIGHT TREE BUILDER
+//====================================
 class LightTreeBuilder {
 private:
     struct TItem { // TLAS items over BLAS roots
@@ -315,7 +319,9 @@ public:
 
     const std::vector<BlasRangeGpu>& GetCpuBLASRanges() const { return m_cpuBlasRanges; }
 
-    // -------------------------- API -----------------------------------
+    //====================================
+    //API
+    //====================================
 
     void Build(const std::vector<::LightTriangle>& tris, const Settings& cfg = {}) {
         LT_TIME_SCOPE(L"Build()");
@@ -559,7 +565,7 @@ public:
         LT_TIME_SCOPE(L"PrintMetrics()");
         struct ND { uint32_t i; uint32_t d; };
 
-        // ---- TLAS ----
+        //TLAS
         if (m_tlas.empty()){
             LT_WARN(L"TLAS is empty.");
         } else {
@@ -591,7 +597,7 @@ public:
                   << L", maxChildren=" << maxChildren);
         }
 
-        // ---- BLAS (per instance + aggregate) ----
+        //BLAS per instance + aggregate
         uint64_t allNodes=0, allInner=0, allLeaf=0, allLeafDepthSum=0, allLeafTriSum=0;
         uint32_t allMaxDepth=0, globalMinLeafTri=UINT32_MAX, globalMaxLeafTri=0;
 
@@ -690,7 +696,9 @@ private:
         return LT_IDENTITY_3X3;
     }
 
-    // -------------------------- Build: BLAS (SAOH) ----------------------------
+    //====================================
+    //BUILD BLAS SAOH
+    //====================================
     void buildBLASes_SAOH(){
         LT_TIME_SCOPE(L"buildBLASes_SAOH()");
         LT_LOG(L"Grouping " << (m_tris ? m_tris->size() : 0) << L" emissive triangles by instanceID...");
@@ -943,7 +951,9 @@ private:
 
 
 
-    // -------------------------- Build: TLAS (SAOH) ----------------------------
+    //====================================
+    //BUILD TLAS SAOH
+    //====================================
     void buildTLAS_SAOH(){
         LT_TIME_SCOPE(L"buildTLAS_SAOH()");
         LT_LOG(L"buildTLAS: BLASes=" << m_blas.size());
@@ -996,7 +1006,7 @@ private:
             return nodeIdx;
         }
 
-        // --- helper: binary split on [b0,e0)
+        //helper, binary split on [b0,e0)
         auto findBinarySplit = [&](uint32_t b0, uint32_t e0,
                                    int& axisOut, float& splitPosOut, uint32_t& midOut)->bool
         {
@@ -1123,7 +1133,9 @@ private:
 
 
 
-    // -------------------------- Upload helpers --------------------------------
+    //====================================
+    //UPLOAD HELPERS
+    //====================================
     template<typename T>
     ComPtr<ID3D12Resource> uploadVector(ID3D12Device* device, ID3D12GraphicsCommandList* cmd, const std::vector<T>& v){
         if (v.empty()) return {}; const UINT64 bytes = static_cast<UINT64>(v.size()*sizeof(T));

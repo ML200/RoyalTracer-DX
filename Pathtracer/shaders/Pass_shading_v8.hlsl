@@ -2,9 +2,9 @@
 #include "Includes_v8.hlsli"
 
 
-//====================================================================
+//====================================
 //SHADING PASS
-//====================================================================
+//====================================
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
@@ -15,7 +15,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    float3 accumulation = output_primary + output_indirect + sunDirect;
+    //====================================
+    //X1 SHARP REFLECTION CONTRIBUTION
+    //====================================
+    //slot 8 is the durable handoff, debug passes scribble g_NrcInferenceOut later
+    float3 reflContrib = float3(0, 0, 0);
+    {
+        const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
+        if (reflPack.w > 0.0f)
+            reflContrib = max(float3(0, 0, 0), reflPack.rgb);
+    }
+    //debug mirror, linear here, postprocess applies sRGB
+    gOutput[uint3(DTid.xy, 4)] = float4(reflContrib, 1.0f);
+
+    float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
 
     bool cameraChanged = false;
     [unroll]
@@ -24,7 +37,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
     static const float MAX_SAMPLES     = 1000.0;
 
-    float4 prev        = gPermanentData[DTid.xy];   //rgb = running avg, a = N
+    float4 prev        = gPermanentData[DTid.xy];
     float3 prevAvg     = prev.rgb;
     float  prevSamples = prev.a;
 
@@ -32,7 +45,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float  newSamples;
     if (cameraChanged)
     {
-        //Camera moved: reset running average and sample count
+        //camera moved, reset running average
         newAvg     = accumulation;
         newSamples = 1.0h;
     }
@@ -43,7 +56,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         newAvg     = mad(accumulation - prevAvg, invN, prevAvg);
     }
 
-    //store back
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
     gOutput[uint3(DTid.xy, 2)] = float4(newAvg, 1.0f);
 
@@ -52,7 +64,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
-    //Variables for bias hint, set in each branch, used after
+
+    //bias hint inputs set per branch, used after
     uint  biasInstID;
     float2 biasMV = float2(0, 0);
     bool  isEmitterSurface = false;
@@ -60,13 +73,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
     bool isEmissiveOrSky = load_isEmitter(g_sample_current, pixelIdx);
     if (isEmissiveOrSky)
     {
-        //Emitters have a valid surface, sky sentinel, instID==0xFFFFFFFF, does not
+        //emitter has valid surface, sky sentinel instID=0xFFFFFFFF does not
         uint emInstID = load_instID(g_sample_current, pixelIdx);
         bool hasPosition = (emInstID != 0xFFFFFFFFu);
 
         if (hasPosition)
         {
-            //Emitter surface: compute depth + motion vectors like regular geometry
+            //emitter surface, depth and MV like regular geometry
             uint emPrimID = load_primID(g_sample_current, pixelIdx);
             float2 emBary = load_bary(g_sample_current, pixelIdx);
             float3 emPos  = ReconstructPosition(emInstID, emPrimID, emBary);
@@ -81,17 +94,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
             biasMV = emMV;
             isEmitterSurface = true;
 
-            //Provide shading normal for DLSS-RR edge detection
+            //shading normal for DLSS RR edge detection
             float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
         {
-            //Sky: no surface, clamped to cameraFar to stay within DLSS-RRs declared range
+            //sky, clamp to cameraFar to stay in DLSS RR range
             g_dlssDepth[DTid.xy] = cameraFar;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-            //Camera-only motion vector: reproject current ray direction through previous VP
+            //camera only MV, reproject current ray through prev VP
             float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
@@ -116,9 +129,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
         g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
+        gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
     else{
-        //Reconstruct surface for DLSS
+        //reconstruct surface for DLSS
         uint sInstID = load_instID(g_sample_current, pixelIdx);
         uint sPrimID = load_primID(g_sample_current, pixelIdx);
         float2 sBary = load_bary(g_sample_current, pixelIdx);
@@ -129,6 +143,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
         g_dlssRoughness[DTid.xy] = sv.Pr;
+        //debug mirror of diffuse albedo passed to DLSS RR
+        gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
 
         float2 curPix = DTid.xy;
         float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
@@ -142,17 +158,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
         biasInstID = sInstID;
         biasMV = mvPixels;
 
-        //Specular albedo
+        //specular albedo
         float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
         g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
         Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
 
-        //Specular motion vector.
-        //Uses the deterministic perfect-reflection ray traced in raygen, scratch slice 4.
+        //specular MV from raygen's perfect reflection probe in scratch slice 4
         float specularity = Luma(specularAlbedo);
-        float2 specMV = mvPixels; //default: surface motion vector
+        float2 specMV = mvPixels;
         bool validSpecReproj = false;
         {
             float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
@@ -174,16 +189,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
     }
 
-    //====================================================================
-    //BIAS HINT, INSTANCE-ID DISOCCLUSION
-    //====================================================================
-    //Compare current instID with the previous frame's instID at the
-    //reprojected pixel. Mismatch = different object = disocclusion,
-    //tell DLSS-RR to trust the current frame, bias=1. This provides
-    //exact object identity info that DLSS-RR cannot derive from
-    //depth/normals alone.
+    //====================================
+    //BIAS HINT INSTANCE ID DISOCCLUSION
+    //====================================
+    //instID mismatch at reprojected pixel marks disocclusion, bias=1
     {
-        float disoccBias = 1.0f;  //default: trust current, off-screen, first frame
+        float disoccBias = 1.0f;
         float2 reprojPrev = float2(DTid.xy) + biasMV;
         int2 prevPixI = int2(round(reprojPrev));
         if (all(prevPixI >= 0) && all(prevPixI < int2(dims))) {
@@ -192,10 +203,27 @@ void main(uint3 DTid : SV_DispatchThreadID)
             disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
         }
         float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
-        float bias = max(disoccBias, emitterBias);
+
+        //reflection dominated pixels lean toward the input so edges stay crisp
+        float reflectionBias = 0.0f;
+        {
+            const float reflLuma  = Luma(reflContrib);
+            const float totalLuma = Luma(accumulation);
+            if (totalLuma > 1e-5f && reflLuma > 1e-5f) {
+                reflectionBias = saturate(reflLuma / totalLuma);
+            }
+        }
+
+        float bias = max(disoccBias, max(emitterBias, reflectionBias));
         g_dlssBiasHint[DTid.xy] = bias;
         if (disoccBias > 0.5f && !isEmissiveOrSky) {
             g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
         }
     }
+
+    //====================================
+    //DLSS TRANSPARENCY OVERLAY HOOK
+    //====================================
+    //placeholder side write, host can wire as a post denoise overlay later
+    g_dlssTransparency[DTid.xy] = float4(reflContrib, 0.0f);
 }

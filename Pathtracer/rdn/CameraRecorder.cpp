@@ -10,7 +10,7 @@ CameraRecorder::CameraRecorder() {
 
 CameraRecorder::~CameraRecorder() {
     if (!m_hasRecorded && !m_filePath.empty()) {
-        // Try to delete the file
+        //delete empty file
         if (std::remove(m_filePath.c_str()) == 0) {
             std::cout << "[CameraRecorder] Deleted empty recording file: " << m_filePath << std::endl;
         }
@@ -21,7 +21,7 @@ void CameraRecorder::Initialize() {
     m_hasRecorded = false;
     m_startTime = std::chrono::high_resolution_clock::now();
 
-    // Generate unique filename
+    //unique filename
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm;

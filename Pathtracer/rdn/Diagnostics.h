@@ -42,7 +42,7 @@ namespace dxdiag
 
         if (g_infoQ)
         {
-            // don't spam – only ERRORS and CORRUPTION
+            //errors and corruption only
             g_infoQ->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, true);
             g_infoQ->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR,      true);
             g_infoQ->SetMessageCountLimit(4096);
@@ -57,22 +57,12 @@ namespace dxdiag
         for (UINT64 i = 0; i < nMsg; ++i)
         {
             SIZE_T sz = 0;
-            // 1. Get the required size
             g_infoQ->GetMessage(i, nullptr, &sz);
 
             std::unique_ptr<uint8_t[]> blob(new uint8_t[sz]);
             D3D12_MESSAGE* msg = reinterpret_cast<D3D12_MESSAGE*>(blob.get());
 
-            // 2. ACTUALLY FETCH THE DATA FIRST
             g_infoQ->GetMessage(i, msg, &sz);
-
-            // 3. Now it is safe to read msg->pDescription
-            /*if (msg->pDescription != nullptr &&
-                strstr(msg->pDescription, "sl.dlss_d.mvec") != nullptr &&
-                strstr(msg->pDescription, "RESOURCE_BARRIER_BEFORE_AFTER_MISMATCH") != nullptr)
-            {
-                continue; // Trash it silently
-            }*/
 
             std::wcout << L"[DX] " << msg->pDescription << std::endl;
         }
@@ -94,17 +84,17 @@ namespace dxdiag
             g_dred->GetAutoBreadcrumbsOutput(&bc);
             g_dred->GetPageFaultAllocationOutput(&pf);
 
-            // very compact breadcrumb dump – customise as you like
+            //compact breadcrumb dump
             for (auto node = bc.pHeadAutoBreadcrumbNode;
                  node; node = node->pNext)
             {
-                std::wcerr << L"  ► Last GPU command list 0x"
+                std::wcerr << L"  > Last GPU command list 0x"
                            << node->pCommandListDebugNameA << L"\n";
             }
 
             if (pf.PageFaultVA)
             {
-                std::wcerr << L"  ► Page-fault at GPU VA : 0x"
+                std::wcerr << L"  > Page-fault at GPU VA : 0x"
                            << std::hex << pf.PageFaultVA << std::dec << L"\n";
             }
         }
@@ -116,4 +106,4 @@ namespace dxdiag
     inline void DumpNewMessages()          {}
     inline void CheckDeviceRemoved(ID3D12Device*) {}
 #endif
-} // namespace dxdiag
+}

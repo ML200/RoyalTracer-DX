@@ -1,17 +1,17 @@
 #pragma once
-// ═══════════════════════════════════════════════════════════════════
-// Core/ResourceFactory.h — Convenience wrappers for buffer/texture
-//                          creation, upload, and barrier management.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//RESOURCE FACTORY
+//====================================
+//buffer/texture creation, upload, barrier helpers
 
 #include "../Common.h"
-#include "../nv_helpers_dx12/BottomLevelASGenerator.h" // for heap props
+#include "../nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "../DXRHelper.h"
 
 struct ResourceFactory {
     explicit ResourceFactory(ID3D12Device* dev) : device(dev) {}
 
-    // ── Raw buffer (default heap, UAV-capable) ───────────────────
+    //raw default-heap UAV-capable buffer
     ComPtr<ID3D12Resource> CreateUAVBuffer(UINT sizeBytes, const std::wstring& name) const {
         auto desc = CD3DX12_RESOURCE_DESC::Buffer(sizeBytes, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         ComPtr<ID3D12Resource> res;
@@ -22,7 +22,7 @@ struct ResourceFactory {
         return res;
     }
 
-    // ── Default-heap buffer (generic read after copy) ────────────
+    //default-heap buffer, generic-read after copy
     ComPtr<ID3D12Resource> CreateDefaultBuffer(UINT sizeBytes, const std::wstring& name) const {
         auto res = nv_helpers_dx12::CreateBuffer(device, sizeBytes,
             D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
@@ -31,15 +31,14 @@ struct ResourceFactory {
         return res;
     }
 
-    // ── Upload-heap buffer ───────────────────────────────────────
+    //upload-heap buffer
     ComPtr<ID3D12Resource> CreateUploadBuffer(UINT sizeBytes) const {
         return nv_helpers_dx12::CreateBuffer(device, sizeBytes,
             D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
             nv_helpers_dx12::kUploadHeapProps);
     }
 
-    // ── Upload data to a default-heap buffer via staging ─────────
-    //    Returns the upload heap (caller must keep alive until GPU done)
+    //upload data to default buffer via staging, caller keeps upload alive until GPU done
     ComPtr<ID3D12Resource> UploadToBuffer(
         ID3D12GraphicsCommandList* cmdList,
         ID3D12Resource* dst, const void* data, UINT sizeBytes,
@@ -59,7 +58,7 @@ struct ResourceFactory {
         return upload;
     }
 
-    // ── Create 2D texture (default heap) ─────────────────────────
+    //2D default-heap texture
     ComPtr<ID3D12Resource> CreateTexture2D(
         UINT w, UINT h, DXGI_FORMAT fmt, UINT arraySize = 1,
         D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -83,7 +82,7 @@ struct ResourceFactory {
         return res;
     }
 
-    // ── Upload-mapped helper for constant/structured data ────────
+    //upload-mapped helper for constant/structured data
     ComPtr<ID3D12Resource> CreateUploadBufferWithData(const void* data, UINT sizeBytes) const {
         auto buf = CreateUploadBuffer(sizeBytes);
         void* p = nullptr;

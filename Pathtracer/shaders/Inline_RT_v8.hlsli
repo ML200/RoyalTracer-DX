@@ -1,17 +1,15 @@
-//====================================================================
+//====================================
 //TRACE PAYLOAD AND HIT INFO
-//====================================================================
-//Minimal payload type. Raygen uses SER HitObject path, the closest-hit
-//and miss stubs still need a nominal payload struct for the pipeline.
+//====================================
+//raygen uses SER HitObject path, stubs still need a nominal payload
 struct [raypayload] TracePayload
 {
     uint dummy : read(caller) : write(caller);
 };
 
-//Sentinel for no-medium in the raygen absorption path.
+//no-medium sentinel for raygen absorption
 static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 
-//Surface-shading result returned by EvalSurfaceState.
 struct HitInfo {
     float3 hitPos;
     float3 hitNormal;
@@ -23,10 +21,10 @@ struct HitInfo {
 
 #ifdef ENABLE_RAY_QUERY_INLINE
 
-//====================================================================
-//RAY ORIGIN OFFSET, RTG CH. 6
-//====================================================================
-//ULP-aware origin offset for self-intersection avoidance.
+//====================================
+//RAY ORIGIN OFFSET, RTG CH 6
+//====================================
+//ULP-aware offset for self-intersection avoidance
 static const float RTG_ORIGIN      = 1.0f / 32.0f;
 static const float RTG_FLOAT_SCALE = 1.0f / 65536.0f;
 static const float RTG_INT_SCALE   = 256.0f;
@@ -44,13 +42,10 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-//====================================================================
+//====================================
 //RAY VALIDITY AND VISIBILITY
-//====================================================================
-//Returns true if the input ray is well-formed. Degenerate rays, NaN/Inf
-//origin or direction, near-zero direction, non-positive tMax, can make
-//BVH traversal hang on some drivers. Every TraceRay/TraceRayInline in
-//this codebase must be gated on this check.
+//====================================
+//degenerate rays can hang BVH traversal, gate every TraceRay on this
 inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 {
     return !any(isnan(direction)) && !any(isinf(direction))
@@ -59,13 +54,12 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
         && tMax > 0.0f;
 }
 
-//Visibility test with RTG origin offset. Returns false (occluded) for
-//degenerate inputs, a safe default that contributes zero radiance.
+//returns false for degenerate inputs, zero radiance safe default
 inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
     if (!IsRayValid(P, direction, tMax)) return false;
 
-    float3 origin = P;//offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
+    float3 origin = P;
 
     RayDesc ray;
     ray.Origin    = origin;
@@ -81,10 +75,7 @@ inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
     return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
-//Variant of IsVisible that takes an already-offset origin. Used by the
-//deferred NEE path in raygen: the caller stores the offset origin in the
-//shadow-ray scratch when the NEE candidate is accepted, so the visibility
-//trace at raygen end can skip the per-surface normal lookup.
+//pre-offset origin variant, skips per-surface normal lookup
 inline bool IsVisibleOffset(float3 origin, float3 direction, float tMax)
 {
     if (!IsRayValid(origin, direction, tMax)) return false;
@@ -103,23 +94,23 @@ inline bool IsVisibleOffset(float3 origin, float3 direction, float tMax)
     return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
-//====================================================================
+//====================================
 //NORMAL CLAMP TO VIEW AND REFLECTION
-//====================================================================
+//====================================
 inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, float epsView, float epsRefl)
 {
     float3 Vn  = normalize(V);
     float3 Nn  = normalize(N);
     float3 NGn = normalize(Ng);
 
-    //Make sure the surface defined by the interpolated normal is hittable by the view vector
-    float a = dot(Nn, Vn); //cos between N and V
+    //make sure the surface is hittable by V
+    float a = dot(Nn, Vn);
     if (a < epsView)
     {
         float3 Nperp = Nn - a * Vn;
         float  len2  = dot(Nperp, Nperp);
 
-        //Degenerate: N ~ +/- V
+        //degenerate, N ~ +/-V
         float3 u_any;
         {
             float3 t = (abs(Vn.x) > 0.5f) ? float3(-Vn.y, Vn.x, 0.0f) : float3(0.0f, -Vn.z, Vn.y);
@@ -134,14 +125,14 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     if (dot(Nn, NGn) < 0.0f)
         Nn = normalize(Nn - 2.0f * dot(Nn, NGn) * NGn);
 
-    //Quick reflection test
+    //quick reflection test
     {
         float3 R = reflect(-Vn, Nn);
         if (dot(R, NGn) >= epsRefl)
             return Nn;
     }
 
-    //Make sure a potentially reflected ray has substantial coverage above the normal
+    //ensure reflected ray has coverage above normal
     float  c     = dot(Vn, NGn);
     float3 Ngp   = NGn - c * Vn;
     float  ngp2  = dot(Ngp, Ngp);
@@ -164,28 +155,24 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     float L = 0.5f * (alpha - delta);
     float U = 0.5f * (alpha + delta);
 
-    //Intersect with [0, thetaMax]
+    //intersect with [0, thetaMax]
     float Lc = max(0.0f, L);
     float Uc = min(thetaMax, U);
 
     float thetaTarget;
     if (Lc <= Uc)
     {
-        //If current theta inside intersection, keep it
         thetaTarget = clamp(thetaStart, Lc, Uc);
     }
     else
     {
-        //No feasible theta within view constraint. Best-effort fallback
         thetaTarget = 0.0f;
     }
 
-    //Rebuild N
     float aT = cos(thetaTarget);
     float sT = sqrt(saturate(1.0f - aT * aT));
     float3 Nopt = aT * Vn + sT * u;
 
-    //Hemisphere fix
     if (dot(Nopt, NGn) < 0.0f)
         Nopt = normalize(Nopt - 2.0f * dot(Nopt, NGn) * NGn);
     else
@@ -194,9 +181,9 @@ inline float3 ClampNormalToViewAndReflection(float3 N, float3 V, float3 Ng, floa
     return Nopt;
 }
 
-//====================================================================
+//====================================
 //TEXTURE EVALUATION
-//====================================================================
+//====================================
 float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
 {
     float3 albedo = LoadKd_rgb(matID);
@@ -227,10 +214,8 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     }
     return pbrProps;
 }
-//Refetch material properties from textures using matID + UV at the given
-//mip level. level defaults to 0 so existing ReSTIR-pass callers keep
-//full-resolution lookups, raygen passes depth to drop detail on deeper
-//bounces where the shading contribution is attenuated by throughput.
+
+//raygen passes depth to drop detail on deeper bounces
 inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, uint level = 0)
 {
     localKd = EvaluateAlbedo(matID, uv, level);
@@ -239,9 +224,9 @@ inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float
     localPm = pbr.y;
 }
 
-//====================================================================
+//====================================
 //CUSTOM TRACE RAY
-//====================================================================
+//====================================
 inline dx::HitObject TraceRay_Custom(
     RaytracingAccelerationStructure SceneBVH,
     RayDesc ray,
@@ -250,7 +235,7 @@ inline dx::HitObject TraceRay_Custom(
 {
 
     TracePayload payload = (TracePayload)0;
-    //RayContribution=0, MultiplierForGeometry=1 (select opaque vs alpha hit group per geometry), MissIndex=0
+    //RayContribution=0, MultiplierForGeometry=1 (opaque vs alpha hit group per geometry), MissIndex=0
     dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 
     uint hint = hitObj.IsHit()?1:0;
@@ -259,17 +244,17 @@ inline dx::HitObject TraceRay_Custom(
 }
 
 
-//====================================================================
+//====================================
 //MISS EVALUATION
-//====================================================================
+//====================================
 inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
 {
     return EvaluateSky(rayDir);
 }
 
-//====================================================================
+//====================================
 //SURFACE STATE EVALUATION
-//====================================================================
+//====================================
 HitInfo EvalSurfaceState(
     uint   instID,
     uint   primID,
@@ -278,7 +263,7 @@ HitInfo EvalSurfaceState(
     uint   level
 )
 {
-    //DATA GATHER
+    //data gather
     const uint baseI      = instanceProps[instID].indexBase;
     const uint baseM      = instanceProps[instID].materialBase;
     const uint materialID = materialIDs[baseM + primID];
@@ -287,7 +272,6 @@ HitInfo EvalSurfaceState(
     const uint i1 = indices[baseI + 3u * primID + 1u];
     const uint i2 = indices[baseI + 3u * primID + 2u];
 
-    //Load only required vertex fields
     const float3 p0 = BTriVertex[i0].vertex;
     const float3 p1 = BTriVertex[i1].vertex;
     const float3 p2 = BTriVertex[i2].vertex;
@@ -300,7 +284,7 @@ HitInfo EvalSurfaceState(
     const uint pn1 = BTriVertex[i1].packedNormal;
     const uint pn2 = BTriVertex[i2].packedNormal;
 
-    //LOCAL GEOMETRY
+    //local geometry
     const float b1 = bc2.x;
     const float b2 = bc2.y;
     const float b0 = 1.0f - b1 - b2;
@@ -308,22 +292,21 @@ HitInfo EvalSurfaceState(
     const float3 p_local = p0 * b0 + p1 * b1 + p2 * b2;
     const float2 uv      = uv0 * b0 + uv1 * b1 + uv2 * b2;
 
-    //Face normal and degeneracy test without length()
+    //face normal, degeneracy test
     const float3 e1_local = p1 - p0;
     const float3 e2_local = p2 - p0;
     const float3 faceN_un = cross(e1_local, e2_local);
     const float  faceLen2 = dot(faceN_un, faceN_un);
 
-    //Normalize via rsqrt, use fallback for degenerate triangle
     const float3 flatN_obj =
         (faceLen2 > 1e-20f) ? (faceN_un * rsqrt(faceLen2)) : float3(0.0f, 0.0f, 1.0f);
 
-    //Shading normals, keep temporaries tight
+    //shading normals
     float3 n0 = UnpackNormal_INT(pn0);
     float3 n1 = UnpackNormal_INT(pn1);
     float3 n2 = UnpackNormal_INT(pn2);
 
-    //Replace degenerate / flipped / junk normals with flat normal
+    //replace degenerate/flipped normals with flat
     {
         const float n0l2 = dot(n0, n0);
         if (n0l2 < EPSILON) n0 = flatN_obj;
@@ -347,18 +330,17 @@ HitInfo EvalSurfaceState(
         }
     }
 
-    //Interpolate and normalize shading normal
     float3 n_local = n0 * b0 + n1 * b1 + n2 * b2;
     n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
 
-    //Ensure shading normal points to same hemisphere as geometric normal
+    //force same hemisphere as geometric normal
     if (dot(n_local, flatN_obj) < 0.0f)
     {
         n_local = n_local - 2.0f * dot(n_local, flatN_obj) * flatN_obj;
         n_local *= rsqrt(max(dot(n_local, n_local), 1e-20f));
     }
 
-    //TRANSFORM
+    //transform
     float3 posW;
     float3 normW;
     float3 geoNormW;
@@ -375,26 +357,24 @@ HitInfo EvalSurfaceState(
         geoNormW = mul(R, flatN_obj);
         geoNormW *= rsqrt(max(dot(geoNormW, geoNormW), 1e-20f));
 
-        //Geometric tangent in object space, from edges + UV deltas, then transform.
+        //tangent from edges + UV deltas
         const float2 dUV1 = uv1 - uv0;
         const float2 dUV2 = uv2 - uv0;
 
         const float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
         const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
 
-        //Unnormalized object tangent
         const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
 
         tangentW_geom = mul(R, tanO);
-        //Normalize, safe even if det==0 -> tanO==0
         tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
     }
 
-    //MATERIAL AND TEXTURING
+    //material and texturing
     HitInfo hit = (HitInfo)0.0f;
     hit.uv = uv;
 
-    //NORMAL MAPPING
+    //normal mapping
     const int normalTexID = LoadNormalTexID(materialID);
     [branch]
     if (normalTexID != -1)
@@ -411,12 +391,12 @@ HitInfo EvalSurfaceState(
         const float3 n_tan =
             nTex.SampleLevel(g_sampler, normalUV, level).xyz * 2.0f - 1.0f;
 
-        //Apply TBN without materializing float3x3
+        //apply TBN without materializing float3x3
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));
     }
 
-    //FINALIZE HIT INFO
+    //finalize
     float3 viewDir = posW - origin;
     viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
@@ -427,7 +407,7 @@ HitInfo EvalSurfaceState(
     hit.hitNormal = isBackface ? -normW : normW;
     hit.backface  = isBackface;
 
-    //Clamp normal to ensure that the ray has substantial chance to proceed
+    //clamp normal so ray can proceed
     {
         const float3 Vw = -viewDir;
         hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, geoNormOriented, 0.1f, 0.02f);
@@ -441,10 +421,9 @@ HitInfo EvalSurfaceState(
 }
 
 
-//====================================================================
+//====================================
 //FAST EMISSION AND MATERIAL LOOKUPS
-//====================================================================
-//Cheap helper to check if hit triangle is a light and return emission for immediate processing
+//====================================
 inline float3 GetEmissionFast(in uint instID, in uint primID)
 {
     uint base = instanceProps[instID].triToLightBase;

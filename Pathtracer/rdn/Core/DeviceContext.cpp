@@ -1,6 +1,6 @@
-// ═══════════════════════════════════════════════════════════════════
-// Core/DeviceContext.cpp
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//DEVICE CONTEXT
+//====================================
 
 #include "../stdafx.h"
 #include "DeviceContext.h"
@@ -22,14 +22,16 @@ extern "C" {
 } while(0)
 #endif
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//INIT
+//====================================
 void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
     width = w; height = h;
     slModule = LoadLibrary("sl.interposer.dll");
     InitStreamline();
     CreateDeviceAndSwapChain(hwnd, useWarp);
 
-    // Query actual buffer count — DLSS-G may have added extra back buffers
+    //DLSS-G may add extra back buffers, query actual count
     DXGI_SWAP_CHAIN_DESC scDesc{};
     swapChain->GetDesc(&scDesc);
     bufferCount = scDesc.BufferCount;
@@ -56,7 +58,9 @@ void DeviceContext::Shutdown() {
     slShutdown();
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//FRAME SYNC
+//====================================
 void DeviceContext::WaitForPreviousFrame() {
     const UINT64 prevFence = nextFenceValue - 1;
     if (prevFence > 0 && fence->GetCompletedValue() < prevFence) {
@@ -79,12 +83,11 @@ void DeviceContext::ExecuteAndPresent() {
     cmdQueue->ExecuteCommandLists(1, lists);
 
 #if ENABLE_D3D12_DIAGNOSTICS
-    // Dump D3D messages before Present so we see errors from command list execution
-    // even if DLSS-G's Present hook crashes
+    //dump D3D messages before Present, DLSS-G's Present hook may crash
     dxdiag::DumpNewMessages();
 #endif
 
-    // Present — use ALLOW_TEARING when supported (DLSS-G's Present hook requires it)
+    //DLSS-G Present hook requires ALLOW_TEARING when supported
     UINT presentFlags = tearingSupported ? DXGI_PRESENT_ALLOW_TEARING : 0;
     HRESULT presentHr = swapChain->Present(0, presentFlags);
     if (FAILED(presentHr)) {
@@ -95,12 +98,11 @@ void DeviceContext::ExecuteAndPresent() {
         ThrowIfFailed(presentHr);
     }
 
-    // Signal AFTER Present — DLSS-G's Present hook may submit additional GPU work
+    //signal AFTER Present, DLSS-G hook may submit additional work
     const UINT64 fv = nextFenceValue++;
     fenceValues[frameIndex] = fv;
     ThrowIfFailed(cmdQueue->Signal(fence.Get(), fv));
 
-    // Advance to next back buffer (non-blocking)
     frameIndex = swapChain->GetCurrentBackBufferIndex();
 
 #if ENABLE_D3D12_DIAGNOSTICS
@@ -110,7 +112,7 @@ void DeviceContext::ExecuteAndPresent() {
 }
 
 void DeviceContext::WaitForGPU() {
-    // Drain all in-flight work — used for shutdown and FlushAndReset
+    //drain all in-flight work
     const UINT64 fv = nextFenceValue++;
     ThrowIfFailed(cmdQueue->Signal(fence.Get(), fv));
     if (fence->GetCompletedValue() < fv) {
@@ -129,13 +131,31 @@ void DeviceContext::FlushAndReset() {
     ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
 }
 
+//====================================
+//SPLIT-SUBMISSION INTEROP
+//====================================
+//close-submit-signal then queue-wait-reopen for mid-frame D3D12/CUDA interop
+//no CPU stall, purely GPU-side sync on extFence
+//allocator NOT reset, in-flight work still reads from it, reuse until next BeginFrame
+void DeviceContext::CloseExecuteAndSignal(ID3D12Fence* extFence, UINT64 value) {
+    ThrowIfFailed(cmdList->Close());
+    ID3D12CommandList* lists[] = { cmdList.Get() };
+    cmdQueue->ExecuteCommandLists(1, lists);
+    ThrowIfFailed(cmdQueue->Signal(extFence, value));
+}
+
+void DeviceContext::WaitAndReopen(ID3D12Fence* extFence, UINT64 value) {
+    ThrowIfFailed(cmdQueue->Wait(extFence, value));
+    ThrowIfFailed(cmdList->Reset(cmdAllocators[frameIndex].Get(), nullptr));
+}
+
 void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
     if (newWidth == 0 || newHeight == 0) return;
     if (newWidth == width && newHeight == height) return;
 
     WaitForGPU();
 
-    // Release back buffer references before ResizeBuffers
+    //release back buffers before ResizeBuffers
     for (UINT n = 0; n < bufferCount; ++n)
         renderTargets[n].Reset();
     depthStencil.Reset();
@@ -143,18 +163,17 @@ void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
     width  = newWidth;
     height = newHeight;
 
-    // Pass 0 for buffer count to keep the existing count (DLSS-G may have added extra buffers)
+    //pass 0 to keep existing count, DLSS-G may have added buffers
     UINT resizeFlags = tearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
     ThrowIfFailed(swapChain->ResizeBuffers(
         0, width, height, DXGI_FORMAT_R8G8B8A8_UNORM, resizeFlags));
     frameIndex = swapChain->GetCurrentBackBufferIndex();
 
-    // Re-query actual buffer count in case it changed
+    //re-query count in case it changed
     DXGI_SWAP_CHAIN_DESC scDesc{};
     swapChain->GetDesc(&scDesc);
     bufferCount = scDesc.BufferCount;
 
-    // Recreate RTVs
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(rtvHeap->GetCPUDescriptorHandleForHeapStart());
     for (UINT n = 0; n < bufferCount; n++) {
         ThrowIfFailed(swapChain->GetBuffer(n, IID_PPV_ARGS(&renderTargets[n])));
@@ -162,7 +181,6 @@ void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
         rtvHandle.Offset(1, rtvDescriptorSize);
     }
 
-    // Recreate depth stencil
     auto hp  = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
     auto drd = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1);
     drd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -178,7 +196,9 @@ void DeviceContext::Resize(UINT newWidth, UINT newHeight) {
         dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//DESCRIPTOR HANDLES
+//====================================
 D3D12_CPU_DESCRIPTOR_HANDLE DeviceContext::CurrentRTV() const {
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(
         rtvHeap->GetCPUDescriptorHandleForHeapStart(), frameIndex, rtvDescriptorSize);
@@ -188,7 +208,9 @@ D3D12_CPU_DESCRIPTOR_HANDLE DeviceContext::DSV() const {
     return dsvHeap->GetCPUDescriptorHandleForHeapStart();
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//STREAMLINE INIT
+//====================================
 void DeviceContext::InitStreamline() {
     sl::Preferences pref{};
     pref.renderAPI       = sl::RenderAPI::eD3D12;
@@ -208,7 +230,9 @@ void DeviceContext::InitStreamline() {
         std::wcout << L"slInit failed! Error: " << (int)res << std::endl;
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//DEVICE AND SWAP CHAIN
+//====================================
 void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
     typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
@@ -221,7 +245,7 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     ComPtr<IDXGIFactory4> factory;
     ThrowIfFailed(slCreateFactory(0, IID_PPV_ARGS(&factory)));
 
-    // Check tearing support (required by DLSS-G's Present hook)
+    //tearing support required by DLSS-G Present hook
     {
         ComPtr<IDXGIFactory5> factory5;
         if (SUCCEEDED(factory.As(&factory5))) {
@@ -244,7 +268,7 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
             D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&device)));
     } else {
         ComPtr<IDXGIAdapter1> hardwareAdapter;
-        // Inline adapter selection (equivalent to DXSample::GetHardwareAdapter)
+        //inline adapter selection
         for (UINT i = 0; factory->EnumAdapters1(i, &hardwareAdapter) != DXGI_ERROR_NOT_FOUND; ++i) {
             DXGI_ADAPTER_DESC1 desc;
             hardwareAdapter->GetDesc1(&desc);
@@ -264,7 +288,7 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     if (res != sl::Result::eOk)
         std::wcout << L"slSetD3DDevice failed: " << (int)res << std::endl;
 
-    // Check DLSS-RR support
+    //DLSS-RR support check
     LUID luid = device->GetAdapterLuid();
     sl::AdapterInfo ai;
     ai.deviceLUID = (uint8_t*)&luid;
@@ -273,12 +297,12 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     if (sr != sl::Result::eOk)
         std::wcout << L"[DLSS-RR] not supported: " << (int)sr << std::endl;
 
-    // Command queue
+    //command queue
     D3D12_COMMAND_QUEUE_DESC qd = {};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ThrowIfFailed(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&cmdQueue)));
 
-    // Swap chain
+    //swap chain
     DXGI_SWAP_CHAIN_DESC1 scd = {};
     scd.BufferCount  = FRAME_COUNT;
     scd.Width        = width;
@@ -300,9 +324,11 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     slGetNewFrameToken(frameToken, nullptr);
 }
 
-// ─────────────────────────────────────────────────────────────────
+//====================================
+//RTV AND DEPTH
+//====================================
 void DeviceContext::CreateRTVsAndDepth() {
-    // RTV heap
+    //RTV heap
     D3D12_DESCRIPTOR_HEAP_DESC rtvDesc = {};
     rtvDesc.NumDescriptors = bufferCount;
     rtvDesc.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -316,7 +342,7 @@ void DeviceContext::CreateRTVsAndDepth() {
         rtvHandle.Offset(1, rtvDescriptorSize);
     }
 
-    // Depth
+    //depth
     dsvHeap = nv_helpers_dx12::CreateDescriptorHeap(device.Get(), 1,
         D3D12_DESCRIPTOR_HEAP_TYPE_DSV, false);
 

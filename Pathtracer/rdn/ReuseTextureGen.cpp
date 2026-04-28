@@ -13,8 +13,7 @@ namespace
         return (r < 0) ? r + m : r;
     }
 
-    // Paper Eq. 3: n_sigma = floor((sigma/sqrt(2))^2 + 1.46/sigma + 1.76/sigma^2
-    //                              + 0.656/sigma^3 + 0.5)
+    //paper Eq 3, n_sigma = floor(0.5*s^2 + 1.46/s + 1.76/s^2 + 0.656/s^3 + 0.5)
     int ComputeSigmaIterations(float sigma)
     {
         const float s = std::max(sigma, 0.8f);
@@ -37,8 +36,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
 
     const int N = size * size;
 
-    // Link indices: adjacent horizontal pairs share an index in the
-    // initial configuration (pixels 2k and 2k+1 both hold link k).
+    //adjacent horizontal pairs share initial link index, pixels 2k and 2k+1 hold link k
     std::vector<uint32_t> link(static_cast<size_t>(N));
     for (int i = 0; i < N; ++i)
         link[i] = static_cast<uint32_t>(i / 2);
@@ -46,7 +44,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
     std::mt19937 rng(seed);
     const int iters = ComputeSigmaIterations(sigma);
 
-    // Tiled 2×2 shuffles with alternating diagonal offset of 1.
+    //tiled 2x2 shuffles with alternating diagonal offset
     for (int it = 0; it < iters; ++it)
     {
         const int off = (it & 1) ? 1 : 0;
@@ -67,7 +65,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
 
                 uint32_t tmp[4] = { link[p0], link[p1], link[p2], link[p3] };
 
-                // Fisher–Yates on 4 entries.
+                //Fisher-Yates on 4 entries
                 for (int i = 3; i > 0; --i)
                 {
                     std::uniform_int_distribution<int> d(0, i);
@@ -81,8 +79,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
         }
     }
 
-    // Each link index now appears in exactly two positions. Build a
-    // (link -> {firstPos, secondPos}) table.
+    //each link index appears in exactly two positions, build lookup
     const int halfLinks = N / 2;
     std::vector<int32_t> firstPos(static_cast<size_t>(halfLinks), -1);
     std::vector<int32_t> secondPos(static_cast<size_t>(halfLinks), -1);
@@ -94,7 +91,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
         else                 secondPos[l] = i;
     }
 
-    // Emit tileable deltas.
+    //tileable deltas
     outRG.resize(static_cast<size_t>(N) * 2u);
     const int halfW = size / 2;
 
@@ -111,9 +108,7 @@ void GenerateReuseTexture(int size, float sigma, uint32_t seed,
         int dx = px - mx;
         int dy = py - my;
 
-        // Canonicalize to the short-way-around delta so the texture
-        // tiles under wrap. dx, dy end up in [-halfW, halfW]; both
-        // +halfW and -halfW are valid and consistent for the pair.
+        //canonicalize to short-way-around delta so texture tiles under wrap
         if (dx >  halfW) dx -= size;
         if (dx < -halfW) dx += size;
         if (dy >  halfW) dy -= size;
@@ -145,9 +140,7 @@ bool ValidateReuseTexture(int size, const std::vector<int16_t>& rg,
             const int pdx = rg[static_cast<size_t>(pi) * 2 + 0];
             const int pdy = rg[static_cast<size_t>(pi) * 2 + 1];
 
-            // Applying partner's delta should land back at (x, y)
-            // under wrap. This formulation is robust to the ±halfW
-            // canonicalization ambiguity.
+            //partner's delta should land back at (x,y) under wrap
             const int bx = WrapMod(px + pdx, size);
             const int by = WrapMod(py + pdy, size);
 

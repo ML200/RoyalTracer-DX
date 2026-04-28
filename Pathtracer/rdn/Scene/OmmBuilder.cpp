@@ -1,9 +1,8 @@
-// ═══════════════════════════════════════════════════════════════════
-// Scene/OmmBuilder.cpp — OMM baking via NVIDIA OMM SDK + D3D12 build
-//
-// BakeAll: one ommCpuBake call per unique texture across ALL meshes,
-//          then distributes results back per-mesh.
-// ═══════════════════════════════════════════════════════════════════
+//====================================
+//OMM BUILDER
+//====================================
+//OMM bake via NVIDIA SDK + D3D12 build
+//BakeAll, one ommCpuBake per unique texture, distributed per-mesh
 
 #include "../stdafx.h"
 #include "OmmBuilder.h"
@@ -15,9 +14,10 @@
 
 using namespace DirectX;
 
-// ═════════════════════════════════════════════════════════════════
-// ExtractAlphaChannel — pull single-channel UNORM8 from RGBA8
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//EXTRACT ALPHA CHANNEL
+//====================================
+//pull single-channel UNORM8 from RGBA8
 static std::vector<uint8_t> ExtractAlphaChannel(const Image& img)
 {
     std::vector<uint8_t> alpha(img.width * img.height);
@@ -29,9 +29,10 @@ static std::vector<uint8_t> ExtractAlphaChannel(const Image& img)
     return alpha;
 }
 
-// ═════════════════════════════════════════════════════════════════
-// BakeAll — batch bake: one SDK call per unique texture
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//BAKE ALL
+//====================================
+//one SDK call per unique texture
 
 // A triangle reference: which mesh, which local alpha-tri index
 struct TriRef {
@@ -325,9 +326,10 @@ void OmmBuilder::BakeAll(
         << (totalBytes / 1024) << L" KB, " << ms << L" ms");
 }
 
-// ═════════════════════════════════════════════════════════════════
-// BuildGPU — build OMM array and upload index buffer
-// ═════════════════════════════════════════════════════════════════
+//====================================
+//BUILD GPU
+//====================================
+//build OMM array and upload index buffer
 OmmGpuData OmmBuilder::BuildGPU(
     const OmmBakeResult& bake,
     ID3D12Device5* device,
