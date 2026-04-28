@@ -40,8 +40,12 @@ cbuffer Push : register(b1)
     uint  nrc_flags;
     float nrc_area_spread_c;
     float nrc_lr_scale;
-    //pad to keep float3 below on a 16B boundary, HLSL straddles otherwise
-    uint   nrc_pad27;
+    //dynamic per-frame cap on inference slots, sized from prior frame's actual
+    //counter via async readback. Both raygen (NrcAppendInference cap) and the
+    //CUDA inference dispatch (count) read this so the work matches demand
+    //instead of paying for the buffer's static 2*W*H capacity every frame.
+    //Slot 27 also doubles as the 16B alignment pad for nrc_scene_center below.
+    uint  nrc_inference_capacity;
     //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5/halfExtent
     float3 nrc_scene_center;
     float  nrc_scene_scale_inv;

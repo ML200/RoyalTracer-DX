@@ -3,7 +3,7 @@
 
 //safety net, real termination is RR at depth>2 plus NRC cache short circuit
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 8
+#define MAX_BOUNCES 32
 #endif
 
 //====================================
@@ -50,8 +50,12 @@ void Pass_raygen_v8()
     const bool  nrcCacheEligible = kNrcEnabled &&
         (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
          nrcPathClass == NRC_CLASS_RENDER);
-    //2x pixel count, cache term plus depth 0 sharp refl, rounded to tcnn 256 batch
-    const uint  nrcInferenceCapacity = (2u * IMG_W * IMG_H + 255u) & ~255u;
+    //dynamic cap from renderer, sized from prior frame's actual counter so the
+    //CUDA inference dispatch matches demand. Excess records (camera cuts that
+    //spike demand) get NRC_INVALID_SLOT and fall through to MIS for one frame
+    //while the cap grows. Buffer size remains 2*W*H worst case, this only
+    //gates the InterlockedAdd so unused slots never get features written.
+    const uint  nrcInferenceCapacity = nrc_inference_capacity;
     float nrcA0 = 0.0f;
     float nrcA  = 0.0f;
     int   nrcHitIdx = 0;

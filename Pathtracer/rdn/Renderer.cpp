@@ -89,7 +89,8 @@ void Renderer::InitDevice() {
             // these buffers — it runs after the main chain has already
             // consumed them.
             const uint32_t pixelCount = GetWidth() * GetHeight();
-            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
+            m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
+            m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
 
             m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
             m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
@@ -124,21 +125,22 @@ void Renderer::InitDevice() {
                 nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
             });
 
-            // Main-chain inference. Size the batch by inference capacity rather
-            // than the device-side counter. ReadU32 used to do a host
-            // cudaStreamSynchronize every frame, which turned any main-stream
-            // backlog (raygen, interop fence waits, driver preemption) into a
-            // CPU stall on the hot path -- the classic source of random
-            // multi-ms frame drops. Slots past the actual raygen write count
-            // have stale features, but nothing downstream reads their outputs:
-            // resolve only touches slots referenced by PendingGI (all < count),
-            // debug_query overwrites its own slots before its own inference.
-            // Extra compute cost is deterministic (cap - actual) samples, worth
-            // the zero-stall guarantee.
+            // Main-chain inference. The dispatch size matches the dynamic cap
+            // computed at frame start from prior frame's actual counter, so
+            // raygen and the CUDA inference agree on the upper bound. The
+            // counter readback is async (mirrors the training counter pattern),
+            // so the host never stalls on the GPU. Records past raygen's
+            // actual write count up to dynamicCap have stale features but
+            // their outputs are never read: resolve only follows PendingGI
+            // (set only for valid slots) and debug_query overwrites its own
+            // slots before its own inference. Schedule the next frame's
+            // readback before dispatching so the copy queues alongside
+            // inference instead of after it.
             RegisterCudaOp(L"nrc_inference", [this]{
                 if (!m_nrcReady) return;
                 void* s = m_cudaInterop.Stream();
-                const uint32_t padded = nrc::AlignBatch(m_nrcInferenceCapacity);
+                m_nrcNetwork.ScheduleInferenceCounterReadback(s, m_nrcCounters.cudaPtr);
+                const uint32_t padded = nrc::AlignBatch(m_nrcDynamicInferenceCap);
                 m_nrcNetwork.Inference(
                     s,
                     static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
@@ -768,7 +770,9 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     // and Counters are fixed-size and don't need recreation.
     if (m_nrcReady) {
         const uint32_t pixelCount = newWidth * newHeight;
-        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
+        m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
+        //full cap for first post resize frame, shrinks again once a new count lands
+        m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
 
         // Reset old buffers FIRST so the cudaInterop allocator releases
         // the backing D3D12 / CUDA imports before we ask it for new ones
@@ -1395,12 +1399,26 @@ void Renderer::PopulateCommandList() {
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
         memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);
-        // Slot 27 is explicit padding — the shader's float3
-        // nrc_scene_center starts at slot 28 (next 16-byte-aligned
-        // cbuffer register). Writing the center at 27 would be
-        // silently dropped by HLSL's cbuffer packing rules and the
-        // shader would read a shifted, zero-valued scale_inv.
-        rsConsts[27] = 0u;
+        // Slot 27: dynamic inference cap. Sized from the most recently
+        // harvested counter (async readback, one frame lag), padded by
+        // 25% plus a small floor for camera cuts and tcnn batch
+        // granularity. Capped at the static buffer capacity. Stays at
+        // the full buffer cap until the first non zero count lands so
+        // the very first frame, post resize, and post weight reinit all
+        // run with headroom. Slot 27 also serves as the 16B alignment
+        // pad for nrc_scene_center at slot 28, so its size is fixed.
+        if (m_nrcReady) {
+            uint32_t target = m_nrcInferenceCapacity;
+            const uint32_t lastCount = m_nrcNetwork.LastInferenceCount();
+            if (lastCount > 0u) {
+                const uint32_t grown = lastCount + (lastCount >> 2) + 4096u;
+                target = std::min(m_nrcInferenceCapacity, grown);
+            }
+            m_nrcDynamicInferenceCap = nrc::AlignBatch(target);
+        } else {
+            m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
+        }
+        rsConsts[27] = m_nrcDynamicInferenceCap;
         // 0.5 / halfExtent maps the scene AABB to exactly [0, 1]³ via
         // x_norm = (x - center) * scale_inv + 0.5. HashGrid's lookup
         // table is indexed in [0, 1] — anything outside that range

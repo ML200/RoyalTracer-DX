@@ -261,6 +261,13 @@ private:
     CudaInterop::Buffer                      m_nrcTrainRecords;
     CudaInterop::Buffer                      m_nrcCounters;
     uint32_t                                 m_nrcInferenceCapacity = 0;
+    //dynamic per-frame cap on inference slots. Each frame the renderer reads
+    //the prior frame's actual counter via async readback and shrinks this to
+    //AlignBatch(prev*5/4 + safetyFloor), capped at the static buffer capacity.
+    //Pushed to raygen as nrc_inference_capacity (slot 27) and used to size the
+    //CUDA inference dispatch. Initialised to and reset on resize/reinit to the
+    //full buffer capacity so the first frame after each event has headroom.
+    uint32_t                                 m_nrcDynamicInferenceCap = 0;
     bool                                     m_nrcReady = false;
     nrc::Settings                            m_nrcSettings{};
     //adaptive training tile, updated each frame from LastValidVertexCount, packed into nrc_flags bits 8..15

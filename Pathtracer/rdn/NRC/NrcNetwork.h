@@ -66,6 +66,16 @@ public:
     //valid vertex count after last TrainFrame, drives adaptive tile feedback
     uint32_t LastValidVertexCount() const;
 
+    //schedule async D2H copy of the inference counter on `stream`, harvested
+    //next frame by LastInferenceCount. devCounterPtr points at counter[0]
+    //(NRC_C_OFF_INFERENCE_COUNT). Non blocking, no host sync.
+    void ScheduleInferenceCounterReadback(void* stream, const void* devCounterPtr);
+
+    //last harvested inference counter, 0 until first readback lands. Used by
+    //the renderer to size the next frame's nrc_inference_capacity (raygen cap
+    //plus inference dispatch count).
+    uint32_t LastInferenceCount() const;
+
     //block on auxStream, required before reallocating shared buffers
     void WaitIdle();
 

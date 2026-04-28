@@ -68,10 +68,13 @@ constexpr uint32_t kHiddenLayers = 5;
 constexpr uint32_t kBatchGranularity = 256;
 
 //per-frame training schedule. EMA alpha=0.99 smooths over ~100+ steps so
-//batches/frame mostly affects initial convergence; pushed to 4 to drive
-//faster catch-up after camera cuts and reseed events.
+//batches/frame mostly affects initial convergence. Halved to 2 to cut the
+//per frame trainer cost in half on the auxStream when WDDM packet
+//scheduling refuses to overlap training with the ReSTIR spatiotemporal
+//passes. Camera cut and reseed reactivity slows by the same factor, but
+//EMA's wide horizon absorbs the change in steady state.
 constexpr uint32_t kTrainingBatchSize       = 8192;
-constexpr uint32_t kTrainingBatchesPerFrame = 4;
+constexpr uint32_t kTrainingBatchesPerFrame = 2;
 constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame;
 
 //training tile side adapts per frame to saturate trainer
