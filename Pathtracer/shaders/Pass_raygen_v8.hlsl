@@ -257,6 +257,13 @@ void Pass_raygen_v8()
         //====================================
         //DEPTH 0 PRIMARY HIT STORAGE
         //====================================
+        //Set by the reflection-probe block below when the reflection ray lands
+        //on a surface the cache can't model (smooth specular or transmissive).
+        //Mirrors the training-time surface eligibility: if a surface wasn't
+        //eligible to train the cache, it isn't eligible to query it either.
+        //When true, the lobe-drop block leaves the primary delta lobes in the
+        //BSDF so regular path tracing handles the reflection via MIS.
+        bool nrcReflFallback = false;
         if (depth == 0)
         {
             const bool isEmitter = any(emission > 0.0f);
@@ -403,12 +410,43 @@ void Pass_raygen_v8()
                             const float3 reflBeta  = lerp(float3(0.04f, 0.04f, 0.04f), reflKd, reflPm);
                             const float3 reflSum   = reflAlpha + reflBeta;
 
-                            float features[17];
-                            NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
-                                             reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+                            //Mirror the cache-training surface gate (see the
+                            //shouldFire effRough check further down). The cache
+                            //was never trained to represent outgoing radiance
+                            //at smooth specular surfaces (SH deg-4 can't fit
+                            //narrow lobes) or at transmissive surfaces (cache
+                            //only models one-sided exitant radiance, missing
+                            //refractive transport). Querying it there returns
+                            //noise that smears across smooth reflections.
+                            //Fallback: skip inference and clear nrcReflFallback
+                            //so the BSDF retains its delta lobes and the path
+                            //tracer handles the reflection via MIS.
+                            const float reflAlphaL = GetPHat(reflAlpha);
+                            const float reflBetaL  = GetPHat(reflBeta);
+                            const float reflSpecW  = reflBetaL / (reflAlphaL + reflBetaL + EPSILON);
+                            const float reflEffR   = lerp(1.0f, reflPr, reflSpecW);
+                            const bool  reflInferEligible =
+                                (reflEffR >= NRC_CACHE_ROUGHNESS_MIN) &&
+                                (LoadKd_w(reflMatID) >= (1.0f - EPSILON));
 
-                            reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
-                            weight   = fresnelP * reflSum;
+                            if (reflInferEligible)
+                            {
+                                float features[17];
+                                NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
+                                                 reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+
+                                reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
+                                weight   = fresnelP * reflSum;
+                            }
+                            else
+                            {
+                                //Zero weight => resolve pass adds nothing; the
+                                //regular path-traced reflection (delta lobes
+                                //preserved via nrcReflFallback) carries the
+                                //contribution instead.
+                                nrcReflFallback = true;
+                                weight = float3(0, 0, 0);
+                            }
                         }
                     }
                     else
@@ -756,7 +794,11 @@ void Pass_raygen_v8()
         //    into the refract branch via ggxNoReflect. The reflection delta
         //    is supplied by the NRC tap above.
         bool ggxNoReflect = false;
-        if (depth == 0 && kSharpRefl)
+        //Skip the lobe drop when the reflection probe fell back to path
+        //tracing — the inference query was unreliable at the reflected hit, so
+        //we left slot 7 empty and need the regular BSDF sampler to carry the
+        //reflection via MIS. Dropping lobes here would silently lose it.
+        if (depth == 0 && kSharpRefl && !nrcReflFallback)
         {
             const bool dropGGX0       = ShouldDropDeltaGGX (hitLocalPr, hitLocalPm);
             const bool dropCoat0      = ShouldDropDeltaCoat(matID);
