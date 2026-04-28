@@ -253,6 +253,7 @@ void Pass_raygen_v8()
 
         const float3 emission = GetEmissionFast(instID, primID);
 
+
         //====================================
         //DEPTH 0 PRIMARY HIT STORAGE
         //====================================
@@ -344,15 +345,23 @@ void Pass_raygen_v8()
                 }
 
                 //Per-pixel weight stashed in slot 7 for the resolve step.
-                //  hit  : weight = Fresnel * (alpha+beta) at the reflected
-                //         hit, because the MLP predicts radiance demodulated
-                //         by that surface's reflectance (matches both the
-                //         cache-term path's NrcWriteTerminationRecord and
-                //         Pass_nrc_debug_present's L_s * reflSum recovery).
-                //         Without this multiply smooth metal/coat surfaces
-                //         render brighter and whiter than the cache debug.
-                //  miss : weight = Fresnel only, slot 8 already holds raw
-                //         sky+sun radiance which is not demodulated.
+                //  hit (non-emitter) : weight = Fresnel * (alpha+beta) at the
+                //                      reflected hit, because the MLP predicts
+                //                      radiance demodulated by that surface's
+                //                      reflectance (matches both the cache-term
+                //                      path's NrcWriteTerminationRecord and
+                //                      Pass_nrc_debug_present's L_s * reflSum
+                //                      recovery). Without this multiply smooth
+                //                      metal/coat surfaces render brighter
+                //                      and whiter than the cache debug.
+                //  hit (emitter)     : weight = Fresnel only, slot 8 holds the
+                //                      raw triangle emission directly (NRC
+                //                      can't reliably learn light surfaces and
+                //                      we want the bright reflection of a sun
+                //                      disk / lamp to land deterministically).
+                //  miss              : weight = Fresnel only, slot 8 already
+                //                      holds raw sky+sun radiance which is not
+                //                      demodulated.
                 if (splitRefl)
                 {
                     const float3 V_prim    = -rayDir;
@@ -365,28 +374,42 @@ void Pass_raygen_v8()
                     float3 weight   = fresnelP;
                     if (committed)
                     {
-                        //Reconstruct the reflected hit's surface state from the
-                        //RayQuery commit data so we can build NRC features and
-                        //recover the demodulation factor.
                         const uint reflFlatPrim = FlatPrimID(cmtInstID, cmtGeomID, cmtPrimID);
-                        const uint reflMatID    = GetMatIDFast(cmtInstID, reflFlatPrim);
+                        const float3 reflEmission = GetEmissionFast(cmtInstID, reflFlatPrim);
 
-                        HitInfo reflHit = EvalSurfaceState(
-                            cmtInstID, reflFlatPrim, cmtBary, reflOrigin, 0u);
+                        if (any(reflEmission > 0.0f))
+                        {
+                            //Reflection landed on an emissive triangle —
+                            //bypass NRC (the cache doesn't model lights well)
+                            //and route the emission through the env-miss lane
+                            //in slot 8. Weight stays at Fresnel only.
+                            gScratchPing[uint3(pixel, 8)] =
+                                float4(NrcCleanRadiance(reflEmission), 1.0f);
+                        }
+                        else
+                        {
+                            //Reconstruct the reflected hit's surface state
+                            //from the RayQuery commit data so we can build
+                            //NRC features and recover the demodulation factor.
+                            const uint reflMatID = GetMatIDFast(cmtInstID, reflFlatPrim);
 
-                        float3 reflKd; float reflPr, reflPm;
-                        RefetchMaterial(reflMatID, reflHit.uv, reflKd, reflPr, reflPm, 0u);
+                            HitInfo reflHit = EvalSurfaceState(
+                                cmtInstID, reflFlatPrim, cmtBary, reflOrigin, 0u);
 
-                        const float3 reflAlpha = reflKd * (1.0f - reflPm);
-                        const float3 reflBeta  = lerp(float3(0.04f, 0.04f, 0.04f), reflKd, reflPm);
-                        const float3 reflSum   = reflAlpha + reflBeta;
+                            float3 reflKd; float reflPr, reflPm;
+                            RefetchMaterial(reflMatID, reflHit.uv, reflKd, reflPr, reflPm, 0u);
 
-                        float features[17];
-                        NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
-                                         reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+                            const float3 reflAlpha = reflKd * (1.0f - reflPm);
+                            const float3 reflBeta  = lerp(float3(0.04f, 0.04f, 0.04f), reflKd, reflPm);
+                            const float3 reflSum   = reflAlpha + reflBeta;
 
-                        reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
-                        weight   = fresnelP * reflSum;
+                            float features[17];
+                            NrcBuildFeatures(reflHit.hitPos, -reflDir, reflHit.hitNormal,
+                                             reflPr, reflAlpha, reflBeta, reflHit.backface, features);
+
+                            reflSlot = NrcAppendInference(nrcInferenceCapacity, features);
+                            weight   = fresnelP * reflSum;
+                        }
                     }
                     else
                     {

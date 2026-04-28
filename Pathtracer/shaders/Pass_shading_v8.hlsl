@@ -69,6 +69,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
 
+
     //bias hint inputs set per branch, used after
     uint  biasInstID;
     float2 biasMV = float2(0, 0);
@@ -133,6 +134,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
         g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
+        gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
     else{
         //reconstruct surface for DLSS
@@ -146,6 +148,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
         g_dlssRoughness[DTid.xy] = sv.Pr;
+        //debug slice mirroring the diffuse albedo we hand to DLSS-RR
+        gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
 
         float2 curPix = DTid.xy;
         float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
