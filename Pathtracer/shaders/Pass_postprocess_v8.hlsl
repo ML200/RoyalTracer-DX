@@ -2,7 +2,7 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//SRGB GAMMA CORRECTION
+//SRGB GAMMA
 //====================================
 inline float3 sRGBGammaCorrection(float3 color)
 {

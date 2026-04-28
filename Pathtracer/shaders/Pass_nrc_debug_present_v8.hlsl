@@ -1,7 +1,7 @@
 //====================================
 //NRC DEBUG VIEW PRESENT
 //====================================
-//writes cache prediction at x1 to gOutput slice 3, runs after debug inference
+//writes cache prediction at x1 into gOutput slice 3
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -23,7 +23,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
         const uint primID = load_primID(g_sample_current, pixelIdx);
         if (primID != 0xFFFFFFFFu)
         {
-            //MLP predicts irradiance, recover radiance via (alpha+beta)
+            //MLP predicts irradiance, recover radiance via alpha+beta
             const uint    instID = load_instID(g_sample_current, pixelIdx);
             const uint    matID  = GetMatIDFast(instID, primID);
             const float2  uv     = load_uv(g_sample_current, pixelIdx);

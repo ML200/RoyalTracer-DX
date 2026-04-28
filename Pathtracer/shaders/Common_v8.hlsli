@@ -8,7 +8,7 @@ inline float Avg3(float3 c) { return dot(c, float3(0.33333f, 0.33333f, 0.33333f)
 //====================================
 //PIXEL ID SWIZZLE
 //====================================
-//tile-swizzled linear index
+//tile swizzled linear index
 inline uint MapPixelID(uint2 dims, int2 lIndex)
 {
     if (lIndex.x < 0 || lIndex.y < 0 ||
@@ -82,7 +82,7 @@ void ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber)
 //====================================
 //ENV BRDF APPROXIMATION
 //====================================
-//DLSS-RR helper for specular albedo estimate, Ray Tracing Gems ch 32
+//DLSS RR specular albedo estimate, Ray Tracing Gems ch 32
 float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 {
     float3 SpecularColor = lerp(0.04.xxx, Kd, saturate(Pm));
@@ -132,7 +132,7 @@ float3 EnvBRDFApprox2(float3 Kd, float Pr, float Pm, float NoV)
 #define BOIL_GROUP_Y 16
 #define BOIL_THREADS (BOIL_GROUP_X * BOIL_GROUP_Y)
 
-//one float per thread in the 16x16 group
+//one float per thread in a 16x16 group
 groupshared float gBoilValues[BOIL_THREADS];
 
 float BoilMultiplier(float strength)
@@ -165,7 +165,7 @@ bool BoilingFilter(
 
     float groupSum = gBoilValues[0];
 
-    //all threads must read groupSum before array is reused
+    //all threads must read groupSum before the array is reused
     GroupMemoryBarrierWithGroupSync();
 
     //count reduction
@@ -195,7 +195,7 @@ bool BoilingFilter(
 //====================================
 float DLSS_LinearDepthFromWorldPos(float3 worldPos)
 {
-    //RH projection, forward is -Z
+    //RH projection, forward is negative Z
     float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
     return max(0.0f, -viewPos.z);
 }

@@ -16,21 +16,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
     //====================================
-    //x1 SHARP-REFLECTION CONTRIBUTION
+    //X1 SHARP REFLECTION CONTRIBUTION
     //====================================
-    //Pass_nrc_resolve_v8 collapses the raygen-time Fresnel + NRC inference
-    //slot into a single resolved RGB in scratch slot 8.rgb (with .w>0 marker).
-    //We can't read NRC inference here because the debug-view passes overwrite
-    //g_NrcInferenceOut between resolve and shading — slot 8 is the durable
-    //hand-off lane.
+    //slot 8 is the durable handoff, debug passes scribble g_NrcInferenceOut later
     float3 reflContrib = float3(0, 0, 0);
     {
         const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
         if (reflPack.w > 0.0f)
             reflContrib = max(float3(0, 0, 0), reflPack.rgb);
     }
-    //Mirror to gOutput slice 4 for inspection / debug overlays. Linear here,
-    //postprocess applies sRGB to keep parity with the other gOutput slices.
+    //debug mirror, linear here, postprocess applies sRGB
     gOutput[uint3(DTid.xy, 4)] = float4(reflContrib, 1.0f);
 
     float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
@@ -84,7 +79,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         if (hasPosition)
         {
-            //emitter surface, depth + MV like regular geometry
+            //emitter surface, depth and MV like regular geometry
             uint emPrimID = load_primID(g_sample_current, pixelIdx);
             float2 emBary = load_bary(g_sample_current, pixelIdx);
             float3 emPos  = ReconstructPosition(emInstID, emPrimID, emBary);
@@ -99,17 +94,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
             biasMV = emMV;
             isEmitterSurface = true;
 
-            //shading normal for DLSS-RR edge detection
+            //shading normal for DLSS RR edge detection
             float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
             g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
         }
         else
         {
-            //sky, clamp to cameraFar to stay in DLSS-RR range
+            //sky, clamp to cameraFar to stay in DLSS RR range
             g_dlssDepth[DTid.xy] = cameraFar;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-            //camera-only MV, reproject current ray through prev VP
+            //camera only MV, reproject current ray through prev VP
             float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
@@ -148,7 +143,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
         g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
         g_dlssRoughness[DTid.xy] = sv.Pr;
-        //debug slice mirroring the diffuse albedo we hand to DLSS-RR
+        //debug mirror of diffuse albedo passed to DLSS RR
         gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
 
         float2 curPix = DTid.xy;
@@ -170,7 +165,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
         g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
 
-        //specular MV from raygen's perfect-reflection probe in scratch slice 4
+        //specular MV from raygen's perfect reflection probe in scratch slice 4
         float specularity = Luma(specularAlbedo);
         float2 specMV = mvPixels;
         bool validSpecReproj = false;
@@ -195,9 +190,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     //====================================
-    //BIAS HINT INSTANCE-ID DISOCCLUSION
+    //BIAS HINT INSTANCE ID DISOCCLUSION
     //====================================
-    //mismatch between curr and prev instID at reprojected pixel means disocclusion, bias=1
+    //instID mismatch at reprojected pixel marks disocclusion, bias=1
     {
         float disoccBias = 1.0f;
         float2 reprojPrev = float2(DTid.xy) + biasMV;
@@ -209,11 +204,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
 
-        //Sharp-reflection bias: pixels whose color is dominated by the NRC
-        //reflection contribution should lean toward the input (i.e., bypass
-        //DLSS denoising) so the reflection edges stay crisp. Smooth lerp on
-        //reflection's share of total luminance keeps weakly reflective pixels
-        //in the denoising regime.
+        //reflection dominated pixels lean toward the input so edges stay crisp
         float reflectionBias = 0.0f;
         {
             const float reflLuma  = Luma(reflContrib);
@@ -233,9 +224,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //====================================
     //DLSS TRANSPARENCY OVERLAY HOOK
     //====================================
-    //Mirror the reflection contribution into g_dlssTransparency so the host can
-    //wire it up later as a true post-denoise overlay (kBufferType_Transparency
-    //via Streamline). Until that wiring lands, it's a benign side write — the
-    //real composite is the bias-hinted accumulation above.
+    //placeholder side write, host can wire as a post denoise overlay later
     g_dlssTransparency[DTid.xy] = float4(reflContrib, 0.0f);
 }

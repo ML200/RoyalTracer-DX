@@ -65,6 +65,7 @@ inline float G2_SmithGGX_Aniso(float NdotV, float TdotV, float BdotV,
 //====================================
 //TANGENT FRAME AND ANISOTROPY
 //====================================
+//arbitrary tangent basis aligned to N
 inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
 {
     if (abs(N.z) < 0.999f)
@@ -78,7 +79,7 @@ inline void CoordinateSystem(float3 N, out float3 T, out float3 B)
     B = cross(N, T);
 }
 
-//aniso in [-1,1], 0=isotropic, positive stretches along tangent
+//aniso in [-1,1], 0 isotropic, positive stretches along tangent
 inline void ComputeAnisotropicAlphas(float alpha, float aniso, out float ax, out float ay)
 {
     float aspect = sqrt(1.0f - 0.9f * abs(aniso));
@@ -106,7 +107,7 @@ inline void BuildAnisotropicFrame(float3 N, float anisoRotation, out float3 T, o
 //====================================
 inline float3 SampleVNDF_H_Aniso(float alpha_x, float alpha_y, float3 V, float3 N, float3 T1, float3 T2, inout uint seed)
 {
-    //hemisphere config, stretch view
+    //stretch view to hemisphere config
     float vx = dot(T1, V);
     float vy = dot(T2, V);
     float vz = abs(dot(N,  V)) + 0.00001f;

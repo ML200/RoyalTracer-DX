@@ -8,7 +8,7 @@ static inline float3 ComputeF0Dielectric(float eta_i, float eta_t)
     return R0s.xxx;
 }
 
-//Schlick dielectric
+//Schlick approximation
 static inline float3 FresnelDielectric(float3 wo, float3 n, float eta_i, float eta_t)
 {
     float ci = abs(dot(wo, n));

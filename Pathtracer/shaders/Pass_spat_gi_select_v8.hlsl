@@ -2,11 +2,9 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//SPATIAL GI NEIGHBOR SELECTION PRE-PASS
+//SPATIAL GI NEIGHBOR SELECTION
 //====================================
-//paired reuse via self-inverting textures (Lin, Kettunen, Wyman 2026, §3)
-//each pixel samples slot s, partner at (pixel+delta) sees inverse delta
-//texture sizes (254, 230, 210) match Renderer::InitReuseTextures
+//paired reuse via self inverting textures, partner at pixel+delta sees inverse delta
 
 Texture2D<int2> g_reuseTexture0 : register(t19);
 Texture2D<int2> g_reuseTexture1 : register(t20);
@@ -15,13 +13,7 @@ Texture2D<int2> g_reuseTexture2 : register(t21);
 //====================================
 //SCRATCH LAYOUT
 //====================================
-//per-pixel layout in g_pathStateBuffer, total 8 + SPAT_COUNT_MAX*20 bytes
-//offset 0  uint validCount, this pass
-//offset 4  float my_Jc, shift pass
-//offset 8+s*20+0   uint nID, 0xFFFFFFFFu means slot rejected
-//offset 8+s*20+4   float3 F, shift pass, visibility baked
-//offset 8+s*20+16  float Jn, shift pass
-//M_sum recomputed in merge pass
+//8B header plus SPAT_COUNT_MAX*20B per slot, M_sum recomputed in merge pass
 static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
 static const uint SEL_SLOT_STRIDE = 20u;
@@ -84,7 +76,7 @@ int2 SampleReuseDelta(uint2 launchIndex, uint slot)
 //====================================
 //PAIR REJECTION
 //====================================
-//symmetric material/normal/distance, thresholds from ReSTIRSettings
+//symmetric material, normal, distance, thresholds from ReSTIRSettings
 bool PairRejected(uint aMat, float3 aPos, float3 aN,
                   uint bMat, float3 bPos, float3 bN)
 {
@@ -110,14 +102,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     const uint baseAddr = sel_addr(pixelIdx);
 
-    //emitter or spatial disabled, no neighbors
+    //emitter or spatial off, no neighbors
     if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u))
     {
         g_pathStateBuffer.Store(baseAddr, 0u);
         return;
     }
 
-    //empty reservoir
+    //empty reservoir, skip
     const uint myM = load_M(g_Reservoirs_current, pixelIdx);
     if (myM == 0u)
     {
@@ -132,7 +124,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
-    //nIds[s] is partner for slot s, 0xFFFFFFFFu if rejected
+    //nIds[s] is partner for slot s, 0xFFFFFFFFu means rejected
     uint  nIds[SPAT_COUNT_MAX];
     [unroll]
     for (uint i = 0u; i < SPAT_COUNT_MAX; ++i) nIds[i] = 0xFFFFFFFFu;
@@ -169,7 +161,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         ++validCount;
     }
 
-    //header, validCount, my_Jc filled by shift pass
+    //header validCount, my_Jc is filled by the shift pass
     g_pathStateBuffer.Store(baseAddr, validCount);
 
     [unroll]

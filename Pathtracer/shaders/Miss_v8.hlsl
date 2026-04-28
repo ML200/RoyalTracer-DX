@@ -3,5 +3,5 @@
 //====================================
 //MISS STUB
 //====================================
-//raygen uses SER HitObject path, miss never runs, D3D12 still requires the symbol
+//unused, raygen uses SER HitObject, D3D12 still requires the symbol
 [shader("miss")] void Miss(inout TracePayload payload) {}

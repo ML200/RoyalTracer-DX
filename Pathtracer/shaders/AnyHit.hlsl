@@ -13,7 +13,7 @@ void AlphaTestAnyHit(inout TracePayload payload,
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     const int texID = LoadAlbedoTexID(matID);
 
-    //no albedo texture, fully opaque
+    //no albedo means fully opaque
     if (texID < 0)
         return;
 

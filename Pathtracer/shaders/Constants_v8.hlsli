@@ -8,10 +8,9 @@
 #define INV_PI 0.3183098861
 #define LUT_SIZE 16
 #define MIN_NORMAL_INT 0.33f
-//BSDF delta-lobe gate, kept low so VNDF sampling stays unbiased
+//BSDF delta lobe gate, low so VNDF sampling stays unbiased
 #define SMOOTH_SPECULAR_THRESHOLD 0.06f
-//NRC cache eligibility gate, well above SH deg-4's representable lobe width
-//so the cache only fires on surfaces it can actually model
+//NRC cache gate, well above SH deg-4 representable lobe width
 #define NRC_CACHE_ROUGHNESS_MIN 0.25f
 #define kInvalidPixel -1u
 
@@ -35,12 +34,9 @@
 #define SPAT_COUNT_MAX 3
 
 //====================================
-//UNIFIED DI+GI RESERVOIR MATID DISCRIMINATOR
+//RESERVOIR MATID SENTINELS
 //====================================
-//sentinels flag DI candidates, Reconnect branches on value
-//MATID_ENV_MISS, x2 is direction, Jn=1, no geom term, no x2 BSDF
-//MATID_LIGHT_TRI, x2 is emissive triangle position, no x2 BSDF, L2 is emission
-//real materials occupy IDs < MATID_LIGHT_TRI
+//env miss x2 is direction, light tri x2 is triangle position, real mats sit below
 #define MATID_ENV_MISS    0xFFFFFFFFu
 #define MATID_LIGHT_TRI   0xFFFFFFFEu
 #define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
@@ -54,6 +50,6 @@
 //====================================
 //BOILING FILTER
 //====================================
-//lower strength means less clamping
+//lower strength clamps less
 #define BOIL_STRENGTH_TEMP 0.2f
 #define BOIL_MIN_AVG_TEMP  1e-8f

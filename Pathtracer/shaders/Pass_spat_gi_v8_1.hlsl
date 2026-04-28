@@ -4,13 +4,9 @@
 //====================================
 //SPATIAL GI MERGE PASS
 //====================================
-//all rays happen in shift pass, this is pure data work
-//per-slot MIS uses only (partner.M, partner.W, GetPHat(partner.F)) field-by-field
-//full partner payload loaded lazily only on RIS acceptance
+//pure data, all rays already cast in shift, payload lazy loaded on RIS acceptance
 
-//scratch layout, 8 + SPAT_COUNT_MAX*20 per pixel
-//[0]  uint validCount, [4] float my_Jc
-//[8+s*20+0] uint nID, [+4] float3 F (my shift, vis baked), [+16] float Jn
+//scratch layout mirrors Pass_spat_gi_select_v8.hlsl
 static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
 static const uint SEL_SLOT_BASE   = 8u;
 static const uint SEL_SLOT_STRIDE = 20u;
@@ -39,14 +35,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //emitter early-out, no reuse
+    //emitter early out, no reuse
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
 
-    //disabled early-out, canonical passthrough
+    //disabled early out, canonical passthrough
     if (!(rs_flags & 8u))
     {
         const float  W = (rdi.W > 0.0f) ? rdi.W : 0.0f;
@@ -84,7 +80,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //GATHER PASS
     //====================================
-    //cheap per-slot, nID, partner Jc, partner shift-to-me, partner M
+    //cheap per slot, nID, partner Jc, partner shift to me, partner M
     uint  slot_nID       [SPAT_COUNT_MAX];
     float slot_partner_Jc[SPAT_COUNT_MAX];
     float slot_partner_Mn[SPAT_COUNT_MAX];
@@ -103,7 +99,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint nID = g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, i));
         if (nID == 0xFFFFFFFFu) continue;
 
-        //partner's cached shift-to-me at their slot i
+        //partner's cached shift to me at their slot i
         const uint4  pShift  = g_pathStateBuffer.Load4(sel_slot_addr(nID, i) + 4u);
         const float3 p_F     = asfloat(pShift.xyz);
         const float  p_F_mag = GetPHat(p_F);
@@ -111,7 +107,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         const float p_Jc = asfloat(g_pathStateBuffer.Load(sel_addr(nID) + 4u));
 
-        //one-field partner M
+        //one field partner M
         const float Mn = min(SPAT_MCAP, load_M(g_Reservoirs_current, nID));
 
         slot_nID       [i] = nID;
@@ -145,7 +141,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //RIS INLINE UPDATE
     //====================================
-    //lazy-load partner payload only on RIS acceptance
+    //partner payload lazy loaded only on acceptance
     uint2 seed = GetSeed(pixelIdx, time, 2);
 
     [loop]
@@ -163,7 +159,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float p_hat_me_to_partner =
             my_F_mag * JacobianRatio(my_Jn, slot_partner_Jc[k]);
 
-        //2 fields from partner for MIS
+        //two partner fields needed for MIS
         const float partner_W     = load_W(g_Reservoirs_current, nID);
         const float partner_F_mag = GetPHat(load_F(g_Reservoirs_current, nID));
         const float Mn            = slot_partner_Mn[k];
@@ -175,13 +171,13 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         const float w_n = mis_n * p_hat_me_to_partner * partner_W;
 
-        //inline RIS step, matches UpdateReservoir byte-for-byte
+        //inline RIS step, matches UpdateReservoir byte for byte
         rdi.w_sum += w_n;
         rdi.M     += (uint)Mn;
 
         if (RandomFloatSingle(seed.x) < (w_n / rdi.w_sum))
         {
-            //lazy load, only on RIS acceptance
+            //lazy load only on RIS acceptance
             const uint   p_objID = load_objID(g_Reservoirs_current, nID);
             const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
 
@@ -194,7 +190,7 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.L2    = load_L2(g_Reservoirs_current, nID);
             rdi.V2    = load_V2(g_Reservoirs_current, nID);
             rdi.uv    = load_uv_res(g_Reservoirs_current, nID);
-            //rdi.F overwritten with shift-to-me contrib below
+            //rdi.F overwritten below with shift to me contrib
 
             contrib_final = my_F;
         }
@@ -203,7 +199,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //FINALIZE
     //====================================
-    //full float3 contribution in rdi.F, GetPHat(F) is the target magnitude
+    //full RGB contribution in rdi.F, target magnitude is GetPHat(F)
     rdi.F = contrib_final;
     const float F_mag_final = GetPHat(rdi.F);
 

@@ -19,16 +19,16 @@ uint PackRGB9E5(float3 v)
 
     float m = max(max(c.x, c.y), c.z);
 
-    //IEEE exponent + mantissa
+    //IEEE exponent and mantissa
     uint bits    = asuint(m);
     int  exp_unb = int((bits >> 23) & 0xFF) - 127;
     uint frac    = bits & 0x7FFFFF;
 
-    //shared biased exponent, ceil(log2(m)) + B
+    //shared biased exponent, ceil(log2(m))+B
     int sharedExp = exp_unb + int(frac != 0) + RGB9E5_EXP_BIAS;
     sharedExp = clamp(sharedExp, 0, int(RGB9E5_EXP_MASK));
 
-    //denom = 2^(sharedExp - B - N)
+    //denom = 2^(sharedExp-B-N)
     float denom = exp2(float(sharedExp - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
     uint rm = uint(floor(c.x / denom + 0.5f));
@@ -45,7 +45,7 @@ uint PackRGB9E5(float3 v)
     gm &= RGB9E5_MANT_MASK;
     bm &= RGB9E5_MANT_MASK;
 
-    //layout, r:9 | g:9 | b:9 | exp:5
+    //layout r:9, g:9, b:9, exp:5
     return (rm <<  0) |
            (gm <<  9) |
            (bm << 18) |

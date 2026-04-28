@@ -49,18 +49,7 @@ struct LightTriangle {
 //====================================
 //PACKED MATERIAL
 //====================================
-//40 B AoS, one material per cache line, path threads hit random materials
-//Ke dropped on CPU, emission via LightTriangle buffer
-//offset 0  Kd_rgb                RGB9E5
-//offset 4  w_Ni                  half Kd.w | half Ni
-//offset 8  PrPmPsPc              4x uint8 [0,1], LSB=Pr
-//offset 12 Tf_rgb                RGB9E5
-//offset 16 Pcr_Aniso_Rot_AlphaTh u8 Pcr | i8 aniso | u8 anisoRot | u8 alphaTh
-//offset 20 texIDs_01             i16 albedo | i16 normal
-//offset 24 texIDs_2              i16 rma    | i16 pad
-//offset 28 uv_albedo             half2
-//offset 32 uv_normal             half2
-//offset 36 uv_rma                half2
+//40B AoS, one material per cache line, layout in src/Components/Vertex.h
 struct MatPacked {
     uint Kd_rgb;
     uint w_Ni;

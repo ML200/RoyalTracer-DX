@@ -1,13 +1,7 @@
 //====================================
 //NRC RESOLVE AND RESERVOIR FINALIZE
 //====================================
-//per pending cache-term pixel, merge cache candidate into reservoir via RIS
-//pixels without pending record already finalized in raygen.
-//
-//Also resolves the depth-0 sharp-reflection inference (slot 7 / 8 in scratch
-//ping) into a single RGB contribution stashed back into slot 8. Doing the
-//resolve here means it lands BEFORE the debug-view passes scribble over
-//g_NrcInferenceOut for their per-pixel debug query.
+//merges cache candidate into reservoir via RIS, also resolves x1 sharp reflection slot
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -23,13 +17,9 @@ void main(uint3 dtid : SV_DispatchThreadID)
     if (pixelIdx == 0xFFFFFFFFu) return;
 
     //====================================
-    //x1 SHARP-REFLECTION RESOLVE
+    //X1 SHARP REFLECTION RESOLVE
     //====================================
-    //Collapses {Fresnel, NRC slot id, env miss radiance} stored across
-    //scratch slots 7 and 8 into a single resolved RGB contribution in slot 8.
-    //The .w channel doubles as a validity marker (>0 = resolved, =0 = no
-    //contribution). Shading reads slot 8 directly with no further inference
-    //buffer access.
+    //collapses Fresnel, NRC slot, env miss radiance into one RGB contribution at slot 8
     {
         const float4 reflPack = gScratchPing[uint3(pixel, 7)];
         const float3 fresnelP = reflPack.rgb;
@@ -45,7 +35,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
             }
             else
             {
-                //raygen stored env miss radiance in slot 8.rgb; .w=1 marker
+                //raygen stored env miss radiance in slot 8.rgb, .w=1 marker
                 const float4 envPack = gScratchPing[uint3(pixel, 8)];
                 reflRad = (envPack.w > 0.0f) ? envPack.rgb : float3(0, 0, 0);
             }
@@ -66,7 +56,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const float3 throughput = UnpackRGB9E5(throughputPk);
     const float3 tpost      = UnpackRGB9E5(tpostPk);
 
-    //L2 and F match raygen's emitter-hit convention
+    //L2 and F match raygen's emitter hit convention
     const float3 L2        = L_s * tpost;
     const float3 F_contrib = throughput * L_s * pdfProduct;
 
@@ -88,7 +78,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
         ps.matID, ps.objID, ps.eta,
         F_contrib, seed);
 
-    //finalize mirrors raygen's old final-resolve block
+    //finalize mirrors raygen's final resolve
     const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
     float W = 0.0f;
     if (F_mag > 1e-6f && wsum > 0.0f)

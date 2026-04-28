@@ -12,7 +12,7 @@ struct SamplingP{
 //====================================
 //STRATEGY PROBABILITIES
 //====================================
-//energy cascade approximating actual distribution, cheap
+//cheap energy cascade approximating the actual distribution
 inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, float etai, float etat, float3 Kd, float Pm)
 {
     float r_sheen = Sampling_Weight_SHEEN(mID, normal, outgoing);
@@ -26,7 +26,7 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
     float energy_after_sheen = 1.0f - sp.Psheen;
     sp.Pcoat = energy_after_sheen * r_coat * 3.0f;
     float energy_after_coat = energy_after_sheen * (1.0f - r_coat);
-    sp.Pspec = energy_after_coat * r_ggx * 5.0f; //boost specular for better denoising
+    sp.Pspec = energy_after_coat * r_ggx * 5.0f; //boosted to denoise better
     float energy_after_ggx = energy_after_coat * (1.0f - r_ggx);
     sp.Pdiff = energy_after_ggx * r_lamb;
 
@@ -52,7 +52,7 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 //====================================
 //STRATEGY SELECTION
 //====================================
-//0=Diffuse, 1=GGX, 2=Coat, 3=Sheen
+//0 diffuse, 1 GGX, 2 coat, 3 sheen
 inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 {
     float r = RandomFloatSingle(seed);
@@ -70,9 +70,7 @@ inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 //====================================
 //BRDF SAMPLING
 //====================================
-//ggxNoReflect: forwards to SampleBRDF_GGX. Use at the x1 split path on smooth
-//transmissive dielectrics so the GGX strategy stays in the sampler (refraction
-//survives) while the reflection delta is handled externally by the NRC tap.
+//ggxNoReflect routes the GGX sampler into the refract branch, NRC owns the reflection delta
 inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat, bool ggxNoReflect = false) {
     uint strategy = SelectSamplingStrategy(p, seed);
     float3 sample;
@@ -96,7 +94,7 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
         sample = SampleBRDF_Lambertian(matID, o, n_s, n_g, seed);
     }
 
-    //reject below-surface samples
+    //reject below surface samples
     float  Ng_wi  = dot(sample, n_g);
 
     if (!refract) {
@@ -123,8 +121,7 @@ struct BrdfData {
     float pdf;
 };
 
-//pdf-only for callers that don't need BRDF val
-//matches EvaluateAndPdf_COMBINED's pdf math, zero-weight lobes skip helper
+//pdf only path, mirrors EvaluateAndPdf_COMBINED's pdf math
 inline float BRDF_PDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -145,9 +142,7 @@ inline float BRDF_PDF_COMBINED(
 //====================================
 //COMBINED BRDF EVALUATION
 //====================================
-//each lobe branches on sampling prob, skips eval/pdf/transmittance when p.X < EPSILON
-//SER keeps branches coherent across similar materials
-//individual lobes return transmittance=1 when weight ~0
+//each lobe skips eval, pdf, transmittance when p.X < EPSILON, SER keeps branches coherent
 inline float3 EvaluateBRDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -184,9 +179,7 @@ inline float3 EvaluateBRDF_COMBINED(
 //====================================
 //FUSED EVAL AND PDF
 //====================================
-//ggxNoReflect mirrors SampleBRDF's flag — see SampleBRDF_GGX/EvalGGXAll for
-//semantics. Eval and sample at the same vertex MUST pass the same value here
-//or the pdf seen by the integrator desyncs from how the direction was drawn.
+//ggxNoReflect must match the value passed to SampleBRDF at the same vertex
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
@@ -230,21 +223,9 @@ inline BrdfData EvaluateAndPdf_COMBINED(
 
 
 //====================================
-//x1 SHARP REFLECTION SPLIT-INTEGRAL SUPPORT
+//X1 SHARP REFLECTION SPLIT INTEGRAL
 //====================================
-//At the primary (depth==0) hit, smooth dielectric/clearcoat surfaces have their
-//delta GGX/coat reflection lobes peeled off the BSDF sampler and replaced by an
-//explicit perfect-mirror reflection ray whose tail is approximated by NRC. The
-//remaining BSDF (sheen, diffuse, transmission, plus delta GGX for metals which
-//we do not split) is sampled normally.
-//
-//ShouldDropDeltaGGX flags the GGX *reflection* delta as eligible for the NRC
-//replacement. The caller decides how to act on it:
-//  - opaque non-metal: zero Pspec entirely (DropDeltaLobes), since the GGX
-//    lobe was reflection-only here.
-//  - smooth transmissive: keep Pspec at full strength but pass ggxNoReflect to
-//    SampleBRDF / EvaluateAndPdf_COMBINED so the GGX sampler stays in the
-//    refraction branch and the reflection delta is owned by NRC.
+//peel delta GGX/coat off the primary BSDF, the explicit reflection ray and NRC carry the tail
 
 inline bool ShouldDropDeltaGGX(float Pr, float Pm)
 {
@@ -261,10 +242,7 @@ inline bool ShouldDropDeltaCoat(uint matID)
     return (LoadPc(matID) > 0.0f) && (LoadPcr(matID) < SMOOTH_SPECULAR_THRESHOLD);
 }
 
-//Drops the requested lobes from the strategy distribution and renormalises so
-//the surviving lobes' probabilities still sum to one. Use the returned sp for
-//both sample direction selection and BSDF eval/pdf at the same vertex so the
-//two stay self-consistent (Veach Eq 8.7 partition).
+//drops the requested lobes and renormalises, must use the same sp for sample and eval
 inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
 {
     if (dropGGX)  sp.Pspec = 0.0f;
@@ -283,11 +261,7 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
     return sp;
 }
 
-//Combined RGB Fresnel for the dropped delta lobes at the primary surface.
-//Layered as coat-on-top: coat consumes (pc * F_coat); the base GGX dielectric
-//gets what passes through. Result multiplies the NRC reflection radiance at
-//composite time. Inputs V and N are the unit view vector and shading normal at
-//the primary hit; etai/etat match the layer's IOR pair.
+//combined Fresnel for the dropped delta lobes, coat on top, GGX gets what passes through
 inline float3 ComputeSharpReflectionFresnel(
     uint   matID,
     float3 V,
@@ -312,7 +286,7 @@ inline float3 ComputeSharpReflectionFresnel(
 
     if (dropGGX)
     {
-        //delta limit collapses H to N, so Fresnel evaluates at the view angle
+        //delta limit collapses H to N, Fresnel evaluates at the view angle
         const float3 F_d = FresnelDielectricTIR(V, N, etai, etat);
         F += transAfterCoat * (1.0f - Pm) * F_d;
     }

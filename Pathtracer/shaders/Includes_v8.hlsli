@@ -1,7 +1,7 @@
 //====================================
 //INCLUDES V8
 //====================================
-//compute shaders, #define COMPUTE_PASS before including
+//compute shaders must define COMPUTE_PASS before include
 
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
@@ -23,8 +23,7 @@ cbuffer Push : register(b1)
     float rs_reuseRoughnessMin;
     float rs_reuseRoughnessMax;
     uint  rs_spatTries;
-    //paired reuse textures, per-slot transforms, Lin et al. 2026 §3.2
-    //flags bits, 1=flipX 2=flipY 4=transpose
+    //paired reuse textures, flag bits 1=flipX 2=flipY 4=transpose
     uint  rs_reuseOffset0_x;
     uint  rs_reuseOffset0_y;
     uint  rs_reuseFlags0;
@@ -37,15 +36,13 @@ cbuffer Push : register(b1)
     //neighbor rejection thresholds for spatial select
     float rs_rejNormalDot;
     float rs_rejDistance;
-    //NRC runtime, see Nrc_v8.hlsli for flag bits
+    //NRC runtime, flag bits in Nrc_v8.hlsli
     uint  nrc_flags;
     float nrc_area_spread_c;
     float nrc_lr_scale;
-    //[27] explicit pad so float3 below lands on 16-byte boundary
-    //HLSL cbuffer rules bump a straddling float3 to next register
-    //without this pad, root-constant upload is offset-shifted vs shader reads
+    //pad to keep float3 below on a 16B boundary, HLSL straddles otherwise
     uint   nrc_pad27;
-    //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5 / halfExtent
+    //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5/halfExtent
     float3 nrc_scene_center;
     float  nrc_scene_scale_inv;
 };
@@ -57,7 +54,7 @@ cbuffer Push : register(b1)
 #define IMG_H (gImageSize.y)
 
 #ifdef COMPUTE_PASS
-    //emulate DispatchRaysIndex/Dimensions for shared code
+    //emulate DispatchRaysIndex/Dimensions
     #define gImageWidth  (gImageSize.x)
     #define gImageHeight (gImageSize.y)
     #define DispatchRaysDimensions() uint3(gImageWidth, gImageHeight, 1)
@@ -143,7 +140,7 @@ RaytracingAccelerationStructure      SceneBVH            : register(t0);
 StructuredBuffer<InstanceProperties> instanceProps       : register(t3);
 StructuredBuffer<uint>               materialIDs         : register(t4);
 
-//40B compressed AoS material, accessors in Material_Decoder_v8.hlsli
+//40B compressed AoS, accessors in Material_Decoder_v8.hlsli
 StructuredBuffer<MatPacked>          g_mat               : register(t5);
 
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
@@ -156,7 +153,7 @@ StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
 StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
-//t16/t17/t18 claimed by lookup buffers in LightTree_v8.hlsli
+//t16/t17/t18 used by LightTree_v8.hlsli lookup buffers
 
 //====================================
 //SHADING AND MATERIAL HEADERS
@@ -173,7 +170,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "BXDF_v8.hlsli"
 
 //====================================
-//SAMPLING RESERVOIRS RT
+//SAMPLING AND RESERVOIRS
 //====================================
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
@@ -185,7 +182,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "MIS_v8.hlsli"
 
 //====================================
-//DLSS-RR RESOURCES
+//DLSS RR RESOURCES
 //====================================
 #ifdef COMPUTE_PASS
 RWTexture2D<float>  g_dlssDepth          : register(u11);

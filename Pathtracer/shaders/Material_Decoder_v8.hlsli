@@ -1,9 +1,7 @@
 //====================================
 //MATERIAL DECODER
 //====================================
-//accessors over compressed AoS g_mat buffer, HLSL CSEs same-material fetches
-//call freely, only touched fields survive
-//struct layout in Data_v8.hlsli, CPU packing in src/Components/Vertex.h
+//accessors over compressed AoS g_mat, HLSL CSEs same material fetches
 
 #ifndef MATERIAL_DECODER_V8_HLSLI
 #define MATERIAL_DECODER_V8_HLSLI
@@ -75,7 +73,7 @@ inline float LoadPcr(uint matID)
     return float(g_mat[matID].Pcr_Aniso_Rot_AlphaTh & 0xFFu) * (1.0f / 255.0f);
 }
 
-//int8 [-127,127] mapped to [-1,1]
+//int8 in [-127,127] mapped to [-1,1]
 inline float LoadAniso(uint matID)
 {
     const uint raw = (g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 8) & 0xFFu;

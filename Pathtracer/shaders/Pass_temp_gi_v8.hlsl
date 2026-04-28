@@ -21,7 +21,7 @@ void Pass_temp_gi_v8()
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
 
-    //emitter early-out
+    //emitter early out
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
@@ -31,7 +31,7 @@ void Pass_temp_gi_v8()
     //keep current reservoir alive until final store
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //disabled early-out
+    //disabled early out
     if (!(rs_flags & 2u)) {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
@@ -45,7 +45,7 @@ void Pass_temp_gi_v8()
     //====================================
     //BASE REPROJECTION
     //====================================
-    //lightweight loads
+    //lightweight loads only
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
     const float2 myBary   = load_bary(g_sample_current, pixelIdx);
@@ -56,7 +56,7 @@ void Pass_temp_gi_v8()
     float3 myKd; float myPr, myPm;
     RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
 
-    //specularity, matches DLSS-RR's EnvBRDFApprox2
+    //specularity matches DLSS RR EnvBRDFApprox2
     const float3 camPos = InitOrigin();
     const float  NoV = saturate(dot(normalize(camPos - myPos), myN1s));
     const float  specularity = Luma(EnvBRDFApprox2(myKd, myPr, myPm, NoV));
@@ -104,7 +104,7 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    //lightweight neighbor ids survive rejection for merge
+    //neighbor ids must survive rejection for the merge step
     uint   rInstID = 0;
     uint   rPrimID = 0;
     float2 rBary   = float2(0, 0);
@@ -134,7 +134,7 @@ void Pass_temp_gi_v8()
                 const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
                 const float p_c = GetPHat(rdi.F) * visReuse_c;
 
-                //canonical Jc, env/miss direction-preserving so Jc=1
+                //canonical Jc, env/miss preserves direction so Jc=1
                 const float Jc_canonical = IsSentinelMatID(rdi.matID)
                     ? ((rdi.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2, rdi.n2_s))
                     : ComputeJc(myPos, rdi.x2, rdi.n2_s);
@@ -143,7 +143,7 @@ void Pass_temp_gi_v8()
                 float n_c = 0.0f;
                 float3 contrib_n_from_me = 0;
 
-                //p_n, reconnect from neighbor vertex to current GI sample
+                //p_n, reconnect from neighbor to current GI sample
                 {
                     SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
 
@@ -159,7 +159,7 @@ void Pass_temp_gi_v8()
                         Jnc);
 
                     float ph = GetPHat(c);
-                    //env/miss casts to far distance, others use self-length shadow ray
+                    //env/miss casts far, others use self length shadow ray
                     {
                         float vis;
                         if (rdi.matID == MATID_ENV_MISS)
@@ -175,7 +175,7 @@ void Pass_temp_gi_v8()
                     }
                 }
 
-                //n_c, reconnect from current vertex to neighbor GI sample
+                //n_c, reconnect from current to neighbor GI sample
                 float J2;
                 {
                     SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
@@ -217,15 +217,13 @@ void Pass_temp_gi_v8()
                 const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
-                //correlation-reduction cCap (Lin et al. 2026 §5)
-                //high dup-count D lowers cCap to refresh the chain and stop firefly persistence
-                //skip for env/miss, direction-preserving shift is benign and would defeat accumulation
+                //correlation reduction cCap, dup count D refreshes the chain
                 const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
                 const float effMcap = (rdi_r.matID == MATID_ENV_MISS)
                     ? (float)rs_tempMcap
                     : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
-                //M caps, roughness-dependent
+                //M caps, roughness dependent
                 float sdata_Pr = myPr;
                 float rdi_r_Pr = IsSentinelMatID(rdi_r.matID)
                     ? 1.0f
@@ -251,7 +249,7 @@ void Pass_temp_gi_v8()
                 rdi.w_sum = w_c;
 
                 p_hat_final = p_c;
-                //on acceptance UpdateReservoir writes F=contrib_n_from_me, GetPHat(F)=n_c
+                //on acceptance F=contrib_n_from_me, GetPHat(F)=n_c
                 if (UpdateReservoir(
                         rdi,
                         w_n,
@@ -282,7 +280,7 @@ void Pass_temp_gi_v8()
         }
     }
 
-    //boilValue to scratch for groupshared boiling pass
+    //handoff to groupshared boiling pass
     gScratchPing[uint3(launchIndex, 5)] = float4(boilValue, 0, 0, 0);
 
     storeReservoir(g_Reservoirs_current, pixelIdx, rdi);

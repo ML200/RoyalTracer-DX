@@ -176,11 +176,7 @@ inline float Sampling_Weight_GGX(
 //====================================
 //GGX VNDF SAMPLING
 //====================================
-//noReflect = true forces the sampler into the refract branch (smooth-transmissive
-//x1 case where the reflection delta is being supplied by an external NRC tap).
-//Pre-condition: canRefract must hold and the geometry must permit refraction
-//(no TIR). Caller (raygen) only enables this at depth==0 air→material hits
-//where TIR cannot occur.
+//noReflect routes into the refract branch, NRC supplies the reflection delta
 inline float3 SampleBRDF_GGX(
     uint   mID,
     float3 outgoing,
@@ -220,8 +216,7 @@ inline float3 SampleBRDF_GGX(
         H = SampleVNDF_H_Aniso(ax, ay, V, N, T, B, seed);
     float   VdotH = max(EPSILON, dot(V, H));
 
-    //reflect vs transmit probabilities. Always consume the random draw so the
-    //RNG advances identically whether or not the noReflect override engages.
+    //always draw, RNG must advance identically with or without noReflect
     float  F_diel    = FresnelDielectricTIR(V, H, etai, etat).x;
     float  p_refl_H  = (1.0f - metalness) * F_diel + metalness;
     float  p_tran_H  = (1.0f - metalness) * (1.0f - F_diel) * trans_w;
@@ -258,9 +253,7 @@ struct GGXResult {
     float  t;
 };
 
-//noReflect = true mirrors SampleBRDF_GGX's no-reflect mode: the reflection
-//branch is treated as having zero contribution and zero pdf, and the transmit
-//pdf drops the (p_tran_H / p_sum) factor since transmit is now the only choice.
+//noReflect mirrors SampleBRDF_GGX, reflection zero, transmit pdf drops p_tran_H/p_sum
 inline GGXResult EvalGGXAll(
     uint matID, float3 N, float3 fN, float3 V, float3 L,
     float etai, float etat, float3 Kd, float Pr, float Pm,

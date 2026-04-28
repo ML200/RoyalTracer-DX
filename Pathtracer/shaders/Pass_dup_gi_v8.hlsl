@@ -4,13 +4,7 @@
 //====================================
 //DUPLICATION MAP CORRELATION REDUCTION
 //====================================
-//counts shared V2 packed uints in 17x17 neighborhood of g_Reservoirs_last
-//next frame's temporal reuse reads map at backprojected coord to lower cCap
-//Lin, Kettunen, Wyman 2026 "ReSTIR PT Enhanced" §5
-//V2 preserved bit-exact under reconnection/hybrid shift, matching V2 = shifted copy
-//DI samples use per-pixel diMarker as discriminator (raygen)
-//output, gScratchPing slot 6 .x = D in [0,1]
-//32x32 groupshared cache collapses 288 global reads into 4 per thread
+//counts shared V2 packed uints in a 17x17 neighborhood, output to scratch slot 6.x
 
 static const uint TILE_W  = 16u;
 static const uint TILE_H  = 16u;
@@ -34,7 +28,7 @@ void main(
     //tile origin shifted by WIN_R, cache covers 32x32 around tile
     const int2 tileOrigin = int2(gid.xy * uint2(TILE_W, TILE_H)) - int2(WIN_R, WIN_R);
 
-    //256 threads fetch 4 cache entries each
+    //256 threads fetch 4 entries each
     const uint tlin = ltid.y * TILE_W + ltid.x;
     [unroll]
     for (uint i = 0u; i < LOADS_PER_THREAD; ++i)
@@ -62,8 +56,7 @@ void main(
     const int cy = (int)ltid.y + (int)WIN_R;
     const uint myV2 = s_V2[cy][cx];
 
-    //interior tile, full 17x17 in bounds, skip per-iter bounds check
-    //same branch for all threads in group, no wavefront divergence
+    //interior tile skips per-iter bounds, group-uniform branch
     const bool interior =
         (gid.x >= 1u) && (gid.y >= 1u) &&
         (gid.x * TILE_W + TILE_W - 1u + WIN_R < IMG_W) &&
@@ -90,7 +83,7 @@ void main(
             {
                 if (dx == 0 && dy == 0) continue;
 
-                //LDS at border holds 0, skip so invalidated canonical V2=0 doesn't inflate count
+                //LDS border holds 0, skip so invalidated V2=0 cannot inflate count
                 const int2 gpx = int2(tid.xy) + int2(dx, dy);
                 if (gpx.x < 0 || gpx.y < 0 || gpx.x >= (int)IMG_W || gpx.y >= (int)IMG_H)
                     continue;

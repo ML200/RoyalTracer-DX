@@ -1,7 +1,7 @@
 //====================================
 //NRC DEBUG QUERY AT PRIMARY HIT
 //====================================
-//writes W*H inference requests for the debug view, runs after main inference consumed
+//writes W*H inference requests for the debug view
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -39,18 +39,17 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const float3 camPos  = viewI[3].xyz;
     const float3 viewDir = normalize(camPos - x1);
 
-    //reflectance factorisation matches raygen's cache-term
+    //reflectance factorisation matches raygen's cache term
     const float3 alpha = localKd * (1.0f - localPm);
     const float3 betaC = lerp(float3(0.04f, 0.04f, 0.04f), localKd, localPm);
 
-    //load the primary hit's backface flag so the debug query passes the
-    //same side bit the main raygen passes for cache training/inference
+    //primary hit backface flag, must match the side bit raygen feeds into NRC
     const bool backface = load_backface(g_sample_current, pixelIdx);
 
     float features[17];
     NrcBuildFeatures(x1, viewDir, n1_s, localPr, alpha, betaC, backface, features);
 
-    //deterministic per-pixel slot, safe to reuse since main inference already consumed
+    //deterministic per-pixel slot, main inference already consumed
     const uint base = pixelIdx * NRC_INFERENCE_IN_STRIDE;
     [unroll]
     for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
