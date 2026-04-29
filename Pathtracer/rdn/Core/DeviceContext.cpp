@@ -7,9 +7,13 @@
 #include "../DXRHelper.h"
 #include "../DXSample.h"
 #include "../nv_helpers_dx12/BottomLevelASGenerator.h"
-#include "../Diagnostics.h"
 
+//Must be set BEFORE Diagnostics.h is included. Diagnostics.h has #pragma once,
+//so it is processed once per TU, and that pass branches on ENABLE_D3D12_DIAGNOSTICS.
+//If the include came before the define the header would compile as the stub (no op)
+//variant and dxdiag::CheckDeviceRemoved / DumpNewMessages would silently do nothing.
 #define ENABLE_D3D12_DIAGNOSTICS 1
+#include "../Diagnostics.h"
 
 extern "C" {
     __declspec(dllexport) extern const UINT  D3D12SDKVersion = 719;
@@ -94,6 +98,10 @@ void DeviceContext::ExecuteAndPresent() {
         std::wcout << L"[DX] Present failed: 0x" << std::hex << presentHr << std::dec << std::endl;
 #if ENABLE_D3D12_DIAGNOSTICS
         dxdiag::DumpNewMessages();
+        //Poll for up to 1s so the device removal has time to propagate to
+        //GetDeviceRemovedReason before we dump DRED. Without the wait the
+        //breadcrumb output is empty even when the GPU is mid hang.
+        dxdiag::CheckDeviceRemoved(device.Get(), 1000);
 #endif
         ThrowIfFailed(presentHr);
     }

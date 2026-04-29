@@ -240,6 +240,11 @@ __global__ void nrc_sort_scatter_kernel(
     const float* feats = in + tid * kRawInputDim;
     const uint32_t bucket = nrc_bucket_from_features(feats);
     const uint32_t newSlot = atomicAdd(&bucketCursors[bucket], 1u);
+    //defensive: a correct scan keeps newSlot < count, but if the prefix
+    //sum is ever off by a bucket the scatter would OOB into adjacent
+    //allocations and trigger an MMU fault during the kernel which TDRs.
+    //Drop the write instead.
+    if (newSlot >= count) return;
 
     float* dst = out + newSlot * kRawInputDim;
     #pragma unroll
@@ -256,6 +261,11 @@ __global__ void nrc_unsort_kernel(
     const uint32_t newSlot = blockIdx.x * blockDim.x + threadIdx.x;
     if (newSlot >= count) return;
     const uint32_t oldSlot = perm[newSlot];
+    //defensive: scatter only writes perm[newSlot] = tid where tid < count,
+    //so oldSlot < count by construction. Guard against an unwritten perm
+    //entry (rare scatter early out above) so the back scatter never
+    //touches memory past the renderer's outputDevPtr allocation.
+    if (oldSlot >= count) return;
     const float*   src     = sortedOut + newSlot * kOutputDim;
     float*         dst     = out       + oldSlot * kOutputDim;
     #pragma unroll
@@ -290,6 +300,7 @@ __global__ void fill_training_batch_kernel(
     const uint8_t* __restrict__ trainBuf,
     const float*   __restrict__ inferenceOut,
     uint32_t                    trainingPathCount,
+    uint32_t                    inferenceOutCapacity,
     float*         __restrict__ outFeatures,
     float*         __restrict__ outTargets,
     uint32_t*      __restrict__ outCounter)
@@ -341,7 +352,17 @@ __global__ void fill_training_batch_kernel(
     if (tailKind == kTailEmitter || tailKind == kTailMiss) {
         float3 t = unpack_rgb9e5(tailRadPk);
         tail_r = t.x; tail_g = t.y; tail_b = t.z;
-    } else if (tailKind == kTailCache && inferenceSlot != kInvalidInferenceSlot) {
+    } else if (tailKind == kTailCache &&
+               inferenceSlot != kInvalidInferenceSlot &&
+               inferenceSlot < inferenceOutCapacity) {
+        //defensive: a torn meta read from a concurrent next frame frame_begin
+        //memset (race window if frame_begin fires before this auxStream fill
+        //kernel drains) can land tailKind==kTailCache alongside a garbage
+        //inferenceSlot. Without the capacity clamp, inferenceOut+slot*kOutputDim
+        //walks past the renderer's NRC_InferenceOut allocation and the deref
+        //below MMU faults inside the kernel which TDRs. Treat an out of range
+        //slot as if the cache contribution were zero, the path still emits
+        //its NEE rows for the depths up to the cache term vertex.
         const float3 reflCT = unpack_rgb9e5(tailRadPk);
         const float* p = inferenceOut + inferenceSlot * kOutputDim;
         //MLP output is L/reflSum directly. Clamp negatives from the linear
@@ -519,17 +540,14 @@ bool Network::Init() {
         m_impl->lastInferenceCount    = 0u;
 
         //cudaStreamNonBlocking lets auxStream overlap without implicit sync
-        //against the legacy/main stream. High priority (numerically smallest)
-        //hints the WDDM/HWS scheduler to keep training kernels resident when
-        //the D3D12 main queue contends for SMs, so per frame training
-        //actually overlaps the ReSTIR spatiotemporal passes instead of being
-        //held at packet boundaries.
-        int  leastPrio    = 0;
-        int  greatestPrio = 0;
-        cudaDeviceGetStreamPriorityRange(&leastPrio, &greatestPrio);
-        if (cudaStreamCreateWithPriority(&m_impl->auxStream,
-                                         cudaStreamNonBlocking,
-                                         greatestPrio) != cudaSuccess) return false;
+        //against the legacy/main stream. Default priority -- the high
+        //priority variant (cudaStreamCreateWithPriority + greatestPrio)
+        //was tried as an overlap hint for the WDDM/HWS scheduler but is
+        //correlated with rare multi second TDR style freezes on some
+        //driver versions where compute preemption against a non
+        //preemptible FullyFusedMLP encoder enters a retry loop.
+        if (cudaStreamCreateWithFlags(&m_impl->auxStream,
+                                      cudaStreamNonBlocking) != cudaSuccess) return false;
         if (cudaEventCreateWithFlags(&m_impl->inferenceDoneEvent,
                                      cudaEventDisableTiming) != cudaSuccess) return false;
         if (cudaEventCreateWithFlags(&m_impl->trainDoneEvent,
@@ -819,6 +837,19 @@ void Network::ScheduleInferenceCounterReadback(void* streamPtr, const void* devC
     }
 }
 
+void Network::WaitTrainDoneOnStream(void* streamPtr) {
+    //inject a one way wait on trainDoneEvent into the caller's stream so any
+    //subsequent main stream work (notably nrc_frame_begin's cudaMemsetAsync on
+    //m_nrcTrainRecords) is ordered after the auxStream training and the fill
+    //kernel that reads the same allocation. CUDA treats an event that has not
+    //yet been recorded as already completed, so the very first call (before
+    //the first TrainFrame finishes) returns immediately and the renderer does
+    //not need a separate first frame guard.
+    if (!m_impl || !m_impl->ready || !m_impl->trainDoneEvent || !streamPtr) return;
+    cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
+    cudaStreamWaitEvent(stream, m_impl->trainDoneEvent, 0);
+}
+
 void Network::WaitIdle() {
     if (!m_impl || !m_impl->auxStream) return;
     cudaStreamSynchronize(m_impl->auxStream);
@@ -840,7 +871,8 @@ void Network::WaitIdle() {
 void Network::TrainFrame(
     void*       streamPtr,
     const void* trainRecordsDevPtr,
-    const void* inferenceOutDevPtr)
+    const void* inferenceOutDevPtr,
+    uint32_t    inferenceOutCapacity)
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
@@ -866,6 +898,7 @@ void Network::TrainFrame(
         reinterpret_cast<const uint8_t*>(trainRecordsDevPtr),
         reinterpret_cast<const float*>  (inferenceOutDevPtr),
         kMaxTrainingPaths,
+        inferenceOutCapacity,
         m_impl->trainFeatures,
         m_impl->trainTargets,
         m_impl->trainCounter);

@@ -45,13 +45,34 @@ inline float3 offset_ray(float3 p, float3 n)
 //====================================
 //RAY VALIDITY AND VISIBILITY
 //====================================
-//degenerate rays can hang BVH traversal, gate every TraceRay on this
+//degenerate rays can hang BVH traversal, gate every TraceRay on this.
+//The previous form only caught NaN/Inf and a 1e-12 magnitude floor, which
+//let through finite but pathological rays that the BVH then crawled for
+//seconds and tripped the Windows TDR. The current bounds are calibrated
+//to the per call TMin (1e-5 / 1e-4) and the scene's bounded extent.
 inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 {
-    return !any(isnan(direction)) && !any(isinf(direction))
-        && dot(direction, direction) >= 1e-12f
-        && !any(isnan(origin))    && !any(isinf(origin))
-        && tMax > 0.0f;
+    if (any(isnan(direction)) || any(isinf(direction))) return false;
+    if (any(isnan(origin))    || any(isinf(origin)))    return false;
+
+    //direction must be (approximately) unit. The old bound dot >= 1e-12
+    //accepted |dir|=1e-6 which makes 1/dir blow up inside BVH slab tests
+    //and pushes traversal into pathological numerical territory. Keep a
+    //wide band so a slightly drifted normalize still passes, reject only
+    //rays that are not order unity.
+    const float d2 = dot(direction, direction);
+    if (d2 < 0.25f || d2 > 4.0f) return false;
+
+    //tMax must clear the actual TMin used downstream (1e-5 in the main
+    //path tracer, 1e-4 in IsVisible). Coincident NEE lights have been
+    //seen to feed in tMax = 0 here.
+    if (tMax <= 1e-4f) return false;
+
+    //scenes are bounded. Origins past ~1e6 lose ULP precision in BVH
+    //traversal and have been observed when hitT itself diverges.
+    if (any(abs(origin) > 1.0e6f)) return false;
+
+    return true;
 }
 
 //returns false for degenerate inputs, zero radiance safe default

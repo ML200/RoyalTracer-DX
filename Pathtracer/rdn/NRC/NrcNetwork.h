@@ -58,10 +58,14 @@ public:
 
     //end-to-end per-frame training, clear then backward-fill then kTrainingBatchesPerFrame steps
     //sized to actual vertex count to avoid training on zero-padded tail
+    //inferenceOutCapacity bounds the kTailCache slot deref in the fill kernel,
+    //defensive against torn meta reads if the caller forgets to gate the next
+    //frame's frame_begin memset on trainDoneEvent
     void TrainFrame(
         void*       stream,
         const void* trainRecordsDevPtr,
-        const void* inferenceOutDevPtr);
+        const void* inferenceOutDevPtr,
+        uint32_t    inferenceOutCapacity);
 
     //valid vertex count after last TrainFrame, drives adaptive tile feedback
     uint32_t LastValidVertexCount() const;
@@ -78,6 +82,14 @@ public:
 
     //block on auxStream, required before reallocating shared buffers
     void WaitIdle();
+
+    //inject a wait on the previous frame's trainDoneEvent into `stream` so
+    //subsequent work on `stream` is ordered after the auxStream training and
+    //fill kernel finish. Required before any main stream write that aliases
+    //resources read by fill_training_batch_kernel (the trainRecords meta
+    //section in particular). No-op until trainDoneEvent has been recorded
+    //at least once, CUDA treats unrecorded events as already completed.
+    void WaitTrainDoneOnStream(void* stream);
 
 private:
     struct Impl;

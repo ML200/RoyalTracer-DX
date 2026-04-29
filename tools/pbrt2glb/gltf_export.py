@@ -1407,7 +1407,14 @@ class GLTFExporter:
 # -------------------------------------------------------------------------
 
 def _to_gltf_matrix(M: np.ndarray):
-    """Convert a 4x4 row-major matrix to glTF's column-major flat list of 16."""
+    """Convert a 4x4 row-major matrix to glTF's column-major flat list of 16.
+
+    The fourth row is forced to exactly [0, 0, 0, 1] as required by the glTF
+    spec. Numerical inversion (e.g. camera-to-world) can otherwise leave -0.0
+    there, which strict loaders like SharpGLTF reject.
+    """
+    M = np.asarray(M, dtype=np.float64).copy()
+    M[3] = [0.0, 0.0, 0.0, 1.0]
     return [float(x) for x in M.T.reshape(-1)]
 
 

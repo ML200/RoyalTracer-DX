@@ -118,6 +118,17 @@ void Renderer::InitDevice() {
             RegisterCudaOp(L"nrc_frame_begin", [this]{
                 if (!m_nrcReady) return;
                 void* s = m_cudaInterop.Stream();
+                // Gate the train records memset on the previous frame's
+                // auxStream training (specifically its fill kernel, which
+                // reads m_nrcTrainRecords meta + per vertex). Without this
+                // wait, the cudaMemsetAsync below races the still in flight
+                // fill kernel: a torn 16 byte meta read can land
+                // tailKind==kTailCache alongside a garbage inferenceSlot,
+                // and the fill kernel's deref into m_nrcInferenceOut MMU
+                // faults inside the kernel which TDRs. The fill kernel
+                // belt is paired with a slot bound check in TrainFrame's
+                // launch, this is the suspenders.
+                m_nrcNetwork.WaitTrainDoneOnStream(s);
                 nrc::Memzero(s, m_nrcCounters.cudaPtr,    m_nrcCounters.sizeBytes);
                 nrc::Memfill(s, m_nrcPendingGI.cudaPtr,   0xFF, m_nrcPendingGI.sizeBytes);
                 // Only clear the meta header — per-vertex payload is
@@ -175,7 +186,8 @@ void Renderer::InitDevice() {
                 m_nrcNetwork.TrainFrame(
                     m_cudaInterop.Stream(),
                     m_nrcTrainRecords.cudaPtr,
-                    m_nrcInferenceOut.cudaPtr);
+                    m_nrcInferenceOut.cudaPtr,
+                    m_nrcInferenceCapacity);
             });
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");

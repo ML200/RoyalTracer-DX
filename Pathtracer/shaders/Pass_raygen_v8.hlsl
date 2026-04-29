@@ -209,11 +209,19 @@ void Pass_raygen_v8()
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
 
-        //null IOR boundary is pass through
+        //null IOR boundary is pass through. Push the new origin past the
+        //surface in the direction of travel so the next TraceRay cannot
+        //re hit the same triangle. With the prior `rayOrigin = hitPos`
+        //and TMin = 1e-5, FP precision occasionally landed the next ray
+        //back on the same surface, burning the full MAX_BOUNCES budget
+        //on dense alpha geometry without forward progress.
         const float matNi = LoadNi(matID);
         if (matNi <= 1.0f + EPSILON)
         {
-            rayOrigin = hitPos;
+            const float3 offsetN = (dot(rayDir, hinfo.hitNormal) >= 0.0f)
+                                   ? hinfo.hitNormal
+                                   : -hinfo.hitNormal;
+            rayOrigin = offset_ray(hitPos, offsetN);
             continue;
         }
 
