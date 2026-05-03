@@ -6,11 +6,7 @@
 #define MAX_BOUNCES 32
 #endif
 
-//====================================
-//RAYGEN UNIFIED DI+GI RESERVOIR
-//====================================
-//DI at d=2 and GI at d>=3 compete in one reservoir, cold state stashed in g_pathStateBuffer
-
+//DI at d=2 and GI at d>=3 share one reservoir, cold state stashed in g_pathStateBuffer
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
@@ -18,10 +14,7 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //====================================
-    //NRC CLASSIFICATION AND SER SORT
-    //====================================
-    //class 0 render, 1 train biased, 2 train unbiased, sort groups long class 2 in warps
+    //class 0 render, 1 train biased, 2 train unbiased
     const bool kNrcEnabled    = NrcIsEnabled();
     const bool kNrcTrainOn    = NrcIsTrainOn();
     //x1 sharp reflection split needs NRC for the replacement radiance
@@ -36,25 +29,13 @@ void Pass_raygen_v8()
     nrcIsTraining = nrcIsTraining && kNrcTrainOn;
     if (!nrcIsTraining) nrcPathClass = NRC_CLASS_RENDER;
 
-    {
-        const uint nrcSortKey =
-            (nrcPathClass << 6) |
-            (((pixel.y >> 4) & 0x7u) << 3) |
-            ((pixel.x >> 4) & 0x7u);
-        dx::MaybeReorderThread(nrcSortKey, 8);
-    }
-
     NrcClearPendingGI(pixelIdx);
 
     //biased paths terminate into the cache, unbiased paths inject ground truth
     const bool  nrcCacheEligible = kNrcEnabled &&
         (nrcPathClass == NRC_CLASS_TRAIN_BIASED ||
          nrcPathClass == NRC_CLASS_RENDER);
-    //dynamic cap from renderer, sized from prior frame's actual counter so the
-    //CUDA inference dispatch matches demand. Excess records (camera cuts that
-    //spike demand) get NRC_INVALID_SLOT and fall through to MIS for one frame
-    //while the cap grows. Buffer size remains 2*W*H worst case, this only
-    //gates the InterlockedAdd so unused slots never get features written.
+    //dynamic cap from prior frame's counter, excess records fall through to MIS
     const uint  nrcInferenceCapacity = nrc_inference_capacity;
     float nrcA0 = 0.0f;
     float nrcA  = 0.0f;
@@ -115,10 +96,6 @@ void Pass_raygen_v8()
         diMarker = float3(r * cos(phi), r * sin(phi), z);
     }
 
-
-    //====================================
-    //PATH LOOP
-    //====================================
     [loop]
     for (int depth = 0; depth < MAX_BOUNCES; ++depth)
     {
@@ -134,9 +111,6 @@ void Pass_raygen_v8()
         const uint rayFlags = (depth == 0) ? RAY_FLAG_NONE : RAY_FLAG_FORCE_OMM_2_STATE;
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, rayFlags, 0xFF);
 
-        //====================================
-        //MISS
-        //====================================
         if (!hitObj.IsHit())
         {
             if (depth == 0)
@@ -195,9 +169,6 @@ void Pass_raygen_v8()
             break;
         }
 
-        //====================================
-        //HIT SETUP
-        //====================================
         const float  hitT   = hitObj.GetRayTCurrent();
         const float3 hitPos = rayOrigin + rayDir * hitT;
 
@@ -209,12 +180,7 @@ void Pass_raygen_v8()
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
 
-        //null IOR boundary is pass through. Push the new origin past the
-        //surface in the direction of travel so the next TraceRay cannot
-        //re hit the same triangle. With the prior `rayOrigin = hitPos`
-        //and TMin = 1e-5, FP precision occasionally landed the next ray
-        //back on the same surface, burning the full MAX_BOUNCES budget
-        //on dense alpha geometry without forward progress.
+        //null IOR boundary, push origin past the surface so the next TraceRay can't re hit it
         const float matNi = LoadNi(matID);
         if (matNi <= 1.0f + EPSILON)
         {
@@ -240,10 +206,6 @@ void Pass_raygen_v8()
 
         const float3 emission = GetEmissionFast(instID, primID);
 
-
-        //====================================
-        //DEPTH 0 PRIMARY HIT STORAGE
-        //====================================
         //true means the reflection probe hit a cache ineligible surface, keep delta lobes in the BSDF
         bool nrcReflFallback = false;
         if (depth == 0)
@@ -399,9 +361,6 @@ void Pass_raygen_v8()
             }
         }
 
-        //====================================
-        //EMITTER HIT
-        //====================================
         if (any(emission > 0.0f) && hinfo.lightID != 0xFFFFFFFFu)
         {
             const float3 throughput = UnpackRGB9E5(throughputPk);
@@ -448,9 +407,6 @@ void Pass_raygen_v8()
             break;
         }
 
-        //====================================
-        //STASH DEPTH 1 VERTEX AND V2
-        //====================================
         if (depth == 1)
         {
             store_ps_depth1(g_pathStateBuffer, pixelIdx,
@@ -463,9 +419,6 @@ void Pass_raygen_v8()
             store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
         }
 
-        //====================================
-        //NRC AREA SPREAD AND CACHE TERMINATION
-        //====================================
         //Bekaert area spread, gated at hitIdx>=3, class 2 runs to natural term
         ++nrcHitIdx;
         //reset per vertex NEE accumulator, NEE blocks below add into it
@@ -525,9 +478,6 @@ void Pass_raygen_v8()
             }
         }
 
-        //====================================
-        //NEE
-        //====================================
         const bool performNEE = !(mediumMatID != MEDIUM_INVALID || LoadKd_w(matID) < EPSILON);
 
         uint matKdPk, matPrPmPk, hitNormalPk;
@@ -537,10 +487,7 @@ void Pass_raygen_v8()
             matPrPmPk   = f32tof16_custom(hitLocalPr) | (f32tof16_custom(hitLocalPm) << 16u);
             hitNormalPk = PackNormal(hinfo.hitNormal);
 
-            //====================================
-            //POINT LIGHT NEE
-            //====================================
-            //visibility inline per candidate, handles infinite sun distance
+            //point light NEE, visibility inline per candidate
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(hitPos, hinfo.hitNormal, seed);
 
@@ -621,9 +568,7 @@ void Pass_raygen_v8()
                 }
             }
 
-            //====================================
-            //SUN NEE
-            //====================================
+            //sun NEE
             {
                 float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                 SunSampleResult sun = SampleSun(rSun);
@@ -703,9 +648,6 @@ void Pass_raygen_v8()
             hinfo.hitNormal = UnpackNormal(hitNormalPk);
         }
 
-        //====================================
-        //SAMPLE NEXT BSDF DIRECTION
-        //====================================
         SamplingP sp = CalculateStrategyProbabilities(matID, -rayDir, hinfo.hitNormal, iors.x, iors.y, hitLocalKd, hitLocalPm);
         //x1 split integral, peel delta GGX/coat lobes when smooth, NRC supplies the reflection radiance
         bool ggxNoReflect = false;
@@ -785,9 +727,6 @@ void Pass_raygen_v8()
         prevNormalPk = PackNormal(hinfo.hitNormal);
     }
 
-    //====================================
-    //COMMIT TRAINING PATH META
-    //====================================
     //numVertices=0 paths are skipped, untagged long paths get NRC_TAIL_RR, tail=0 is unbiased
     if (nrcPathId != NRC_INVALID_PATH)
     {
@@ -797,9 +736,6 @@ void Pass_raygen_v8()
         NrcStorePathMeta(nrcPathId, nrcTrainVIdx, tailKind, infSlot, nrcTailRadPk);
     }
 
-    //====================================
-    //FINAL RESOLVE
-    //====================================
     //cache terminated pixels defer W/M/invalidation to Pass_nrc_resolve_v8
     store_wsum(g_Reservoirs_current, pixelIdx, wsum);
     if (!nrcCacheTerminated)
