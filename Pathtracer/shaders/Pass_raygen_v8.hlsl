@@ -701,7 +701,7 @@ void Pass_raygen_v8()
             float3 tpostWeight = bdata.val * absorptionTint * cosTheta;
 
             //RR applies to render and training, survival boost patched into stored beta only
-            if (depth > 2)
+            if (depth > 1)
             {
                 const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
                 if (RandomFloatSingle(seed) >= survivalProb) break;
