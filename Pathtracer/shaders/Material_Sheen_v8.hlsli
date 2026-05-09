@@ -98,22 +98,24 @@ inline float3 EvaluateBRDF_SHEEN(
     float3 V = normalize(outgoing);
     float3 L = normalize(-incoming);
 
-    float w = saturate(LoadPs(mID));
-    if (w <= 0.0f) return 0.0.xxx;
+    const half w = (half)saturate(LoadPs(mID));
+    if (w <= (half)0.0) return 0.0.xxx;
 
+    //NdotV/NdotL stay float, denom = 4*NdotV*NdotL is floored at 1e-6 (denormal in fp16)
     float NdotV = max(0.0f, dot(N, V));
     float NdotL = max(0.0f, dot(N, L));
     if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0.xxx;
 
-    float3 H    = normalize(V + L);
-    float  NdotH = max(0.0f, dot(N, H));
+    float3 H = normalize(V + L);
+    const half NdotH = (half)max(0.0f, dot(N, H));
 
-    float  D = SHEEN_D_Charlie(NdotH);
-    float  G = SHEEN_G_Charlie(NdotV, NdotL);
-    float  denom = max(1e-6f, 4.0f * NdotV * NdotL);
+    //D bounded ~1.1; G in [0,1] but Lambda inside uses exp(), keep G as float
+    const half  D = (half)SHEEN_D_Charlie(NdotH);
+    const float G = SHEEN_G_Charlie(NdotV, NdotL);
+    const float denom = max(1e-6f, 4.0f * NdotV * NdotL);
 
     //F~1 and SHEEN_COLOR=white multiply to identity
-    return w * (G * D / denom);
+    return ((float)w * G * (float)D / denom).xxx;
 }
 
 

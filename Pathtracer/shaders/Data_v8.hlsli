@@ -70,7 +70,7 @@ struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float cosTheta_e;
+    float3 axis;     float sinTheta_o;   //precomputed at build, saves one sqrt per importance call
 
     uint   firstChild;
     uint   childCount;
@@ -88,7 +88,7 @@ struct LightBLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float cosTheta_e;
+    float3 axis;     float sinTheta_o;   //precomputed at build, saves one sqrt per importance call
 
     uint   firstChild;
     uint   childCount;

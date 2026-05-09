@@ -451,7 +451,8 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss" });
     pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"OpaqueHitGroup", L"AlphaHitGroup" });
 
-    pipeline.SetMaxPayloadSize(128);
+    //TracePayload is a single uint sentinel (4 B), HitObject SER carries the real hit data
+    pipeline.SetMaxPayloadSize(4);
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
     pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);

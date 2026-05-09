@@ -263,31 +263,44 @@ inline GGXResult EvalGGXAll(
     r.f = 0.0f;
     r.pdf = 0.0f;
 
-    //transmittance, independent of H
-    float NdotV = abs(dot(N, V)) + 0.00001f;
-    float NdotL = dot(N, L);
+    //NdotV stays float, the +1e-5 offset is denormal in fp16 and would flush to zero
+    const float NdotV   = abs(dot(N, V)) + 0.00001f;
+    const float NdotL_f = dot(N, L);
+    const bool  isReflect = NdotL_f > 0.0f;
+    const float absNdotL  = abs(NdotL_f);
 
-    const float Kd_w = LoadKd_w(matID);
+    //bounded material params at half precision
+    const half PmH        = (half)Pm;
+    const half PrH        = (half)Pr;
+    const half Kd_w_h     = (half)LoadKd_w(matID);
+    const half oneMinusPm = (half)1.0 - PmH;
+    const half trans_w    = (half)1.0 - Kd_w_h;
+
+    //transmittance, all factors lie in [0,1]
     {
-        float Ni   = LoadNi(matID);
-        float F0_t = ComputeF0Dielectric(etat, etai).x;
-        float Favg = (F0_t + (1.0f - F0_t) * (1.0f / 21.0f)) * (1.0f / Ni);
-        float Fo   = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr * 0.7f) * (1.0f - Pr * 0.7f);
-        float Fi   = FresnelDielectric(L, N, etai, etat).x;
-        float Kd_frac = Avg3(Kd * Kd_w);
-        float gate_t  = Kd_w * (1.0f - Pm);
-        r.t = gate_t * (1.0f - Fo) * (1.0f - Fi) * (1.0f / max(1.0f - Kd_frac * Favg, 1e-4f));
+        const float Ni       = LoadNi(matID);
+        const half  F0_t     = (half)ComputeF0Dielectric(etat, etai).x;
+        const half  Favg     = (F0_t + ((half)1.0 - F0_t) * (half)(1.0f / 21.0f)) * (half)(1.0f / Ni);
+        const half  PrFactor = (half)1.0 - PrH * (half)0.7;
+        const half  Fo       = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
+        const half  Fi       = (half)FresnelDielectric(L, N, etai, etat).x;
+        const half  Kd_frac  = (half)Avg3(Kd) * Kd_w_h;
+        const half  gate_t   = Kd_w_h * oneMinusPm;
+        r.t = (float)(gate_t * ((half)1.0 - Fo) * ((half)1.0 - Fi)
+                     / max((half)1.0 - Kd_frac * Favg, (half)1e-4));
     }
 
-    //eval + pdf shared setup
-    bool  isReflect = NdotL > 0.0f;
-    float absNdotL  = abs(NdotL);
+    //alpha clamped at 0.001 stays inside fp16 normal range
+    const half alpha = max((half)0.001, PrH * PrH);
 
-    float alpha   = max(0.001f, Pr * Pr);
-    float trans_w = 1.0f - Kd_w;
-
-    float ax, ay;
-    ComputeAnisotropicAlphas(alpha, LoadAniso(matID), ax, ay);
+    //inline ComputeAnisotropicAlphas so ax/ay stay in half registers
+    half ax_h, ay_h;
+    {
+        const float aniso  = LoadAniso(matID);
+        const half  aspect = (half)sqrt(1.0f - 0.9f * abs(aniso));
+        ax_h = max((half)0.001, alpha / aspect);
+        ay_h = max((half)0.001, alpha * aspect);
+    }
     float3 T, B;
     BuildAnisotropicFrame(N, LoadAnisoRot(matID), T, B);
 
@@ -304,27 +317,32 @@ inline GGXResult EvalGGXAll(
         if (dot(V, H) < 0.0f) H = -H;
     }
 
-    float NdotH = dot(N, H);
-    float VdotH = dot(V, H);
-    float LdotH = dot(L, H);
-    float TdotH = dot(T, H);
-    float BdotH = dot(B, H);
-    float TdotV = dot(T, V);
-    float BdotV = dot(B, V);
-    float TdotL = dot(T, L);
-    float BdotL = dot(B, L);
+    //VdotH/LdotH stay float, used in signed denom_jac with very small values
+    const float VdotH = dot(V, H);
+    const float LdotH = dot(L, H);
 
-    float D   = D_GGX_Aniso(NdotH, TdotH, BdotH, ax, ay);
-    float G1V = G1_SmithGGX_Aniso(NdotV, TdotV, BdotV, ax, ay);
-    float G1L = G1_SmithGGX_Aniso(absNdotL, TdotL, BdotL, ax, ay);
-    float G2  = G1V * G1L;
+    //frame-relative dots are bounded in [-1,1] and only feed multiplicative D/G terms
+    const half NdotL = (half)NdotL_f;
+    const half NdotH = (half)dot(N, H);
+    const half TdotH = (half)dot(T, H);
+    const half BdotH = (half)dot(B, H);
+    const half TdotV = (half)dot(T, V);
+    const half BdotV = (half)dot(B, V);
+    const half TdotL = (half)dot(T, L);
+    const half BdotL = (half)dot(B, L);
 
-    float3 F_d_vec = FresnelDielectricTIR(V, H, etai, etat);
-    float  F_diel  = F_d_vec.x;
+    //D and G can exceed fp16 range for smooth surfaces, keep float
+    const float D   = D_GGX_Aniso(NdotH, TdotH, BdotH, ax_h, ay_h);
+    const float G1V = G1_SmithGGX_Aniso(NdotV,    TdotV, BdotV, ax_h, ay_h);
+    const float G1L = G1_SmithGGX_Aniso(absNdotL, TdotL, BdotL, ax_h, ay_h);
+    const float G2  = G1V * G1L;
 
-    float p_refl_H = (1.0f - Pm) * F_diel + Pm;
-    float p_tran_H = (1.0f - Pm) * (1.0f - F_diel) * trans_w;
-    float p_sum    = p_refl_H + p_tran_H;
+    const float3 F_d_vec = FresnelDielectricTIR(V, H, etai, etat);
+    const half   F_diel  = (half)F_d_vec.x;
+
+    const half p_refl_H = oneMinusPm * F_diel + PmH;
+    const half p_tran_H = oneMinusPm * ((half)1.0 - F_diel) * trans_w;
+    const half p_sum    = p_refl_H + p_tran_H;
 
     //eval
     if (isReflect)
@@ -354,19 +372,19 @@ inline GGXResult EvalGGXAll(
     }
     else
     {
-        float oneMinusF  = 1.0f - F_diel;
+        float oneMinusF  = 1.0f - (float)F_diel;
         float denom_bsdf = NdotV * absNdotL;
         float denom_jac  = etai * VdotH + etat * LdotH;
         float numer      = (etat * etat) * abs(VdotH) * abs(LdotH);
         float btdf       = oneMinusF * D * G2 * numer / (denom_bsdf * denom_jac * denom_jac);
-        float gate_eval  = trans_w * (1.0f - Pm);
+        float gate_eval  = (float)(trans_w * oneMinusPm);
         float scalar_t   = btdf * gate_eval;
         float3 spec_t    = max(0.0f, float3(scalar_t, scalar_t, scalar_t));
         r.f = (any(isnan(spec_t)) || any(isinf(spec_t))) ? 0.0.xxx : spec_t;
     }
 
     //pdf
-    if (p_sum > 0.0f)
+    if (p_sum > (half)0.0)
     {
         if (isReflect)
         {
@@ -379,12 +397,12 @@ inline GGXResult EvalGGXAll(
                 float VdotH_pos = max(1e-6f, VdotH);
                 float pdf_H     = (D * G1V * VdotH_pos) / max(1e-6f, NdotV);
 
-                float p_sel = p_refl_H;
-                float eta   = etai / etat;
+                half  p_sel  = p_refl_H;
+                float eta    = etai / etat;
                 float cos2_t = 1.0f - (eta * eta) * (1.0f - VdotH_pos * VdotH_pos);
                 if (cos2_t < 0.0f) p_sel += p_tran_H;
 
-                r.pdf = max(0.0f, (p_sel / p_sum) * pdf_H / (4.0f * VdotH_pos));
+                r.pdf = max(0.0f, ((float)p_sel / (float)p_sum) * pdf_H / (4.0f * VdotH_pos));
             }
         }
         else
@@ -396,7 +414,7 @@ inline GGXResult EvalGGXAll(
             float jacobian  = (etat * etat * abs(LdotH)) / (denom_jac * denom_jac);
 
             //noReflect collapses pick_tran to 1 — sampler always selects refract
-            const float pTranScale = noReflect ? 1.0f : (p_tran_H / p_sum);
+            const float pTranScale = noReflect ? 1.0f : ((float)p_tran_H / (float)p_sum);
             r.pdf = max(0.0f, pTranScale * pdf_H * jacobian);
         }
     }

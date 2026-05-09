@@ -45,7 +45,7 @@ Renderer::Renderer(UINT width, UINT height)
         L"cuda:nrc_debug_inference",                    L"barrier",
         L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
-        L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
+        //L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
@@ -369,8 +369,8 @@ void Renderer::UpdateRenderer(float dt) {
     // Poll for completed async refit — stage data for GPU upload
     lt::TLASRefitResult refitResult;
     if (m_lightTreeRefit.PollResult(refitResult)) {
-        m_pendingTLASUpload  = std::move(refitResult.nodes);
-        m_pendingBLASToItem  = std::move(refitResult.blasToItem);
+        m_pendingTLASUpload    = std::move(refitResult.nodes);
+        m_pendingBLASBitTrail  = std::move(refitResult.blasBitTrails);
 
         // Update worldToLocal in BLASRanges from refit result
         auto& cpuRanges = m_lightTree.GetCpuBLASRanges();
@@ -445,7 +445,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const UINT nodeCount = (UINT)m_pendingTLASUpload.size();
     const UINT nodeBytes = nodeCount * sizeof(lt::LightTLASNodeGpu);
-    const UINT itemCount = (UINT)m_pendingBLASToItem.size();
+    const UINT itemCount = (UINT)m_pendingBLASBitTrail.size();
     const UINT itemBytes = itemCount * sizeof(uint32_t);
     CD3DX12_RANGE readRange(0, 0);
 
@@ -520,20 +520,20 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
         D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &b1);
 
-    // ── BLASToItem ───────────────────────────────────────────────
+    // ── BLAS bit trails (per-BLAS TLAS descent path used by the PDF) ─
     if (itemCount > 0) {
-        growBuffer(m_ltBtIGpu, m_blasToItemUploadStaging, m_ltBtIGpuCapacity,
+        growBuffer(m_ltBlasBitTrailGpu, m_blasBitTrailUploadStaging, m_ltBlasBitTrailGpuCapacity,
                   itemCount, 0, DXGI_FORMAT_R32_UINT,
-                  LT_BLASTOITEM_SRV_SLOT, L"LT_BLASToItem_Refit");
+                  LT_BLASBITTRAIL_SRV_SLOT, L"LT_BLASBitTrail_Refit");
 
         { void* p = nullptr;
-          ThrowIfFailed(m_blasToItemUploadStaging->Map(0, &readRange, &p));
-          memcpy(p, m_pendingBLASToItem.data(), itemBytes);
-          m_blasToItemUploadStaging->Unmap(0, nullptr); }
+          ThrowIfFailed(m_blasBitTrailUploadStaging->Map(0, &readRange, &p));
+          memcpy(p, m_pendingBLASBitTrail.data(), itemBytes);
+          m_blasBitTrailUploadStaging->Unmap(0, nullptr); }
 
-        cmdList->CopyBufferRegion(m_ltBtIGpu.Get(), 0, m_blasToItemUploadStaging.Get(), 0, itemBytes);
+        cmdList->CopyBufferRegion(m_ltBlasBitTrailGpu.Get(), 0, m_blasBitTrailUploadStaging.Get(), 0, itemBytes);
 
-        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltBtIGpu.Get(),
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltBlasBitTrailGpu.Get(),
             D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &b2);
     }
@@ -560,7 +560,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     }
 
     m_pendingTLASUpload.clear();
-    m_pendingBLASToItem.clear();
+    m_pendingBLASBitTrail.clear();
     m_pendingBLASRanges.clear();
 }
 

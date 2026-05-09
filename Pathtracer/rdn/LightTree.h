@@ -75,7 +75,7 @@ namespace lt
     struct LightTLASNodeGpu {
         XMFLOAT3 bmin; float power;
         XMFLOAT3 bmax; float cosTheta_o;
-        XMFLOAT3 axis; float cosTheta_e;
+        XMFLOAT3 axis; float sinTheta_o;  // precomputed sqrt(1 - cosTheta_o^2)
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -92,7 +92,7 @@ namespace lt
     struct LightBLASNodeGpu {
         XMFLOAT3 bmin; float power;
         XMFLOAT3 bmax; float cosTheta_o;
-        XMFLOAT3 axis; float cosTheta_e;
+        XMFLOAT3 axis; float sinTheta_o;  // precomputed sqrt(1 - cosTheta_o^2)
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -290,11 +290,13 @@ private:
     struct TItem { // TLAS items over BLAS roots
         uint32_t idx; Aabb a; XMFLOAT3 c; float p; Cone cone; uint32_t primCount; float sumP, sumP2;
     };
-    std::vector<uint32_t> m_blasToItem;
+    std::vector<uint32_t> m_triBitTrails;   // BLAS descent path per emissive triangle
+    std::vector<uint32_t> m_blasBitTrails;  // TLAS descent path per BLAS
+    static constexpr uint32_t LT_TRAIL_MAX_DEPTH = 16; // 32 bits / 2 bits per level
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 16;       // triangles per BLAS leaf
+        uint32_t maxLeafTris = 1;        // triangles per BLAS leaf
         bool     useTwoLevel = true;     // group by instanceID into BLASes
         uint32_t buildBins   = 64;       // spatial bin count for SAOH
         enum class Heuristic { SAOH, SAH }; // What heuristic should we use?
@@ -309,8 +311,8 @@ public:
         ComPtr<ID3D12Resource> LeafAliasProb;
         ComPtr<ID3D12Resource> LeafAliasIdx;
         ComPtr<ID3D12Resource> TriToBLAS;
-        ComPtr<ID3D12Resource> TriToLeafOffset;
-        ComPtr<ID3D12Resource> BLASToItem;
+        ComPtr<ID3D12Resource> TriBitTrail;   // 2-bits-per-level BLAS descent path per emissive triangle
+        ComPtr<ID3D12Resource> BLASBitTrail;  // 2-bits-per-level TLAS descent path per BLAS
         std::vector<ComPtr<ID3D12Resource>> staging;
     };
 
@@ -403,16 +405,12 @@ public:
               << L", Ranges="      << KiB(gpuRanges.size()*sizeof(BlasRangeGpu))         << L" KiB"
               << L", LeafIdx="     << KiB(gpuLeafTriIndex.size()*sizeof(uint32_t))       << L" KiB");
 
-        // Lookup tables
+        // tri → BLAS lookup (per-triangle BLAS index for the PDF entry)
         std::vector<uint32_t> triToBLAS(m_tris ? m_tris->size() : 0, 0xFFFFFFFFu);
-        std::vector<uint32_t> triToLeafOff(m_tris ? m_tris->size() : 0, 0);
-
         for (uint32_t bIdx = 0; bIdx < m_blas.size(); ++bIdx) {
             const auto& b = m_blas[bIdx];
             for (uint32_t j = 0; j < b.leafTriList.size(); ++j) {
-                uint32_t tri = b.leafTriList[j];
-                triToBLAS[tri]    = bIdx;
-                triToLeafOff[tri] = j;
+                triToBLAS[b.leafTriList[j]] = bIdx;
             }
         }
 
@@ -421,13 +419,13 @@ public:
 
         // Upload everything (alias buffers removed)
         m_gpu = {};
-        m_gpu.BLASNodes       = uploadVector(device, cmdList, gpuBlasNodes);
-        m_gpu.LeafTriIndex    = uploadVector(device, cmdList, gpuLeafTriIndex);
-        m_gpu.BLASRanges      = uploadVector(device, cmdList, gpuRanges);
-        m_gpu.TLASNodes       = uploadVector(device, cmdList, gpuTlasNodes);
-        m_gpu.TriToBLAS       = uploadVector(device, cmdList, triToBLAS);
-        m_gpu.TriToLeafOffset = uploadVector(device, cmdList, triToLeafOff);
-        m_gpu.BLASToItem      = uploadVector(device, cmdList, m_blasToItem);
+        m_gpu.BLASNodes    = uploadVector(device, cmdList, gpuBlasNodes);
+        m_gpu.LeafTriIndex = uploadVector(device, cmdList, gpuLeafTriIndex);
+        m_gpu.BLASRanges   = uploadVector(device, cmdList, gpuRanges);
+        m_gpu.TLASNodes    = uploadVector(device, cmdList, gpuTlasNodes);
+        m_gpu.TriToBLAS    = uploadVector(device, cmdList, triToBLAS);
+        m_gpu.TriBitTrail  = uploadVector(device, cmdList, m_triBitTrails);
+        m_gpu.BLASBitTrail = uploadVector(device, cmdList, m_blasBitTrails);
     }
 
     void WriteSrvs(ID3D12Device* device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const {
@@ -531,19 +529,19 @@ public:
         }
         dst.ptr += inc;
 
-        // TriToLeafOffset (R32_UINT)
-        if (m_gpu.TriToLeafOffset) {
-            UINT n = static_cast<UINT>(m_gpu.TriToLeafOffset->GetDesc().Width / 4);
-            LT_LOG(L"WriteLookupSrvs: TriToLeafOffset count=" << n);
-            makeTyped(m_gpu.TriToLeafOffset.Get(), DXGI_FORMAT_R32_UINT, n, dst);
+        // TriBitTrail (R32_UINT), count = #tris -- BLAS descent path per triangle
+        if (m_gpu.TriBitTrail) {
+            UINT n = static_cast<UINT>(m_gpu.TriBitTrail->GetDesc().Width / 4);
+            LT_LOG(L"WriteLookupSrvs: TriBitTrail count=" << n);
+            makeTyped(m_gpu.TriBitTrail.Get(), DXGI_FORMAT_R32_UINT, n, dst);
         }
         dst.ptr += inc;
 
-        // BLASToItem (R32_UINT), count = #BLASes
-        if (m_gpu.BLASToItem) {
-            UINT n = static_cast<UINT>(m_gpu.BLASToItem->GetDesc().Width / 4);
-            LT_LOG(L"WriteLookupSrvs: BLASToItem count=" << n);
-            makeTyped(m_gpu.BLASToItem.Get(), DXGI_FORMAT_R32_UINT, n, dst);
+        // BLASBitTrail (R32_UINT), count = #BLASes -- TLAS descent path per BLAS
+        if (m_gpu.BLASBitTrail) {
+            UINT n = static_cast<UINT>(m_gpu.BLASBitTrail->GetDesc().Width / 4);
+            LT_LOG(L"WriteLookupSrvs: BLASBitTrail count=" << n);
+            makeTyped(m_gpu.BLASBitTrail.Get(), DXGI_FORMAT_R32_UINT, n, dst);
         }
     }
 
@@ -551,7 +549,7 @@ public:
     void ReleaseStaging(){ LT_TIME_SCOPE(L"ReleaseStaging()"); LT_LOG(L"ReleaseStaging: " << m_gpu.staging.size() << L" upload buffers freed"); m_gpu.staging.clear(); }
 
     ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
-    ID3D12Resource* GetBLASToItemGpuBuffer() const { return m_gpu.BLASToItem.Get(); }
+    ID3D12Resource* GetBLASBitTrailGpuBuffer() const { return m_gpu.BLASBitTrail.Get(); }
     uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * sizeof(LightTLASNodeGpu)); }
 
     const GpuBuffers& GetGpu() const { return m_gpu; }
@@ -707,6 +705,8 @@ private:
         for (uint32_t i=0;i<m_tris->size();++i) groups[(*m_tris)[i].instanceID].push_back(i);
         LT_LOG(L"buildBLASes: groups=" << groups.size());
         m_blas.clear(); m_blas.reserve(groups.size());
+        // sized for the full tri set; recursive build writes per-triangle BLAS descent trail at leaves
+        m_triBitTrails.assign(m_tris->size(), 0u);
         for (auto& kv : groups){ const auto& idxs = kv.second; LT_LOG(L"  BLAS[" << kv.first << L"] tris=" << idxs.size());
             BLASBuild b;
             b.triIndices = idxs;
@@ -746,8 +746,8 @@ private:
                 tmp.push_back({ idxs[j], c, a, t.weight, inst, lc });
             }
 
-            // SAOH build
-            buildBLASRecursive_SAOH(tmp, b, 0, static_cast<uint32_t>(tmp.size()));
+            // SAOH build (with bit trail tracking starting at depth 0, trail = 0)
+            buildBLASRecursive_SAOH(tmp, b, 0, static_cast<uint32_t>(tmp.size()), 0u, 0u);
             // stats
             uint32_t leafs = 0, inner = 0;
             for (const auto& n : b.nodes) (n.isLeaf() ? leafs : inner)++;
@@ -766,7 +766,8 @@ private:
     static void aggMerge(Agg& A, const Agg& B){ if (!B.valid) return; if (!A.valid){ A=B; return; } A.a = unionAabb(A.a, B.a); A.E+=B.E; A.cone=coneUnion(A.cone,B.cone); A.N+=B.N; A.sumP+=B.sumP; A.sumP2+=B.sumP2; }
 
     uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out,
-                                 uint32_t begin, uint32_t end)
+                                 uint32_t begin, uint32_t end,
+                                 uint32_t bitTrail, uint32_t depth)
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size());
         out.nodes.emplace_back();
@@ -790,7 +791,11 @@ private:
         if (count <= m_cfg.maxLeafTris) {
             N0.triFirst = static_cast<uint32_t>(out.leafTriList.size());
             N0.triCount = count;
-            for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
+            for (uint32_t i = begin; i < end; ++i) {
+                const uint32_t tri = tmp[i].triIndex;
+                out.leafTriList.push_back(tri);
+                m_triBitTrails[tri] = bitTrail;
+            }
             N0.firstChild = 0xFFFFFFFF;
             N0.childCount = 0; // leaf
             return nodeIdx;
@@ -886,7 +891,11 @@ private:
             BLASNode& N = nodeAt(nodeIdx);
             N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
             N.triCount = count;
-            for (uint32_t i = begin; i < end; ++i) out.leafTriList.push_back(tmp[i].triIndex);
+            for (uint32_t i = begin; i < end; ++i) {
+                const uint32_t tri = tmp[i].triIndex;
+                out.leafTriList.push_back(tri);
+                m_triBitTrails[tri] = bitTrail;
+            }
             N.firstChild = 0xFFFFFFFF; N.childCount = 0;
             return nodeIdx;
         }
@@ -930,8 +939,16 @@ private:
         for (uint32_t i=0;i<bucketCount;i++) out.nodes.emplace_back();
 
         // Build each child into its slot
+        // child index c is encoded into 2 bits at position (2*depth) for the bit trail
+        const bool depthOverflow = (depth >= LT_TRAIL_MAX_DEPTH);
+        if (depthOverflow) {
+            LT_WARN(L"BLAS bit trail exceeded depth " << LT_TRAIL_MAX_DEPTH << L"; PDF will be incorrect for deeper subtrees");
+        }
+        const uint32_t shift = 2u * depth;
         for (uint32_t c = 0; c < bucketCount; ++c) {
-            uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e);
+            //guard against UB when shift >= 32; trail is intentionally unchanged past the cap
+            const uint32_t childTrail = depthOverflow ? bitTrail : (bitTrail | (c << shift));
+            uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
             uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(out.nodes[built], out.nodes[desired]);
         }
@@ -966,12 +983,9 @@ private:
         // Reserve to minimize reallocations during recursive build
         m_tlas.reserve(items.size() * 2u + 32u);
 
-        buildTLASRecursive_SAOH(items, 0, static_cast<uint32_t>(items.size()));
-        m_blasToItem.clear();
-        m_blasToItem.resize(m_blas.size(), 0);
-        for (uint32_t i = 0; i < items.size(); ++i) {
-            m_blasToItem[ items[i].idx ] = i;
-        }
+        // m_blasBitTrails populated at TLAS leaves during recursion (one entry per BLAS).
+        m_blasBitTrails.assign(m_blas.size(), 0u);
+        buildTLASRecursive_SAOH(items, 0, static_cast<uint32_t>(items.size()), 0u, 0u);
         LT_LOG(L"buildTLAS done: TLAS nodes=" << m_tlas.size());
     }
 
@@ -980,7 +994,8 @@ private:
         A.a=unionAabb(A.a,t.a); A.E+=t.p; A.cone=coneUnion(A.cone,t.cone); A.N+=t.primCount; A.sumP+=t.sumP; A.sumP2+=t.sumP2; }
     static void aggTMerge(AggT& A, const AggT& B){ if (!B.valid) return; if (!A.valid){ A=B; return; } A.a=unionAabb(A.a,B.a); A.E+=B.E; A.cone=coneUnion(A.cone,B.cone); A.N+=B.N; A.sumP+=B.sumP; A.sumP2+=B.sumP2; }
 
-    uint32_t buildTLASRecursive_SAOH(std::vector<TItem>& it, uint32_t begin, uint32_t end)
+    uint32_t buildTLASRecursive_SAOH(std::vector<TItem>& it, uint32_t begin, uint32_t end,
+                                     uint32_t bitTrail, uint32_t depth)
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
         m_tlas.push_back({});
@@ -994,7 +1009,7 @@ private:
         N0.bmin = parent.a.mn; N0.bmax = parent.a.mx; N0.power = parent.E;
         N0.axis = parent.cone.axis;
         N0.cosTheta_o = std::cos(clampf(parent.cone.theta_o, 0.f, LT_PI));
-        N0.cosTheta_e = std::cos(clampf(parent.cone.theta_e, 0.f, LT_PI));
+        N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
         N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
         N0.itemFirst = begin; N0.itemCount = end - begin;
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
@@ -1003,6 +1018,7 @@ private:
         const uint32_t count = end - begin;
         if (count == 1) {
             N0.blasIndex = it[begin].idx;
+            m_blasBitTrails[it[begin].idx] = bitTrail;
             return nodeIdx;
         }
 
@@ -1122,8 +1138,14 @@ private:
         nodeAt(nodeIdx).childCount = bucketCount;
         for (uint32_t i=0;i<bucketCount;i++) m_tlas.push_back({});
 
+        const bool depthOverflow = (depth >= LT_TRAIL_MAX_DEPTH);
+        if (depthOverflow) {
+            LT_WARN(L"TLAS bit trail exceeded depth " << LT_TRAIL_MAX_DEPTH << L"; PDF will be incorrect for deeper subtrees");
+        }
+        const uint32_t shift = 2u * depth;
         for (uint32_t c=0;c<bucketCount;c++){
-            uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e);
+            const uint32_t childTrail = depthOverflow ? bitTrail : (bitTrail | (c << shift));
+            uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
             uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(m_tlas[built], m_tlas[desired]);
         }
@@ -1166,7 +1188,7 @@ private:
         g.bmin = n.aabb.mn; g.bmax = n.aabb.mx; g.power = n.power;
         g.axis = n.cone.axis;
         g.cosTheta_o = std::cos(clampf(n.cone.theta_o, 0.f, LT_PI));
-        g.cosTheta_e = std::cos(clampf(n.cone.theta_e, 0.f, LT_PI));
+        g.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - g.cosTheta_o * g.cosTheta_o));
 
         g.firstChild = n.firstChild;
         g.childCount = n.childCount;

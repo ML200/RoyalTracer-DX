@@ -15,20 +15,21 @@ struct SamplingP{
 //cheap energy cascade approximating the actual distribution
 inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, float etai, float etat, float3 Kd, float Pm)
 {
-    float r_sheen = Sampling_Weight_SHEEN(mID, normal, outgoing);
-    float r_coat  = Sampling_Weight_COAT(mID, normal, outgoing, etai, etat);
-    float r_ggx   = Sampling_Weight_GGX(mID, normal, outgoing, etai, etat, Kd, Pm);
-    float r_lamb   = Sampling_Weight_Lambertian(mID, normal, outgoing);
+    //all weights and energy fractions are in [0,1], boosted products max ~5, fp16 safe
+    const half r_sheen = (half)Sampling_Weight_SHEEN(mID, normal, outgoing);
+    const half r_coat  = (half)Sampling_Weight_COAT(mID, normal, outgoing, etai, etat);
+    const half r_ggx   = (half)Sampling_Weight_GGX(mID, normal, outgoing, etai, etat, Kd, Pm);
+    const half r_lamb  = (half)Sampling_Weight_Lambertian(mID, normal, outgoing);
+
+    const half energy_after_sheen = (half)1.0 - r_sheen;
+    const half energy_after_coat  = energy_after_sheen * ((half)1.0 - r_coat);
+    const half energy_after_ggx   = energy_after_coat  * ((half)1.0 - r_ggx);
 
     SamplingP sp;
-
-    sp.Psheen = r_sheen;
-    float energy_after_sheen = 1.0f - sp.Psheen;
-    sp.Pcoat = energy_after_sheen * r_coat * 3.0f;
-    float energy_after_coat = energy_after_sheen * (1.0f - r_coat);
-    sp.Pspec = energy_after_coat * r_ggx * 5.0f; //boosted to denoise better
-    float energy_after_ggx = energy_after_coat * (1.0f - r_ggx);
-    sp.Pdiff = energy_after_ggx * r_lamb;
+    sp.Psheen = (float)r_sheen;
+    sp.Pcoat  = (float)(energy_after_sheen * r_coat * (half)3.0);
+    sp.Pspec  = (float)(energy_after_coat  * r_ggx  * (half)5.0); //boosted to denoise better
+    sp.Pdiff  = (float)(energy_after_ggx   * r_lamb);
 
     float total_prob = sp.Psheen + sp.Pcoat + sp.Pspec + sp.Pdiff;
     if (total_prob > 0.0f)
@@ -195,27 +196,28 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     const float3 V  = normalize(o);
     const float3 L  = normalize(s);
 
-    float gate = 1.0f;
+    //gate is a product of transmittances, always in [0,1] — half precision is exact enough
+    half gate = (half)1.0;
 
     if (p.Psheen >= EPSILON) {
-        res.val += gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+        res.val += (float)gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
         res.pdf += p.Psheen * BRDF_PDF_SHEEN(matID, n_s, -s, o);
-        gate    *= Transmittance_SHEEN(matID, n_s, -s, o);
+        gate    *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
         const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
-        res.val += gate * cr.f;
+        res.val += (float)gate * cr.f;
         res.pdf += p.Pcoat * cr.pdf;
-        gate    *= cr.t;
+        gate    *= (half)cr.t;
     }
     if (p.Pspec >= EPSILON) {
         const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
-        res.val += gate * gr.f;
+        res.val += (float)gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
-        gate    *= gr.t;
+        gate    *= (half)gr.t;
     }
     if (p.Pdiff >= EPSILON) {
-        res.val += gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        res.val += (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
         res.pdf += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
     }
     return res;

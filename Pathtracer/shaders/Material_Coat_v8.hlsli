@@ -113,44 +113,49 @@ inline CoatResult EvalCoatAll(
     r.pdf = 0.0f;
     r.t = 1.0f;
 
-    float NdotV = max(0.0f, dot(N, V));
-    float NdotL = max(0.0f, dot(N, L));
+    //NdotV/NdotL kept float, used as denominators with EPSILON-class floors
+    const float NdotV = max(0.0f, dot(N, V));
+    const float NdotL = max(0.0f, dot(N, L));
 
-    float pc = saturate(LoadPc(matID));
-    if (pc <= 0.0f) return r;
+    const half pc = (half)saturate(LoadPc(matID));
+    if (pc <= (half)0.0) return r;
 
-    float Pr_coat = LoadPcr(matID);
+    const half Pr_coat = (half)LoadPcr(matID);
 
     //transmittance
     if (NdotV > 0.0f && NdotL > 0.0f)
     {
-        float Fo = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr_coat * 0.7f) * (1.0f - Pr_coat * 0.7f);
-        float Fi = FresnelDielectric(L, N, etai, etat).x;
-        r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
+        const half PrFactor = (half)1.0 - Pr_coat * (half)0.7;
+        const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
+        const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
+        r.t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
     }
 
     //eval + pdf
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);
-    float  NdotH = max(0.0f, dot(N, H));
-    float  VdotH = max(EPSILON, dot(V, H));
+    const half NdotH = (half)max(0.0f, dot(N, H));
+    //VdotH stays float, divides spec via 4*VdotH
+    const float VdotH = max(EPSILON, dot(V, H));
 
-    float rough = saturate(Pr_coat);
-    float alpha = max(EPSILON, rough * rough);
+    const half rough = saturate(Pr_coat);
+    //fp16 normal min is ~6.1e-5; 1e-4 is the lowest safe alpha clamp here
+    const half alpha = max((half)1e-4, rough * rough);
 
-    float D   = D_GGX(NdotH, alpha);
-    float G1V = G1_SmithGGX(NdotV, alpha);
+    //D and G can blow past fp16 range for smooth coat, keep float
+    const float D   = D_GGX(NdotH, alpha);
+    const float G1V = G1_SmithGGX(NdotV, alpha);
 
     {
-        float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
-        float  denom = max(4.0f * NdotV * NdotL, EPSILON);
-        float3 F     = FresnelDielectricTIR(V, H, etai, etat);
+        const float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
+        const float  denom = max(4.0f * NdotV * NdotL, EPSILON);
+        const float3 F     = FresnelDielectricTIR(V, H, etai, etat);
 
-        float3 spec = pc * (F * D * G2) / denom;
+        float3 spec = (float)pc * (F * D * G2) / denom;
 
-        float Ess = GetEssLUT(Pr_coat, NdotV);
-        float kms = (1.0f - Ess) / max(Ess, 1e-6f);
+        const float Ess = GetEssLUT((float)Pr_coat, NdotV);
+        const float kms = (1.0f - Ess) / max(Ess, 1e-6f);
         spec = spec * (1.0f + F * kms);
 
         r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
