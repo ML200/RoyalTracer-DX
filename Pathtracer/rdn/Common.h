@@ -68,8 +68,9 @@ static constexpr UINT  SORT_BUCKETS         = 65536;
 static constexpr int   NUM_LUTS             = 2;
 static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
-//NRC reserves 5 UAVs at heap 58..62, bindless starts at 63
-static constexpr UINT  BINDLESS_HEAP_START  = 63;
+//NRC reserves 5 UAVs at heap 58..62, autoexpose at heap 63, bindless starts at 64
+static constexpr UINT  AUTOEXPOSE_HEAP_SLOT = 63;
+static constexpr UINT  BINDLESS_HEAP_START  = 64;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -160,7 +161,8 @@ struct SunSettings {
     float turbidity     = 2.0f;
     float sunIntensity  = 5.0f;
     float skyIntensity  = 8.5f;
-    float _pad0 = 0, _pad1 = 0, _pad2 = 0;
+    float globalEmissionStrength = 1.0f;
+    float _pad1 = 0, _pad2 = 0;
 };
 
 //====================================

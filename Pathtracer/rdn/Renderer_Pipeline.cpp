@@ -277,6 +277,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // NRC shared D3D12/CUDA UAVs (u40..u44) at heap slots 58..62 — see
     // shaders/Nrc_v8.hlsli for binding order.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 40, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Auto-expose persistent state (u24) at heap slot 63
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 24, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -531,6 +533,10 @@ void Renderer::CreateRaytracingOutputBuffer() {
 void Renderer::CreatePathStateBuffer() {
     ResourceFactory rf(m_ctx.Device());
     m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
+    // 16B persistent: [0]=sumLogLumFixed (u32), [4]=smoothedLogLum (f32),
+    // [8]=isInitialized (u32 flag), [12]=pad. Cleared once at create; finalize
+    // shader manages it after that.
+    m_autoExposeBuffer = rf.CreateUAVBuffer(16, L"AutoExposeState");
 }
 
 //====================================
@@ -829,6 +835,14 @@ void Renderer::CreateShaderResourceHeap() {
     if (m_nrcPendingGI.resource)    nrcUAV(m_nrcPendingGI);    else nullRawUAV();  // u42
     if (m_nrcTrainRecords.resource) nrcUAV(m_nrcTrainRecords); else nullRawUAV();  // u43
     if (m_nrcCounters.resource)     nrcUAV(m_nrcCounters);     else nullRawUAV();  // u44
+
+    // Slot 63: autoexpose persistent state (u24, 16 B raw)
+    { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+      ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+      ud.Format        = DXGI_FORMAT_R32_TYPELESS;
+      ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
+      ud.Buffer.NumElements = 4;  // 16 B / 4
+      dev->CreateUnorderedAccessView(m_autoExposeBuffer.Get(), nullptr, &ud, handle); next(); }
 
     // Bindless textures
     UINT globalTexIdx = 0;

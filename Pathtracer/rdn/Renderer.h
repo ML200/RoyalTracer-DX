@@ -175,6 +175,7 @@ private:
     ComPtr<ID3D12Resource>       m_permanentDataTexture;
     ComPtr<ID3D12Resource>       m_scratchPing;
     ComPtr<ID3D12Resource>       m_pathStateBuffer;
+    ComPtr<ID3D12Resource>       m_autoExposeBuffer;  // 16B persistent: sumLogLumFixed, smoothedLogLum, isInitialized, _pad
     ComPtr<ID3D12Resource>       m_reservoirBuffer, m_reservoirBuffer_2;
     ComPtr<ID3D12Resource>       m_reservoirBuffer_3, m_reservoirBuffer_4;
     ComPtr<ID3D12Resource>       m_sampleBuffer_current, m_sampleBuffer_last;

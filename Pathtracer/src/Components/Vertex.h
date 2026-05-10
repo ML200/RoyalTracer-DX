@@ -33,6 +33,7 @@ struct alignas(16) Material {
     int normalTexID;
     int rmaTexID;
     float alphaThreshold;
+    bool invertAlpha = false;  // true = sample is transparency (1=transparent), AnyHit will flip the test
 
     Material() :
         Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
@@ -138,7 +139,9 @@ inline void PackOne(const Material& m, uint32_t dst[10])
     };
     dst[5] = uint32_t(clip16(m.albedoTexID))
            | (uint32_t(clip16(m.normalTexID)) << 16);
-    dst[6] = uint32_t(clip16(m.rmaTexID));   // high 16 unused
+    // texIDs_2: bits 0..15 = rmaTexID, bit 16 = invertAlpha flag (high 15 still spare)
+    dst[6] = uint32_t(clip16(m.rmaTexID))
+           | (m.invertAlpha ? (1u << 16) : 0u);
     dst[7] = uint32_t(PackHalf(m.albedoUVScale.x))
            | (uint32_t(PackHalf(m.albedoUVScale.y)) << 16);
     dst[8] = uint32_t(PackHalf(m.normalUVScale.x))
@@ -170,6 +173,7 @@ struct MaterialSoA {
     std::vector<int32_t>           normalTexID;
     std::vector<int32_t>           rmaTexID;
     std::vector<float>             alphaThreshold;
+    std::vector<uint8_t>           invertAlpha;     // 0/1, AnyHit flips the cutout test when 1
 
     size_t size()  const { return Ni.size(); }
     bool   empty() const { return Ni.empty(); }
@@ -180,7 +184,7 @@ struct MaterialSoA {
         Pr_Pm_Ps_Pc.reserve(n); Pcr_aniso_anisor.reserve(n); Tf.reserve(n);
         albedoUVScale.reserve(n); normalUVScale.reserve(n); rmaUVScale.reserve(n);
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
-        alphaThreshold.reserve(n);
+        alphaThreshold.reserve(n); invertAlpha.reserve(n);
     }
 
     void push_back(const Material& m)
@@ -198,6 +202,7 @@ struct MaterialSoA {
         normalTexID.push_back(m.normalTexID);
         rmaTexID.push_back(m.rmaTexID);
         alphaThreshold.push_back(m.alphaThreshold);
+        invertAlpha.push_back(m.invertAlpha ? 1u : 0u);
     }
 
     void append(const std::vector<Material>& src)
@@ -221,6 +226,7 @@ struct MaterialSoA {
         m.normalTexID = normalTexID[i];
         m.rmaTexID = rmaTexID[i];
         m.alphaThreshold = alphaThreshold[i];
+        m.invertAlpha = (i < invertAlpha.size()) ? (invertAlpha[i] != 0u) : false;
         return m;
     }
 

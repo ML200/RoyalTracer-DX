@@ -123,6 +123,13 @@ inline int LoadRmaTexID(uint matID)
     return (int)(lo << 16) >> 16;
 }
 
+//bit 16 of texIDs_2: 1 = opacity-channel sample is transparency (1=transparent, 0=opaque),
+//AnyHit flips the cutout test so map_Tr-style and inverted-PNG opacity textures render correctly.
+inline bool LoadInvertAlpha(uint matID)
+{
+    return (g_mat[matID].texIDs_2 & (1u << 16)) != 0u;
+}
+
 inline float2 LoadAlbedoUVScale(uint matID)
 {
     const uint p = g_mat[matID].uv_albedo;

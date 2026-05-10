@@ -88,7 +88,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
-    if (m_showMaterials) DrawMaterialInspector(scene);
+    if (m_showMaterials) DrawMaterialInspector(scene, camera);
 
     // Material re-upload happens via dirty flag checked in Renderer
     ImGui::Render();
@@ -193,7 +193,8 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
     ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.001f, 0.001f, 10.0f, "%.3f");
     ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
-    ImGui::DragFloat("Move Speed",       &flyCam.moveSpeed,  0.1f, 0.1f, 100.0f);
+    ImGui::SliderFloat("Move Speed",     &flyCam.moveSpeed,  0.01f, 10000.0f, "%.3f",
+                       ImGuiSliderFlags_Logarithmic);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
 
     ImGui::Separator();
@@ -306,11 +307,19 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
 //====================================
 //MATERIAL INSPECTOR
 //====================================
-void Editor::DrawMaterialInspector(Scene& scene) {
+void Editor::DrawMaterialInspector(Scene& scene, Camera& camera) {
     ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 700), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Materials", &m_showMaterials)) { ImGui::End(); return; }
+
+    // Lives on SunSettings only because that struct is the tail of the camera CB.
+    // Applied at GPU emission read sites, leaves authored Ke untouched.
+    ImGui::SliderFloat("Global Emission", &camera.sunSettings.globalEmissionStrength,
+                       0.0f, 10.0f, "%.2fx");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Scales every emissive material equally.\n1.0 = authored values.");
+    ImGui::Separator();
 
     // Material list (left)
     ImGui::BeginChild("MatList", ImVec2(180, 0), true);
@@ -463,6 +472,19 @@ void Editor::DrawMaterialInspector(Scene& scene) {
         // ── Alpha ────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Alpha Test")) {
             changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);
+
+            //ensure the SoA slot exists (older materials predate this field)
+            if (i >= mats.invertAlpha.size()) mats.invertAlpha.resize(i + 1, 0u);
+            bool inv = mats.invertAlpha[i] != 0u;
+            if (ImGui::Checkbox("Invert (sample is transparency)", &inv)) {
+                mats.invertAlpha[i] = inv ? 1u : 0u;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Top of the invert-alpha hierarchy (L3, manual override).\n"
+                    "Auto-detection at load: filename hint (L1) and brightness check (L2).\n"
+                    "Toggle on if the texture's alpha encodes 1 = transparent (map_Tr style).");
         }
 
         // ── Textures (read-only info) ────────────────────────────
@@ -576,14 +598,17 @@ void Editor::DrawSunPanel(Camera& camera) {
         ImGui::SliderFloat("Day of Year", &s.dayOfYear, 1.0f, 365.0f, "%.0f");
     }
     if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Sim Speed",       &s.simSpeed, 0.0f, 100.0f, "%.1fx");
+        ImGui::SliderFloat("Sim Speed",       &s.simSpeed, 0.0f, 10000.0f, "%.1fx",
+                           ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Start UTC Hours", &s.startUTCHours, 0.0f, 24.0f, "%.1f h");
         ImGui::SliderFloat("Night Speedup",   &s.nightSpeedup, 1.0f, 10.0f, "%.1fx");
     }
     if (ImGui::CollapsingHeader("Appearance", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Turbidity",      &s.turbidity, 1.0f, 10.0f, "%.1f");
-        ImGui::SliderFloat("Sun Intensity",  &s.sunIntensity, 0.0f, 20.0f, "%.1f");
-        ImGui::SliderFloat("Sky Intensity",  &s.skyIntensity, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Sun Intensity",  &s.sunIntensity, 0.0f, 100.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Sky Intensity",  &s.skyIntensity, 0.0f, 100.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
     }
 
     ImGui::End();

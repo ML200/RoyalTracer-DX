@@ -157,9 +157,14 @@ void Pass_raygen_v8()
         hitObj.GetAttributes(attr);
         HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
 
-        //null IOR boundary, push origin past the surface and retry
+        //null IOR boundary, push origin past the surface and retry.
+        //gated on transmissive: tinyobj defaults mat.ior=1.0 when MTL lacks
+        //'Ni', so an opaque OBJ material would otherwise hit this branch and
+        //pass straight through, never writing the sample buffer. DLSS then
+        //reprojects from stale instID/primID -> see-through with trails.
         const float matNi = LoadNi(matID);
-        if (matNi <= 1.0f + EPSILON)
+        const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
+        if (matNi <= 1.0f + EPSILON && transmissive)
         {
             const float3 offsetN = (dot(rayDir, hinfo.hitNormal) >= 0.0f)
                                    ? hinfo.hitNormal
@@ -167,8 +172,6 @@ void Pass_raygen_v8()
             rayOrigin = offset_ray(hitPos, offsetN);
             continue;
         }
-
-        const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
         const bool flipIOR = hinfo.backface && transmissive;
         const float2 iors = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
         const uint   mediumMatID = flipIOR ? matID : MEDIUM_INVALID;
@@ -596,8 +599,11 @@ void Pass_raygen_v8()
             hitObj.GetAttributes(attr);
             HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, depth);
 
+            //null IOR boundary only applies to actually transmissive surfaces
+            //(see primary loop comment). Opaque Ni=1 materials must NOT pass through.
             const float matNi = LoadNi(matID);
-            if (matNi <= 1.0f + EPSILON)
+            const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
+            if (matNi <= 1.0f + EPSILON && transmissive)
             {
                 const float3 offsetN = (dot(rayDir, hinfo.hitNormal) >= 0.0f)
                                        ? hinfo.hitNormal
@@ -605,8 +611,6 @@ void Pass_raygen_v8()
                 rayOrigin = offset_ray(hitPos, offsetN);
                 continue;
             }
-
-            const bool transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
             const bool flipIOR = hinfo.backface && transmissive;
             const float2 iors = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
             const uint   mediumMatID = flipIOR ? matID : MEDIUM_INVALID;

@@ -758,11 +758,67 @@ public:
             return (int)textureID;
         };
 
+        // ──────────────────────────────────────────────────────────────
+        // Hierarchical invert-alpha detection. Each level can override the
+        // previous; the editor toggle (handled on the renderer side via
+        // mats.invertAlpha[i]) sits above all of these.
+        //   L0: default = false (standard map_d / opacity convention)
+        //   L1: filename heuristic — alpha texture name contains a Tr-style hint
+        //   L2: brightness check — one convention would render zero pixels,
+        //       prefer the other (catches inverted-PNG opacity maps)
+        // ──────────────────────────────────────────────────────────────
+        auto containsCI = [](const std::string& s, const char* sub) -> bool {
+            std::string l = s; std::transform(l.begin(), l.end(), l.begin(), ::tolower);
+            std::string ll = sub; std::transform(ll.begin(), ll.end(), ll.begin(), ::tolower);
+            return l.find(ll) != std::string::npos;
+        };
+
+        auto detectInvertAlpha = [&](const std::string& alphaName,
+                                     const DirectX::ScratchImage* opacityImg,
+                                     float threshold) -> bool
+        {
+            bool invert = false;
+
+            // L1 — filename hints. Tools that wrote 'map_Tr' or named the file
+            // along the transparency convention typically mean 1=transparent.
+            if (!alphaName.empty() &&
+                (containsCI(alphaName, "_tr.")    ||
+                 containsCI(alphaName, "_trans")  ||
+                 containsCI(alphaName, "transparen")))
+            {
+                invert = true;
+            }
+
+            // L2 — brightness check. If the chosen convention would reject
+            // every pixel (alpha test fails everywhere), flip. Conservative:
+            // only fires when one option is clearly nonsense.
+            if (opacityImg) {
+                const DirectX::Image* img = opacityImg->GetImage(0, 0, 0);
+                if (img && img->pixels) {
+                    const uint8_t threshByte = (uint8_t)std::min<int>(255, std::max<int>(0, (int)std::lround(threshold * 255.0f)));
+                    uint64_t passNoInvert = 0, passInvert = 0;
+                    const uint8_t* p = img->pixels;
+                    const size_t count = (size_t)img->width * (size_t)img->height;
+                    for (size_t i = 0; i < count; ++i) {
+                        const uint8_t a = p[i];
+                        if (a >= threshByte)              ++passNoInvert;
+                        if ((uint8_t)(255 - a) >= threshByte) ++passInvert;
+                    }
+                    if (passNoInvert == 0 && passInvert > 0)      invert = true;
+                    else if (passInvert == 0 && passNoInvert > 0) invert = false;
+                }
+            }
+
+            return invert;
+        };
+
         auto processAlbedoWithOpacity = [&](
             const std::string& diffuse_fname, const std::string& opacity_fname,
             float constant_dissolve, const std::string& materialPath,
-            std::vector<TextureData>& albedoList) -> int
+            std::vector<TextureData>& albedoList,
+            bool& outInvertAlpha) -> int
         {
+            outInvertAlpha = false;
             if (diffuse_fname.empty() && opacity_fname.empty()) return -1;
             std::string cacheKey = materialPath + diffuse_fname + "+opacity_" + opacity_fname
                                  + "_d" + std::to_string(constant_dissolve) + "_srgb";
@@ -813,6 +869,9 @@ public:
                     Resize(*opacityImage.GetImage(0,0,0), dw, dh, TEX_FILTER_DEFAULT, resized);
                     opacityImage = std::move(resized);
                 }
+                //run hierarchical detection BEFORE we copy alpha into the albedo, so the
+                //heuristic sees the raw opacity convention as the source files supplied it.
+                outInvertAlpha = detectInvertAlpha(opacity_fname, &opacityImage, /*threshold*/ 0.5f);
                 uint8_t* dpx = diffuseImage.GetPixels();
                 const uint8_t* opx = opacityImage.GetPixels();
                 for (size_t i = 0; i < (size_t)dw * dh; ++i) dpx[i*4+3] = opx[i];
@@ -820,6 +879,8 @@ public:
                 uint8_t alpha_const = (uint8_t)(constant_dissolve * 255.0f);
                 uint8_t* dpx = diffuseImage.GetPixels();
                 for (size_t i = 0; i < (size_t)dw * dh; ++i) dpx[i*4+3] = alpha_const;
+                //constant_dissolve baked into a uniform alpha — no inversion ambiguity
+                outInvertAlpha = false;
             }
             ScratchImage mipChain;
             HRESULT hr = GenerateMipMaps(*diffuseImage.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
@@ -843,21 +904,45 @@ public:
 
         for (const auto& mat : materials) {
             Material t_mat;
-            t_mat.Kd = { mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve };
+            const bool has_opacity_tex = !mat.alpha_texname.empty();
+
+            // OBJ Tr/d ambiguity: tinyobj computes dissolve = 1 - Tr, but several
+            // exporters (older Blender, some legacy DCCs) write `Tr 1` to mean
+            // "fully opaque" instead of "fully transparent". That, plus MTLs
+            // that simply forget `d`, lands dissolve at 0 for what should be a
+            // solid opaque surface -> Kd.w=0 -> BXDF reads trans_w=1 -> entire
+            // mesh renders see-through. If there's no opacity texture and the
+            // dissolve is at the floor, treat it as a misset and force opaque.
+            float effective_dissolve = mat.dissolve;
+            if (!has_opacity_tex && effective_dissolve <= 0.0f) {
+                effective_dissolve = 1.0f;
+            }
+
+            t_mat.Kd = { mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], effective_dissolve };
             t_mat.Ke = { mat.emission[0], mat.emission[1], mat.emission[2] };
-            t_mat.Ni = mat.ior;
-            t_mat.Pr_Pm_Ps_Pc = { mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness };
+            //tinyobj defaults mat.ior to 1.0 when MTL omits 'Ni'. Match the GLB loader's
+            //default of 1.5 (typical glass/dielectric) so omitted-Ni MTLs get sane Fresnel.
+            t_mat.Ni = (mat.ior <= 1.0f) ? 1.5f : mat.ior;
+            //tinyobj defaults mat.roughness to 0.0 when MTL omits 'Pr'. A perfectly-smooth
+            //surface is almost never the intent for a PBR-less MTL — default to 1.0 (matte)
+            //so Minecraft-style materials render diffuse instead of as mirrors.
+            const float effective_roughness = (mat.roughness <= 0.0f) ? 1.0f : mat.roughness;
+            t_mat.Pr_Pm_Ps_Pc = { effective_roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness };
             t_mat.Pcr_aniso_anisor = { mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation };
             t_mat.Tf = {mat.transmittance[0], mat.transmittance[1], mat.transmittance[2]};
 
-            bool has_opacity_tex = !mat.alpha_texname.empty();
-            bool has_partial_dissolve = mat.dissolve < 1.0f;
+            const bool has_partial_dissolve = effective_dissolve < 1.0f;
             if (has_opacity_tex || has_partial_dissolve) {
-                t_mat.albedoTexID = processAlbedoWithOpacity(mat.diffuse_texname, mat.alpha_texname, mat.dissolve, material_search_path, albedoTextures);
+                bool detectedInvert = false;
+                t_mat.albedoTexID = processAlbedoWithOpacity(mat.diffuse_texname, mat.alpha_texname, effective_dissolve, material_search_path, albedoTextures, detectedInvert);
                 t_mat.alphaThreshold = mat.unknown_parameter.count("alpha_cutoff") ? std::stof(mat.unknown_parameter.at("alpha_cutoff")) : 0.5f;
+                //L1+L2 of the invert-alpha hierarchy ran inside processAlbedoWithOpacity; editor
+                //(L3) can override later via mats.invertAlpha[i].
+                t_mat.invertAlpha = detectedInvert;
             } else {
                 t_mat.albedoTexID = processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
                 t_mat.alphaThreshold = 1.0f;
+                t_mat.invertAlpha = false;
             }
             bool isBump = !mat.bump_texname.empty() && mat.normal_texname.empty();
             std::string normalTexName = !mat.normal_texname.empty() ? mat.normal_texname : mat.bump_texname;

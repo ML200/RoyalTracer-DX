@@ -52,6 +52,8 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
         L"dlss",                                        L"barrier",
+        L"Pass_autoexpose_reduce_v8.hlsl|cs:8x8",       L"barrier",
+        L"Pass_autoexpose_finalize_v8.hlsl|fx:1",       L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",             L"barrier",
     });
 }

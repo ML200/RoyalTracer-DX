@@ -453,7 +453,7 @@ inline float3 GetEmissionFast(in uint instID, in uint primID)
     {
         return float3(0.0f, 0.0f, 0.0f);
     }
-    return g_EmissiveTriangles[lightID].emission;
+    return g_EmissiveTriangles[lightID].emission * GLOBAL_EMISSION_STRENGTH;
 }
 
 inline uint GetMatIDFast(in uint instID, in uint primID){

@@ -1,6 +1,17 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 
+//====================================
+//REVERSIBLE PRE-TONEMAP FOR DLSS RR
+//====================================
+//DLSS RR doesn't tolerate large brightness differences in input — emitters
+//used to be saturate'd to [0,1] which destroyed their HDR. Per-channel
+//Reinhard (c / (1 + c)) is reversible: postprocess applies the inverse to
+//recover HDR before AgX, so tonemapping happens once, not twice.
+inline float3 DlssReinhard(float3 c) {
+    c = max(c, 0.0f);
+    return c / (1.0f + c);
+}
 
 //====================================
 //SHADING PASS
@@ -128,7 +139,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssRoughness[DTid.xy] = 1.0f;
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
-        g_dlssInput[DTid.xy] = float4(saturate(accumulation), 1.0f);
+        //Reinhard pre-tonemap (reversed in postprocess) so emitters survive AgX
+        g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
     else{
@@ -186,7 +198,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         g_dlssSpecMVec[DTid.xy] = specMV;
 
-        g_dlssInput[DTid.xy] = float4(accumulation, 1.0f);
+        //same Reinhard pre-tonemap as the emitter path so DLSS RR sees a
+        //uniformly bounded input and the postprocess inversion is consistent
+        g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
     }
 
     //====================================

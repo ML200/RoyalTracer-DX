@@ -37,7 +37,7 @@ private:
     void DrawCameraPanel(Camera& camera, FlyCamController& flyCam);
     void DrawPassPipelinePanel(PassSystem& passes);
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
-    void DrawMaterialInspector(Scene& scene);
+    void DrawMaterialInspector(Scene& scene, Camera& camera);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);

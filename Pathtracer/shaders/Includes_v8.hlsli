@@ -99,7 +99,8 @@ cbuffer CameraParams : register(b0)
     float sunTurbidity;
     float sunSunIntensity;
     float sunSkyIntensity;
-    float _sunpad0, _sunpad1, _sunpad2;
+    float globalEmissionStrength;
+    float _sunpad1, _sunpad2;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -112,6 +113,7 @@ cbuffer CameraParams : register(b0)
 #define SUN_INTENSITY_VAL   sunSunIntensity
 #define SKY_INTENSITY_VAL   sunSkyIntensity
 #define SKY_INTENSITY       sunSkyIntensity
+#define GLOBAL_EMISSION_STRENGTH globalEmissionStrength
 
 //====================================
 //CORE UTILITY HEADERS
@@ -134,6 +136,22 @@ RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
+
+//====================================
+//AUTO EXPOSURE STATE (16 B persistent)
+//====================================
+//[0]  uint  AE_OFFS_SUM       — fixed-point log-luminance sum (cleared each frame)
+//[4]  float AE_OFFS_SMOOTHED  — temporally smoothed log-luminance (read by postprocess)
+//[8]  uint  AE_OFFS_INIT      — first-frame flag, 0 = uninitialized, 1 = ready
+//fixed-point packing: store uint((logLum + AE_LOG_OFFSET) * AE_LOG_SCALE) per group
+//range chosen so the 32400-tile 1080p sum stays inside uint32 with margin
+RWByteAddressBuffer gAutoExpose              : register(u24);
+static const uint  AE_OFFS_SUM        = 0u;   // fixed-point log-lum sum (cleared each frame)
+static const uint  AE_OFFS_SMOOTHED   = 4u;   // float, persistent
+static const uint  AE_OFFS_INIT       = 8u;   // uint flag, persistent
+static const uint  AE_OFFS_TILE_COUNT = 12u;  // uint, contributing tile count (cleared each frame)
+static const float AE_LOG_OFFSET      = 10.0f;
+static const float AE_LOG_SCALE       = 10.0f;
 
 //====================================
 //SCENE DATA

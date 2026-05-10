@@ -419,7 +419,7 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
 
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
     result.objID    = triData.instanceID;
-    result.emission = triData.emission;
+    result.emission = triData.emission * GLOBAL_EMISSION_STRENGTH;
 
     float4x4 worldMat = instanceProps[result.objID].objectToWorld;
     float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
