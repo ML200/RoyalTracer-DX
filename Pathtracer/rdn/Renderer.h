@@ -28,10 +28,11 @@
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
 //CPU-side sizing stubs matching shader SoA sizes
-struct Reservoir_DI  { uint8_t pad[100]; };
-struct Reservoir_GI  { uint8_t pad[100]; };
-struct SampleData    { uint8_t pad[100]; };
-struct InitialBSDFRay{ uint8_t pad[100]; };
+// Sizes mirror the HLSL SoA strides exactly. Reservoir comes from
+// PLANE_WSUM(60) + SZ_4(4) in Reservoir_v8.hlsli. SampleData is BYTES_SD
+// in Sample_Data_v8.hlsli.
+struct Reservoir_GI  { uint8_t pad[64]; };
+struct SampleData    { uint8_t pad[24]; };
 
 class Renderer {
 public:
@@ -176,10 +177,12 @@ private:
     ComPtr<ID3D12Resource>       m_scratchPing;
     ComPtr<ID3D12Resource>       m_pathStateBuffer;
     ComPtr<ID3D12Resource>       m_autoExposeBuffer;  // 16B persistent: sumLogLumFixed, smoothedLogLum, isInitialized, _pad
-    ComPtr<ID3D12Resource>       m_reservoirBuffer, m_reservoirBuffer_2;
+    // Heap slots 10/11 (root-sig u2/u3) had two extra reservoir buffers from
+    // the old DI/GI split. The unified pipeline only touches the GI pair, so
+    // the DI ones are gone. Heap slots stay alive via null UAV bindings to
+    // preserve the contiguous u2..u7 descriptor range.
     ComPtr<ID3D12Resource>       m_reservoirBuffer_3, m_reservoirBuffer_4;
     ComPtr<ID3D12Resource>       m_sampleBuffer_current, m_sampleBuffer_last;
-    ComPtr<ID3D12Resource>       m_initialBSDFRayBuffer;
     ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
     ComPtr<ID3D12DescriptorHeap> m_stagingUavHeap;
 

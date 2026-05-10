@@ -230,6 +230,19 @@ void Renderer::CreateAccelerationStructures() {
 
     m_ctx.FlushAndReset();
     m_lightTree.ReleaseStaging();
+
+    // The mesh.vertexBuffer/indexBuffer pair is only consumed by BLAS construction.
+    // Once the BLAS exists, shaders sample geometry via vertexGlobal/indexGlobal
+    // and these copies are dead VRAM. cpuVertices/cpuIndices stay around so a
+    // future BLAS rebuild can recreate the upload buffers from CPU data.
+    {
+        size_t freed = 0;
+        for (auto& mesh : m_scene.meshes) {
+            if (mesh.vertexBuffer) { mesh.vertexBuffer.Reset(); ++freed; }
+            if (mesh.indexBuffer)  { mesh.indexBuffer.Reset(); }
+        }
+        LOG(L"[AS] Released per-mesh source buffers on " << freed << L" meshes");
+    }
 }
 
 //====================================
@@ -519,13 +532,10 @@ void Renderer::CreateRaytracingOutputBuffer() {
     auto MakeRaw = [&](ComPtr<ID3D12Resource>& res, UINT bytes, const std::wstring& name) {
         res = rf.CreateUAVBuffer(bytes, name);
     };
-    MakeRaw(m_reservoirBuffer,      px * sizeof(Reservoir_DI),  L"Reservoir_DI_1");
-    MakeRaw(m_reservoirBuffer_2,    px * sizeof(Reservoir_DI),  L"Reservoir_DI_2");
     MakeRaw(m_reservoirBuffer_3,    px * sizeof(Reservoir_GI),  L"Reservoir_GI_1");
     MakeRaw(m_reservoirBuffer_4,    px * sizeof(Reservoir_GI),  L"Reservoir_GI_2");
     MakeRaw(m_sampleBuffer_current, px * sizeof(SampleData),    L"Sample_Current");
     MakeRaw(m_sampleBuffer_last,    px * sizeof(SampleData),    L"Sample_Last");
-    MakeRaw(m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay),L"InitialBSDFRay");
 
     CreatePathStateBuffer();
 }
@@ -664,8 +674,19 @@ void Renderer::CreateShaderResourceHeap() {
         next();
     };
     UINT px = GetWidth() * GetHeight();
-    rawUAV(m_reservoirBuffer,      px * sizeof(Reservoir_DI));
-    rawUAV(m_reservoirBuffer_2,    px * sizeof(Reservoir_DI));
+    // Slots 10/11 map to root-sig u2/u3 which no shader binds. Two null
+    // raw UAVs keep the contiguous u2..u7 descriptor range valid without
+    // backing memory. Inlined to avoid colliding with the nullRawUAV
+    // lambda defined later in this same function for the NRC slots.
+    for (int i = 0; i < 2; ++i) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
+        next();
+    }
     rawUAV(m_reservoirBuffer_3,    px * sizeof(Reservoir_GI));
     rawUAV(m_reservoirBuffer_4,    px * sizeof(Reservoir_GI));
     rawUAV(m_sampleBuffer_current, px * sizeof(SampleData));
@@ -682,8 +703,17 @@ void Renderer::CreateShaderResourceHeap() {
       ud.Texture2DArray.ArraySize = 16;
       dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, handle); next(); }
 
-    // Slot 19: initial BSDF ray UAV
-    rawUAV(m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay));
+    // Slot 19 maps to root-sig u9, which no shader binds. Null UAV keeps
+    // the descriptor table layout intact.
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, handle);
+        next();
+    }
 
     // Slots 20-23: light tree SRVs
     m_lightTree.WriteSrvs(dev, handle);

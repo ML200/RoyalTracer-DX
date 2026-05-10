@@ -762,13 +762,10 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     m_outputResource.Reset();
     m_permanentDataTexture.Reset();
     m_scratchPing.Reset();
-    m_reservoirBuffer.Reset();
-    m_reservoirBuffer_2.Reset();
     m_reservoirBuffer_3.Reset();
     m_reservoirBuffer_4.Reset();
     m_sampleBuffer_current.Reset();
     m_sampleBuffer_last.Reset();
-    m_initialBSDFRayBuffer.Reset();
     m_pathStateBuffer.Reset();
     for (int i = 0; i < MAX_STACKS; ++i)
         m_stackBuffers[i].Reset();
@@ -909,8 +906,19 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         dev->CreateUnorderedAccessView(res.Get(), nullptr, &ud, h);
     };
-    rawUAVAt(10, m_reservoirBuffer,      px * sizeof(Reservoir_DI));
-    rawUAVAt(11, m_reservoirBuffer_2,    px * sizeof(Reservoir_DI));
+    // Slots 10/11 map to root-sig u2/u3 which no shader binds. Two null
+    // UAVs keep the descriptor table layout intact without backing memory.
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        for (UINT slot : {10u, 11u}) {
+            CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+            dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+        }
+    }
     rawUAVAt(12, m_reservoirBuffer_3,    px * sizeof(Reservoir_GI));
     rawUAVAt(13, m_reservoirBuffer_4,    px * sizeof(Reservoir_GI));
     rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
@@ -925,8 +933,17 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, h);
     });
 
-    // Slot 19: initial BSDF ray UAV
-    rawUAVAt(19, m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay));
+    // Slot 19 maps to root-sig u9, unbound by every shader. Null UAV
+    // preserves the descriptor table shape without backing memory.
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 19, inc);
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+    }
 
     // Slot 32: path state UAV
     rawUAVAt(32, m_pathStateBuffer, px * 88);
@@ -1045,6 +1062,10 @@ UINT Renderer::CreateProceduralMesh(
         mesh.opaqueTriCount, mesh.alphaTriCount);
     mesh.blas = blasBuf.pResult;
     m_ctx.FlushAndReset();
+
+    // Source buffers are only used for BLAS build, see CreateAccelerationStructures.
+    mesh.vertexBuffer.Reset();
+    mesh.indexBuffer.Reset();
 
     UINT meshIndex = (UINT)m_scene.meshes.size();
     m_scene.meshes.push_back(std::move(mesh));
