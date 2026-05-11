@@ -1206,6 +1206,32 @@ public:
             return (int)id;
         };
 
+        // Average the emissive texture (linearized from sRGB) into a single RGB value.
+        // glTF stores emissiveTexture as sRGB; convert per pixel before averaging so
+        // the bake matches integrated radiance, not a gamma-skewed mean.
+        auto computeEmissiveAverage = [&](int imageIndex) -> XMFLOAT3 {
+            if (imageIndex < 0 || imageIndex >= (int)decodedImages.size()) return {0.0f, 0.0f, 0.0f};
+            const DecodedImage& img = decodedImages[imageIndex];
+            if (img.pixels.empty() || img.width <= 0 || img.height <= 0) return {0.0f, 0.0f, 0.0f};
+
+            auto srgbToLin = [](uint8_t v) -> float {
+                float x = v * (1.0f / 255.0f);
+                return (x <= 0.04045f) ? (x * (1.0f / 12.92f))
+                                       : std::pow((x + 0.055f) * (1.0f / 1.055f), 2.4f);
+            };
+
+            const size_t pixCount = (size_t)img.width * (size_t)img.height;
+            double sumR = 0.0, sumG = 0.0, sumB = 0.0;
+            const uint8_t* p = img.pixels.data();
+            for (size_t i = 0; i < pixCount; ++i) {
+                sumR += srgbToLin(p[i*4 + 0]);
+                sumG += srgbToLin(p[i*4 + 1]);
+                sumB += srgbToLin(p[i*4 + 2]);
+            }
+            const float inv = 1.0f / (float)pixCount;
+            return { (float)(sumR * inv), (float)(sumG * inv), (float)(sumB * inv) };
+        };
+
         // ---- 4. Materials (scene-local, 0-based) --------------------------------
         Material defaultMaterial;
         scene.materials.push_back(defaultMaterial);
@@ -1218,8 +1244,15 @@ public:
             Material t_mat{};
             t_mat.Kd = { (float)pbr.base_color_factor[0], (float)pbr.base_color_factor[1],
                          (float)pbr.base_color_factor[2], (float)pbr.base_color_factor[3] };
+            // Emissive: start from the factor, then bake the texture average (if any).
+            // Renderer reads Ke only — no emissive texture is sampled at runtime, so the
+            // pre-averaged value is the final radiance modulo emissiveStrength.
             t_mat.Ke = { (float)gmat.emissive_factor[0], (float)gmat.emissive_factor[1],
                          (float)gmat.emissive_factor[2] };
+            if (gmat.emissive_texture.index >= 0) {
+                XMFLOAT3 avg = computeEmissiveAverage(getImageIndex(gmat.emissive_texture.index));
+                t_mat.Ke.x *= avg.x; t_mat.Ke.y *= avg.y; t_mat.Ke.z *= avg.z;
+            }
 
             const tg3_value* emStrExt = tg3_find_extension(gmat.ext, "KHR_materials_emissive_strength");
             if (emStrExt) {

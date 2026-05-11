@@ -130,7 +130,7 @@ void Pass_raygen_v8()
         ray.Origin    = rayOrigin;
         ray.Direction = rayDir;
         ray.TMin      = 0.00001f;
-        ray.TMax      = 10000.0f;
+        ray.TMax      = 100000.0f;
         //primary uses 4 state OMM
         dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
@@ -223,7 +223,7 @@ void Pass_raygen_v8()
                 reflRay.Origin    = reflOrigin;
                 reflRay.Direction = reflDir;
                 reflRay.TMin      = 0.00001f;
-                reflRay.TMax      = 10000.0f;
+                reflRay.TMax      = 100000.0f;
 
                 RayQuery<RAY_FLAG_NONE> q;
                 q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
@@ -539,7 +539,7 @@ void Pass_raygen_v8()
             ray.Origin    = rayOrigin;
             ray.Direction = rayDir;
             ray.TMin      = 0.00001f;
-            ray.TMax      = 10000.0f;
+            ray.TMax      = 100000.0f;
             //secondaries force 2 state to skip alpha any hit
             dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF);
 
