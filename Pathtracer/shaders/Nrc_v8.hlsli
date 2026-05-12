@@ -20,13 +20,15 @@ static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;
 static const uint NRC_TRAINING_TILE_SIDE    = 8u;
 static const uint NRC_TRAINING_TILE_MIN     = 4u;
 static const uint NRC_TRAINING_TILE_MAX     = 32u;
-//Müller et al. 2021 §3.2 uses u = 1/16. Raising the biased share speeds up
-//the self-training iteration that carries multi-bounce radiance across frames;
-//too much unbiased mass starves the iteration (each unbiased path lacks the
-//cache-as-tail that would have fed the next frame's chain).
-static const uint NRC_UNBIASED_DENOM        = 16u;
+//Set to 1 = 100% unbiased training, no self-iteration. Trades the paper's
+//multi-bounce cache-as-tail signal for immediate adaptation to lighting
+//changes. With biased paths, the cache's own predictions feed back into
+//training targets so a stale cache reinforces itself; pure unbiased breaks
+//that loop at the cost of noisier deep bounces (RR-truncated tails only).
+//Müller et al. 2021 §3.2 used 16. Raise back if multi-bounce GI degrades.
+static const uint NRC_UNBIASED_DENOM        = 1u;
 
-static const uint NRC_MAX_TRAINING_PATHS    = 65536u;
+static const uint NRC_MAX_TRAINING_PATHS    = 131072u;
 static const uint NRC_MAX_VERTICES_PER_PATH = 8u;
 
 static const uint NRC_INVALID_SLOT          = 0xFFFFFFFFu;

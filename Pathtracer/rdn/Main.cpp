@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./island.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
+            { "./harbor2.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
             //{ "./car/car.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         };
     }

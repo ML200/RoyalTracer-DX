@@ -276,4 +276,16 @@ private:
     nrc::Settings                            m_nrcSettings{};
     //adaptive training tile, updated each frame from LastValidVertexCount, packed into nrc_flags bits 8..15
     uint32_t                                 m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
+    //resolution-scaled training records target. Recomputed each frame from screen
+    //size so per-cell sample density stays consistent across resolutions. Fed to
+    //both the adaptive tile feedback (as target) and the fill kernel (as cap).
+    //Initialised to the legacy 1080p fixed target so a trainer lambda that ever
+    //fires before the first frame tick has a sane cap to use.
+    uint32_t                                 m_nrcTrainRecordsTarget =
+        nrc::kTrainingBatchSize * nrc::kTrainingBatchesPerFrame;
+    //weight-collapse auto-reinit state. Counter ticks up while LastInferenceOutMagnitudeMean
+    //stays below threshold; cooldown gates the detector for a short window after a reinit
+    //so the freshly seeded network has time to learn before the canary can fire again.
+    uint32_t                                 m_nrcCollapseConsecutive = 0u;
+    uint32_t                                 m_nrcReinitCooldown      = 0u;
 };

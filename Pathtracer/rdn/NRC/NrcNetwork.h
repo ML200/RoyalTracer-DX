@@ -61,11 +61,16 @@ public:
     //inferenceOutCapacity bounds the kTailCache slot deref in the fill kernel,
     //defensive against torn meta reads if the caller forgets to gate the next
     //frame's frame_begin memset on trainDoneEvent
+    //targetRecords caps how many rows the fill kernel emits this frame -- caller
+    //scales it with screen resolution (see kPixelsPerTrainingSample) so per-cell
+    //sample density stays consistent. Internally clamped to kTrainingRecordsPerFrame
+    //which is the buffer ceiling.
     void TrainFrame(
         void*       stream,
         const void* trainRecordsDevPtr,
         const void* inferenceOutDevPtr,
-        uint32_t    inferenceOutCapacity);
+        uint32_t    inferenceOutCapacity,
+        uint32_t    targetRecords);
 
     //valid vertex count after last TrainFrame, drives adaptive tile feedback
     uint32_t LastValidVertexCount() const;
@@ -79,6 +84,23 @@ public:
     //the renderer to size the next frame's nrc_inference_capacity (raygen cap
     //plus inference dispatch count).
     uint32_t LastInferenceCount() const;
+
+    //schedule async D2H copy of the inference output magnitude on `stream`.
+    //Launches a reduction kernel that sums |out| across the batch, then
+    //memcpys the scalar to host. Non blocking, harvested next frame by
+    //LastInferenceOutMagnitudeMean. Used by the renderer to detect weight
+    //collapse (output saturates near zero across many frames -> ReinitWeights).
+    void ScheduleInferenceOutSumReadback(
+        void*        stream,
+        const float* outputDevPtr,
+        uint32_t     count);
+
+    //mean |out| per channel from the last completed readback. Returns -1
+    //until the first readback lands so the caller can distinguish "no data"
+    //from "zero output". A healthy network produces nonzero output for any
+    //non degenerate features so this stays well above 0; a collapsed network
+    //with all weights zero produces literal zero across all queries.
+    float LastInferenceOutMagnitudeMean() const;
 
     //block on auxStream, required before reallocating shared buffers
     void WaitIdle();

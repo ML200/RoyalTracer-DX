@@ -34,7 +34,7 @@ static tcnn::json BuildNetworkConfig() {
         //Conservative LR matching the prior stable baseline.
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1e-3f},
+            {"learning_rate", 1.5e-3f},
             {"beta1",         0.9f},
             {"beta2",         0.99f},
             {"epsilon",       1e-8f},
@@ -126,7 +126,7 @@ __device__ __forceinline__ float3 unpack_rgb9e5(uint32_t p) {
 //With sqrt target transform, sqrt(kTargetMax) must stay within fp16-safe range
 //for the L2 loss: (pred - sqrt_target)^2 is computed on-device. sqrt(1e4)=100,
 //worst-case diff^2 = 1e4, comfortably under fp16 max (6.5e4).
-constexpr float kTargetMax = 1.0e4f;
+constexpr float kTargetMax = 5.0e1f;
 __device__ __forceinline__ float safe_target(float v) {
     if (!isfinite(v)) return 0.0f;
     return fminf(fmaxf(v, 0.0f), kTargetMax);
@@ -292,6 +292,27 @@ __global__ void ema_update_kernel(
 }
 
 //====================================
+//COLLAPSE DETECTOR REDUCTION
+//====================================
+//sum |out[r]|+|out[g]|+|out[b]| across the inference batch into a single
+//float. atomicAdd into shared then global keeps the launch cheap (one tiny
+//kernel per inference) and avoids the cost of a full hierarchical scan.
+//The host divides by (count*3) for a mean magnitude per channel that the
+//renderer compares against a collapse threshold.
+__global__ void nrc_infout_sum_kernel(
+    const float* __restrict__ out,
+    uint32_t                  count,
+    float*       __restrict__ sumOut)
+{
+    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= count) return;
+    const float r = out[tid * kOutputDim + 0];
+    const float g = out[tid * kOutputDim + 1];
+    const float b = out[tid * kOutputDim + 2];
+    atomicAdd(sumOut, fabsf(r) + fabsf(g) + fabsf(b));
+}
+
+//====================================
 //BACKWARD-FILL KERNEL
 //====================================
 //one thread per path, walks vertex bucket in reverse, emits (features, target) rows
@@ -301,6 +322,7 @@ __global__ void fill_training_batch_kernel(
     const float*   __restrict__ inferenceOut,
     uint32_t                    trainingPathCount,
     uint32_t                    inferenceOutCapacity,
+    uint32_t                    targetRecords,
     float*         __restrict__ outFeatures,
     float*         __restrict__ outTargets,
     uint32_t*      __restrict__ outCounter)
@@ -415,7 +437,11 @@ __global__ void fill_training_batch_kernel(
             : (static_cast<uint32_t>(v) == chosenDepth);
         if (shouldEmit) {
             const uint32_t localCount = atomicAdd(outCounter, 1u);
-            if (localCount < kTrainingRecordsPerFrame) {
+            //cap at runtime target (renderer scales with resolution) AND at the
+            //compile-time buffer ceiling so we never OOB outFeatures/outTargets
+            const uint32_t cap = (targetRecords < kTrainingRecordsPerFrame)
+                ? targetRecords : kTrainingRecordsPerFrame;
+            if (localCount < cap) {
                 //sequential output index. The prior bijective scatter
                 //(localCount * 2654435761u & mask) was a hash shuffle to
                 //decorrelate paths inside a batch, but kTrainingDecorrelatePaths
@@ -459,7 +485,7 @@ struct Network::Impl {
     //EMA weights, inference reads emaParams, training mutates raw params
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
-    float                      emaAlpha  = 0.99f;
+    float                      emaAlpha  = 0.97f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback
@@ -501,6 +527,20 @@ struct Network::Impl {
     bool                       inferenceCountPending     = false;
     uint32_t                   lastInferenceCount        = 0;
 
+    //collapse detector. ScheduleInferenceOutSumReadback launches the reduction
+    //kernel on the same stream as inference and copies the resulting sum back
+    //to host. infOutSumCountInFlight remembers the count used by the pending
+    //readback so LastInferenceOutMagnitudeMean can normalize correctly when
+    //the readback lands. Renderer polls the mean and triggers ReinitWeights
+    //when it stays near zero across many frames.
+    float*                     devInfOutSum              = nullptr;
+    float*                     hostInfOutSum             = nullptr;
+    cudaEvent_t                infOutSumEvent            = nullptr;
+    bool                       infOutSumPending          = false;
+    uint32_t                   infOutSumCountInFlight    = 0;
+    float                      lastInferenceOutSum       = 0.0f;
+    uint32_t                   lastInferenceOutCount     = 0;
+
     //private stream, training overlaps next frame's raygen
     //inferenceDoneEvent, main stream -> auxStream before reading inferenceOut
     //trainDoneEvent, auxStream -> main stream before next inference reads emaParams
@@ -538,6 +578,17 @@ bool Network::Init() {
                                      cudaEventDisableTiming) != cudaSuccess) return false;
         m_impl->inferenceCountPending = false;
         m_impl->lastInferenceCount    = 0u;
+
+        if (cudaMalloc(&m_impl->devInfOutSum, sizeof(float)) != cudaSuccess) return false;
+        cudaMemset(m_impl->devInfOutSum, 0, sizeof(float));
+        if (cudaMallocHost(&m_impl->hostInfOutSum, sizeof(float)) != cudaSuccess) return false;
+        *m_impl->hostInfOutSum = 0.0f;
+        if (cudaEventCreateWithFlags(&m_impl->infOutSumEvent,
+                                     cudaEventDisableTiming) != cudaSuccess) return false;
+        m_impl->infOutSumPending       = false;
+        m_impl->infOutSumCountInFlight = 0u;
+        m_impl->lastInferenceOutSum    = 0.0f;
+        m_impl->lastInferenceOutCount  = 0u;
 
         //cudaStreamNonBlocking lets auxStream overlap without implicit sync
         //against the legacy/main stream. Default priority -- the high
@@ -609,6 +660,22 @@ void Network::Shutdown() {
     }
     m_impl->inferenceCountPending = false;
     m_impl->lastInferenceCount    = 0u;
+    if (m_impl->devInfOutSum) {
+        cudaFree(m_impl->devInfOutSum);
+        m_impl->devInfOutSum = nullptr;
+    }
+    if (m_impl->hostInfOutSum) {
+        cudaFreeHost(m_impl->hostInfOutSum);
+        m_impl->hostInfOutSum = nullptr;
+    }
+    if (m_impl->infOutSumEvent) {
+        cudaEventDestroy(m_impl->infOutSumEvent);
+        m_impl->infOutSumEvent = nullptr;
+    }
+    m_impl->infOutSumPending       = false;
+    m_impl->infOutSumCountInFlight = 0u;
+    m_impl->lastInferenceOutSum    = 0.0f;
+    m_impl->lastInferenceOutCount  = 0u;
     //drain in-flight training before destroying events
     if (m_impl->auxStream) {
         cudaStreamSynchronize(m_impl->auxStream);
@@ -646,6 +713,14 @@ bool Network::ReinitWeights() {
             m_impl->inferenceCountPending = false;
         }
         m_impl->lastInferenceCount = 0u;
+        if (m_impl->infOutSumPending) {
+            cudaEventSynchronize(m_impl->infOutSumEvent);
+            m_impl->infOutSumPending = false;
+        }
+        m_impl->infOutSumCountInFlight = 0u;
+        m_impl->lastInferenceOutSum    = 0.0f;
+        m_impl->lastInferenceOutCount  = 0u;
+        if (m_impl->devInfOutSum) cudaMemset(m_impl->devInfOutSum, 0, sizeof(float));
 
         //tcnn::create_from_config reseeds internally, no manual seed plumbing required
         //keep CUDA buffers/events/stream untouched, only model + EMA get reset
@@ -837,6 +912,51 @@ void Network::ScheduleInferenceCounterReadback(void* streamPtr, const void* devC
     }
 }
 
+void Network::ScheduleInferenceOutSumReadback(
+    void*        streamPtr,
+    const float* outputDevPtr,
+    uint32_t     count)
+{
+    if (!m_impl || !m_impl->ready || !outputDevPtr || count == 0u) return;
+    cudaStream_t stream = static_cast<cudaStream_t>(streamPtr);
+
+    //consume the previous readback if it has landed. Same non blocking
+    //pattern as ScheduleInferenceCounterReadback. lastInferenceOutSum stays
+    //at the prior value until the new event retires, so the renderer's
+    //collapse window keeps observing fresh data each frame.
+    if (m_impl->infOutSumPending) {
+        if (cudaEventQuery(m_impl->infOutSumEvent) == cudaSuccess) {
+            m_impl->lastInferenceOutSum   = *m_impl->hostInfOutSum;
+            m_impl->lastInferenceOutCount = m_impl->infOutSumCountInFlight;
+            m_impl->infOutSumPending      = false;
+        }
+    }
+
+    if (m_impl->infOutSumPending) return;
+
+    //zero device accumulator before each launch; atomicAdd reduces into it
+    cudaMemsetAsync(m_impl->devInfOutSum, 0, sizeof(float), stream);
+
+    constexpr uint32_t kThreads = 256u;
+    const uint32_t kBlocks = (count + kThreads - 1u) / kThreads;
+    nrc_infout_sum_kernel<<<kBlocks, kThreads, 0, stream>>>(
+        outputDevPtr, count, m_impl->devInfOutSum);
+
+    cudaMemcpyAsync(m_impl->hostInfOutSum, m_impl->devInfOutSum,
+                    sizeof(float), cudaMemcpyDeviceToHost, stream);
+    cudaEventRecord(m_impl->infOutSumEvent, stream);
+    m_impl->infOutSumPending       = true;
+    m_impl->infOutSumCountInFlight = count;
+}
+
+float Network::LastInferenceOutMagnitudeMean() const {
+    //sentinel -1: no readback has landed yet. Caller treats this as "no data"
+    //rather than as zero so the collapse detector doesn't fire during warmup.
+    if (!m_impl || m_impl->lastInferenceOutCount == 0u) return -1.0f;
+    const float denom = float(m_impl->lastInferenceOutCount) * 3.0f;
+    return m_impl->lastInferenceOutSum / denom;
+}
+
 void Network::WaitTrainDoneOnStream(void* streamPtr) {
     //inject a one way wait on trainDoneEvent into the caller's stream so any
     //subsequent main stream work (notably nrc_frame_begin's cudaMemsetAsync on
@@ -872,7 +992,8 @@ void Network::TrainFrame(
     void*       streamPtr,
     const void* trainRecordsDevPtr,
     const void* inferenceOutDevPtr,
-    uint32_t    inferenceOutCapacity)
+    uint32_t    inferenceOutCapacity,
+    uint32_t    targetRecords)
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
@@ -899,6 +1020,7 @@ void Network::TrainFrame(
         reinterpret_cast<const float*>  (inferenceOutDevPtr),
         kMaxTrainingPaths,
         inferenceOutCapacity,
+        targetRecords,
         m_impl->trainFeatures,
         m_impl->trainTargets,
         m_impl->trainCounter);

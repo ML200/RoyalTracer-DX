@@ -431,7 +431,7 @@ HitInfo EvalSurfaceState(
     //clamp normal so ray can proceed
     {
         const float3 Vw = -viewDir;
-        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, geoNormOriented, 0.1f, 0.02f);
+        hit.hitNormal = ClampNormalToViewAndReflection(hit.hitNormal, Vw, geoNormOriented, 0.005f, 0.02f);
     }
 
     const uint baseL        = instanceProps[instID].triToLightBase;

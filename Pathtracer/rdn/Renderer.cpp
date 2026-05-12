@@ -159,6 +159,12 @@ void Renderer::InitDevice() {
                     static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
                     static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
                     padded);
+                //async sum of |out| over the batch, harvested next frame by
+                //the collapse detector in the NRC tick block
+                m_nrcNetwork.ScheduleInferenceOutSumReadback(
+                    s,
+                    static_cast<const float*>(m_nrcInferenceOut.cudaPtr),
+                    padded);
             });
 
             // Additional inference for the debug view only. Runs AFTER
@@ -189,7 +195,8 @@ void Renderer::InitDevice() {
                     m_cudaInterop.Stream(),
                     m_nrcTrainRecords.cudaPtr,
                     m_nrcInferenceOut.cudaPtr,
-                    m_nrcInferenceCapacity);
+                    m_nrcInferenceCapacity,
+                    m_nrcTrainRecordsTarget);
             });
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
@@ -1389,6 +1396,45 @@ void Renderer::PopulateCommandList() {
             m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
         }
 
+        // Auto-reinit on weight collapse. When training on long stretches of
+        // near-zero targets (ultra-dark scenes, all-shadow areas) the L2 loss
+        // can drive the network into a dead-ReLU state where every prediction
+        // is literally zero and gradients vanish so the network can't recover
+        // on its own. The previous frame's inference output magnitude (sampled
+        // by ScheduleInferenceOutSumReadback) is the canary: if it stays below
+        // kCollapseMean for kCollapseFrames consecutive frames AND training is
+        // on, queue a reinit. Cooldown gates the detector after a reinit so
+        // we don't retrigger before the freshly seeded network has had a
+        // chance to learn (LR=3e-3 + JIT warmup needs ~120 frames to recover
+        // meaningful output magnitudes from zero EMA).
+        if (m_nrcReady && m_nrcSettings.trainingEnabled && m_nrcSettings.enabled) {
+            constexpr float    kCollapseMean   = 1.0e-6f;
+            constexpr uint32_t kCollapseFrames = 60u;
+            constexpr uint32_t kReinitCooldown = 240u;
+
+            if (m_nrcReinitCooldown > 0u) {
+                --m_nrcReinitCooldown;
+                m_nrcCollapseConsecutive = 0u;
+            } else {
+                //mean < 0 is the "no readback yet" sentinel; leave counter alone
+                const float mean = m_nrcNetwork.LastInferenceOutMagnitudeMean();
+                if (mean >= 0.0f) {
+                    if (mean < kCollapseMean) ++m_nrcCollapseConsecutive;
+                    else                       m_nrcCollapseConsecutive = 0u;
+                }
+                if (m_nrcCollapseConsecutive >= kCollapseFrames) {
+                    LOG(L"[NRC] Auto-reinit triggered: mean output magnitude "
+                        << mean << L" stayed below " << kCollapseMean
+                        << L" for " << m_nrcCollapseConsecutive << L" frames");
+                    m_nrcSettings.requestReinit = true;
+                    m_nrcReinitCooldown      = kReinitCooldown;
+                    m_nrcCollapseConsecutive = 0u;
+                }
+            }
+        } else {
+            m_nrcCollapseConsecutive = 0u;
+        }
+
         // Consume editor-requested weight reinit before any NRC work fires
         // on this frame. Network::ReinitWeights drains auxStream internally
         // and the follow-up cudaMemset on EMA forces a global device sync,
@@ -1403,6 +1449,22 @@ void Renderer::PopulateCommandList() {
             m_nrcSettings.requestReinit = false;
         }
 
+        // Runtime training records target scales with screen area so per-cell
+        // sample density stays consistent across resolutions. At 1080p this
+        // computes to ~32400 (matching the old fixed target); 1440p ~57600;
+        // 4K ~129600. Clamped to kTrainingRecordsPerFrame which is the buffer
+        // ceiling sized for 4K worst case.
+        {
+            const uint32_t pixels = GetWidth() * GetHeight();
+            uint32_t target = pixels / nrc::kPixelsPerTrainingSample;
+            // Floor at one full SGD batch so the trainer always has something
+            // to chew on at tiny window sizes / editor previews.
+            const uint32_t floorRecords = nrc::kTrainingBatchesPerFrame * nrc::kBatchGranularity;
+            if (target < floorRecords)                 target = floorRecords;
+            if (target > nrc::kTrainingRecordsPerFrame) target = nrc::kTrainingRecordsPerFrame;
+            m_nrcTrainRecordsTarget = target;
+        }
+
         // Adaptive tile side per paper §3.5. With T = target records,
         // V = previous frame's actual records, and S = previous tile
         // side, the new side is S · sqrt(V/T) — vertex count scales
@@ -1414,7 +1476,7 @@ void Renderer::PopulateCommandList() {
         if (m_nrcReady && m_nrcSettings.trainingEnabled) {
             const uint32_t prev = m_nrcNetwork.LastValidVertexCount();
             if (prev > 0u) {
-                const float target  = (float)nrc::kTrainingRecordsPerFrame;
+                const float target  = (float)m_nrcTrainRecordsTarget;
                 const float ratio   = (float)prev / target;
                 const float scaled  = (float)m_nrcTrainTileSide * sqrtf(ratio);
                 const float blended = 0.5f * (float)m_nrcTrainTileSide + 0.5f * scaled;

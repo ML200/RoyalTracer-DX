@@ -67,26 +67,36 @@ constexpr uint32_t kHiddenLayers = 5;
 //tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
 
-//per-frame training schedule. EMA alpha=0.99 smooths over ~100+ steps so
-//batches/frame mostly affects initial convergence. Halved to 2 to cut the
-//per frame trainer cost in half on the auxStream when WDDM packet
-//scheduling refuses to overlap training with the ReSTIR spatiotemporal
-//passes. Camera cut and reseed reactivity slows by the same factor, but
-//EMA's wide horizon absorbs the change in steady state.
+//per-frame training schedule. kTrainingBatchSize is the legacy floor for
+//the original fixed-target design; the actual SGD per-batch row count is
+//computed at runtime from validVertices/kTrainingBatchesPerFrame so the
+//trainer naturally scales with resolution. kTrainingRecordsPerFrame is now
+//the BUFFER SIZE ceiling (sized for ~4K worst case), the runtime target
+//passed each frame from the renderer caps the fill kernel and the adaptive
+//tile feedback below this number.
 constexpr uint32_t kTrainingBatchSize       = 8192;
-constexpr uint32_t kTrainingBatchesPerFrame = 2;
-constexpr uint32_t kTrainingRecordsPerFrame = kTrainingBatchSize * kTrainingBatchesPerFrame;
+constexpr uint32_t kTrainingBatchesPerFrame = 4;
+constexpr uint32_t kTrainingRecordsPerFrame = 131072;
+
+//target one training sample per N screen pixels regardless of resolution
+//so per-cell sample density stays consistent. At 1080p, W*H/64 = 32400,
+//matches the old fixed target. At 1440p, ~57K. At 4K, ~130K (clamps to
+//the buffer cap above).
+constexpr uint32_t kPixelsPerTrainingSample = 64u;
 
 //training tile side adapts per frame to saturate trainer
 constexpr uint32_t kInitialTrainingTileSide = 8u;
 constexpr uint32_t kMinTrainingTileSide     = 4u;
 constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
-//1 in N training pixels takes long RR-terminated path for ground truth.
-//Müller et al. 2021 §3.2 uses u = 1/16 -- the biased share drives the
-//multi-bounce self-training iteration, the unbiased share just anchors
-//emitter/miss radiance so the iteration doesn't wander.
-constexpr uint32_t kUnbiasedDenom = 16u;
+//100% unbiased training (denom=1). All training paths take the long
+//RR-terminated route, no cache-as-tail. Self-bias loop eliminated: stale
+//cache values can't reinforce themselves because no training target
+//depends on the cache's own prediction. Trade-off: deep bounces are
+//noisier (RR truncation, no cache short-circuit) so GI convergence in
+//dim multi-bounce regions takes more frames. Paper used 16, raise if
+//multi-bounce quality regresses past acceptable.
+constexpr uint32_t kUnbiasedDenom = 1u;
 
 //EXPERIMENT: emit training rows ONLY at this exact path depth.
 //Backward fill still walks every stored vertex so the emitted row at
@@ -146,8 +156,9 @@ constexpr uint32_t kTrainingDepthMask        = 0b00001111u;
 //DIAGNOSTIC: pipeline integrity test.
 constexpr bool kDebugConstantTraining = false;
 
-//max training paths per frame, headroom above 1080p 8x8 tiles
-constexpr uint32_t kMaxTrainingPaths   = 65536u;
+//max training paths per frame. Sized for 4K at the smallest adaptive tile
+//(kPixelsPerTrainingSample density), one row per path with decorrelation.
+constexpr uint32_t kMaxTrainingPaths   = 131072u;
 
 constexpr uint32_t kInvalidInferenceSlot = 0xFFFFFFFFu;
 constexpr uint32_t kInvalidTrainPath     = 0xFFFFFFFFu;
