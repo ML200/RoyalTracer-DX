@@ -20,38 +20,15 @@ namespace nrc {
 //====================================
 static tcnn::json BuildNetworkConfig() {
     return tcnn::json{
-        //RelativeL2 per Müller et al. 2021 §5: (pred - tgt)^2 / (sg(pred)^2 + eps).
-        //Plain L2 gradient scales with target magnitude, so across a shuffled
-        //batch mixing direct-illumination targets (O(1000)) with indirect
-        //targets (O(0.01-1)), the bright samples dominate Adam's updates and
-        //the MLP underfits dark regions. RelativeL2's per-sample normalization
-        //by prediction magnitude makes gradient contributions scale-invariant,
-        //giving dark samples equal pull. Linear target (no sqrt/log) keeps
-        //the optimum unbiased at E[L/r]; safe_target's kTargetMax=1e4 cap
-        //keeps sg(pred)^2 in fp16-safe range (max 6.5e4).
         {"loss", {{"otype", "RelativeL2"}}},
-
-        //Conservative LR matching the prior stable baseline.
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1.0e-3f},
+            {"learning_rate", 1.0e-2f},
             {"beta1",         0.9f},
-            {"beta2",         0.99f},
+            {"beta2",         0.97f},
             {"epsilon",       1e-8f},
             {"l2_reg",        1e-6f},
         }},
-
-        //composite encoding, 17 raw -> 75 encoded
-        //3 pos HashGrid 16 levels x 2 features = 32
-        //3 dir SH deg 4 = 16, 3 normal SH deg 4 = 16
-        //1 rough OneBlob 4 bins = 4, 7 alpha/beta+sidebit Identity = 7
-        //sidebit = +1 front / -1 back is folded into the trailing Identity
-        //slab so the orient flip surfaces as an explicit linear feature the
-        //first hidden layer can latch onto immediately, instead of being
-        //buried in the SH-encoded normal where the MLP has to learn it.
-        //HashGrid per_level_scale 1.38 bounds N_max to ~cm regime, Smoothstep C1 for clean gradients
-        //SH replaces octahedral+OneBlob, analytic smooth rotation-equivariant
-        //HashGrid requires positions in [0,1]^3, renderer normalizes via nrc_scene_scale_inv
         {"encoding", {
             {"otype",  "Composite"},
             {"nested", tcnn::json::array({
@@ -61,12 +38,7 @@ static tcnn::json BuildNetworkConfig() {
                     {"type",                   "Hash"},
                     {"n_levels",               16u},
                     {"n_features_per_level",   2u},
-                    //log2=21 -- 4x more buckets than 19. With one-row-per-path
-                    //the gradient-scatter cost of a larger table is contained,
-                    //so the extra capacity buys cleaner spatial detail at
-                    //higher hash-grid levels (~mm regime). Pairs with the
-                    //deeper 5-layer net.
-                    {"log2_hashmap_size",      21u},
+                    {"log2_hashmap_size",      21u}, //expensive 21 map size is costly but higher quality in large scenes
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
                     {"interpolation",          "Smoothstep"},
@@ -93,12 +65,6 @@ static tcnn::json BuildNetworkConfig() {
             })},
         }},
 
-        //fully-fused MLP, 5 hidden x 64 ReLU, LINEAR output (kHiddenLayers).
-        //Target is L/reflSum directly (no transform). RelativeL2 + linear
-        //gives an unbiased optimum at E[L/r]; the prior sqrt-target was
-        //Jensen-biased low (converged to (E[sqrt(L/r)])^2), and log1p was
-        //worse still. fp16 safety holds because safe_target caps L/r at
-        //kTargetMax=1e4, well under fp16 max 6.5e4.
         {"network", {
             {"otype",             "FullyFusedMLP"},
             {"activation",        "ReLU"},
@@ -485,7 +451,7 @@ struct Network::Impl {
     //EMA weights, inference reads emaParams, training mutates raw params
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
-    float                      emaAlpha  = 0.97f;
+    float                      emaAlpha  = 0.96f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback

@@ -62,7 +62,7 @@ constexpr uint32_t kMaxVerticesPerPath = 8u;
 //that the 3-layer config softened; combined with the bumped HashGrid
 //capacity (log2_hashmap_size=21) and the doubled training batches/frame.
 constexpr uint32_t kHiddenWidth  = 64;
-constexpr uint32_t kHiddenLayers = 5;
+constexpr uint32_t kHiddenLayers = 4;
 
 //tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
@@ -151,7 +151,7 @@ constexpr uint32_t kTrainingEmitDepthOnly = 1u;
 //  0b00000111 = {0,1,2}
 //  0b11111111 = full {0..7}
 constexpr bool     kTrainingDecorrelatePaths = true;
-constexpr uint32_t kTrainingDepthMask        = 0b00001111u;
+constexpr uint32_t kTrainingDepthMask        = 0b11111111u;
 
 //DIAGNOSTIC: pipeline integrity test.
 constexpr bool kDebugConstantTraining = false;
