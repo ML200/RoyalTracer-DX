@@ -34,7 +34,7 @@ static tcnn::json BuildNetworkConfig() {
         //Conservative LR matching the prior stable baseline.
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1.5e-3f},
+            {"learning_rate", 1.0e-3f},
             {"beta1",         0.9f},
             {"beta2",         0.99f},
             {"epsilon",       1e-8f},
@@ -66,7 +66,7 @@ static tcnn::json BuildNetworkConfig() {
                     //so the extra capacity buys cleaner spatial detail at
                     //higher hash-grid levels (~mm regime). Pairs with the
                     //deeper 5-layer net.
-                    {"log2_hashmap_size",      19u},
+                    {"log2_hashmap_size",      21u},
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
                     {"interpolation",          "Smoothstep"},

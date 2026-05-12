@@ -20,21 +20,6 @@ Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
-    // Define the rendering pass pipeline (data-driven).
-    // NRC integration. Main chain always runs — debug view is purely
-    // additive, a W×H per-pixel inference tacked on after training.
-    //   cuda:nrc_frame_begin   — zero counters, invalidate PendingGI
-    //   <raygen>               — append cache-term + training records
-    //   cuda:nrc_inference     — tcnn inference on raygen's records
-    //                            (class-0 cache-term + class-1 tail seeds)
-    //   Pass_nrc_resolve_v8    — stitch L̂_s into the reservoir via RIS
-    //   cuda:nrc_train         — backward tail pass + 4× training step
-    //   (debug view only, scheduled regardless — shaders self-gate:)
-    //     Pass_nrc_debug_query   — write per-pixel x1 features into the
-    //                              now-consumed inference buffer
-    //     cuda:nrc_debug_inference — one additional inference for the
-    //                                per-pixel camera-hit queries
-    //     Pass_nrc_debug_present — copy L̂_s into gOutput slice 3
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
