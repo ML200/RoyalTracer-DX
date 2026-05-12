@@ -99,8 +99,9 @@ void Pass_raygen_v8()
     float wsum = 0.0f;
 
     uint   seed         = initRandomData(pixel, uint2(8, 4), time, 1u);
-    float3 rayOrigin    = InitOrigin();
-    float3 rayDir       = InitDirection(pixel, float2(imgSize), seed);
+    float3 rayOrigin;
+    float3 rayDir;
+    InitCameraRayDoF(pixel, imgSize, seed, rayOrigin, rayDir);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf     = 1.0f;

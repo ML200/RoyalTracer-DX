@@ -23,7 +23,7 @@ static tcnn::json BuildNetworkConfig() {
         {"loss", {{"otype", "RelativeL2"}}},
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1.0e-2f},
+            {"learning_rate", 2.0e-2f},
             {"beta1",         0.7f},
             {"beta2",         0.97f},
             {"epsilon",       1e-8f},

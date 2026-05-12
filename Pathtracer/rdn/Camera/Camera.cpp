@@ -78,6 +78,9 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     //extra[3] repurposed as cameraFar for sky depth + spec hit distance in shading pass
     float extra[4] = { (float)m_jitterFrameIndex, m_jitterX, m_jitterY, farPlane };
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
+    //mirror camera DoF settings into the cbuffer tail before upload
+    sunSettings.dofApertureRadius = apertureRadius;
+    sunSettings.dofFocusDistance  = focusDistance;
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
     m_buffer->Unmap(0, nullptr);
 

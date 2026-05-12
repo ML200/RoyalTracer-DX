@@ -2,11 +2,15 @@
 //CAMERA RAY GENERATION
 //====================================
 
+//thin-lens DoF parameters live in CameraParams (dofApertureRadius, dofFocusDistance)
+//aperture radius is in world units, larger = shallower depth of field
+//focus distance is along view-space forward axis, surfaces at this depth stay sharp
+
 float3 InitOrigin(){
     return mul(viewI, float4(0, 0, 0, 1)).xyz;
 }
 
-//direction with subpixel jitter
+//direction with subpixel jitter (pinhole)
 float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 {
     float2 pixelSample = float2(pixel) + 0.5f + jitter;
@@ -14,6 +18,48 @@ float3 InitDirection(uint2 pixel, uint2 imgSize, inout uint seed)
 
     float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
     return normalize(mul(viewI, float4(target.xyz, 0)).xyz);
+}
+
+//concentric disk mapping, uniform on unit disk
+float2 SampleUnitDisk(inout uint seed)
+{
+    float u1 = RandomFloatSingle(seed) * 2.0f - 1.0f;
+    float u2 = RandomFloatSingle(seed) * 2.0f - 1.0f;
+    if (u1 == 0.0f && u2 == 0.0f) return float2(0.0f, 0.0f);
+
+    float r, theta;
+    if (abs(u1) > abs(u2)) {
+        r     = u1;
+        theta = (PI * 0.25f) * (u2 / u1);
+    } else {
+        r     = u2;
+        theta = (PI * 0.5f) - (PI * 0.25f) * (u1 / u2);
+    }
+    return float2(r * cos(theta), r * sin(theta));
+}
+
+//thin-lens primary ray, lens lives on view-space z=0 plane, focal plane at z=dofFocusDistance
+//perturbs the origin uniformly inside the aperture disk and aims at the focal point that the
+//pinhole ray would have hit, so the focus plane stays sharp while everything else blurs
+void InitCameraRayDoF(uint2 pixel, uint2 imgSize, inout uint seed,
+                      out float3 rayOrigin, out float3 rayDir)
+{
+    float2 pixelSample = float2(pixel) + 0.5f + jitter;
+    float2 d           = (pixelSample / float2(imgSize)) * 2.0f - 1.0f;
+
+    //view-space far-plane point along the pinhole ray, homogeneous form is fine here since
+    //the focus-plane scale below cancels any leftover w divide
+    //abs(viewH.z) keeps the focal point on the camera-forward side for both LH and RH
+    //projections, this engine is RH (XMMatrixPerspectiveFovRH) so viewH.z is negative
+    float4 viewH       = mul(projectionI, float4(d.x, -d.y, 1, 1));
+    float3 viewFocus   = viewH.xyz * (dofFocusDistance / abs(viewH.z));
+
+    float2 lensXY      = SampleUnitDisk(seed) * dofApertureRadius;
+    float3 viewLensPos = float3(lensXY, 0.0f);
+    float3 viewRayDir  = normalize(viewFocus - viewLensPos);
+
+    rayOrigin = mul(viewI, float4(viewLensPos, 1)).xyz;
+    rayDir    = normalize(mul(viewI, float4(viewRayDir, 0)).xyz);
 }
 
 //====================================
@@ -45,6 +91,23 @@ inline float2 GetLastFramePixelCoordinates_Float(
     if (any(px < -0.5f) || any(px > (resolution - 0.5f))) return float2(-1.0f, -1.0f);
 
     return px;
+}
+
+//current-frame pinhole projection, mirrors GetLastFramePixelCoordinates_Unclamped
+//for DoF the lens-jittered curPix no longer equals the pinhole projection of the hit point,
+//MV must use the pinhole projection on both ends so DLSS sees pure scene motion
+inline float2 GetCurrentFramePixelCoordinates_Unclamped(
+    float3 worldPos,
+    float4x4 V,
+    float4x4 P,
+    float2 resolution)
+{
+    float4 clipPos = mul(P, mul(V, float4(worldPos, 1.0f)));
+    if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
+    float2 ndc = clipPos.xy / clipPos.w;
+    float2 uv  = ndc * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    return uv * resolution - 0.5f;
 }
 
 //unclamped variant for MV, allows off-screen previous pos, only rejects behind-camera

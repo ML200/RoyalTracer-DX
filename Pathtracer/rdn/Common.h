@@ -162,7 +162,10 @@ struct SunSettings {
     float sunIntensity  = 5.0f;
     float skyIntensity  = 8.5f;
     float globalEmissionStrength = 1.0f;
-    float _pad1 = 0, _pad2 = 0;
+    //thin-lens DoF, populated from Camera::apertureRadius / focusDistance
+    //during UploadGPUBuffer, lives in this struct so the cbuffer tail stays 16-byte aligned
+    float dofApertureRadius = 0.0f;
+    float dofFocusDistance  = 10.0f;
 };
 
 //====================================

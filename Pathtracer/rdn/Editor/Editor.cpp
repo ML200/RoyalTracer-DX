@@ -198,6 +198,12 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Depth of Field");
+    ImGui::DragFloat("Aperture Radius",  &camera.apertureRadius, 0.001f, 0.0f, 1.0f, "%.4f");
+    ImGui::DragFloat("Focus Distance",   &camera.focusDistance,  0.05f, 0.01f, 10000.0f, "%.3f",
+                     ImGuiSliderFlags_Logarithmic);
+
+    ImGui::Separator();
     ImGui::Text("Jitter frame: %u", camera.JitterFrame());
 
     ImGui::End();

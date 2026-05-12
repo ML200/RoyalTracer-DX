@@ -97,10 +97,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
+            //DoF aware MV, pinhole projection on both ends so the lens offset
+            //(curPix is the lens jittered pixel, emPos is the lens jittered hit) cancels out
             float2 prevPix = GetLastFramePixelCoordinates_Unclamped(
-                emPos, prevView, prevProjection, dims, emInstID) - jitter;
-            bool validPrev = (prevPix.x > -1e8f);
-            float2 emMV = validPrev ? float2(prevPix - curPix) : float2(0, 0);
+                emPos, prevView, prevProjection, dims, emInstID);
+            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(
+                emPos, view, projection, dims);
+            bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
+            float2 emMV = validPrev ? (prevPix - curPinholePix) : float2(0, 0);
             g_dlssMVec[curPix] = emMV;
             biasMV = emMV;
             isEmitterSurface = true;
@@ -159,11 +163,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
 
         float2 curPix = DTid.xy;
-        float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID) - jitter;
+        //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
+        //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
+        //pure scene motion in pinhole space, the lens offset cancels out
+        float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
+        float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims);
 
-        bool validPrev = (prevPix.x > -1e8f);
+        bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
 
-        float2 mvPixels = validPrev ? float2(prevPix - curPix) : float2(0.0, 0.0);
+        float2 mvPixels = validPrev ? (prevPix - curPinholePix) : float2(0.0, 0.0);
 
         g_dlssMVec[curPix] = mvPixels;
 
@@ -186,12 +194,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint   reflInstID = asuint(reflData.w);
             if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
             {
+                //DoF aware spec MV, pinhole on both ends like the surface MV above
                 float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
-                    reflData.xyz, prevView, prevProjection, dims, reflInstID) - jitter;
-                bool validRefl = (prevRefl.x > -1e8f);
+                    reflData.xyz, prevView, prevProjection, dims, reflInstID);
+                float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
+                    reflData.xyz, view, projection, dims);
+                bool validRefl = (prevRefl.x > -1e8f) && (curRefl.x > -1e8f);
                 if (validRefl)
                 {
-                    specMV = prevRefl - curPix;
+                    specMV = prevRefl - curRefl;
                     validSpecReproj = true;
                 }
             }

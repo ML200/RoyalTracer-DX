@@ -100,7 +100,9 @@ cbuffer CameraParams : register(b0)
     float sunSunIntensity;
     float sunSkyIntensity;
     float globalEmissionStrength;
-    float _sunpad1, _sunpad2;
+    //thin-lens DoF, driven from the Camera class on the host side
+    float dofApertureRadius;
+    float dofFocusDistance;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude

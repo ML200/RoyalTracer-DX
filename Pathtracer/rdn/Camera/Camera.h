@@ -53,6 +53,12 @@ public:
     float   farPlane    = 10000.0f;
     float   moveSpeed   = 5.0f;
 
+    //thin-lens DoF, aperture in world units, focus distance along view forward axis
+    //synced into sunSettings (cbuffer tail) inside UploadGPUBuffer
+    //aperture defaults to 0 = pinhole, raise in the camera panel to enable DoF
+    float   apertureRadius = 0.0f;
+    float   focusDistance  = 10.0f;
+
     SunSettings sunSettings;
 
 private:
