@@ -24,10 +24,10 @@ static tcnn::json BuildNetworkConfig() {
         {"optimizer", {
             {"otype",         "Adam"},
             {"learning_rate", 1.0e-2f},
-            {"beta1",         0.9f},
+            {"beta1",         0.7f},
             {"beta2",         0.97f},
             {"epsilon",       1e-8f},
-            {"l2_reg",        1e-6f},
+            {"l2_reg",        1e-5f},
         }},
         {"encoding", {
             {"otype",  "Composite"},
