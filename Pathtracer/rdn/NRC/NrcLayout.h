@@ -78,24 +78,37 @@ constexpr uint32_t kTrainingBatchSize       = 8192;
 constexpr uint32_t kTrainingBatchesPerFrame = 4;
 constexpr uint32_t kTrainingRecordsPerFrame = 131072;
 
-//target one training sample per N screen pixels regardless of resolution
-//so per-cell sample density stays consistent. At 1080p, W*H/64 = 32400,
-//matches the old fixed target. At 1440p, ~57K. At 4K, ~130K (clamps to
-//the buffer cap above).
+//Anchored 1080p density used to derive the fixed training records target
+//below. Kept as a tunable density knob even though the renderer no longer
+//scales it with resolution.
 constexpr uint32_t kPixelsPerTrainingSample = 64u;
+
+//FIXED training records target across all resolutions. NRC stability tuning
+//was done at 1080p; scaling the sample count with screen area meant UWQHD/4K
+//were getting 1.5-4x more samples per frame than the optimizer was tuned
+//for, which manifested as over-fast adaptation and instability. Anchoring
+//at the 1080p value (1920*1080/kPixelsPerTrainingSample = 32400) keeps
+//behavior consistent and lets the adaptive tile side grow with resolution
+//to hit this constant target.
+constexpr uint32_t kFixedTrainingRecords = (1920u * 1080u) / kPixelsPerTrainingSample;
 
 //training tile side adapts per frame to saturate trainer
 constexpr uint32_t kInitialTrainingTileSide = 8u;
 constexpr uint32_t kMinTrainingTileSide     = 4u;
 constexpr uint32_t kMaxTrainingTileSide     = 32u;
 
-//100% unbiased training (denom=1). All training paths take the long
-//RR-terminated route, no cache-as-tail. Self-bias loop eliminated: stale
-//cache values can't reinforce themselves because no training target
-//depends on the cache's own prediction. Trade-off: deep bounces are
-//noisier (RR truncation, no cache short-circuit) so GI convergence in
-//dim multi-bounce regions takes more frames. Paper used 16, raise if
-//multi-bounce quality regresses past acceptable.
+//Cache-as-tail: with probability 1/denom a training path stays fully
+//unbiased (long RR-terminated chain); with probability (denom-1)/denom
+//it short-circuits deep bounces via the cache prediction. Higher denom
+//means MORE cache reuse (paper used 16 = 15/16 cache-tail).
+//
+//TEST: denom=1 -- 100% unbiased, no cache-as-tail at all. Eliminates
+//the self-bias loop entirely so the cache cannot reinforce its own
+//predictions. Slower convergence in dark scenes (deep bounces noisier)
+//but the equilibrium is ground-truth E[L] exactly, no upward drift
+//possible. If converged result still looks acceptable here this is
+//the safest config; raise to 4/8/16 only if convergence speed is
+//painfully slow and overestimation creep is tolerable.
 constexpr uint32_t kUnbiasedDenom = 1u;
 
 //EXPERIMENT: emit training rows ONLY at this exact path depth.

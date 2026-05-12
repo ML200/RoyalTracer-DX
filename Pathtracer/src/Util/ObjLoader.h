@@ -86,6 +86,42 @@ inline bool LoadDDSMemoryToRGBA8(const uint8_t* data, size_t size, DXGI_FORMAT t
     return true;
 }
 
+// Minimal base64 decoder for image data URIs in glTF JSON.
+inline std::vector<uint8_t> DecodeBase64(const char* in, size_t len) {
+    static const int8_t table[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,-1,63,
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    };
+    std::vector<uint8_t> out;
+    out.reserve((len * 3) / 4);
+    int32_t buffer = 0, bits = 0;
+    for (size_t i = 0; i < len; ++i) {
+        int8_t v = table[(unsigned char)in[i]];
+        if (v < 0) continue;
+        buffer = (buffer << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((uint8_t)((buffer >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
 // Texture packing
 constexpr int TARGET_TEXTURE_DIM = 2048;
 
@@ -1054,7 +1090,11 @@ public:
         tg3_parse_options_init(&opts);
         opts.preserve_image_channels = 0;
         opts.images_as_is = 0;
-        opts.memory.memory_budget = 4ULL * 1024 * 1024 * 1024;
+        // Headroom for huge .bin payloads. The parser memcpys each buffer
+        // into its arena, so the budget needs to exceed the largest buffer
+        // by enough for metadata. When this trips, the arena alloc returns
+        // NULL silently and downstream accessor reads AV at 0x0.
+        opts.memory.memory_budget = 64ULL * 1024 * 1024 * 1024;
 
         opts.image.load_image = [](tg3_image_result* result,
                            const tg3_image_request* request,
@@ -1086,9 +1126,33 @@ public:
         opts.image.free_image = [](uint8_t* pixels, void*) { free(pixels); };
         opts.image.user_data = nullptr;
 
-        tg3_error_code ec = tg3_parse_glb(&model, &errors, fileData.data(), (uint64_t)fileSize, nullptr, 0, &opts);
+        // Filesystem callbacks let the parser resolve external .bin buffers
+        // referenced by non-binary glTF (split format). GLB ignores these.
+        opts.fs.read_file = [](uint8_t** out_data, uint64_t* out_size,
+                               const char* path, uint32_t path_len, void*) -> int32_t {
+            std::ifstream f(std::string(path, path_len), std::ios::binary | std::ios::ate);
+            if (!f.is_open()) return 0;
+            std::streamoff sz = f.tellg();
+            if (sz < 0) return 0;
+            f.seekg(0);
+            uint8_t* data = (uint8_t*)malloc((size_t)sz);
+            if (!data) return 0;
+            f.read(reinterpret_cast<char*>(data), sz);
+            if (!f) { free(data); return 0; }
+            *out_data = data;
+            *out_size = (uint64_t)sz;
+            return 1;
+        };
+        opts.fs.free_file = [](uint8_t* data, uint64_t /*size*/, void*) { free(data); };
+        opts.fs.user_data = nullptr;
+
+        // Auto-detect GLB vs JSON glTF from the magic bytes; base_dir resolves
+        // URI-referenced buffers for the JSON path.
+        tg3_error_code ec = tg3_parse_auto(&model, &errors, fileData.data(), (uint64_t)fileSize,
+                                            material_search_path.c_str(),
+                                            (uint32_t)material_search_path.length(), &opts);
         if (ec != TG3_OK) {
-            std::cerr << "[GlbLoader] Failed to parse GLB (error code " << (int)ec << ")." << std::endl;
+            std::cerr << "[GlbLoader] Failed to parse glTF (error code " << (int)ec << ")." << std::endl;
             for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
                 const tg3_error_entry* e = tg3_errors_get(&errors, i);
                 if (e) std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
@@ -1128,6 +1192,58 @@ public:
                     }
                     int w, h, c;
                     unsigned char* decoded = stbi_load_from_memory(bvData, (int)bvSize, &w, &h, &c, 4);
+                    if (decoded) {
+                        decodedImages[i].pixels.assign(decoded, decoded + w*h*4);
+                        decodedImages[i].width = w; decodedImages[i].height = h; decodedImages[i].channels = 4;
+                        stbi_image_free(decoded);
+                    }
+                }
+                continue;
+            }
+
+            // Non-binary glTF: image referenced by URI (external file or data URI).
+            // The tinygltf3 parser stores the URI verbatim and does not fetch it.
+            if (img.uri.data && img.uri.len > 0) {
+                std::vector<uint8_t> imageBytes;
+                if (tg3_is_data_uri(img.uri.data, img.uri.len)) {
+                    const char* uri = img.uri.data;
+                    uint32_t uriLen = img.uri.len;
+                    const char* comma = (const char*)memchr(uri, ',', uriLen);
+                    if (comma) {
+                        const char* payload = comma + 1;
+                        size_t payloadLen = uriLen - (size_t)(payload - uri);
+                        imageBytes = DecodeBase64(payload, payloadLen);
+                    }
+                } else {
+                    std::string fullPath = material_search_path + std::string(img.uri.data, img.uri.len);
+                    std::ifstream f(fullPath, std::ios::binary | std::ios::ate);
+                    if (f.is_open()) {
+                        std::streamoff sz = f.tellg();
+                        if (sz > 0) {
+                            f.seekg(0);
+                            imageBytes.resize((size_t)sz);
+                            f.read(reinterpret_cast<char*>(imageBytes.data()), sz);
+                            if (!f) imageBytes.clear();
+                        }
+                    } else {
+                        std::cerr << "[GlbLoader] Failed to open external image: " << fullPath << std::endl;
+                    }
+                }
+
+                if (!imageBytes.empty()) {
+                    if (isDDSMemory(imageBytes.data(), imageBytes.size())) {
+                        DirectX::ScratchImage ddsImage;
+                        if (LoadDDSMemoryToRGBA8(imageBytes.data(), imageBytes.size(), DXGI_FORMAT_R8G8B8A8_UNORM, ddsImage)) {
+                            const auto& meta = ddsImage.GetMetadata();
+                            size_t pixelSize = meta.width * meta.height * 4;
+                            decodedImages[i].pixels.assign(ddsImage.GetPixels(), ddsImage.GetPixels() + pixelSize);
+                            decodedImages[i].width = (int)meta.width; decodedImages[i].height = (int)meta.height;
+                            decodedImages[i].channels = 4;
+                            continue;
+                        }
+                    }
+                    int w, h, c;
+                    unsigned char* decoded = stbi_load_from_memory(imageBytes.data(), (int)imageBytes.size(), &w, &h, &c, 4);
                     if (decoded) {
                         decodedImages[i].pixels.assign(decoded, decoded + w*h*4);
                         decodedImages[i].width = w; decodedImages[i].height = h; decodedImages[i].channels = 4;

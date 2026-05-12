@@ -29,6 +29,19 @@ Renderer::CreateBottomLevelAS(
     UINT opaqueTriCount, UINT alphaTriCount,
     MeshGPU* meshOmm)
 {
+    std::wcout << L"[BLAS]   CreateBottomLevelAS ENTER: vbufs=" << vVertexBuffers.size()
+               << L" ibufs=" << vIndexBuffers.size()
+               << L" opaqueTris=" << opaqueTriCount
+               << L" alphaTris=" << alphaTriCount
+               << L" omm=" << (meshOmm && meshOmm->hasOmm ? L"yes" : L"no")
+               << std::endl;
+    for (size_t i = 0; i < vVertexBuffers.size(); ++i) {
+        std::wcout << L"[BLAS]     geom[" << i << L"] verts=" << vVertexBuffers[i].second
+                   << L" vbufPtr=" << vVertexBuffers[i].first.Get()
+                   << L" ibufPtr=" << vIndexBuffers[i].first.Get()
+                   << std::endl;
+    }
+
     nv_helpers_dx12::BottomLevelASGenerator blasGen;
 
     for (size_t i = 0; i < vVertexBuffers.size(); i++) {
@@ -68,10 +81,14 @@ Renderer::CreateBottomLevelAS(
         buildFlags |= D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_ALLOW_COMPACTION;
 
     blasGen.ComputeASBufferSizes(m_ctx.Device(), buildFlags, &scratchSize, &resultSize);
+    std::wcout << L"[BLAS]     sizes scratch=" << (scratchSize / (1024 * 1024)) << L" MB"
+               << L" result=" << (resultSize / (1024 * 1024)) << L" MB" << std::endl;
+
     AccelerationStructureBuffers buffers;
     buffers.pScratch = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), scratchSize,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
         nv_helpers_dx12::kDefaultHeapProps);
+    std::wcout << L"[BLAS]     scratch buf created (" << buffers.pScratch.Get() << L")" << std::endl;
 
     if constexpr (!kUseBlasCompaction) {
         buffers.pResult = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), resultSize,
@@ -85,6 +102,7 @@ Renderer::CreateBottomLevelAS(
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
             nv_helpers_dx12::kDefaultHeapProps);
+        std::wcout << L"[BLAS]     uncompacted result buf created (" << buffers.pResultUncompacted.Get() << L")" << std::endl;
 
         ComPtr<ID3D12Resource> compactedSizeBuf = nv_helpers_dx12::CreateBuffer(
             m_ctx.Device(), sizeof(UINT64), D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -94,8 +112,10 @@ Renderer::CreateBottomLevelAS(
         postInfo.DestBuffer = compactedSizeBuf->GetGPUVirtualAddress();
         postInfo.InfoType   = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE;
 
+        std::wcout << L"[BLAS]     calling blasGen.Generate (uncompacted build)..." << std::endl;
         blasGen.Generate(m_ctx.CmdList(), buffers.pScratch.Get(),
             buffers.pResultUncompacted.Get(), false, nullptr);
+        std::wcout << L"[BLAS]     blasGen.Generate returned" << std::endl;
 
         D3D12_GPU_VIRTUAL_ADDRESS src = buffers.pResultUncompacted->GetGPUVirtualAddress();
         m_ctx.CmdList()->EmitRaytracingAccelerationStructurePostbuildInfo(&postInfo, 1, &src);
@@ -110,13 +130,16 @@ Renderer::CreateBottomLevelAS(
         m_ctx.CmdList()->ResourceBarrier(1, &barrier);
         m_ctx.CmdList()->CopyResource(readback.Get(), compactedSizeBuf.Get());
 
+        std::wcout << L"[BLAS]     FlushAndReset before reading compacted size..." << std::endl;
         m_ctx.FlushAndReset();
+        std::wcout << L"[BLAS]     FlushAndReset returned" << std::endl;
 
         UINT64 compactedSize;
         void* pMap;
         ThrowIfFailed(readback->Map(0, nullptr, &pMap));
         memcpy(&compactedSize, pMap, sizeof(UINT64));
         readback->Unmap(0, nullptr);
+        std::wcout << L"[BLAS]     compactedSize=" << (compactedSize / (1024 * 1024)) << L" MB" << std::endl;
 
         buffers.pResult = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), compactedSize,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -132,6 +155,7 @@ Renderer::CreateBottomLevelAS(
         auto uavB = CD3DX12_RESOURCE_BARRIER::UAV(buffers.pResult.Get());
         m_ctx.CmdList()->ResourceBarrier(1, &uavB);
     }
+    std::wcout << L"[BLAS]   CreateBottomLevelAS EXIT: result=" << buffers.pResult.Get() << std::endl;
     return buffers;
 }
 
@@ -139,16 +163,26 @@ void Renderer::CreateTopLevelAS(
     const std::vector<Scene::TLASInstance>& instances,
     bool updateOnly)
 {
+    std::wcout << L"[TLAS] CreateTopLevelAS ENTER: instances=" << instances.size()
+               << L" updateOnly=" << (updateOnly ? L"yes" : L"no") << std::endl;
+
     if (!updateOnly) {
-        for (size_t i = 0; i < instances.size(); i++)
+        for (size_t i = 0; i < instances.size(); i++) {
+            std::wcout << L"[TLAS]   instance[" << i << L"] blas=" << instances[i].blas.Get()
+                       << L" hitGroup=" << instances[i].hitGroupContribution
+                       << L" flags=" << (UINT)instances[i].flags << std::endl;
             m_topLevelASGenerator.AddInstance(
                 instances[i].blas.Get(), instances[i].transform,
                 static_cast<UINT>(i), instances[i].hitGroupContribution,
                 instances[i].flags);
+        }
 
         UINT64 scratchSize, resultSize, instanceDescsSize;
         m_topLevelASGenerator.ComputeASBufferSizes(
             m_ctx.Device(), true, &scratchSize, &resultSize, &instanceDescsSize);
+        std::wcout << L"[TLAS]   sizes scratch=" << (scratchSize / 1024) << L" KB"
+                   << L" result=" << (resultSize / 1024) << L" KB"
+                   << L" instanceDescs=" << instanceDescsSize << L" B" << std::endl;
 
         m_topLevelASBuffers.pScratch = nv_helpers_dx12::CreateBuffer(
             m_ctx.Device(), scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -162,18 +196,32 @@ void Renderer::CreateTopLevelAS(
             D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
     }
 
+    std::wcout << L"[TLAS]   calling m_topLevelASGenerator.Generate..." << std::endl;
     m_topLevelASGenerator.Generate(m_ctx.CmdList(),
         m_topLevelASBuffers.pScratch.Get(), m_topLevelASBuffers.pResult.Get(),
         m_topLevelASBuffers.pInstanceDesc.Get(), updateOnly,
         m_topLevelASBuffers.pResult.Get());
+    std::wcout << L"[TLAS]   Generate returned. TLAS=" << m_topLevelASBuffers.pResult.Get() << std::endl;
 }
 
 void Renderer::CreateAccelerationStructures() {
+    std::wcout << L"[AS] CreateAccelerationStructures ENTER: meshes=" << m_scene.meshes.size()
+               << L" instances=" << m_scene.instances.size() << std::endl;
+
     // One BLAS per unique mesh (skip if already built, e.g. procedural meshes)
-    LOG(L"[AS] Building BLAS for " << m_scene.meshes.size() << L" meshes...");
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
-        if (mesh.blas) continue;
+        std::wcout << L"[AS] mesh[" << m << L"/" << m_scene.meshes.size() << L"] "
+                   << L"verts=" << mesh.vertexCount
+                   << L" indices=" << mesh.indexCount
+                   << L" opaqueTris=" << mesh.opaqueTriCount
+                   << L" alphaTris=" << mesh.alphaTriCount
+                   << L" totalTris=" << (mesh.opaqueTriCount + mesh.alphaTriCount)
+                   << std::endl;
+        if (mesh.blas) {
+            std::wcout << L"[AS]   already has BLAS, skipping" << std::endl;
+            continue;
+        }
 
         // Build OMM array on GPU if bake data exists.
         // ommGpu must outlive CreateBottomLevelAS (which flushes the cmd list).
@@ -194,15 +242,15 @@ void Renderer::CreateAccelerationStructures() {
             {{ mesh.indexBuffer.Get(),  mesh.indexCount  }},
             mesh.opaqueTriCount, mesh.alphaTriCount, ommPtr);
         mesh.blas = buffers.pResult;
-
-        if ((m + 1) % 500 == 0)
-            LOG(L"[AS] BLAS " << (m + 1) << L"/" << m_scene.meshes.size());
+        std::wcout << L"[AS]   mesh[" << m << L"] BLAS=" << mesh.blas.Get() << std::endl;
     }
-    LOG(L"[AS] All BLAS built. Building TLAS...");
+    std::wcout << L"[AS] All BLAS built. Rebuilding TLAS instance list..." << std::endl;
 
     // TLAS from scene instances
     m_scene.RebuildTLASInstanceList();
+    std::wcout << L"[AS] tlasInstances.size()=" << m_scene.tlasInstances.size() << std::endl;
     CreateTopLevelAS(m_scene.tlasInstances);
+    std::wcout << L"[AS] TLAS built" << std::endl;
 
     // Emissive triangles & light tree
     m_scene.CollectEmissiveTriangles();

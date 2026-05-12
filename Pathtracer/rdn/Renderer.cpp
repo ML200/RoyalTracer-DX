@@ -1434,14 +1434,14 @@ void Renderer::PopulateCommandList() {
             m_nrcSettings.requestReinit = false;
         }
 
-        // Runtime training records target scales with screen area so per-cell
-        // sample density stays consistent across resolutions. At 1080p this
-        // computes to ~32400 (matching the old fixed target); 1440p ~57600;
-        // 4K ~129600. Clamped to kTrainingRecordsPerFrame which is the buffer
-        // ceiling sized for 4K worst case.
+        // Runtime training records target is FIXED across resolutions
+        // (kFixedTrainingRecords ~= 32400, the 1080p budget). NRC stability
+        // tuning was done at 1080p and higher-resolution scaling was making
+        // the trainer adapt too fast / overshoot in dark scenes. The
+        // adaptive tile side below grows with resolution to hit this
+        // constant target instead.
         {
-            const uint32_t pixels = GetWidth() * GetHeight();
-            uint32_t target = pixels / nrc::kPixelsPerTrainingSample;
+            uint32_t target = nrc::kFixedTrainingRecords;
             // Floor at one full SGD batch so the trainer always has something
             // to chew on at tiny window sizes / editor previews.
             const uint32_t floorRecords = nrc::kTrainingBatchesPerFrame * nrc::kBatchGranularity;

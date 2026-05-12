@@ -6,6 +6,9 @@
 
 #include "../stdafx.h"
 #include <fstream>
+#include <algorithm>
+#include <iterator>
+#include <limits>
 #include "AssetLoader.h"
 #include "OmmBuilder.h"
 #include "../DXRHelper.h"
@@ -38,6 +41,155 @@ MeshSplitResult AssetLoader::SplitOpaqueAlpha(
     r.reorderedMaterialIDs = std::move(opaqueMatIDs);
     r.reorderedMaterialIDs.insert(r.reorderedMaterialIDs.end(), alphaMatIDs.begin(), alphaMatIDs.end());
     return r;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Spatial split — longest centroid-axis, median partition. Recursing on each
+// half until every piece holds ≤ maxTris triangles. Pieces carry only the
+// vertices their triangles reference, so the BLAS builder sees a compact
+// vertex+index pair per piece.
+std::vector<LoadedMesh> AssetLoader::SplitMeshSpatial(LoadedMesh mesh, UINT maxTris)
+{
+    const UINT triCount = (UINT)mesh.indices.size() / 3;
+    if (triCount <= maxTris) {
+        std::vector<LoadedMesh> out;
+        out.push_back(std::move(mesh));
+        return out;
+    }
+
+    // Triangle centroids and their AABB.
+    std::vector<XMFLOAT3> centroids(triCount);
+    const float fMax = std::numeric_limits<float>::max();
+    XMFLOAT3 cMin{  fMax,  fMax,  fMax };
+    XMFLOAT3 cMax{ -fMax, -fMax, -fMax };
+    for (UINT t = 0; t < triCount; ++t) {
+        const auto& p0 = mesh.vertices[mesh.indices[3*t+0]].position;
+        const auto& p1 = mesh.vertices[mesh.indices[3*t+1]].position;
+        const auto& p2 = mesh.vertices[mesh.indices[3*t+2]].position;
+        centroids[t] = { (p0.x + p1.x + p2.x) / 3.0f,
+                         (p0.y + p1.y + p2.y) / 3.0f,
+                         (p0.z + p1.z + p2.z) / 3.0f };
+        cMin.x = std::min(cMin.x, centroids[t].x); cMax.x = std::max(cMax.x, centroids[t].x);
+        cMin.y = std::min(cMin.y, centroids[t].y); cMax.y = std::max(cMax.y, centroids[t].y);
+        cMin.z = std::min(cMin.z, centroids[t].z); cMax.z = std::max(cMax.z, centroids[t].z);
+    }
+
+    // Longest centroid-AABB axis — the choice that keeps post-split AABBs
+    // from overlapping each other along the dominant extent.
+    const float ex = cMax.x - cMin.x;
+    const float ey = cMax.y - cMin.y;
+    const float ez = cMax.z - cMin.z;
+    int axis = 0;
+    if (ey > ex && ey >= ez) axis = 1;
+    else if (ez > ex && ez > ey) axis = 2;
+
+    auto axisVal = [&](UINT t) -> float {
+        return axis == 0 ? centroids[t].x : (axis == 1 ? centroids[t].y : centroids[t].z);
+    };
+
+    // Median centroid → balanced halves (≤ ceil(N/2) triangles each, so the
+    // recursion terminates in ⌈log2(N/maxTris)⌉ levels).
+    std::vector<UINT> triIdx(triCount);
+    for (UINT t = 0; t < triCount; ++t) triIdx[t] = t;
+    auto midIt = triIdx.begin() + triCount / 2;
+    std::nth_element(triIdx.begin(), midIt, triIdx.end(),
+        [&](UINT a, UINT b) { return axisVal(a) < axisVal(b); });
+
+    std::vector<uint8_t> isLeft(triCount, 0);
+    for (auto it = triIdx.begin(); it != midIt; ++it) isLeft[*it] = 1;
+
+    // Free intermediate state before allocating children to keep peak RAM down.
+    centroids.clear(); centroids.shrink_to_fit();
+    triIdx.clear();    triIdx.shrink_to_fit();
+
+    auto buildSide = [&](bool wantLeft) {
+        LoadedMesh out;
+        std::vector<int32_t> vertRemap(mesh.vertices.size(), -1);
+        for (UINT t = 0; t < triCount; ++t) {
+            if ((isLeft[t] != 0) != wantLeft) continue;
+            for (int j = 0; j < 3; ++j) {
+                const UINT oldVi = mesh.indices[3*t+j];
+                int32_t& newVi = vertRemap[oldVi];
+                if (newVi < 0) {
+                    newVi = (int32_t)out.vertices.size();
+                    out.vertices.push_back(mesh.vertices[oldVi]);
+                }
+                out.indices.push_back((UINT)newVi);
+            }
+            out.perTriMaterialIDs.push_back(mesh.perTriMaterialIDs[t]);
+        }
+        return out;
+    };
+
+    LoadedMesh left  = buildSide(true);
+    LoadedMesh right = buildSide(false);
+
+    // Parent geometry no longer needed — drop it before recursing.
+    mesh = LoadedMesh{};
+    isLeft.clear(); isLeft.shrink_to_fit();
+
+    auto leftPieces  = SplitMeshSpatial(std::move(left),  maxTris);
+    auto rightPieces = SplitMeshSpatial(std::move(right), maxTris);
+
+    leftPieces.insert(leftPieces.end(),
+        std::make_move_iterator(rightPieces.begin()),
+        std::make_move_iterator(rightPieces.end()));
+    return leftPieces;
+}
+
+void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris)
+{
+    const size_t meshesIn     = scene.meshes.size();
+    const size_t instancesIn  = scene.instances.size();
+    std::wcout << L"[Split] SplitOversizedMeshes ENTER: meshes=" << meshesIn
+               << L" instances=" << instancesIn
+               << L" threshold=" << maxTris << L" tris" << std::endl;
+
+    std::vector<LoadedMesh>           newMeshes;
+    std::vector<std::vector<UINT>>    oldToNew(scene.meshes.size());
+    newMeshes.reserve(scene.meshes.size());
+
+    for (size_t i = 0; i < scene.meshes.size(); ++i) {
+        const UINT triCount = (UINT)scene.meshes[i].indices.size() / 3;
+        const UINT vtxCount = (UINT)scene.meshes[i].vertices.size();
+        std::wcout << L"[Split]   mesh[" << i << L"] tris=" << triCount
+                   << L" verts=" << vtxCount
+                   << (triCount > maxTris ? L"  (SPLITTING)" : L"  (under threshold, keep as-is)")
+                   << std::endl;
+
+        auto pieces = SplitMeshSpatial(std::move(scene.meshes[i]), maxTris);
+
+        if (pieces.size() > 1) {
+            std::wcout << L"[Split]   -> produced " << pieces.size() << L" pieces:" << std::endl;
+            for (size_t p = 0; p < pieces.size(); ++p) {
+                std::wcout << L"[Split]      piece[" << p << L"] tris="
+                           << (pieces[p].indices.size() / 3)
+                           << L" verts=" << pieces[p].vertices.size() << std::endl;
+            }
+        }
+
+        oldToNew[i].reserve(pieces.size());
+        for (auto& p : pieces) {
+            oldToNew[i].push_back((UINT)newMeshes.size());
+            newMeshes.push_back(std::move(p));
+        }
+    }
+    scene.meshes = std::move(newMeshes);
+
+    // Fan out instances: one input instance referring to mesh i becomes
+    // |oldToNew[i]| instances, all sharing the original local transform.
+    std::vector<std::pair<UINT, XMMATRIX>> newInstances;
+    newInstances.reserve(scene.instances.size());
+    for (const auto& [oldIdx, xform] : scene.instances) {
+        for (UINT newIdx : oldToNew[oldIdx])
+            newInstances.push_back({ newIdx, xform });
+    }
+    scene.instances = std::move(newInstances);
+
+    std::wcout << L"[Split] SplitOversizedMeshes EXIT: meshes "
+               << meshesIn << L" -> " << scene.meshes.size()
+               << L"  instances " << instancesIn << L" -> " << scene.instances.size()
+               << std::endl;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -94,6 +246,11 @@ void AssetLoader::LoadModels(
         else
             loaded = ObjLoader::loadObjFile(modelPath, textureMap,
                 albedoTextures, normalTextures, rmaTextures, matSearchPath);
+
+        // Spatial split — driver BLAS builds blow out VRAM on multi-hundred-million
+        // triangle meshes, so cap each piece at MAX_TRIS_PER_MESH and let the TLAS
+        // stitch them back together.
+        SplitOversizedMeshes(loaded, MAX_TRIS_PER_MESH);
 
         // ── Merge materials ──────────────────────────────────────
         const UINT globalMatBase = (UINT)scene.materials.size();
@@ -177,6 +334,10 @@ void AssetLoader::LoadModels(
         UINT modelIdx = (UINT)scene.models.size();
         for (UINT i = model.instanceStart; i < model.instanceStart + model.instanceCount; ++i)
             scene.instances[i].modelIndex = modelIdx;
+
+        std::wcout << L"[AssetLoader] Model '" << std::wstring(model.name.begin(), model.name.end())
+                   << L"' registered: meshes=" << model.meshCount
+                   << L" instances=" << model.instanceCount << std::endl;
 
         scene.models.push_back(std::move(model));
     }

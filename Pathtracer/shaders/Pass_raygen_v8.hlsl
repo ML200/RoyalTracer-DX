@@ -46,8 +46,14 @@ void Pass_raygen_v8()
     //class 0 render, 1 train biased, 2 train unbiased
     const bool kNrcEnabled    = NrcIsEnabled();
     const bool kNrcTrainOn    = NrcIsTrainOn();
-    //x1 sharp reflection split needs NRC for the replacement radiance
-    const bool kSharpRefl     = kNrcEnabled && NrcIsSharpReflectionsOn();
+    //x1 sharp reflection split was tapping NRC for the replacement radiance
+    //on the primary-hit perfect-mirror reflection ray. Hardcoded OFF because
+    //the cache is unreliable on primary specular paths (delta-lobe samples
+    //land in cells with no diffuse training neighbors -> overbrightness even
+    //after the rest of the NRC tuning settled). Reflections now follow the
+    //standard NRC depth threshold like every other ray.
+    //const bool kSharpRefl_legacy = kNrcEnabled && NrcIsSharpReflectionsOn();
+    const bool kSharpRefl     = false;
     //adaptive tile side from renderer feedback
     const uint  nrcTileSide   = NrcTrainingTileSide();
     const uint2 nrcTileOffset = uint2(asuint(time) % nrcTileSide,

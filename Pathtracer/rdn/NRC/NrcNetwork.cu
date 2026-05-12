@@ -20,13 +20,13 @@ namespace nrc {
 //====================================
 static tcnn::json BuildNetworkConfig() {
     return tcnn::json{
-        {"loss", {{"otype", "RelativeL2"}}},
+        {"loss", {{"otype", "L2"}}},
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 2.0e-2f},
-            {"beta1",         0.7f},
-            {"beta2",         0.97f},
-            {"epsilon",       1e-8f},
+            {"learning_rate", 1.5e-3f},
+            {"beta1",         0.9f},
+            {"beta2",         0.995f},
+            {"epsilon",       1e-4f},
             {"l2_reg",        1e-5f},
         }},
         {"encoding", {
@@ -38,7 +38,7 @@ static tcnn::json BuildNetworkConfig() {
                     {"type",                   "Hash"},
                     {"n_levels",               16u},
                     {"n_features_per_level",   2u},
-                    {"log2_hashmap_size",      21u}, //expensive 21 map size is costly but higher quality in large scenes
+                    {"log2_hashmap_size",      21u}, //~2M entries/level. Kept at 21 for the finer spatial precision in the converged state; the cost is slower training (~4x fewer samples per cell vs log2=19) which is compensated by a higher LR (per-sample learning rate up so each rarer hit teaches more).
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
                     {"interpolation",          "Smoothstep"},
@@ -88,11 +88,15 @@ __device__ __forceinline__ float3 unpack_rgb9e5(uint32_t p) {
     return make_float3(float(rm) * scale, float(gm) * scale, float(bm) * scale);
 }
 
-//NaN/Inf -> 0, negatives -> 0, caps magnitude to prevent Adam moment spikes
-//With sqrt target transform, sqrt(kTargetMax) must stay within fp16-safe range
-//for the L2 loss: (pred - sqrt_target)^2 is computed on-device. sqrt(1e4)=100,
-//worst-case diff^2 = 1e4, comfortably under fp16 max (6.5e4).
-constexpr float kTargetMax = 5.0e1f;
+//NaN/Inf -> 0, negatives -> 0, caps magnitude to prevent Adam moment spikes.
+//Under L2 the gradient is 2(pred-target), so worst-case per-sample gradient
+//magnitude is exactly 2 * kTargetMax = 20. Aggressive cap chosen alongside
+//log2_hashmap_size=21 (more spatial entries, fewer samples per cell) -- the
+//tighter cap compensates for the lower per-cell density by guaranteeing no
+//single rare bright NEE sample can drift the cell prediction far. Will dim
+//physically bright surfaces (strong direct sun, specular peaks); accept
+//that trade for full stability in dark scenes.
+constexpr float kTargetMax = 1.0e1f;
 __device__ __forceinline__ float safe_target(float v) {
     if (!isfinite(v)) return 0.0f;
     return fminf(fmaxf(v, 0.0f), kTargetMax);
@@ -380,11 +384,16 @@ __global__ void fill_training_batch_kernel(
         const float ls_g = lnee.y + beta.y * tail_g;
         const float ls_b = lnee.z + beta.z * tail_b;
 
-        //target = L_s/(alpha+beta), LINEAR (no transform). RelativeL2 + linear
-        //gives an unbiased optimum at E[L/r]; the prior sqrt transform converged
-        //to (E[sqrt(L/r)])^2 which is strictly <= E[L/r] by Jensen, producing a
-        //uniform darkening proportional to per-cell MC variance. Output is
-        //fp16-safe because safe_target caps at kTargetMax=1e4 < fp16 max 6.5e4.
+        //target = L_s/(alpha+beta), LINEAR (no transform). L2 + linear gives an
+        //unbiased optimum at E[L/r]; prior sqrt transform was Jensen-biased
+        //(E[sqrt(L/r)])^2 <= E[L/r]. RelativeL2 was tested -- mathematically
+        //unbiased but tcnn's grad = 2(pred-target)/(pred^2+0.01) is asymmetric:
+        //once pred drifts up, the down-pull from dark samples collapses while
+        //the up-pull from rare bright NEE samples stays strong, producing a
+        //stable overshoot above E[L/r] in dark scenes with sparse bright
+        //sources. RelativeL1 was also tested -- median-biased, crushed night
+        //scenes to zero. L2 has symmetric grad = 2(pred-target), gradient
+        //spikes bounded by kTargetMax and absorbed by beta2=0.999.
         //alpha @ raw[10..12], beta @ raw[13..15]. 1e-5 floor avoids div-by-zero
         //on black materials.
         const float rs_r = fmaxf(raw[10] + raw[13], 1e-5f);
@@ -451,7 +460,7 @@ struct Network::Impl {
     //EMA weights, inference reads emaParams, training mutates raw params
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
-    float                      emaAlpha  = 0.96f;
+    float                      emaAlpha  = 0.965f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback
