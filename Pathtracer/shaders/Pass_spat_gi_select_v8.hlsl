@@ -76,14 +76,17 @@ int2 SampleReuseDelta(uint2 launchIndex, uint slot)
 //====================================
 //PAIR REJECTION
 //====================================
-//symmetric material, normal, distance, thresholds from ReSTIRSettings
+//symmetric material, normal, distance. distThresh is rs_rejDistance scaled by
+//camera-to-surface length so the slab grows with world-space pixel footprint;
+//fixed threshold rejects all far neighbors on large scenes
 bool PairRejected(uint aMat, float3 aPos, float3 aN,
-                  uint bMat, float3 bPos, float3 bN)
+                  uint bMat, float3 bPos, float3 bN,
+                  float distThresh)
 {
     if (aMat != bMat) return true;
     if (RejectNormal(aN, bN, rs_rejNormalDot)) return true;
-    if (RejectDistance(aPos, bPos, aN, rs_rejDistance)) return true;
-    if (RejectDistance(bPos, aPos, bN, rs_rejDistance)) return true;
+    if (RejectDistance(aPos, bPos, aN, distThresh)) return true;
+    if (RejectDistance(bPos, aPos, bN, distThresh)) return true;
     return false;
 }
 
@@ -124,6 +127,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
+    //slab thickness scales with camera distance so pixel footprint at depth still passes
+    const float distThresh = rs_rejDistance * length(myPos - InitOrigin());
+
     //nIds[s] is partner for slot s, 0xFFFFFFFFu means rejected
     uint  nIds[SPAT_COUNT_MAX];
     [unroll]
@@ -152,7 +158,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float3 bPos    = ReconstructPosition(bInstID, bPrimID, bBary);
         const float3 bN1s    = load_n1_s_with_instID(g_sample_current, bID, bInstID);
 
-        if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s)) continue;
+        if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s, distThresh)) continue;
 
         const uint bM = load_M(g_Reservoirs_current, bID);
         if (bM == 0u) continue;

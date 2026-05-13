@@ -96,6 +96,8 @@ void Pass_raygen_v8()
     //slot 7 sharp refl control rgb=Fresnel w=NRC slot, slot 8 raw env radiance
     gScratchPing[uint3(pixel, 7)] = float4(0, 0, 0, asfloat(NRC_INVALID_SLOT));
     gScratchPing[uint3(pixel, 8)] = float4(0, 0, 0, 0);
+    //slot 9 NRC debug L_s, postprocess reads even when NRC debug pass skips this pixel
+    gScratchPing[uint3(pixel, 9)] = float4(0, 0, 0, 0);
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 

@@ -140,13 +140,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     const float exposure = ReadExposure();
 
-    float3 noisy  = gOutput[uint3(DTid.xy, 0)].xyz;
+    //HDR debug slices read from FP32 scratchPing / gPermanentData. Writing raw HDR
+    //into the R8G8B8A8 UNORM gOutput would clip to 1.0 and quantize to 8 bits linear
+    //before tonemap could ever see it, which is why noisy/gt/nrc/refl used to look
+    //unexposed and banded relative to the DLSS clean slice
+    const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
+    const float3 reflContrib = (reflPack.w > 0.0f)
+        ? max(float3(0, 0, 0), reflPack.rgb)
+        : float3(0, 0, 0);
+    float3 noisy  = gScratchPing[uint3(DTid.xy, 1)].rgb +
+                    gScratchPing[uint3(DTid.xy, 2)].rgb +
+                    gScratchPing[uint3(DTid.xy, 3)].rgb +
+                    reflContrib;
     //clean came through DLSS RR which received Reinhard-tonemapped input —
     //undo that here so AgX sees the original HDR
     float3 clean  = InverseDlssReinhard(g_dlssOutput[DTid.xy].xyz);
-    float3 gt     = gOutput[uint3(DTid.xy, 2)].xyz;
-    float3 nrc    = gOutput[uint3(DTid.xy, 3)].xyz;
-    float3 refl   = gOutput[uint3(DTid.xy, 4)].xyz;
+    float3 gt     = gPermanentData[DTid.xy].rgb;
+    float3 nrc    = gScratchPing[uint3(DTid.xy, 9)].rgb;
+    float3 refl   = reflContrib;
     float3 albedo = gOutput[uint3(DTid.xy, 5)].xyz;
 
     //auto-exposure + AgX tonemap on the radiance-bearing slices.

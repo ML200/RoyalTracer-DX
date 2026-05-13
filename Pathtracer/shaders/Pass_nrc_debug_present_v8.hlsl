@@ -1,7 +1,8 @@
 //====================================
 //NRC DEBUG VIEW PRESENT
 //====================================
-//writes cache prediction at x1 into gOutput slice 3
+//writes cache prediction at x1 into scratchPing slot 9, postprocess reads it from
+//there; gOutput is R8G8B8A8 UNORM and would clip the HDR L_s before tonemap
 
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
@@ -37,5 +38,5 @@ void main(uint3 dtid : SV_DispatchThreadID)
         }
     }
 
-    gOutput[uint3(pixel, 3)] = float4(L_s, 1.0f);
+    gScratchPing[uint3(pixel, 9)] = float4(L_s, 1.0f);
 }

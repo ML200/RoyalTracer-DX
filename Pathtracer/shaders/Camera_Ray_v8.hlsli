@@ -96,13 +96,18 @@ inline float2 GetLastFramePixelCoordinates_Float(
 //current-frame pinhole projection, mirrors GetLastFramePixelCoordinates_Unclamped
 //for DoF the lens-jittered curPix no longer equals the pinhole projection of the hit point,
 //MV must use the pinhole projection on both ends so DLSS sees pure scene motion
+//round trip through localPos matches the prev path so stationary objects get bit identical
+//currWorldPos and prevWorldPos, otherwise FP32 matmul residual leaks into the MV
 inline float2 GetCurrentFramePixelCoordinates_Unclamped(
     float3 worldPos,
     float4x4 V,
     float4x4 P,
-    float2 resolution)
+    float2 resolution,
+    uint objID)
 {
-    float4 clipPos = mul(P, mul(V, float4(worldPos, 1.0f)));
+    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float4 currWorldPos = mul(instanceProps[objID].objectToWorld,        localPos);
+    float4 clipPos      = mul(P, mul(V, currWorldPos));
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
     float2 ndc = clipPos.xy / clipPos.w;
     float2 uv  = ndc * 0.5f + 0.5f;

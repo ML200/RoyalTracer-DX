@@ -217,7 +217,7 @@ void Pass_temp_gi_v8()
                 const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
                 const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
-                //correlation reduction cCap, dup count D refreshes the chain
+                //correlation reduction cCap, dup count D refreshes the chain (2026 paper)
                 const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
                 const float effMcap = (rdi_r.matID == MATID_ENV_MISS)
                     ? (float)rs_tempMcap
@@ -230,8 +230,9 @@ void Pass_temp_gi_v8()
                     : EvaluatePBRProperties(rdi_r.matID, rdi_r.uv, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = effMcap;/*(minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f
-                                        : min(effMcap, effMcap * tempMcapScale);*/
+                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin)
+                    ? 0.0f
+                    : min(effMcap, effMcap * tempMcapScale);
 
                 const float M_c   = min(effMcap, rdi.M);
                 const float M_n   = min(dynTempMcap,  rdi_r.M);

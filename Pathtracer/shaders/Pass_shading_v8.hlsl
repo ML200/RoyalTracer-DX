@@ -20,7 +20,6 @@ inline float3 DlssReinhard(float3 c) {
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
-    gOutput[uint3(DTid.xy, 0)] = float4(0, 0, 0, 0);
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)];
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
@@ -36,8 +35,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (reflPack.w > 0.0f)
             reflContrib = max(float3(0, 0, 0), reflPack.rgb);
     }
-    //debug mirror, linear here, postprocess applies sRGB
-    gOutput[uint3(DTid.xy, 4)] = float4(reflContrib, 1.0f);
 
     float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
 
@@ -68,13 +65,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
-    gOutput[uint3(DTid.xy, 2)] = float4(newAvg, 1.0f);
 
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
-
-    gOutput[uint3(DTid.xy, 0)] = float4(accumulation, 1.0f);
-
 
     //bias hint inputs set per branch, used after
     uint  biasInstID;
@@ -102,7 +95,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float2 prevPix = GetLastFramePixelCoordinates_Unclamped(
                 emPos, prevView, prevProjection, dims, emInstID);
             float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(
-                emPos, view, projection, dims);
+                emPos, view, projection, dims, emInstID);
             bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
             float2 emMV = validPrev ? (prevPix - curPinholePix) : float2(0, 0);
             g_dlssMVec[curPix] = emMV;
@@ -167,7 +160,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
         //pure scene motion in pinhole space, the lens offset cancels out
         float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-        float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims);
+        float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
 
         bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
 
@@ -198,7 +191,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
                     reflData.xyz, prevView, prevProjection, dims, reflInstID);
                 float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
-                    reflData.xyz, view, projection, dims);
+                    reflData.xyz, view, projection, dims, reflInstID);
                 bool validRefl = (prevRefl.x > -1e8f) && (curRefl.x > -1e8f);
                 if (validRefl)
                 {
