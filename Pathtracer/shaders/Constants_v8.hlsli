@@ -26,7 +26,7 @@
 //====================================
 #define TEMP_MCAP 8
 
-#define SPAT_MCAP 48
+#define SPAT_MCAP 100000
 #define SPAT_EXP  0.8f
 #define SPAT_RAD_MAX 48
 #define SPAT_RAD_MIN 8

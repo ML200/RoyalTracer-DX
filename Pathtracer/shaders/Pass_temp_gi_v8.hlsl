@@ -219,9 +219,7 @@ void Pass_temp_gi_v8()
 
                 //correlation reduction cCap, dup count D refreshes the chain (2026 paper)
                 const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
-                const float effMcap = (rdi_r.matID == MATID_ENV_MISS)
-                    ? (float)rs_tempMcap
-                    : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
+                const float effMcap = (rdi_r.matID == MATID_ENV_MISS) ? (float)rs_tempMcap : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
                 //M caps, roughness dependent
                 float sdata_Pr = myPr;
@@ -230,9 +228,7 @@ void Pass_temp_gi_v8()
                     : EvaluatePBRProperties(rdi_r.matID, rdi_r.uv, 0).x;
                 const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
                 const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin)
-                    ? 0.0f
-                    : min(effMcap, effMcap * tempMcapScale);
+                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f : min(effMcap, effMcap * tempMcapScale);
 
                 const float M_c   = min(effMcap, rdi.M);
                 const float M_n   = min(dynTempMcap,  rdi_r.M);

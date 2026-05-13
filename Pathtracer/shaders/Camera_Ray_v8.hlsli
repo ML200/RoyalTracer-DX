@@ -98,6 +98,9 @@ inline float2 GetLastFramePixelCoordinates_Float(
 //MV must use the pinhole projection on both ends so DLSS sees pure scene motion
 //round trip through localPos matches the prev path so stationary objects get bit identical
 //currWorldPos and prevWorldPos, otherwise FP32 matmul residual leaks into the MV
+//view stage applies the rotation to (currWorldPos - camPos), avoiding the big-minus-big
+//cancellation that mul(view, worldPos) hits at large world coords; this kills the residual
+//drift visible on grazing angle surfaces
 inline float2 GetCurrentFramePixelCoordinates_Unclamped(
     float3 worldPos,
     float4x4 V,
@@ -107,7 +110,8 @@ inline float2 GetCurrentFramePixelCoordinates_Unclamped(
 {
     float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
     float4 currWorldPos = mul(instanceProps[objID].objectToWorld,        localPos);
-    float4 clipPos      = mul(P, mul(V, currWorldPos));
+    float3 viewPos      = mul((float3x3)V, currWorldPos.xyz - InitOrigin());
+    float4 clipPos      = mul(P, float4(viewPos, 1.0f));
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
     float2 ndc = clipPos.xy / clipPos.w;
     float2 uv  = ndc * 0.5f + 0.5f;
@@ -116,6 +120,8 @@ inline float2 GetCurrentFramePixelCoordinates_Unclamped(
 }
 
 //unclamped variant for MV, allows off-screen previous pos, only rejects behind-camera
+//same camera relative view step as the current frame counterpart, prev camera position
+//extracted from prevView since there is no prevViewI in the cbuffer
 inline float2 GetLastFramePixelCoordinates_Unclamped(
     float3 worldPos,
     float4x4 prevView,
@@ -125,7 +131,11 @@ inline float2 GetLastFramePixelCoordinates_Unclamped(
 {
     float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
     float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
-    float4 clipPos      = mul(prevProjection, mul(prevView, prevWorldPos));
+    //prevCamPos = -R^T * t where R^T is the upper 3x3 of prevView and t is its translation column
+    float3 prevTransCol = mul(prevView, float4(0, 0, 0, 1)).xyz;
+    float3 prevCamPos   = -mul(transpose((float3x3)prevView), prevTransCol);
+    float3 viewPos      = mul((float3x3)prevView, prevWorldPos.xyz - prevCamPos);
+    float4 clipPos      = mul(prevProjection, float4(viewPos, 1.0f));
 
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
 
