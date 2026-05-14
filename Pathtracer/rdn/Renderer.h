@@ -299,11 +299,4 @@ private:
     //so the freshly seeded network has time to learn before the canary can fire again.
     uint32_t                                 m_nrcCollapseConsecutive = 0u;
     uint32_t                                 m_nrcReinitCooldown      = 0u;
-    //per-frame adaptive EMA smoothing factor passed to TrainFrame. Recomputed
-    //each NRC tick from the scene brightness signal (LastInferenceOutMagnitudeMean):
-    //dark scenes get heavier smoothing (residual gradient jitter is worst where
-    //targets are near zero), bright scenes get lighter smoothing for fast
-    //adaptation. Initialised to the bright-scene value so the warmup frames
-    //before the first brightness readback behave like the old fixed config.
-    float                                    m_nrcEmaAlpha = 0.965f;
 };

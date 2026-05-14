@@ -190,7 +190,7 @@ constexpr uint32_t kTrainingEmitDepthOnly = 1u;
 //  0b00000111 = {0,1,2}
 //  0b11111111 = full {0..7}
 constexpr bool     kTrainingDecorrelatePaths = true;
-constexpr uint32_t kTrainingDepthMask        = 0b11111111u;
+constexpr uint32_t kTrainingDepthMask        = 0b00000011u;
 
 //DIAGNOSTIC: pipeline integrity test.
 constexpr bool kDebugConstantTraining = false;

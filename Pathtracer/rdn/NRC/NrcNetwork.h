@@ -66,18 +66,12 @@ public:
     //scales it with screen resolution (see kPixelsPerTrainingSample) so per-cell
     //sample density stays consistent. Internally clamped to kTrainingRecordsPerFrame
     //which is the buffer ceiling.
-    //emaAlpha is the per-frame EMA smoothing factor applied to emaParams after
-    //the SGD steps. The caller drives it adaptively (heavier smoothing in dark
-    //scenes where residual gradient jitter is worst, lighter in bright scenes
-    //for fast adaptation). After EMA warmup the bias correction saturates so a
-    //time-varying alpha is just a standard EMA with a per-frame smoothing rate.
     void TrainFrame(
         void*       stream,
         const void* trainRecordsDevPtr,
         const void* inferenceOutDevPtr,
         uint32_t    inferenceOutCapacity,
-        uint32_t    targetRecords,
-        float       emaAlpha);
+        uint32_t    targetRecords);
 
     //valid vertex count after last TrainFrame, drives adaptive tile feedback
     uint32_t LastValidVertexCount() const;

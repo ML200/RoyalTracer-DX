@@ -20,18 +20,29 @@ namespace nrc {
 //====================================
 static tcnn::json BuildNetworkConfig() {
     return tcnn::json{
-        {"loss", {{"otype", "L2"}}},
+        //RelativeL2Luminance: the loss Müller et al. 2021 used for NRC (tcnn's
+        //docs cite it as "Used in Neural Radiance Caching"). Scale-invariant --
+        //error is normalized by predicted luminance^2 -- which is what lets the
+        //LR run at 1e-2; a plain-L2 setup could not. HISTORY: an earlier
+        //session rejected plain per-channel RelativeL2 for asymmetric-gradient
+        //dark-scene overshoot. RelativeL2Luminance is the shared-luminance-
+        //denominator variant (one scalar denom, no per-channel collapse) and
+        //is being re-evaluated on the current config (4x128, log2=19, 1.5x
+        //data, roughness-gated emit) -- WATCH dark/indirect regions for slow
+        //upward brightness drift, that is the failure signature.
+        {"loss", {{"otype", "RelativeL2Luminance"}}},
         {"optimizer", {
             {"otype",         "Adam"},
-            //2.0e-3 (raised from 1.5e-3) to keep adaptation snappy after the
-            //training-data volume was halved back from the 3x peak to ~1.5x
-            //baseline (kPixelsPerTrainingSample). The bigger-than-original
-            //batch still gives the variance headroom for the higher LR.
-            {"learning_rate", 2.0e-3f},
+            //Müller-matched Adam: lr 1e-2 + standard betas + standard tcnn
+            //epsilon/l2_reg. Replaces the prior hand-tuned set (lr 2e-3,
+            //beta2 0.995, epsilon 1e-4, l2_reg 1e-5) which was tuned around
+            //the plain-L2 loss; this set tracks the paper's recipe and pairs
+            //with the scale-invariant RelativeL2Luminance loss above.
+            {"learning_rate", 1.0e-2f},
             {"beta1",         0.9f},
-            {"beta2",         0.995f},
-            {"epsilon",       1e-4f},
-            {"l2_reg",        1e-5f},
+            {"beta2",         0.999f},
+            {"epsilon",       1e-8f},
+            {"l2_reg",        1e-8f},
         }},
         {"encoding", {
             {"otype",  "Composite"},
@@ -539,10 +550,11 @@ struct Network::Impl {
     uint32_t* trainCounter  = nullptr;
 
     //EMA weights, inference reads emaParams, training mutates raw params.
-    //emaAlpha is no longer stored here -- it is a per-frame TrainFrame arg,
-    //driven adaptively by the renderer from the scene brightness signal.
+    //emaAlpha is a fixed smoothing factor. An adaptive brightness-keyed
+    //emaAlpha was tried and reverted -- a constant 0.97 was preferred.
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
+    float                      emaAlpha  = 0.97f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback
@@ -1062,8 +1074,7 @@ void Network::TrainFrame(
     const void* trainRecordsDevPtr,
     const void* inferenceOutDevPtr,
     uint32_t    inferenceOutCapacity,
-    uint32_t    targetRecords,
-    float       emaAlpha)
+    uint32_t    targetRecords)
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
@@ -1139,10 +1150,7 @@ void Network::TrainFrame(
     //them, so the bracket is collapsed onto W_final. Total weight on the
     //SGD block is still (1 - a^N) which matches the exact form, only the
     //within bracket distribution is approximated.
-    //per-frame adaptive smoothing factor from the caller (brightness-keyed).
-    //Clamp defensively so a bad caller value can't produce a^N outside [0,1]
-    //and corrupt the EMA coefficients below.
-    const float alpha = fminf(fmaxf(emaAlpha, 0.0f), 0.9999f);
+    const float alpha = m_impl->emaAlpha;
     for (uint32_t b = 0; b < kTrainingBatchesPerFrame; ++b) {
         const float* fPtr = m_impl->trainFeatures + b * perBatch * kRawInputDim;
         const float* tPtr = m_impl->trainTargets  + b * perBatch * kOutputDim;

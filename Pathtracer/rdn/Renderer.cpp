@@ -172,8 +172,7 @@ void Renderer::InitDevice() {
                     m_nrcTrainRecords.cudaPtr,
                     m_nrcInferenceOut.cudaPtr,
                     m_nrcInferenceCapacity,
-                    m_nrcTrainRecordsTarget,
-                    m_nrcEmaAlpha);
+                    m_nrcTrainRecordsTarget);
             });
 
             // Additional inference for the debug view only. Runs AFTER
@@ -1444,36 +1443,6 @@ void Renderer::PopulateCommandList() {
             }
         } else {
             m_nrcCollapseConsecutive = 0u;
-        }
-
-        // Adaptive EMA smoothing factor. Dark scenes carry residual gradient
-        // jitter -- sparse bright NEE hits among mostly near-zero targets --
-        // that the EMA is meant to absorb; bright scenes have enough signal
-        // that light smoothing is fine and keeps scene-change adaptation fast.
-        // Key emaAlpha off the same brightness canary the collapse detector
-        // reads (mean inference output magnitude): low -> heavy smoothing,
-        // high -> light. The map is a log-space smoothstep between two
-        // anchors. NOTE: the anchors are in linear output-magnitude units and
-        // are GUESSES -- tune kEmaDarkAnchor / kEmaBrightAnchor by watching the
-        // LastInferenceOutMagnitudeMean value in a known-dark vs known-bright
-        // scene. This is a single global alpha keyed on the frame-wide mean,
-        // so a mixed scene (dark room + bright window) smooths by the average;
-        // per-region alpha would need a per-cell EMA, a much larger change.
-        if (m_nrcReady) {
-            constexpr float kEmaAlphaBright  = 0.965f; // light smoothing, fast adapt
-            constexpr float kEmaAlphaDark    = 0.990f; // heavy smoothing, stable
-            constexpr float kEmaBrightAnchor = 1.0f;   // mean |out| >= this -> bright
-            constexpr float kEmaDarkAnchor   = 0.01f;  // mean |out| <= this -> dark
-            const float mean = m_nrcNetwork.LastInferenceOutMagnitudeMean();
-            if (mean >= 0.0f) { // -1 = no readback yet; keep the prior value
-                const float lm = log2f(mean > 1e-8f ? mean : 1e-8f);
-                const float lo = log2f(kEmaDarkAnchor);
-                const float hi = log2f(kEmaBrightAnchor);
-                float t = (lm - lo) / (hi - lo);
-                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-                t = t * t * (3.0f - 2.0f * t); // smoothstep
-                m_nrcEmaAlpha = kEmaAlphaDark + (kEmaAlphaBright - kEmaAlphaDark) * t;
-            }
         }
 
         // Consume editor-requested weight reinit before any NRC work fires

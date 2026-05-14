@@ -580,7 +580,7 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
         ImGui::DragFloat ("Half extent (auto)", &n.sceneExtent,  0.0f);
         ImGui::EndDisabled();
         ImGui::TextDisabled(
-            "Derived from mesh localAabbs \u00d7 live instance transforms.");
+            "Derived from mesh localAabbs × live instance transforms.");
     }
 
     if (ImGui::CollapsingHeader("Optimizer")) {
