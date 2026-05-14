@@ -47,16 +47,27 @@ static tcnn::json BuildNetworkConfig() {
         {"encoding", {
             {"otype",  "Composite"},
             {"nested", tcnn::json::array({
+                //Position encoding: TriangleWave (Müller 2021's original
+                //choice), swapped back 2026-05-14 from a 16-level HashGrid.
+                //The hash grid gave finer spatial detail, but: (1) its 16
+                //scattered level lookups per query were L2-bandwidth-bound
+                //(SMs stalling on memory -> "GPU idle"); (2) its ~16.7M learned
+                //params were gradient-scattered + Adam-updated every training
+                //step -- the dominant training cost; (3) the level-indexing
+                //logic was register-heavy inside the JIT-fused kernel, capping
+                //occupancy. TriangleWave is a fixed (non-learned) basis: pure
+                //ALU, no lookups, no encoder backward, no encoder params in
+                //the optimizer, tiny register footprint. Trade is lower
+                //spatial resolution in the cache -- acceptable here because
+                //the cache only fires at x3+ (deep bounces) where the radiance
+                //it represents is low-frequency indirect GI. n_frequencies=12
+                //matches tcnn's documented NRC-replication config. To revert,
+                //restore the Grid/Hash block (log2_hashmap_size 19,
+                //base_resolution 16, per_level_scale 1.38, 16 levels x 2).
                 tcnn::json{
-                    {"n_dims_to_encode",       3u},
-                    {"otype",                  "Grid"},
-                    {"type",                   "Hash"},
-                    {"n_levels",               16u},
-                    {"n_features_per_level",   2u},
-                    {"log2_hashmap_size",      19u}, //~512k entries/level. Dropped from 21 to 19 to lift per-cell sample density 4x, which is the dominant lever for indoor stability and adaptability. The training-eligibility gate (NRC_TRAIN_ROUGHNESS_MIN) drops glossy-surface contamination so the higher density now feeds clean targets only. Encoder VRAM falls from ~256MB to ~64MB and per-query bandwidth shrinks accordingly. Trade is fine spatial detail in the converged state; bumping back to 21 reverses the speed/density gain.
-                    {"base_resolution",        16u},
-                    {"per_level_scale",        1.38f},
-                    {"interpolation",          "Smoothstep"},
+                    {"n_dims_to_encode", 3u},
+                    {"otype",            "TriangleWave"},
+                    {"n_frequencies",    12u},
                 },
                 tcnn::json{
                     {"n_dims_to_encode", 3u},
@@ -372,49 +383,32 @@ __global__ void fill_training_batch_kernel(
     const uint32_t lastV = (numVertices <= kMaxVerticesPerPath) ? (numVertices - 1u)
                                                                 : (kMaxVerticesPerPath - 1u);
 
-    //resolve emit depth: single-depth uses kTrainingEmitDepthOnly directly,
-    //decorrelated multi-depth picks one depth from kTrainingDepthMask via
-    //pathId hash so each path emits at most one row -- killing intra-path
-    //target correlation while preserving the multi-depth feature distribution.
+    //resolve which vertices emit a training row. MULTI-ROW: every permitted
+    //vertex emits its own (features, target) row -- a path is no longer
+    //collapsed to a single random depth.
+    //  kTrainingDecorrelatePaths = true  -> emit at every vertex in
+    //      (kTrainingDepthMask & emitMask): the depth mask AND the roughness
+    //      emit gate both have to permit it.
+    //  kTrainingDecorrelatePaths = false -> emit at every stored vertex that
+    //      passed the roughness emit gate (depth mask ignored).
+    //emitMask (the NRC_TRAIN_ROUGHNESS_MIN gate) always applies in both modes
+    //-- it is a separate concern from depth selection and is load-bearing
+    //(keeps glossy/specular surfaces out of the cache).
     //
-    //emitMask gates further: only vertices whose stored effective roughness
-    //cleared NRC_TRAIN_ROUGHNESS_MIN at storage time are eligible to be
-    //picked. Paths whose only candidate depths land on glossy surfaces drop
-    //out entirely (return below) so the cache is never taught a peaky
-    //L_s/(alpha+beta) target it cannot represent.
-    //
-    //sentinel 0xFFFFFFFFu means "no valid depth", path emits nothing.
-    uint32_t chosenDepth = kTrainingEmitDepthOnly;
-    if (kTrainingDecorrelatePaths) {
-        const uint32_t storedMask = (numVertices >= 32u) ? 0xFFFFFFFFu
-                                                         : ((1u << numVertices) - 1u);
-        const uint32_t mask  = kTrainingDepthMask & emitMask & storedMask;
-        const uint32_t count = static_cast<uint32_t>(__popc(mask));
-        if (count == 0u) {
-            chosenDepth = 0xFFFFFFFFu;
-        } else {
-            uint32_t h = pathId * 0x9E3779B9u;
-            h ^= h >> 16; h *= 0xC2B2AE35u;
-            h ^= h >> 13; h *= 0x27D4EB2Fu;
-            h ^= h >> 16;
-            const uint32_t target = h % count;
-            uint32_t cursor = mask;
-            //clear the `target` lowest set bits, leaving the picked one as the new lowest
-            for (uint32_t i = 0u; i < target; ++i) cursor &= cursor - 1u;
-            //__ffs returns 1-indexed position of lowest set bit, cursor != 0 here
-            chosenDepth = static_cast<uint32_t>(__ffs(static_cast<int>(cursor)) - 1);
-        }
-    } else {
-        //single-depth mode: also gate by emitMask so glossy hits at the chosen
-        //depth are skipped instead of contaminating the cache.
-        if (((1u << kTrainingEmitDepthOnly) & emitMask) == 0u) {
-            chosenDepth = 0xFFFFFFFFu;
-        }
-    }
+    //WARNING: multi-row reintroduces intra-path target correlation -- target_v
+    //and target_{v+1} share the L_s[v+1] term. The row budget
+    //(kFixedTrainingRecords) was raised so the extra rows are additive rather
+    //than displacing path diversity; watch indirect regions for chromatic
+    //darkening, the historical failure mode of multi-row emission.
+    const uint32_t storedMask = (numVertices >= 32u) ? 0xFFFFFFFFu
+                                                     : ((1u << numVertices) - 1u);
+    const uint32_t emitDepthMask = kTrainingDecorrelatePaths
+        ? (kTrainingDepthMask & emitMask & storedMask)
+        : (emitMask & storedMask);
 
-    //early-out when no eligible emission depth exists (debug-mode emits at
-    //every vertex regardless, so keep walking the chain in that case).
-    if (!kDebugConstantTraining && chosenDepth == 0xFFFFFFFFu) return;
+    //early-out when no vertex emits (debug-mode emits at every vertex
+    //regardless, so keep walking the chain in that case).
+    if (!kDebugConstantTraining && emitDepthMask == 0u) return;
 
     //seed backward recursion, tailRadPk semantics depend on tailKind
     //emitter/miss, direct radiance, cache, (alpha+beta) at cache-term vertex, RR tail=0
@@ -469,8 +463,9 @@ __global__ void fill_training_batch_kernel(
         //being a training ROW, not it leaking through the transport chain).
         //Truncating here costs the GI bounce *off* glossy surfaces (slight
         //darkening near shiny objects) but 0 is bounded error where the leak
-        //was not. chosenDepth is always an eligible vertex so the emitted
-        //target itself is never zeroed by this -- only transport vertices.
+        //was not. Emitted vertices are always emitMask-eligible (emitDepthMask
+        //is a subset of emitMask) so an emitted target is never zeroed by this
+        //-- only transport-only vertices are.
         const bool vEligible = (emitMask & (1u << static_cast<uint32_t>(v))) != 0u;
         const float ls_r = vEligible ? (lnee.x + beta.x * tail_r) : 0.0f;
         const float ls_g = vEligible ? (lnee.y + beta.y * tail_g) : 0.0f;
@@ -495,13 +490,13 @@ __global__ void fill_training_batch_kernel(
         const float tgt_g = safe_target(ls_g / rs_g);
         const float tgt_b = safe_target(ls_b / rs_b);
 
-        //Per-path single-row emission: row at chosenDepth (resolved above)
-        //enters the batch, all other vertices contribute only via backward
-        //fill. Decorrelated multi-depth gives chosenDepth a uniform pick from
-        //kTrainingDepthSet per pathId; otherwise chosenDepth = kTrainingEmitDepthOnly.
+        //Multi-row emission: a vertex emits iff its bit is set in
+        //emitDepthMask (resolved above from the depth mask + roughness gate).
+        //Every vertex still participates in the backward chain regardless of
+        //whether it emits a row.
         const bool shouldEmit = kDebugConstantTraining
             ? true
-            : (static_cast<uint32_t>(v) == chosenDepth);
+            : (((emitDepthMask >> static_cast<uint32_t>(v)) & 1u) != 0u);
         if (shouldEmit) {
             const uint32_t localCount = atomicAdd(outCounter, 1u);
             //cap at runtime target (renderer scales with resolution) AND at the
@@ -1132,8 +1127,19 @@ void Network::TrainFrame(
     //size this frame's batches from prev frame's count, 1-frame lag acceptable
     const uint32_t validVertices = m_impl->lastValidVertices;
 
+    //clamp to the fill kernel's actual write cap before sizing the batches.
+    //outCounter counts emit ATTEMPTS; with multi-row emission it can overshoot
+    //the cap, but only min(cap, outCounter) rows were actually WRITTEN. Sizing
+    //perBatch off the raw counter would make the SGD read past the written
+    //region into stale / uninitialized rows. lastValidVertices stays the raw
+    //(buffer-ceiling-clamped) value so the adaptive-tile feedback still sees
+    //true demand; only the SGD sizing uses the tighter write cap.
+    const uint32_t writeCap = (targetRecords < kTrainingRecordsPerFrame)
+                              ? targetRecords : kTrainingRecordsPerFrame;
+    const uint32_t writtenRows = (validVertices < writeCap) ? validVertices : writeCap;
+
     //round down to tcnn granularity, drops <=255 rows
-    const uint32_t perBatchRaw = validVertices / kTrainingBatchesPerFrame;
+    const uint32_t perBatchRaw = writtenRows / kTrainingBatchesPerFrame;
     const uint32_t perBatch    = (perBatchRaw / kBatchGranularity) * kBatchGranularity;
     if (perBatch == 0) {
         //still signal done so next inference doesn't wait on stale event

@@ -58,17 +58,17 @@ constexpr uint32_t kOutputDim    = 3;
 //per-path bucket cap, deeper paths drop tail vertices
 constexpr uint32_t kMaxVerticesPerPath = 8u;
 
-//4 hidden x 128 ReLU, FullyFusedMLP tensor-core path. Width 128 is the top
-//of the fused path's supported set {16,32,64,128} -- going wider forces the
-//~2x slower CutlassMLP. Bumped from 4x64 now that inference is L2-encoder-
-//bound rather than MLP-bound: the extra width is nearly free against the
-//encoder cost so we spend it on capacity. Depth kept at 4 (not 5+) to
-//limit dying-ReLU compounding in dark scenes; the collapse detector in
-//Renderer.cpp plus l2_reg=1e-5 and Adam epsilon=1e-4 guard the worst case
-//if a unit cascade still fires. EMA buffer + tcnn params auto-resize from
-//network->n_params() in Network::Init / ReinitWeights, no other code keys
-//off these two constants.
-constexpr uint32_t kHiddenWidth  = 128;
+//4 hidden x 64 ReLU, FullyFusedMLP tensor-core path. Width is from the fused
+//path's supported set {16,32,64,128}; wider forces the ~2x slower CutlassMLP.
+//Was briefly 128 (widened when inference looked encoder-bound, so the extra
+//MLP FLOPs were ~free at query time) -- narrowed back to 64 (the Müller 2021
+//width) because TRAINING backprops through the MLP and does pay for width,
+//and training wall-time was the concern. Depth kept at 4 to limit dying-ReLU
+//compounding in dark scenes; the collapse detector in Renderer.cpp is the
+//backstop if a unit cascade still fires. EMA buffer + tcnn params auto-resize
+//from network->n_params() in Network::Init / ReinitWeights, no other code
+//keys off these two constants.
+constexpr uint32_t kHiddenWidth  = 64;
 constexpr uint32_t kHiddenLayers = 4;
 
 //tcnn batch granularity
@@ -85,33 +85,30 @@ constexpr uint32_t kTrainingBatchSize       = 8192;
 constexpr uint32_t kTrainingBatchesPerFrame = 4;
 constexpr uint32_t kTrainingRecordsPerFrame = 131072;
 
-//Anchored 1080p density used to derive the fixed training records target
-//below: one traced training path per N screen pixels.
-//
-//History: started at 64. Dropped to 21 (~3x denser) to cut SGD gradient
-//variance -- that fixed dark-scene instability and sped adaptation a lot,
-//but tripled per-step SGD compute and made training wall-time significant.
-//Settled at 42 (~1.5x the original baseline): keeps most of the variance
-//reduction (perBatch ~7936 -> ~12288) while halving the cost of the 3x
-//peak. Why variance matters: with small batches a dark frame's sparse
-//bright NEE hits land unevenly across the 4 SGD batches, inflating Adam's
-//2nd moment, which throttles the effective step (slow adaptation) unevenly
-//across weights (instability). Bigger batches give each step a
-//representative dark/bright mix. Paired with LR raised to 2e-3 to keep
-//adaptation snappy at the reduced data volume, and kUnbiasedDenom=16 which
-//short-circuits most training paths into the cache so raygen tracing cost
-//drops too.
+//Anchored 1080p density: one traced training PATH per N screen pixels. The
+//adaptive tile side grows with resolution to keep this path density constant
+//(NRC stability was tuned at 1080p; scaling with screen area destabilized it).
+//History: 64 -> 21 (~3x, cut SGD gradient variance, fixed dark-scene
+//instability, but tripled SGD wall-time) -> settled 42 (~1.5x baseline).
 constexpr uint32_t kPixelsPerTrainingSample = 42u;
 
-//FIXED training records target across all resolutions. NRC stability tuning
-//was done at 1080p; scaling the sample count with screen area meant UWQHD/4K
-//were getting more samples per frame than the optimizer was tuned for, which
-//manifested as over-fast adaptation and instability. Anchoring at the 1080p
-//value (1920*1080/kPixelsPerTrainingSample = ~98742) keeps behavior
-//consistent and lets the adaptive tile side grow with resolution to hit this
-//constant target. Stays under the kMaxTrainingPaths / kTrainingRecordsPerFrame
-//ceiling of 131072, so the renderer's clamp never bites at common resolutions.
-constexpr uint32_t kFixedTrainingRecords = (1920u * 1080u) / kPixelsPerTrainingSample;
+//Upper bound on training ROWS one path emits. With multi-row emission (one
+//row per eligible vertex -- see kTrainingDecorrelatePaths) and
+//kTrainingDepthMask=0b011 a path emits up to 2 rows. The per-frame row budget
+//below is paths/frame * this, so the extra-vertex rows are ADDITIVE: they do
+//not displace path diversity. If kTrainingDecorrelatePaths is set false (emit
+//at ALL stored vertices) the true bound is kMaxVerticesPerPath; the budget
+//stays sized for the decorrelated case and the fill kernel just caps
+//over-emission, which is safe (dropped, not OOB).
+constexpr uint32_t kMaxEmitRowsPerPath = 2u;
+
+//FIXED per-frame training ROW target across all resolutions = paths/frame
+//(1080p-anchored) * kMaxEmitRowsPerPath. The adaptive tile side grows with
+//resolution to hit this constant. Stays under the kMaxTrainingPaths /
+//kTrainingRecordsPerFrame ceiling of 131072 so the renderer's clamp does not
+//bite at common resolutions.
+constexpr uint32_t kFixedTrainingRecords =
+    ((1920u * 1080u) / kPixelsPerTrainingSample) * kMaxEmitRowsPerPath;
 
 //training tile side adapts per frame to saturate trainer
 constexpr uint32_t kInitialTrainingTileSide = 8u;
@@ -137,58 +134,31 @@ constexpr uint32_t kMaxTrainingTileSide     = 32u;
 //Mirror: NRC_UNBIASED_DENOM in shaders/Nrc_v8.hlsli must match.
 constexpr uint32_t kUnbiasedDenom = 16u;
 
-//EXPERIMENT: emit training rows ONLY at this exact path depth.
-//Backward fill still walks every stored vertex so the emitted row at
-//depth K carries the full multi-bounce MC chain from K to terminal,
-//but rows for any vertex with depth != K are never written into the
-//training batch. Multi-depth unions produce systematic darkening /
-//chromatic bias in indirect regions regardless of loss, transform,
-//shuffle, or HashGrid capacity -- single-depth training is the only
-//configuration that gives clean predictions for indirect illumination.
-//  0 -> only primary hit (= x1 in paper's 1-indexed nomenclature)
-//  1 -> only first bounce (= x2)           <- currently best observed
-//  2 -> only second bounce (= x3)
-//  ...
-//Used when kTrainingDecorrelatePaths is false.
-constexpr uint32_t kTrainingEmitDepthOnly = 1u;
-
-//EXPERIMENT [H1]: per-path random depth selection.
-//Each path picks ONE depth from kTrainingDepthSet uniformly at random
-//(hashed from pathId) and emits exactly one training row at that depth.
-//Backward fill still walks every stored vertex so the emitted row
-//carries the full multi-bounce MC chain from its depth to terminal.
+//Multi-row training emission. The CUDA fill kernel emits a (features,target)
+//row for EVERY vertex permitted by the masks below -- a path contributes one
+//row per eligible vertex, not one row total.
+//  kTrainingDecorrelatePaths = true  -> emit at every vertex whose depth bit
+//      is set in kTrainingDepthMask AND whose roughness emit gate (emitMask)
+//      passed. e.g. 0b00000011 -> depths 0 and 1 (primary hit + first bounce).
+//  kTrainingDecorrelatePaths = false -> emit at every stored vertex that
+//      passed the roughness emit gate (kTrainingDepthMask ignored).
+//The roughness emit gate (NRC_TRAIN_ROUGHNESS_MIN) always applies in both
+//modes -- it is a separate concern from depth selection and is load-bearing.
 //
-//This preserves the multi-depth feature distribution but eliminates
-//within-path target correlation: the previous "emit at every v in
-//{0..K}" mode produced positively correlated gradients on shared MLP
-//parameters because target_v and target_{v+1} are both derived from
-//the same MC realization of L_s[v+1]. Adam's 2nd-moment EMA accumulates
-//that correlated variance and effective LR collapses on the affected
-//parameters, locking predictions near the EMA-init mean (~0) -- the
-//"indirect underestimated, sky color absorbed into shadow" signature.
+//HISTORY / WARNING: this previously emitted exactly ONE row per path (a
+//single random depth) specifically to kill intra-path target correlation --
+//target_v and target_{v+1} both derive from the same MC realization of
+//L_s[v+1], so multi-row emission produces positively correlated gradients
+//that can lock Adam's 2nd moment ("indirect underestimated, sky color
+//absorbed into shadow / chromatic darkening"). Multi-row was re-enabled
+//2026-05-14 to test whether the current config tolerates it; the row budget
+//(kFixedTrainingRecords, via kMaxEmitRowsPerPath) was raised so the extra
+//rows are additive, not displacing path diversity. WATCH indirect regions
+//for chromatic darkening -- if it returns, single-row (one random depth per
+//path) is the proven-safe fallback.
 //
-//Test protocol:
-//  (a) kTrainingDecorrelatePaths=false, kTrainingEmitDepthOnly=1
-//      -> single-depth baseline, expected to be clean.
-//  (b) kTrainingDecorrelatePaths=false with the kernel emit predicate
-//      modified to v <= 1 (or any multi-depth union) -> reproduces bias.
-//  (c) kTrainingDecorrelatePaths=true, kTrainingDepthSet={0,1}
-//      -> H1 test. Same multi-depth feature distribution as (b) but
-//         at most one row per path. If indirect regions recover, H1 is
-//         confirmed: intra-path correlation drives the bias and the
-//         fix is per-sample gradient clipping or AMSGrad. If still
-//         biased, H1 is ruled out and the next test is RelativeL2 eps.
-//
-//When kTrainingDecorrelatePaths is true, kTrainingEmitDepthOnly is ignored.
-//
-//The pick set is a 32-bit bitmask -- bit i set means depth i is eligible.
-//The kernel uses __popc + __ffs to count bits and resolve the n-th set bit
-//for the per-path random pick (constexpr arrays are not reachable from
-//device code, but a uint32_t constant is).
-//  0b00000011 = {0,1}    (cleanest H1 test, same row count as single-depth)
-//  0b00000110 = {1,2}    (matches the user's reported "K=1,2" failure case)
-//  0b00000111 = {0,1,2}
-//  0b11111111 = full {0..7}
+//kTrainingDepthMask bit i set = depth i eligible (used when decorrelate=true):
+//  0b00000011 = {0,1}   0b00000111 = {0,1,2}   0b11111111 = {0..7}
 constexpr bool     kTrainingDecorrelatePaths = true;
 constexpr uint32_t kTrainingDepthMask        = 0b00000011u;
 
@@ -241,12 +211,11 @@ static_assert(sizeof(PendingGI) == 16, "PendingGI must match Nrc_v8.hlsli");
 //numVertices field is packed:
 //  bits  0..7  numVertices count (max kMaxVerticesPerPath = 8 fits in 4 bits)
 //  bits  8..15 emitMask: bit i set = vertex i is training-emit-eligible
-//              (effective roughness >= NRC_TRAIN_ROUGHNESS_MIN at storage time)
+//              (raw GGX roughness >= NRC_TRAIN_ROUGHNESS_MIN at storage time)
 //  bits 16..31 reserved
 //The fill kernel intersects emitMask with kTrainingDepthMask so that only
-//diffuse-dominated vertices can be picked as the per-path emission depth;
-//chain accumulation still walks every stored vertex so tails through
-//ineligible bounces resolve correctly.
+//diffuse-dominated vertices emit training rows; chain accumulation still walks
+//every stored vertex so tails through ineligible bounces resolve correctly.
 struct TrainingPathMeta {
     uint32_t numVerticesPacked;  // count in low byte, emitMask in next byte
     uint32_t tailKind;

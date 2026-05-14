@@ -81,11 +81,11 @@ void Pass_raygen_v8()
     uint  nrcPathId      = NRC_INVALID_PATH;
     uint  nrcTailRadPk   = 0u;
     uint  nrcTailInfSlot = NRC_INVALID_SLOT;
-    //bit i set = vertex i was emitted on a training-eligible surface (effRough
-    //>= NRC_TRAIN_ROUGHNESS_MIN). The CUDA fill kernel intersects this with
-    //kTrainingDepthMask to pick a chosenDepth, dropping paths whose only
-    //stored vertices land on glossy surfaces. Chain accumulation still walks
-    //every vertex so tails through ineligible bounces still resolve correctly.
+    //bit i set = vertex i was stored on a training-eligible surface (raw GGX
+    //roughness >= NRC_TRAIN_ROUGHNESS_MIN). The CUDA fill kernel intersects
+    //this with kTrainingDepthMask and emits a training row at every vertex
+    //that passes both (multi-row). Chain accumulation still walks every vertex
+    //so tails through ineligible bounces still resolve correctly.
     uint  nrcEmitMask    = 0u;
     //NEE accumulator only lives within a single bounce iteration, never across the trace call
     float3 nrcLNeeAccum = float3(0, 0, 0);
