@@ -23,9 +23,12 @@ Renderer::Renderer(UINT width, UINT height)
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
+        //cuda:nrc_inference now also submits TrainFrame on auxStream so
+        //the dedicated cuda:nrc_train pass is gone -- one fewer D3D12
+        //cmd list close/execute/fence/reopen cycle per frame, training
+        //runs concurrently with resolve/debug/GI/shading.
         L"cuda:nrc_inference",                          L"barrier",
         L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
-        L"cuda:nrc_train",                              L"barrier",
         L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
         L"cuda:nrc_debug_inference",                    L"barrier",
         L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
@@ -150,6 +153,27 @@ void Renderer::InitDevice() {
                     s,
                     static_cast<const float*>(m_nrcInferenceOut.cudaPtr),
                     padded);
+
+                //Submit training inside the same cuda:* op so we do not
+                //pay a second close+execute+fence+reopen cycle on the
+                //D3D12 cmd list. TrainFrame ignores `s` and queues onto
+                //auxStream, gated on inferenceDoneEvent that Inference
+                //records on the main stream above. This lets training
+                //run concurrently with the rest of the frame (resolve,
+                //debug passes, GI, shading) instead of forcing the
+                //pipeline to round-trip through a second cuda:* pass.
+                //Removing the dedicated cuda:nrc_train pass entry from
+                //Renderer's pass list saves the WDDM scheduling +
+                //driver bookkeeping overhead of one full cmd list
+                //close/reopen per frame, which Nsight measured at
+                //multiple ms in large scenes.
+                m_nrcNetwork.TrainFrame(
+                    s,
+                    m_nrcTrainRecords.cudaPtr,
+                    m_nrcInferenceOut.cudaPtr,
+                    m_nrcInferenceCapacity,
+                    m_nrcTrainRecordsTarget,
+                    m_nrcEmaAlpha);
             });
 
             // Additional inference for the debug view only. Runs AFTER
@@ -158,31 +182,33 @@ void Renderer::InitDevice() {
             // with per-pixel predictions for Pass_nrc_debug_present.
             // Debug_query wrote one query per pixel at slot = pixelIdx,
             // so count is W*H.
-            RegisterCudaOp(L"nrc_debug_inference", [this]{
-                if (!m_nrcReady || !m_nrcSettings.debugView) return;
-                void* s = m_cudaInterop.Stream();
-                const uint32_t count   = GetWidth() * GetHeight();
-                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
-                const uint32_t padded  = nrc::AlignBatch(clamped);
-                m_nrcNetwork.Inference(
-                    s,
-                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
-                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
-                    padded);
-            });
+            RegisterCudaOp(L"nrc_debug_inference",
+                [this]{
+                    if (!m_nrcReady || !m_nrcSettings.debugView) return;
+                    void* s = m_cudaInterop.Stream();
+                    const uint32_t count   = GetWidth() * GetHeight();
+                    const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
+                    const uint32_t padded  = nrc::AlignBatch(clamped);
+                    m_nrcNetwork.Inference(
+                        s,
+                        static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
+                        static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
+                        padded);
+                },
+                //skip the entire fence round-trip when debug view is off;
+                //typical play config never enables debug view so this kills
+                //one full close/execute/fence/wait/reopen cycle per frame
+                [this]{ return m_nrcReady && m_nrcSettings.debugView; });
 
-            // Backward-fill the training targets from the per-path meta,
-            // walk each path's bucket in reverse, emit (features, target)
-            // rows into tcnn-ready scratch, then run the four SGD steps.
-            RegisterCudaOp(L"nrc_train", [this]{
-                if (!m_nrcReady) return;
-                m_nrcNetwork.TrainFrame(
-                    m_cudaInterop.Stream(),
-                    m_nrcTrainRecords.cudaPtr,
-                    m_nrcInferenceOut.cudaPtr,
-                    m_nrcInferenceCapacity,
-                    m_nrcTrainRecordsTarget);
-            });
+            // Backward-fill + 4 SGD steps were previously dispatched
+            // here from a dedicated cuda:nrc_train pass. They now ride
+            // along inside cuda:nrc_inference (TrainFrame submits to
+            // auxStream and is gated on inferenceDoneEvent), saving one
+            // full D3D12 cmd list close/execute/fence/reopen cycle per
+            // frame. Keep the registration as a no-op so any surviving
+            // L"cuda:nrc_train" pass list entry stays harmless instead
+            // of asserting in the dispatcher's lookup.
+            RegisterCudaOp(L"nrc_train", []{});
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
         }
@@ -1420,6 +1446,36 @@ void Renderer::PopulateCommandList() {
             m_nrcCollapseConsecutive = 0u;
         }
 
+        // Adaptive EMA smoothing factor. Dark scenes carry residual gradient
+        // jitter -- sparse bright NEE hits among mostly near-zero targets --
+        // that the EMA is meant to absorb; bright scenes have enough signal
+        // that light smoothing is fine and keeps scene-change adaptation fast.
+        // Key emaAlpha off the same brightness canary the collapse detector
+        // reads (mean inference output magnitude): low -> heavy smoothing,
+        // high -> light. The map is a log-space smoothstep between two
+        // anchors. NOTE: the anchors are in linear output-magnitude units and
+        // are GUESSES -- tune kEmaDarkAnchor / kEmaBrightAnchor by watching the
+        // LastInferenceOutMagnitudeMean value in a known-dark vs known-bright
+        // scene. This is a single global alpha keyed on the frame-wide mean,
+        // so a mixed scene (dark room + bright window) smooths by the average;
+        // per-region alpha would need a per-cell EMA, a much larger change.
+        if (m_nrcReady) {
+            constexpr float kEmaAlphaBright  = 0.965f; // light smoothing, fast adapt
+            constexpr float kEmaAlphaDark    = 0.990f; // heavy smoothing, stable
+            constexpr float kEmaBrightAnchor = 1.0f;   // mean |out| >= this -> bright
+            constexpr float kEmaDarkAnchor   = 0.01f;  // mean |out| <= this -> dark
+            const float mean = m_nrcNetwork.LastInferenceOutMagnitudeMean();
+            if (mean >= 0.0f) { // -1 = no readback yet; keep the prior value
+                const float lm = log2f(mean > 1e-8f ? mean : 1e-8f);
+                const float lo = log2f(kEmaDarkAnchor);
+                const float hi = log2f(kEmaBrightAnchor);
+                float t = (lm - lo) / (hi - lo);
+                t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+                t = t * t * (3.0f - 2.0f * t); // smoothstep
+                m_nrcEmaAlpha = kEmaAlphaDark + (kEmaAlphaBright - kEmaAlphaDark) * t;
+            }
+        }
+
         // Consume editor-requested weight reinit before any NRC work fires
         // on this frame. Network::ReinitWeights drains auxStream internally
         // and the follow-up cudaMemset on EMA forces a global device sync,
@@ -1691,13 +1747,23 @@ void Renderer::PopulateCommandList() {
             auto it = m_cudaOps.find(p.file);
             if (it == m_cudaOps.end()) break;
 
+            // shouldRun lets the registrar skip the entire interop round
+            // trip when no actual CUDA work is needed this frame. The cmd
+            // list close + ExecuteCommandLists + fence signal + CUDA wait
+            // + CUDA signal + queue wait + cmd list reopen cycle costs
+            // several ms of WDDM cross context overhead even with an
+            // empty CUDA stream, so skipping it for known no-op ops
+            // (debug inference when debug view is off etc.) is a clear
+            // win.
+            if (!it->second.shouldRun()) break;
+
             // D3D12 -> CUDA: flush current list and signal fence at value N.
             const UINT64 preVal  = ++m_cudaFenceValue;
             m_ctx.CloseExecuteAndSignal(m_cudaFence.fence.Get(), preVal);
             m_cudaInterop.CudaWait(m_cudaFence, preVal);
 
             // CUDA work (tcnn kernels) enqueued on the interop stream.
-            it->second();
+            it->second.fn();
 
             // CUDA -> D3D12: signal N+1 from CUDA, queue-wait, reopen list.
             const UINT64 postVal = ++m_cudaFenceValue;

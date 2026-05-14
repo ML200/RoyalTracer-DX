@@ -74,9 +74,20 @@ public:
     //CUDA INTEROP
     //====================================
     //callback for L"cuda:<name>" pass entries, runs on CudaInterop stream, fence-gated
-    using CudaOpFn = std::function<void()>;
+    //shouldRun is checked by the dispatcher BEFORE the D3D12 cmd list close/execute/
+    //fence/wait/reopen cycle -- when it returns false the round-trip is skipped
+    //entirely, saving the WDDM cross-context overhead even when the op would no-op.
+    using CudaOpFn   = std::function<void()>;
+    using CudaOpPred = std::function<bool()>;
+    struct CudaOp {
+        CudaOpFn   fn;
+        CudaOpPred shouldRun = [] { return true; };
+    };
     void RegisterCudaOp(const std::wstring& name, CudaOpFn fn) {
-        m_cudaOps[name] = std::move(fn);
+        m_cudaOps[name] = CudaOp{ std::move(fn), [] { return true; } };
+    }
+    void RegisterCudaOp(const std::wstring& name, CudaOpFn fn, CudaOpPred shouldRun) {
+        m_cudaOps[name] = CudaOp{ std::move(fn), std::move(shouldRun) };
     }
     CudaInterop& GetCudaInterop() { return m_cudaInterop; }
 
@@ -251,7 +262,7 @@ private:
     CudaInterop                              m_cudaInterop;
     CudaInterop::Fence                       m_cudaFence;
     UINT64                                   m_cudaFenceValue = 0;
-    std::unordered_map<std::wstring, CudaOpFn> m_cudaOps;
+    std::unordered_map<std::wstring, CudaOp> m_cudaOps;
 
     //====================================
     //NRC STATE
@@ -288,4 +299,11 @@ private:
     //so the freshly seeded network has time to learn before the canary can fire again.
     uint32_t                                 m_nrcCollapseConsecutive = 0u;
     uint32_t                                 m_nrcReinitCooldown      = 0u;
+    //per-frame adaptive EMA smoothing factor passed to TrainFrame. Recomputed
+    //each NRC tick from the scene brightness signal (LastInferenceOutMagnitudeMean):
+    //dark scenes get heavier smoothing (residual gradient jitter is worst where
+    //targets are near zero), bright scenes get lighter smoothing for fast
+    //adaptation. Initialised to the bright-scene value so the warmup frames
+    //before the first brightness readback behave like the old fixed config.
+    float                                    m_nrcEmaAlpha = 0.965f;
 };

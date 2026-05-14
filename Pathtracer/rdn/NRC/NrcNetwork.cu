@@ -23,7 +23,11 @@ static tcnn::json BuildNetworkConfig() {
         {"loss", {{"otype", "L2"}}},
         {"optimizer", {
             {"otype",         "Adam"},
-            {"learning_rate", 1.5e-3f},
+            //2.0e-3 (raised from 1.5e-3) to keep adaptation snappy after the
+            //training-data volume was halved back from the 3x peak to ~1.5x
+            //baseline (kPixelsPerTrainingSample). The bigger-than-original
+            //batch still gives the variance headroom for the higher LR.
+            {"learning_rate", 2.0e-3f},
             {"beta1",         0.9f},
             {"beta2",         0.995f},
             {"epsilon",       1e-4f},
@@ -38,7 +42,7 @@ static tcnn::json BuildNetworkConfig() {
                     {"type",                   "Hash"},
                     {"n_levels",               16u},
                     {"n_features_per_level",   2u},
-                    {"log2_hashmap_size",      21u}, //~2M entries/level. Kept at 21 for the finer spatial precision in the converged state; the cost is slower training (~4x fewer samples per cell vs log2=19) which is compensated by a higher LR (per-sample learning rate up so each rarer hit teaches more).
+                    {"log2_hashmap_size",      19u}, //~512k entries/level. Dropped from 21 to 19 to lift per-cell sample density 4x, which is the dominant lever for indoor stability and adaptability. The training-eligibility gate (NRC_TRAIN_ROUGHNESS_MIN) drops glossy-surface contamination so the higher density now feeds clean targets only. Encoder VRAM falls from ~256MB to ~64MB and per-query bandwidth shrinks accordingly. Trade is fine spatial detail in the converged state; bumping back to 21 reverses the speed/density gain.
                     {"base_resolution",        16u},
                     {"per_level_scale",        1.38f},
                     {"interpolation",          "Smoothstep"},
@@ -111,6 +115,15 @@ __device__ __forceinline__ float safe_target(float v) {
 //queue stays small enough to keep cache lines hot inside the encoder.
 //A finer grid (64^3) buys minor extra coherence at fine HashGrid levels
 //but quadruples the scan cost and the bucket scratch.
+//
+//Master toggle. The sort intends to cluster queries spatially so HashGrid
+//cache lines stay hot, but for very large inference batches the count and
+//scatter kernels are dominated by global atomic contention into the 32k
+//bucket counters and the cost can outweigh the encoder locality win,
+//particularly with log2_hashmap_size=19 where the encoder fits in a few MB
+//of L2 anyway. Set false to skip the entire sort phase and dispatch
+//inference directly on the renderer's input buffer.
+constexpr bool kEnableSpatialSort = false;
 
 constexpr uint32_t kSortBucketsPerAxis = 32u;
 constexpr uint32_t kSortBuckets        = kSortBucketsPerAxis * kSortBucketsPerAxis * kSortBucketsPerAxis;
@@ -265,21 +278,55 @@ __global__ void ema_update_kernel(
 //COLLAPSE DETECTOR REDUCTION
 //====================================
 //sum |out[r]|+|out[g]|+|out[b]| across the inference batch into a single
-//float. atomicAdd into shared then global keeps the launch cheap (one tiny
-//kernel per inference) and avoids the cost of a full hierarchical scan.
-//The host divides by (count*3) for a mean magnitude per channel that the
-//renderer compares against a collapse threshold.
+//float. The host divides by (count*3) for a mean magnitude per channel
+//that the renderer compares against a collapse threshold.
+//
+//Hierarchical reduction: warp-shuffle inside each warp, shared mem across
+//warps inside a block, then ONE atomicAdd per block into the global sum.
+//With 256 threads/block on a multi-million query batch this drops global
+//atomic ops from ~N (one per thread) to ~N/256 (one per block) and
+//eliminates the L2 atomic contention that was serialising the whole
+//kernel. The previous version did `atomicAdd(sumOut, ...)` per thread,
+//which on a ~5M batch took multiple ms of essentially sequential atomic
+//queue traffic and starved overlapping streams of GPU resources -- the
+//visible "both inference and training streams sit idle" gap in the Nsight
+//timeline came directly from this kernel saturating the atomic units.
+//Block size MUST be 256 to match the host launch and the warpSums size.
 __global__ void nrc_infout_sum_kernel(
     const float* __restrict__ out,
     uint32_t                  count,
     float*       __restrict__ sumOut)
 {
-    const uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= count) return;
-    const float r = out[tid * kOutputDim + 0];
-    const float g = out[tid * kOutputDim + 1];
-    const float b = out[tid * kOutputDim + 2];
-    atomicAdd(sumOut, fabsf(r) + fabsf(g) + fabsf(b));
+    __shared__ float warpSums[8]; //256 threads / 32 lanes per warp = 8 warps
+    const uint32_t tid  = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t lane = threadIdx.x & 31u;
+    const uint32_t warp = threadIdx.x >> 5;
+
+    float local = 0.0f;
+    if (tid < count) {
+        const float r = out[tid * kOutputDim + 0];
+        const float g = out[tid * kOutputDim + 1];
+        const float b = out[tid * kOutputDim + 2];
+        local = fabsf(r) + fabsf(g) + fabsf(b);
+    }
+
+    //warp reduction via shuffle, no shared mem traffic for the inner step
+    for (uint32_t offset = 16u; offset > 0u; offset >>= 1) {
+        local += __shfl_down_sync(0xFFFFFFFFu, local, offset);
+    }
+
+    //one shared mem write per warp, lane 0 of each warp publishes the warp sum
+    if (lane == 0u) warpSums[warp] = local;
+    __syncthreads();
+
+    //first warp reduces the 8 warp sums and emits a single atomic per block
+    if (warp == 0u) {
+        local = (lane < 8u) ? warpSums[lane] : 0.0f;
+        for (uint32_t offset = 4u; offset > 0u; offset >>= 1) {
+            local += __shfl_down_sync(0xFFFFFFFFu, local, offset);
+        }
+        if (lane == 0u) atomicAdd(sumOut, local);
+    }
 }
 
 //====================================
@@ -301,7 +348,9 @@ __global__ void fill_training_batch_kernel(
     if (pathId >= trainingPathCount || pathId >= kMaxTrainingPaths) return;
 
     const uint32_t* meta = reinterpret_cast<const uint32_t*>(trainBuf + pathId * kPathMetaStride);
-    const uint32_t numVertices  = meta[0];
+    const uint32_t metaWord0    = meta[0];
+    const uint32_t numVertices  = UnpackNumVertices(metaWord0);
+    const uint32_t emitMask     = UnpackEmitMask(metaWord0);
     const uint32_t tailKind     = meta[1];
     const uint32_t inferenceSlot = meta[2];
     const uint32_t tailRadPk    = meta[3];
@@ -316,10 +365,19 @@ __global__ void fill_training_batch_kernel(
     //decorrelated multi-depth picks one depth from kTrainingDepthMask via
     //pathId hash so each path emits at most one row -- killing intra-path
     //target correlation while preserving the multi-depth feature distribution.
+    //
+    //emitMask gates further: only vertices whose stored effective roughness
+    //cleared NRC_TRAIN_ROUGHNESS_MIN at storage time are eligible to be
+    //picked. Paths whose only candidate depths land on glossy surfaces drop
+    //out entirely (return below) so the cache is never taught a peaky
+    //L_s/(alpha+beta) target it cannot represent.
+    //
     //sentinel 0xFFFFFFFFu means "no valid depth", path emits nothing.
     uint32_t chosenDepth = kTrainingEmitDepthOnly;
     if (kTrainingDecorrelatePaths) {
-        const uint32_t mask  = kTrainingDepthMask;
+        const uint32_t storedMask = (numVertices >= 32u) ? 0xFFFFFFFFu
+                                                         : ((1u << numVertices) - 1u);
+        const uint32_t mask  = kTrainingDepthMask & emitMask & storedMask;
         const uint32_t count = static_cast<uint32_t>(__popc(mask));
         if (count == 0u) {
             chosenDepth = 0xFFFFFFFFu;
@@ -335,7 +393,17 @@ __global__ void fill_training_batch_kernel(
             //__ffs returns 1-indexed position of lowest set bit, cursor != 0 here
             chosenDepth = static_cast<uint32_t>(__ffs(static_cast<int>(cursor)) - 1);
         }
+    } else {
+        //single-depth mode: also gate by emitMask so glossy hits at the chosen
+        //depth are skipped instead of contaminating the cache.
+        if (((1u << kTrainingEmitDepthOnly) & emitMask) == 0u) {
+            chosenDepth = 0xFFFFFFFFu;
+        }
     }
+
+    //early-out when no eligible emission depth exists (debug-mode emits at
+    //every vertex regardless, so keep walking the chain in that case).
+    if (!kDebugConstantTraining && chosenDepth == 0xFFFFFFFFu) return;
 
     //seed backward recursion, tailRadPk semantics depend on tailKind
     //emitter/miss, direct radiance, cache, (alpha+beta) at cache-term vertex, RR tail=0
@@ -379,10 +447,23 @@ __global__ void fill_training_batch_kernel(
         float3 lnee = unpack_rgb9e5(L_neePk);
         float3 beta = unpack_rgb9e5(betaLocalPk);
 
-        //MC estimator, L_s[v] = L_nee + beta*tail
-        const float ls_r = lnee.x + beta.x * tail_r;
-        const float ls_g = lnee.y + beta.y * tail_g;
-        const float ls_b = lnee.z + beta.z * tail_b;
+        //MC estimator, L_s[v] = L_nee + beta*tail -- EXCEPT for sub-threshold
+        //(glossy/specular) vertices, whose emitMask bit is clear. Those
+        //contribute 0 to the chain: their outgoing radiance is a view-
+        //dependent reflection the position-dominant cache cannot represent,
+        //and beta~=1 / L_nee~=0 on a glossy surface means they otherwise pass
+        //the reflected tail straight through into the target of the eligible
+        //diffuse vertex upstream -- that is the "cache still learns
+        //reflections" artifact (the emit gate only stops the glossy vertex
+        //being a training ROW, not it leaking through the transport chain).
+        //Truncating here costs the GI bounce *off* glossy surfaces (slight
+        //darkening near shiny objects) but 0 is bounded error where the leak
+        //was not. chosenDepth is always an eligible vertex so the emitted
+        //target itself is never zeroed by this -- only transport vertices.
+        const bool vEligible = (emitMask & (1u << static_cast<uint32_t>(v))) != 0u;
+        const float ls_r = vEligible ? (lnee.x + beta.x * tail_r) : 0.0f;
+        const float ls_g = vEligible ? (lnee.y + beta.y * tail_g) : 0.0f;
+        const float ls_b = vEligible ? (lnee.z + beta.z * tail_b) : 0.0f;
 
         //target = L_s/(alpha+beta), LINEAR (no transform). L2 + linear gives an
         //unbiased optimum at E[L/r]; prior sqrt transform was Jensen-biased
@@ -457,10 +538,11 @@ struct Network::Impl {
     float*    trainTargets  = nullptr;
     uint32_t* trainCounter  = nullptr;
 
-    //EMA weights, inference reads emaParams, training mutates raw params
+    //EMA weights, inference reads emaParams, training mutates raw params.
+    //emaAlpha is no longer stored here -- it is a per-frame TrainFrame arg,
+    //driven adaptively by the renderer from the scene brightness signal.
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
-    float                      emaAlpha  = 0.965f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback
@@ -784,6 +866,18 @@ void Network::Inference(
     //wait for prev frame's training to finish writing emaParams, first call no-op
     cudaStreamWaitEvent(stream, m_impl->trainDoneEvent, 0);
 
+    //Master toggle bypass: dispatch tcnn directly on the renderer's input
+    //buffer. The 4 sort/unsort helper kernels and their scratch buffers are
+    //skipped entirely. Used to A/B test whether the sort's HashGrid locality
+    //win exceeds its global atomic contention cost on this scene size.
+    if (!kEnableSpatialSort) {
+        tcnn::GPUMatrix<float> input (const_cast<float*>(inputDevPtr),  kRawInputDim, count);
+        tcnn::GPUMatrix<float> output(                  outputDevPtr,   kOutputDim,   count);
+        m_impl->model.network->inference(stream, input, output);
+        cudaEventRecord(m_impl->inferenceDoneEvent, stream);
+        return;
+    }
+
     const bool sortOK = m_impl->EnsureSortScratch(count);
     if (!sortOK) {
         //fallback: original unsorted path. Keeps the renderer alive if the
@@ -968,7 +1062,8 @@ void Network::TrainFrame(
     const void* trainRecordsDevPtr,
     const void* inferenceOutDevPtr,
     uint32_t    inferenceOutCapacity,
-    uint32_t    targetRecords)
+    uint32_t    targetRecords,
+    float       emaAlpha)
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
@@ -1044,7 +1139,10 @@ void Network::TrainFrame(
     //them, so the bracket is collapsed onto W_final. Total weight on the
     //SGD block is still (1 - a^N) which matches the exact form, only the
     //within bracket distribution is approximated.
-    const float alpha = m_impl->emaAlpha;
+    //per-frame adaptive smoothing factor from the caller (brightness-keyed).
+    //Clamp defensively so a bad caller value can't produce a^N outside [0,1]
+    //and corrupt the EMA coefficients below.
+    const float alpha = fminf(fmaxf(emaAlpha, 0.0f), 0.9999f);
     for (uint32_t b = 0; b < kTrainingBatchesPerFrame; ++b) {
         const float* fPtr = m_impl->trainFeatures + b * perBatch * kRawInputDim;
         const float* tPtr = m_impl->trainTargets  + b * perBatch * kOutputDim;

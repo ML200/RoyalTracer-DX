@@ -20,13 +20,17 @@ static const uint NRC_INFERENCE_OUT_STRIDE  = NRC_OUTPUT_DIM   * 4u;
 static const uint NRC_TRAINING_TILE_SIDE    = 8u;
 static const uint NRC_TRAINING_TILE_MIN     = 4u;
 static const uint NRC_TRAINING_TILE_MAX     = 32u;
-//Set to 1 = 100% unbiased training, no self-iteration. Trades the paper's
-//multi-bounce cache-as-tail signal for immediate adaptation to lighting
-//changes. With biased paths, the cache's own predictions feed back into
-//training targets so a stale cache reinforces itself; pure unbiased breaks
-//that loop at the cost of noisier deep bounces (RR-truncated tails only).
-//Müller et al. 2021 §3.2 used 16. Raise back if multi-bounce GI degrades.
-static const uint NRC_UNBIASED_DENOM        = 1u;
+//1/denom of training paths stay fully unbiased, (denom-1)/denom short-
+//circuit deep bounces into the cache (cache-as-tail). Set to 16 (paper's
+//value, Müller et al. 2021 §3.2). With biased paths the cache's own
+//prediction feeds back into training targets -- a self-reinforcement loop
+//that an earlier session saw cause brightness creep on the old config.
+//Re-enabled because the current config (5x128 MLP, log2=19, 1.5x training
+//data, roughness emit-gate) should keep the cache accurate enough for the
+//loop to stay stable, and 15/16 paths short-circuiting is a big raygen
+//cost saving. kTargetMax=10 is the backstop; watch GI for slow drift.
+//Mirror: kUnbiasedDenom in rdn/NRC/NrcLayout.h must match.
+static const uint NRC_UNBIASED_DENOM        = 16u;
 
 static const uint NRC_MAX_TRAINING_PATHS    = 131072u;
 static const uint NRC_MAX_VERTICES_PER_PATH = 8u;
@@ -315,16 +319,23 @@ inline uint NrcAllocateTrainingPath()
     return pathId;
 }
 
+//emitMask holds one bit per vertex slot; bit i set = vertex i is eligible to
+//be picked as the per-path emission depth in the CUDA fill kernel. Packed
+//into the upper byte of the numVertices word (numVertices itself is bounded
+//by NRC_MAX_VERTICES_PER_PATH=8 so bits 0..3 are sufficient for the count).
+//Layout: bits 0..7 = numVertices, bits 8..15 = emitMask, bits 16..31 reserved.
 inline void NrcStorePathMeta(
     uint pathId,
     uint numVertices,
+    uint emitMask,
     uint tailKind,
     uint inferenceSlot,
     uint tailRadiancePk)
 {
     if (pathId >= NRC_MAX_TRAINING_PATHS) return;
-    const uint base = pathId * NRC_TPM_STRIDE;
-    g_NrcTrainRecords.Store4(base, uint4(numVertices, tailKind, inferenceSlot, tailRadiancePk));
+    const uint base   = pathId * NRC_TPM_STRIDE;
+    const uint packed = (numVertices & 0xFFu) | ((emitMask & 0xFFu) << 8u);
+    g_NrcTrainRecords.Store4(base, uint4(packed, tailKind, inferenceSlot, tailRadiancePk));
 }
 
 //====================================

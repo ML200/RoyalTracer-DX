@@ -81,6 +81,12 @@ void Pass_raygen_v8()
     uint  nrcPathId      = NRC_INVALID_PATH;
     uint  nrcTailRadPk   = 0u;
     uint  nrcTailInfSlot = NRC_INVALID_SLOT;
+    //bit i set = vertex i was emitted on a training-eligible surface (effRough
+    //>= NRC_TRAIN_ROUGHNESS_MIN). The CUDA fill kernel intersects this with
+    //kTrainingDepthMask to pick a chosenDepth, dropping paths whose only
+    //stored vertices land on glossy surfaces. Chain accumulation still walks
+    //every vertex so tails through ineligible bounces still resolve correctly.
+    uint  nrcEmitMask    = 0u;
     //NEE accumulator only lives within a single bounce iteration, never across the trace call
     float3 nrcLNeeAccum = float3(0, 0, 0);
 
@@ -509,6 +515,19 @@ void Pass_raygen_v8()
                 nrcPathId, vIdx, features,
                 PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
                 PackRGB9E5(NrcCleanRadiance(updateWeight)));
+
+            //flag this vertex emit-eligible only if its RAW GGX roughness
+            //clears the training gate. Gating on raw roughness (not an
+            //energy-weighted blend) is deliberate: a dielectric always carries
+            //a ~4% Fresnel specular lobe, and if that lobe is sharp (low pr)
+            //it produces a view-dependent mirror reflection the position-
+            //dominant cache cannot represent -- regardless of how much diffuse
+            //base sits under it. An energy-fraction blend lets a bright/
+            //colored diffuse base hide a pr=0 mirror coat (e.g. opaque water),
+            //which then trains high-variance reflection targets that
+            //destabilize shared HashGrid cells.
+            if (hitLocalPr >= NRC_TRAIN_ROUGHNESS_MIN) nrcEmitMask |= (1u << vIdx);
+
             nrcStateA = pk_set_vidx(nrcStateA, vIdx + 1u);
         }
 
@@ -700,17 +719,17 @@ void Pass_raygen_v8()
                 NrcAccumulateA(nrcA, hitT, prev_pdf, cosHit);
             }
 
-            //multilobe roughness gate
-            const float3 alphaG  = hitLocalKd * (1.0f - hitLocalPm);
-            const float3 betaG   = lerp(float3(0.04f, 0.04f, 0.04f), hitLocalKd, hitLocalPm);
-            const float  alphaL  = GetPHat(alphaG);
-            const float  betaL   = GetPHat(betaG);
-            const float  specW   = betaL / (alphaL + betaL + EPSILON);
-            const float  effRough = lerp(1.0f, hitLocalPr, specW);
-
+            //cache fire gate on RAW GGX roughness, matching the training emit
+            //gate. The prior energy-weighted blend (lerp(1,pr,specW)) let a
+            //bright diffuse base hide a sharp pr=0 Fresnel coat, so the cache
+            //both trained on AND fired on mirror-like surfaces (opaque water
+            //etc.). A surface below NRC_CACHE_ROUGHNESS_MIN raw roughness now
+            //just keeps tracing -- its mirror reflection is path-traced
+            //correctly instead of being replaced by an unrepresentable cache
+            //query.
             const bool shouldFire =
                 !prevSpec &&
-                (effRough >= NRC_CACHE_ROUGHNESS_MIN) &&
+                (hitLocalPr >= NRC_CACHE_ROUGHNESS_MIN) &&
                 NrcShouldCacheTerminate(nrcHitIdx, nrcA0, nrcA, nrcCacheEligible, nrc_area_spread_c);
 
             if (shouldFire)
@@ -910,6 +929,14 @@ void Pass_raygen_v8()
                     nrcPathId, vIdx, features,
                     PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
                     PackRGB9E5(NrcCleanRadiance(updateWeight)));
+
+                //emit-eligibility gate on RAW GGX roughness (see primary-loop
+                //comment): a sharp Fresnel lobe is uncacheable regardless of
+                //diffuse-base energy, so an energy-weighted blend is wrong here.
+                //Vertex is still stored so the kernel's chain accumulation can
+                //use its lnee/beta when other depths are picked.
+                if (hitLocalPr >= NRC_TRAIN_ROUGHNESS_MIN) nrcEmitMask |= (1u << vIdx);
+
                 nrcStateA = pk_set_vidx(nrcStateA, vIdx + 1u);
             }
 
@@ -966,7 +993,7 @@ void Pass_raygen_v8()
     {
         const uint tailKind = (nrcTailKindFinal != NRC_TAIL_INVALID) ? nrcTailKindFinal : NRC_TAIL_RR;
         const uint infSlot  = (tailKind == NRC_TAIL_CACHE) ? nrcTailInfSlot : NRC_INVALID_SLOT;
-        NrcStorePathMeta(nrcPathId, nrcTrainVIdxFinal, tailKind, infSlot, nrcTailRadPk);
+        NrcStorePathMeta(nrcPathId, nrcTrainVIdxFinal, nrcEmitMask, tailKind, infSlot, nrcTailRadPk);
     }
 
     //cache terminated pixels defer W/M/invalidation to Pass_nrc_resolve_v8
