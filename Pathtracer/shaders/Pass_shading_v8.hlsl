@@ -5,12 +5,39 @@
 //REVERSIBLE PRE-TONEMAP FOR DLSS RR
 //====================================
 //DLSS RR doesn't tolerate large brightness differences in input — emitters
-//used to be saturate'd to [0,1] which destroyed their HDR. Per-channel
-//Reinhard (c / (1 + c)) is reversible: postprocess applies the inverse to
-//recover HDR before AgX, so tonemapping happens once, not twice.
+//used to be saturate'd to [0,1] which destroyed their HDR. Luminance-based
+//Reinhard (c * 1/(1+L)) is reversible AND preserves hue across the
+//compression, unlike per-channel Reinhard which shifts saturated colors
+//(a bright red emitter would have R compressed much more than G/B, leaking
+//pink into the DLSS input). Postprocess applies the matching inverse so
+//tonemapping happens once, not twice.
 inline float3 DlssReinhard(float3 c) {
     c = max(c, 0.0f);
-    return c / (1.0f + c);
+    const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+    return c / (1.0f + lum);
+}
+
+//====================================
+//AERIAL PERSPECTIVE HELPER
+//====================================
+//Atmospheric extinction + in-scatter between camera and a scene hit point.
+//Returns the modulated scene radiance. Distant outdoor surfaces pick up the
+//haze tint, indoor / close geometry passes through nearly unchanged. Skipped
+//for sky/sun pixels (those already integrate the full atmosphere in raygen).
+inline float3 ApplyAerialPerspective(float3 sceneRadiance, float3 camPosWorld,
+                                     float3 hitPosWorld, float3 sunDir)
+{
+    const float3 toHit     = hitPosWorld - camPosWorld;
+    const float  worldDist = length(toHit);
+    if (worldDist <= 1e-3f) return sceneRadiance;
+
+    const float3 viewDir   = toHit / worldDist;
+    const float  hitDistKm = worldDist * (1.0f / WORLD_UNITS_PER_KM);
+
+    float3 transmittance;
+    const float3 inScatter = ComputeAerialPerspective(viewDir, sunDir, hitDistKm, transmittance);
+
+    return sceneRadiance * transmittance + inScatter * SKY_INTENSITY;
 }
 
 //====================================
@@ -20,6 +47,13 @@ inline float3 DlssReinhard(float3 c) {
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
+
+    //sky/sun samplers read the camera altitude through a static, set once per
+    //invocation so ComputeSunState and ComputeAerialPerspective see the right
+    //observer in this dispatch
+    const float3 camPosWorld = mul(viewI, float4(0, 0, 0, 1)).xyz;
+    SetSkyObserver(camPosWorld);
+    const SunState sunState = ComputeSunState();
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)];
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
@@ -37,6 +71,29 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
+
+    //====================================
+    //AERIAL PERSPECTIVE
+    //====================================
+    //Apply atmosphere between camera and the primary hit point before the running
+    //average + DLSS bound so every downstream consumer (gPermanentData ground
+    //truth slice, the DLSS clean slice, the noisy debug slice) sees the same
+    //atmospherically modulated radiance. Skipped for sky/sun rays — those are
+    //integrated through the full atmosphere already inside the raygen miss path.
+    {
+        float2 dimsAP    = float2(IMG_W, IMG_H);
+        uint   pixelIdxAP = MapPixelID(dimsAP, DTid.xy);
+        bool isEmissiveOrSkyAP = load_isEmitter(g_sample_current, pixelIdxAP);
+        uint apInstID = load_instID(g_sample_current, pixelIdxAP);
+        bool hasPositionAP = (apInstID != 0xFFFFFFFFu);
+        if (hasPositionAP) {
+            uint   apPrimID  = load_primID(g_sample_current, pixelIdxAP);
+            float2 apBary    = load_bary(g_sample_current, pixelIdxAP);
+            float3 hitPosWorld = ReconstructPosition(apInstID, apPrimID, apBary);
+            accumulation = ApplyAerialPerspective(accumulation, camPosWorld,
+                                                  hitPosWorld, sunState.dirWS);
+        }
+    }
 
     bool cameraChanged = false;
     [unroll]
@@ -145,7 +202,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         uint sInstID = load_instID(g_sample_current, pixelIdx);
         uint sPrimID = load_primID(g_sample_current, pixelIdx);
         float2 sBary = load_bary(g_sample_current, pixelIdx);
-        SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, mul(viewI, float4(0, 0, 0, 1)).xyz);
+        SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, camPosWorld);
         //DLSS RR input data
         g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
 

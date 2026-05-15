@@ -75,4 +75,7 @@ private:
 
     float    m_jitterX = 0.0f, m_jitterY = 0.0f;
     uint32_t m_jitterFrameIndex = 0;
+    //accumulated wall-clock seconds since Init, written into the cbuffer so
+    //auto-exposure (and any future framerate-independent system) can derive dt
+    float    m_wallTimeSec = 0.0f;
 };

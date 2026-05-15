@@ -591,10 +591,11 @@ void Renderer::CreateRaytracingOutputBuffer() {
 void Renderer::CreatePathStateBuffer() {
     ResourceFactory rf(m_ctx.Device());
     m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
-    // 16B persistent: [0]=sumLogLumFixed (u32), [4]=smoothedLogLum (f32),
-    // [8]=isInitialized (u32 flag), [12]=pad. Cleared once at create; finalize
-    // shader manages it after that.
-    m_autoExposeBuffer = rf.CreateUAVBuffer(16, L"AutoExposeState");
+    // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
+    // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),
+    // [20..31]=pad. 32 B keeps the UAV 16 B aligned for D3D12. Cleared once at
+    // create; finalize shader manages it after that.
+    m_autoExposeBuffer = rf.CreateUAVBuffer(32, L"AutoExposeState");
 }
 
 //====================================

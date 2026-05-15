@@ -81,53 +81,108 @@ float3 AgXDefaultContrastApprox(float3 x) {
           -  0.00232f;
 }
 
+//Soft display-gamut handling for AgX output. Pure saturate per-channel hue-
+//shifts saturated emitters (a (1.2, 0.4, 0.2) pixel goes (1, 0.4, 0.2) and
+//looks more orange than the original red). We instead desaturate toward
+//luminance as the brightest channel overshoots 1.0, then guarantee peak ≤ 1.
+//Both the chroma reduction and the final normalize are gentle; pixels already
+//in-gamut pass through unchanged.
+inline float3 AgXSoftGamutClamp(float3 c) {
+    c = max(c, 0.0f);
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak > 1.0f) {
+        const float lum = 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+        const float t   = saturate(1.0f - 1.0f / peak);  // 0 at peak=1, →1 at peak→∞
+        c = lerp(c, lum.xxx, t);
+        peak = max(c.r, max(c.g, c.b));
+        if (peak > 1.0f) c /= peak;
+    }
+    return c;
+}
+
 float3 AgX(float3 color) {
     //sRGB -> AgX working primaries
     color = mul(kAgXInputMatrix, color);
 
-    //log2 encode, clamp the exposure range, normalize to [0,1]
-    //maxEv bumped from AgX-stock 4.026 -> 6.0 to give bright emitters
-    //extra headroom before per-channel clipping desaturates them to white
+    //log2 encode, clamp the exposure range, normalize to [0,1].
+    //Returned to the canonical 4.026 maxEv; widening it (previously 6.0) was a
+    //workaround for bright emitters not getting brought into AgX's natural
+    //range. Now that auto-exposure measures real HDR (not the Reinhard-
+    //bounded image), pre-AgX exposure scales emitters down on its own.
     const float minEv = -12.47393f;
-    const float maxEv =  6.0f;
+    const float maxEv =  4.026069f;
     color = clamp(log2(max(color, 1e-10f)), minEv, maxEv);
     color = (color - minEv) / (maxEv - minEv);
 
     //display sigmoid (this IS the EOTF for AgX)
     color = AgXDefaultContrastApprox(color);
 
-    //AgX -> sRGB display primaries
+    //AgX -> sRGB display primaries, then hue-preserving gamut clamp
     color = mul(kAgXOutputMatrix, color);
 
-    return saturate(color);
+    return AgXSoftGamutClamp(color);
 }
 
 //====================================
 //INVERSE REINHARD (RECOVER HDR AFTER DLSS RR)
 //====================================
-//Pass_shading_v8.hlsl applies c / (1 + c) to its DLSS RR input so DLSS sees
-//a bounded range (the network mishandles very bright emitters otherwise).
-//Postprocess inverts that here so AgX still operates on real HDR — without
-//this, emitters get clipped at the shading stage AND compressed again by AgX,
-//and end up dimmer than their surroundings.
-//Saturating dlssOut bounds the recovered HDR at ~10000, which is well below
-//AgX's clipping point at maxEv.
-inline float3 InverseDlssReinhard(float3 c) {
-    c = saturate(c);
-    return c / max(1.0f - c, 1e-4f);
+//Pass_shading_v8.hlsl applies c / (1 + L) (luminance Reinhard) to its DLSS RR
+//input so DLSS sees a bounded range (the network mishandles very bright
+//emitters otherwise). Postprocess inverts that here so AgX still operates on
+//real HDR — without this, emitters get clipped at the shading stage AND
+//compressed again by AgX, ending up dimmer than their surroundings.
+//Per-channel saturate bounds the recovered HDR at ~10000 nits-equivalent,
+//well below AgX's clipping point.
+inline float3 InverseDlssReinhard(float3 r) {
+    r = saturate(r);
+    const float lumR = 0.2126f * r.x + 0.7152f * r.y + 0.0722f * r.z;
+    return r / max(1.0f - lumR, 1e-4f);
 }
 
 //====================================
 //EXPOSURE FROM AUTO-EXPOSE STATE
 //====================================
-//key / exp(smoothed log-lum). Auto-expose finalize already clamped the log-lum
-//range, so this can't blow up. Lowered from 0.18 (photographic mid-grey) to
-//target a darker mid-tone that reads correctly on screen with AgX.
-static const float AE_KEY_VALUE = 0.12f;
+//exposure = key / 2^smoothed_log2_lum. AE finalize clamps the log2-lum range,
+//so this can't blow up. 0.18 is photographic mid-grey; with AgX maxEv at the
+//default 4.026 this places the mean scene luminance at a balanced mid-tone.
+static const float AE_KEY_VALUE = 0.18f;
 
 float ReadExposure() {
-    const float smoothedLogLum = asfloat(gAutoExpose.Load(AE_OFFS_SMOOTHED));
-    return AE_KEY_VALUE / max(exp(smoothedLogLum), 1e-6f);
+    const float smoothedLog2Lum = asfloat(gAutoExpose.Load(AE_OFFS_SMOOTHED));
+    return AE_KEY_VALUE / max(exp2(smoothedLog2Lum), 1e-6f);
+}
+
+//====================================
+//OUTPUT DITHER (HIDES 8-BIT BANDING)
+//====================================
+//Triangular-PDF noise applied in sRGB-encoded space (where the UNORM
+//quantization happens). Per-channel independent dither hides banding in
+//smooth gradients (twilight sky, dark surfaces) without visible noise on
+//mid-tones. Animated by CameraParams.time so it's temporally invisible at
+//normal framerates and DLSS-RR accumulates it away.
+inline uint DitherHash32(uint h) {
+    h ^= h >> 16; h *= 0x85EBCA6Bu;
+    h ^= h >> 13; h *= 0xC2B2AE35u;
+    h ^= h >> 16;
+    return h;
+}
+
+inline float DitherUniform01(uint h) {
+    return float(h & 0x00FFFFFFu) * (1.0f / float(0x01000000u));
+}
+
+inline float TriDither(uint seed) {
+    //triangular PDF in [-1, +1] = U1 - U2 with U1, U2 independent uniform
+    return DitherUniform01(DitherHash32(seed))
+         - DitherUniform01(DitherHash32(seed + 0x9E3779B9u));
+}
+
+inline float3 ApplyOutputDither(float3 c, uint2 pix, uint frameSeed) {
+    const uint base = pix.x * 0xCC9E2D51u + pix.y * 0x1B873593u + frameSeed;
+    return c + (1.0f / 255.0f) * float3(
+        TriDither(base),
+        TriDither(base + 0x6F7E1437u),
+        TriDither(base + 0xB1C5A8F1u));
 }
 
 //====================================
@@ -169,6 +224,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
     nrc   = AgX(nrc   * exposure);
     refl  = AgX(refl  * exposure);
     albedo = sRGBGammaCorrection(albedo);
+
+    //triangular dither in display space hides 8-bit banding. Animated per
+    //frame so DLSS RR accumulates the noise away on the live slice.
+    const uint frameSeed = asuint(time);
+    noisy  = ApplyOutputDither(noisy,  DTid.xy, frameSeed);
+    clean  = ApplyOutputDither(clean,  DTid.xy, frameSeed);
+    gt     = ApplyOutputDither(gt,     DTid.xy, frameSeed);
+    nrc    = ApplyOutputDither(nrc,    DTid.xy, frameSeed);
+    refl   = ApplyOutputDither(refl,   DTid.xy, frameSeed);
+    albedo = ApplyOutputDither(albedo, DTid.xy, frameSeed);
 
     gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);

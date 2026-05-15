@@ -86,9 +86,11 @@ cbuffer CameraParams : register(b0)
     float4x4 projectionI;
     float4x4 prevView;
     float4x4 prevProjection;
-    float  time;
+    float  time;       //jitter frame index cast to float, drives random seeds and the sun
     float2 jitter;
     float  cameraFar;
+    float  walltime;   //accumulated wall-clock seconds, drives dt-based auto-exposure
+    float3 _camPad0;   //matches the host's 3-float pad inside extra[8]
     //sun settings
     float sunLatitude;
     float sunLongitude;
@@ -113,8 +115,13 @@ cbuffer CameraParams : register(b0)
 #define SUN_NIGHT_SPEEDUP   sunNightSpeedup
 #define SUN_TURBIDITY       sunTurbidity
 #define SUN_INTENSITY_VAL   sunSunIntensity
-#define SKY_INTENSITY_VAL   sunSkyIntensity
-#define SKY_INTENSITY       sunSkyIntensity
+//Sky integrates atmospheric in-scatter in units of ATMOS_SOLAR_IRRADIANCE
+//(=1 in the model). For the sky to read in the same scene units as the path-
+//traced sun, the final scale must equal the sun's irradiance. sunSkyIntensity
+//therefore acts as a multiplicative artistic boost on top of physical (1.0 =
+//physically calibrated, >1 = sky pops more than ground, <1 = muted sky).
+#define SKY_INTENSITY_VAL   (sunSunIntensity * sunSkyIntensity)
+#define SKY_INTENSITY       (sunSunIntensity * sunSkyIntensity)
 #define GLOBAL_EMISSION_STRENGTH globalEmissionStrength
 
 //====================================
@@ -140,20 +147,24 @@ RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
 //====================================
-//AUTO EXPOSURE STATE (16 B persistent)
+//AUTO EXPOSURE STATE (20 B persistent)
 //====================================
-//[0]  uint  AE_OFFS_SUM       — fixed-point log-luminance sum (cleared each frame)
-//[4]  float AE_OFFS_SMOOTHED  — temporally smoothed log-luminance (read by postprocess)
-//[8]  uint  AE_OFFS_INIT      — first-frame flag, 0 = uninitialized, 1 = ready
-//fixed-point packing: store uint((logLum + AE_LOG_OFFSET) * AE_LOG_SCALE) per group
-//range chosen so the 32400-tile 1080p sum stays inside uint32 with margin
+//[0]  uint  AE_OFFS_SUM        — fixed-point log2-luminance sum (cleared each frame)
+//[4]  float AE_OFFS_SMOOTHED   — temporally smoothed log2-luminance (read by postprocess)
+//[8]  uint  AE_OFFS_INIT       — first-frame flag, 0 = uninitialized, 1 = ready
+//[12] uint  AE_OFFS_TILE_COUNT — contributing tile count (cleared each frame)
+//[16] float AE_OFFS_PREV_TIME  — last frame's CameraParams.time, drives dt-based smoothing
+//fixed-point packing: store uint((log2Lum + AE_LOG_OFFSET) * AE_LOG_SCALE) per group.
+//log2 units are clamped to [-AE_LOG_OFFSET, +AE_LOG_OFFSET] before packing so the sum
+//stays inside uint32 at 4K: tilesAt4K(32400) * 2*OFFSET*SCALE = 32400*224 ≈ 7.3M, safe.
 RWByteAddressBuffer gAutoExpose              : register(u24);
-static const uint  AE_OFFS_SUM        = 0u;   // fixed-point log-lum sum (cleared each frame)
+static const uint  AE_OFFS_SUM        = 0u;   // fixed-point log2-lum sum (cleared each frame)
 static const uint  AE_OFFS_SMOOTHED   = 4u;   // float, persistent
 static const uint  AE_OFFS_INIT       = 8u;   // uint flag, persistent
 static const uint  AE_OFFS_TILE_COUNT = 12u;  // uint, contributing tile count (cleared each frame)
-static const float AE_LOG_OFFSET      = 10.0f;
-static const float AE_LOG_SCALE       = 10.0f;
+static const uint  AE_OFFS_PREV_TIME  = 16u;  // float, persistent
+static const float AE_LOG_OFFSET      = 14.0f;
+static const float AE_LOG_SCALE       =  8.0f;
 
 //====================================
 //SCENE DATA

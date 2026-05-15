@@ -116,6 +116,10 @@ void Pass_raygen_v8()
     float3 rayOrigin;
     float3 rayDir;
     InitCameraRayDoF(pixel, imgSize, seed, rayOrigin, rayDir);
+
+    //sky/sun sampler reads camera altitude through this static, must be set
+    //before any EvaluateSky/EvaluateSun/SampleSun call below
+    SetSkyObserver(InitOrigin());
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf     = 1.0f;

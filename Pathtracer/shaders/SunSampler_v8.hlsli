@@ -187,6 +187,18 @@
 #define SKY_STAR_DAWN_LINGER    10.0f
 #endif
 
+//per-channel optical-depth scaling used to fade stars where the daytime sky is
+//bright. Higher = stars hide earlier as scatter ramps up at dawn/dusk.
+#ifndef SKY_STAR_SCATTER_SHIELD
+#define SKY_STAR_SCATTER_SHIELD 60.0f
+#endif
+
+//Lambertian albedo of the planet body, used when a ray hits the ground from
+//orbit. Ocean-dominated, lit by the same in-shader sun irradiance.
+#ifndef ATMOS_GROUND_ALBEDO
+#define ATMOS_GROUND_ALBEDO     float3(0.06f, 0.07f, 0.10f)
+#endif
+
 //====================================
 //WORLD ORIENTATION
 //====================================
@@ -195,6 +207,40 @@
 #endif
 
 static const float3 WORLD_UP = float3(0, 1, 0);
+
+//====================================
+//OBSERVER POSITION
+//====================================
+//world Y is altitude above the surface tangent point, world XZ are tangent-plane
+//offsets (planet curvature is ignored for horizontal motion, which keeps "fly
+//straight up to orbit" predictable). Override WORLD_UNITS_PER_KM if your engine
+//does not use 1 m world units.
+#ifndef WORLD_UNITS_PER_KM
+#define WORLD_UNITS_PER_KM      1000.0f
+#endif
+
+static const float SKY_OBSERVER_MIN_RADIUS = ATMOS_BOTTOM_RADIUS + 0.0002f;
+
+//per-invocation observer position in planet space (km, planet centered at origin).
+//defaults to the surface tangent point so call sites that skip SetSkyObserver
+//keep the legacy ground-level behavior. Raygen sets this once near the top.
+static float3 g_skyObserverPlanet = float3(0.0f, SKY_OBSERVER_MIN_RADIUS, 0.0f);
+
+inline float3 WorldToPlanet(float3 worldPos)
+{
+    float scale = 1.0f / WORLD_UNITS_PER_KM;
+    return float3(worldPos.x * scale,
+                  ATMOS_BOTTOM_RADIUS + worldPos.y * scale,
+                  worldPos.z * scale);
+}
+
+inline void SetSkyObserver(float3 worldPos)
+{
+    float3 P = WorldToPlanet(worldPos);
+    float r = length(P);
+    if (r < SKY_OBSERVER_MIN_RADIUS) P *= SKY_OBSERVER_MIN_RADIUS / max(1e-6f, r);
+    g_skyObserverPlanet = P;
+}
 
 //====================================
 //SUN STRUCTS
@@ -454,18 +500,23 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 //====================================
 //SCATTERING INTEGRATION
 //====================================
-float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittanceOut)
+float3 IntegrateScattering(float3 viewDir, float3 sunDir,
+                           out float3 transmittanceOut, out bool hitPlanetOut)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
     float Rt = ATMOS_TOP_RADIUS;
 
-    float3 O = float3(0, Rb + 0.0002f, 0);
+    float3 O = g_skyObserverPlanet;
     float3 V = SafeNormalize(viewDir);
     float3 L = SafeNormalize(sunDir);
 
+    hitPlanetOut = false;
+
+    //ray vs atmosphere top, observer can be inside (tV0<0) or above (tV0>0)
     float tV0, tV1;
-    if (!RaySphereIntersect(O, V, Rt, tV0, tV1))
+    if (!RaySphereIntersect(O, V, Rt, tV0, tV1) || tV1 <= 0.0f)
     {
+        //ray never enters atmosphere (outside, pointing outward)
         transmittanceOut = float3(1, 1, 1);
         return float3(0, 0, 0);
     }
@@ -473,10 +524,14 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
     float tMin = max(0.0f, tV0);
     float tMax = tV1;
 
+    //planet body terminates the ray, throughput accumulates the real
+    //atmospheric transmittance from observer to that surface point and is
+    //reused by EvaluatePlanetBody for the outgoing leg
     float tG0, tG1;
-    if (RaySphereIntersect(O, V, Rb, tG0, tG1))
+    if (RaySphereIntersect(O, V, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
     {
-        if (tG0 > 0.0f) tMax = min(tMax, tG0);
+        tMax = tG0;
+        hitPlanetOut = true;
     }
 
     if (tMax <= tMin)
@@ -505,9 +560,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
         float ds   = (s1 - s0) * totalDist;
 
         float3 P = O + V * tMid;
-        float alt = length(P) - Rb;
-
-        if (alt < 0.0f) break;
+        float alt = max(0.0f, length(P) - Rb);
 
         MediumSample med = SampleMedium(alt);
 
@@ -540,6 +593,138 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
 
     totalInScatter *= ATMOS_MULTI_SCATTER_FACTOR;
 
+    //throughput is the atmospheric transmittance from observer along the ray,
+    //terminating either at the atmosphere top (no planet hit) or at the planet
+    //surface. Planet occlusion of stars/space is reported via hitPlanetOut.
+    transmittanceOut = throughput;
+    return totalInScatter;
+}
+
+//====================================
+//AERIAL PERSPECTIVE (SCENE RAYS)
+//====================================
+//Bounded variant of IntegrateScattering used by the shading pass to apply
+//atmosphere to scene geometry. Returns the in-scatter accumulated between the
+//observer and a hit point at distance hitDistKm (in km), with the matching
+//transmittance written to the out parameter. Caller composites as:
+//    finalRadiance = sceneRadiance * transmittance + inScatter * SKY_INTENSITY
+//
+//Cheaper than IntegrateScattering: scene segments are typically short, so a
+//4-step march with 4-step transmittance-to-sun is plenty even for tens of km.
+//Distant outdoor objects (mountains 50+ km away) still get a meaningful tint.
+#ifndef ATMOS_AERIAL_VIEW_STEPS
+#define ATMOS_AERIAL_VIEW_STEPS  4
+#endif
+#ifndef ATMOS_AERIAL_LIGHT_STEPS
+#define ATMOS_AERIAL_LIGHT_STEPS 4
+#endif
+
+inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
+{
+    float t0, t1;
+    if (!RaySphereIntersect(P, L, Rt, t0, t1)) return float3(1, 1, 1);
+
+    float tMax = t1;
+    if (tMax <= 0.0f) return float3(1, 1, 1);
+    float tMin = max(0.0f, t0);
+
+    float ds = (tMax - tMin) / (float)ATMOS_AERIAL_LIGHT_STEPS;
+    float3 od = float3(0, 0, 0);
+
+    [unroll]
+    for (int i = 0; i < ATMOS_AERIAL_LIGHT_STEPS; i++)
+    {
+        float t = tMin + ((float)i + 0.5f) * ds;
+        float3 Q = P + L * t;
+        float alt = length(Q) - Rb;
+        if (alt < 0.0f) return float3(0, 0, 0);
+
+        MediumSample med = SampleMedium(alt);
+        od += med.extinction * ds;
+    }
+
+    return exp(-od);
+}
+
+//Returns in-scatter in units of ATMOS_SOLAR_IRRADIANCE; caller scales by
+//SKY_INTENSITY (sunSunIntensity * sunSkyIntensity) to match scene exposure.
+float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
+                                out float3 transmittanceOut)
+{
+    float Rb = ATMOS_BOTTOM_RADIUS;
+    float Rt = ATMOS_TOP_RADIUS;
+    float3 O = g_skyObserverPlanet;
+    float3 V = SafeNormalize(viewDir);
+    float3 L = SafeNormalize(sunDir);
+
+    //find the segment of the ray that lies inside the atmosphere shell, clipped
+    //to the hit distance. Observer can be inside (tV0<0) or above (tV0>0).
+    float tV0, tV1;
+    if (!RaySphereIntersect(O, V, Rt, tV0, tV1) || tV1 <= 0.0f)
+    {
+        //segment never enters the atmosphere
+        transmittanceOut = float3(1, 1, 1);
+        return float3(0, 0, 0);
+    }
+
+    float tMin = max(0.0f, tV0);
+    float tMax = min(hitDistKm, tV1);
+
+    if (tMax <= tMin)
+    {
+        transmittanceOut = float3(1, 1, 1);
+        return float3(0, 0, 0);
+    }
+
+    float totalDist = tMax - tMin;
+
+    float cosTheta = dot(V, L);
+    float phR = PhaseRayleigh(cosTheta);
+    float phM = PhaseMieTwoLobe(cosTheta);
+
+    float3 totalInScatter = float3(0, 0, 0);
+    float3 throughput     = float3(1, 1, 1);
+
+    //uniform spacing: scene segments are typically short and roughly homogeneous,
+    //so the sqrt-spaced clustering used for full-sky integration is unnecessary
+    [unroll]
+    for (int i = 0; i < ATMOS_AERIAL_VIEW_STEPS; i++)
+    {
+        float u0   = (float)i / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float u1   = (float)(i + 1) / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float tMid = tMin + (u0 + u1) * 0.5f * totalDist;
+        float ds   = (u1 - u0) * totalDist;
+
+        float3 P = O + V * tMid;
+        float alt = max(0.0f, length(P) - Rb);
+        MediumSample med = SampleMedium(alt);
+
+        float3 segTr = exp(-med.extinction * ds);
+
+        //earth shadow at this sample
+        float3 Pnorm = SafeNormalize(P);
+        float sunCosZ = dot(Pnorm, L);
+        float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
+        float earthShadow = (sunCosZ > cosHorizon) ? 1.0f : 0.0f;
+
+        float3 sunTr = TransmittanceToSunCheap(P, L, Rb, Rt);
+
+        float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
+        float3 scatterInteg;
+        scatterInteg.x = (med.extinction.x > 1e-10f)
+            ? scatterPhase.x * (1.0f - segTr.x) / med.extinction.x : scatterPhase.x * ds;
+        scatterInteg.y = (med.extinction.y > 1e-10f)
+            ? scatterPhase.y * (1.0f - segTr.y) / med.extinction.y : scatterPhase.y * ds;
+        scatterInteg.z = (med.extinction.z > 1e-10f)
+            ? scatterPhase.z * (1.0f - segTr.z) / med.extinction.z : scatterPhase.z * ds;
+
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr;
+        totalInScatter += throughput * sunIllum * scatterInteg;
+        throughput *= segTr;
+    }
+
+    totalInScatter *= ATMOS_MULTI_SCATTER_FACTOR;
+
     transmittanceOut = throughput;
     return totalInScatter;
 }
@@ -552,15 +737,19 @@ float3 AtmosphericTransmittance(float3 dir)
     float Rb = ATMOS_BOTTOM_RADIUS;
     float Rt = ATMOS_TOP_RADIUS;
 
-    float3 O = float3(0, Rb + 0.0002f, 0);
+    float3 O = g_skyObserverPlanet;
     float3 D = SafeNormalize(dir);
 
     float t0, t1;
-    if (!RaySphereIntersect(O, D, Rt, t0, t1)) return float3(1, 1, 1);
+    if (!RaySphereIntersect(O, D, Rt, t0, t1) || t1 <= 0.0f) return float3(1, 1, 1);
 
-    float tMax = t1;
-    if (tMax <= 0.0f) return float3(1, 1, 1);
     float tMin = max(0.0f, t0);
+    float tMax = t1;
+
+    //planet between observer and atmosphere exit blocks the path entirely
+    float tG0, tG1;
+    if (RaySphereIntersect(O, D, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
+        return float3(0, 0, 0);
 
     float ds = (tMax - tMin) / (float)ATMOS_VIEW_STEPS;
     float3 od = float3(0, 0, 0);
@@ -569,14 +758,37 @@ float3 AtmosphericTransmittance(float3 dir)
     {
         float t = tMin + ((float)i + 0.5f) * ds;
         float3 Q = O + D * t;
-        float alt = length(Q) - Rb;
-        if (alt < 0.0f) return float3(0, 0, 0);
+        float alt = max(0.0f, length(Q) - Rb);
 
         MediumSample med = SampleMedium(alt);
         od += med.extinction * ds;
     }
 
     return exp(-od);
+}
+
+//====================================
+//PLANET BODY
+//====================================
+//simple Lambertian sphere lit by the in-shader sun. Exposure matches the rest
+//of the path-traced scene (SUN_INTENSITY_VAL irradiance) rather than the
+//SKY_INTENSITY-amplified sky model, so the lit ground reads as a surface, not
+//a glowing emitter. Caller multiplies by the observer→surface atmospheric
+//transmittance to attenuate the outgoing leg through the air column.
+inline float3 EvaluatePlanetBody(float3 O, float3 V, float3 L)
+{
+    float tG0, tG1;
+    if (!RaySphereIntersect(O, V, ATMOS_BOTTOM_RADIUS, tG0, tG1)) return float3(0, 0, 0);
+    if (tG0 <= 0.0f) return float3(0, 0, 0);
+
+    float3 P     = O + V * tG0;
+    float3 N     = SafeNormalize(P);
+    float  NdotL = saturate(dot(N, L));
+    if (NdotL <= 0.0f) return float3(0, 0, 0);
+
+    float3 sunTr = TransmittanceToSun(P, L, ATMOS_BOTTOM_RADIUS, ATMOS_TOP_RADIUS);
+
+    return (ATMOS_GROUND_ALBEDO / PI) * NdotL * sunTr * ATMOS_SOLAR_IRRADIANCE * SUN_INTENSITY_VAL;
 }
 
 //====================================
@@ -611,8 +823,18 @@ inline SunState ComputeSunState()
     S.cosThetaMax = cos(thetaMax);
     S.omega       = GetSunSolidAngle(thetaMax);
 
-    float horizonRad = SUN_HORIZON_DEG * DEG2RAD;
-    S.visible = (S.elevRad > horizonRad) ? 1.0f : 0.0f;
+    //horizon depends on observer altitude: at ground use the refraction-lifted
+    //value (-0.833 deg), at the top of the atmosphere drop to the pure geometric
+    //horizon, which is well below local horizontal for an orbital observer
+    float  obsR2          = max(1e-6f, dot(g_skyObserverPlanet, g_skyObserverPlanet));
+    float  obsR           = sqrt(obsR2);
+    float  cosGeoHorizon  = -sqrt(max(0.0f, 1.0f - (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS) / obsR2));
+    float  cosGroundLift  = sin(SUN_HORIZON_DEG * DEG2RAD);
+    float  altFade        = saturate((obsR - ATMOS_BOTTOM_RADIUS) / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float  cosEffHorizon  = lerp(cosGroundLift, cosGeoHorizon, altFade);
+    float3 observerUp     = g_skyObserverPlanet / obsR;
+    float  sunCosFromUp   = dot(d, observerUp);
+    S.visible = (sunCosFromUp > cosEffHorizon) ? 1.0f : 0.0f;
 
     float3 Tr = AtmosphericTransmittance(S.dirWS);
     S.tint    = SUN_COLOR_VAL * Tr;
@@ -749,8 +971,10 @@ inline float Scintillation(float seed, float elevFactor, float frameCount)
 }
 
 //single star layer
+//returns raw star emission, callers gate visibility via atmospheric transmittance
+//and sky-scatter shielding so the same layer works from ground or orbit
 float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
-                         float brightnessScale, float sunElevDeg)
+                         float brightnessScale)
 {
     float2 uv;
     uv.x = atan2(vStar.z, vStar.x) / TAU + 0.5f;
@@ -779,14 +1003,6 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
     float magRand = Hash12(cell + 13.0f);
     float magnitude = pow(magRand, 2.5f);
 
-    float dimThreshold    = -SKY_TWILIGHT_DEG;
-    float brightThreshold = -6.0f + SKY_STAR_DAWN_LINGER;
-    float starThreshold   = lerp(dimThreshold, brightThreshold, magnitude);
-    float fadeRange        = max(1.0f, abs(starThreshold - dimThreshold) * 0.4f + 2.0f);
-    float starTwilight    = Smooth01(saturate((starThreshold - sunElevDeg) / fadeRange));
-
-    if (starTwilight <= 0.0f) return float3(0, 0, 0);
-
     float baseRadius = lerp(0.05f, 0.08f, magnitude);
 
     //gaussian core + soft halo
@@ -796,39 +1012,32 @@ float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
 
     float3 col = StarColor(Hash12(cell + 29.0f));
 
-    float elevFactor = saturate(dot(vStar, WORLD_UP));
+    //scintillation peaks near the horizon and dies as the ray approaches the celestial pole
+    float elevFactor = saturate(abs(dot(vStar, WORLD_UP)));
     float scint = Scintillation(Hash12(cell + 37.0f), elevFactor, (float)SUN_FRAMECOUNT);
 
-    return brightness * magnitude * col * brightnessScale * scint * starTwilight;
+    return brightness * magnitude * col * brightnessScale * scint;
 }
 
-//multi-layer star field
-float3 EvaluateStars(float3 rayDir, float elevDeg)
+//multi-layer star field, sphere mapped to celestial coords
+//gating by horizon/twilight happens at EvaluateSky scope via viewTr and scatter
+float3 EvaluateStars(float3 rayDir)
 {
     float3 v = SafeNormalize(rayDir);
     float solarH = GetSolarTimeHours();
     float sidFrac = frac((solarH / 24.0f) * SKY_SIDEREAL_RATIO);
     float3 vStar = RotateAroundAxis(v, WORLD_UP, -TAU * sidFrac);
 
-    float upDot = dot(v, WORLD_UP);
-    float horizonW = Smooth01(saturate(upDot / 0.02f));
-
-    if (horizonW <= 0.0f) return float3(0, 0, 0);
-
     float3 stars = float3(0, 0, 0);
 
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 0.5f,
-                               0.985f, 1.6f, elevDeg);
-
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 1.0f,
-                               SKY_STAR_DENSITY, 1.0f, elevDeg);
+    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 0.5f, 0.985f, 1.6f);
+    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 1.0f, SKY_STAR_DENSITY, 1.0f);
 
 #if SKY_STAR_LAYERS >= 3
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 2.2f,
-                               0.994f, 0.35f, elevDeg);
+    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 2.2f, 0.994f, 0.35f);
 #endif
 
-    return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE * horizonW;
+    return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE;
 }
 
 //====================================
@@ -838,35 +1047,41 @@ float3 EvaluateSky(float3 rayDir)
 {
     SunState S = ComputeSunState();
 
-    float3 v     = SafeNormalize(rayDir);
-    float  upDot = dot(v, WORLD_UP);
+    float3 v       = SafeNormalize(rayDir);
     float  elevDeg = S.elevRad * RAD2DEG;
+    float3 O       = g_skyObserverPlanet;
 
-    bool isGround = (upDot <= 0.0f);
-    float3 vEval = isGround ? SafeNormalize(float3(v.x, 1e-4f, v.z)) : v;
-
-    //physical scattering
+    //physical scattering, viewTr is the real atmospheric transmittance along
+    //the integrated path (from observer to atmosphere top OR planet surface),
+    //hitPlanet says whether the ray terminated on the ground
+    bool   hitPlanet;
     float3 viewTr;
-    float3 scatter = IntegrateScattering(vEval, S.dirWS, viewTr);
+    float3 scatter = IntegrateScattering(v, S.dirWS, viewTr, hitPlanet);
 
     float3 daySky = scatter * SKY_INTENSITY;
 
-    //night
-    float tw = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    //planet body, attenuated by the outgoing atmospheric leg back to the observer
+    float3 planetBody = hitPlanet
+        ? (EvaluatePlanetBody(O, v, S.dirWS) * viewTr)
+        : float3(0, 0, 0);
 
-    float mu = saturate(dot(vEval, WORLD_UP));
-    float3 nightBase = SKY_NIGHT_BASE * lerp(1.6f, 1.0f, pow(mu, 0.7f));
-    nightBase *= SKY_INTENSITY;
+    //night base, residual upper-atmosphere airglow. Fades out above the
+    //atmosphere top and is suppressed entirely when the planet body covers
+    //the ray (no "sky glow leaking through the ground").
+    float observerR     = length(O);
+    float atmosResidual = saturate((ATMOS_TOP_RADIUS - observerR)
+                                   / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float tw            = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    float mu            = saturate(dot(v, WORLD_UP));
+    float3 nightBase    = SKY_NIGHT_BASE * lerp(1.6f, 1.0f, pow(mu, 0.7f));
+    nightBase          *= SKY_INTENSITY * atmosResidual * (hitPlanet ? 0.0f : 1.0f);
 
-    float3 stars = EvaluateStars(v, elevDeg);
+    //stars fade where sky scatter is bright (dawn/dusk) and where the atmosphere
+    //extinguishes the path (long horizon traversal). Planet occlusion is handled
+    //by the explicit hitPlanet flag.
+    float3 starShield = exp(-scatter * SKY_STAR_SCATTER_SHIELD);
+    float3 stars      = hitPlanet ? float3(0, 0, 0)
+                                  : (EvaluateStars(v) * viewTr * starShield);
 
-    float3 sky = lerp(nightBase, daySky, tw) + stars;
-
-    if (isGround)
-    {
-        float t = Smooth01(saturate((-upDot) / 0.35f));
-        return lerp(sky, sky * SKY_GROUND_DARKEN, t);
-    }
-
-    return sky;
+    return lerp(nightBase, daySky, tw) + stars + planetBody;
 }

@@ -125,8 +125,8 @@ struct ReSTIRSettings {
     int   spatTriesGI      = 8;
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
-    float reuseRoughnessMin = 0.2f;
-    float reuseRoughnessMax = 0.5f;
+    float reuseRoughnessMin = 0.1f;
+    float reuseRoughnessMax = 0.3f;
 
     //neighbor rejection thresholds for Pass_spat_gi_select_v8
     float rejNormalDot     = 0.36f;
@@ -160,7 +160,10 @@ struct SunSettings {
     float nightSpeedup  = 2.0f;
     float turbidity     = 2.0f;
     float sunIntensity  = 5.0f;
-    float skyIntensity  = 8.5f;
+    //multiplicative boost on the physically calibrated sky brightness (which is
+    //internally tied to sunIntensity). 1.0 = real-world sun-to-sky ratio,
+    //higher values make the sky pop more than ground (stylized).
+    float skyIntensity  = 1.0f;
     float globalEmissionStrength = 1.0f;
     //thin-lens DoF, populated from Camera::apertureRadius / focusDistance
     //during UploadGPUBuffer, lives in this struct so the cbuffer tail stays 16-byte aligned

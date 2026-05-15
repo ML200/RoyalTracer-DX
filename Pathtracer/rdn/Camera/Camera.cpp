@@ -14,9 +14,9 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
-    //GPU CB, 6 matrices + extras + SunSettings
+    //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3) + SunSettings
     uint32_t matCount = 6;
-    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 4 + sizeof(SunSettings);
+    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8 + sizeof(SunSettings);
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -31,6 +31,8 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
 //UPDATE
 //====================================
 void Camera::Update(float dt, bool keysDown[256], float aspectRatio) {
+    m_wallTimeSec += dt;
+
     glm::vec3 eye, center, up;
     nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
     glm::vec3 fwd   = glm::normalize(center - eye);
@@ -75,8 +77,13 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     uint8_t* pData;
     if (FAILED(m_buffer->Map(0, nullptr, (void**)&pData))) return;
     memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
-    //extra[3] repurposed as cameraFar for sky depth + spec hit distance in shading pass
-    float extra[4] = { (float)m_jitterFrameIndex, m_jitterX, m_jitterY, farPlane };
+    //extra[3] = cameraFar (sky depth + spec hit distance)
+    //extra[4] = walltime in seconds (drives framerate-independent auto-exposure)
+    //extras 5..7 are pad to keep sunSettings 16B aligned
+    float extra[8] = {
+        (float)m_jitterFrameIndex, m_jitterX, m_jitterY, farPlane,
+        m_wallTimeSec, 0.0f, 0.0f, 0.0f
+    };
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
     //mirror camera DoF settings into the cbuffer tail before upload
     sunSettings.dofApertureRadius = apertureRadius;
