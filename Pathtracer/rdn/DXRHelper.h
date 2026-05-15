@@ -113,8 +113,10 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
     args.push_back(targetProfile);
 
     // Debug and Optimization flags
-    args.push_back(L"-Zi");               // Generate debug info (so DXC has source locations during codegen)
-    args.push_back(L"-Qstrip_debug");     // Strip debug from the shipping blob (still extractable via DXC_OUT_PDB)
+    args.push_back(L"-Zi");               // Generate debug info
+    // -Qstrip_debug intentionally omitted: keeping the debug info embedded in
+    // the DXIL blob lets Nsight correlate GPU work back to HLSL source lines.
+    // -O3 below stays on so the profile reflects the real optimized shaders.
     args.push_back(L"-Qstrip_reflect");   // Strip reflection from the shipping blob (extractable via DXC_OUT_REFLECTION)
     args.push_back(L"-O3");               // Optimization
     args.push_back(L"-enable-16bit-types");

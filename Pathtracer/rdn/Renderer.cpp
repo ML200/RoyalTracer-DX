@@ -106,7 +106,7 @@ void Renderer::InitDevice() {
             // last frame's stale numVertices=0 so the backward-fill
             // kernel skips unused paths).
             RegisterCudaOp(L"nrc_frame_begin", [this]{
-                if (!m_nrcReady) return;
+                if (!m_nrcReady || !m_nrcSettings.enabled) return;
                 void* s = m_cudaInterop.Stream();
                 // Gate the train records memset on the previous frame's
                 // auxStream training (specifically its fill kernel, which
@@ -124,7 +124,13 @@ void Renderer::InitDevice() {
                 // Only clear the meta header — per-vertex payload is
                 // overwritten by raygen for freshly-allocated path ids.
                 nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
-            });
+            },
+            //"Enable cache" off in the editor short circuits every cache
+            //subsystem: skip the whole D3D12<->CUDA interop round trip here.
+            //Paired with nrc_inference on the same predicate so the counter,
+            //PendingGI and training meta clears stay matched to the work
+            //that consumes them.
+            [this]{ return m_nrcReady && m_nrcSettings.enabled; });
 
             // Main-chain inference. The dispatch size matches the dynamic cap
             // computed at frame start from prior frame's actual counter, so
@@ -138,7 +144,7 @@ void Renderer::InitDevice() {
             // readback before dispatching so the copy queues alongside
             // inference instead of after it.
             RegisterCudaOp(L"nrc_inference", [this]{
-                if (!m_nrcReady) return;
+                if (!m_nrcReady || !m_nrcSettings.enabled) return;
                 void* s = m_cudaInterop.Stream();
                 m_nrcNetwork.ScheduleInferenceCounterReadback(s, m_nrcCounters.cudaPtr);
                 const uint32_t padded = nrc::AlignBatch(m_nrcDynamicInferenceCap);
@@ -173,7 +179,11 @@ void Renderer::InitDevice() {
                     m_nrcInferenceOut.cudaPtr,
                     m_nrcInferenceCapacity,
                     m_nrcTrainRecordsTarget);
-            });
+            },
+            //gated on the editor master switch: when the cache is disabled,
+            //skip inference and the training that rides inside this op so the
+            //whole NRC stack goes dark, matching nrc_frame_begin.
+            [this]{ return m_nrcReady && m_nrcSettings.enabled; });
 
             // Additional inference for the debug view only. Runs AFTER
             // training, so main inferenceOut has already been consumed
@@ -183,7 +193,7 @@ void Renderer::InitDevice() {
             // so count is W*H.
             RegisterCudaOp(L"nrc_debug_inference",
                 [this]{
-                    if (!m_nrcReady || !m_nrcSettings.debugView) return;
+                    if (!m_nrcReady || !m_nrcSettings.enabled || !m_nrcSettings.debugView) return;
                     void* s = m_cudaInterop.Stream();
                     const uint32_t count   = GetWidth() * GetHeight();
                     const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
@@ -197,7 +207,7 @@ void Renderer::InitDevice() {
                 //skip the entire fence round-trip when debug view is off;
                 //typical play config never enables debug view so this kills
                 //one full close/execute/fence/wait/reopen cycle per frame
-                [this]{ return m_nrcReady && m_nrcSettings.debugView; });
+                [this]{ return m_nrcReady && m_nrcSettings.enabled && m_nrcSettings.debugView; });
 
             // Backward-fill + 4 SGD steps were previously dispatched
             // here from a dedicated cuda:nrc_train pass. They now ride
@@ -1483,7 +1493,7 @@ void Renderer::PopulateCommandList() {
         // (sky-dominant frames, big visibility changes) doesn't yank
         // the size around. First frame uses the initial value because
         // LastValidVertexCount returns 0 before TrainFrame ever ran.
-        if (m_nrcReady && m_nrcSettings.trainingEnabled) {
+        if (m_nrcReady && m_nrcSettings.enabled && m_nrcSettings.trainingEnabled) {
             const uint32_t prev = m_nrcNetwork.LastValidVertexCount();
             if (prev > 0u) {
                 const float target  = (float)m_nrcTrainRecordsTarget;
@@ -1497,11 +1507,16 @@ void Renderer::PopulateCommandList() {
             }
         }
 
+        //"Enable cache" is the master switch. Training, debug view and sharp
+        //reflections are subsystems of the cache, so they only light up when
+        //the cache itself is on, otherwise raygen keeps writing training and
+        //debug records that nothing downstream consumes.
+        const bool nrcActive = m_nrcReady && m_nrcSettings.enabled;
         uint32_t nrcFlags = 0u;
-        if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
-        if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
-        if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
-        if (m_nrcReady && m_nrcSettings.sharpReflections)    nrcFlags |= nrc::flags::kSharpReflections;
+        if (nrcActive)                                   nrcFlags |= nrc::flags::kEnabled;
+        if (nrcActive && m_nrcSettings.trainingEnabled)  nrcFlags |= nrc::flags::kTrain;
+        if (nrcActive && m_nrcSettings.debugView)        nrcFlags |= nrc::flags::kDebugView;
+        if (nrcActive && m_nrcSettings.sharpReflections) nrcFlags |= nrc::flags::kSharpReflections;
         nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);

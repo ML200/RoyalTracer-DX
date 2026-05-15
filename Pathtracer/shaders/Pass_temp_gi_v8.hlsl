@@ -222,13 +222,13 @@ void Pass_temp_gi_v8()
                 const float effMcap = (rdi_r.matID == MATID_ENV_MISS) ? (float)rs_tempMcap : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
                 //M caps, roughness dependent
-                float sdata_Pr = myPr;
-                float rdi_r_Pr = IsSentinelMatID(rdi_r.matID)
-                    ? 1.0f
-                    : EvaluatePBRProperties(rdi_r.matID, rdi_r.uv, 0).x;
-                const float minRoughTemp  = min(sdata_Pr, rdi_r_Pr);
-                const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, minRoughTemp);
-                const float dynTempMcap   = (minRoughTemp <= rs_reuseRoughnessMin) ? 0.0f : min(effMcap, effMcap * tempMcapScale);
+                //gate ONLY on myPr, the current pixel's primary roughness, which is
+                //deterministic G-buffer data fixed regardless of which sample wins the
+                //RIS. Pulling rdi_r_Pr (roughness of the resampled neighbor vertex) into
+                //M_n makes the confidence weight depend on the sample being resampled,
+                //which biases the temporal estimator: energy gain that scales with the cap.
+                const float tempMcapScale = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, myPr);
+                const float dynTempMcap   = (myPr <= rs_reuseRoughnessMin) ? 0.0f : effMcap * tempMcapScale;
 
                 const float M_c   = min(effMcap, rdi.M);
                 const float M_n   = min(dynTempMcap,  rdi_r.M);
