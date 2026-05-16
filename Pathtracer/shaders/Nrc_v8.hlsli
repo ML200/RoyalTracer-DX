@@ -204,17 +204,36 @@ inline bool NrcShouldCacheTerminate(int hitIdx, float a0, float a, bool cacheEli
 //====================================
 //INFERENCE INPUT OUTPUT
 //====================================
-inline uint NrcAppendInference(uint capacity, float features[17])
+//raw-input variant: builds features inline and streams them directly to the
+//inference buffer. The previous form took a float[17] which DXC allocates at
+//raygen function entry and counts as 68B of live state across every reorder
+//point even when logically dead. Stay raw, never materialise the array.
+inline uint NrcAppendInference(
+    uint   capacity,
+    float3 x, float3 o, float3 n, float r,
+    float3 alpha, float3 beta, bool backface)
 {
     uint slot;
     g_NrcCounters.InterlockedAdd(NRC_C_OFF_INFERENCE_COUNT, 1u, slot);
     if (slot >= capacity) return NRC_INVALID_SLOT;
 
     const uint base = slot * NRC_INFERENCE_IN_STRIDE;
-    [unroll]
-    for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
-        g_NrcInferenceIn.Store(base + i * 4u, asuint(features[i]));
-    }
+
+    const float3 xN  = saturate(NrcCleanFinite3(NrcNormalizePosition(x)));
+    const float3 shO = saturate(NrcCleanFinite3(NrcEncodeDir(o)));
+    const float3 shN = saturate(NrcCleanFinite3(NrcEncodeDir(n)));
+    const float  rE  = saturate(NrcCleanFinite(NrcEncodeRoughness(r)));
+    const float3 aC  = clamp(NrcCleanFinite3(alpha), 0.0f, 1e3f);
+    const float3 bC  = clamp(NrcCleanFinite3(beta),  0.0f, 1e3f);
+    const float  sd  = backface ? -1.0f : 1.0f;
+
+    g_NrcInferenceIn.Store3(base +  0u, asuint(xN));
+    g_NrcInferenceIn.Store3(base + 12u, asuint(shO));
+    g_NrcInferenceIn.Store3(base + 24u, asuint(shN));
+    g_NrcInferenceIn.Store (base + 36u, asuint(rE));
+    g_NrcInferenceIn.Store3(base + 40u, asuint(aC));
+    g_NrcInferenceIn.Store3(base + 52u, asuint(bC));
+    g_NrcInferenceIn.Store (base + 64u, asuint(sd));
     return slot;
 }
 
@@ -291,11 +310,9 @@ inline uint NrcWriteTerminationRecord(
     const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, metallic);
     const float3 reflSum = alpha + betaC;
 
-    float features[17];
-    NrcBuildFeatures(hitPos, viewDir, hitNormal, roughness, alpha, betaC,
-                     backface, features);
-
-    const uint slot = NrcAppendInference(inferenceCapacity, features);
+    const uint slot = NrcAppendInference(
+        inferenceCapacity, hitPos, viewDir, hitNormal,
+        roughness, alpha, betaC, backface);
     if (slot == NRC_INVALID_SLOT) return NRC_INVALID_SLOT;
 
     NrcStorePendingGI(
@@ -324,40 +341,68 @@ inline uint NrcAllocateTrainingPath()
 //into the upper byte of the numVertices word (numVertices itself is bounded
 //by NRC_MAX_VERTICES_PER_PATH=8 so bits 0..3 are sufficient for the count).
 //Layout: bits 0..7 = numVertices, bits 8..15 = emitMask, bits 16..31 reserved.
-inline void NrcStorePathMeta(
-    uint pathId,
-    uint numVertices,
-    uint emitMask,
-    uint tailKind,
-    uint inferenceSlot,
-    uint tailRadiancePk)
+//
+//Split between head (numVertices+emitMask, written at finalize) and tail
+//(kind+slot+rad, written at each termination point) so the live state across
+//the bounce-loop trace does not have to carry nrcTailRadPk + nrcTailInfSlot
+//in registers from termination through to finalize.
+//
+//Validity gate is the head word: fill_training_batch_kernel skips records
+//with numVertices==0. As long as the head is written last, a torn read is
+//impossible (the head is the publish barrier).
+inline void NrcStorePathHead(uint pathId, uint numVertices, uint emitMask)
 {
     if (pathId >= NRC_MAX_TRAINING_PATHS) return;
     const uint base   = pathId * NRC_TPM_STRIDE;
     const uint packed = (numVertices & 0xFFu) | ((emitMask & 0xFFu) << 8u);
-    g_NrcTrainRecords.Store4(base, uint4(packed, tailKind, inferenceSlot, tailRadiancePk));
+    g_NrcTrainRecords.Store(base + NRC_TPM_OFF_NUMVERTS, packed);
+}
+
+inline void NrcStorePathTail(uint pathId, uint tailKind, uint inferenceSlot, uint tailRadiancePk)
+{
+    if (pathId >= NRC_MAX_TRAINING_PATHS) return;
+    const uint base = pathId * NRC_TPM_STRIDE;
+    g_NrcTrainRecords.Store3(base + NRC_TPM_OFF_TAILKIND,
+                             uint3(tailKind, inferenceSlot, tailRadiancePk));
+}
+
+//RR-default seed at allocation, overwritten if the path terminates explicitly
+inline void NrcInitPathTail(uint pathId)
+{
+    NrcStorePathTail(pathId, NRC_TAIL_RR, NRC_INVALID_SLOT, 0u);
 }
 
 //====================================
 //TRAINING VERTEX
 //====================================
-//direct indexed write, caller tracks vIdx locally
+//raw-input variant, see NrcAppendInference for the live-state rationale
 inline void NrcStoreTrainingVertex(
-    uint pathId,
-    uint vIdx,
-    float features[17],
-    uint L_neePk,
-    uint betaLocalPk)
+    uint   pathId, uint vIdx,
+    float3 x, float3 o, float3 n, float r,
+    float3 alpha, float3 beta, bool backface,
+    uint   L_neePk, uint betaLocalPk)
 {
     if (pathId >= NRC_MAX_TRAINING_PATHS || vIdx >= NRC_MAX_VERTICES_PER_PATH) return;
     const uint base = NRC_PATH_META_TOTAL +
                       (pathId * NRC_MAX_VERTICES_PER_PATH + vIdx) * NRC_TV_STRIDE;
-    [unroll]
-    for (uint i = 0; i < NRC_RAW_INPUT_DIM; ++i) {
-        g_NrcTrainRecords.Store(base + NRC_TV_OFF_RAW + i * 4u, asuint(features[i]));
-    }
-    g_NrcTrainRecords.Store(base + NRC_TV_OFF_LNEE, L_neePk);
-    g_NrcTrainRecords.Store(base + NRC_TV_OFF_BETA, betaLocalPk);
+
+    const float3 xN  = saturate(NrcCleanFinite3(NrcNormalizePosition(x)));
+    const float3 shO = saturate(NrcCleanFinite3(NrcEncodeDir(o)));
+    const float3 shN = saturate(NrcCleanFinite3(NrcEncodeDir(n)));
+    const float  rE  = saturate(NrcCleanFinite(NrcEncodeRoughness(r)));
+    const float3 aC  = clamp(NrcCleanFinite3(alpha), 0.0f, 1e3f);
+    const float3 bC  = clamp(NrcCleanFinite3(beta),  0.0f, 1e3f);
+    const float  sd  = backface ? -1.0f : 1.0f;
+
+    g_NrcTrainRecords.Store3(base + NRC_TV_OFF_RAW +  0u, asuint(xN));
+    g_NrcTrainRecords.Store3(base + NRC_TV_OFF_RAW + 12u, asuint(shO));
+    g_NrcTrainRecords.Store3(base + NRC_TV_OFF_RAW + 24u, asuint(shN));
+    g_NrcTrainRecords.Store (base + NRC_TV_OFF_RAW + 36u, asuint(rE));
+    g_NrcTrainRecords.Store3(base + NRC_TV_OFF_RAW + 40u, asuint(aC));
+    g_NrcTrainRecords.Store3(base + NRC_TV_OFF_RAW + 52u, asuint(bC));
+    g_NrcTrainRecords.Store (base + NRC_TV_OFF_RAW + 64u, asuint(sd));
+    g_NrcTrainRecords.Store (base + NRC_TV_OFF_LNEE, L_neePk);
+    g_NrcTrainRecords.Store (base + NRC_TV_OFF_BETA, betaLocalPk);
 }
 
 //beta known only after raygen samples the next BSDF, second pass update

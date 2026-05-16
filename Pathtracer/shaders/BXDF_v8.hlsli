@@ -12,8 +12,11 @@ struct SamplingP{
 //====================================
 //STRATEGY PROBABILITIES
 //====================================
-//cheap energy cascade approximating the actual distribution
-inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, float etai, float etat, float3 Kd, float Pm)
+//cheap energy cascade approximating the actual distribution.
+//etai/etat are IOR (~1..2.5), Pm is metalness (0..1). All fit cleanly in fp16,
+//so the API takes half -- callers avoid promoting at the boundary. Lobe
+//weight helpers still take float and get an implicit half->float at the call.
+inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float3 normal, half etai, half etat, float3 Kd, half Pm)
 {
     //all weights and energy fractions are in [0,1], boosted products max ~5, fp16 safe
     const half r_sheen = (half)Sampling_Weight_SHEEN(mID, normal, outgoing);
@@ -72,7 +75,7 @@ inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 //BRDF SAMPLING
 //====================================
 //ggxNoReflect routes the GGX sampler into the refract branch, NRC owns the reflection delta
-inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, float localPr, float localPm, inout uint seed, float etai, float etat, bool ggxNoReflect = false) {
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
     uint strategy = SelectSamplingStrategy(p, seed);
     float3 sample;
 
@@ -123,10 +126,11 @@ struct BrdfData {
 };
 
 //pdf only path, mirrors EvaluateAndPdf_COMBINED's pdf math
+//pdf accumulator stays float -- pdf products can dip below fp16 min normal.
 inline float BRDF_PDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, float localPr, float localPm, float etai, float etat)
+    float3 localKd, half localPr, half localPm, half etai, half etat)
 {
     float pdf = 0.0f;
     if (p.Psheen >= EPSILON)
@@ -147,7 +151,7 @@ inline float BRDF_PDF_COMBINED(
 inline float3 EvaluateBRDF_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, float localPr, float localPm, float etai, float etat)
+    float3 localKd, half localPr, half localPm, half etai, half etat)
 {
     const float3 N  = normalize(n_s);
     const float3 fN = normalize(n_g);
@@ -180,11 +184,13 @@ inline float3 EvaluateBRDF_COMBINED(
 //====================================
 //FUSED EVAL AND PDF
 //====================================
-//ggxNoReflect must match the value passed to SampleBRDF at the same vertex
+//ggxNoReflect must match the value passed to SampleBRDF at the same vertex.
+//BrdfData.pdf stays float (pdf products can underflow fp16); val stays float3
+//for full radiance range.
 inline BrdfData EvaluateAndPdf_COMBINED(
     SamplingP p,
     uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
-    float3 localKd, float localPr, float localPm, float etai, float etat,
+    float3 localKd, half localPr, half localPm, half etai, half etat,
     bool ggxNoReflect = false)
 {
     BrdfData res;

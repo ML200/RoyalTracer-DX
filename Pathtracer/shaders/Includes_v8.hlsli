@@ -144,7 +144,13 @@ RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
-RWByteAddressBuffer g_pathStateBuffer        : register(u10);
+//globallycoherent so the raygen scratch+reload pattern (tpost, nrcA0)
+//actually drops those values from live state across the bounce-loop
+//TraceRay reorder boundary. Without it, DXC store-to-load forwards the
+//scratch values and keeps them register-resident across the trace,
+//defeating the spill entirely. Spat GI pass takes a small cache hit on
+//its cross-pixel reads; revert if that shows up in profiling.
+globallycoherent RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 
 //====================================
 //AUTO EXPOSURE STATE (20 B persistent)

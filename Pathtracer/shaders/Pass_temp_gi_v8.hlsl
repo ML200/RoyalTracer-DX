@@ -6,7 +6,7 @@
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
-    uint sortKey;
+    /*uint sortKey;
     {
         const uint2 li  = DispatchRaysIndex().xy;
         const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
@@ -14,8 +14,7 @@ void Pass_temp_gi_v8()
 
         sortKey = emi ? 0u : (!(rs_flags & 2u) ? 1u : 2u);
     }
-
-    dx::MaybeReorderThread(sortKey, 2);
+    dx::MaybeReorderThread(sortKey, 2);*/
 
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims_f      = float2(IMG_W, IMG_H);

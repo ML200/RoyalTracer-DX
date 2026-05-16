@@ -25,13 +25,13 @@ uint sel_slot_addr(uint linearIdx, uint slot)
 void Pass_spat_gi_shift_v8()
 {
     //sort by validCount so similar work pixels pair up
-    uint sortKey;
+    /*uint sortKey;
     {
         const uint2 li = DispatchRaysIndex().xy;
         const uint  px = MapPixelID(uint2(IMG_W, IMG_H), int2(li));
         sortKey = g_pathStateBuffer.Load(sel_addr(px));
     }
-    dx::MaybeReorderThread(sortKey, 2);
+    dx::MaybeReorderThread(sortKey, 2);*/
 
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims        = float2(IMG_W, IMG_H);

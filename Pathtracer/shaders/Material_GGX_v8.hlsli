@@ -253,10 +253,12 @@ struct GGXResult {
     float  t;
 };
 
-//noReflect mirrors SampleBRDF_GGX, reflection zero, transmit pdf drops p_tran_H/p_sum
+//noReflect mirrors SampleBRDF_GGX, reflection zero, transmit pdf drops p_tran_H/p_sum.
+//Pr/Pm/etai/etat are half (bounded values <= ~2.5); matches the top-level BXDF API
+//so the boundary casts collapse. Kd stays float3 (lambertian path takes float Kd).
 inline GGXResult EvalGGXAll(
     uint matID, float3 N, float3 fN, float3 V, float3 L,
-    float etai, float etat, float3 Kd, float Pr, float Pm,
+    half etai, half etat, float3 Kd, half Pr, half Pm,
     bool noReflect = false)
 {
     GGXResult r;
@@ -269,11 +271,9 @@ inline GGXResult EvalGGXAll(
     const bool  isReflect = NdotL_f > 0.0f;
     const float absNdotL  = abs(NdotL_f);
 
-    //bounded material params at half precision
-    const half PmH        = (half)Pm;
-    const half PrH        = (half)Pr;
+    //bounded material params already half from the signature
     const half Kd_w_h     = (half)LoadKd_w(matID);
-    const half oneMinusPm = (half)1.0 - PmH;
+    const half oneMinusPm = (half)1.0 - Pm;
     const half trans_w    = (half)1.0 - Kd_w_h;
 
     //transmittance, all factors lie in [0,1]
@@ -281,7 +281,7 @@ inline GGXResult EvalGGXAll(
         const float Ni       = LoadNi(matID);
         const half  F0_t     = (half)ComputeF0Dielectric(etat, etai).x;
         const half  Favg     = (F0_t + ((half)1.0 - F0_t) * (half)(1.0f / 21.0f)) * (half)(1.0f / Ni);
-        const half  PrFactor = (half)1.0 - PrH * (half)0.7;
+        const half  PrFactor = (half)1.0 - Pr * (half)0.7;
         const half  Fo       = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
         const half  Fi       = (half)FresnelDielectric(L, N, etai, etat).x;
         const half  Kd_frac  = (half)Avg3(Kd) * Kd_w_h;
@@ -291,7 +291,7 @@ inline GGXResult EvalGGXAll(
     }
 
     //alpha clamped at 0.001 stays inside fp16 normal range
-    const half alpha = max((half)0.001, PrH * PrH);
+    const half alpha = max((half)0.001, Pr * Pr);
 
     //inline ComputeAnisotropicAlphas so ax/ay stay in half registers
     half ax_h, ay_h;
@@ -340,7 +340,7 @@ inline GGXResult EvalGGXAll(
     const float3 F_d_vec = FresnelDielectricTIR(V, H, etai, etat);
     const half   F_diel  = (half)F_d_vec.x;
 
-    const half p_refl_H = oneMinusPm * F_diel + PmH;
+    const half p_refl_H = oneMinusPm * F_diel + Pm;
     const half p_tran_H = oneMinusPm * ((half)1.0 - F_diel) * trans_w;
     const half p_sum    = p_refl_H + p_tran_H;
 
@@ -354,19 +354,26 @@ inline GGXResult EvalGGXAll(
         }
         else
         {
-            float3 F0_d = ComputeF0Dielectric(etai, etat);
-            float3 F_c  = FresnelConductor(Kd, V, H);
+            //Scoping the dielectric and conductor float3 intermediates into
+            //separate blocks keeps the eval peak register count down --
+            //F0_d / F_d_vec die before F_c is computed, and F_c / specular_c
+            //die before the final combine. Pulls DG2_over_den + kms scalars
+            //out so they're shared across both sub-blocks instead of recomputed.
+            const float DG2_over_den = (D * G2) / (4.0f * NdotV * NdotL);
+            const float Ess          = GetEssLUT((float)Pr, NdotV);
+            const float kms          = (1.0f - Ess) / max(Ess, 1e-6f);
 
-            float denom = 4.0f * NdotV * NdotL;
-
-            float3 specular_d = (F_d_vec * D * G2) / denom;
-            float3 specular_c = (F_c * D * G2) / denom;
-
-            float Ess = GetEssLUT(Pr, NdotV);
-            float kms = (1.0f - Ess) / max(Ess, 1e-6f);
-
-            float3 spec = (1.0f - Pm) * specular_d * (1.0f + F0_d * kms)
-                        + Pm          * specular_c * (1.0f + Kd  * kms);
+            float3 spec;
+            //dielectric (1-Pm) contribution -- consumes F_d_vec from outer scope
+            {
+                const float3 F0_d = ComputeF0Dielectric(etai, etat);
+                spec = ((float)1.0 - (float)Pm) * (F_d_vec * DG2_over_den) * ((float3)1.0 + F0_d * kms);
+            }
+            //conductor Pm contribution
+            {
+                const float3 F_c = FresnelConductor(Kd, V, H);
+                spec += (float)Pm * (F_c * DG2_over_den) * ((float3)1.0 + Kd * kms);
+            }
             r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
         }
     }

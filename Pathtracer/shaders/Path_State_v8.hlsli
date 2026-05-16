@@ -73,6 +73,80 @@ uint ps_addr_cand_ln (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_L
 
 
 //====================================
+//RAYGEN-ONLY SCRATCH (aliases HOT1 + HOT2)
+//====================================
+//Raygen and the wavefront variant share g_pathStateBuffer but never run on
+//the same frame. The wavefront's HOT1/HOT2 planes are unused under the
+//raygen path, so we reuse those 32B as a scratch region for values the
+//compiler would otherwise keep live across the bounce-loop TraceRay reorder
+//boundary. g_pathStateBuffer is declared globallycoherent so the spill+reload
+//pattern is not defeated by store-to-load forwarding.
+//
+//HOT1 layout (16B):
+//  bytes  0..11  tpost   (float3, full fp32 precision -- multiplicative
+//                          throughput chain that must not lose bits)
+//  bytes 12..15  nrcA0   (float, set once at primary hit, read each bounce
+//                          inside the cache-termination check)
+//HOT2 layout (16B):
+//  bytes  0..3   nrcA          (accumulated area spread, RMW each bounce)
+//  bytes  4..7   nrcEmitMask   (per-vertex emit-eligibility bits, OR'd in
+//                                training-vertex emit, read at finalize)
+//  bytes  8..15  free
+static const uint PS_RG_OFF_TPOST       = 0u;
+static const uint PS_RG_OFF_NRCA0       = 12u;
+static const uint PS_RG2_OFF_NRCA       = 0u;
+static const uint PS_RG2_OFF_EMITMASK   = 4u;
+
+void store_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx, float3 tpost)
+{
+    buf.Store3(ps_addr_hot1(pixelIdx) + PS_RG_OFF_TPOST, asuint(tpost));
+}
+
+float3 load_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load3(ps_addr_hot1(pixelIdx) + PS_RG_OFF_TPOST));
+}
+
+void store_rg_nrcA0(RWByteAddressBuffer buf, uint pixelIdx, float a0)
+{
+    buf.Store(ps_addr_hot1(pixelIdx) + PS_RG_OFF_NRCA0, asuint(a0));
+}
+
+float load_rg_nrcA0(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load(ps_addr_hot1(pixelIdx) + PS_RG_OFF_NRCA0));
+}
+
+void store_rg_nrcA(RWByteAddressBuffer buf, uint pixelIdx, float a)
+{
+    buf.Store(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_NRCA, asuint(a));
+}
+
+float load_rg_nrcA(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_NRCA));
+}
+
+void store_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx, uint mask)
+{
+    buf.Store(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK, mask);
+}
+
+uint load_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return buf.Load(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK);
+}
+
+//atomic OR forces a memory op the compiler cannot fold into a register-held
+//copy. Used by the training-vertex emit-eligibility update so nrcEmitMask
+//never enters the live set.
+void atomic_or_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx, uint bit)
+{
+    buf.InterlockedOr(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK, bit);
+}
+
+
+//====================================
 //FLAGS BIT LAYOUT
 //====================================
 //bits 0-5   depth (0..63)

@@ -106,7 +106,7 @@ struct CoatResult {
 
 inline CoatResult EvalCoatAll(
     uint matID, float3 N, float3 V, float3 L,
-    float etai, float etat)
+    half etai, half etat)
 {
     CoatResult r;
     r.f = 0.0f;

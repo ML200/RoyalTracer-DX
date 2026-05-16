@@ -16,8 +16,8 @@ inline uint MapPixelID(uint2 dims, int2 lIndex)
     {
         return 0xFFFFFFFF;
     }
-    const uint tileWidth  = 4;
-    const uint tileHeight = 8;
+    const uint tileWidth  = 8;
+    const uint tileHeight = 4;
 
     uint2 uIndex   = uint2(lIndex);
     uint tileCountX = (dims.x + tileWidth - 1u) / tileWidth;
