@@ -6,9 +6,11 @@
 //caches each pixel's shift to partner x2, merge reads both sides without further rays
 
 //scratch layout mirrors Pass_spat_gi_select_v8.hlsl
-static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
-static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 20u;
+//slot is [nID(4) | F(12) | Jn(4) | Jc(4)], Jc duplicated per slot so the
+//merge pass picks up partner Jc in the same sector as partner shift
+static const uint SEL_STRIDE      = 4u + SPAT_COUNT_MAX * 24u;
+static const uint SEL_SLOT_BASE   = 4u;
+static const uint SEL_SLOT_STRIDE = 24u;
 
 uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
 uint sel_slot_addr(uint linearIdx, uint slot)
@@ -46,9 +48,9 @@ void Pass_spat_gi_shift_v8()
     const SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, InitOrigin());
 
     //my Jc, env/miss uses Jc=1, shift preserves direction
+    float my_Jc = 1.0f;
     {
         const uint myMatID = load_matID(g_Reservoirs_current, pixelIdx);
-        float my_Jc = 1.0f;
         if (myMatID != MATID_ENV_MISS)
         {
             const uint   myObjID = load_objID(g_Reservoirs_current, pixelIdx);
@@ -56,7 +58,15 @@ void Pass_spat_gi_shift_v8()
             const float3 my_n2s  = load_n2_s (g_Reservoirs_current, pixelIdx, myObjID);
             my_Jc = ComputeJc(sv.x, my_x2, my_n2s);
         }
-        g_pathStateBuffer.Store(baseAddr + 4u, asuint(my_Jc));
+    }
+
+    //my_Jc lives in every slot so partner-side reads in the merge gather get
+    //it in the same sector as the partner shift load
+    const uint my_Jc_pk = asuint(my_Jc);
+    [unroll]
+    for (uint jcS = 0u; jcS < SPAT_COUNT_MAX; ++jcS)
+    {
+        g_pathStateBuffer.Store(sel_slot_addr(pixelIdx, jcS) + 20u, my_Jc_pk);
     }
 
     //one shift per valid slot, partner loaded per field, pack1 fetched once

@@ -32,7 +32,7 @@
 // PLANE_WSUM(60) + SZ_4(4) in Reservoir_v8.hlsli. SampleData is BYTES_SD
 // in Sample_Data_v8.hlsli.
 struct Reservoir_GI  { uint8_t pad[64]; };
-struct SampleData    { uint8_t pad[24]; };
+struct SampleData    { uint8_t pad[28]; };
 
 class Renderer {
 public:

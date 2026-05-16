@@ -1,14 +1,17 @@
 //====================================
-//COMPACT G-BUFFER 24 BYTES PER PIXEL
+//COMPACT G-BUFFER 28 BYTES PER PIXEL
 //====================================
 //cached normals/UV so BuildVertexLight skips scattered vertex loads per neighbor
 //offset 0  instID, offset 4 primID bits 0-30 + emitter flag bit 31
 //offset 8  bary.x, offset 12 bary.y
 //offset 16 n1_s object-space packed, offset 20 uv half2
+//offset 24 hitT, primary ray distance, used by ReconstructPositionFromHitT
+//          so spatial neighbor pixel position falls out of one coalesced load
+//          instead of an instanceProps + indices + BTriVertex chain
 //emitter flag set, primary hit is emitter or sky, L1 already in gScratchPing
 //sky sentinel, instID=0xFFFFFFFF with emitter flag
 
-static const uint BYTES_SD = 24u;
+static const uint BYTES_SD = 28u;
 
 uint pixelBaseAddr_SD(uint pixelIdx)
 {
@@ -78,11 +81,17 @@ void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackFloat2x16(uv.x, uv.y));
 }
 
+void store_hitT(RWByteAddressBuffer buf, uint pixelIdx, float hitT)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 24u, asuint(hitT));
+}
+
 void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
     buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
     buf.Store2(base + 16u, uint2(0u, 0u));
+    buf.Store (base + 24u, 0u);
 }
 
 //====================================
@@ -134,6 +143,11 @@ float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
     return float2(a, b);
 }
 
+float load_hitT(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
+}
+
 //====================================
 //SAMPLE DATA COPY FOR TEMPORAL REUSE
 //====================================
@@ -142,4 +156,5 @@ void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixel
     uint base = pixelBaseAddr_SD(pixelIdx);
     dst.Store4(base,       src.Load4(base));
     dst.Store2(base + 16u, src.Load2(base + 16u));
+    dst.Store (base + 24u, src.Load (base + 24u));
 }

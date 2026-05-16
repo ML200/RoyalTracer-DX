@@ -13,10 +13,14 @@ Texture2D<int2> g_reuseTexture2 : register(t21);
 //====================================
 //SCRATCH LAYOUT
 //====================================
-//8B header plus SPAT_COUNT_MAX*20B per slot, M_sum recomputed in merge pass
-static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
-static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 20u;
+//4B header (validCount) plus SPAT_COUNT_MAX*24B per slot, M_sum recomputed in
+//merge pass. Each slot is [nID(4) | F(12) | Jn(4) | Jc(4)]. Jc lives in every
+//slot so the merge pass picks up partner Jc inside the same 32B sector as the
+//partner shift load, killing the second scattered fetch we used to do at
+//sel_addr(nID)+4.
+static const uint SEL_STRIDE      = 4u + SPAT_COUNT_MAX * 24u;
+static const uint SEL_SLOT_BASE   = 4u;
+static const uint SEL_SLOT_STRIDE = 24u;
 
 uint sel_addr(uint linearIdx) { return linearIdx * SEL_STRIDE; }
 uint sel_slot_addr(uint linearIdx, uint slot)
@@ -122,9 +126,9 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
     const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const float  myHitT   = load_hitT(g_sample_current, pixelIdx);
+    const float3 myPos    = ReconstructPositionFromHitT(int2(launchIndex), myHitT);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     //slab thickness scales with camera distance so pixel footprint at depth still passes
@@ -154,8 +158,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint   bInstID = load_instID(g_sample_current, bID);
         const uint   bPrimID = load_primID(g_sample_current, bID);
         const uint   bMatID  = GetMatIDFast(bInstID, bPrimID);
-        const float2 bBary   = load_bary(g_sample_current, bID);
-        const float3 bPos    = ReconstructPosition(bInstID, bPrimID, bBary);
+        const float  bHitT   = load_hitT(g_sample_current, bID);
+        const float3 bPos    = ReconstructPositionFromHitT(partner, bHitT);
         const float3 bN1s    = load_n1_s_with_instID(g_sample_current, bID, bInstID);
 
         if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s, distThresh)) continue;

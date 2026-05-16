@@ -114,6 +114,13 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
 
     // Debug and Optimization flags
     args.push_back(L"-Zi");               // Generate debug info
+    args.push_back(L"-Qembed_debug");     // Embed the PDB in the DXIL container.
+                                          // Without this, -Zi puts debug into a
+                                          // separate blob and Nsight cannot find
+                                          // HLSL source for the SASS/DXIL view.
+    args.push_back(L"-Zss");              // Source-hash stable across rebuilds,
+                                          // lets Nsight's capture re-correlate
+                                          // when only line numbers move.
     // -Qstrip_debug intentionally omitted: keeping the debug info embedded in
     // the DXIL blob lets Nsight correlate GPU work back to HLSL source lines.
     // -O3 below stays on so the profile reflects the real optimized shaders.

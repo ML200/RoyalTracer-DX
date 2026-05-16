@@ -7,9 +7,10 @@
 //pure data, all rays already cast in shift, payload lazy loaded on RIS acceptance
 
 //scratch layout mirrors Pass_spat_gi_select_v8.hlsl
-static const uint SEL_STRIDE      = 8u + SPAT_COUNT_MAX * 20u;
-static const uint SEL_SLOT_BASE   = 8u;
-static const uint SEL_SLOT_STRIDE = 20u;
+//slot is [nID(4) | F(12) | Jn(4) | Jc(4)], Jc per-slot for sector locality
+static const uint SEL_STRIDE      = 4u + SPAT_COUNT_MAX * 24u;
+static const uint SEL_SLOT_BASE   = 4u;
+static const uint SEL_SLOT_STRIDE = 24u;
 
 uint sel_addr(uint idx) { return idx * SEL_STRIDE; }
 uint sel_slot_addr(uint idx, uint slot)
@@ -54,10 +55,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //LOAD SCRATCH HEADER
     //====================================
-    const uint  baseAddr = sel_addr(pixelIdx);
-    const uint2 header   = g_pathStateBuffer.Load2(baseAddr);
-    const uint  validCount = header.x;
-    const float my_Jc      = asfloat(header.y);
+    //header is just validCount now, my_Jc moved into slot 0 (see shift pass)
+    const uint  baseAddr   = sel_addr(pixelIdx);
+    const uint  validCount = g_pathStateBuffer.Load(baseAddr);
 
     //====================================
     //CANONICAL CONTRIBUTION
@@ -88,6 +88,10 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     float M_sum = M_c;
 
+    //my Jc lives in slot 0's Jc field, written by the shift pass. Tile coalesced
+    //SELF load before the scattered partner loads in the unrolled body below.
+    const float my_Jc = asfloat(g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, 0u) + 20u));
+
     [unroll]
     for (uint i = 0u; i < SPAT_COUNT_MAX; ++i)
     {
@@ -99,13 +103,15 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint nID = g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, i));
         if (nID == 0xFFFFFFFFu) continue;
 
-        //partner's cached shift to me at their slot i
-        const uint4  pShift  = g_pathStateBuffer.Load4(sel_slot_addr(nID, i) + 4u);
+        //partner shift to me (F + Jn) at offset 4..19 of partner slot i,
+        //partner Jc at offset 20..23 of same slot, so both land in or near a
+        //single sector of partner's record instead of two distinct sectors
+        const uint   partnerSlot = sel_slot_addr(nID, i);
+        const uint4  pShift  = g_pathStateBuffer.Load4(partnerSlot + 4u);
         const float3 p_F     = asfloat(pShift.xyz);
         const float  p_F_mag = GetPHat(p_F);
         const float  p_Jn    = asfloat(pShift.w);
-
-        const float p_Jc = asfloat(g_pathStateBuffer.Load(sel_addr(nID) + 4u));
+        const float  p_Jc    = asfloat(g_pathStateBuffer.Load(partnerSlot + 20u));
 
         //one field partner M
         const float Mn = min(SPAT_MCAP, load_M(g_Reservoirs_current, nID));

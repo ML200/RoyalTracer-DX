@@ -72,6 +72,11 @@ struct InstanceXformCPU {
 namespace lt
 {
 #pragma pack(push, 1)
+    // 64B, mirrors HLSL Data_v8.hlsli. Build-stat fields
+    // (primCount/sumPower/sumPowerSq/itemFirst/itemCount) were dropped
+    // because no shader read them and they were inflating descent register
+    // pressure. Builder still tracks them internally (Node, TItem) for the
+    // SAOH heuristic, they just don't ship to the GPU node.
     struct LightTLASNodeGpu {
         XMFLOAT3 bmin; float power;
         XMFLOAT3 bmax; float cosTheta_o;
@@ -80,13 +85,7 @@ namespace lt
         uint32_t firstChild;
         uint32_t childCount;
         uint32_t blasIndex;
-
-        uint32_t primCount;
-        float    sumPower;
-        float    sumPowerSq;
-
-        uint32_t itemFirst;
-        uint32_t itemCount;
+        uint32_t _pad;                    // keeps struct stride 16B aligned
     };
 
     struct LightBLASNodeGpu {
@@ -98,9 +97,6 @@ namespace lt
         uint32_t childCount;
         uint32_t triFirst;
         uint32_t triCount;
-
-        uint32_t primCount;    uint32_t _pad0;
-        float    sumPower;     float    sumPowerSq;
     };
 
     struct BlasRangeGpu {
@@ -1010,10 +1006,11 @@ private:
         N0.axis = parent.cone.axis;
         N0.cosTheta_o = std::cos(clampf(parent.cone.theta_o, 0.f, LT_PI));
         N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
-        N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
-        N0.itemFirst = begin; N0.itemCount = end - begin;
+        //primCount/sumPower/sumPowerSq/itemFirst/itemCount dropped from the
+        //GPU struct, parent.* still feeds the SAOH split heuristic below
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
         N0.blasIndex = UINT32_MAX;
+        N0._pad      = 0;
 
         const uint32_t count = end - begin;
         if (count == 1) {
@@ -1196,8 +1193,8 @@ private:
         g.triFirst = n.triFirst;
         g.triCount = n.triCount;
 
-        g.primCount = n.primCount; g._pad0 = 0;
-        g.sumPower = n.sumPower; g.sumPowerSq = n.sumPowerSq;
+        //primCount/sumPower/sumPowerSq dropped from the GPU struct, still
+        //tracked on n for the SAOH build but never read by any shader
         return g;
     }
 };

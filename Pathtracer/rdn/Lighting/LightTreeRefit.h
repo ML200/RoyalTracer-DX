@@ -226,10 +226,11 @@ private:
         N0.axis = parent.cone.axis;
         N0.cosTheta_o = std::cos(lt::clampf(parent.cone.theta_o, 0.f, lt::LT_PI));
         N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
-        N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
-        N0.itemFirst = begin; N0.itemCount = end - begin;
+        //primCount/sumPower/sumPowerSq/itemFirst/itemCount dropped from the
+        //GPU node struct, parent.* still drives the local SAOH split
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
         N0.blasIndex = UINT32_MAX;
+        N0._pad      = 0;
 
         const uint32_t count = end - begin;
         if (count == 1) {

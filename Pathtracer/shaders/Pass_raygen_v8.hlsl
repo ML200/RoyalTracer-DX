@@ -3,7 +3,7 @@
 
 //safety net, real termination is RR at depth>2 plus NRC cache short circuit
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 32
+#define MAX_BOUNCES 12
 #endif
 
 //====================================
@@ -211,6 +211,7 @@ void Pass_raygen_v8()
         store_bary  (g_sample_current, pixelIdx, attr.barycentrics);
         store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
         store_uv    (g_sample_current, pixelIdx, hinfo.uv);
+        store_hitT  (g_sample_current, pixelIdx, hitT);
         if (isEmitter) {
             gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
             gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
