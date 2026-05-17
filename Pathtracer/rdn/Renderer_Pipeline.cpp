@@ -1292,7 +1292,7 @@ void Renderer::InitReuseTextures() {
 //code change. Just drop the new EXR in include/ as sky_stars.exr and
 //rebuild (the include/ copy step picks it up). The loader logs the actual
 //dimensions on startup.
-static constexpr const char* SKY_STARS_EXR_PATH = "./sky_stars_8k.exr";
+static constexpr const char* SKY_STARS_EXR_PATH = "./sky_stars.exr";
 
 void Renderer::InitSkyStarsTexture() {
     SCOPE_TIMER("InitSkyStarsTexture");
