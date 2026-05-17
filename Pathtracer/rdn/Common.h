@@ -182,10 +182,23 @@ struct SunSettings {
     //            soft halo bilinear filtering creates around each star
     //            (the "blob"), so visible star footprint shrinks to the
     //            bright centre. Subtraction is hard clamped at 0.
-    float skyStarIntensity = 0.5f;
-    float skyStarGamma     = 2.5f;
-    float skyStarLodBias   = 0.3f;
-    float skyStarThreshold = 0.05f;
+    //Tuned for the 8K NASA SVS EXR + mipmap chain: low LOD bias to grab
+    //sharp detail (the gamma + threshold tricks are no longer needed once
+    //the source resolution is high enough that single stars are 1 texel
+    //even at mip 0), gamma left at the linear identity, threshold at zero.
+    //Intensity dialed down so the bright Milky Way doesn't overpower the
+    //rest of the night sky after AE.
+    float skyStarIntensity = 0.047f;
+    float skyStarGamma     = 1.57f;
+    float skyStarLodBias   = -1.0f;
+    float skyStarThreshold = 0.0f;
+    //Scalar multiplier on the SKY_NIGHT_BASE airglow tint. 1.0 is the
+    //literal SKY_NIGHT_BASE value (sun-independent, matches the chromatic
+    //balance picked in SunSampler_v8.hlsli). AE compensates for the dim
+    //absolute luminance via the AE_LOG_LUM_MIN floor in
+    //Pass_autoexpose_finalize_v8.hlsl, so a clear night still reads as
+    //"dim" rather than "black". Higher = stylized brighter night.
+    float skyNightBaseIntensity = 0.57f;
 };
 
 //====================================

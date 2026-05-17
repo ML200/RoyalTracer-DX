@@ -132,6 +132,7 @@ cbuffer CameraParams : register(b0)
     float skyStarGamma;
     float skyStarLodBias;
     float skyStarThreshold;
+    float skyNightBaseIntensity;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude

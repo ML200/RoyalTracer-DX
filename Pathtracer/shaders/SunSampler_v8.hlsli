@@ -1087,14 +1087,20 @@ float3 EvaluateSky(float3 rayDir)
 
     //night base, residual upper-atmosphere airglow. Fades out above the
     //atmosphere top and is suppressed entirely when the planet body covers
-    //the ray (no "sky glow leaking through the ground").
+    //the ray (no "sky glow leaking through the ground"). Crucially does
+    //NOT scale by SKY_INTENSITY (= sunSunIntensity * sunSkyIntensity):
+    //airglow and integrated starlight are physically independent of the
+    //sun's brightness, so cranking sunSunIntensity must not brighten the
+    //night sky. (Pre-fix bug: night sky bled with sun intensity, making
+    //"midnight" never fully dark even with the sun far below the horizon.)
     float observerR     = length(O);
     float atmosResidual = saturate((ATMOS_TOP_RADIUS - observerR)
                                    / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
     float tw            = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
     float mu            = saturate(dot(v, WORLD_UP));
-    float3 nightBase    = SKY_NIGHT_BASE * lerp(1.6f, 1.0f, pow(mu, 0.7f));
-    nightBase          *= SKY_INTENSITY * atmosResidual * (hitPlanet ? 0.0f : 1.0f);
+    float3 nightBase    = SKY_NIGHT_BASE * skyNightBaseIntensity
+                                         * lerp(1.6f, 1.0f, pow(mu, 0.7f));
+    nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f);
 
     //stars fade where sky scatter overwhelms them and where atmospheric
     //extinction reduces throughput. NO sun-elevation gating — at orbital

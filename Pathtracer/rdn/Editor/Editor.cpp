@@ -645,11 +645,21 @@ void Editor::DrawSunPanel(Camera& camera) {
                               "\"large blob\" look. Raise for sharper / sparser stars,\n"
                               "but very high values start clipping faint real stars.");
 
+        ImGui::SliderFloat("Night Base", &s.skyNightBaseIntensity, 0.0f, 50.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Brightness of the residual airglow / integrated faint\n"
+                              "starlight that fills the night sky between resolved\n"
+                              "stars. Independent of sun intensity (was a bug before).\n"
+                              "0 = pitch black night, 5 = previous default look,\n"
+                              "higher = stylized brighter night sky.");
+
         if (ImGui::Button("Reset Star Defaults")) {
-            s.skyStarIntensity = 0.5f;
-            s.skyStarGamma     = 2.5f;
-            s.skyStarLodBias   = 0.3f;
-            s.skyStarThreshold = 0.05f;
+            s.skyStarIntensity      = 0.047f;
+            s.skyStarGamma          = 1.57f;
+            s.skyStarLodBias        = -1.0f;
+            s.skyStarThreshold      = 0.0f;
+            s.skyNightBaseIntensity = 0.57f;
         }
     }
 
