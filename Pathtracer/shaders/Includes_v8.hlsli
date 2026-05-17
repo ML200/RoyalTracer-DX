@@ -137,6 +137,59 @@ cbuffer CameraParams : register(b0)
     float skyStarLodBias;
     float skyStarThreshold;
     float skyNightBaseIntensity;
+    //volumetric cloud knobs, mirror CloudSettings in Common.h (same order!)
+    //Scalar packing concatenates these into the existing cbuffer register
+    //layout — no padding needed because every field is float.
+    float cloud_enabled;
+    float cloud_coverage;
+    float cloud_coverageVariation;
+    float cloud_coverageFrequency;
+    float cloud_layerBotKm;
+    float cloud_layerTopKm;
+    float cloud_horizonFadeKm;
+    float cloud_extinction;
+    float cloud_baseFrequency;
+    float cloud_hfFrequency;
+    float cloud_hfAmount;
+    //Nubis-3 silver lining: amplitude + spread of the narrow forward
+    //HG lobe max-blended into the primary phase. Replaces the old
+    //J&D droplet diameter knobs.
+    float cloud_silverIntensity;
+    float cloud_silverSpread;
+    //Defocus cone half angle for cone traced sun shadows (degrees).
+    //0 = strict sun direction.
+    float cloud_shadowConeDeg;
+    //Nubis-3 secondary multi-scatter phase: strength of the broader
+    //HG term and its eccentricity. Replaces the Wrenninge octave
+    //triple (a, b, c) which is no longer used.
+    float cloud_secondaryStrength;
+    float cloud_secondaryG;
+    //Lambertian diffuse shell term strength (sun-facing NdotL on
+    //cloud normal, masked to shell so cores stay smooth).
+    float cloud_diffuseShellStrength;
+    float cloud_windX;
+    float cloud_windZ;
+    float cloud_viewSteps;
+    float cloud_lightSteps;
+    float cloud_trEps;
+    //indirect lighting on cloud samples
+    float cloud_skyAmbient;
+    float cloud_groundBounce;
+    float cloud_groundAlbedo;
+    float cloud_skyAmbientScale;
+    float cloud_groundScale;
+    //surface shadowing and termination
+    float cloud_cloudShadowOnSurfaces;
+    float cloud_rrThreshold;
+    //Sun shadow ray count per scattering event (1 = strict sun dir,
+    //3..5 = soft self shadows when shadowConeDeg > 0) and the upward
+    //density step count for the sky ambient occlusion estimate.
+    float cloud_shadowConeSamples;
+    float cloud_ambientSteps;
+    //weather-map XZ offset in km — scrolls coverage field horizontally
+    //without re-seeding noise (artistic offset on top of wind animation).
+    float cloud_weatherOffsetX;
+    float cloud_weatherOffsetZ;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -155,6 +208,43 @@ cbuffer CameraParams : register(b0)
 #define SKY_INTENSITY_VAL   (sunSunIntensity * sunSkyIntensity)
 #define SKY_INTENSITY       (sunSunIntensity * sunSkyIntensity)
 #define GLOBAL_EMISSION_STRENGTH globalEmissionStrength
+
+//Volumetric cloud knob redirects. Clouds_v8.hlsli wraps each constant in
+//#ifndef so defining them here overrides the static fallbacks and binds
+//the cloud integrator to the editor-driven CB fields. Loop bounds are
+//cast to int at the use site because the CB exposes them as float for
+//uniform packing.
+#define CLOUD_COVERAGE_BASE     cloud_coverage
+#define CLOUD_COVERAGE_VAR      cloud_coverageVariation
+#define CLOUD_COVERAGE_FREQ     cloud_coverageFrequency
+#define CLOUD_LAYER_BOT_KM      cloud_layerBotKm
+#define CLOUD_LAYER_TOP_KM      cloud_layerTopKm
+#define CLOUD_HORIZON_FADE_KM   cloud_horizonFadeKm
+#define CLOUD_EXTINCTION        cloud_extinction
+#define CLOUD_BASE_FREQ              cloud_baseFrequency
+#define CLOUD_HF_FREQ                cloud_hfFrequency
+#define CLOUD_HF_AMOUNT              cloud_hfAmount
+#define CLOUD_SILVER_INTENSITY       cloud_silverIntensity
+#define CLOUD_SILVER_SPREAD          cloud_silverSpread
+#define CLOUD_SHADOW_CONE_DEG        cloud_shadowConeDeg
+#define CLOUD_SECONDARY_STRENGTH     cloud_secondaryStrength
+#define CLOUD_SECONDARY_G            cloud_secondaryG
+#define CLOUD_DIFFUSE_SHELL_STRENGTH cloud_diffuseShellStrength
+#define CLOUD_WIND_X                 cloud_windX
+#define CLOUD_WIND_Z                 cloud_windZ
+#define CLOUD_VIEW_STEPS             ((int)cloud_viewSteps)
+#define CLOUD_LIGHT_STEPS            ((int)cloud_lightSteps)
+#define CLOUD_TR_EPS                 cloud_trEps
+#define CLOUD_SKY_AMBIENT            cloud_skyAmbient
+#define CLOUD_GROUND_BOUNCE          cloud_groundBounce
+#define CLOUD_GROUND_ALBEDO          cloud_groundAlbedo
+#define CLOUD_SKY_AMBIENT_SCALE      cloud_skyAmbientScale
+#define CLOUD_GROUND_SCALE           cloud_groundScale
+#define CLOUD_RR_THRESHOLD           cloud_rrThreshold
+#define CLOUD_SHADOW_CONE_SAMPLES    cloud_shadowConeSamples
+#define CLOUD_AMBIENT_STEPS          ((int)cloud_ambientSteps)
+#define CLOUD_WEATHER_OFFSET_X       cloud_weatherOffsetX
+#define CLOUD_WEATHER_OFFSET_Z       cloud_weatherOffsetZ
 
 //====================================
 //CORE UTILITY HEADERS

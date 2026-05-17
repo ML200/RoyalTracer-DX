@@ -83,7 +83,10 @@ public:
     float   apertureRadius = 0.0f;
     float   focusDistance  = 10.0f;
 
-    SunSettings sunSettings;
+    SunSettings   sunSettings;
+    //Volumetric cloud knobs, appended to the camera cbuffer tail after
+    //SunSettings. Driven from the editor's Clouds panel.
+    CloudSettings cloudSettings;
 
 private:
     ComPtr<ID3D12Resource>         m_buffer;

@@ -202,6 +202,154 @@ struct SunSettings {
 };
 
 //====================================
+//CLOUD SETTINGS
+//====================================
+//Runtime knobs for the volumetric cloud system in Clouds_v8.hlsli. Mirrored
+//into the camera cbuffer tail after SunSettings so the same upload path
+//feeds them to the shader. All fields are float so HLSL scalar packing
+//interleaves cleanly across cbuffer register boundaries.
+//
+//Defaults match the static fallbacks in Clouds_v8.hlsli — the runtime
+//knobs only take effect once the host has uploaded a non-zero buffer, so
+//the visual baseline is identical to the pre-editor state.
+struct CloudSettings {
+    //master toggle: 0 = clouds OFF (early-out, cheap), 1 = clouds ON.
+    //ENABLE_CLOUDS at compile time still wins over this (kill switch).
+    float enabled            = 1.0f;
+    //coverage controls how much of the sky is filled with cumulus. 0
+    //gives clear skies, ~0.5 is "scattered", 1 is overcast.
+    float coverage           = 0.55f;
+    //horizontal variation around the coverage base — adds "weather front"
+    //character (denser here, clearer there) rather than uniform fill.
+    //0.5 default gives noticeable clusters and clearings across the
+    //sky which is the dominant cue against the "artificial / repeated"
+    //feel of uniform-coverage cloudscapes.
+    float coverageVariation  = 0.50f;
+    //horizontal frequency of the coverage modulation field (1/km). Lower
+    //= bigger weather cells, higher = more local variation.
+    float coverageFrequency  = 0.025f;
+    //shell geometry: layer occupies [bottomKm, topKm] above the planet
+    //surface. Typical fair-weather cumulus base sits 1..2 km, top 3..6.
+    float layerBotKm         = 1.5f;
+    float layerTopKm         = 3.5f;
+    //limb softening from orbit, in km of fade distance above cloud base
+    //(prevents the layer reading as a hard ring at the planet horizon).
+    float horizonFadeKm      = 2.0f;
+    //sigma_t at unit density (1/km). 9 matches the Nubis tuned baseline
+    //(thin stratocumulus); raise to 25..40 for thick / opaque cumulus.
+    //Higher values make clouds read as solid walls instead of letting
+    //the multi-scatter terms show through — for "fluffy" cumulus stay
+    //in 6..15.
+    float extinction         = 9.0f;
+    //base shape Worley FBM frequency (1/km). The base octave runs at this
+    //frequency, a second detail octave at ~2.7x sits on top. Lower =
+    //larger cumulus clusters; 0.18 gives ~5 km cluster spacing which
+    //reads as natural skies rather than the tiled "blobs on a grid"
+    //look the single octave default produced.
+    float baseFrequency      = 0.18f;
+    //high-frequency value-noise erosion (1/km) and its amount [0,1].
+    //Eats the edges of the base blobs, producing the wispy detail that
+    //distinguishes cumulus from raw spheres.
+    float hfFrequency        = 3.5f;
+    float hfAmount           = 0.55f;
+    //====================================
+    // Nubis-3 lighting model (Schneider, SIGGRAPH)
+    //====================================
+    // The primary HG forward lobe is blended with a narrow "silver"
+    // lobe via max(); together they reproduce the sharp halo around
+    // the sun without paying for a separate Mie evaluation.
+    // silverIntensity: amplitude of the silver lobe (0..1).
+    // silverSpread:    angular spread of the silver lobe (0..0.3).
+    //                  Smaller = tighter halo, larger = wider glow.
+    float silverIntensity       =  0.35f;
+    float silverSpread          =  0.08f;
+    // Half angle of the cone traced sun shadow defocus cone, in degrees.
+    // 0 = strict sun direction (cheapest). 2..6 = visibly softer self
+    // shadows characteristic of real cumulus.
+    float shadowConeDeg         =   0.0f;
+    // Secondary multi-scatter phase term: a broader HG modulated by
+    // cloud depth + extinction-attenuated sun term. Captures the soft
+    // fill on the shadow side without paying for a Wrenninge octave
+    // loop.
+    // secondaryStrength: amplitude of the secondary term (0..1).
+    // secondaryG:        HG eccentricity of the secondary lobe (0..1).
+    //                    Smaller = more isotropic (more fill in core).
+    float secondaryStrength  = 0.45f;
+    float secondaryG         = 0.18f;
+    // Sun-facing diffuse shell term: Lambertian NdotL on the cloud
+    // normal estimated from a 4-tap tetrahedral gradient. Lives mostly
+    // on cloud EDGES (shell mask = (1-density)^2) so cumulus get the
+    // sun-lit silhouette without flooding the cores. 0.7 default gives
+    // strong sunlit/shadowed contrast that separates cumulus shape
+    // from the cloud field background.
+    float diffuseShellStrength = 0.70f;
+    //wind drift in km/s (horizontal only). Animates noise via walltime.
+    float windX              = 0.04f;
+    float windZ              = 0.015f;
+    //View march step floor (adaptive step count grows with view path
+    //length above this) and per-sample sun shadow march step count.
+    //Both default to stochastic-friendly values — DLSS RR is expected
+    //to denoise the per-step variance. Bump to 64/6 if banding shows
+    //up behind dense cumulus that the denoiser can't track; drop to
+    //16/2 for absolute max perf.
+    float viewSteps          = 32.0f;
+    float lightSteps         = 3.0f;
+    //view-transmittance cutoff for early-out — below this the cumulative
+    //radiance contribution is below the sensor noise floor.
+    float trEps              = 0.005f;
+
+    //====================================
+    // indirect lighting on cloud samples
+    //====================================
+    // skyAmbient and groundBounce are 0/1 runtime toggles. skyAmbient
+    // adds the hemispherical sky-dome contribution at every cloud
+    // scattering event, groundBounce adds a Lambertian terrain bounce
+    // proxy underneath the cloud. groundAlbedo is the gray average
+    // reflectance of the surface, biased proxy until a per-cell ground
+    // irradiance map exists. skyAmbientScale and groundScale are
+    // artistic multipliers, 1.0 keeps the values physically scaled.
+    float skyAmbient         = 1.0f;
+    float groundBounce       = 1.0f;
+    float groundAlbedo       = 0.20f;
+    float skyAmbientScale    = 1.0f;
+    float groundScale        = 1.0f;
+
+    //====================================
+    // surface shadowing and termination
+    //====================================
+    // cloudShadowOnSurfaces enables the inline CloudSunVisibility lookup
+    // at surface NEE. expensive when called per-pixel, off by default
+    // until a precomputed shadow map is wired in. rrThreshold sets the
+    // Russian roulette boundary on view-march throughput.
+    float cloudShadowOnSurfaces = 0.0f;
+    float rrThreshold        = 0.10f;
+
+    //====================================
+    // sampling counts (Monte Carlo)
+    //====================================
+    // shadowConeSamples: number of jittered shadow rays inside the sun
+    // defocus cone per scattering event. 1 = strict sun direction
+    // (cheapest), 3..5 = visibly softer self shadow if shadowConeDeg
+    // is non zero.
+    // ambientSteps: number of upward density samples used to estimate
+    // sky ambient occlusion per scattering event. 2 default cuts the
+    // single-sample variance in half — important for tall cloud
+    // layers (3+ km) where individual cumulus can be tall enough
+    // that a single random sample's outcome (in-cloud vs above-cloud)
+    // varies wildly. Bump to 3-4 if dark patches still appear.
+    float shadowConeSamples  = 1.0f;
+    float ambientSteps       = 2.0f;
+
+    //weather-map XZ offset in km. Scrolls the coverage/weather field
+    //horizontally without re-seeding noise, so the user can browse
+    //different cloud arrangements without changing the underlying
+    //random pattern. Wind animation still adds to these at runtime;
+    //these are a static artistic offset on top.
+    float weatherOffsetX     = 0.0f;
+    float weatherOffsetZ     = 0.0f;
+};
+
+//====================================
 //PER-FRAME STATS
 //====================================
 struct FrameStats {

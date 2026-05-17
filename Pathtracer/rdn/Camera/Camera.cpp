@@ -15,9 +15,11 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
-    //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3) + SunSettings
+    //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3)
+    //+ SunSettings + CloudSettings appended at the tail.
     uint32_t matCount = 6;
-    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8 + sizeof(SunSettings);
+    m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8
+                 + sizeof(SunSettings) + sizeof(CloudSettings);
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -153,6 +155,10 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     sunSettings.dofApertureRadius = apertureRadius;
     sunSettings.dofFocusDistance  = focusDistance;
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
+    //CloudSettings follows SunSettings; both packed as scalar floats so the
+    //HLSL CB packing rules concatenate them cleanly across register slots.
+    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra) + sizeof(SunSettings),
+           &cloudSettings, sizeof(CloudSettings));
     m_buffer->Unmap(0, nullptr);
 
     m_viewMatrix           = matrices[0];

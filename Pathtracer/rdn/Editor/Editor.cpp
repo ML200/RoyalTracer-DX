@@ -56,6 +56,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
+            ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
             ImGui::EndMenu();
         }
@@ -88,6 +89,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
+    if (m_showClouds)    DrawCloudPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene, camera);
 
     // Material re-upload happens via dirty flag checked in Renderer
@@ -661,6 +663,275 @@ void Editor::DrawSunPanel(Camera& camera) {
             s.skyStarThreshold      = 0.0f;
             s.skyNightBaseIntensity = 0.57f;
         }
+    }
+
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+//CLOUD PANEL
+//Live controls for the volumetric cloud system in Clouds_v8.hlsli.
+//Every field maps 1:1 onto a CloudSettings member which Camera uploads
+//into the camera cbuffer tail; the shader macros in Includes_v8.hlsli
+//redirect the Clouds_v8 CLOUD_* identifiers to those cbuffer fields so
+//edits take effect on the next frame without a recompile.
+void Editor::DrawCloudPanel(Camera& camera) {
+    ImGui::SetNextWindowSize(ImVec2(360, 520), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Clouds")) { ImGui::End(); return; }
+
+    auto& c = camera.cloudSettings;
+
+    //----- Master toggle (mirrors cloud_enabled, sampled as <0.5/>=0.5)
+    bool enabled = c.enabled >= 0.5f;
+    if (ImGui::Checkbox("Enabled", &enabled)) c.enabled = enabled ? 1.0f : 0.0f;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Runtime master switch. The shader takes an\n"
+                          "early-out path when off, so the cost is\n"
+                          "essentially free. ENABLE_CLOUDS in\n"
+                          "Clouds_v8.hlsli is the compile-time kill\n"
+                          "switch that dead-codes the integrator.");
+
+    if (ImGui::CollapsingHeader("Coverage", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Coverage##amount",    &c.coverage,           0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fraction of sky filled with cumulus. 0 = clear,\n"
+                              "~0.5 = scattered, 1.0 = overcast. Uses\n"
+                              "Schneider's coverage-threshold remap so the\n"
+                              "field stays sharp instead of fading uniformly.");
+
+        ImGui::SliderFloat("Coverage Variation",  &c.coverageVariation,  0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Horizontal noise amplitude around the coverage\n"
+                              "base — creates 'weather front' density bands\n"
+                              "rather than uniform fill. 0 = uniform, 0.5 = strong.");
+
+        ImGui::SliderFloat("Coverage Frequency",  &c.coverageFrequency,  0.001f, 1.0f, "%.4f /km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Spatial scale of the coverage modulation. Lower\n"
+                              "= huge weather cells, higher = local variation.");
+
+        ImGui::SliderFloat("Weather Offset X",    &c.weatherOffsetX,    -500.0f, 500.0f, "%.1f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Static XZ offset added to the weather/coverage\n"
+                              "sample position. Scrolls through different cloud\n"
+                              "arrangements without re-seeding the noise pattern.\n"
+                              "Wind drift still animates on top.");
+
+        ImGui::SliderFloat("Weather Offset Z",    &c.weatherOffsetZ,    -500.0f, 500.0f, "%.1f km");
+    }
+
+    if (ImGui::CollapsingHeader("Shell Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Layer Bottom",   &c.layerBotKm,    0.0f, 20.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Altitude of the cloud base above the planet\n"
+                              "surface. Real cumulus base sits at 1..2 km in\n"
+                              "fair weather, 0.5..1 km in maritime air.");
+
+        ImGui::SliderFloat("Layer Top",      &c.layerTopKm,    0.0f, 30.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Top of the cloud layer. Cumulus tops vary from\n"
+                              "3 km (small) to 12 km (cumulonimbus). Must be\n"
+                              "above Layer Bottom or the shell is empty.");
+
+        ImGui::SliderFloat("Horizon Fade",   &c.horizonFadeKm, 0.0f, 10.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Limb softening distance (orbital views). Without\n"
+                              "this the cloud layer reads as a hard bright ring\n"
+                              "against the planet's silhouette.");
+    }
+
+    if (ImGui::CollapsingHeader("Density Field", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Extinction",     &c.extinction,    1.0f, 200.0f, "%.1f /km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Sigma_t at unit density (per km). Real water\n"
+                              "cumulus runs 25..60 /km. Higher = more opaque,\n"
+                              "lower = wispier and more translucent.");
+
+        ImGui::SliderFloat("Base Frequency", &c.baseFrequency, 0.05f, 5.0f, "%.3f /km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Frequency of the low-frequency Worley field that\n"
+                              "defines cumulus blob spacing. Lower = bigger\n"
+                              "clouds, higher = smaller more numerous puffs.");
+
+        ImGui::SliderFloat("HF Frequency",   &c.hfFrequency,   0.5f, 30.0f, "%.2f /km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Erosion noise frequency — controls the wispy\n"
+                              "edge detail size. Higher = finer whisps.");
+
+        ImGui::SliderFloat("HF Amount",      &c.hfAmount,      0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How aggressively the HF noise eats edges. 0 =\n"
+                              "smooth Worley blobs, 1 = heavily eroded whispy\n"
+                              "stratocumulus. Cores stay intact regardless.");
+    }
+
+    if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Silver Intensity", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Amplitude of the narrow forward 'silver lining'\n"
+                              "HG lobe max-blended into the primary phase.\n"
+                              "Higher = brighter halo around the sun. 0 disables\n"
+                              "silver and falls back to pure forward HG.");
+
+        ImGui::SliderFloat("Silver Spread",    &c.silverSpread,    0.01f, 0.3f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Angular spread of the silver lobe. Smaller\n"
+                              "= tighter brighter halo against the sun, larger\n"
+                              "= broader softer glow around the sun direction.");
+
+        ImGui::SliderFloat("Shadow Cone (deg)", &c.shadowConeDeg,  0.0f, 15.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Half angle of the sun shadow defocus cone (deg).\n"
+                              "0 = strict sun direction (cheapest single ray).\n"
+                              "2..6 = visibly softer self shadow when paired\n"
+                              "with Shadow Cone Samples > 1.");
+    }
+
+    if (ImGui::CollapsingHeader("Multi-Scatter Fill")) {
+        ImGui::SliderFloat("Secondary Strength", &c.secondaryStrength, 0.0f, 1.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Amplitude of the secondary multi-scatter phase.\n"
+                              "Modulated by density × height × sun atten. Lifts\n"
+                              "the shadow side of cumulus without the cost of\n"
+                              "a full octave loop. 0 = no fill, 1.0 = bright.");
+
+        ImGui::SliderFloat("Secondary G",        &c.secondaryG,        0.0f, 0.6f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("HG eccentricity of the secondary lobe. Smaller\n"
+                              "= more isotropic (more fill across the volume),\n"
+                              "larger = still forward biased like the primary.");
+
+        ImGui::SliderFloat("Diffuse Shell",      &c.diffuseShellStrength, 0.0f, 1.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Strength of the Lambertian sun term on the\n"
+                              "cloud normal (estimated from a 4-tap gradient).\n"
+                              "Lives on cloud EDGES via a shell mask, gives the\n"
+                              "sun-lit silhouette that defines cumulus shape.\n"
+                              "0 = flat lighting, 0.4..0.6 = strong silhouette.");
+    }
+
+    if (ImGui::CollapsingHeader("Animation")) {
+        ImGui::SliderFloat("Wind X", &c.windX, -1.0f, 1.0f, "%.3f km/s");
+        ImGui::SliderFloat("Wind Z", &c.windZ, -1.0f, 1.0f, "%.3f km/s");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Horizontal drift of the cloud field over time.\n"
+                              "Driven by walltime, so paused sim freezes the\n"
+                              "field. ±0.05 km/s is a gentle breeze.");
+    }
+
+    if (ImGui::CollapsingHeader("Indirect Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
+        bool skyAmb = c.skyAmbient >= 0.5f;
+        if (ImGui::Checkbox("Sky Ambient", &skyAmb))
+            c.skyAmbient = skyAmb ? 1.0f : 0.0f;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hemispherical sky-dome illumination on cloud\n"
+                              "samples. Single zenith probe per pixel, biased\n"
+                              "but cheap. Lifts cloud shadow sides from inky\n"
+                              "to natural blue-gray, the dominant fix for\n"
+                              "the dim-looking underside complaint.");
+
+        ImGui::SliderFloat("Sky Ambient Scale", &c.skyAmbientScale, 0.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Artistic multiplier on the sky ambient term.\n"
+                              "1.0 is physically scaled to the Bruneton sky.");
+
+        bool gnd = c.groundBounce >= 0.5f;
+        if (ImGui::Checkbox("Ground Bounce", &gnd))
+            c.groundBounce = gnd ? 1.0f : 0.0f;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Reflected sun off the ground proxy lighting\n"
+                              "cloud bases from below. Snow / desert / ocean\n"
+                              "scenes need this for cloud bottoms to read\n"
+                              "as bright instead of gray-flat.");
+
+        ImGui::SliderFloat("Ground Albedo", &c.groundAlbedo, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Gray Lambertian reflectance of the terrain.\n"
+                              "0.18 grass/forest, 0.30 desert, 0.06 ocean,\n"
+                              "0.85 fresh snow. Biased single scalar until a\n"
+                              "ground irradiance map is wired in.");
+
+        ImGui::SliderFloat("Ground Scale", &c.groundScale, 0.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Artistic multiplier on the ground bounce term.");
+    }
+
+    if (ImGui::CollapsingHeader("Surface Interaction")) {
+        bool surf = c.cloudShadowOnSurfaces >= 0.5f;
+        if (ImGui::Checkbox("Shadow On Surfaces", &surf))
+            c.cloudShadowOnSurfaces = surf ? 1.0f : 0.0f;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Cloud transmittance applied to the sun NEE on\n"
+                              "scene surfaces, producing live cloud shadows on\n"
+                              "terrain and props. Each surface NEE pays for a\n"
+                              "short cloud march, expensive without a shadow\n"
+                              "map. Off by default until the shadow map pass\n"
+                              "lands.");
+    }
+
+    if (ImGui::CollapsingHeader("Quality / Performance")) {
+        int viewSteps  = (int)c.viewSteps;
+        int lightSteps = (int)c.lightSteps;
+        if (ImGui::SliderInt("View Steps",  &viewSteps,  16, 128))
+            c.viewSteps  = (float)viewSteps;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Fixed step view march sample count. Each step\n"
+                              "covers (tFar - tNear) / N, so grazing rays get\n"
+                              "the same coverage as vertical rays, just at\n"
+                              "coarser per step resolution. 48 baseline; bump\n"
+                              "to 64..96 for thick or contrasty cloudscapes.");
+
+        if (ImGui::SliderInt("Light Steps", &lightSteps, 2, 12))
+            c.lightSteps = (float)lightSteps;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Per shadow ray sun march step count, with\n"
+                              "geometric growth. 3 baseline (stochastic, DLSS\n"
+                              "RR denoises). Bump to 5..8 if banded shadow\n"
+                              "patterns show up that the denoiser can't track.");
+
+        int shadowK = (int)c.shadowConeSamples;
+        if (ImGui::SliderInt("Shadow Cone Samples", &shadowK, 1, 5))
+            c.shadowConeSamples = (float)shadowK;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Number of jittered shadow rays inside the sun\n"
+                              "defocus cone per scattering event. 1 = single\n"
+                              "jittered sample (cheapest), 3..5 = visibly softer\n"
+                              "self shadow at proportional cost.");
+
+        int ambientK = (int)c.ambientSteps;
+        if (ImGui::SliderInt("Ambient Occlusion Steps", &ambientK, 1, 6))
+            c.ambientSteps = (float)ambientK;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Upward density march sample count per scattering\n"
+                              "event, used to estimate sky ambient occlusion\n"
+                              "from cloud overhead. 2 = Nubis baseline (cheap).\n"
+                              "4..6 = smoother but proportional cost. Two sky\n"
+                              "anchor colours (zenith + horizon) are sampled\n"
+                              "once per pixel regardless of this setting.");
+
+        ImGui::SliderFloat("Tr Cutoff", &c.trEps, 1e-4f, 0.1f, "%.4f",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("View transmittance threshold below which the\n"
+                              "march exits early. Lower = more accurate (less\n"
+                              "early exit), higher = faster but slight banding\n"
+                              "behind dense clouds.");
+
+        ImGui::SliderFloat("RR Threshold", &c.rrThreshold, 0.01f, 0.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Russian roulette termination boundary on view\n"
+                              "throughput. Samples above this never terminate,\n"
+                              "samples below survive with probability\n"
+                              "throughput/threshold. Lower = less variance,\n"
+                              "higher = faster.");
+    }
+
+    if (ImGui::Button("Reset Cloud Defaults")) {
+        c = CloudSettings{};
     }
 
     ImGui::End();

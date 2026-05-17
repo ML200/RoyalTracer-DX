@@ -1075,9 +1075,43 @@ float3 EvaluateStars(float3 rayDir)
 }
 
 //====================================
+//VOLUMETRIC CLOUDS
+//====================================
+//Pulled in after the atmosphere helpers (SampleMedium, TransmittanceToSun,
+//RaySphereIntersect, Hash12) and before EvaluateSky so the cloud
+//integrator can reuse them when shading sky pixels.
+#include "Clouds_v8.hlsli"
+
+//====================================
 //PUBLIC SKY API
 //====================================
-float3 EvaluateSky(float3 rayDir)
+//Sky is split into THREE evaluators so different consumers can pick the
+//right cost/quality point:
+//
+//  EvaluateSkyBackground(v)     — atmosphere + stars + planet body only,
+//                                 NO clouds. Used by raygen's primary
+//                                 miss; clouds for primary pixels are
+//                                 supplied by a dedicated compute pass
+//                                 (Pass_clouds_primary_v8) and composited
+//                                 in the shading pass.
+//
+//  EvaluateSky(v, cloudTrOut)   — background + CHEAP clouds. Used by
+//                                 bounce-miss / inline-RT-miss paths
+//                                 where the path's contribution is
+//                                 attenuated by NRC/ReSTIR weights and
+//                                 we don't want to spend the full
+//                                 Skybolt step-and-retract march on
+//                                 every indirect ray. cloudTrOut is the
+//                                 cheap cloud transmittance so the
+//                                 caller can attenuate sun-disc / MIS-
+//                                 sun radiance consistently.
+//
+//  EvaluateSky(v)               — convenience overload, discards cloudTr.
+//
+//The full-quality EvaluateClouds is still exported by Clouds_v8.hlsli
+//but only called from Pass_clouds_primary_v8.
+
+float3 EvaluateSkyBackground(float3 rayDir)
 {
     SunState S = ComputeSunState();
 
@@ -1127,4 +1161,33 @@ float3 EvaluateSky(float3 rayDir)
                                   : (EvaluateStars(v) * viewTr * starShield);
 
     return lerp(nightBase, daySky, tw) + stars + planetBody;
+}
+
+//Background + CHEAP volumetric clouds. cloudTrOut returns the [0,1]
+//cheap cloud transmittance along v so callers can attenuate sun-disc /
+//MIS-sun radiance that passes through clouds. The cheap variant uses
+//a single straight march (no shadow rays, single Worley octave, no
+//multi-scatter octaves) — fine for bounce paths whose contribution is
+//attenuated by NRC/ReSTIR weights and ultimately denoised by DLSS RR.
+float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
+{
+    cloudTrOut = float3(1.0f, 1.0f, 1.0f);
+
+    float3 v          = SafeNormalize(rayDir);
+    float3 background = EvaluateSkyBackground(v);
+
+    SunState S = ComputeSunState();
+    float3 cloudL = EvaluateCloudsCheap(v, S.dirWS,
+                                        ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
+                                        cloudTrOut);
+    return background * cloudTrOut + cloudL;
+}
+
+//Single-argument overload kept so legacy call sites that don't care
+//about cloud transmittance compile unchanged. The discarded out param
+//costs only one register.
+float3 EvaluateSky(float3 rayDir)
+{
+    float3 cloudTrIgnored;
+    return EvaluateSky(rayDir, cloudTrIgnored);
 }

@@ -61,9 +61,38 @@ void main(uint3 DTid : SV_DispatchThreadID)
     SetSkyObserver(camPosAbsWorld);
     const SunState sunState = ComputeSunState();
 
-    float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)];
-    float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)];
+    float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)].rgb;
+    float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)].rgb;
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
+
+    //====================================
+    //PRIMARY CLOUD COMPOSITE (SKY PIXELS)
+    //====================================
+    //Pass_clouds_primary_v8 wrote cloudL into slot 10 and cloudTr into
+    //slot 11 for every sky pixel, identity (0, 1) for the rest. Compose
+    //here so the primary slots feed both the DLSS RR input AND the
+    //postprocess noisy/gt debug paths with clouds already merged in. We
+    //write the composited values back to slots 1 & 2 so postprocess
+    //(which does its own sum of slot1+slot2+slot3) picks them up
+    //without needing changes there.
+    //
+    //Branchless composite on the identity values: on non-sky pixels
+    //cloudTr=(1,1,1) and cloudL=(0,0,0), so output_primary * cloudTr +
+    //cloudL == output_primary — no behavioural change for surface hits.
+    {
+        const float2 dimsCO    = float2(IMG_W, IMG_H);
+        const uint   pixelIdxCO = MapPixelID(dimsCO, DTid.xy);
+        const uint   coInst     = load_instID(g_sample_current, pixelIdxCO);
+        if (coInst == 0xFFFFFFFFu)
+        {
+            const float3 cloudL  = gScratchPing[uint3(DTid.xy, 10)].rgb;
+            const float3 cloudTr = gScratchPing[uint3(DTid.xy, 11)].rgb;
+            output_primary  = output_primary  * cloudTr + cloudL;
+            output_indirect = output_indirect * cloudTr + cloudL;
+            gScratchPing[uint3(DTid.xy, 1)] = float4(output_primary,  0);
+            gScratchPing[uint3(DTid.xy, 2)] = float4(output_indirect, 0);
+        }
+    }
 
     //====================================
     //X1 SHARP REFLECTION CONTRIBUTION

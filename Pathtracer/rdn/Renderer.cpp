@@ -23,10 +23,14 @@ Renderer::Renderer(UINT width, UINT height)
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
-        //cuda:nrc_inference now also submits TrainFrame on auxStream so
-        //the dedicated cuda:nrc_train pass is gone -- one fewer D3D12
-        //cmd list close/execute/fence/reopen cycle per frame, training
-        //runs concurrently with resolve/debug/GI/shading.
+        //Primary cloud march. Runs once raygen has set the sky sentinel
+        //and the un-cloud-composited sky+sun in slots 1/2. Writes cloudL
+        //to slot 10 and cloudTr to slot 11; Pass_shading_v8 composites
+        //these onto sky pixels via background * cloudTr + cloudL. The
+        //barrier after raygen above already orders this against the
+        //raygen UAV writes; the next barrier orders this against the
+        //downstream consumers in shading.
+        L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         L"cuda:nrc_inference",                          L"barrier",
         L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",

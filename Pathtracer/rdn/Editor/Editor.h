@@ -41,6 +41,7 @@ private:
     void DrawReSTIRPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
+    void DrawCloudPanel(Camera& camera);
 
     bool m_visible        = true;
     bool m_showScene      = false;
@@ -50,6 +51,7 @@ private:
     bool m_showReSTIR     = false;
     bool m_showNRC        = false;
     bool m_showSun        = false;
+    bool m_showClouds     = false;
     bool m_showMaterials  = false;
     int  m_selectedModel  = -1;
     int  m_selectedMat    = -1;

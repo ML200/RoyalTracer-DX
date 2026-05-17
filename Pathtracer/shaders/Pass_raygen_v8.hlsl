@@ -102,9 +102,15 @@ inline bool TraceCameraRay(
     //----- MISS: sky + sun disk written to primary scratch slots -----
     if (!hitObj.IsHit())
     {
+        //Background only — atmosphere + stars + planet + sun disc. Clouds
+        //for primary rays come from Pass_clouds_primary_v8 (compute pass
+        //dispatched after raygen) and are composited in Pass_shading_v8
+        //via background * cloudTr + cloudL. The sun disc is added in
+        //un-attenuated here; shading multiplies the whole background by
+        //cloudTr so the sun gets the same cloud attenuation it used to.
         const float3 sun = EvaluateSun(rayDir);
-        float3 skyL1     = EvalMissState(rayDir, sun);
-        if (length(sun) > 0.0f) skyL1 = sun;
+        float3 skyL1     = EvaluateSkyBackground(rayDir);
+        if (length(sun) > 0.0f) skyL1 += sun;
         gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
         gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
         store_sky(g_sample_current, pixelIdx);
@@ -691,7 +697,12 @@ void Pass_raygen_v8()
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
                 ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
-            const float3 envL       = EvaluateSky(rayDir) + sunRad * sunMisBsdf;
+            //Cloud attenuation applies to the MIS-paired sun term too —
+            //the BSDF technique sees the cloud-occluded sun, matching
+            //what NEE would estimate via sun sampling.
+            float3 cloudTr;
+            const float3 sky        = EvaluateSky(rayDir, cloudTr);
+            const float3 envL       = sky + sunRad * sunMisBsdf * cloudTr;
 
             if (nrcPathId != NRC_INVALID_PATH)
                 NrcStorePathTail(nrcPathId, NRC_TAIL_MISS, NRC_INVALID_SLOT,
