@@ -616,6 +616,42 @@ void Editor::DrawSunPanel(Camera& camera) {
         ImGui::SliderFloat("Sky Intensity",  &s.skyIntensity, 0.0f, 100.0f, "%.2f",
                            ImGuiSliderFlags_Logarithmic);
     }
+    if (ImGui::CollapsingHeader("Stars / Milky Way", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Star Intensity", &s.skyStarIntensity, 0.0f, 5.0f, "%.3f",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Final brightness multiplier on the star texture sample,\n"
+                              "applied after the gamma curve.");
+
+        ImGui::SliderFloat("Star Gamma",     &s.skyStarGamma, 1.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Luminance power curve. >1 crushes the bilinear mip\n"
+                              "smear (faint dim averaged pixels) into near black\n"
+                              "while preserving peak star centres. 1.0 = linear,\n"
+                              "2.0 = balanced, 3.0+ = aggressive sparkle.");
+
+        ImGui::SliderFloat("Star LOD Bias",  &s.skyStarLodBias, -1.0f, 3.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Extra mip offset on top of the footprint based pick.\n"
+                              "Higher = blurrier + more temporally stable under jitter;\n"
+                              "lower = sharper but may flicker on single texel bright\n"
+                              "stars. 0 = exactly pixel = texel.");
+
+        ImGui::SliderFloat("Star Threshold", &s.skyStarThreshold, 0.0f, 0.5f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Black level subtraction applied before the gamma curve.\n"
+                              "Cuts the bilinear halo around each star so the visible\n"
+                              "footprint shrinks to the bright centre, fixing the\n"
+                              "\"large blob\" look. Raise for sharper / sparser stars,\n"
+                              "but very high values start clipping faint real stars.");
+
+        if (ImGui::Button("Reset Star Defaults")) {
+            s.skyStarIntensity = 0.5f;
+            s.skyStarGamma     = 2.5f;
+            s.skyStarLodBias   = 0.3f;
+            s.skyStarThreshold = 0.05f;
+        }
+    }
 
     ImGui::End();
 }

@@ -147,18 +147,17 @@
 #define SKY_TWILIGHT_DEG        18.0f
 #endif
 
-#ifndef SKY_STAR_GRID
-#define SKY_STAR_GRID           900.0f
-#endif
+//Star skybox runtime knobs are pulled from the CameraParams cbuffer
+//(skyStarIntensity, skyStarGamma, skyStarLodBias, skyStarThreshold on the
+//SunSettings tail), driven by the editor sliders so values can be tuned
+//live without a recompile. Names kept as SKY_STAR_* for compatibility with
+//the existing call sites.
+#define SKY_STAR_INTENSITY      skyStarIntensity
+#define SKY_STAR_GAMMA          skyStarGamma
+#define SKY_STAR_THRESHOLD      skyStarThreshold
 
-#ifndef SKY_STAR_DENSITY
-#define SKY_STAR_DENSITY        0.997f
-#endif
-
-#ifndef SKY_STAR_INTENSITY
-#define SKY_STAR_INTENSITY      3.0f
-#endif
-
+//Additional scale, kept separate so the host can drive an artistic fade
+//(e.g. for cinematic shots) without touching INTENSITY.
 #ifndef SKY_STAR_SCALE
 #define SKY_STAR_SCALE          1.0f
 #endif
@@ -175,23 +174,41 @@
 #define SKY_NIGHT_BASE          float3(0.00015f, 0.00020f, 0.00035f)
 #endif
 
-#ifndef SKY_STAR_LAYERS
-#define SKY_STAR_LAYERS         3
-#endif
-
-#ifndef SKY_STAR_SCINTILLATION
-#define SKY_STAR_SCINTILLATION  0.04f
-#endif
-
-#ifndef SKY_STAR_DAWN_LINGER
-#define SKY_STAR_DAWN_LINGER    10.0f
-#endif
-
 //per-channel optical-depth scaling used to fade stars where the daytime sky is
-//bright. Higher = stars hide earlier as scatter ramps up at dawn/dusk.
+//bright. Higher = stars hide earlier as scatter ramps up at dawn/dusk. At
+//ground noon, blue Rayleigh scatter ≈ 0.02; shield 1000 gives exp(-20) → 0.
+//Red scatter is ~5x smaller, so red components reach exp(-4) ≈ 0.018 — close
+//enough to invisible after AE+AgX. From orbit scatter ≈ 0 so stars are
+//unaffected, which is the whole point: the gate must be the atmosphere, not
+//the sun's elevation.
 #ifndef SKY_STAR_SCATTER_SHIELD
-#define SKY_STAR_SCATTER_SHIELD 60.0f
+#define SKY_STAR_SCATTER_SHIELD 1000.0f
 #endif
+
+//====================================
+//STAR / MILKY WAY TEXTURE
+//====================================
+//Stars and Milky Way are sourced from an equirectangular sky texture in the
+//celestial (RA/Dec) frame, bound as gSkyStars in Includes_v8.hlsli. Sampled
+//with WorldToCelestial(rayDir) to stay locked to sidereal rotation. Host
+//side: load NASA SVS 4851 Deep Star Maps as Texture2D, expose the SRV at
+//register t40, and bind it through the root signature.
+
+//Set to 1 if the source texture is stored sRGB encoded (LDR 8 bit TIFF/JPEG/
+//PNG). Leave at 0 for HDR linear formats (BC6H DDS, .exr, .hdr).
+#ifndef SKY_STAR_TEXTURE_SRGB
+#define SKY_STAR_TEXTURE_SRGB 0
+#endif
+
+//Set to 1 if the texture's right ascension increases right to left (mirror
+//image, "as seen from inside the celestial sphere"). Most map projections go
+//left to right (RA=0 at u=0.5, increasing toward u=1).
+#ifndef SKY_STAR_TEXTURE_FLIP_U
+#define SKY_STAR_TEXTURE_FLIP_U 0
+#endif
+
+//LOD bias is also runtime tunable via the editor (SunSettings.skyStarLodBias).
+#define SKY_STAR_LOD_BIAS       skyStarLodBias
 
 //Lambertian albedo of the planet body, used when a ray hits the ground from
 //orbit. Ocean-dominated, lit by the same in-shader sun irradiance.
@@ -397,6 +414,65 @@ inline void GetSunDirAndElev(out float3 dirWS, out float elevRad)
 
     dirWS   = ENU_ToWorld(east, north, up);
     elevRad = asin(clamp(up, -1.0f, 1.0f));
+}
+
+//====================================
+//CELESTIAL FRAME (STARS)
+//====================================
+//Local Sidereal Time in radians. Built from the same GetSolarTimeHours() the
+//sun uses, so star motion is locked in lockstep with sun motion (including
+//SUN_NIGHT_SPEEDUP warping). The SKY_SIDEREAL_RATIO multiplier makes stars
+//rotate ~1.00273x faster than the sun, which is the real Earth value:
+//over a solar day they drift ~4 min ahead, walking through the seasons over
+//a year. Longitude offsets which meridian sees which RA first.
+inline float GetLSTRad()
+{
+    return GetSolarTimeHours() * SKY_SIDEREAL_RATIO * (TAU / 24.0f)
+         + SUN_LONGITUDE_DEG * DEG2RAD;
+}
+
+//Map a world space direction into the celestial equatorial frame with RA
+//fixed (stars are stationary in this frame, the diurnal rotation lives in
+//the LST term). This is the algebraic inverse of the same projection
+//GetSunDirAndElev uses, so the sun's position and the star field share a
+//single coordinate transform and a single time base.
+//
+//Output convention: vStar.y = celestial north pole component, vStar.x and
+//vStar.z together span the celestial equator. EvaluateStars consumes this
+//directly for the equirectangular skybox lookup: Dec = asin(vStar.y),
+//RA = atan2(vStar.z, vStar.x).
+float3 WorldToCelestial(float3 vWorld)
+{
+    float latRad = SUN_LATITUDE_DEG * DEG2RAD;
+    float cosL = cos(latRad), sinL = sin(latRad);
+
+    //world to ENU components
+    float3 Nw = SafeNormalize(float3(WORLD_NORTH.x, 0.0f, WORLD_NORTH.z));
+    float3 Ew = SafeNormalize(cross(WORLD_UP, Nw));
+    float east  = dot(vWorld, Ew);
+    float north = dot(vWorld, Nw);
+    float up    = dot(vWorld, WORLD_UP);
+
+    //ENU to instantaneous equatorial. Matches the sun convention where
+    //v_eq = (cos δ sin H, cos δ cos H, sin δ): X_i at H=90°, Y_i at meridian
+    //(H=0), Z_i along celestial north pole. Derived by inverting the
+    //rotation by colatitude around the east axis that the sun formula uses.
+    float X_i = east;
+    float Y_i = -sinL * north + cosL * up;
+    float Z_i =  cosL * north + sinL * up;
+
+    //instantaneous to RA fixed. Substituting H = LST - α into the sun's
+    //v_eq form and solving for the (α, δ) coefficients gives a rotation by
+    //LST around the celestial pole axis.
+    float lst = GetLSTRad();
+    float cl = cos(lst), sl = sin(lst);
+    float X_f =  sl * X_i + cl * Y_i;
+    float Y_f = -cl * X_i + sl * Y_i;
+    float Z_f =  Z_i;
+
+    //pack with celestial pole on +Y so the equirectangular sampling in
+    //EvaluateStars treats vStar.y as the latitude axis directly.
+    return float3(X_f, Z_f, Y_f);
 }
 
 //====================================
@@ -918,126 +994,70 @@ float3 EvaluateSun(float3 rayDir)
 }
 
 //====================================
-//STARS
+//STARS / MILKY WAY (texture sourced)
 //====================================
-inline float3 RotateAroundAxis(float3 v, float3 axis, float angle)
-{
-    float s = sin(angle), c = cos(angle);
-    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0f - c);
-}
-
-//color from approximate B-V index
-inline float3 StarColor(float rand01)
-{
-    float bv = lerp(-0.2f, 1.4f, rand01);
-
-    float3 col;
-    float t;
-    if (bv < 0.0f)
-    {
-        t = saturate((bv + 0.3f) / 0.3f);
-        col = lerp(float3(0.65f, 0.75f, 1.0f), float3(0.80f, 0.85f, 1.0f), t);
-    }
-    else if (bv < 0.4f)
-    {
-        t = bv / 0.4f;
-        col = lerp(float3(0.95f, 0.95f, 1.0f), float3(1.0f, 0.96f, 0.88f), t);
-    }
-    else if (bv < 0.8f)
-    {
-        t = (bv - 0.4f) / 0.4f;
-        col = lerp(float3(1.0f, 0.96f, 0.88f), float3(1.0f, 0.86f, 0.65f), t);
-    }
-    else
-    {
-        t = saturate((bv - 0.8f) / 0.6f);
-        col = lerp(float3(1.0f, 0.86f, 0.65f), float3(1.0f, 0.70f, 0.45f), t);
-    }
-
-    return col;
-}
-
-inline float Scintillation(float seed, float elevFactor, float frameCount)
-{
-    float strength = SKY_STAR_SCINTILLATION * (1.0f - elevFactor * elevFactor);
-
-    float phase = seed * 100.0f;
-    float t = frameCount * 0.002f;
-    float flicker = sin(t * 1.7f + phase)
-                  * sin(t * 2.9f + phase * 0.7f)
-                  * sin(t * 0.5f + phase * 1.3f);
-
-    return 1.0f - strength * 0.5f * (flicker + 1.0f);
-}
-
-//single star layer
-//returns raw star emission, callers gate visibility via atmospheric transmittance
-//and sky-scatter shielding so the same layer works from ground or orbit
-float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
-                         float brightnessScale)
-{
-    float2 uv;
-    uv.x = atan2(vStar.z, vStar.x) / TAU + 0.5f;
-    uv.y = acos(clamp(vStar.y, -1.0f, 1.0f)) / PI;
-
-    float sinTheta = sqrt(max(1e-6f, 1.0f - vStar.y * vStar.y));
-    float poleCompensation = saturate(sinTheta);
-
-    if (poleCompensation < 0.08f) return float3(0, 0, 0);
-
-    float2 g    = uv * float2(gridScale, gridScale * 0.5f);
-    float2 cell = floor(g);
-    float2 f    = frac(g);
-
-    float r0 = Hash12(cell);
-    float adjustedDensity = 1.0f - (1.0f - density) * poleCompensation;
-    float present = step(adjustedDensity, r0);
-    if (present < 0.5f) return float3(0, 0, 0);
-
-    float2 starPos = Hash22(cell + 5.0f);
-    starPos = lerp(0.15f, 0.85f, starPos);
-    float2 delta = f - starPos;
-    delta.x *= max(0.15f, poleCompensation);
-    float dist = length(delta);
-
-    float magRand = Hash12(cell + 13.0f);
-    float magnitude = pow(magRand, 2.5f);
-
-    float baseRadius = lerp(0.05f, 0.08f, magnitude);
-
-    //gaussian core + soft halo
-    float core = exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.08f));
-    float halo = magnitude * exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.5f)) * 0.3f;
-    float brightness = saturate(core + halo);
-
-    float3 col = StarColor(Hash12(cell + 29.0f));
-
-    //scintillation peaks near the horizon and dies as the ray approaches the celestial pole
-    float elevFactor = saturate(abs(dot(vStar, WORLD_UP)));
-    float scint = Scintillation(Hash12(cell + 37.0f), elevFactor, (float)SUN_FRAMECOUNT);
-
-    return brightness * magnitude * col * brightnessScale * scint;
-}
-
-//multi-layer star field, sphere mapped to celestial coords
-//gating by horizon/twilight happens at EvaluateSky scope via viewTr and scatter
+//Sample an equirectangular sky texture in the celestial RA fixed frame so
+//stars and Milky Way rotate in lockstep with the sun (via WorldToCelestial).
+//Gating by horizon/atmosphere happens at EvaluateSky scope via viewTr and
+//the scatter shield, identical to the previous procedural path.
 float3 EvaluateStars(float3 rayDir)
 {
-    float3 v = SafeNormalize(rayDir);
-    float solarH = GetSolarTimeHours();
-    float sidFrac = frac((solarH / 24.0f) * SKY_SIDEREAL_RATIO);
-    float3 vStar = RotateAroundAxis(v, WORLD_UP, -TAU * sidFrac);
+    float3 v     = SafeNormalize(rayDir);
+    float3 vStar = WorldToCelestial(v);
 
-    float3 stars = float3(0, 0, 0);
+    //Equirectangular projection: u = RA / 2π, v = (π/2 - Dec) / π.
+    //vStar.y is on the celestial pole axis (set by WorldToCelestial), so
+    //Dec = asin(vStar.y) and RA = atan2(vStar.z, vStar.x).
+    float dec = asin(clamp(vStar.y, -1.0f, 1.0f));
+    float ra  = atan2(vStar.z, vStar.x);
+    float2 uv = float2(ra * (1.0f / TAU) + 0.5f,
+                       0.5f - dec * (1.0f / PI));
 
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 0.5f, 0.985f, 1.6f);
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 1.0f, SKY_STAR_DENSITY, 1.0f);
-
-#if SKY_STAR_LAYERS >= 3
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 2.2f, 0.994f, 0.35f);
+#if SKY_STAR_TEXTURE_FLIP_U
+    uv.x = 1.0f - uv.x;
 #endif
 
-    return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE;
+    //Footprint based LOD selection: pick a mip where one texel covers about
+    //one screen pixel, plus SKY_STAR_LOD_BIAS extra to make single texel
+    //bright stars stable under sub pixel jitter. This is the fix for the
+    //flicker that DLSS RR smears across frames; without it, jitter shifts
+    //which texel each pixel hits and the denoiser sees the stars as
+    //incoherent moving features.
+    //  pixel angular size = 2 / (proj._m11 * H)        (proj._m11 = cot(fovV/2))
+    //  texel angular size = π / texH                   (equirect latitude)
+    float texW, texH, texMips;
+    gSkyStars.GetDimensions(0, texW, texH, texMips);
+    //gImageSize comes from the Push cbuffer and is available in both raygen
+    //and compute; gImageHeight is a compute-only alias for gImageSize.y.
+    float pixelAngular = 2.0f / (projection._m11 * float(gImageSize.y));
+    float texelAngular = PI / texH;
+    float lod = log2(pixelAngular / texelAngular) + SKY_STAR_LOD_BIAS;
+    lod = clamp(lod, 0.0f, texMips - 1.0f);
+
+    float3 c = gSkyStars.SampleLevel(g_sampler, uv, lod).rgb;
+    c = max(c, 0.0f);
+
+#if SKY_STAR_TEXTURE_SRGB
+    //sRGB -> linear (fast polynomial approximation, max error ~0.003)
+    c = c * (c * (c * 0.305306011f + 0.682171111f) + 0.012522878f);
+#endif
+
+    //Black level lift: subtract a fixed pedestal so the soft bilinear halo
+    //around each star (the dim averaged texels) clamps to zero, shrinking
+    //the visible star footprint to the bright centre. Applied before gamma
+    //so the curve operates on a clean signal.
+    c = max(c - SKY_STAR_THRESHOLD, 0.0f);
+
+    //Luminance based power curve: turn the bilinear averaged "soft bloom"
+    //into sparse sparkles. Applied on luminance only (not per channel) so
+    //star colours don't shift toward whichever channel happens to be
+    //brightest. factor = lum^(gamma - 1) implements lum -> lum^gamma while
+    //preserving chroma.
+    const float lum    = max(dot(c, float3(0.2126f, 0.7152f, 0.0722f)), 1e-6f);
+    const float factor = pow(lum, SKY_STAR_GAMMA - 1.0f);
+    c *= factor;
+
+    return c * SKY_STAR_INTENSITY * SKY_STAR_SCALE;
 }
 
 //====================================
@@ -1076,9 +1096,12 @@ float3 EvaluateSky(float3 rayDir)
     float3 nightBase    = SKY_NIGHT_BASE * lerp(1.6f, 1.0f, pow(mu, 0.7f));
     nightBase          *= SKY_INTENSITY * atmosResidual * (hitPlanet ? 0.0f : 1.0f);
 
-    //stars fade where sky scatter is bright (dawn/dusk) and where the atmosphere
-    //extinguishes the path (long horizon traversal). Planet occlusion is handled
-    //by the explicit hitPlanet flag.
+    //stars fade where sky scatter overwhelms them and where atmospheric
+    //extinction reduces throughput. NO sun-elevation gating — at orbital
+    //altitudes the atmosphere is thin enough that scatter ≈ 0 even with the
+    //sun above the horizon, so stars must remain visible from high up during
+    //the day. Hiding stars at ground noon comes entirely from the scatter
+    //shield (blue scatter ~0.02 + shield 1000 → exp(-20)) plus viewTr.
     float3 starShield = exp(-scatter * SKY_STAR_SCATTER_SHIELD);
     float3 stars      = hitPlanet ? float3(0, 0, 0)
                                   : (EvaluateStars(v) * viewTr * starShield);

@@ -233,6 +233,7 @@ void Renderer::InitDevice() {
         }
         GenerateLutTextures();
         InitReuseTextures();
+        InitSkyStarsTexture();
 
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
@@ -303,6 +304,7 @@ void Renderer::InitSceneGPU() {
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
         m_ctx.FlushAndReset();
         m_lutUploadHeaps.clear();
+        m_skyStarsUploadHeap.Reset();
 
         CreateRaytracingPipeline();
         CreateStreamingCompactionBuffers();

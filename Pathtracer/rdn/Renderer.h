@@ -230,6 +230,14 @@ private:
     std::vector<ComPtr<ID3D12Resource>> m_reuseTextureUploadHeaps;
     void InitReuseTextures();
 
+    //star / Milky Way skybox (NASA SVS 4851 Deep Star Maps EXR), sampled in
+    //EvaluateStars via the celestial-frame ray direction. Loaded from
+    //SKY_STARS_EXR_PATH at startup. Upload heap is retained until the post
+    //init flush, then freed alongside m_lutUploadHeaps.
+    ComPtr<ID3D12Resource> m_skyStarsTexture;
+    ComPtr<ID3D12Resource> m_skyStarsUploadHeap;
+    void InitSkyStarsTexture();
+
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4,5 };
 

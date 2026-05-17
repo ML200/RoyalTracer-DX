@@ -16,3 +16,12 @@
 
 #define TINYGLTF3_IMPLEMENTATION
 #include "../lib/tiny_gltf_v3.h"
+
+//TinyEXR: reuse stb_image's zlib decoder (already in this TU via
+//STB_IMAGE_IMPLEMENTATION above) instead of pulling in miniz. The defines
+//MUST match the ones used wherever else tinyexr.h is included (currently
+//Renderer_Pipeline.cpp) so the extern declarations agree.
+#define TINYEXR_USE_MINIZ    0
+#define TINYEXR_USE_STB_ZLIB 1
+#define TINYEXR_IMPLEMENTATION
+#include "../lib/tinyexr/tinyexr.h"

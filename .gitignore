@@ -56,3 +56,8 @@ trulla.obj
 
 *.glb
 /Pathtracer/shaders/.claude
+
+# Sky star map (NASA SVS 4851 equirectangular EXR, 4k/8k/16k variants).
+# Too large to vendor; CMake downloads on demand if missing. See the
+# `Sky star map` block in Pathtracer/CMakeLists.txt for the URL.
+/Pathtracer/include/sky_stars*.exr

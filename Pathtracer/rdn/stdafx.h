@@ -16,6 +16,14 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+//Stops windows.h from defining min/max macros that clobber std::min,
+//std::max and std::numeric_limits<T>::max(). Required since pulling in
+//tinyexr (and other modern headers) — the only existing use of the bare
+//max() macro is fixed in ShaderBindingTableGenerator.cpp.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
 
 #include <d3d12.h>

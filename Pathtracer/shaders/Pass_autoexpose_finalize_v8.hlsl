@@ -15,11 +15,13 @@
 static const float AE_KEY_VALUE   =  0.18f;  // photographic mid-grey, matches postprocess key
 //Limiting the boost is what keeps dark scenes looking dark. The previous
 //AE_LOG_LUM_MIN = -9 let the AE multiply a mean luminance of 0.002 by ~92x —
-//moonless night came out looking like a sunny afternoon. Eye adaptation isn't
-//perfect either: a real human in a dark room still perceives it as dim, not
-//"normal exposure." With MIN = -3 the maximum boost is ~1.4x, so anything
-//darker than ~lum 0.125 reads progressively darker on screen.
-static const float AE_LOG_LUM_MIN = -3.0f;   // max boost  ~ key * 2^3   = 1.44x  (preserves "feels dark")
+//moonless night came out looking like a sunny afternoon. MIN = -3 swung the
+//other way (max boost 1.4x, anything darker than ~lum 0.125 read progressively
+//darker), making clear night feel oppressive. MIN = -4 (max boost ~2.9x) is
+//the middle ground: eye adaptation lifts starlit scenes a stop or so, while
+//anything below ~lum 0.063 reads progressively darker — night still feels
+//like night.
+static const float AE_LOG_LUM_MIN = -4.0f;   // max boost  ~ key * 2^4   = 2.88x  (clear night reads as dim, not black)
 static const float AE_LOG_LUM_MAX =  3.0f;   // max cut    ~ key * 2^-3  = 0.022x (sun-disc scenes still clip nicely)
 static const float AE_ADAPT_TAU   =  0.3f;   // seconds to reach 1-1/e of new target; ~1 s to converge fully
 static const float AE_DT_MIN      =  0.001f; // guard against hitches and clock anomalies

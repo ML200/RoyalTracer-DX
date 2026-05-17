@@ -83,6 +83,47 @@ set(INCLUDES_DIR   "${CMAKE_SOURCE_DIR}/include")
 set(SHADERS_DIR   "${CMAKE_SOURCE_DIR}/shaders")
 
 
+# ─────────────────────── Sky star map (NASA SVS 4851) ──────────────────────
+# Equirectangular HDR star + Milky Way map sampled by EvaluateStars
+# (SunSampler_v8.hlsli). 8K variant is ~120 MB so it's gitignored and
+# downloaded on demand. The runtime loader handles a missing file gracefully
+# (sky falls back to night base), so a failed download isn't fatal — just
+# means no stars until the next configure pulls it down.
+#
+# Override the URL at configure time if NASA reorganises or you want a
+# different resolution / mirror:
+#   cmake -DSKY_STARS_URL=https://my.mirror/sky_stars.exr ...
+set(SKY_STARS_URL
+    "https://svs.gsfc.nasa.gov/vis/a000000/a004800/a004851/starmap_2020_8k.exr"
+    CACHE STRING "URL to fetch Pathtracer/include/sky_stars.exr from if missing")
+set(SKY_STARS_FILE "${INCLUDES_DIR}/sky_stars.exr")
+
+if(NOT EXISTS "${SKY_STARS_FILE}" AND SKY_STARS_URL)
+    message(STATUS "[SkyStars] ${SKY_STARS_FILE} not found")
+    message(STATUS "[SkyStars] Downloading from ${SKY_STARS_URL} (~120 MB, one time)")
+    file(DOWNLOAD
+        "${SKY_STARS_URL}"
+        "${SKY_STARS_FILE}"
+        SHOW_PROGRESS
+        TIMEOUT 600
+        TLS_VERIFY ON
+        STATUS _skystars_status)
+    list(GET _skystars_status 0 _skystars_code)
+    if(NOT _skystars_code EQUAL 0)
+        list(GET _skystars_status 1 _skystars_msg)
+        message(WARNING
+            "[SkyStars] Download failed (code ${_skystars_code}): ${_skystars_msg}\n"
+            "  Build will continue; sky will use night base only at runtime.\n"
+            "  Set -DSKY_STARS_URL=<url> at configure if the default is broken,\n"
+            "  or drop the file into Pathtracer/include/sky_stars.exr manually.")
+        file(REMOVE "${SKY_STARS_FILE}")
+    else()
+        file(SIZE "${SKY_STARS_FILE}" _skystars_size)
+        message(STATUS "[SkyStars] Downloaded ${_skystars_size} bytes")
+    endif()
+endif()
+
+
 # ────────────────────────── DirectXTex ─────────────────────────────
 file(GLOB DIRECTXTEX_SOURCES "DirectXTex/*.cpp")
 add_library(DirectXTex STATIC ${DIRECTXTEX_SOURCES})
@@ -190,6 +231,12 @@ target_include_directories(Pathtracer PRIVATE
         ${ORT_INCLUDE_DIR}
         ${OMM_SDK_ROOT}/include
         ${CMAKE_SOURCE_DIR}/lib/imgui)
+
+# NOMINMAX kills the windows.h min/max macros project-wide so std::min,
+# std::max, std::numeric_limits<T>::max() etc. compile in any TU that
+# transitively pulls in windows.h (d3d12.h, dxgi1_4.h, ...). Required since
+# adding tinyexr and any other modern C++ library that uses std::max().
+target_compile_definitions(Pathtracer PRIVATE NOMINMAX)
 
 # ──────────────── Streamline import‐lib as an IMPORTED static library ────────
 add_library(sl_interposer STATIC IMPORTED GLOBAL)

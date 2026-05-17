@@ -68,9 +68,11 @@ static constexpr UINT  SORT_BUCKETS         = 65536;
 static constexpr int   NUM_LUTS             = 2;
 static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
-//NRC reserves 5 UAVs at heap 58..62, autoexpose at heap 63, bindless starts at 64
+//NRC reserves 5 UAVs at heap 58..62, autoexpose at heap 63, sky stars SRV at
+//heap 64 (register t40 in Includes_v8.hlsli), bindless starts at 65
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT = 63;
-static constexpr UINT  BINDLESS_HEAP_START  = 64;
+static constexpr UINT  SKY_STARS_HEAP_SLOT  = 64;
+static constexpr UINT  BINDLESS_HEAP_START  = 65;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -169,6 +171,21 @@ struct SunSettings {
     //during UploadGPUBuffer, lives in this struct so the cbuffer tail stays 16-byte aligned
     float dofApertureRadius = 0.0f;
     float dofFocusDistance  = 10.0f;
+    //star skybox tuning (EvaluateStars in SunSampler_v8.hlsli). Runtime
+    //knobs so the artist can dial in sparkle vs bloom without recompiling.
+    //intensity = final brightness multiplier (after gamma)
+    //gamma     = power curve on luminance; >1 darkens mid tones (bilinear
+    //            mip smear) and preserves peaks (star centres). 1.0 = off.
+    //lodBias   = additional mip offset on the footprint based pick. Higher
+    //            = blurrier and more stable under jitter, lower = sharper.
+    //threshold = black level lift applied before the gamma curve. Cuts the
+    //            soft halo bilinear filtering creates around each star
+    //            (the "blob"), so visible star footprint shrinks to the
+    //            bright centre. Subtraction is hard clamped at 0.
+    float skyStarIntensity = 0.5f;
+    float skyStarGamma     = 2.5f;
+    float skyStarLodBias   = 0.3f;
+    float skyStarThreshold = 0.05f;
 };
 
 //====================================

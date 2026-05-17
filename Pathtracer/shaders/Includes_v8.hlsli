@@ -76,6 +76,28 @@ SamplerState   g_sampler_LUT : register(s1);
 Texture2DArray g_LUT         : register(t33);
 
 //====================================
+//STAR / MILKY WAY SKYBOX
+//====================================
+//Equirectangular sky texture in the celestial (RA/Dec) frame. Source: e.g.
+//NASA SVS 4851 "Deep Star Maps 2020" Tycho-2 / Gaia based all-sky map.
+//Sampled in EvaluateStars (SunSampler_v8.hlsli) using a celestial-frame ray
+//direction so the texture rotates with sidereal time in lockstep with the sun.
+//
+//HOST WIRING (Renderer_Pipeline.cpp / Renderer.h):
+//  1. Add `ComPtr<ID3D12Resource> m_skyStarsTexture;` to Renderer.h.
+//  2. Load the equirectangular star map (BC6H DDS for HDR linear, or
+//     R8G8B8A8_UNORM_SRGB for LDR) and upload to m_skyStarsTexture.
+//  3. In CreateRayGenSignature, add:
+//       ranges.emplace_back().Init(
+//         D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 40, 0, STATIC,
+//         D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+//  4. In WriteDescriptors, after the AE state UAV (current last slot 63),
+//     CreateShaderResourceView for m_skyStarsTexture at the next heap slot.
+//  5. If using LDR sRGB, set SKY_STAR_TEXTURE_SRGB=1 in SunSampler_v8.hlsli.
+//  6. If stars appear mirrored east/west, set SKY_STAR_TEXTURE_FLIP_U=1.
+Texture2D<float4> gSkyStars   : register(t40);
+
+//====================================
 //CAMERA
 //====================================
 cbuffer CameraParams : register(b0)
@@ -105,6 +127,11 @@ cbuffer CameraParams : register(b0)
     //thin-lens DoF, driven from the Camera class on the host side
     float dofApertureRadius;
     float dofFocusDistance;
+    //star skybox runtime knobs, mirror SunSettings tail in Common.h
+    float skyStarIntensity;
+    float skyStarGamma;
+    float skyStarLodBias;
+    float skyStarThreshold;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude

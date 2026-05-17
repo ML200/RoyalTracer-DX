@@ -15,6 +15,13 @@
 #include <filesystem>
 #include <random>
 #include <d3dcompiler.h>
+#include <DirectXPackedVector.h>
+#include "../DirectXTex/DirectXTex.h"
+//Must match the TINYEXR_USE_* defines in ThirdPartyImpl.cpp so the extern
+//declarations and the implementation agree on zlib backend.
+#define TINYEXR_USE_MINIZ    0
+#define TINYEXR_USE_STB_ZLIB 1
+#include "../lib/tinyexr/tinyexr.h"
 
 //====================================
 //ACCELERATION STRUCTURES
@@ -340,6 +347,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 5, 40, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Auto-expose persistent state (u24) at heap slot 63
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 24, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Star / Milky Way skybox texture (t40, Includes_v8.hlsli) at heap slot 64
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 40, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -923,6 +932,20 @@ void Renderer::CreateShaderResourceHeap() {
       ud.Buffer.NumElements = 4;  // 16 B / 4
       dev->CreateUnorderedAccessView(m_autoExposeBuffer.Get(), nullptr, &ud, handle); next(); }
 
+    // Slot 64: star / Milky Way skybox SRV (t40, gSkyStars in Includes_v8.hlsli).
+    // Null SRV until InitSkyStarsTexture has run successfully so the descriptor
+    // table stays valid even if the EXR file is missing.
+    if (m_skyStarsTexture) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                  = m_skyStarsTexture->GetDesc().Format;
+        d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Texture2D.MipLevels     = m_skyStarsTexture->GetDesc().MipLevels;
+        dev->CreateShaderResourceView(m_skyStarsTexture.Get(), &d, handle); next();
+    } else {
+        nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
+    }
+
     // Bindless textures
     UINT globalTexIdx = 0;
     auto writeBatch = [&](UINT heapBase, UINT count) {
@@ -1251,6 +1274,132 @@ void Renderer::InitReuseTextures() {
             m_reuseTexture[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
         m_ctx.CmdList()->ResourceBarrier(1, &bar);
     }
+}
+
+//====================================
+//STAR / MILKY WAY SKYBOX (NASA SVS EXR)
+//====================================
+//Loads an equirectangular EXR (e.g. NASA SVS 4851 Deep Star Maps, 16K) and
+//uploads it as DXGI_FORMAT_R16G16B16A16_FLOAT. Sampled in EvaluateStars
+//(SunSampler_v8.hlsli) via gSkyStars at register t40, descriptor heap slot
+//SKY_STARS_HEAP_SLOT. Path is fixed so users can drop replacement files in
+//place without rebuilding. On failure the descriptor is left as a null SRV;
+//the shader returns black and the night sky reads as just the night base.
+
+//Runtime working directory is the build dir, with `include/*` flattened in
+//(same convention the GLB loader uses with paths like "./harbor2.glb").
+//Resolution agnostic name so swapping 4k/8k/16k variants doesn't need a
+//code change. Just drop the new EXR in include/ as sky_stars.exr and
+//rebuild (the include/ copy step picks it up). The loader logs the actual
+//dimensions on startup.
+static constexpr const char* SKY_STARS_EXR_PATH = "./sky_stars_8k.exr";
+
+void Renderer::InitSkyStarsTexture() {
+    SCOPE_TIMER("InitSkyStarsTexture");
+
+    if (!std::filesystem::exists(SKY_STARS_EXR_PATH)) {
+        LOG(L"[SkyStars] EXR not found at " << SKY_STARS_EXR_PATH
+            << L" -- sky will use night base only");
+        return;
+    }
+
+    //TinyEXR loads RGBA float regardless of source channel count (alpha is
+    //forced to 1 if absent). For a 4K x 2K texture this is ~128 MB of host
+    //memory temporarily; we free it immediately after converting to half.
+    float* rgbaF = nullptr;
+    int    width = 0, height = 0;
+    const char* errStr = nullptr;
+    int ret = LoadEXR(&rgbaF, &width, &height, SKY_STARS_EXR_PATH, &errStr);
+    if (ret != TINYEXR_SUCCESS) {
+        LOG(L"[SkyStars] LoadEXR failed: "
+            << (errStr ? std::string(errStr).c_str() : "(no error string)"));
+        if (errStr) FreeEXRErrorMessage(errStr);
+        return;
+    }
+
+    //float RGBA -> half RGBA for the base mip
+    const size_t numFloats = (size_t)width * height * 4;
+    std::vector<uint16_t> halfBase(numFloats);
+    DirectX::PackedVector::XMConvertFloatToHalfStream(
+        halfBase.data(),     sizeof(uint16_t),
+        rgbaF,               sizeof(float),
+        numFloats);
+    free(rgbaF);
+
+    //Mipmap generation: critical for clean rendering under camera jitter +
+    //DLSS RR. Without mips, sub-pixel jitter samples random texels of bright
+    //stars between frames, looking like noise to the temporal denoiser and
+    //smearing. With a proper mip chain + footprint based LOD in the shader,
+    //each pixel covers ~1 texel of the chosen mip so jitter only blends
+    //inside the bilinear filter footprint, which is stable.
+    DirectX::Image baseImg = {};
+    baseImg.width      = (size_t)width;
+    baseImg.height     = (size_t)height;
+    baseImg.format     = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    baseImg.rowPitch   = (size_t)width * 8;
+    baseImg.slicePitch = baseImg.rowPitch * (size_t)height;
+    baseImg.pixels     = reinterpret_cast<uint8_t*>(halfBase.data());
+
+    DirectX::ScratchImage mipChain;
+    HRESULT hr = DirectX::GenerateMipMaps(baseImg, DirectX::TEX_FILTER_LINEAR,
+                                          0 /*full chain*/, mipChain);
+    const bool haveMips = SUCCEEDED(hr);
+    const size_t mipCount = haveMips ? mipChain.GetImageCount() : 1u;
+    if (!haveMips) {
+        LOG(L"[SkyStars] GenerateMipMaps failed (hr=" << std::hex << hr
+            << std::dec << L"), falling back to single mip");
+    }
+    LOG(L"[SkyStars] Loaded " << width << L"x" << height
+        << L" EXR with " << mipCount << L" mip"
+        << (mipCount == 1 ? L"" : L"s"));
+
+    //R16G16B16A16_FLOAT default heap texture with the full mip chain
+    auto* dev = m_ctx.Device();
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width            = (UINT64)width;
+    td.Height           = (UINT)height;
+    td.DepthOrArraySize = 1;
+    td.MipLevels        = (UINT16)mipCount;
+    td.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    td.SampleDesc.Count = 1;
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&m_skyStarsTexture)));
+    m_skyStarsTexture->SetName(L"SkyStarsTexture");
+
+    //Upload heap sized for the entire mip chain
+    UINT64 uploadSize = GetRequiredIntermediateSize(
+        m_skyStarsTexture.Get(), 0, (UINT)mipCount);
+    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_skyStarsUploadHeap)));
+    m_skyStarsUploadHeap->SetName(L"SkyStarsUploadHeap");
+
+    //Subresource descriptors for each mip
+    std::vector<D3D12_SUBRESOURCE_DATA> sr(mipCount);
+    if (haveMips) {
+        for (size_t i = 0; i < mipCount; ++i) {
+            const DirectX::Image* img = mipChain.GetImage(i, 0, 0);
+            sr[i].pData      = img->pixels;
+            sr[i].RowPitch   = (LONG_PTR)img->rowPitch;
+            sr[i].SlicePitch = (LONG_PTR)img->slicePitch;
+        }
+    } else {
+        sr[0].pData      = halfBase.data();
+        sr[0].RowPitch   = (LONG_PTR)((UINT64)width * 8);
+        sr[0].SlicePitch = sr[0].RowPitch * height;
+    }
+
+    UpdateSubresources(m_ctx.CmdList(), m_skyStarsTexture.Get(),
+                       m_skyStarsUploadHeap.Get(), 0, 0, (UINT)mipCount, sr.data());
+
+    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_skyStarsTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+    m_ctx.CmdList()->ResourceBarrier(1, &bar);
 }
 
 //====================================
