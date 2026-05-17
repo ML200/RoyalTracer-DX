@@ -910,13 +910,27 @@ inline SunState ComputeSunState()
     float  cosEffHorizon  = lerp(cosGroundLift, cosGeoHorizon, altFade);
     float3 observerUp     = g_skyObserverPlanet / obsR;
     float  sunCosFromUp   = dot(d, observerUp);
-    S.visible = (sunCosFromUp > cosEffHorizon) ? 1.0f : 0.0f;
+
+    //Smooth horizon visibility: a hard step here caused a global "lights
+    //out" pop when the sun crossed the horizon (direct sun radiance went
+    //from full to zero in a single sim tick). Smoothstep over ~1 deg of
+    //sun altitude — wide enough to absorb the real sun disc (0.5 deg
+    //diameter) plus atmospheric refraction blur, narrow enough to still
+    //read as "sunset / sunrise" instead of an artificial dimmer.
+    //sin() converts the angular fade width to the cos space the inputs
+    //live in (small angle approx near horizon: d(cos)/dα ≈ -sin(α) ≈ -1).
+    const float kHorizonFadeDeg = 1.0f;
+    const float visEdge         = sin(kHorizonFadeDeg * DEG2RAD);
+    S.visible = smoothstep(-visEdge, +visEdge, sunCosFromUp - cosEffHorizon);
 
     float3 Tr = AtmosphericTransmittance(S.dirWS);
     S.tint    = SUN_COLOR_VAL * Tr;
 
-    S.pdf      = (S.visible > 0.0f) ? (1.0f / S.omega) : 0.0f;
-    S.radiance = (S.visible > 0.0f) ? (S.tint * SUN_INTENSITY_VAL / S.omega) : float3(0, 0, 0);
+    //PDF stays at 1/omega while the sun is even partly visible so MIS
+    //weights stay sensible; radiance carries the smooth fade factor so
+    //direct sun contribution dies gracefully instead of popping.
+    S.pdf      = (S.visible > 0.001f) ? (1.0f / S.omega) : 0.0f;
+    S.radiance = S.tint * SUN_INTENSITY_VAL * S.visible / S.omega;
 
     return S;
 }

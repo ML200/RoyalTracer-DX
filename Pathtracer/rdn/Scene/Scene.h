@@ -160,6 +160,16 @@ struct Scene {
     bool emissivesDirty  = false;
 
     //====================================
+    //FLOATING ORIGIN
+    //====================================
+    //Per-frame shift applied to every instance transform before it lands
+    //in cpuInstanceProps / tlasInstances. Source of truth (si.worldTransform)
+    //stays in absolute world coords; this is the GPU side compensation.
+    //Updated by the renderer from Camera::getSceneOriginWorld() before
+    //PrepareInstanceProperties / RebuildTLASInstanceList run.
+    XMFLOAT3 sceneOriginWorld = { 0.0f, 0.0f, 0.0f };
+
+    //====================================
     //METHODS
     //====================================
     //recompute instance worldTransforms from model worldTransform, sets tlasDirty

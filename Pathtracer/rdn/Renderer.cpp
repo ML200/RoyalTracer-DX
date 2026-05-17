@@ -423,6 +423,33 @@ void Renderer::UpdateRenderer(float dt) {
     // Debug-view checkbox only enables the calculation into slice 3.
     // Cycle to it with 'C' when you want to look at it.
 
+    // ── Floating origin sync ─────────────────────────────────────
+    // Snap the scene origin to a 1 km grid following the camera. If it
+    // moved this frame, every instance transform needs re-shifting and
+    // the TLAS BVH has to be rebuilt (refit can't handle the big jump).
+    // Done BEFORE PrepareInstanceProperties so the new origin is in
+    // effect when transforms get shifted.
+    m_camera.PollSceneOrigin();
+    if (m_camera.consumeOriginShifted()) {
+        //Every instance needs its transform re-shifted to the new origin.
+        //PrepareInstanceProperties picks these up via the dirty list and
+        //rewrites cpuInstanceProps + tlasInstances.transform.
+        m_scene.MarkAllInstancesDirty();
+        //tlasDirty + non-empty dirtyInstanceList sends the TLAS through
+        //UpdateAndRefit (microseconds for any reasonable instance count)
+        //instead of tlasFullRebuild which re-allocates GPU buffers + the
+        //instance descriptor heap and costs ~ms regardless of count. The
+        //BVH may be slightly suboptimal after a big shift but the existing
+        //periodic RebuildInPlace (every 120 frames) recovers structure.
+        m_scene.tlasDirty       = true;
+        //Light tree triangle positions are computed from xforms shifted by
+        //sceneOriginWorld (see BuildXformsFromScene). Re-refit so NEE
+        //queries from the new origin hit the right cluster nodes.
+        m_scene.lightTreeDirty  = true;
+    }
+    const auto camOrigin = m_camera.getSceneOriginWorld();
+    m_scene.sceneOriginWorld = { camOrigin.x, camOrigin.y, camOrigin.z };
+
     // Prepare instance data on CPU shadow buffer (overlaps with GPU)
     auto t_instStart = hrc::now();
     m_scene.PrepareInstanceProperties();
@@ -454,9 +481,17 @@ void Renderer::UpdateRenderer(float dt) {
 std::vector<InstanceXformCPU> Renderer::BuildXformsFromScene() const {
     std::vector<InstanceXformCPU> xf;
     xf.reserve(m_scene.instances.size());
+    //Apply the floating origin shift so light tree positions match the
+    //shifted ray origins. Without this, NEE distance lookups would be off
+    //by sceneOriginWorld magnitude at orbital altitudes.
+    const XMVECTOR shift = XMVectorSet(m_scene.sceneOriginWorld.x,
+                                        m_scene.sceneOriginWorld.y,
+                                        m_scene.sceneOriginWorld.z, 0.0f);
     for (const auto& si : m_scene.instances) {
         InstanceXformCPU x{};
-        XMStoreFloat4x4(&x.objectToWorld, si.worldTransform);
+        XMMATRIX shifted = si.worldTransform;
+        shifted.r[3] = XMVectorSubtract(shifted.r[3], shift);
+        XMStoreFloat4x4(&x.objectToWorld, shifted);
         xf.push_back(x);
     }
     return xf;

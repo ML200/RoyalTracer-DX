@@ -147,12 +147,25 @@ void Scene::PrepareInstanceProperties() {
         dirtyInstanceList.push_back(static_cast<uint32_t>(i));
     }
 
+    //Floating origin shift. The source of truth si.worldTransform stays in
+    //absolute world coords; everything that lands in cpuInstanceProps /
+    //tlasInstances is shifted by -sceneOriginWorld so the GPU sees a
+    //camera local frame. Shift only touches the translation row; rotation
+    /// scale (and hence normals) are unaffected.
+    const XMVECTOR shift = XMVectorSet(sceneOriginWorld.x,
+                                        sceneOriginWorld.y,
+                                        sceneOriginWorld.z, 0.0f);
+
     // Only process dirty instances — reads/writes go to CPU shadow buffer (fast),
     // NOT the GPU upload heap (write-combined memory where reads are 10-100x slower)
     for (uint32_t idx : dirtyInstanceList) {
         auto& dst = cpuInstanceProps[idx];
         auto& si  = instances[idx];
-        const XMMATRIX& M = si.worldTransform;
+        XMMATRIX M = si.worldTransform;
+        //subtract origin from translation row (row index 3 in DirectXMath
+        //row-vector convention). XMVectorSubtract zeroes only xyz because
+        //shift.w == 0, preserving the .w = 1 of the translation row.
+        M.r[3] = XMVectorSubtract(M.r[3], shift);
         XMVECTOR det;
 
         bool isNew = !instanceInitialized[idx];
@@ -188,7 +201,8 @@ void Scene::PrepareInstanceProperties() {
         dst.materialBase   = mesh.materialIDBase;
         dst.triToLightBase = instTriOffset.empty() ? 0 : instTriOffset[idx];
 
-        // Keep TLAS in sync
+        // Keep TLAS in sync (shifted transform; the TopLevelASGenerator holds
+        // a reference to this XMMATRIX so the next refit picks up the shift).
         if (idx < tlasInstances.size())
             tlasInstances[idx].transform = M;
     }
@@ -224,6 +238,12 @@ void Scene::UploadInstanceProperties() {
 void Scene::RebuildTLASInstanceList() {
     tlasInstances.clear();
     tlasInstances.reserve(instances.size());
+    //Floating origin shift: subtract sceneOriginWorld from each transform
+    //so the TLAS is built in camera local space. See PrepareInstanceProperties
+    //for the per-frame refit equivalent.
+    const XMVECTOR shift = XMVectorSet(sceneOriginWorld.x,
+                                        sceneOriginWorld.y,
+                                        sceneOriginWorld.z, 0.0f);
     for (size_t i = 0; i < instances.size(); ++i) {
         const auto& si   = instances[i];
         const auto& mesh = meshes[si.meshIndex];
@@ -236,7 +256,10 @@ void Scene::RebuildTLASInstanceList() {
             ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE
             : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
 
-        tlasInstances.push_back({ mesh.blas, si.worldTransform, hitGroupContrib, flags });
+        XMMATRIX shifted = si.worldTransform;
+        shifted.r[3] = XMVectorSubtract(shifted.r[3], shift);
+
+        tlasInstances.push_back({ mesh.blas, shifted, hitGroupContrib, flags });
     }
 }
 

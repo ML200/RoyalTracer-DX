@@ -48,11 +48,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
-    //sky/sun samplers read the camera altitude through a static, set once per
-    //invocation so ComputeSunState and ComputeAerialPerspective see the right
-    //observer in this dispatch
-    const float3 camPosWorld = mul(viewI, float4(0, 0, 0, 1)).xyz;
-    SetSkyObserver(camPosWorld);
+    //Floating origin: viewI returns the *shifted* camera (view matrix
+    //built in floating origin space). Most downstream math (aerial
+    //perspective distance, reflections, etc.) lives in shifted world too
+    //because hit positions are reconstructed via the shifted instance
+    //transforms — keep camPosWorld in that shifted frame. Atmosphere /
+    //planet observer math is the one exception: it needs the absolute
+    //altitude above the planet centre, so add sceneOriginWorld back just
+    //for SetSkyObserver.
+    const float3 camPosWorld    = mul(viewI, float4(0, 0, 0, 1)).xyz;
+    const float3 camPosAbsWorld = camPosWorld + sceneOriginWorld;
+    SetSkyObserver(camPosAbsWorld);
     const SunState sunState = ComputeSunState();
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)];
@@ -169,19 +175,36 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssDepth[DTid.xy] = cameraFar;
             g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 
-            //camera only MV, reproject current ray through prev VP
+            //Sky / planet body MV: rotation only reprojection. Sky is at
+            //infinite distance so camera translation between frames must
+            //not contribute to its apparent motion — only rotation does.
+            //The previous "camPos + worldDir * cameraFar" trick breaks at
+            //orbital flight speeds where camera translation per frame can
+            //exceed cameraFar, making the far point arbitrarily close to
+            //the camera and the MV dominated by translation instead of
+            //rotation. Direction only reprojection sidesteps the issue.
+            //
+            //Math: transform worldDir into the previous view frame's
+            //*rotation* (mul with w=0 ignores the translation row), then
+            //project at any large positive view distance. The perspective
+            //divide cancels the distance, so the exact value is arbitrary
+            //as long as it doesn't underflow / overflow.
             float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
             float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
             float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
-            float3 camPos = mul(viewI, float4(0, 0, 0, 1)).xyz;
-            float3 farPoint = camPos + worldDir * cameraFar;
-            float4 prevClip = mul(prevProjection, mul(prevView, float4(farPoint, 1.0f)));
+            float3 prevViewDir = mul(prevView, float4(worldDir, 0)).xyz;
             float2 skyMV = float2(0.0f, 0.0f);
-            if (prevClip.w > 0.0f) {
-                float2 prevNdc = prevClip.xy / prevClip.w;
-                float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f, 0.5f - prevNdc.y * 0.5f);
-                float2 prevPix = prevUV * dims - 0.5f;
-                skyMV = prevPix - float2(DTid.xy) - jitter;
+            //RH projection: in-front-of-camera has view-space z < 0
+            if (prevViewDir.z < 0.0f) {
+                float4 prevClip = mul(prevProjection,
+                                      float4(prevViewDir * cameraFar, 1.0f));
+                if (prevClip.w > 0.0f) {
+                    float2 prevNdc = prevClip.xy / prevClip.w;
+                    float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f,
+                                            0.5f - prevNdc.y * 0.5f);
+                    float2 prevPix = prevUV * dims - 0.5f;
+                    skyMV = prevPix - float2(DTid.xy) - jitter;
+                }
             }
             g_dlssMVec[DTid.xy] = skyMV;
             biasMV = skyMV;

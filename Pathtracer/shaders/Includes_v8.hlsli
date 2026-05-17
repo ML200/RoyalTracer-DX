@@ -112,7 +112,11 @@ cbuffer CameraParams : register(b0)
     float2 jitter;
     float  cameraFar;
     float  walltime;   //accumulated wall-clock seconds, drives dt-based auto-exposure
-    float3 _camPad0;   //matches the host's 3-float pad inside extra[8]
+    //Floating origin: scene origin in absolute world coords. The view
+    //matrix is built in shifted space (eye = absolute - sceneOriginWorld),
+    //so InitOrigin() returns the shifted camera. For atmosphere math that
+    //needs planet centered absolute coords, use InitOrigin() + sceneOriginWorld.
+    float3 sceneOriginWorld;
     //sun settings
     float sunLatitude;
     float sunLongitude;

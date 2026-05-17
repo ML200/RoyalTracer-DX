@@ -264,9 +264,18 @@ void Renderer::CreateAccelerationStructures() {
 
     std::vector<InstanceXformCPU> ltXforms;
     ltXforms.reserve(m_scene.instances.size());
+    //Apply floating origin shift (same as BuildXformsFromScene in Renderer.cpp)
+    //so light tree positions match shifted ray origins. At init time the
+    //scene origin is (0,0,0) so this is a no-op, but kept symmetric for
+    //correctness if init ever runs after a camera shift.
+    const XMVECTOR ltShift = XMVectorSet(m_scene.sceneOriginWorld.x,
+                                          m_scene.sceneOriginWorld.y,
+                                          m_scene.sceneOriginWorld.z, 0.0f);
     for (const auto& si : m_scene.instances) {
         InstanceXformCPU x{};
-        XMStoreFloat4x4(&x.objectToWorld, si.worldTransform);
+        XMMATRIX shifted = si.worldTransform;
+        shifted.r[3] = XMVectorSubtract(shifted.r[3], ltShift);
+        XMStoreFloat4x4(&x.objectToWorld, shifted);
         ltXforms.push_back(x);
     }
     m_lightTree.Build(m_scene.emissiveTriangles, ltXforms);

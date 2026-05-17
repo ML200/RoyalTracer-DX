@@ -6,6 +6,7 @@
 #include "../nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "Windowsx.h"
 #include "../DXRHelper.h"
+#include "../glm/gtc/matrix_transform.hpp"  // glm::lookAt for floating origin
 
 void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setWindowSize(width, height);
@@ -51,13 +52,74 @@ void Camera::Update(float dt, bool keysDown[256], float aspectRatio) {
         eye += move; center += move;
         nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
     }
+    //Floating origin snap lives in UploadGPUBuffer instead of here so the
+    //engine layer's FlyCamController (which bypasses Camera::Update) still
+    //gets the shift treatment. See UploadGPUBuffer for the actual logic.
 }
 
 //====================================
 //UPLOAD GPU BUFFER
 //====================================
+//Snap m_sceneOriginWorld to the nearest 1 km grid point if the camera has
+//drifted more than half a quantum away.
+//
+//Convention: the *manipulator stores eye/center in shifted coords*, so the
+//absolute world position is always manipulator_eye + m_sceneOriginWorld.
+//When we snap, we have to also shift the manipulator by the same delta so
+//its stored values stay small (within ±500 m of zero). Without this, the
+//manipulator accumulates the full absolute eye position as float32 and
+//`center = eye + fwd` loses direction precision at orbital distances —
+//that's what causes the rotation wobble at large absolute coordinates.
+//
+//Side effect: prevView is pre-multiplied by T(shiftDelta) so motion
+//vectors stay continuous across the snap (no per-pixel MV spike).
+void Camera::PollSceneOrigin() {
+    glm::vec3 eye, center, up;
+    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+    //eye is already in shifted coords (the convention above). Recover
+    //absolute by adding sceneOriginWorld back; that's the value we snap.
+    const glm::vec3 eyeAbs = eye + m_sceneOriginWorld;
+    const glm::vec3 driftAbs = eyeAbs - m_sceneOriginWorld;
+    if (std::fabs(driftAbs.x) > kSceneOriginQuantumMeters * 0.5f ||
+        std::fabs(driftAbs.y) > kSceneOriginQuantumMeters * 0.5f ||
+        std::fabs(driftAbs.z) > kSceneOriginQuantumMeters * 0.5f) {
+        const glm::vec3 snapped = glm::round(eyeAbs / kSceneOriginQuantumMeters)
+                                * kSceneOriginQuantumMeters;
+        if (snapped != m_sceneOriginWorld) {
+            const glm::vec3 shiftDelta = snapped - m_sceneOriginWorld;
+            m_sceneOriginWorld = snapped;
+            m_originShifted    = true;
+
+            //Push the shift into the manipulator so its stored eye/center
+            //stay small in float32. Equivalent statement of the invariant:
+            //  eye_manip_new + sceneOrigin_new == eye_manip_old + sceneOrigin_old
+            //  => eye_manip_new = eye_manip_old - shiftDelta
+            const glm::vec3 eyeShifted    = eye    - shiftDelta;
+            const glm::vec3 centerShifted = center - shiftDelta;
+            nv_helpers_dx12::CameraManip.setLookat(eyeShifted, centerShifted, up);
+
+            //Re-express prevView in the new shifted frame. For row vector
+            //pos: pos_new_shifted = pos_old_shifted - shiftDelta, so
+            //pos_new_shifted * (T(shiftDelta) * prevView_old) reproduces
+            //the same view-space result as the original pos_old_shifted *
+            //prevView_old. Pre-multiplying by T(shiftDelta) just adjusts
+            //the translation row of prevView; projection is untouched.
+            const XMMATRIX T = XMMatrixTranslation(shiftDelta.x,
+                                                   shiftDelta.y,
+                                                   shiftDelta.z);
+            m_prevView = XMMatrixMultiply(T, m_prevView);
+        }
+    }
+}
+
 void Camera::UploadGPUBuffer(float aspectRatio) {
     std::vector<XMMATRIX> matrices(6);
+
+    //Floating origin: the manipulator stores eye/center already in shifted
+    //coords (PollSceneOrigin maintains that invariant). So we use them
+    //as-is for the view matrix — no further subtraction needed.
+    //getMatrix() returns the lookAt of those shifted values, which is
+    //exactly what the GPU wants.
     const glm::mat4& viewMat = nv_helpers_dx12::CameraManip.getMatrix();
     memcpy(&matrices[0].r->m128_f32[0], glm::value_ptr(viewMat), 16 * sizeof(float));
 
@@ -79,10 +141,12 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     memcpy(pData, matrices.data(), 6 * sizeof(XMMATRIX));
     //extra[3] = cameraFar (sky depth + spec hit distance)
     //extra[4] = walltime in seconds (drives framerate-independent auto-exposure)
-    //extras 5..7 are pad to keep sunSettings 16B aligned
+    //extras 5..7 = sceneOriginWorld.xyz (floating origin shift, used by shaders
+    //              to reconstruct absolute camera position for atmosphere math)
     float extra[8] = {
         (float)m_jitterFrameIndex, m_jitterX, m_jitterY, farPlane,
-        m_wallTimeSec, 0.0f, 0.0f, 0.0f
+        m_wallTimeSec,
+        m_sceneOriginWorld.x, m_sceneOriginWorld.y, m_sceneOriginWorld.z
     };
     memcpy(pData + 6 * sizeof(XMMATRIX), extra, sizeof(extra));
     //mirror camera DoF settings into the cbuffer tail before upload

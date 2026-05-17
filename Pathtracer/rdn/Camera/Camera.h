@@ -44,6 +44,30 @@ public:
     nv_helpers_dx12::Manipulator& Manipulator() { return nv_helpers_dx12::CameraManip; }
 
     //====================================
+    //FLOATING ORIGIN
+    //====================================
+    //Scene origin that follows the camera in 1 km steps. Subtracted from
+    //world coords before they reach the GPU so ray origins / BLAS hits
+    //stay in float32 range even at orbital altitudes. Use absolute camera
+    //position = camera_in_shifted_frame + sceneOriginWorld for any math
+    //that needs planet centered coords (atmosphere observer altitude).
+    glm::vec3 getSceneOriginWorld() const { return m_sceneOriginWorld; }
+    //Call BEFORE Scene::PrepareInstanceProperties each frame: snaps the
+    //origin to a new grid point if the camera has drifted too far, sets
+    //m_originShifted. Separate from UploadGPUBuffer so the renderer can
+    //react (force TLAS rebuild, mark all instances dirty) in the same
+    //frame instead of one frame late.
+    void PollSceneOrigin();
+    //True for one frame after the origin snapped to a new grid point; the
+    //renderer consumes this to force a TLAS rebuild + re-shift of all
+    //instance transforms. Cleared on read.
+    bool consumeOriginShifted() {
+        const bool s = m_originShifted;
+        m_originShifted = false;
+        return s;
+    }
+
+    //====================================
     //EDITOR-FRIENDLY STATE
     //====================================
     float   fovDegrees  = 60.0f;
@@ -78,4 +102,12 @@ private:
     //accumulated wall-clock seconds since Init, written into the cbuffer so
     //auto-exposure (and any future framerate-independent system) can derive dt
     float    m_wallTimeSec = 0.0f;
+
+    //floating origin: scene origin snaps to a quantised grid as the camera
+    //flies, so absolute world coords never get large enough to chew through
+    //float32 precision. 1 km grid gives sub millimetre precision anywhere
+    //inside one cell.
+    glm::vec3 m_sceneOriginWorld = glm::vec3(0.0f);
+    bool      m_originShifted    = false;
+    static constexpr float kSceneOriginQuantumMeters = 1000.0f;
 };

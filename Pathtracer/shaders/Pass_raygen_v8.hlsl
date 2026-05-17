@@ -302,7 +302,10 @@ void Pass_raygen_v8()
 
     //sky/sun sampler reads camera altitude through this static, must be set
     //before any EvaluateSky/EvaluateSun/SampleSun call below
-    SetSkyObserver(InitOrigin());
+    //Atmosphere needs absolute (planet centered) camera position. The view
+    //matrix is built in floating origin shifted space so InitOrigin() is
+    //the *shifted* camera; add sceneOriginWorld back to recover absolute.
+    SetSkyObserver(InitOrigin() + sceneOriginWorld);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf     = 1.0f;

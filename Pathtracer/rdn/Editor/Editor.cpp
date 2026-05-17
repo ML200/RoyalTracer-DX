@@ -193,7 +193,7 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
     ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
     ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.001f, 0.001f, 10.0f, "%.3f");
     ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
-    ImGui::SliderFloat("Move Speed",     &flyCam.moveSpeed,  0.01f, 10000.0f, "%.3f",
+    ImGui::SliderFloat("Move Speed",     &flyCam.moveSpeed,  0.01f, 1000000.0f, "%.3f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
 
