@@ -218,7 +218,7 @@ struct CloudSettings {
     float enabled            = 1.0f;
     //coverage controls how much of the sky is filled with cumulus. 0
     //gives clear skies, ~0.5 is "scattered", 1 is overcast.
-    float coverage           = 0.55f;
+    float coverage           = 0.62f;
     //horizontal variation around the coverage base — adds "weather front"
     //character (denser here, clearer there) rather than uniform fill.
     //0.5 default gives noticeable clusters and clearings across the
@@ -227,11 +227,11 @@ struct CloudSettings {
     float coverageVariation  = 0.50f;
     //horizontal frequency of the coverage modulation field (1/km). Lower
     //= bigger weather cells, higher = more local variation.
-    float coverageFrequency  = 0.025f;
+    float coverageFrequency  = 0.0305f;
     //shell geometry: layer occupies [bottomKm, topKm] above the planet
     //surface. Typical fair-weather cumulus base sits 1..2 km, top 3..6.
     float layerBotKm         = 1.5f;
-    float layerTopKm         = 3.5f;
+    float layerTopKm         = 3.84f;
     //limb softening from orbit, in km of fade distance above cloud base
     //(prevents the layer reading as a hard ring at the planet horizon).
     float horizonFadeKm      = 2.0f;
@@ -246,12 +246,12 @@ struct CloudSettings {
     //larger cumulus clusters; 0.18 gives ~5 km cluster spacing which
     //reads as natural skies rather than the tiled "blobs on a grid"
     //look the single octave default produced.
-    float baseFrequency      = 0.18f;
+    float baseFrequency      = 0.271f;
     //high-frequency value-noise erosion (1/km) and its amount [0,1].
     //Eats the edges of the base blobs, producing the wispy detail that
     //distinguishes cumulus from raw spheres.
-    float hfFrequency        = 3.5f;
-    float hfAmount           = 0.55f;
+    float hfFrequency        = 10.53f;
+    float hfAmount           = 0.80f;
     //====================================
     // Nubis-3 lighting model (Schneider, SIGGRAPH)
     //====================================
@@ -261,12 +261,12 @@ struct CloudSettings {
     // silverIntensity: amplitude of the silver lobe (0..1).
     // silverSpread:    angular spread of the silver lobe (0..0.3).
     //                  Smaller = tighter halo, larger = wider glow.
-    float silverIntensity       =  0.35f;
-    float silverSpread          =  0.08f;
+    float silverIntensity       =  0.34f;
+    float silverSpread          =  0.097f;
     // Half angle of the cone traced sun shadow defocus cone, in degrees.
     // 0 = strict sun direction (cheapest). 2..6 = visibly softer self
     // shadows characteristic of real cumulus.
-    float shadowConeDeg         =   0.0f;
+    float shadowConeDeg         =  15.0f;
     // Secondary multi-scatter phase term: a broader HG modulated by
     // cloud depth + extinction-attenuated sun term. Captures the soft
     // fill on the shadow side without paying for a Wrenninge octave
@@ -282,7 +282,7 @@ struct CloudSettings {
     // sun-lit silhouette without flooding the cores. 0.7 default gives
     // strong sunlit/shadowed contrast that separates cumulus shape
     // from the cloud field background.
-    float diffuseShellStrength = 0.70f;
+    float diffuseShellStrength = 0.72f;
     //wind drift in km/s (horizontal only). Animates noise via walltime.
     float windX              = 0.04f;
     float windZ              = 0.015f;
@@ -348,7 +348,7 @@ struct CloudSettings {
     //different cloud arrangements without changing the underlying
     //random pattern. Wind animation still adds to these at runtime;
     //these are a static artistic offset on top.
-    float weatherOffsetX     = 0.0f;
+    float weatherOffsetX     = -5.2f;
     float weatherOffsetZ     = 0.0f;
 };
 

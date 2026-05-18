@@ -99,32 +99,22 @@ inline bool TraceCameraRay(
     ray.TMax      = 100000.0f;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-    //----- MISS: sky + sun disk written to primary scratch slots -----
+    //----- MISS: only the sun disc written here -----
     if (!hitObj.IsHit())
     {
-        //Background only — atmosphere + stars + planet + sun disc. Clouds
-        //for primary rays come from Pass_clouds_primary_v8 (compute pass
-        //dispatched after raygen) and are composited in Pass_shading_v8
-        //via background * cloudTr + cloudL. The sun disc is added in
-        //un-attenuated here; shading multiplies the whole background by
-        //cloudTr so the sun gets the same cloud attenuation it used to.
+        //Unified atmosphere+cloud march runs in Pass_clouds_primary_v8 and
+        //writes the full sky pixel value (atmospheric scatter + cloud
+        //in-scatter + planet body + stars + nightBase, all attenuated by
+        //the combined transmittance) into scratch slot 10, along with the
+        //combined transmittance in slot 11. Raygen only contributes the
+        //sun disc here; the shading composite
+        //   output_primary = output_primary * cloudTr + cloudL
+        //then resolves to (sun * combinedTr) + (everything else), giving
+        //the sun the correct combined atmosphere+cloud attenuation
+        //automatically.
         const float3 sun = EvaluateSun(rayDir);
-        float3 skyL1     = EvaluateSkyBackground(rayDir);
-        if (length(sun) > 0.0f) skyL1 += sun;
+        float3 skyL1     = (length(sun) > 0.0f) ? sun : float3(0, 0, 0);
 
-        //Per pixel cloud attenuation of sky and sun disc happens in the
-        //shading composite via cloudTr from Pass_clouds_primary_v8 (see
-        //Pass_shading_v8.hlsl: output_primary = output_primary * cloudTr
-        //+ cloudL). That gives the correct direction dependent answer:
-        //sky pixels grazing a hole in the overcast stay bright, pixels
-        //looking through a thick cumulus go dark. A previous blanket
-        //multiply by CloudSunVisibility(rayOrigin) was applied here, but
-        //it used a single observer to sun visibility scalar for ALL
-        //directions (so it could not distinguish hole from cloud) and
-        //also misread the camera altitude under floating origin (the
-        //shifted rayOrigin lost most of the altitude into sceneOriginWorld,
-        //so a camera high above the cloud layer registered as sitting at
-        //sea level and the whole sky went black).
         gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
         gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
         store_sky(g_sample_current, pixelIdx);

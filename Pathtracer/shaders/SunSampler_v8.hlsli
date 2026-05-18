@@ -1191,6 +1191,76 @@ float3 EvaluateSkyBackground(float3 rayDir)
     return lerp(nightBase, daySky, tw) + stars + planetBody;
 }
 
+//Background components "behind" the atmospheric scatter — planet body,
+//stars, and airglow nightBase. Used by the unified atmosphere+clouds
+//march in Pass_clouds_primary_v8 to produce the part of the sky pixel
+//that the unified march does NOT integrate (the unified march handles
+//atmospheric scatter and cloud in-scatter directly).
+//
+//The caller multiplies the returned value by the combined atmosphere+
+//cloud transmittance from the unified march, so all three terms get the
+//correct attenuation through both media.
+//
+//unifiedInscatter is passed in so the star shield can fade stars where
+//atmospheric scatter is bright (matches the old shield behaviour using
+//IntegrateScattering's raw scatter — we divide by SKY_INTENSITY to
+//recover the unamplified scatter magnitude the shield was tuned for).
+float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
+                                   bool hitPlanet, float3 unifiedInscatter)
+{
+    float3 v = SafeNormalize(rayDir);
+    float3 O = g_skyObserverPlanet;
+    float elevDeg = S.elevRad * RAD2DEG;
+
+    //Night base airglow — fades out at dawn via (1 - tw), zeroed when
+    //ray terminates on the planet (no airglow behind the ground).
+    float observerR     = length(O);
+    float atmosResidual = saturate((ATMOS_TOP_RADIUS - observerR)
+                                   / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float tw            = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    float mu            = saturate(dot(v, WORLD_UP));
+    float3 nightBase    = SKY_NIGHT_BASE * skyNightBaseIntensity
+                                         * lerp(1.6f, 1.0f, pow(mu, 0.7f));
+    nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f) * (1.0f - tw);
+
+    //Planet body with per-pixel cloud shadow at the ground hit point.
+    //The outgoing atmospheric transmittance from hit to observer is the
+    //combined transmittance applied by the caller — not multiplied here.
+    float3 planetBody = float3(0, 0, 0);
+    if (hitPlanet)
+    {
+        planetBody = EvaluatePlanetBody(O, v, S.dirWS);
+        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        {
+            float tG0, tG1;
+            if (RaySphereIntersect(O, v, ATMOS_BOTTOM_RADIUS, tG0, tG1) && tG0 > 0.0f)
+            {
+                float3 Pplanet   = O + v * tG0;
+                float3 PworldHit = float3(Pplanet.x,
+                                          Pplanet.y - ATMOS_BOTTOM_RADIUS,
+                                          Pplanet.z) * WORLD_UNITS_PER_KM;
+                planetBody *= CloudSunVisibility(PworldHit, S.dirWS);
+            }
+        }
+    }
+
+    //Stars shielded by atmospheric (+cloud) brightness so they hide
+    //during daytime. Shield input is the unified inscatter divided by
+    //SKY_INTENSITY so the SKY_STAR_SCATTER_SHIELD constant retains its
+    //original tuning (operates on un-amplified scatter magnitude).
+    //Cloud brightness contributes to the shield too — a sunlit cloud
+    //behind a star will hide it.
+    float3 stars = float3(0, 0, 0);
+    if (!hitPlanet)
+    {
+        float3 shieldInput = unifiedInscatter / max(SKY_INTENSITY, 1e-6f);
+        float3 starShield  = exp(-shieldInput * SKY_STAR_SCATTER_SHIELD);
+        stars = EvaluateStars(v) * starShield;
+    }
+
+    return nightBase + planetBody + stars;
+}
+
 //Background + CHEAP volumetric clouds. cloudTrOut returns the [0,1]
 //cheap cloud transmittance along v so callers can attenuate sun-disc /
 //MIS-sun radiance that passes through clouds. The cheap variant uses

@@ -2,33 +2,34 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//PRIMARY VOLUMETRIC CLOUD PASS
+//PRIMARY VOLUMETRIC CLOUD PASS — UNIFIED ATMOSPHERE+CLOUD MARCH
 //====================================
-//Decoupled from raygen. For every primary-miss pixel (where g_sample_current
-//holds the sky sentinel instID=0xFFFFFFFFu) this pass reconstructs the
-//camera ray via the SAME thin-lens DoF sampler the surface raygen uses, then
-//runs the full Skybolt step-and-retract cloud integrator (EvaluateClouds).
+//For every primary-miss pixel (g_sample_current holds the sky sentinel
+//instID=0xFFFFFFFFu) this pass runs a single ray march that integrates
+//BOTH the atmospheric scatter (Rayleigh/Mie/ozone) AND the cloud scatter
+//(Watoo phase + Wrenninge MS octaves) against the combined extinction.
+//
+//Three phases share the running (inscatter, transmittance) state:
+//  Phase 1: observer → cloud-shell entry, atmosphere only
+//  Phase 2: combined march through cloud shell with hull-skip
+//  Phase 3: cloud-shell exit → atmosphere top (or planet hit), atmosphere only
+//
+//Planet body / stars / nightBase are added on top, attenuated by the
+//combined transmittance. Sun disc lives in output_primary (from raygen)
+//and gets the same combined-T attenuation through the shading composite.
+//
 //Writes:
+//  gScratchPing[..,10] = full sky pixel value (unified inscatter +
+//                       background_behind * combined_T)
+//  gScratchPing[..,11] = combined atmosphere+cloud transmittance
+//  gScratchPing[..,12] = (cloudHitPos.xyz, cloudHitDistKm) — transmittance-
+//                       weighted mean cloud depth for DLSS RR MV/depth
 //
-//  gScratchPing[..,10] = cloudL    (cloud in-scatter radiance)
-//  gScratchPing[..,11] = cloudTr   (cloud transmittance, RGB)
-//  gScratchPing[..,12] = (worldHitPos.xyz, distKm)
-//                       transmittance-weighted cloud hit position in shifted
-//                       world space + ray distance in km. Distance is 0 if
-//                       the ray accumulated no cloud weight (clear sky).
-//                       Pass_shading_v8 reads this to write proper MV/depth
-//                       /normal/albedo into the DLSS RR inputs for cloud
-//                       pixels — without it, the camera-rotation-only sky MV
-//                       smears clouds badly under camera translation.
+//Non-sky pixels write identity (zero radiance, unit transmittance) so
+//the shading composite is a coherent no-op there.
 //
-//Non-sky pixels write the identity (cloudL=0, cloudTr=1, hitDist=0) so
-//shading can apply the composite unconditionally without a branch — keeping
-//the inner loop coherent. Sky pixels detect via load_instID == 0xFFFFFFFFu.
-//
-//Ray generation uses InitCameraRayDoF so bokeh blur applies consistently to
-//the cloud layer the same way it does to surfaces. DLSS RR denoises the
-//residual per-step march variance via the MV trick the shading pass uses
-//for sky pixels.
+//Ray generation uses InitCameraRayDoF so bokeh blur applies consistently
+//to the unified sky+cloud layer.
 
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
@@ -67,20 +68,33 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     const SunState S = ComputeSunState();
 
-    float3 cloudTr;
+    //Unified march: atmosphere + cloud integrated against combined sigma_t
+    //in one loop. Returns the scattered radiance and the combined
+    //transmittance from observer to atmosphere exit (or planet hit).
+    float3 combinedTr;
+    bool   hitPlanet;
     float  cloudHitDistKm;
-    float3 cloudL = EvaluateClouds(rayDir, S.dirWS,
-                                   ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
-                                   cloudTr, cloudHitDistKm);
+    float3 unifiedInscatter = EvaluateAtmosphereAndClouds(
+        rayDir, S.dirWS, ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
+        combinedTr, hitPlanet, cloudHitDistKm);
 
-    //Reconstruct the cloud hit position in shifted world space. Multiply
-    //distance-in-km by WORLD_UNITS_PER_KM so the result lives in the same
-    //frame as the camera (built from viewI). When the ray accumulated no
-    //cloud weight, cloudHitDistKm == 0 and the position degenerates to
-    //the lens origin — the shading pass checks the distance to decide.
+    //Background behind the unified march — planet body / stars / airglow,
+    //all attenuated by the combined transmittance. The star shield uses
+    //the unified inscatter to fade stars under bright atmosphere or cloud.
+    float3 backgroundBehind = EvaluateSkyBackgroundBehind(
+        rayDir, S, hitPlanet, unifiedInscatter);
+
+    //Full sky pixel value goes into the cloud composite slot. The shading
+    //pass then computes output_primary = (sun_disc from raygen) * cloudTr
+    //+ cloudL, which works out to sun*combinedTr + (unified + bg*combinedTr).
+    float3 skyPixel = unifiedInscatter + backgroundBehind * combinedTr;
+
+    //Reconstruct the cloud hit position for DLSS MV/depth. Zero distance
+    //(clear-sky pixels) degenerates to the lens origin; the shading pass
+    //branches on cloudHitDistKm > 0 to use rotation-only sky MV instead.
     const float3 cloudHitPos = rayOrigin + rayDir * (cloudHitDistKm * WORLD_UNITS_PER_KM);
 
-    gScratchPing[uint3(pixel, 10)] = float4(cloudL,         0.0f);
-    gScratchPing[uint3(pixel, 11)] = float4(cloudTr,        0.0f);
-    gScratchPing[uint3(pixel, 12)] = float4(cloudHitPos,    cloudHitDistKm);
+    gScratchPing[uint3(pixel, 10)] = float4(skyPixel,    0.0f);
+    gScratchPing[uint3(pixel, 11)] = float4(combinedTr,  0.0f);
+    gScratchPing[uint3(pixel, 12)] = float4(cloudHitPos, cloudHitDistKm);
 }
