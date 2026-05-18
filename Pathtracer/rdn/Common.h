@@ -69,10 +69,15 @@ static constexpr int   NUM_LUTS             = 2;
 static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //NRC reserves 5 UAVs at heap 58..62, autoexpose at heap 63, sky stars SRV at
-//heap 64 (register t40 in Includes_v8.hlsli), bindless starts at 65
-static constexpr UINT  AUTOEXPOSE_HEAP_SLOT = 63;
-static constexpr UINT  SKY_STARS_HEAP_SLOT  = 64;
-static constexpr UINT  BINDLESS_HEAP_START  = 65;
+//heap 64 (register t40), cloud noise 3D SRV at heap 65 (register t42), cloud
+//coverage 2D SRV at heap 66 (register t43 — NASA Blue Marble equirect map).
+//t41 is intentionally left free for the optional STBN array in Clouds_v8.hlsli.
+//Bindless starts at 67.
+static constexpr UINT  AUTOEXPOSE_HEAP_SLOT     = 63;
+static constexpr UINT  SKY_STARS_HEAP_SLOT      = 64;
+static constexpr UINT  CLOUD_NOISE_HEAP_SLOT    = 65;
+static constexpr UINT  CLOUD_COVERAGE_HEAP_SLOT = 66;
+static constexpr UINT  BINDLESS_HEAP_START      = 67;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -153,9 +158,25 @@ struct DLSSGSettings {
 //====================================
 //SUN TIME-OF-DAY SETTINGS
 //====================================
+//Naming note: `latitude` / `longitude` are the OBSERVER's lat/lon on the
+//planet, not the sun's. The sun direction is derived from these (the
+//standard astronomy formula in GetSunDirAndElev uses observer lat as `L`
+//and observer lon to offset the local solar hour), and the cloud coverage
+//map's equirectangular projection is rotated by these so the equirect
+//pole follows the planet's actual north pole instead of the observer's
+//overhead direction (without this, the cloud zenith pinches at the
+//equirect singularity — see EnuToPlanetDir in Clouds_v8.hlsli).
+//
+//World coordinates are the observer's local ENU frame at (latitude,
+//longitude): +X = east, +Y = up (planet radial at observer),
+//+Z = north. All atmosphere math (transmittance, scattering, sun
+//direction) operates in this local frame, which is correct for any
+//lat/lon since the relevant quantities (altitude, zenith angles) are
+//scalar. Only the cloud coverage map needs the ENU→planet rotation
+//because it's the only thing keyed by absolute planet geography.
 struct SunSettings {
-    float latitude      = 48.52f;
-    float longitude     = 11.405f;
+    float latitude      = 48.52f;   // observer latitude  (degrees, -90..90)
+    float longitude     = 11.405f;  // observer longitude (degrees, -180..180)
     float dayOfYear     = 172.0f;
     float simSpeed      = 10.0f;
     float startUTCHours = 6.0f;
@@ -219,15 +240,6 @@ struct CloudSettings {
     //coverage controls how much of the sky is filled with cumulus. 0
     //gives clear skies, ~0.5 is "scattered", 1 is overcast.
     float coverage           = 0.62f;
-    //horizontal variation around the coverage base — adds "weather front"
-    //character (denser here, clearer there) rather than uniform fill.
-    //0.5 default gives noticeable clusters and clearings across the
-    //sky which is the dominant cue against the "artificial / repeated"
-    //feel of uniform-coverage cloudscapes.
-    float coverageVariation  = 0.50f;
-    //horizontal frequency of the coverage modulation field (1/km). Lower
-    //= bigger weather cells, higher = more local variation.
-    float coverageFrequency  = 0.0305f;
     //shell geometry: layer occupies [bottomKm, topKm] above the planet
     //surface. Typical fair-weather cumulus base sits 1..2 km, top 3..6.
     float layerBotKm         = 1.5f;
@@ -276,24 +288,9 @@ struct CloudSettings {
     //                    Smaller = more isotropic (more fill in core).
     float secondaryStrength  = 0.45f;
     float secondaryG         = 0.18f;
-    // Sun-facing diffuse shell term: Lambertian NdotL on the cloud
-    // normal estimated from a 4-tap tetrahedral gradient. Lives mostly
-    // on cloud EDGES (shell mask = (1-density)^2) so cumulus get the
-    // sun-lit silhouette without flooding the cores. 0.7 default gives
-    // strong sunlit/shadowed contrast that separates cumulus shape
-    // from the cloud field background.
-    float diffuseShellStrength = 0.72f;
     //wind drift in km/s (horizontal only). Animates noise via walltime.
     float windX              = 0.04f;
     float windZ              = 0.015f;
-    //View march step floor (adaptive step count grows with view path
-    //length above this) and per-sample sun shadow march step count.
-    //Both default to stochastic-friendly values — DLSS RR is expected
-    //to denoise the per-step variance. Bump to 64/6 if banding shows
-    //up behind dense cumulus that the denoiser can't track; drop to
-    //16/2 for absolute max perf.
-    float viewSteps          = 32.0f;
-    float lightSteps         = 3.0f;
     //view-transmittance cutoff for early-out — below this the cumulative
     //radiance contribution is below the sensor noise floor.
     float trEps              = 0.005f;
@@ -343,13 +340,50 @@ struct CloudSettings {
     float shadowConeSamples  = 1.0f;
     float ambientSteps       = 2.0f;
 
-    //weather-map XZ offset in km. Scrolls the coverage/weather field
-    //horizontally without re-seeding noise, so the user can browse
-    //different cloud arrangements without changing the underlying
-    //random pattern. Wind animation still adds to these at runtime;
-    //these are a static artistic offset on top.
-    float weatherOffsetX     = -5.2f;
-    float weatherOffsetZ     = 0.0f;
+    //====================================
+    // adaptive march loop bounds (the big perf levers)
+    //====================================
+    //Hard upper loop bound on the main view march. The adaptive
+    //stepper exits early via t >= tFar in the common case; this is
+    //the runaway guard. 128 = baseline (needed for grazing far-cloud
+    //views — drop to 48/32 only for cheap preview modes where
+    //banding is acceptable). The adaptive stepper means the perf hit
+    //of a high ceiling is minimal in nearby/dense scenes.
+    //Cast to int at the use site (CB exposes as float for uniform
+    //packing).
+    float viewStepsMax       = 128.0f;
+    //Base step size (km) for the fine portion of the adaptive view
+    //march. Smaller = denser sampling = better quality, worse perf.
+    //0.6 tuned for stratocumulus shells; bump to 1.0..1.5 to drop
+    //sample count by ~half on thick cumulus where banding is hidden
+    //by HF noise anyway.
+    float targetStepKm       = 0.6f;
+    //Surface shadow march sample count (per cloud_cloudShadowOnSurfaces
+    //NEE call). 1 = fast single-sample sphere-intersect path
+    //(~4-5x cheaper than multi-sample), 2..6 = multi-tap shell
+    //march for higher fidelity at cloud edges. Default 1 — visually
+    //indistinguishable from 4 for the dominant overhead-cumulus
+    //shadow case, and surface NEE is per-pixel per-bounce so this
+    //is the single biggest knob for the "Shadow On Surfaces" cost.
+    float shadowSteps        = 1.0f;
+    //Bounce-ray cheap path: per-bounce volume march step count and
+    //max march length along the bounce ray (km). The cheap path
+    //runs for specular / transmission bounces and trades quality
+    //for speed. 10 / 60 km is the Nubis baseline; drop to 6 / 30
+    //if bounce-ray clouds are an indirect-illumination niche.
+    float cheapSteps         = 10.0f;
+    float cheapMaxLenKm      = 60.0f;
+    //Cloud-eval distance limits. fadeDistanceKm starts the fade,
+    //renderDistanceKm clamps the march. fadeDistanceKm must be <
+    //renderDistanceKm. Lower both aggressively for ground-level
+    //scenes where the horizon is < 50 km and far clouds aren't
+    //visible anyway.
+    float fadeDistanceKm     = 2500.0f;
+    float renderDistanceKm   = 3000.0f;
+    //Atmospheric haze in front of clouds (artistic multiplier on
+    //the aerial perspective). 1.0 = physically calibrated, 0.0 =
+    //clouds pop without haze attenuation against the sky.
+    float hazeStrength       = 1.0f;
 };
 
 //====================================

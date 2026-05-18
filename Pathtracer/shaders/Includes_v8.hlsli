@@ -71,8 +71,17 @@ cbuffer Push : register(b1)
 //====================================
 //SAMPLERS AND LUTS
 //====================================
-SamplerState   g_sampler     : register(s0);
-SamplerState   g_sampler_LUT : register(s1);
+SamplerState   g_sampler           : register(s0);
+SamplerState   g_sampler_LUT       : register(s1);
+//Plain bilinear + WRAP (no anisotropy). Used for samples whose UV
+//derivatives become enormous at wrap boundaries — anisotropic filtering
+//would otherwise see the huge derivative as a giant footprint and
+//pick a coarse mip / mis-orient the aniso kernel, producing a visible
+//streak across the seam. The equirectangular cloud coverage map
+//(g_cloudCoverage) is the prototypical case: atan2(z,x) wraps ±π at
+//the longitude=180° meridian, and any anisotropic sampler shows a
+//banded artifact there. This sampler avoids that entirely.
+SamplerState   g_samplerLinearWrap : register(s2);
 Texture2DArray g_LUT         : register(t33);
 
 //====================================
@@ -96,6 +105,26 @@ Texture2DArray g_LUT         : register(t33);
 //  5. If using LDR sRGB, set SKY_STAR_TEXTURE_SRGB=1 in SunSampler_v8.hlsli.
 //  6. If stars appear mirrored east/west, set SKY_STAR_TEXTURE_FLIP_U=1.
 Texture2D<float4> gSkyStars   : register(t40);
+
+//Volumetric cloud noise — 256³ RGBA8 3D texture baked once at startup by
+//Pass_cloudnoise_bake_v8.hlsl. The runtime cloud integrator
+//(Clouds_v8.hlsli) samples this instead of evaluating Perlin/Worley
+//analytically, dropping per-density-tap cost from ~80-200 ALU ops to one
+//texture fetch. t41 is intentionally skipped to leave room for the
+//optional STBN array used by CLOUD_STBN_AVAILABLE in Clouds_v8.hlsli.
+//Channel layout: R = Perlin-Worley FBM (low-freq cloud body),
+//G = Worley FBM (alt low-freq), B = value noise (HF erosion),
+//A = single-octave Worley (mid-freq cauliflower).
+Texture3D<float4> g_cloudNoise : register(t42);
+
+//Planet-scale cloud coverage map (NASA Blue Marble, equirectangular 8192×4096
+//R8 luminance). Loaded once by Renderer::InitCloudCoverageTexture. The cloud
+//integrator (Clouds_v8.hlsli) samples this via planet-radial direction to gate
+//the procedural noise body with real-world climatology — gives continental-
+//scale weather patterns instead of uniform global coverage. Hardware bilinear
+//filtering interpolates between source texels so coverage transitions read as
+//smooth gradients (no blocky pixel boundaries).
+Texture2D<float> g_cloudCoverage : register(t43);
 
 //====================================
 //CAMERA
@@ -142,8 +171,6 @@ cbuffer CameraParams : register(b0)
     //layout — no padding needed because every field is float.
     float cloud_enabled;
     float cloud_coverage;
-    float cloud_coverageVariation;
-    float cloud_coverageFrequency;
     float cloud_layerBotKm;
     float cloud_layerTopKm;
     float cloud_horizonFadeKm;
@@ -164,13 +191,8 @@ cbuffer CameraParams : register(b0)
     //triple (a, b, c) which is no longer used.
     float cloud_secondaryStrength;
     float cloud_secondaryG;
-    //Lambertian diffuse shell term strength (sun-facing NdotL on
-    //cloud normal, masked to shell so cores stay smooth).
-    float cloud_diffuseShellStrength;
     float cloud_windX;
     float cloud_windZ;
-    float cloud_viewSteps;
-    float cloud_lightSteps;
     float cloud_trEps;
     //indirect lighting on cloud samples
     float cloud_skyAmbient;
@@ -186,10 +208,21 @@ cbuffer CameraParams : register(b0)
     //density step count for the sky ambient occlusion estimate.
     float cloud_shadowConeSamples;
     float cloud_ambientSteps;
-    //weather-map XZ offset in km — scrolls coverage field horizontally
-    //without re-seeding noise (artistic offset on top of wind animation).
-    float cloud_weatherOffsetX;
-    float cloud_weatherOffsetZ;
+    //Adaptive march loop bound (main path) + base step size. The
+    //big perf levers for the primary view march.
+    float cloud_viewStepsMax;
+    float cloud_targetStepKm;
+    //Surface shadow march sample count. 1 = fast single-sample
+    //sphere-intersect path, 2..6 = multi-tap shell march.
+    float cloud_shadowSteps;
+    //Bounce-ray cheap path: step count and max march length (km).
+    float cloud_cheapSteps;
+    float cloud_cheapMaxLenKm;
+    //Cloud-eval distance window (fade start / hard clamp).
+    float cloud_fadeDistanceKm;
+    float cloud_renderDistanceKm;
+    //Aerial-perspective haze multiplier in front of clouds.
+    float cloud_hazeStrength;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -215,9 +248,6 @@ cbuffer CameraParams : register(b0)
 //cast to int at the use site because the CB exposes them as float for
 //uniform packing.
 #define CLOUD_COVERAGE_BASE     cloud_coverage
-//cloud_coverageVariation / cloud_coverageFrequency are unused — the
-//per-location weather-front noise was removed. The cbuffer fields are
-//left in place so the host upload layout doesn't change.
 #define CLOUD_LAYER_BOT_KM      cloud_layerBotKm
 #define CLOUD_LAYER_TOP_KM      cloud_layerTopKm
 #define CLOUD_HORIZON_FADE_KM   cloud_horizonFadeKm
@@ -230,11 +260,8 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_SHADOW_CONE_DEG        cloud_shadowConeDeg
 #define CLOUD_SECONDARY_STRENGTH     cloud_secondaryStrength
 #define CLOUD_SECONDARY_G            cloud_secondaryG
-#define CLOUD_DIFFUSE_SHELL_STRENGTH cloud_diffuseShellStrength
 #define CLOUD_WIND_X                 cloud_windX
 #define CLOUD_WIND_Z                 cloud_windZ
-#define CLOUD_VIEW_STEPS             ((int)cloud_viewSteps)
-#define CLOUD_LIGHT_STEPS            ((int)cloud_lightSteps)
 #define CLOUD_TR_EPS                 cloud_trEps
 #define CLOUD_SKY_AMBIENT            cloud_skyAmbient
 #define CLOUD_GROUND_BOUNCE          cloud_groundBounce
@@ -244,10 +271,22 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_RR_THRESHOLD           cloud_rrThreshold
 #define CLOUD_SHADOW_CONE_SAMPLES    cloud_shadowConeSamples
 #define CLOUD_AMBIENT_STEPS          ((int)cloud_ambientSteps)
-//cloud_weatherOffsetX / cloud_weatherOffsetZ are unused — the
-//per-location weather-front noise that consumed them was removed.
-//The cbuffer fields are left in place so the host upload layout
-//doesn't change.
+//Adaptive march bounds + step (override the static fallbacks in
+//Clouds_v8.hlsli so the editor drives them at runtime).
+#define CLOUD_VIEW_STEPS_MAX         ((int)cloud_viewStepsMax)
+#define CLOUD_TARGET_STEP_KM         cloud_targetStepKm
+//Surface shadow march sample count — drives CloudOpticalDepthAlongRay
+//(surface NEE shadow). Set to 1 to take the fast sphere-intersect path.
+#define CLOUD_SHADOW_STEPS           ((int)cloud_shadowSteps)
+//Bounce-ray cheap path knobs — drive EvaluateCloudsCheap so bounce
+//rays respect the editor's quality/perf trade-off.
+#define CLOUD_CHEAP_STEPS            ((int)cloud_cheapSteps)
+#define CLOUD_CHEAP_MAX_LEN_KM       cloud_cheapMaxLenKm
+//Cloud-eval distance window (fade + hard clamp).
+#define CLOUD_FADE_DISTANCE_KM       cloud_fadeDistanceKm
+#define CLOUD_RENDER_DISTANCE_KM     cloud_renderDistanceKm
+//Aerial-perspective haze multiplier.
+#define CLOUD_HAZE_STRENGTH          cloud_hazeStrength
 
 //====================================
 //CORE UTILITY HEADERS

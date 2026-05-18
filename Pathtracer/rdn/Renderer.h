@@ -238,6 +238,42 @@ private:
     ComPtr<ID3D12Resource> m_skyStarsUploadHeap;
     void InitSkyStarsTexture();
 
+    //Volumetric cloud noise — 256³ RGBA8 3D texture baked once at startup by
+    //Pass_cloudnoise_bake_v8.hlsl (compute pass). The runtime cloud shader
+    //(Clouds_v8.hlsli) samples this instead of evaluating Perlin/Worley
+    //analytically per density tap, dropping the per-sample cost from
+    //~80-200 ALU ops to a single Texture3D.SampleLevel(). NSight showed
+    //the analytical path as the dominant cloud-frame cost (compute-bound,
+    //not bandwidth-bound), so this is the single biggest perf lever.
+    //Channel layout: R=Perlin-Worley, G=WorleyFBM, B=value (HF), A=Worley.
+    //
+    //The bake uses a private 1-UAV heap, root signature, and PSO because
+    //it runs ONCE before CreateShaderResourceHeap; allocating a UAV slot
+    //in m_srvUavHeap (which is built later, and only carries an SRV view
+    //of this texture at runtime) would have required reordering init.
+    ComPtr<ID3D12Resource>       m_cloudNoiseTexture;
+    ComPtr<ID3D12DescriptorHeap> m_cloudNoiseBakeHeap;
+    ComPtr<ID3D12RootSignature>  m_cloudNoiseBakeSig;
+    ComPtr<ID3D12PipelineState>  m_cloudNoiseBakePSO;
+    void BakeCloudNoiseTexture();
+
+    //Planet-scale cloud coverage map — NASA Blue Marble "cloud_combined_8192.tif"
+    //(8192×4096 equirectangular). Loaded once at startup from
+    //include/cloud_coverage.tif (downloaded by CMake), converted to single-
+    //channel R8 luminance, and uploaded as DXGI_FORMAT_R8_UNORM. Sampled by
+    //Clouds_v8.hlsli (g_cloudCoverage at register t43) to gate the procedural
+    //noise body with real-world climatology — gives continental-scale weather
+    //fronts instead of uniform global coverage. Hardware bilinear filtering
+    //produces the gradient between map pixels (no hard coverage edges).
+    ComPtr<ID3D12Resource> m_cloudCoverageTexture;
+    ComPtr<ID3D12Resource> m_cloudCoverageUploadHeap;
+    void InitCloudCoverageTexture();
+    //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —
+    //the shader formula `saturate(base * map * 2)` collapses to `base`
+    //when `map = 0.5`, so a grey fallback restores the pre-coverage-map
+    //behaviour visually while keeping the descriptor table populated.
+    void CreateCloudCoverageFallback(uint8_t value);
+
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4,5 };
 

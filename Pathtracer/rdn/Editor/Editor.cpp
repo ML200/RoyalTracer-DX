@@ -698,27 +698,6 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "~0.5 = scattered, 1.0 = overcast. Uses\n"
                               "Schneider's coverage-threshold remap so the\n"
                               "field stays sharp instead of fading uniformly.");
-
-        ImGui::SliderFloat("Coverage Variation",  &c.coverageVariation,  0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Horizontal noise amplitude around the coverage\n"
-                              "base — creates 'weather front' density bands\n"
-                              "rather than uniform fill. 0 = uniform, 0.5 = strong.");
-
-        ImGui::SliderFloat("Coverage Frequency",  &c.coverageFrequency,  0.001f, 1.0f, "%.4f /km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Spatial scale of the coverage modulation. Lower\n"
-                              "= huge weather cells, higher = local variation.");
-
-        ImGui::SliderFloat("Weather Offset X",    &c.weatherOffsetX,    -500.0f, 500.0f, "%.1f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Static XZ offset added to the weather/coverage\n"
-                              "sample position. Scrolls through different cloud\n"
-                              "arrangements without re-seeding the noise pattern.\n"
-                              "Wind drift still animates on top.");
-
-        ImGui::SliderFloat("Weather Offset Z",    &c.weatherOffsetZ,    -500.0f, 500.0f, "%.1f km");
     }
 
     if (ImGui::CollapsingHeader("Shell Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -804,14 +783,6 @@ void Editor::DrawCloudPanel(Camera& camera) {
             ImGui::SetTooltip("HG eccentricity of the secondary lobe. Smaller\n"
                               "= more isotropic (more fill across the volume),\n"
                               "larger = still forward biased like the primary.");
-
-        ImGui::SliderFloat("Diffuse Shell",      &c.diffuseShellStrength, 0.0f, 1.5f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Strength of the Lambertian sun term on the\n"
-                              "cloud normal (estimated from a 4-tap gradient).\n"
-                              "Lives on cloud EDGES via a shell mask, gives the\n"
-                              "sun-lit silhouette that defines cumulus shape.\n"
-                              "0 = flat lighting, 0.4..0.6 = strong silhouette.");
     }
 
     if (ImGui::CollapsingHeader("Animation")) {
@@ -874,24 +845,54 @@ void Editor::DrawCloudPanel(Camera& camera) {
     }
 
     if (ImGui::CollapsingHeader("Quality / Performance")) {
-        int viewSteps  = (int)c.viewSteps;
-        int lightSteps = (int)c.lightSteps;
-        if (ImGui::SliderInt("View Steps",  &viewSteps,  16, 128))
-            c.viewSteps  = (float)viewSteps;
+        int viewMax = (int)c.viewStepsMax;
+        if (ImGui::SliderInt("View Steps Max", &viewMax, 16, 256))
+            c.viewStepsMax = (float)viewMax;
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Fixed step view march sample count. Each step\n"
-                              "covers (tFar - tNear) / N, so grazing rays get\n"
-                              "the same coverage as vertical rays, just at\n"
-                              "coarser per step resolution. 48 baseline; bump\n"
-                              "to 64..96 for thick or contrasty cloudscapes.");
+            ImGui::SetTooltip("Hard upper loop bound on the main view march.\n"
+                              "The adaptive stepper usually exits early via\n"
+                              "t >= tFar — this is the runaway guard. 128 =\n"
+                              "Nubis baseline; 64 buys ~30%% on grazing orbital\n"
+                              "views; 32 for cheap previews.");
 
-        if (ImGui::SliderInt("Light Steps", &lightSteps, 2, 12))
-            c.lightSteps = (float)lightSteps;
+        ImGui::SliderFloat("Target Step Size", &c.targetStepKm, 0.1f, 3.0f, "%.2f km");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Per shadow ray sun march step count, with\n"
-                              "geometric growth. 3 baseline (stochastic, DLSS\n"
-                              "RR denoises). Bump to 5..8 if banded shadow\n"
-                              "patterns show up that the denoiser can't track.");
+            ImGui::SetTooltip("Base step size for the fine portion of the\n"
+                              "adaptive view march. Smaller = denser sampling\n"
+                              "= better quality, worse perf. 0.6 km tuned\n"
+                              "for stratocumulus; raise to 1.0..1.5 for ~half\n"
+                              "the sample count when HF noise hides banding.");
+
+        int shadowSteps = (int)c.shadowSteps;
+        if (ImGui::SliderInt("Surface Shadow Steps", &shadowSteps, 1, 6))
+            c.shadowSteps = (float)shadowSteps;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Sample count for the surface-shadow march (cloud\n"
+                              "shadows on terrain via CloudSunVisibility).\n"
+                              "1 = fast single-sample sphere-intersect path,\n"
+                              "~4-5x cheaper than multi-tap and visually\n"
+                              "indistinguishable for overhead cumulus.\n"
+                              "2..6 = multi-tap shell march for softer edges /\n"
+                              "low sun angles at proportional cost. This is\n"
+                              "called per-pixel per-bounce when 'Shadow On\n"
+                              "Surfaces' is on, so it's the biggest single knob\n"
+                              "for that feature's cost.");
+
+        int cheapSteps = (int)c.cheapSteps;
+        if (ImGui::SliderInt("Bounce Cheap Steps", &cheapSteps, 4, 32))
+            c.cheapSteps = (float)cheapSteps;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Step count for the cheap volume march used on\n"
+                              "indirect bounces (specular / transmission).\n"
+                              "10 = Nubis baseline; drop to 6 if bounce-ray\n"
+                              "clouds are an indirect-illumination niche.");
+
+        ImGui::SliderFloat("Bounce Cheap Max Length", &c.cheapMaxLenKm,
+                           10.0f, 500.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Maximum march length along the bounce ray (km).\n"
+                              "Clamps the cheap path so bounce rays don't pay\n"
+                              "for orbital-distance clouds.");
 
         int shadowK = (int)c.shadowConeSamples;
         if (ImGui::SliderInt("Shadow Cone Samples", &shadowK, 1, 5))
@@ -928,6 +929,36 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "samples below survive with probability\n"
                               "throughput/threshold. Lower = less variance,\n"
                               "higher = faster.");
+    }
+
+    if (ImGui::CollapsingHeader("Distance / Haze")) {
+        ImGui::SliderFloat("Fade Distance", &c.fadeDistanceKm,
+                           50.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Distance along the view ray at which clouds\n"
+                              "start fading out. Must be < Render Distance.\n"
+                              "Drop to ~200 km for ground-level scenes where\n"
+                              "the horizon hides anything beyond.");
+
+        ImGui::SliderFloat("Render Distance", &c.renderDistanceKm,
+                           100.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hard clamp on the view march distance (km).\n"
+                              "Beyond this the march exits early. 3000 km\n"
+                              "= orbital baseline; 300 km for ground level\n"
+                              "gives a big perf win because the march stops\n"
+                              "at the horizon instead of integrating\n"
+                              "through dead pixels.");
+
+        // Keep fade < render so the smoothstep doesn't invert
+        if (c.fadeDistanceKm >= c.renderDistanceKm)
+            c.fadeDistanceKm = c.renderDistanceKm * 0.9f;
+
+        ImGui::SliderFloat("Haze Strength", &c.hazeStrength, 0.0f, 2.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Atmospheric aerial-perspective multiplier in\n"
+                              "front of clouds. 1.0 = physical, 0.0 = clouds\n"
+                              "pop without haze attenuation against the sky.");
     }
 
     if (ImGui::Button("Reset Cloud Defaults")) {

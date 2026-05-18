@@ -217,9 +217,6 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #endif
 
 // Integration
-#ifndef CLOUD_VIEW_STEPS
-#define CLOUD_VIEW_STEPS        32
-#endif
 #ifndef CLOUD_SHADOW_STEPS
 #define CLOUD_SHADOW_STEPS      4
 #endif
@@ -287,29 +284,10 @@ inline float CloudLodT(float distKm)
                   / max(1e-4f, CLOUD_LOD_FAR_KM - CLOUD_LOD_NEAR_KM));
 }
 
-inline uint CloudHash3D(int3 p)
-{
-    uint h = uint(p.x) * 73856093u
-           ^ uint(p.y) * 19349663u
-           ^ uint(p.z) * 83492791u;
-    h ^= h >> 16; h *= 0x7feb352du;
-    h ^= h >> 15; h *= 0x846ca68bu;
-    h ^= h >> 16;
-    return h;
-}
-
-inline float CloudHashFloat(int3 p)
-{
-    return float(CloudHash3D(p)) * (1.0f / 4294967296.0f);
-}
-
-inline float3 CloudHashVec3(int3 p)
-{
-    uint h = CloudHash3D(p);
-    return float3((h        & 1023u),
-                  ((h >> 10) & 1023u),
-                  ((h >> 20) & 1023u)) * (1.0f / 1023.0f);
-}
+// CloudHash3D / CloudHashFloat / CloudHashVec3 were used by the old analytical
+// CloudValueNoise / CloudWorley / CloudPerlin. Removed — the runtime path now
+// samples a baked 3D texture (g_cloudNoise) and the tileable hashes live in
+// Pass_cloudnoise_bake_v8.hlsl (BakeHash3D etc.) where they belong.
 
 inline float4 CloudRand4(uint2 px, uint frame, uint tap)
 {
@@ -329,115 +307,72 @@ inline float4 CloudRand4(uint2 px, uint frame, uint tap)
 #endif
 }
 
-float CloudValueNoise(float3 p)
+//------------------------------------------------------------------------------
+// NOISE — texture-baked lookups (drop-in replacements for the old analytical
+// CloudPerlinWorley / CloudWorleyFBM / CloudValueNoise / CloudWorley).
+//------------------------------------------------------------------------------
+// g_cloudNoise (Includes_v8.hlsli) is a 256³ RGBA8 3D texture filled once
+// at startup by Pass_cloudnoise_bake_v8.hlsl. Each channel was baked at a
+// specific period so the texture tiles seamlessly when sampled with WRAP
+// addressing; the wrappers below divide the caller's `p` by that period to
+// produce the correct UVW coordinate.
+//
+// Per-sample cost goes from ~80-200 ALU ops (analytical FBM with 27-neighbour
+// Worley + Perlin gradient FBM) to a single texture fetch + trilinear
+// interpolation. NSight identified the analytical path as the dominant cost
+// of the cloud march, so this is the single biggest perf lever in the
+// pipeline. Visuals are preserved because the bake evaluated the same
+// noise functions on a fine voxel grid.
+//
+// Bake-side periods (must match Pass_cloudnoise_bake_v8.hlsl):
+#define CLOUD_NOISE_R_PERIOD   32.0f   // Perlin-Worley FBM
+#define CLOUD_NOISE_G_PERIOD   16.0f   // Worley FBM (2 octaves)
+#define CLOUD_NOISE_B_PERIOD   48.0f   // value noise (high-freq erosion)
+#define CLOUD_NOISE_A_PERIOD   32.0f   // single-octave Worley (raw)
+
+inline float CloudValueNoise(float3 p)
 {
-    int3   i = int3(floor(p));
-    float3 f = frac(p);
-    float3 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
-
-    float c000 = CloudHashFloat(i + int3(0, 0, 0));
-    float c100 = CloudHashFloat(i + int3(1, 0, 0));
-    float c010 = CloudHashFloat(i + int3(0, 1, 0));
-    float c110 = CloudHashFloat(i + int3(1, 1, 0));
-    float c001 = CloudHashFloat(i + int3(0, 0, 1));
-    float c101 = CloudHashFloat(i + int3(1, 0, 1));
-    float c011 = CloudHashFloat(i + int3(0, 1, 1));
-    float c111 = CloudHashFloat(i + int3(1, 1, 1));
-
-    float x00 = lerp(c000, c100, u.x);
-    float x10 = lerp(c010, c110, u.x);
-    float x01 = lerp(c001, c101, u.x);
-    float x11 = lerp(c011, c111, u.x);
-    float y0  = lerp(x00,  x10,  u.y);
-    float y1  = lerp(x01,  x11,  u.y);
-    return lerp(y0, y1, u.z);
+    return g_cloudNoise.SampleLevel(g_sampler,
+        p * (1.0f / CLOUD_NOISE_B_PERIOD), 0).b;
 }
 
-float CloudWorley(float3 p)
+inline float CloudWorley(float3 p)
 {
-    int3   i = int3(floor(p));
-    float3 f = frac(p);
-    float  minD2 = 1.0e10f;
-
-    [unroll] for (int x = -1; x <= 1; ++x)
-    [unroll] for (int y = -1; y <= 1; ++y)
-    [unroll] for (int z = -1; z <= 1; ++z)
-    {
-        int3   cell    = i + int3(x, y, z);
-        float3 feature = float3(x, y, z) + CloudHashVec3(cell) - f;
-        float  d2      = dot(feature, feature);
-        minD2          = min(minD2, d2);
-    }
-    return saturate(sqrt(minD2) * 1.15f);
+    return g_cloudNoise.SampleLevel(g_sampler,
+        p * (1.0f / CLOUD_NOISE_A_PERIOD), 0).a;
 }
 
-float CloudWorleyFBM(float3 p, uint quality)
+// quality argument retained for call-site compatibility but ignored —
+// the bake stores the 2-octave FBM; per-call quality variation isn't
+// possible with a single texture, and the FBM is the only level that
+// matters for the cloud body anyway.
+inline float CloudWorleyFBM(float3 p, uint quality)
 {
-    float wInv0 = 1.0f - CloudWorley(p);
-    if (quality >= 2u) return wInv0;
-
-    float wInv1 = 1.0f - CloudWorley(p * 2.7f + float3(13.31f, -7.13f, 19.77f));
-    if (quality >= 1u) return wInv0 * 0.62f + wInv1 * 0.38f;
-
-    float wInv2 = 1.0f - CloudWorley(p * 7.0f + float3(-3.47f, 21.97f,  5.13f));
-    return wInv0 * 0.50f + wInv1 * 0.32f + wInv2 * 0.18f;
+    return g_cloudNoise.SampleLevel(g_sampler,
+        p * (1.0f / CLOUD_NOISE_G_PERIOD), 0).g;
 }
 
-inline float3 CloudPerlinGrad(int3 p)
+// CloudPerlinWorley drives the primary cloud body silhouette — it's the
+// noise that gives cumulus their characteristic clustered-billows shape.
+// Two-octave runtime FBM: combine a base tap with a 2× scaled & offset
+// tap of the same R channel. The combined result has the frequency
+// richness of a real FBM (which is what the analytical version produced)
+// while only paying for one extra Texture3D fetch per call — the second
+// tap reuses the same texture so there's no extra storage cost.
+//
+// Per-octave weights mirror the analytical CloudPerlinFBM's 0.5/0.25
+// after the +0.5 bias was removed and the weights renormalised so the
+// result stays in [0,1]: w0=0.65, w1=0.35. The 2× scale + non-axis-
+// aligned offset (11.7, 5.3, 23.9) breaks any visible alignment between
+// the two octaves so the combined noise doesn't read as a repeating
+// motif. The texture WRAPs so both taps tile cleanly.
+inline float CloudPerlinWorley(float3 p)
 {
-    uint h = CloudHash3D(p) & 15u;
-    float3 g;
-    g.x = (h <  8u) ? 1.0f : -1.0f;
-    g.y = (h <  4u || h == 12u || h == 14u) ? 1.0f : -1.0f;
-    g.z = (h <  2u || h == 12u || h == 13u) ?  0.0f : 1.0f;
-    return g;
-}
-
-float CloudPerlin(float3 p)
-{
-    int3   i = int3(floor(p));
-    float3 f = frac(p);
-    float3 u = f * f * f * (f * (f * 6.0f - 15.0f) + 10.0f);
-
-    float3 g000 = CloudPerlinGrad(i + int3(0, 0, 0));
-    float3 g100 = CloudPerlinGrad(i + int3(1, 0, 0));
-    float3 g010 = CloudPerlinGrad(i + int3(0, 1, 0));
-    float3 g110 = CloudPerlinGrad(i + int3(1, 1, 0));
-    float3 g001 = CloudPerlinGrad(i + int3(0, 0, 1));
-    float3 g101 = CloudPerlinGrad(i + int3(1, 0, 1));
-    float3 g011 = CloudPerlinGrad(i + int3(0, 1, 1));
-    float3 g111 = CloudPerlinGrad(i + int3(1, 1, 1));
-
-    float c000 = dot(g000, f - float3(0, 0, 0));
-    float c100 = dot(g100, f - float3(1, 0, 0));
-    float c010 = dot(g010, f - float3(0, 1, 0));
-    float c110 = dot(g110, f - float3(1, 1, 0));
-    float c001 = dot(g001, f - float3(0, 0, 1));
-    float c101 = dot(g101, f - float3(1, 0, 1));
-    float c011 = dot(g011, f - float3(0, 1, 1));
-    float c111 = dot(g111, f - float3(1, 1, 1));
-
-    float x00 = lerp(c000, c100, u.x);
-    float x10 = lerp(c010, c110, u.x);
-    float x01 = lerp(c001, c101, u.x);
-    float x11 = lerp(c011, c111, u.x);
-    float y0  = lerp(x00,  x10,  u.y);
-    float y1  = lerp(x01,  x11,  u.y);
-    return lerp(y0, y1, u.z);
-}
-
-float CloudPerlinFBM(float3 p)
-{
-    float v = CloudPerlin(p) * 0.5f
-            + CloudPerlin(p * 2.13f + float3(5.7f, -2.3f, 9.1f)) * 0.25f;
-    return saturate(v * (1.0f / 1.5f) + 0.5f);
-}
-
-float CloudPerlinWorley(float3 p)
-{
-    float perlin = CloudPerlinFBM(p);
-    float worleyInv = CloudWorleyFBM(p, 0u);
-    return saturate((perlin - (1.0f - worleyInv)) / max(worleyInv, 1e-3f));
+    float3 uvw0 = p * (1.0f / CLOUD_NOISE_R_PERIOD);
+    float3 uvw1 = uvw0 * 2.0f + float3(0.117f, 0.053f, 0.239f);
+    float  n0   = g_cloudNoise.SampleLevel(g_sampler, uvw0, 0).r;
+    float  n1   = g_cloudNoise.SampleLevel(g_sampler, uvw1, 0).r;
+    return saturate(n0 * 0.65f + n1 * 0.35f);
 }
 
 //------------------------------------------------------------------------------
@@ -464,6 +399,92 @@ inline float coverageModulation(float coverage, float detail, float filterWidth)
     return saturate((modDetail - f) / max(filterWidth, 1e-3f));
 }
 
+//------------------------------------------------------------------------------
+// PLANET-SCALE COVERAGE MAP — NASA Blue Marble climatology
+//------------------------------------------------------------------------------
+// Samples g_cloudCoverage (8192×4096 R8 equirectangular luminance map) via the
+// planet-radial direction of the sample position. Hardware bilinear filtering
+// produces smooth gradients between source texels — no blocky coverage edges.
+//
+// Combination with the editor's CLOUD_COVERAGE_BASE: the map value (0..1) is
+// rescaled around 0.5 so a "typical cloudy" map texel reproduces the user's
+// base coverage exactly, and very cloudy texels (storm regions, mapValue→1)
+// can double up to fully overcast. Formula:
+//     coverage = saturate(base * map * 2.0)
+// This keeps the editor slider behaving as "global average target", while the
+// map adds per-location continental-scale variation. When the map texture is
+// missing the loader binds a 1×1 grey fallback (mapValue = 0.5) so the
+// product collapses to `base` and pre-map behaviour is preserved.
+
+// World is the observer's local ENU frame (X=east, Y=up, Z=north at the
+// observer's lat/lon on the planet — see ENU_ToWorld in SunSampler_v8.hlsli).
+// The equirectangular cloud coverage map is keyed by absolute planet lat/lon,
+// not by world-frame direction, so we have to rotate world directions into
+// planet-absolute coordinates before doing the equirect math.
+//
+// Why this matters: without the rotation, the equirect's polar axis IS
+// world +Y, and world +Y IS the observer's overhead direction (local up
+// at the observer's lat/lon). Looking up therefore hits the equirect
+// singularity at every render — manifests as a vertical "ice cream cone"
+// pinch at the zenith, visible in the cloud body wherever rays cluster
+// near world +Y. With the rotation applied, looking up samples the map
+// at the observer's actual lat/lon (a normal map region) and the
+// singularity moves to the planet's true geographic poles, which sit
+// sideways/below for any non-pole observer.
+//
+// The ENU→planet rotation uses the observer's lat/lon from the SUN_*
+// cbuffer fields. Those values are semantically OBSERVER lat/lon (the
+// "Sun" in their name is legacy — the sun direction is *derived* from
+// them via standard astronomical formulas), so reusing them here is
+// consistent with the rest of the atmosphere pipeline.
+inline float3 EnuToPlanetDir(float3 dirEnu)
+{
+    float L   = SUN_LATITUDE_DEG  * DEG2RAD;
+    float lon = SUN_LONGITUDE_DEG * DEG2RAD;
+    float sL = sin(L), cL = cos(L);
+    float sLon = sin(lon), cLon = cos(lon);
+
+    // ENU basis expressed in planet frame:
+    //   up    = radial direction at (lat, lon)
+    //   east  = orthogonal to up, in the planet equatorial plane
+    //   north = cross(up, east)
+    float3 east  = float3(-sLon,       0.0f, cLon);
+    float3 up    = float3( cL * cLon,  sL,   cL * sLon);
+    float3 north = float3(-sL * cLon,  cL,  -sL * sLon);
+
+    return dirEnu.x * east + dirEnu.y * up + dirEnu.z * north;
+}
+
+inline float CloudSampleCoverageMap(float3 P)
+{
+    // Rotate the cloud sample's world-frame direction into planet-absolute
+    // coords, then take the equirectangular UV.
+    //   u = longitude wrap: atan2 ∈ [-π, π] → [0, 1]
+    //   v = colatitude:     acos(y)/π,  0 at planet north pole, 1 at south
+    //
+    // Sampler is g_samplerLinearWrap (plain bilinear + wrap, no aniso).
+    // The default g_sampler is anisotropic and uses screen-space UV
+    // derivatives to size its filter footprint; at the longitude=±180°
+    // meridian atan2 makes u jump by ~1.0 between adjacent pixels, which
+    // the aniso filter mistakes for an enormous magnification → coarse
+    // mip / mis-oriented kernel → visible streak across the seam.
+    // Bilinear sidesteps the problem entirely because it ignores
+    // derivatives.
+    float3 dirEnu    = SafeNormalize(P);
+    float3 dirPlanet = EnuToPlanetDir(dirEnu);
+
+    float u = atan2(dirPlanet.z, dirPlanet.x) * (0.5f / PI) + 0.5f;
+    float v = acos(clamp(dirPlanet.y, -1.0f, 1.0f)) * (1.0f / PI);
+    return g_cloudCoverage.SampleLevel(g_samplerLinearWrap, float2(u, v), 0);
+}
+
+inline float CloudGlobalCoverage(float3 P)
+{
+    float base = saturate(CLOUD_COVERAGE_BASE);
+    float map  = CloudSampleCoverageMap(P);
+    return saturate(base * map * 2.0f);
+}
+
 // Cheap upper-bound estimator. Used by empty-space skipping and by the
 // ambient column probe — both want a fast "is there cloud here?" check
 // without paying for the full noise pyramid.
@@ -474,12 +495,11 @@ float CloudProbeHull(float3 P, float timeSec)
     float profile = CloudAltitudeProfile(alt);
     if (profile <= 0.0f) return 0.0f;
 
-    //Coverage is a single global value. The previous per-location
-    //weathermap variation used a low-frequency value noise sampled in
-    //xz which produced visible axis-aligned grid-cell boundaries
-    //(value-noise cell artifacts at ~40 km wavelength), reading as
-    //large rectangular patches in the sky.
-    float coverage = saturate(CLOUD_COVERAGE_BASE);
+    //Coverage = editor base × NASA Blue Marble map at this lon/lat,
+    //scaled so map=0.5 reproduces the base (see CloudGlobalCoverage).
+    //Gives continental-scale weather variation without the rectangular-
+    //grid artefacts of the old procedural weathermap.
+    float coverage = CloudGlobalCoverage(P);
     return coverage * profile;
 }
 
@@ -511,10 +531,11 @@ CloudMaterial CloudSampleMaterial(float3 P, float timeSec, float lodT, uint qual
     float3 wind = float3(CLOUD_WIND_X, 0.0f, CLOUD_WIND_Z) * timeSec;
     float3 q    = P + wind;
 
-    //Coverage is a single global value — the per-location weathermap
-    //value-noise variation was removed because its low-frequency grid
-    //(~40 km cells) produced visible axis-aligned rectangular patches.
-    float coverage = saturate(CLOUD_COVERAGE_BASE);
+    //Coverage = editor base × NASA Blue Marble map at this lon/lat,
+    //scaled so map=0.5 reproduces base. Gives continental-scale weather
+    //variation without the rectangular-grid artefacts of the old
+    //procedural weathermap. See CloudGlobalCoverage for the formula.
+    float coverage = CloudGlobalCoverage(P);
     if (coverage <= 0.0f) return m;
 
     // Low-frequency domain warp pushes the base shape around so cumulus
@@ -770,7 +791,12 @@ inline float CloudDensityForShadow(float3 P, float timeSec)
     float profile = CloudAltitudeProfile(alt);
     if (profile <= 0.0f) return 0.0f;
 
-    float coverage = saturate(CLOUD_COVERAGE_BASE);
+    // MUST sample the same coverage source as the view march (see
+    // CloudGlobalCoverage) so the surface shadow matches the visible
+    // cloud silhouette. Using a different coverage source here would
+    // make shadows appear in places with no overhead clouds and vice
+    // versa.
+    float coverage = CloudGlobalCoverage(P);
     if (coverage <= 0.0f) return 0.0f;
 
     float3 wind = float3(CLOUD_WIND_X, 0.0f, CLOUD_WIND_Z) * timeSec;
@@ -833,18 +859,63 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 // the shell, even where actual cloud cells don't exist. Integrated
 // over a long sun-direction path that's `tau = 0.15 * 9 * shell` ≈
 // many units, so exp(-tau) collapses to zero and surfaces register
-// "fully shadowed" with no actual clouds nearby. Switching to
-// CloudDensityForShadow uses the same Perlin-Worley noise the cloud
-// body uses, so the surface shadow matches the visible cloud
-// silhouette exactly. Same per-tap cost as the cloud-body sun shadow.
+// "fully shadowed" with no actual clouds nearby. CloudDensityForShadow
+// uses the same Perlin-Worley noise the cloud body uses, so the
+// surface shadow matches the visible cloud silhouette exactly.
+//
+// Two paths gated by CLOUD_SHADOW_STEPS (editor knob):
+//   N == 1: fast path. One sphere intersect at the cloud-layer
+//           midpoint + one noise tap, multiplied by an oblique-
+//           corrected shell thickness. Skips RayCloudShell and the
+//           loop entirely — ~4-5x cheaper than the multi-tap march
+//           and visually indistinguishable for the dominant overhead-
+//           cumulus shadow case (the integration along the sun ray
+//           is dominated by the density at the cloud center; the
+//           shell-thickness multiplier captures the rest).
+//   N >= 2: multi-tap shell march. Better fidelity at cloud edges
+//           and for low sun angles where the noise varies along the
+//           path. Used when the user wants softer / more accurate
+//           shadows at proportional cost.
 float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSec)
 {
+    int N = max(CLOUD_SHADOW_STEPS, 1);
+
+    if (N == 1)
+    {
+        // Fast path: single midpoint sample at the cloud-layer
+        // mid-altitude along the sun ray. Sphere intersect picks
+        // the outward hit of the mid-shell sphere; one noise tap
+        // gates the shadow; oblique-path correction (1/cos(sun
+        // zenith at Q)) scales the constant shell thickness so
+        // low sun = longer (darker) shadow path.
+        float midAlt = 0.5f * (CLOUD_LAYER_BOT_KM + CLOUD_LAYER_TOP_KM);
+        float Rmid   = ATMOS_BOTTOM_RADIUS + midAlt;
+        float r      = length(P);
+        float dotPD  = dot(P, D);
+        float disc   = dotPD * dotPD - (r * r - Rmid * Rmid);
+        if (disc < 0.0f) return 0.0f;
+        float tMid   = -dotPD + sqrt(disc);
+        if (tMid <= 0.0f || tMid > maxLenKm) return 0.0f;
+
+        float3 Q = P + D * tMid;
+        float  d = CloudDensityForShadow(Q, timeSec);
+
+        // Constant shell thickness scaled by 1/cos(sun zenith at
+        // Q). Floor at 0.15 keeps grazing rays from blowing up.
+        float shellTh = CLOUD_LAYER_TOP_KM - CLOUD_LAYER_BOT_KM;
+        float cosZ    = saturate(dot(D, SafeNormalize(Q)));
+        float pathLen = shellTh / max(cosZ, 0.15f);
+
+        return d * CLOUD_EXTINCTION * pathLen;
+    }
+
+    // Multi-sample shell march (N >= 2). Same per-tap cost as
+    // the cloud-body sun shadow.
     float tNear, tFar;
     if (!RayCloudShell(P, D, tNear, tFar)) return 0.0f;
     tFar = min(tFar, tNear + maxLenKm);
     if (tFar <= tNear) return 0.0f;
 
-    const int   N  = CLOUD_SHADOW_STEPS;
     const float ds = (tFar - tNear) / (float)N;
     float tau = 0.0f;
     [loop]

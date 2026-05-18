@@ -230,6 +230,13 @@ void Renderer::InitDevice() {
         GenerateLutTextures();
         InitReuseTextures();
         InitSkyStarsTexture();
+        //Bake the 256³ cloud noise texture before CreateShaderResourceHeap
+        //runs, so the heap can pick up the resulting SRV at heap slot
+        //CLOUD_NOISE_HEAP_SLOT. One-time GPU work on the init cmd list.
+        BakeCloudNoiseTexture();
+        //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
+        //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
+        InitCloudCoverageTexture();
 
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(

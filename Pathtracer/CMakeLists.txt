@@ -124,6 +124,48 @@ if(NOT EXISTS "${SKY_STARS_FILE}" AND SKY_STARS_URL)
 endif()
 
 
+# ──────────────── Planet-scale cloud coverage (NASA BMNG) ──────────────────
+# Equirectangular 8192×4096 TIFF from NASA's "Blue Marble: Clouds" composite
+# (Visible Earth ID 57747). Sampled by the cloud integrator (Clouds_v8.hlsli
+# → g_cloudCoverage at register t43) to gate the procedural noise body with
+# real-world cloud climatology — gives proper continental-scale weather
+# patterns instead of uniform global coverage. ~34 MB, one-time download.
+#
+# Override at configure time if NASA reorganises or a mirror is preferred:
+#   cmake -DCLOUD_COVERAGE_URL=https://my.mirror/cloud_combined_8192.tif ...
+# Setting URL to empty disables the download entirely and the runtime
+# falls back to procedural-only coverage.
+set(CLOUD_COVERAGE_URL
+    "https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_8192.tif"
+    CACHE STRING "URL to fetch Pathtracer/include/cloud_coverage.tif from if missing")
+set(CLOUD_COVERAGE_FILE "${INCLUDES_DIR}/cloud_coverage.tif")
+
+if(NOT EXISTS "${CLOUD_COVERAGE_FILE}" AND CLOUD_COVERAGE_URL)
+    message(STATUS "[CloudCoverage] ${CLOUD_COVERAGE_FILE} not found")
+    message(STATUS "[CloudCoverage] Downloading from ${CLOUD_COVERAGE_URL} (~34 MB, one time)")
+    file(DOWNLOAD
+        "${CLOUD_COVERAGE_URL}"
+        "${CLOUD_COVERAGE_FILE}"
+        SHOW_PROGRESS
+        TIMEOUT 600
+        TLS_VERIFY ON
+        STATUS _cloudcov_status)
+    list(GET _cloudcov_status 0 _cloudcov_code)
+    if(NOT _cloudcov_code EQUAL 0)
+        list(GET _cloudcov_status 1 _cloudcov_msg)
+        message(WARNING
+            "[CloudCoverage] Download failed (code ${_cloudcov_code}): ${_cloudcov_msg}\n"
+            "  Build will continue; clouds will use procedural-only coverage at runtime.\n"
+            "  Set -DCLOUD_COVERAGE_URL=<url> at configure if the default is broken,\n"
+            "  or drop the file into Pathtracer/include/cloud_coverage.tif manually.")
+        file(REMOVE "${CLOUD_COVERAGE_FILE}")
+    else()
+        file(SIZE "${CLOUD_COVERAGE_FILE}" _cloudcov_size)
+        message(STATUS "[CloudCoverage] Downloaded ${_cloudcov_size} bytes (8192×4096 TIFF)")
+    endif()
+endif()
+
+
 # ────────────────────────── DirectXTex ─────────────────────────────
 file(GLOB DIRECTXTEX_SOURCES "DirectXTex/*.cpp")
 add_library(DirectXTex STATIC ${DIRECTXTEX_SOURCES})
