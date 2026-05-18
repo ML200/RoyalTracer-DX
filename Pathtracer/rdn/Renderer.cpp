@@ -23,13 +23,6 @@ Renderer::Renderer(UINT width, UINT height)
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
-        //Primary cloud march. Runs once raygen has set the sky sentinel
-        //and the un-cloud-composited sky+sun in slots 1/2. Writes cloudL
-        //to slot 10 and cloudTr to slot 11; Pass_shading_v8 composites
-        //these onto sky pixels via background * cloudTr + cloudL. The
-        //barrier after raygen above already orders this against the
-        //raygen UAV writes; the next barrier orders this against the
-        //downstream consumers in shading.
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         L"cuda:nrc_inference",                          L"barrier",
         L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
@@ -37,7 +30,6 @@ Renderer::Renderer(UINT width, UINT height)
         L"cuda:nrc_debug_inference",                    L"barrier",
         L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
-        //L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",

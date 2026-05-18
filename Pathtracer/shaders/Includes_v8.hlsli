@@ -215,8 +215,9 @@ cbuffer CameraParams : register(b0)
 //cast to int at the use site because the CB exposes them as float for
 //uniform packing.
 #define CLOUD_COVERAGE_BASE     cloud_coverage
-#define CLOUD_COVERAGE_VAR      cloud_coverageVariation
-#define CLOUD_COVERAGE_FREQ     cloud_coverageFrequency
+//cloud_coverageVariation / cloud_coverageFrequency are unused — the
+//per-location weather-front noise was removed. The cbuffer fields are
+//left in place so the host upload layout doesn't change.
 #define CLOUD_LAYER_BOT_KM      cloud_layerBotKm
 #define CLOUD_LAYER_TOP_KM      cloud_layerTopKm
 #define CLOUD_HORIZON_FADE_KM   cloud_horizonFadeKm
@@ -243,8 +244,10 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_RR_THRESHOLD           cloud_rrThreshold
 #define CLOUD_SHADOW_CONE_SAMPLES    cloud_shadowConeSamples
 #define CLOUD_AMBIENT_STEPS          ((int)cloud_ambientSteps)
-#define CLOUD_WEATHER_OFFSET_X       cloud_weatherOffsetX
-#define CLOUD_WEATHER_OFFSET_Z       cloud_weatherOffsetZ
+//cloud_weatherOffsetX / cloud_weatherOffsetZ are unused — the
+//per-location weather-front noise that consumed them was removed.
+//The cbuffer fields are left in place so the host upload layout
+//doesn't change.
 
 //====================================
 //CORE UTILITY HEADERS

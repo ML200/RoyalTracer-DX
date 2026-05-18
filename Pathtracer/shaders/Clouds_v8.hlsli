@@ -11,23 +11,26 @@
      Worley FBM erosion at edges + mid-frequency body detail
      Heart-shaped altitude profile within the cloud layer
 
-   LIGHTING (Nubis Evolved 2022 — Schneider)
+   LIGHTING (Wrenninge octaves, Frostbite-style)
      Sun ray Beer-Lambert transmittance (no fake multipliers)
-     Direct: dual-lobe Henyey-Greenstein matching Mie shape
-     Multi-scatter: single Nubis-style term
-         MS = K * sqrt(Tdir) * heightBias * SECONDARY_STRENGTH * STRENGTH * phaseMS
-       MS amplitude FOLLOWS direct illumination via sqrt(Tdir), so cloud
-       tops (high Tdir) glow white even when the direct back lobe is
-       small (e.g., overhead-sun + downward view). This is critical for
-       orbital views — without it, cloud tops end up darker than bases
-       because the only thing they have is sky ambient. The earlier
-       Bouthors envelope (MS growing with sunOD) inverted this and gave
-       a "sun-from-below" appearance.
+     Direct: dual-lobe Henyey-Greenstein matching Mie shape (octave 0)
+     Multi-scatter: Wrenninge octave sum (Hillaire 2016 §5.8). Each
+       octave n in [1..N-1] is an additional single-scatter term with
+       sun-ray extinction raised to b^n, contribution scaled by a^n,
+       and phase eccentricity scaled by c^n. With N=3, a=b=c=0.5 the
+       cloud cores receive light from the n=2 octave (Tdir^0.25, 0.25x
+       amplitude) which the old single-term approximation couldn't
+       reach. heightBias floor + STRENGTH artist amp still modulate
+       octaves >=1 so cumulus bases retain their lit floor.
      Sky ambient: occluded by column-density above sample
        Probe origin relocated to cloud altitude — orbital cameras would
        otherwise integrate through near-zero atmosphere upward, producing
        skyAmbientTop ≈ 0 and the same inversion.
      Ground bounce: attenuated by sample height in layer
+     Integration: energy-conserving analytical (Hillaire 2016 §5.6.3):
+       L_acc += T * inscatter * (1 - segTr); transmittance-weighted mean
+       depth fed back to caller for DLSS motion-vector reprojection
+       (§5.9.1 Eq. 21).
 
    PIPELINE
      EvaluateClouds:       full quality adaptive march, primary rays
@@ -62,15 +65,12 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_HORIZON_FADE_KM   2.0f
 #endif
 
-// Shape / coverage
+// Shape / coverage. CLOUD_COVERAGE_BASE is the single global coverage
+// value. The per-location weathermap variation (low-freq value noise in
+// xz) was removed because its grid-cell boundaries produced visible
+// rectangular patches in the sky.
 #ifndef CLOUD_COVERAGE_BASE
 #define CLOUD_COVERAGE_BASE     0.45f
-#endif
-#ifndef CLOUD_COVERAGE_VAR
-#define CLOUD_COVERAGE_VAR      0.30f
-#endif
-#ifndef CLOUD_COVERAGE_FREQ
-#define CLOUD_COVERAGE_FREQ     0.025f
 #endif
 #ifndef CLOUD_BASE_FREQ
 #define CLOUD_BASE_FREQ         0.45f
@@ -88,18 +88,13 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_WARP_AMP_KM       0.4f
 #endif
 
-// Wind / weather offset
+// Wind animation — translates the noise sample space so clouds drift.
+// Unrelated to the removed weathermap variation.
 #ifndef CLOUD_WIND_X
 #define CLOUD_WIND_X            0.04f
 #endif
 #ifndef CLOUD_WIND_Z
 #define CLOUD_WIND_Z            0.015f
-#endif
-#ifndef CLOUD_WEATHER_OFFSET_X
-#define CLOUD_WEATHER_OFFSET_X  0.0f
-#endif
-#ifndef CLOUD_WEATHER_OFFSET_Z
-#define CLOUD_WEATHER_OFFSET_Z  0.0f
 #endif
 
 // Extinction / albedo
@@ -126,18 +121,49 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_SECONDARY_G       0.20f
 #endif
 
-// MS strength — global multiplier on the Nubis-style MS term. 1.5 gives
-// the soft fluffy cumulus look. Lower for thin/wispy clouds, higher for
-// hyper-stylized marshmallow puffs.
+// MS strength — global multiplier on the Wrenninge MS octaves (1.5
+// matches the previous Nubis-style single-term feel). Lower for thin/
+// wispy clouds, higher for marshmallow puffs.
 #ifndef CLOUD_MS_STRENGTH
 #define CLOUD_MS_STRENGTH       1.5f
 #endif
 
-// MS height floor — minimum MS contribution at cloud base (h=0). Without
-// a floor bases turn black; 0.40 maps to "shaded white" which is what
-// real cumulus bottoms look like.
+// MS height floor — minimum MS contribution at cloud base (h=0).
+// Without a floor bases turn black; 0.40 maps to "shaded white" which
+// matches real cumulus bottoms.
 #ifndef CLOUD_MS_HEIGHT_FLOOR
 #define CLOUD_MS_HEIGHT_FLOOR   0.40f
+#endif
+
+// Wrenninge multi-scatter octaves (Hillaire 2016 §5.8, after Wrenninge
+// "Oz: The Great and Volumetric" 2013). Approximates higher orders of
+// scattering as a sum of single-scatter terms, each with reduced
+// scattering amplitude (a^n), reduced extinction (b^n), and reduced
+// phase eccentricity (c^n). Octave 0 is the un-modified direct term;
+// octaves 1..N-1 stand in for the multi-scatter contribution.
+//
+// Constraint for energy conservation: a <= b. With a=b=0.5 (the
+// Frostbite-default values), each octave halves its amplitude AND
+// halves its effective extinction — so the sun ray reaches deeper into
+// the cloud at each successive octave, brightening the core. c=0.5
+// broadens the phase function per octave so later octaves contribute
+// near-isotropic fill rather than a directional halo.
+//
+// N=3 is the sweet spot: octave 0 = direct, octave 1 = "first bounce"
+// (matches the old sqrt(Tdir) approximation), octave 2 = "deep core
+// fill" (brightens the back of thick cumulus that single-term MS
+// leaves dark). N=2 falls back to the previous behaviour roughly.
+#ifndef CLOUD_MS_OCTAVES_N
+#define CLOUD_MS_OCTAVES_N      3
+#endif
+#ifndef CLOUD_MS_A
+#define CLOUD_MS_A              0.50f
+#endif
+#ifndef CLOUD_MS_B
+#define CLOUD_MS_B              0.50f
+#endif
+#ifndef CLOUD_MS_C
+#define CLOUD_MS_C              0.50f
 #endif
 
 // Sky ambient
@@ -224,7 +250,7 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_TARGET_STEP_KM     0.6f
 #endif
 #ifndef CLOUD_VIEW_STEPS_MAX
-#define CLOUD_VIEW_STEPS_MAX     256
+#define CLOUD_VIEW_STEPS_MAX     128
 #endif
 #ifndef CLOUD_MAX_EMPTY_STEP_KM
 #define CLOUD_MAX_EMPTY_STEP_KM  50.0f
@@ -444,14 +470,12 @@ float CloudProbeHull(float3 P, float timeSec)
     float profile = CloudAltitudeProfile(alt);
     if (profile <= 0.0f) return 0.0f;
 
-    float3 wind = float3(CLOUD_WIND_X, 0.0f, CLOUD_WIND_Z) * timeSec;
-    float3 q    = P + wind;
-    float3 covQ = float3(q.x + CLOUD_WEATHER_OFFSET_X,
-                         0.0f,
-                         q.z + CLOUD_WEATHER_OFFSET_Z) * CLOUD_COVERAGE_FREQ;
-    float  covNoise = CloudValueNoise(covQ);
-    float  coverage = saturate(CLOUD_COVERAGE_BASE
-                              + (covNoise - 0.5f) * CLOUD_COVERAGE_VAR);
+    //Coverage is a single global value. The previous per-location
+    //weathermap variation used a low-frequency value noise sampled in
+    //xz which produced visible axis-aligned grid-cell boundaries
+    //(value-noise cell artifacts at ~40 km wavelength), reading as
+    //large rectangular patches in the sky.
+    float coverage = saturate(CLOUD_COVERAGE_BASE);
     return coverage * profile;
 }
 
@@ -483,12 +507,10 @@ CloudMaterial CloudSampleMaterial(float3 P, float timeSec, float lodT, uint qual
     float3 wind = float3(CLOUD_WIND_X, 0.0f, CLOUD_WIND_Z) * timeSec;
     float3 q    = P + wind;
 
-    float3 covQ      = float3(q.x + CLOUD_WEATHER_OFFSET_X,
-                              0.0f,
-                              q.z + CLOUD_WEATHER_OFFSET_Z) * CLOUD_COVERAGE_FREQ;
-    float  covNoise  = CloudValueNoise(covQ);
-    float  coverage  = saturate(CLOUD_COVERAGE_BASE
-                               + (covNoise - 0.5f) * CLOUD_COVERAGE_VAR);
+    //Coverage is a single global value — the per-location weathermap
+    //value-noise variation was removed because its low-frequency grid
+    //(~40 km cells) produced visible axis-aligned rectangular patches.
+    float coverage = saturate(CLOUD_COVERAGE_BASE);
     if (coverage <= 0.0f) return m;
 
     // Low-frequency domain warp pushes the base shape around so cumulus
@@ -682,6 +704,23 @@ inline float CloudPhaseDirect(float cosT)
     return wFwd * fwd + (1.0f - wFwd) * bwd;
 }
 
+// Eccentricity-scaled variant for the Wrenninge multi-scatter octaves
+// (Hillaire 2016 §5.8, the c^n term). Each octave broadens the phase
+// function — scale=1 returns the un-modified dual lobe (octave 0),
+// scale=0.5 halves both lobe g's (octave 1), scale=0 collapses to
+// isotropic. Same weight blend so the back/forward energy ratio stays
+// consistent across octaves.
+inline float CloudPhaseDirectScaled(float cosT, float eccentricity)
+{
+    float sIntens = saturate(CLOUD_SILVER_INTENSITY);
+    float gFwd = lerp(0.85f, 0.99f - CLOUD_SILVER_SPREAD, sIntens) * eccentricity;
+    float wFwd = lerp(0.85f, 0.95f, sIntens);
+
+    float fwd = CloudHG(cosT, gFwd);
+    float bwd = CloudHG(cosT, -0.50f * eccentricity);
+    return wFwd * fwd + (1.0f - wFwd) * bwd;
+}
+
 // Multi-scatter phase: nearly isotropic with a slight forward bias.
 // After many bounces the light has effectively lost its initial direction
 // so the phase tends toward isotropic. The slight forward bias keeps the
@@ -704,6 +743,13 @@ inline float CloudPhaseMS(float cosT)
 // dark patches that don't correspond to anything visible. lodT=1 keeps
 // the shadow detail simplified — same macro shape, no high-frequency
 // near-field modulation, fast.
+// Sun shadow march sampled by every cloud-body sample — dominant cost
+// of the whole cloud system, so the density evaluation here is the
+// cheap path: quality=2 inside CloudSampleMaterial uses a single Worley
+// octave (~27 cell scans) instead of the full Perlin-Worley pyramid
+// (~100 cell scans), and lodT=1 skips the warp / cauliflower / HF
+// detail entirely. Macro shadow shape still tracks the cloud body —
+// the cloud's self-shadow stays consistent with the visible silhouette.
 float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 {
     const float SAMPLE_DIST_KM[6] = { 0.2f, 0.6f, 1.5f, 3.5f, 7.0f, 12.0f };
@@ -715,13 +761,19 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
     for (int i = 0; i < 6; ++i)
     {
         float3 Q = P + L * SAMPLE_DIST_KM[i];
-        float  d = CloudDensity(Q, timeSec, 1.0f, 0u);
+        float  d = CloudDensity(Q, timeSec, 1.0f, 2u);
         tau += d * CLOUD_EXTINCTION * SAMPLE_SEG_KM[i];
         if (tau >= TAU_EARLYOUT) break;
     }
     return tau * CLOUD_SUN_TAU_MULT;
 }
 
+// Surface shadow march (called from CloudSunVisibility for ground NEE
+// and aerial-perspective per-pixel attenuation). Visible only as a
+// soft shadow on opaque surfaces — viewers don't directly compare it
+// against the cloud body's silhouette, so we can use the cheapest
+// possible density (the 2D hull: coverage * altitude profile, no 3D
+// noise at all). Skips ~100x the per-sample work of the full density.
 float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSec)
 {
     float tNear, tFar;
@@ -737,7 +789,7 @@ float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSe
     {
         float  ti = tNear + ((float)i + 0.5f) * ds;
         float3 Q  = P + D * ti;
-        tau += CloudDensity(Q, timeSec, 1.0f, 0u) * CLOUD_EXTINCTION * ds;
+        tau += CloudProbeHull(Q, timeSec) * CLOUD_EXTINCTION * ds;
     }
     return tau;
 }
@@ -828,34 +880,48 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
     float h = m.heightFrac;
     float3 K = sunRad * sunAtmos * earthShadow * CLOUD_ALBEDO;
 
-    //-- Direct scattering --
-    // Beer-Lambert sun transmittance times dual-lobe HG phase. Dominates
-    // at cloud surfaces and on the sun-side rim; dies off in cloud cores
-    // where multi-scatter takes over.
-    float Tdir   = exp(-sunOD);
-    float3 direct = K * Tdir * CloudPhaseDirect(cosTheta);
+    //-- Direct + multi-scatter via Wrenninge octaves --
+    // Sum N successive single-scatter terms, each with its sun-ray
+    // extinction raised to b^n, contribution scaled by a^n, and phase
+    // function eccentricity multiplied by c^n. The n=0 term IS the
+    // direct contribution (b^0=1, a^0=1, c^0=1 → unmodified). For n>=1
+    // the reduced extinction makes the sun ray reach deeper into the
+    // cloud and the reduced eccentricity broadens the contribution
+    // toward isotropic — together they approximate the energy of higher
+    // scattering orders without recursing.
+    //
+    // The single-term "Nubis Evolved" MS approximation we used before
+    // corresponds roughly to N=2 with a=b=0.5 (the n=1 term has
+    // sqrt(Tdir) attenuation, half amplitude). N=3 adds a third term
+    // with Tdir^0.25 and 0.25 amplitude — that's the one that fills in
+    // the dim cores of thick cumulus, which the old single-term model
+    // couldn't reach.
+    //
+    // heightBias and CLOUD_MS_STRENGTH only modulate octaves n>=1 — the
+    // direct term (n=0) is left at its physical value. SECONDARY_STRENGTH
+    // is folded into the artist amplitude as before.
+    float Tdir       = exp(-sunOD);
+    float heightBias = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
+                            pow(saturate(h), 0.5f));
+    float msArtistAmp = (0.5f + CLOUD_SECONDARY_STRENGTH)
+                      * CLOUD_MS_STRENGTH * heightBias;
 
-    //-- Multi-scatter (Nubis Evolved formulation) --
-    // MS amplitude follows the DIRECT illumination, not opposes it.
-    // sqrt(Tdir) is a softer-than-Beer attenuation: MS reaches further
-    // into the cloud than direct (its effective extinction is halved),
-    // but still dies off in the deep core where no light reaches at all.
-    //
-    // For our orbital view (looking down at cloud tops with sun above)
-    // this is what produces the bright white cumulus caps: the back lobe
-    // of the phase function gives weak direct, but MS — proportional to
-    // sqrt(Tdir) which is near 1 at the top — fills in dramatically.
-    //
-    // heightBias floors at FLOOR so bases retain some MS even at h=0.
-    // SECONDARY_STRENGTH is the artist amplitude (0..1 maps to 0.5..1.5x).
-    // CLOUD_MS_STRENGTH is the per-scene tuning constant.
-    float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
-    float heightBias  = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
-                             pow(saturate(h), 0.5f));
-    float msAmount    = depthFactor * heightBias
-                      * (0.5f + CLOUD_SECONDARY_STRENGTH)
-                      * CLOUD_MS_STRENGTH;
-    float3 ms = K * msAmount * CloudPhaseMS(cosTheta);
+    float3 inscatter = K * Tdir * CloudPhaseDirect(cosTheta);
+
+    float aPow = CLOUD_MS_A;
+    float bPow = CLOUD_MS_B;
+    float cPow = CLOUD_MS_C;
+    [unroll]
+    for (int n = 1; n < CLOUD_MS_OCTAVES_N; ++n)
+    {
+        float TdirN  = pow(max(Tdir, 1e-6f), bPow);
+        float phaseN = CloudPhaseDirectScaled(cosTheta, cPow);
+        inscatter   += K * TdirN * phaseN * aPow * msArtistAmp;
+
+        aPow *= CLOUD_MS_A;
+        bPow *= CLOUD_MS_B;
+        cPow *= CLOUD_MS_C;
+    }
 
     //-- Sky ambient --
     // Column density above the sample, attenuated through the cloud
@@ -881,7 +947,7 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
         }
     }
 
-    return direct + ms + ambient;
+    return inscatter + ambient;
 }
 
 //------------------------------------------------------------------------------
@@ -917,7 +983,6 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     const float ds       = (tFar - tNear) / (float)N;
     const float cosTheta = dot(V, L);
     const float phaseDir = CloudPhaseDirect(cosTheta);
-    const float phaseMS  = CloudPhaseMS   (cosTheta);
 
     float3 PMid = O + V * (0.5f * (tNear + tFar));
     float3 sunAtmos = TransmittanceToSun(PMid, L,
@@ -938,6 +1003,13 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
         float3 P    = O + V * ti;
         float  lodT = CloudLodT(ti);
 
+        // Hull-first skip: the cheap 2D coverage * altitude profile
+        // gates the expensive 3D noise + sun-shadow march. Most bounce-
+        // ray samples land in empty sky and this lets them bail at
+        // ~10 ops instead of paying ~6000 ops for the full eval.
+        float hull = CloudProbeHull(P, walltime);
+        if (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY) continue;
+
         CloudMaterial m = CloudSampleMaterial(P, walltime, lodT, 0u);
         if (m.density <= CLOUD_EFFECTIVE_ZERO_DENSITY) continue;
 
@@ -948,23 +1020,41 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
 
         float3 K = sunIrradiance * sunAtmos * earthShadow * CLOUD_ALBEDO;
 
-        // Direct
-        float3 inscatter = K * Tdir * phaseDir;
-
-        // MS — Nubis Evolved: amplitude follows direct via sqrt(Tdir),
-        // so cloud tops (high Tdir) glow even when the back lobe of the
-        // direct phase is small. Same formula as the full path.
-        float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
+        // Wrenninge octaves — same formulation as the primary path but
+        // capped to the configured octave count (typically the cheap
+        // variant runs 2 octaves; primary runs 3). Bounce rays are
+        // attenuated by the path throughput downstream so the extra
+        // fidelity of octave 2+ rarely matters here.
         float heightBias  = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
                                  pow(saturate(m.heightFrac), 0.5f));
-        float msAmount    = depthFactor * heightBias
-                          * (0.5f + CLOUD_SECONDARY_STRENGTH)
-                          * CLOUD_MS_STRENGTH;
-        inscatter += K * msAmount * phaseMS;
+        float msArtistAmp = (0.5f + CLOUD_SECONDARY_STRENGTH)
+                          * CLOUD_MS_STRENGTH * heightBias;
 
+        float3 inscatter = K * Tdir * phaseDir;
+
+        float aPow = CLOUD_MS_A;
+        float bPow = CLOUD_MS_B;
+        float cPow = CLOUD_MS_C;
+        [unroll]
+        for (int n = 1; n < CLOUD_MS_OCTAVES_N; ++n)
+        {
+            float TdirN  = pow(max(Tdir, 1e-6f), bPow);
+            float phaseN = CloudPhaseDirectScaled(cosTheta, cPow);
+            inscatter   += K * TdirN * phaseN * aPow * msArtistAmp;
+
+            aPow *= CLOUD_MS_A;
+            bPow *= CLOUD_MS_B;
+            cPow *= CLOUD_MS_C;
+        }
+
+        // Energy-conserving analytical integration (Hillaire 2016 §5.6.3
+        // / Wrenninge / Frostbite): integrate the scattered radiance
+        // over the segment as (L - L*Tr) / sigma_t. Equivalent to the
+        // expanded form (sigma_t * inscatter) * (1-segTr)/sigma_t used
+        // here — the inscatter * (1 - segTr) cancellation gives the
+        // physically correct accumulation for any segment length.
         float segTr = exp(-sigma_t * ds);
-        float segIn = (1.0f - segTr) / max(sigma_t, 1e-6f);
-        L_acc   += trCloud * (sigma_t * inscatter) * segIn;
+        L_acc   += trCloud * inscatter * (1.0f - segTr);
         trCloud *= segTr;
 
         if (max(trCloud.r, max(trCloud.g, trCloud.b)) < CLOUD_TR_EPS)
@@ -986,10 +1076,19 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
 // FULL PRIMARY MARCH
 //------------------------------------------------------------------------------
 
+// cloudHitDistKmOut returns the transmittance-weighted mean ray distance
+// at which the cloud actually contributes radiance (Hillaire 2016 §5.9.1
+// Eq. 21: mean front depth weighted by alpha contribution per sample).
+// Zero when no sample contributed weight. Used by Pass_clouds_primary_v8
+// to write a representative world-space cloud hit position into the DLSS
+// depth / motion-vector inputs so cloud silhouettes reproject correctly
+// under camera translation.
 float3 EvaluateClouds(float3 V, float3 sunDir, float3 sunIrradiance,
-                      out float3 cloudTrOut)
+                      out float3 cloudTrOut,
+                      out float  cloudHitDistKmOut)
 {
-    cloudTrOut = float3(1, 1, 1);
+    cloudTrOut        = float3(1, 1, 1);
+    cloudHitDistKmOut = 0.0f;
 
 #if !ENABLE_CLOUDS
     return float3(0, 0, 0);
@@ -1117,6 +1216,15 @@ float3 EvaluateClouds(float3 V, float3 sunDir, float3 sunIrradiance,
     float3 trCloud = float3(1, 1, 1);
     float3 L_acc   = float3(0, 0, 0);
 
+    // Transmittance-weighted distance accumulator (Hillaire 2016 §5.9.1
+    // Eq. 21). Per-sample weight is the alpha contribution of the
+    // segment — visibility of this sample (trCloud BEFORE multiplying by
+    // segTr) times the absorbed fraction (1 - segTr). The final mean
+    // distance is sumHitWT / sumHitW; falls back to 0 when no sample
+    // contributed (clear-sky pixel).
+    float sumHitW  = 0.0f;
+    float sumHitWT = 0.0f;
+
     float t        = tNear;
     float stepSize = CLOUD_TARGET_STEP_KM
                    * lerp(0.55f, 1.0f, CloudLodT(tNear));
@@ -1164,9 +1272,27 @@ float3 EvaluateClouds(float3 V, float3 sunDir, float3 sunIrradiance,
                 sampleUp, cosTheta, earthShadow,
                 pixel, frame, 200u + (uint)acceptedI * 11u);
 
+            // Energy-conserving analytical integration: the closed-form
+            // integral of inscatter * exp(-sigma_t * x) over [0, stepSize]
+            // reduces to inscatter * (1 - segTr) when the inscatter is
+            // expressed as the in-scattered radiance per unit length
+            // (i.e., already scaled to the local extinction). Stays
+            // numerically stable for any sigma_t including small values.
             float segTr = exp(-sigma_t * stepSize);
-            float segIn = (1.0f - segTr) / max(sigma_t, 1e-6f);
-            L_acc   += trCloud * (sigma_t * inscatter) * segIn;
+            L_acc      += trCloud * inscatter * (1.0f - segTr);
+
+            // Accumulate transmittance-weighted distance for the cloud
+            // mean depth. Must use trCloud BEFORE the segTr multiply so
+            // the weight represents this sample's visibility (not the
+            // visibility of the sample after it). Luma weight on trCloud
+            // collapses the per-channel transmittance into a scalar.
+            {
+                float wK = dot(trCloud, float3(0.2126f, 0.7152f, 0.0722f))
+                         * (1.0f - segTr);
+                sumHitW  += wK;
+                sumHitWT += wK * tSample;
+            }
+
             trCloud *= segTr;
             acceptedI++;
 
@@ -1198,7 +1324,8 @@ float3 EvaluateClouds(float3 V, float3 sunDir, float3 sunIrradiance,
                        - dot(trCloud, float3(0.2126f, 0.7152f, 0.0722f)));
     L_acc += aerialIn * SKY_INTENSITY * cloudOpacity * CLOUD_HAZE_STRENGTH;
 
-    cloudTrOut = trCloud;
+    cloudTrOut        = trCloud;
+    cloudHitDistKmOut = (sumHitW > 1e-5f) ? (sumHitWT / sumHitW) : 0.0f;
     return L_acc;
 #endif
 }

@@ -37,7 +37,27 @@ inline float3 ApplyAerialPerspective(float3 sceneRadiance, float3 camPosWorld,
     float3 transmittance;
     const float3 inScatter = ComputeAerialPerspective(viewDir, sunDir, hitDistKm, transmittance);
 
-    return sceneRadiance * transmittance + inScatter * SKY_INTENSITY;
+    //Cloud-attenuated atmospheric in-scatter. ComputeAerialPerspective
+    //assumes the atmosphere is fully sun-lit, but a surface under
+    //overcast lives in air that's in the cloud's shadow — the air
+    //itself receives almost no direct sun, so its Rayleigh/Mie scatter
+    //should be near-zero. Without this attenuation, overcast scenes
+    //show bright atmospheric haze on the ground even when no direct
+    //sun is reaching anything. Uses the same cloud_cloudShadowOnSurfaces
+    //toggle as surface NEE — both target the same physical effect.
+    //
+    //hitPosWorld is in floating origin shifted space; CloudSunVisibility
+    //expects absolute world coords (WorldToPlanet uses .y as altitude
+    //above sea level). Add sceneOriginWorld to recover the planet
+    //relative altitude — without this the altitude early out at
+    //Clouds_v8.hlsli:803 misfires when the camera is high above clouds
+    //but its shifted Y is small.
+    float cloudSunVis = 1.0f;
+    if (cloud_cloudShadowOnSurfaces > 0.5f) {
+        cloudSunVis = CloudSunVisibility(hitPosWorld + sceneOriginWorld, sunDir);
+    }
+
+    return sceneRadiance * transmittance + inScatter * SKY_INTENSITY * cloudSunVis;
 }
 
 //====================================
@@ -200,43 +220,87 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         else
         {
-            //sky, clamp to cameraFar to stay in DLSS RR range
-            g_dlssDepth[DTid.xy] = cameraFar;
-            g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            //====================================
+            //SKY OR CLOUD-COVERED SKY
+            //====================================
+            //Pass_clouds_primary_v8 wrote the transmittance-weighted cloud
+            //hit position to scratch slot 12 (xyz = world pos, w = dist in
+            //km). If the cloud has non-trivial opacity we feed cloud data
+            //into DLSS RR instead of treating this as pure infinity — that
+            //gives clouds proper camera-translation motion vectors, real
+            //depth for edge detection, and a stable billboard normal.
+            //Otherwise fall through to the rotation-only sky path.
+            const float4 cloudHitData    = gScratchPing[uint3(DTid.xy, 12)];
+            const float3 cloudHitPos     = cloudHitData.xyz;
+            const float  cloudHitDistKm  = cloudHitData.w;
+            const float3 cloudTr         = gScratchPing[uint3(DTid.xy, 11)].rgb;
+            const float  cloudOpacity    = saturate(1.0f
+                                         - dot(cloudTr, float3(0.2126f, 0.7152f, 0.0722f)));
+            const bool   cloudIsDominant = (cloudHitDistKm > 0.0f) && (cloudOpacity > 0.05f);
 
-            //Sky / planet body MV: rotation only reprojection. Sky is at
-            //infinite distance so camera translation between frames must
-            //not contribute to its apparent motion — only rotation does.
-            //The previous "camPos + worldDir * cameraFar" trick breaks at
-            //orbital flight speeds where camera translation per frame can
-            //exceed cameraFar, making the far point arbitrarily close to
-            //the camera and the MV dominated by translation instead of
-            //rotation. Direction only reprojection sidesteps the issue.
-            //
-            //Math: transform worldDir into the previous view frame's
-            //*rotation* (mul with w=0 ignores the translation row), then
-            //project at any large positive view distance. The perspective
-            //divide cancels the distance, so the exact value is arbitrary
-            //as long as it doesn't underflow / overflow.
-            float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
-            float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
-            float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
-            float3 prevViewDir = mul(prevView, float4(worldDir, 0)).xyz;
-            float2 skyMV = float2(0.0f, 0.0f);
-            //RH projection: in-front-of-camera has view-space z < 0
-            if (prevViewDir.z < 0.0f) {
-                float4 prevClip = mul(prevProjection,
-                                      float4(prevViewDir * cameraFar, 1.0f));
-                if (prevClip.w > 0.0f) {
-                    float2 prevNdc = prevClip.xy / prevClip.w;
-                    float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f,
-                                            0.5f - prevNdc.y * 0.5f);
-                    float2 prevPix = prevUV * dims - 0.5f;
-                    skyMV = prevPix - float2(DTid.xy) - jitter;
-                }
+            if (cloudIsDominant)
+            {
+                //Cloud-aware DLSS inputs.
+                g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(cloudHitPos);
+
+                //World-space MV. Cloud is treated as world-static (no wind
+                //animation contribution to MV), so only camera motion
+                //matters. Parallax from camera translation is the bit that
+                //the old rotation-only sky MV was missing — clouds smeared
+                //heavily on dolly. This fixes it.
+                float2 prevPix = GetLastFramePixelCoordinates_World(
+                    cloudHitPos, prevView, prevProjection, dims);
+                float2 curPinholePix = GetCurrentFramePixelCoordinates_World(
+                    cloudHitPos, view, projection, dims);
+                bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
+                float2 cloudMV = validPrev ? (prevPix - curPinholePix) : float2(0, 0);
+                g_dlssMVec[DTid.xy] = cloudMV;
+                biasMV = cloudMV;
+
+                //Camera-facing billboard normal. Volumetric clouds don't
+                //have a surface normal in the physical sense, but a
+                //consistent screen-aligned normal gives DLSS RR a stable
+                //edge-detection signal that varies smoothly across the
+                //cloud silhouette.
+                float2 nd = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+                float4 ndTarget = mul(projectionI, float4(nd.x, -nd.y, 1, 1));
+                float3 cloudNormal = -normalize(mul(viewI, float4(ndTarget.xyz, 0)).xyz);
+                g_dlssNormals[DTid.xy] = float4(cloudNormal, 0.0f);
             }
-            g_dlssMVec[DTid.xy] = skyMV;
-            biasMV = skyMV;
+            else
+            {
+                //Pure sky: clamp depth to cameraFar so DLSS RR's range
+                //handling stays consistent.
+                g_dlssDepth[DTid.xy] = cameraFar;
+                g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+                //Sky / planet body MV: rotation only reprojection. Sky is
+                //at infinite distance so camera translation between frames
+                //must not contribute to its apparent motion — only
+                //rotation does. The "camPos + worldDir * cameraFar" trick
+                //breaks at orbital flight speeds where camera translation
+                //per frame can exceed cameraFar, making the far point
+                //arbitrarily close and the MV dominated by translation.
+                //Direction-only reprojection sidesteps the issue.
+                float2 d = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+                float4 target = mul(projectionI, float4(d.x, -d.y, 1, 1));
+                float3 worldDir = normalize(mul(viewI, float4(target.xyz, 0)).xyz);
+                float3 prevViewDir = mul(prevView, float4(worldDir, 0)).xyz;
+                float2 skyMV = float2(0.0f, 0.0f);
+                if (prevViewDir.z < 0.0f) {
+                    float4 prevClip = mul(prevProjection,
+                                          float4(prevViewDir * cameraFar, 1.0f));
+                    if (prevClip.w > 0.0f) {
+                        float2 prevNdc = prevClip.xy / prevClip.w;
+                        float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f,
+                                                0.5f - prevNdc.y * 0.5f);
+                        float2 prevPix = prevUV * dims - 0.5f;
+                        skyMV = prevPix - float2(DTid.xy) - jitter;
+                    }
+                }
+                g_dlssMVec[DTid.xy] = skyMV;
+                biasMV = skyMV;
+            }
         }
 
         biasInstID = emInstID;

@@ -1128,10 +1128,38 @@ float3 EvaluateSkyBackground(float3 rayDir)
 
     float3 daySky = scatter * SKY_INTENSITY;
 
-    //planet body, attenuated by the outgoing atmospheric leg back to the observer
-    float3 planetBody = hitPlanet
-        ? (EvaluatePlanetBody(O, v, S.dirWS) * viewTr)
-        : float3(0, 0, 0);
+    //No observer-position cloud-shadow proxy on daySky. The previous
+    //attempt dimmed the entire atmospheric scatter based on whether
+    //the OBSERVER was in cloud shadow — which made the whole sky go
+    //dark when the camera entered even a tiny cloud shadow. The
+    //correct behaviour is for the cloud's line-of-sight transmittance
+    //(cloudTr from EvaluateClouds / EvaluateCloudsCheap) to attenuate
+    //the sky per-pixel, which the Pass_clouds_primary_v8 composite
+    //and the bounce-ray EvaluateSky already do. Atmospheric scatter
+    //is allowed to remain at its physical (sun-lit) value here.
+
+    //planet body, attenuated by the outgoing atmospheric leg back to the
+    //observer. Sun-side cloud shadow uses the hit point (not the observer)
+    //because the planet ground may be far away and live under different
+    //cloud cover than the camera — same lookup pattern as mesh surface NEE
+    //in raygen.
+    float3 planetBody = float3(0, 0, 0);
+    if (hitPlanet)
+    {
+        planetBody = EvaluatePlanetBody(O, v, S.dirWS) * viewTr;
+        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        {
+            float tG0, tG1;
+            if (RaySphereIntersect(O, v, ATMOS_BOTTOM_RADIUS, tG0, tG1) && tG0 > 0.0f)
+            {
+                float3 Pplanet    = O + v * tG0;
+                float3 PworldHit  = float3(Pplanet.x,
+                                           Pplanet.y - ATMOS_BOTTOM_RADIUS,
+                                           Pplanet.z) * WORLD_UNITS_PER_KM;
+                planetBody *= CloudSunVisibility(PworldHit, S.dirWS);
+            }
+        }
+    }
 
     //night base, residual upper-atmosphere airglow. Fades out above the
     //atmosphere top and is suppressed entirely when the planet body covers
@@ -1174,9 +1202,14 @@ float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
     cloudTrOut = float3(1.0f, 1.0f, 1.0f);
 
     float3 v          = SafeNormalize(rayDir);
+    //EvaluateSkyBackground already applies sun-side cloud shadow to its
+    //daySky and planetBody terms (stars / nightBase intentionally skipped).
+    //No additional background-wide multiply here, which would have wrongly
+    //dimmed stars and airglow by sun visibility.
     float3 background = EvaluateSkyBackground(v);
 
     SunState S = ComputeSunState();
+
     float3 cloudL = EvaluateCloudsCheap(v, S.dirWS,
                                         ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
                                         cloudTrOut);

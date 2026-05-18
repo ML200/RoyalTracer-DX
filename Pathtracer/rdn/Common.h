@@ -318,10 +318,13 @@ struct CloudSettings {
     // surface shadowing and termination
     //====================================
     // cloudShadowOnSurfaces enables the inline CloudSunVisibility lookup
-    // at surface NEE. expensive when called per-pixel, off by default
-    // until a precomputed shadow map is wired in. rrThreshold sets the
-    // Russian roulette boundary on view-march throughput.
-    float cloudShadowOnSurfaces = 0.0f;
+    // at surface NEE — attenuates direct sun radiance by the cloud column
+    // along the sun ray, so overcast scenes show no direct sun on the
+    // ground. Cost is a ~4-sample cloud march per surface NEE call (so
+    // per-pixel per-bounce). On by default; flip off if perf is tight in
+    // a no-clouds scene. rrThreshold sets the Russian roulette boundary
+    // on view-march throughput.
+    float cloudShadowOnSurfaces = 1.0f;
     float rrThreshold        = 0.10f;
 
     //====================================

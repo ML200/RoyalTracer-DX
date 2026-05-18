@@ -160,6 +160,48 @@ inline float2 GetLastFramePixelCoordinates_Unclamped(
     return uv * resolution - 0.5f;
 }
 
+//====================================
+//STATIC WORLD REPROJECTION
+//====================================
+//Variants of the above for points that have NO instance — e.g., volumetric
+//cloud sample positions. Skips the instanceProps[objID] lookup and treats
+//the position as world-static (no animation). Same camera-relative
+//view-space step as the instance versions to avoid the big-minus-big
+//cancellation at large world coords.
+inline float2 GetLastFramePixelCoordinates_World(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution)
+{
+    float3 prevTransCol = mul(prevView, float4(0, 0, 0, 1)).xyz;
+    float3 prevCamPos   = -mul(transpose((float3x3)prevView), prevTransCol);
+    float3 viewPos      = mul((float3x3)prevView, worldPos - prevCamPos);
+    float4 clipPos      = mul(prevProjection, float4(viewPos, 1.0f));
+
+    if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
+
+    float2 ndc = clipPos.xy / clipPos.w;
+    float2 uv  = ndc * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    return uv * resolution - 0.5f;
+}
+
+inline float2 GetCurrentFramePixelCoordinates_World(
+    float3 worldPos,
+    float4x4 V,
+    float4x4 P,
+    float2 resolution)
+{
+    float3 viewPos = mul((float3x3)V, worldPos - InitOrigin());
+    float4 clipPos = mul(P, float4(viewPos, 1.0f));
+    if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
+    float2 ndc = clipPos.xy / clipPos.w;
+    float2 uv  = ndc * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    return uv * resolution - 0.5f;
+}
+
 inline int2 GetBestReprojectedPixel_d(
     float3 worldPos,
     float4x4 prevView,

@@ -111,6 +111,20 @@ inline bool TraceCameraRay(
         const float3 sun = EvaluateSun(rayDir);
         float3 skyL1     = EvaluateSkyBackground(rayDir);
         if (length(sun) > 0.0f) skyL1 += sun;
+
+        //Per pixel cloud attenuation of sky and sun disc happens in the
+        //shading composite via cloudTr from Pass_clouds_primary_v8 (see
+        //Pass_shading_v8.hlsl: output_primary = output_primary * cloudTr
+        //+ cloudL). That gives the correct direction dependent answer:
+        //sky pixels grazing a hole in the overcast stay bright, pixels
+        //looking through a thick cumulus go dark. A previous blanket
+        //multiply by CloudSunVisibility(rayOrigin) was applied here, but
+        //it used a single observer to sun visibility scalar for ALL
+        //directions (so it could not distinguish hole from cloud) and
+        //also misread the camera altitude under floating origin (the
+        //shifted rayOrigin lost most of the altitude into sceneOriginWorld,
+        //so a camera high above the cloud layer registered as sitting at
+        //sea level and the whole sky went black).
         gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
         gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
         store_sky(g_sample_current, pixelIdx);
@@ -534,6 +548,30 @@ void Pass_raygen_v8()
 
                 if (NdotL > 1e-6f)
                 {
+                    //====================================
+                    //CLOUD SHADOW ON SURFACE NEE
+                    //====================================
+                    //Attenuate sun radiance by the cloud transmittance along
+                    //the sun ray. Without this, NEE samples direct sun even
+                    //through overcast cloud cover, while the BSDF MIS
+                    //partner DOES see clouds (via EvaluateSky's cloudTr) —
+                    //the techniques drift apart and surfaces stay sun-lit
+                    //in scenes the user expects to be fully diffuse.
+                    //
+                    //CloudSunVisibility is a ~4-sample march along the sun
+                    //ray; cost is bounded but not free, so the feature is
+                    //gated by cloud_cloudShadowOnSurfaces (cbuffer toggle).
+                    //
+                    //Input must be in absolute world coords (WorldToPlanet
+                    //inside the function reads .y as altitude above sea
+                    //level). ctx.hitPos is in floating origin shifted space,
+                    //so we add sceneOriginWorld to recover the planet
+                    //relative altitude before calling.
+                    if (cloud_cloudShadowOnSurfaces > 0.5f)
+                    {
+                        sun.radiance *= CloudSunVisibility(ctx.hitPos + sceneOriginWorld, sun.direction);
+                    }
+
                     const float3 throughput = UnpackRGB9E5(throughputPk);
 
                     SamplingP sp_nee   = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
