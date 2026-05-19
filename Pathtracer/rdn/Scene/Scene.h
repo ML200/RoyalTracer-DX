@@ -168,6 +168,14 @@ struct Scene {
     //Updated by the renderer from Camera::getSceneOriginWorld() before
     //PrepareInstanceProperties / RebuildTLASInstanceList run.
     XMFLOAT3 sceneOriginWorld = { 0.0f, 0.0f, 0.0f };
+    //Origin used by the PREVIOUS PrepareInstanceProperties call. The delta
+    //between the two is applied to every instance's prevObjectToWorld so it
+    //stays consistent with Camera::m_prevView after a floating-origin snap;
+    //without this, prevObjectToWorld lives in the old shifted frame while
+    //prevView expects the new one, and motion vectors gain a shiftDelta-
+    //sized offset on every snap (visible as a tearing/destabilization
+    //past ~500 m of camera drift).
+    XMFLOAT3 prevSceneOriginWorld = { 0.0f, 0.0f, 0.0f };
 
     //====================================
     //METHODS

@@ -473,6 +473,13 @@ void Renderer::UpdateRenderer(float dt) {
     m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
+    //ResetView (editor button) snapped prevView = view inside UploadGPUBuffer
+    //so MVs come out at zero this frame; tell DLSS RR to discard its history
+    //so it doesn't blend the pre-reset frame on top of the new pose. Must
+    //run before slEvaluateFeature(DLSS_RR) downstream.
+    if (m_camera.ConsumeResetPending()) {
+        m_dlss.ForceReset();
+    }
     m_scene.UploadInstanceProperties();
     if (m_scene.materialsDirty) {
         m_scene.UpdateMaterialBuffer();

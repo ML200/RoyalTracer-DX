@@ -18,49 +18,6 @@ inline float3 DlssReinhard(float3 c) {
 }
 
 //====================================
-//AERIAL PERSPECTIVE HELPER
-//====================================
-//Atmospheric extinction + in-scatter between camera and a scene hit point.
-//Returns the modulated scene radiance. Distant outdoor surfaces pick up the
-//haze tint, indoor / close geometry passes through nearly unchanged. Skipped
-//for sky/sun pixels (those already integrate the full atmosphere in raygen).
-inline float3 ApplyAerialPerspective(float3 sceneRadiance, float3 camPosWorld,
-                                     float3 hitPosWorld, float3 sunDir)
-{
-    const float3 toHit     = hitPosWorld - camPosWorld;
-    const float  worldDist = length(toHit);
-    if (worldDist <= 1e-3f) return sceneRadiance;
-
-    const float3 viewDir   = toHit / worldDist;
-    const float  hitDistKm = worldDist * (1.0f / WORLD_UNITS_PER_KM);
-
-    float3 transmittance;
-    const float3 inScatter = ComputeAerialPerspective(viewDir, sunDir, hitDistKm, transmittance);
-
-    //Cloud-attenuated atmospheric in-scatter. ComputeAerialPerspective
-    //assumes the atmosphere is fully sun-lit, but a surface under
-    //overcast lives in air that's in the cloud's shadow — the air
-    //itself receives almost no direct sun, so its Rayleigh/Mie scatter
-    //should be near-zero. Without this attenuation, overcast scenes
-    //show bright atmospheric haze on the ground even when no direct
-    //sun is reaching anything. Uses the same cloud_cloudShadowOnSurfaces
-    //toggle as surface NEE — both target the same physical effect.
-    //
-    //hitPosWorld is in floating origin shifted space; CloudSunVisibility
-    //expects absolute world coords (WorldToPlanet uses .y as altitude
-    //above sea level). Add sceneOriginWorld to recover the planet
-    //relative altitude — without this the altitude early out at
-    //Clouds_v8.hlsli:803 misfires when the camera is high above clouds
-    //but its shifted Y is small.
-    float cloudSunVis = 1.0f;
-    if (cloud_cloudShadowOnSurfaces > 0.5f) {
-        cloudSunVis = CloudSunVisibility(hitPosWorld + sceneOriginWorld, sunDir);
-    }
-
-    return sceneRadiance * transmittance + inScatter * SKY_INTENSITY * cloudSunVis;
-}
-
-//====================================
 //SHADING PASS
 //====================================
 [numthreads(16, 16, 1)]
@@ -69,86 +26,73 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     //Floating origin: viewI returns the *shifted* camera (view matrix
-    //built in floating origin space). Most downstream math (aerial
-    //perspective distance, reflections, etc.) lives in shifted world too
-    //because hit positions are reconstructed via the shifted instance
-    //transforms — keep camPosWorld in that shifted frame. Atmosphere /
-    //planet observer math is the one exception: it needs the absolute
-    //altitude above the planet centre, so add sceneOriginWorld back just
-    //for SetSkyObserver.
-    const float3 camPosWorld    = mul(viewI, float4(0, 0, 0, 1)).xyz;
-    const float3 camPosAbsWorld = camPosWorld + sceneOriginWorld;
-    SetSkyObserver(camPosAbsWorld);
-    const SunState sunState = ComputeSunState();
+    //built in floating origin space). Hit positions are reconstructed via
+    //the shifted instance transforms, so camPosWorld stays in the shifted
+    //frame and feeds BuildVertex/specular MV below directly.
+    const float3 camPosWorld = mul(viewI, float4(0, 0, 0, 1)).xyz;
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)].rgb;
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)].rgb;
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
     //====================================
-    //PRIMARY CLOUD COMPOSITE (SKY PIXELS)
-    //====================================
-    //Pass_clouds_primary_v8 wrote cloudL into slot 10 and cloudTr into
-    //slot 11 for every sky pixel, identity (0, 1) for the rest. Compose
-    //here so the primary slots feed both the DLSS RR input AND the
-    //postprocess noisy/gt debug paths with clouds already merged in. We
-    //write the composited values back to slots 1 & 2 so postprocess
-    //(which does its own sum of slot1+slot2+slot3) picks them up
-    //without needing changes there.
-    //
-    //Branchless composite on the identity values: on non-sky pixels
-    //cloudTr=(1,1,1) and cloudL=(0,0,0), so output_primary * cloudTr +
-    //cloudL == output_primary — no behavioural change for surface hits.
-    {
-        const float2 dimsCO    = float2(IMG_W, IMG_H);
-        const uint   pixelIdxCO = MapPixelID(dimsCO, DTid.xy);
-        const uint   coInst     = load_instID(g_sample_current, pixelIdxCO);
-        if (coInst == 0xFFFFFFFFu)
-        {
-            const float3 cloudL  = gScratchPing[uint3(DTid.xy, 10)].rgb;
-            const float3 cloudTr = gScratchPing[uint3(DTid.xy, 11)].rgb;
-            output_primary  = output_primary  * cloudTr + cloudL;
-            output_indirect = output_indirect * cloudTr + cloudL;
-            gScratchPing[uint3(DTid.xy, 1)] = float4(output_primary,  0);
-            gScratchPing[uint3(DTid.xy, 2)] = float4(output_indirect, 0);
-        }
-    }
-
-    //====================================
     //X1 SHARP REFLECTION CONTRIBUTION
     //====================================
-    //slot 8 is the durable handoff, debug passes scribble g_NrcInferenceOut later
+    //slot 8 is the durable handoff, debug passes scribble g_NrcInferenceOut later.
+    //Read here (above the cloud composite) so the mesh path can attenuate it
+    //before postprocess sees it.
     float3 reflContrib = float3(0, 0, 0);
+    float  reflAlpha   = 0.0f;
     {
         const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
+        reflAlpha = reflPack.w;
         if (reflPack.w > 0.0f)
             reflContrib = max(float3(0, 0, 0), reflPack.rgb);
     }
 
-    float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
-
     //====================================
-    //AERIAL PERSPECTIVE
+    //CLOUD + ATMOSPHERE COMPOSITE
     //====================================
-    //Apply atmosphere between camera and the primary hit point before the running
-    //average + DLSS bound so every downstream consumer (gPermanentData ground
-    //truth slice, the DLSS clean slice, the noisy debug slice) sees the same
-    //atmospherically modulated radiance. Skipped for sky/sun rays — those are
-    //integrated through the full atmosphere already inside the raygen miss path.
+    //Pass_clouds_primary_v8 wrote cloudL into slot 10 and combined atmosphere
+    //+ cloud transmittance into slot 11 for EVERY primary pixel. Sky pixels:
+    //cloudL bundles the unified in-scatter plus planet/stars/airglow behind.
+    //Mesh pixels: cloudL is the unified in-scatter from camera to mesh hit
+    //(no background behind — the mesh occludes it), cloudTr is the camera→
+    //mesh atm+cloud transmittance. For mesh pixels this composite replaces
+    //the old ApplyAerialPerspective call — the unified march already handled
+    //atmospheric scatter/extinction so doing aerial perspective here too
+    //would double-count atmosphere and ignore cloud occlusion entirely.
+    //
+    //Per-slot composite uniform across sky and mesh — slot 1 AND slot 2 both
+    //pick up cloudL on top of their attenuated radiance. The doubling is
+    //intentional: raygen writes slot1 = slot2 = sun-disc/emission for sky
+    //and emitter pixels, so the postprocess sum (slot1+slot2+slot3+refl)
+    //naturally counts those contributions twice, which means cloudL must
+    //also land twice for a cloud-occluded mesh to read at the SAME apparent
+    //brightness as the same cloud seen as a sky pixel. Injecting cloudL
+    //only once gave mesh-through-cloud half the cloud brightness, reading
+    //as "dimmed mesh" instead of "covered by a bright cloud".
+    //
+    //Identity case (no cloud, no atmosphere): cloudL = 0 and cloudTr =
+    //(1,1,1) so the composite is a no-op.
     {
-        float2 dimsAP    = float2(IMG_W, IMG_H);
-        uint   pixelIdxAP = MapPixelID(dimsAP, DTid.xy);
-        bool isEmissiveOrSkyAP = load_isEmitter(g_sample_current, pixelIdxAP);
-        uint apInstID = load_instID(g_sample_current, pixelIdxAP);
-        bool hasPositionAP = (apInstID != 0xFFFFFFFFu);
-        if (hasPositionAP) {
-            uint   apPrimID  = load_primID(g_sample_current, pixelIdxAP);
-            float2 apBary    = load_bary(g_sample_current, pixelIdxAP);
-            float3 hitPosWorld = ReconstructPosition(apInstID, apPrimID, apBary);
-            accumulation = ApplyAerialPerspective(accumulation, camPosWorld,
-                                                  hitPosWorld, sunState.dirWS);
-        }
+        const float3 cloudL  = gScratchPing[uint3(DTid.xy, 10)].rgb;
+        const float3 cloudTr = gScratchPing[uint3(DTid.xy, 11)].rgb;
+
+        output_primary  = output_primary  * cloudTr + cloudL;
+        output_indirect = output_indirect * cloudTr + cloudL;
+        sunDirect      *= cloudTr;
+        reflContrib    *= cloudTr;
+
+        gScratchPing[uint3(DTid.xy, 1)] = float4(output_primary,  0);
+        gScratchPing[uint3(DTid.xy, 2)] = float4(output_indirect, 0);
+        gScratchPing[uint3(DTid.xy, 3)] = float4(sunDirect,       0);
+        //Preserve reflPack.w (validity flag) so the postprocess gate
+        //(reflPack.w > 0.0f ? rgb : 0) still reads the right state.
+        gScratchPing[uint3(DTid.xy, 8)] = float4(reflContrib, reflAlpha);
     }
+
+    float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
 
     bool cameraChanged = false;
     [unroll]
@@ -257,14 +201,34 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 g_dlssMVec[DTid.xy] = cloudMV;
                 biasMV = cloudMV;
 
-                //Camera-facing billboard normal. Volumetric clouds don't
-                //have a surface normal in the physical sense, but a
-                //consistent screen-aligned normal gives DLSS RR a stable
-                //edge-detection signal that varies smoothly across the
-                //cloud silhouette.
-                float2 nd = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
-                float4 ndTarget = mul(projectionI, float4(nd.x, -nd.y, 1, 1));
-                float3 cloudNormal = -normalize(mul(viewI, float4(ndTarget.xyz, 0)).xyz);
+                //Cloud surface normal from Pass_clouds_primary_v8 (slot 13).
+                //The cloud pass extracts the outward facing normal at the
+                //transmittance weighted Hillaire mean depth by finite
+                //differencing the macro shape density (no HF / cauliflower)
+                //so neighbouring pixels of the same cumulus share roughly
+                //matching normals — the spatial similarity signal RR uses
+                //to pool samples across the cloud silhouette. Massive lift
+                //over the previous camera facing billboard, which gave
+                //every pixel of every cumulus the same normal and let RR
+                //pool only through temporal accumulation (smearing /
+                //boiling on dim or noisy clouds).
+                //
+                //Fall back to the billboard only when the cloud pass
+                //couldn't produce a usable normal (zero vector) — happens
+                //for thin clouds or when the camera sits inside a cumulus
+                //where gradient extraction is ambiguous.
+                const float3 cloudNormalFromPass = gScratchPing[uint3(DTid.xy, 13)].xyz;
+                float3 cloudNormal;
+                if (dot(cloudNormalFromPass, cloudNormalFromPass) > 0.25f)
+                {
+                    cloudNormal = cloudNormalFromPass;
+                }
+                else
+                {
+                    float2 nd = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+                    float4 ndTarget = mul(projectionI, float4(nd.x, -nd.y, 1, 1));
+                    cloudNormal = -normalize(mul(viewI, float4(ndTarget.xyz, 0)).xyz);
+                }
                 g_dlssNormals[DTid.xy] = float4(cloudNormal, 0.0f);
             }
             else
@@ -314,70 +278,152 @@ void main(uint3 DTid : SV_DispatchThreadID)
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
     else{
-        //reconstruct surface for DLSS
-        uint sInstID = load_instID(g_sample_current, pixelIdx);
-        uint sPrimID = load_primID(g_sample_current, pixelIdx);
-        float2 sBary = load_bary(g_sample_current, pixelIdx);
-        SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, camPosWorld);
-        //DLSS RR input data
-        g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
+        //====================================
+        //CLOUD-OCCLUDED MESH OVERRIDE
+        //====================================
+        //If a thick enough cloud sits between camera and mesh (typical
+        //"above clouds, ground below" view), the visible surface for this
+        //pixel is the cloud, not the mesh. Feeding DLSS RR the mesh's
+        //depth/normal/MV in that case makes the upscaler resolve the noisy
+        //mesh behind near-zero cloud transmittance — boiling and ghosting.
+        //
+        //Dominance is decided by the CLOUD-ONLY accumulated opacity that
+        //cloud_primary stores in slot 13.w (1 - macro-shape transmittance,
+        //atmospheric extinction excluded). Earlier attempts used either a
+        //hard opacity threshold on combined atm+cloud Tr or a luma ratio
+        //of cloudL vs mesh*Tr — both broke on long mesh rays because
+        //cloudL bundles atmospheric in-scatter, so the see-through-cloud
+        //case still registered as "cloud dominant" purely from haze.
+        //
+        //cloudAlpha > 0.5: cloud blocks more than half the light from beyond
+        //  → cloud is the visible surface, DLSS tracks it
+        //cloudAlpha < 0.5: cloud lets more than half through
+        //  → mesh shows through, DLSS tracks the mesh
+        const float4 cloudNormalAndAlpha = gScratchPing[uint3(DTid.xy, 13)];
+        const float4 cloudHitDataM       = gScratchPing[uint3(DTid.xy, 12)];
+        const float3 cloudHitPosM        = cloudHitDataM.xyz;
+        const float  cloudHitDistKmM     = cloudHitDataM.w;
+        const float  cloudAlphaM         = cloudNormalAndAlpha.w;
+        const bool   cloudDominatesM     = (cloudHitDistKmM > 0.0f) && (cloudAlphaM > 0.5f);
 
-        g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
-        g_dlssRoughness[DTid.xy] = sv.Pr;
-        //debug mirror of diffuse albedo passed to DLSS RR
-        gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
-
-        float2 curPix = DTid.xy;
-        //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
-        //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
-        //pure scene motion in pinhole space, the lens offset cancels out
-        float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-        float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
-
-        bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
-
-        float2 mvPixels = validPrev ? (prevPix - curPinholePix) : float2(0.0, 0.0);
-
-        g_dlssMVec[curPix] = mvPixels;
-
-        biasInstID = sInstID;
-        biasMV = mvPixels;
-
-        //specular albedo
-        float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
-        g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
-
-        Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
-        g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
-
-        //specular MV from raygen's perfect reflection probe in scratch slice 4
-        float specularity = Luma(specularAlbedo);
-        float2 specMV = mvPixels;
-        bool validSpecReproj = false;
+        if (cloudDominatesM)
         {
-            float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
-            uint   reflInstID = asuint(reflData.w);
-            if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
+            //Mirror of the sky-pixel cloud-dominant branch above. Cloud
+            //depth, world-space cloud MV, gradient-extracted cloud normal
+            //(billboard fallback), and the sky-style flat material (diffuse
+            //white, no spec, full roughness) so DLSS RR resolves the cloud
+            //silhouette rather than the mesh visible behind cloudTr ≈ 0.
+            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(cloudHitPosM);
+
+            float2 prevPixCM = GetLastFramePixelCoordinates_World(
+                cloudHitPosM, prevView, prevProjection, dims);
+            float2 curPinholePixCM = GetCurrentFramePixelCoordinates_World(
+                cloudHitPosM, view, projection, dims);
+            bool validPrevCM = (prevPixCM.x > -1e8f) && (curPinholePixCM.x > -1e8f);
+            float2 cloudMVm = validPrevCM ? (prevPixCM - curPinholePixCM) : float2(0, 0);
+            g_dlssMVec[DTid.xy] = cloudMVm;
+            biasMV = cloudMVm;
+
+            const float3 cloudNormalFromPassM = cloudNormalAndAlpha.xyz;
+            float3 cloudNormalM;
+            if (dot(cloudNormalFromPassM, cloudNormalFromPassM) > 0.25f)
             {
-                //DoF aware spec MV, pinhole on both ends like the surface MV above
-                float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
-                    reflData.xyz, prevView, prevProjection, dims, reflInstID);
-                float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
-                    reflData.xyz, view, projection, dims, reflInstID);
-                bool validRefl = (prevRefl.x > -1e8f) && (curRefl.x > -1e8f);
-                if (validRefl)
+                cloudNormalM = cloudNormalFromPassM;
+            }
+            else
+            {
+                float2 ndM = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+                float4 ndTargetM = mul(projectionI, float4(ndM.x, -ndM.y, 1, 1));
+                cloudNormalM = -normalize(mul(viewI, float4(ndTargetM.xyz, 0)).xyz);
+            }
+            g_dlssNormals[DTid.xy] = float4(cloudNormalM, 0.0f);
+
+            g_dlssDiffuseAlbedo[DTid.xy]  = float4(1.0f, 1.0f, 1.0f, 0.0f);
+            g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            g_dlssRoughness[DTid.xy]      = 1.0f;
+            g_dlssSpecHitDist[DTid.xy]    = 0.0f;
+            g_dlssSpecMVec[DTid.xy]       = float2(0.0f, 0.0f);
+            gOutput[uint3(DTid.xy, 5)]    = float4(1.0f, 1.0f, 1.0f, 1.0f);
+
+            //Use the mesh's instID for the disocclusion check, NOT the sky
+            //sentinel. g_sample_last still stores raygen's mesh instID
+            //(this override only affects the local biasInstID this frame),
+            //so a sentinel here would mismatch the prev sample every frame
+            //of a stable cloud-over-mesh view → bias=1 permanently → DLSS
+            //refuses to temporally accumulate the cloud and it stays noisy.
+            //Cloud↔mesh transition disocclusion is handled by DLSS RR's
+            //internal depth-disocclusion logic (cloud depth ≠ mesh depth).
+            biasInstID = load_instID(g_sample_current, pixelIdx);
+
+            g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+        }
+        else
+        {
+            //reconstruct surface for DLSS
+            uint sInstID = load_instID(g_sample_current, pixelIdx);
+            uint sPrimID = load_primID(g_sample_current, pixelIdx);
+            float2 sBary = load_bary(g_sample_current, pixelIdx);
+            SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, camPosWorld);
+            //DLSS RR input data
+            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
+
+            g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
+            g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
+            g_dlssRoughness[DTid.xy] = sv.Pr;
+            //debug mirror of diffuse albedo passed to DLSS RR
+            gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
+
+            float2 curPix = DTid.xy;
+            //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
+            //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
+            //pure scene motion in pinhole space, the lens offset cancels out
+            float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
+            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
+
+            bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
+
+            float2 mvPixels = validPrev ? (prevPix - curPinholePix) : float2(0.0, 0.0);
+
+            g_dlssMVec[curPix] = mvPixels;
+
+            biasInstID = sInstID;
+            biasMV = mvPixels;
+
+            //specular albedo
+            float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
+            g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
+
+            Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
+            g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
+
+            //specular MV from raygen's perfect reflection probe in scratch slice 4
+            float specularity = Luma(specularAlbedo);
+            float2 specMV = mvPixels;
+            bool validSpecReproj = false;
+            {
+                float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
+                uint   reflInstID = asuint(reflData.w);
+                if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
                 {
-                    specMV = prevRefl - curRefl;
-                    validSpecReproj = true;
+                    //DoF aware spec MV, pinhole on both ends like the surface MV above
+                    float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
+                        reflData.xyz, prevView, prevProjection, dims, reflInstID);
+                    float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
+                        reflData.xyz, view, projection, dims, reflInstID);
+                    bool validRefl = (prevRefl.x > -1e8f) && (curRefl.x > -1e8f);
+                    if (validRefl)
+                    {
+                        specMV = prevRefl - curRefl;
+                        validSpecReproj = true;
+                    }
                 }
             }
-        }
-        g_dlssSpecMVec[DTid.xy] = specMV;
+            g_dlssSpecMVec[DTid.xy] = specMV;
 
-        //same Reinhard pre-tonemap as the emitter path so DLSS RR sees a
-        //uniformly bounded input and the postprocess inversion is consistent
-        g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+            //same Reinhard pre-tonemap as the emitter path so DLSS RR sees a
+            //uniformly bounded input and the postprocess inversion is consistent
+            g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+        }
     }
 
     //====================================

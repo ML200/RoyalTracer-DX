@@ -8,10 +8,36 @@
 #include "../DXRHelper.h"
 #include "../glm/gtc/matrix_transform.hpp"  // glm::lookAt for floating origin
 
-void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
-    nv_helpers_dx12::CameraManip.setWindowSize(width, height);
+void Camera::ResetView() {
     nv_helpers_dx12::CameraManip.setLookat(
         glm::vec3(-1.5f, 1.5f, 3.5f), glm::vec3(0, 1.0f, 0), glm::vec3(0, 1, 0));
+
+    //Snap the floating origin back to absolute zero. Without this, the
+    //manipulator eye lives at (-1.5, 1.5, 3.5) in the OLD shifted frame
+    //while sceneOriginWorld is still parked far away from a previous
+    //flight — the absolute spawn comes out at (-1.5 + sceneOrigin,
+    //1.5 + sceneOrigin.y, 3.5 + sceneOrigin.z), nowhere near the
+    //expected world zero. Mirrors PollSceneOrigin's prev-view fix-up so
+    //the snap stays MV-continuous even before UploadGPUBuffer overrides
+    //prev = view below.
+    if (m_sceneOriginWorld != glm::vec3(0.0f)) {
+        const glm::vec3 shiftDelta = -m_sceneOriginWorld;  // newOrigin - oldOrigin = 0 - old
+        m_sceneOriginWorld = glm::vec3(0.0f);
+        m_originShifted    = true;
+        const XMMATRIX T = XMMatrixTranslation(shiftDelta.x,
+                                               shiftDelta.y,
+                                               shiftDelta.z);
+        m_prevView = XMMatrixMultiply(T, m_prevView);
+    }
+
+    //Flag the reset for UploadGPUBuffer (prevView=view snap) and for the
+    //renderer (DLSS history flush). Cleared by Camera::ConsumeResetPending.
+    m_resetPending = true;
+}
+
+void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
+    nv_helpers_dx12::CameraManip.setWindowSize(width, height);
+    ResetView();
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
@@ -135,6 +161,19 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     XMVECTOR det;
     matrices[2] = XMMatrixInverse(&det, matrices[0]);
     matrices[3] = XMMatrixInverse(&det, matrices[1]);
+
+    //On a camera reset, force prev = current so motion vectors land at zero.
+    //The previous pose is from a totally different (pre-reset) camera, so
+    //any non-zero MV is garbage — DLSS would lock onto the wrong history
+    //and ReSTIR's temporal reproject would land in arbitrary pixels. The
+    //flag stays set so the renderer can also flush DLSS RR history via
+    //ForceReset right after this call.
+    if (m_resetPending) {
+        m_prevView           = matrices[0];
+        m_prevProj           = matrices[1];
+        m_prevProjUnjittered = matrices[1];
+    }
+
     matrices[4] = m_prevView;
     matrices[5] = m_prevProj;
 

@@ -19,6 +19,13 @@ public:
     //returns true if resources were recreated, caller should rebuild SRV heap
     bool UpdateMode(ID3D12Device* device);
 
+    //Flag the next Evaluate to pass reset=eTrue to DLSS RR, dropping all
+    //temporal history. Called by the renderer when the camera teleports
+    //(Camera::ResetView) — without this, prevView=view from the camera
+    //reset path makes DLSS think the camera was static, so it would reuse
+    //pixels rendered from the pre-reset pose.
+    void ForceReset() { m_forceReset = true; }
+
     void Evaluate(
         ID3D12GraphicsCommandList* cmdList,
         ID3D12Device* device,

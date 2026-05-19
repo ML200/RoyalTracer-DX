@@ -199,6 +199,11 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
                        ImGuiSliderFlags_Logarithmic);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");
 
+    if (ImGui::Button("Reset Camera")) {
+        camera.ResetView();
+        flyCam.Reset();
+    }
+
     ImGui::Separator();
     ImGui::TextUnformatted("Depth of Field");
     ImGui::DragFloat("Aperture Radius",  &camera.apertureRadius, 0.001f, 0.0f, 1.0f, "%.4f");
@@ -718,6 +723,22 @@ void Editor::DrawCloudPanel(Camera& camera) {
             ImGui::SetTooltip("Limb softening distance (orbital views). Without\n"
                               "this the cloud layer reads as a hard bright ring\n"
                               "against the planet's silhouette.");
+
+        ImGui::SliderFloat("Top Variation",  &c.topVariationKm, 0.0f, 10.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Per cloud top altitude jitter. Each column's\n"
+                              "effective top is Layer Top + variation * noise,\n"
+                              "so 0 collapses to a flat slab top and larger\n"
+                              "values produce towering cumulus reaching well\n"
+                              "above Layer Top.");
+
+        ImGui::SliderFloat("Top Frequency",  &c.topFrequency,   0.0f, 0.5f, "%.3f /km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Horizontal frequency of the per cloud top altitude\n"
+                              "noise. Lower = neighbouring cumulus share top\n"
+                              "altitudes (long thunderstorm fronts), higher =\n"
+                              "tall and short cumulus alternate cloud to cloud.");
     }
 
     if (ImGui::CollapsingHeader("Density Field", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -746,6 +767,21 @@ void Editor::DrawCloudPanel(Camera& camera) {
             ImGui::SetTooltip("How aggressively the HF noise eats edges. 0 =\n"
                               "smooth Worley blobs, 1 = heavily eroded whispy\n"
                               "stratocumulus. Cores stay intact regardless.");
+
+        ImGui::SliderFloat("Coverage Edge Width", &c.covModFilterWidth, 0.01f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Schneider coverage threshold remap edge width.\n"
+                              "Smaller = sharper cloud silhouettes (hard edged\n"
+                              "cumulus), larger = softer transition between cloud\n"
+                              "and clear sky.");
+
+        ImGui::SliderFloat("Domain Warp",    &c.warpAmpKm,     0.0f, 3.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Low frequency domain warp amplitude. Pushes the\n"
+                              "base shape around so cumulus don't look like\n"
+                              "stamps on a grid. 0 disables warp (slightly\n"
+                              "faster, more obvious tiling). Auto attenuated\n"
+                              "with distance via the LOD blend.");
     }
 
     if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -768,6 +804,23 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "0 = strict sun direction (cheapest single ray).\n"
                               "2..6 = visibly softer self shadow when paired\n"
                               "with Shadow Cone Samples > 1.");
+
+        // Albedo is stored as three consecutive scalar floats in the cbuffer
+        // (HLSL scalar packing). C++ guarantees no padding between consecutive
+        // float members, so &albedoR is a valid float[3] for ColorEdit3.
+        ImGui::ColorEdit3("Single Scatter Albedo", &c.albedoR);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Per channel single scattering albedo. 0.995\n"
+                              "white = real water cumulus (almost lossless).\n"
+                              "Drop all three for pollution / dust loaded\n"
+                              "clouds, tint asymmetric for sunset rim experiments.");
+
+        ImGui::SliderFloat("Sun Tau Multiplier", &c.sunTauMult, 0.0f, 5.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Multiplier on the optical depth accumulated along\n"
+                              "the sun shadow ray. >1 deepens self shadow,\n"
+                              "<1 lifts the shadow side of cumulus. 1.0 keeps\n"
+                              "the integrator physically calibrated.");
     }
 
     if (ImGui::CollapsingHeader("Multi-Scatter Fill")) {
@@ -783,6 +836,20 @@ void Editor::DrawCloudPanel(Camera& camera) {
             ImGui::SetTooltip("HG eccentricity of the secondary lobe. Smaller\n"
                               "= more isotropic (more fill across the volume),\n"
                               "larger = still forward biased like the primary.");
+
+        ImGui::SliderFloat("MS Strength",        &c.msStrength,        0.0f, 20.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Global multiplier on the multi-scatter contribution.\n"
+                              "4.0 = Nubis Evolved baseline. 0 disables MS and\n"
+                              "clouds collapse to pure single scatter (very dark\n"
+                              "shadow sides and cores).");
+
+        ImGui::SliderFloat("MS Base Floor",      &c.msHeightFloor,     0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Minimum MS amplitude floor at cloud base (h=0).\n"
+                              "Without this real cumulus bases read as black;\n"
+                              "0.18 keeps them 'shaded white' the way real\n"
+                              "stratocumulus bases look from below.");
     }
 
     if (ImGui::CollapsingHeader("Animation")) {
@@ -809,6 +876,28 @@ void Editor::DrawCloudPanel(Camera& camera) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Artistic multiplier on the sky ambient term.\n"
                               "1.0 is physically scaled to the Bruneton sky.");
+
+        ImGui::SliderFloat("Sky Ambient Intensity", &c.ambientIntensity, 0.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Brightness multiplier on the sky dome contribution\n"
+                              "applied at every cloud sample. Stacks with Sky\n"
+                              "Ambient Scale (this controls per sample weight,\n"
+                              "the scale controls overall mix).");
+
+        ImGui::SliderFloat("Sky AO Scale",       &c.ambientAOScale,    0.0f, 2.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Scales how much the column density above a sample\n"
+                              "occludes the sky probe. 0 = sky reaches every\n"
+                              "sample regardless of overhead cloud, 1.0 = full\n"
+                              "physical attenuation through the overhead column.");
+
+        ImGui::SliderFloat("Sky AO Max OD",      &c.ambientODMax,      0.5f, 50.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Optical depth cap on the sky AO term. With this\n"
+                              "low (e.g. 2) thick overcast columns still leak\n"
+                              "~13%% sky into the base; raise to 8+ so dense\n"
+                              "overhead columns actually shut the sky term down.");
 
         bool gnd = c.groundBounce >= 0.5f;
         if (ImGui::Checkbox("Ground Bounce", &gnd))
@@ -929,6 +1018,55 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "samples below survive with probability\n"
                               "throughput/threshold. Lower = less variance,\n"
                               "higher = faster.");
+
+        ImGui::SliderFloat("Max Step",         &c.maxStepKm,    0.01f, 5.0f, "%.3f km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Cap on a single empty space step before adaptive\n"
+                              "growth kicks in. Smaller = more sample density in\n"
+                              "near empty regions but more steps wasted; larger\n"
+                              "= fewer wasted steps but risk of missing thin\n"
+                              "clouds at the start of the march.");
+
+        ImGui::SliderFloat("Step Growth",      &c.stepGrowth,   1.0f, 1.5f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Geometric growth factor on the in cloud step.\n"
+                              "Each fine step multiplies stride by this until\n"
+                              "the Max Fine Step ceiling. 1.0 = constant step,\n"
+                              "1.1 = aggressive growth (cheap, banding at edges).");
+
+        ImGui::SliderFloat("Zero Density",     &c.effectiveZeroDensity,
+                           1e-5f, 0.1f, "%.5f", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Density floor below which a sample is treated as\n"
+                              "empty (no in scatter, no transmittance update).\n"
+                              "Higher = skip more thin cloud edges (faster, more\n"
+                              "visible silhouette steps); lower = capture every\n"
+                              "wisp.");
+
+        ImGui::SliderFloat("Max Empty Step",   &c.maxEmptyStepKm,
+                           1.0f, 500.0f, "%.1f km", ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Absolute cap on the big empty space step. The\n"
+                              "march takes huge strides through distant clear\n"
+                              "sky; this clamps the stride so even at long\n"
+                              "distances we don't skip an entire cloud field\n"
+                              "in one step.");
+
+        ImGui::SliderFloat("Empty Growth/Km",  &c.emptyStepGrowthPerKm,
+                           0.0f, 2.0f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Empty step grows as (1 + t * this) with view ray\n"
+                              "distance. 0 = empty step never grows, 0.1 = ~10x\n"
+                              "growth per 100 km, 1.0 = aggressive (great for\n"
+                              "orbital views over deserts).");
+
+        ImGui::SliderFloat("Max Fine Step",    &c.maxFineStepKm, 0.1f, 10.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Ceiling on the in cloud step after geometric\n"
+                              "growth. Smaller = denser sampling deep in thick\n"
+                              "clouds, larger = lets the step balloon for cheap\n"
+                              "interiors at the cost of banding.");
     }
 
     if (ImGui::CollapsingHeader("Distance / Haze")) {
@@ -959,6 +1097,27 @@ void Editor::DrawCloudPanel(Camera& camera) {
             ImGui::SetTooltip("Atmospheric aerial-perspective multiplier in\n"
                               "front of clouds. 1.0 = physical, 0.0 = clouds\n"
                               "pop without haze attenuation against the sky.");
+
+        ImGui::SliderFloat("LOD Near",  &c.lodNearKm, 0.0f, 100.0f, "%.1f km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Below this distance the cloud noise runs at full\n"
+                              "quality (full domain warp, both HF erosion taps,\n"
+                              "cauliflower mid-frequency). Above LOD Far the noise\n"
+                              "drops to the simplified far-field path.");
+
+        ImGui::SliderFloat("LOD Far",   &c.lodFarKm,  1.0f, 500.0f, "%.1f km",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Distance at which the cloud noise reaches its\n"
+                              "simplified far-field state. Smaller band (Near→Far)\n"
+                              "= sharper LOD step, larger = smoother quality\n"
+                              "transition.");
+
+        // Keep LOD near <= far so the saturate( (d-near)/(far-near) ) blend
+        // doesn't divide by zero or invert.
+        if (c.lodNearKm >= c.lodFarKm)
+            c.lodNearKm = c.lodFarKm * 0.5f;
     }
 
     if (ImGui::Button("Reset Cloud Defaults")) {

@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            { "./bistro2/bistro2.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
+            { "./harbor2.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
             //{ "./car/car.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         };
     }
@@ -69,6 +69,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
         std::wcout << L"Console initialized" << std::endl;
     }
     auto scene = std::make_unique<BistroScene>();
-    EngineApp app(1280, 720, L"DXR Pathtracer - Engine Layer", std::move(scene));
+    EngineApp app(1920, 1080, L"DXR Pathtracer - Engine Layer", std::move(scene));
     return Win32Application::Run(&app, hInstance, nCmdShow);
 }

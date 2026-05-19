@@ -223,6 +223,45 @@ cbuffer CameraParams : register(b0)
     float cloud_renderDistanceKm;
     //Aerial-perspective haze multiplier in front of clouds.
     float cloud_hazeStrength;
+    //Per-cloud top altitude jitter — noise amplitude (km) and
+    //horizontal noise frequency (1/km). Controls towering cumulus.
+    float cloud_topVariationKm;
+    float cloud_topFrequency;
+    //Coverage modulation soft edge width + low-frequency domain warp
+    //amplitude (km). Filter width sharpens / softens silhouettes;
+    //warp amp breaks up the noise grid pattern.
+    float cloud_covModFilterWidth;
+    float cloud_warpAmpKm;
+    //Per-channel single-scattering albedo (white cloud ≈ 0.995).
+    float cloud_albedoR;
+    float cloud_albedoG;
+    float cloud_albedoB;
+    //Nubis Evolved multi-scatter: global amplitude + base floor that
+    //keeps cumulus bottoms from going black at h=0.
+    float cloud_msStrength;
+    float cloud_msHeightFloor;
+    //Sky ambient probe: brightness, AO scale on the column density
+    //above the sample, and max optical depth cap so dense overcast
+    //columns can actually shut the sky term down.
+    float cloud_ambientIntensity;
+    float cloud_ambientAOScale;
+    float cloud_ambientODMax;
+    //Multiplier on the sun shadow optical depth (>1 darker self
+    //shadow, <1 brighter).
+    float cloud_sunTauMult;
+    //Distance LOD blend band — full quality below near, simplified
+    //above far.
+    float cloud_lodNearKm;
+    float cloud_lodFarKm;
+    //Adaptive march bounds: small step cap, geometric growth factor,
+    //zero-density floor, big empty-space step cap + distance growth,
+    //fine step ceiling.
+    float cloud_maxStepKm;
+    float cloud_stepGrowth;
+    float cloud_effectiveZeroDensity;
+    float cloud_maxEmptyStepKm;
+    float cloud_emptyStepGrowthPerKm;
+    float cloud_maxFineStepKm;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -287,6 +326,35 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_RENDER_DISTANCE_KM     cloud_renderDistanceKm
 //Aerial-perspective haze multiplier.
 #define CLOUD_HAZE_STRENGTH          cloud_hazeStrength
+//Top altitude variability (per-cloud tops).
+#define CLOUD_TOP_VARIATION_KM       cloud_topVariationKm
+#define CLOUD_TOP_FREQ               cloud_topFrequency
+//Density shaping.
+#define CLOUD_COVMOD_FILTER_WIDTH    cloud_covModFilterWidth
+#define CLOUD_WARP_AMP_KM            cloud_warpAmpKm
+//Cloud albedo as a packed float3 from three scalar cbuffer slots
+//(scalar packing keeps the surrounding fields aligned without
+//manual padding).
+#define CLOUD_ALBEDO                 float3(cloud_albedoR, cloud_albedoG, cloud_albedoB)
+//Multi-scatter.
+#define CLOUD_MS_STRENGTH            cloud_msStrength
+#define CLOUD_MS_HEIGHT_FLOOR        cloud_msHeightFloor
+//Sky ambient.
+#define CLOUD_AMBIENT_INTENSITY      cloud_ambientIntensity
+#define CLOUD_AMBIENT_AO_SCALE       cloud_ambientAOScale
+#define CLOUD_AMBIENT_OD_MAX         cloud_ambientODMax
+//Sun shadow tau multiplier.
+#define CLOUD_SUN_TAU_MULT           cloud_sunTauMult
+//Distance LOD.
+#define CLOUD_LOD_NEAR_KM            cloud_lodNearKm
+#define CLOUD_LOD_FAR_KM             cloud_lodFarKm
+//Adaptive march step bounds.
+#define CLOUD_MAX_STEP_KM            cloud_maxStepKm
+#define CLOUD_STEP_GROWTH            cloud_stepGrowth
+#define CLOUD_EFFECTIVE_ZERO_DENSITY cloud_effectiveZeroDensity
+#define CLOUD_MAX_EMPTY_STEP_KM      cloud_maxEmptyStepKm
+#define CLOUD_EMPTY_STEP_GROWTH_PER_KM cloud_emptyStepGrowthPerKm
+#define CLOUD_MAX_FINE_STEP_KM       cloud_maxFineStepKm
 
 //====================================
 //CORE UTILITY HEADERS

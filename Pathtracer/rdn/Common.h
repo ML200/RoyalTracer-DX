@@ -239,11 +239,11 @@ struct CloudSettings {
     float enabled            = 1.0f;
     //coverage controls how much of the sky is filled with cumulus. 0
     //gives clear skies, ~0.5 is "scattered", 1 is overcast.
-    float coverage           = 0.62f;
+    float coverage           = 0.60f;
     //shell geometry: layer occupies [bottomKm, topKm] above the planet
     //surface. Typical fair-weather cumulus base sits 1..2 km, top 3..6.
     float layerBotKm         = 1.5f;
-    float layerTopKm         = 3.84f;
+    float layerTopKm         = 3.73f;
     //limb softening from orbit, in km of fade distance above cloud base
     //(prevents the layer reading as a hard ring at the planet horizon).
     float horizonFadeKm      = 2.0f;
@@ -252,18 +252,18 @@ struct CloudSettings {
     //Higher values make clouds read as solid walls instead of letting
     //the multi-scatter terms show through — for "fluffy" cumulus stay
     //in 6..15.
-    float extinction         = 9.0f;
+    float extinction         = 4.0f;
     //base shape Worley FBM frequency (1/km). The base octave runs at this
     //frequency, a second detail octave at ~2.7x sits on top. Lower =
     //larger cumulus clusters; 0.18 gives ~5 km cluster spacing which
     //reads as natural skies rather than the tiled "blobs on a grid"
     //look the single octave default produced.
-    float baseFrequency      = 0.271f;
+    float baseFrequency      = 0.321f;
     //high-frequency value-noise erosion (1/km) and its amount [0,1].
     //Eats the edges of the base blobs, producing the wispy detail that
     //distinguishes cumulus from raw spheres.
-    float hfFrequency        = 10.53f;
-    float hfAmount           = 0.80f;
+    float hfFrequency        = 7.27f;
+    float hfAmount           = 0.65f;
     //====================================
     // Nubis-3 lighting model (Schneider, SIGGRAPH)
     //====================================
@@ -273,12 +273,12 @@ struct CloudSettings {
     // silverIntensity: amplitude of the silver lobe (0..1).
     // silverSpread:    angular spread of the silver lobe (0..0.3).
     //                  Smaller = tighter halo, larger = wider glow.
-    float silverIntensity       =  0.34f;
-    float silverSpread          =  0.097f;
+    float silverIntensity       =  0.35f;
+    float silverSpread          =  0.088f;
     // Half angle of the cone traced sun shadow defocus cone, in degrees.
     // 0 = strict sun direction (cheapest). 2..6 = visibly softer self
     // shadows characteristic of real cumulus.
-    float shadowConeDeg         =  15.0f;
+    float shadowConeDeg         =  0.0f;
     // Secondary multi-scatter phase term: a broader HG modulated by
     // cloud depth + extinction-attenuated sun term. Captures the soft
     // fill on the shadow side without paying for a Wrenninge octave
@@ -289,8 +289,8 @@ struct CloudSettings {
     float secondaryStrength  = 0.45f;
     float secondaryG         = 0.18f;
     //wind drift in km/s (horizontal only). Animates noise via walltime.
-    float windX              = 0.04f;
-    float windZ              = 0.015f;
+    float windX              = -0.026f;
+    float windZ              = -0.037f;
     //view-transmittance cutoff for early-out — below this the cumulative
     //radiance contribution is below the sensor noise floor.
     float trEps              = 0.005f;
@@ -308,7 +308,7 @@ struct CloudSettings {
     float skyAmbient         = 1.0f;
     float groundBounce       = 1.0f;
     float groundAlbedo       = 0.20f;
-    float skyAmbientScale    = 1.0f;
+    float skyAmbientScale    = 0.37f;
     float groundScale        = 1.0f;
 
     //====================================
@@ -322,7 +322,7 @@ struct CloudSettings {
     // a no-clouds scene. rrThreshold sets the Russian roulette boundary
     // on view-march throughput.
     float cloudShadowOnSurfaces = 1.0f;
-    float rrThreshold        = 0.10f;
+    float rrThreshold        = 0.01f;
 
     //====================================
     // sampling counts (Monte Carlo)
@@ -351,13 +351,13 @@ struct CloudSettings {
     //of a high ceiling is minimal in nearby/dense scenes.
     //Cast to int at the use site (CB exposes as float for uniform
     //packing).
-    float viewStepsMax       = 128.0f;
+    float viewStepsMax       = 256.0f;
     //Base step size (km) for the fine portion of the adaptive view
     //march. Smaller = denser sampling = better quality, worse perf.
     //0.6 tuned for stratocumulus shells; bump to 1.0..1.5 to drop
     //sample count by ~half on thick cumulus where banding is hidden
     //by HF noise anyway.
-    float targetStepKm       = 0.6f;
+    float targetStepKm       = 0.5f;
     //Surface shadow march sample count (per cloud_cloudShadowOnSurfaces
     //NEE call). 1 = fast single-sample sphere-intersect path
     //(~4-5x cheaper than multi-sample), 2..6 = multi-tap shell
@@ -372,18 +372,110 @@ struct CloudSettings {
     //for speed. 10 / 60 km is the Nubis baseline; drop to 6 / 30
     //if bounce-ray clouds are an indirect-illumination niche.
     float cheapSteps         = 10.0f;
-    float cheapMaxLenKm      = 60.0f;
+    float cheapMaxLenKm      = 500.0f;
     //Cloud-eval distance limits. fadeDistanceKm starts the fade,
     //renderDistanceKm clamps the march. fadeDistanceKm must be <
     //renderDistanceKm. Lower both aggressively for ground-level
     //scenes where the horizon is < 50 km and far clouds aren't
     //visible anyway.
-    float fadeDistanceKm     = 2500.0f;
-    float renderDistanceKm   = 3000.0f;
+    float fadeDistanceKm     = 94.0f;
+    float renderDistanceKm   = 10000.0f;
     //Atmospheric haze in front of clouds (artistic multiplier on
     //the aerial perspective). 1.0 = physically calibrated, 0.0 =
     //clouds pop without haze attenuation against the sky.
-    float hazeStrength       = 1.0f;
+    float hazeStrength       = 0.96f;
+
+    //====================================
+    // shell geometry (top variability)
+    //====================================
+    //Per cloud top altitude jitter. The effective top of each
+    //cumulus column is layerTopKm + topVariationKm * noise, so
+    //topVariationKm = 0 collapses to a flat slab top, larger
+    //values produce towering cumulus that reach much higher than
+    //the baseline. topFrequency is the horizontal frequency of
+    //the noise (1/km), lower = larger cloud groups share a top
+    //altitude, higher = more chaotic top heights cloud to cloud.
+    float topVariationKm     = 2.02f;
+    float topFrequency       = 0.20f;
+
+    //====================================
+    // density field shaping
+    //====================================
+    //Coverage modulation filter width. Schneider's coverage threshold
+    //remap uses this as the soft edge width: smaller = sharper cloud
+    //silhouettes, larger = softer fade between cloud and clear sky.
+    float covModFilterWidth  = 0.3f;
+    //Low frequency domain warp amplitude (km). Pushes the base shape
+    //around so cumulus don't look like a stamped grid. 0 disables warp
+    //(faster, more obvious tiling). Skipped at distance via LOD blend.
+    float warpAmpKm          = 0.30f;
+
+    //====================================
+    // cloud albedo (single scattering tint)
+    //====================================
+    //Per channel single scattering albedo. Default 0.995 across the
+    //board is "white cloud, near unit albedo with a hair of absorption".
+    //Drop all three for pollution / dust loaded clouds; tint asymmetric
+    //for sunset rim experiments.
+    float albedoR            = 0.995f;
+    float albedoG            = 0.995f;
+    float albedoB            = 0.995f;
+
+    //====================================
+    // multi scatter shaping (Nubis Evolved single term)
+    //====================================
+    //Global multiplier on the secondary multi scatter contribution.
+    //4.0 is the Nubis Evolved baseline; 0 disables MS and clouds collapse
+    //to pure single scatter (very dark cores).
+    float msStrength         = 4.05f;
+    //Minimum MS amplitude floor at cloud base (h=0). Without this real
+    //cumulus bases read as black; 0.18 keeps them "shaded white".
+    float msHeightFloor      = 0.18f;
+
+    //====================================
+    // sky ambient probe
+    //====================================
+    //Brightness multiplier on the sky dome ambient contribution.
+    //ambientAOScale scales how much the column density above a sample
+    //occludes the sky probe. ambientODMax caps the resulting optical
+    //depth so dense overcast columns still shut the sky term down.
+    float ambientIntensity   = 0.85f;
+    float ambientAOScale     = 0.35f;
+    float ambientODMax       = 8.0f;
+
+    //====================================
+    // sun shadow march
+    //====================================
+    //Multiplier on the optical depth accumulated along the sun shadow
+    //ray. >1 deepens self shadows, <1 brightens them. 1.0 = physical.
+    float sunTauMult         = 2.01f;
+
+    //====================================
+    // distance LOD blend (noise quality fall off)
+    //====================================
+    //Distance band over which cloud noise tapers from full quality
+    //(<lodNearKm) to simplified (>lodFarKm). Larger band = smoother
+    //quality transition, smaller = sharper LOD step.
+    float lodNearKm          = 2.0f;
+    float lodFarKm           = 30.0f;
+
+    //====================================
+    // adaptive march step bounds
+    //====================================
+    //Largest empty space step taken when the hull says "no cloud here".
+    //maxStepKm is the base cap on a single empty step before adaptive
+    //growth, maxEmptyStepKm is the absolute cap. emptyStepGrowthPerKm
+    //grows the empty step with distance (1 + t * growth) so the march
+    //takes huge strides through distant empty sky. maxFineStepKm caps
+    //the in cloud step after geometric growth (stepGrowth per step).
+    //effectiveZeroDensity is the density floor below which a sample
+    //is treated as empty.
+    float maxStepKm                 = 0.5f;
+    float stepGrowth                = 1.02f;
+    float effectiveZeroDensity      = 1e-3f;
+    float maxEmptyStepKm            = 500.0f;
+    float emptyStepGrowthPerKm      = 0.0f;
+    float maxFineStepKm             = 10.0f;
 };
 
 //====================================

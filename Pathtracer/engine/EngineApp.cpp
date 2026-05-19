@@ -20,6 +20,7 @@ void EngineApp::OnInit() {
     m_renderer.InitSceneGPU();
 
     m_renderer.SetFlyCam(&m_flyCam);
+    m_flyCam.SetCamera(&m_renderer.GetCamera());
 
     ThrowIfFailed(m_renderer.GetContext().CmdList()->Close());
     m_prevTime = std::chrono::high_resolution_clock::now();

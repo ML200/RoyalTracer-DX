@@ -156,6 +156,21 @@ void Scene::PrepareInstanceProperties() {
                                         sceneOriginWorld.y,
                                         sceneOriginWorld.z, 0.0f);
 
+    //Origin delta since the last call. When non-zero (floating-origin snap
+    //or camera reset), every existing instance's prevObjectToWorld needs the
+    //same delta applied so it lives in the SAME shifted frame as prevView
+    //(which Camera::PollSceneOrigin / Camera::ResetView already adjusted).
+    //Without this, prevWorldPos = prevObjectToWorld * localPos lands in the
+    //OLD shifted frame, prevView projects it as if it were in the NEW
+    //frame, and the resulting MV is off by exactly shiftDelta. DLSS reads
+    //that as a giant per pixel jump and rejects all temporal history; the
+    //ReSTIR temporal pass reprojects into garbage pixels.
+    const XMVECTOR prevShift = XMVectorSet(prevSceneOriginWorld.x,
+                                            prevSceneOriginWorld.y,
+                                            prevSceneOriginWorld.z, 0.0f);
+    const XMVECTOR originDelta  = XMVectorSubtract(shift, prevShift);
+    const bool     originShifted = XMVector3LengthSq(originDelta).m128_f32[0] > 0.0f;
+
     // Only process dirty instances — reads/writes go to CPU shadow buffer (fast),
     // NOT the GPU upload heap (write-combined memory where reads are 10-100x slower)
     for (uint32_t idx : dirtyInstanceList) {
@@ -176,6 +191,18 @@ void Scene::PrepareInstanceProperties() {
             dst.prevObjectToWorld        = dst.objectToWorld;
             dst.prevObjectToWorldInverse = dst.objectToWorldInverse;
             dst.prevObjectToWorldNormal  = dst.objectToWorldNormal;
+
+            //Re-express prev in the NEW shifted frame after a floating-origin
+            //snap. Upper 3x3 (rotation/scale, and hence the normal matrix)
+            //is unaffected — only the translation row picks up -delta. The
+            //inverse has to be recomputed since changing the translation row
+            //of a 4x4 doesn't translate cleanly through XMMatrixInverse on
+            //the cached value; cost is one mat-inverse per existing instance
+            //per snap, which only happens when the origin actually moves.
+            if (originShifted) {
+                dst.prevObjectToWorld.r[3]   = XMVectorSubtract(dst.prevObjectToWorld.r[3], originDelta);
+                dst.prevObjectToWorldInverse = XMMatrixInverse(&det, dst.prevObjectToWorld);
+            }
         }
 
         dst.objectToWorld        = M;
@@ -206,6 +233,9 @@ void Scene::PrepareInstanceProperties() {
         if (idx < tlasInstances.size())
             tlasInstances[idx].transform = M;
     }
+
+    //Latch the origin used this frame so the next call can detect a snap.
+    prevSceneOriginWorld = sceneOriginWorld;
 }
 
 void Scene::UploadInstanceProperties() {

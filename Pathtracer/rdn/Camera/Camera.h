@@ -12,6 +12,10 @@
 class Camera {
 public:
     void Init(ID3D12Device* device, UINT width, UINT height);
+    //Snap the manipulator pose back to the initial spawn (matches Camera::Init).
+    //Editor "Reset Camera" button calls this; pair with FlyCamController::Reset()
+    //so the controller's cached forward doesn't immediately overwrite the pose.
+    void ResetView();
 
     //====================================
     //PER-FRAME
@@ -42,6 +46,17 @@ public:
     void                      ResetJitter()        { m_jitterFrameIndex = 0; }
 
     nv_helpers_dx12::Manipulator& Manipulator() { return nv_helpers_dx12::CameraManip; }
+
+    //True for one frame after Camera::ResetView() has been called. The
+    //renderer reads it (and clears it) to invalidate temporal history that
+    //references the pre-reset camera pose — DLSS RR history in particular,
+    //since the upload step will have snapped prevView = view so DLSS sees
+    //zero motion and would otherwise reuse the old frame's pixels.
+    bool ConsumeResetPending() {
+        const bool r = m_resetPending;
+        m_resetPending = false;
+        return r;
+    }
 
     //====================================
     //FLOATING ORIGIN
@@ -112,5 +127,9 @@ private:
     //inside one cell.
     glm::vec3 m_sceneOriginWorld = glm::vec3(0.0f);
     bool      m_originShifted    = false;
+    //Set by ResetView, consumed by Renderer after UploadGPUBuffer. Drives
+    //the prevView = view snap inside UploadGPUBuffer and the DLSS history
+    //flush in the renderer.
+    bool      m_resetPending     = false;
     static constexpr float kSceneOriginQuantumMeters = 1000.0f;
 };

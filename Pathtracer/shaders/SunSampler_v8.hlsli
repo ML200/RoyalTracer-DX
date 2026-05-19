@@ -210,10 +210,17 @@
 //LOD bias is also runtime tunable via the editor (SunSettings.skyStarLodBias).
 #define SKY_STAR_LOD_BIAS       skyStarLodBias
 
-//Lambertian albedo of the planet body, used when a ray hits the ground from
-//orbit. Ocean-dominated, lit by the same in-shader sun irradiance.
+//Lambertian albedo of the planet body. Set to zero because the real ground
+//is rendered as a path traced mesh elsewhere; the analytic planet body
+//here is only used in `EvaluatePlanetBody` and would otherwise produce a
+//flat ocean coloured disc that double draws with the mesh. The cloud
+//bounce term still uses its own CLOUD_GROUND_ALBEDO so cloud bases keep
+//their ground reflection illumination — the two are independent.
+//Black: the placeholder planet body in EvaluatePlanetBody is intentionally
+//invisible — actual planet rendering will come from real geometry rather
+//than this fallback sphere.
 #ifndef ATMOS_GROUND_ALBEDO
-#define ATMOS_GROUND_ALBEDO     float3(0.06f, 0.07f, 0.10f)
+#define ATMOS_GROUND_ALBEDO     float3(0.0f, 0.0f, 0.0f)
 #endif
 
 //====================================
@@ -644,11 +651,18 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 
         float3 sunTr = TransmittanceToSun(P, L, Rb, Rt);
 
-        //earth shadow
+        //earth shadow — smoothstep across a small angular band around the
+        //planet shadow boundary instead of binary 0/1. The hard step was
+        //visible as a horizontal line through the atmospheric haze at the
+        //altitude where view ray samples cross from "lit" to "in earth
+        //shadow". 0.005 in cos space ≈ 0.57° angular smoothing, comparable
+        //to the sun's apparent diameter so the resulting penumbra reads
+        //as physical instead of looking like a rendering artefact.
         float3 Pnorm = SafeNormalize(P);
         float sunCosZ = dot(Pnorm, L);
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
-        float earthShadow = (sunCosZ > cosHorizon) ? 1.0f : 0.0f;
+        float earthShadow = smoothstep(cosHorizon - 0.005f,
+                                       cosHorizon + 0.005f, sunCosZ);
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
 
@@ -686,14 +700,31 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 //    finalRadiance = sceneRadiance * transmittance + inScatter * SKY_INTENSITY
 //
 //Cheaper than IntegrateScattering: scene segments are typically short, so a
-//4-step march with 4-step transmittance-to-sun is plenty even for tens of km.
+//4 step march with 4 step transmittance to sun is plenty even for tens of km.
 //Distant outdoor objects (mountains 50+ km away) still get a meaningful tint.
+//
+//Each segment also queries cloud transmittance to the sun at its sample point
+//and modulates the in scatter accordingly. Without that query the integrator
+//treats the entire air column as fully sun lit, so view rays through the
+//shadow cast by an overhead cloud read as uniformly bright haze. A stratified
+//per pixel jitter on the sample position within each segment turns the sharp
+//cloud silhouette into per pixel noise instead of a banded contour, which
+//DLSS RR resolves.
 #ifndef ATMOS_AERIAL_VIEW_STEPS
 #define ATMOS_AERIAL_VIEW_STEPS  4
 #endif
 #ifndef ATMOS_AERIAL_LIGHT_STEPS
 #define ATMOS_AERIAL_LIGHT_STEPS 4
 #endif
+
+//Defined in Clouds_v8.hlsli (#included near the bottom of this file).
+//Forward declared here so ComputeAerialPerspective can query cloud shadow
+//at each in scatter sample without reordering the cloud / atmosphere header
+//dependency graph. The planet space variant matches the integrator's native
+//coordinate system (g_skyObserverPlanet + V * t), avoiding the WorldToPlanet
+//round trip and the flat earth reprojection that breaks for points the
+//caller computes as spherical projections rather than tangent plane samples.
+float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS);
 
 inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
 {
@@ -724,7 +755,14 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
 
 //Returns in-scatter in units of ATMOS_SOLAR_IRRADIANCE; caller scales by
 //SKY_INTENSITY (sunSunIntensity * sunSkyIntensity) to match scene exposure.
+//
+//`pixel` seeds the stratified jitter applied to each integration segment.
+//Required because the cloud shadow tap inside the loop is discontinuous at
+//cloud silhouettes; midpoint sampling aliases that discontinuity to the four
+//step boundaries and reads as a soft contour. Jitter turns the contour into
+//per pixel noise that DLSS RR resolves.
 float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
+                                uint2 pixel,
                                 out float3 transmittanceOut)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
@@ -761,29 +799,56 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);
 
+    //Unique salt vs the cloud march (71u) and shadow tap (73u) seeds.
+    uint seed = initRandomData(pixel, uint2(0, 0), (uint)time, 91u);
+
     //uniform spacing: scene segments are typically short and roughly homogeneous,
     //so the sqrt-spaced clustering used for full-sky integration is unnecessary
     [unroll]
     for (int i = 0; i < ATMOS_AERIAL_VIEW_STEPS; i++)
     {
-        float u0   = (float)i / (float)ATMOS_AERIAL_VIEW_STEPS;
-        float u1   = (float)(i + 1) / (float)ATMOS_AERIAL_VIEW_STEPS;
-        float tMid = tMin + (u0 + u1) * 0.5f * totalDist;
-        float ds   = (u1 - u0) * totalDist;
+        float u0    = (float)i / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float u1    = (float)(i + 1) / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float xi    = RandomFloatSingle(seed);
+        float tSamp = tMin + lerp(u0, u1, xi) * totalDist;
+        float ds    = (u1 - u0) * totalDist;
 
-        float3 P = O + V * tMid;
+        float3 P = O + V * tSamp;
         float alt = max(0.0f, length(P) - Rb);
         MediumSample med = SampleMedium(alt);
 
         float3 segTr = exp(-med.extinction * ds);
 
-        //earth shadow at this sample
+        //earth shadow at this sample — smoothstep across the planet shadow
+        //boundary (see IntegrateScattering for rationale; the binary 0/1
+        //version produced a visible horizontal line in the atmospheric
+        //haze where view ray samples crossed the boundary).
         float3 Pnorm = SafeNormalize(P);
         float sunCosZ = dot(Pnorm, L);
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
-        float earthShadow = (sunCosZ > cosHorizon) ? 1.0f : 0.0f;
+        float earthShadow = smoothstep(cosHorizon - 0.005f,
+                                       cosHorizon + 0.005f, sunCosZ);
 
         float3 sunTr = TransmittanceToSunCheap(P, L, Rb, Rt);
+
+        //Cloud shadow at this sample. Without it the integrator treats the
+        //entire view ray's air column as if the sun reaches every point of
+        //it, so a long view ray that crosses the shadow cast by an overhead
+        //cloud still reads as uniformly bright haze. Shares the toggle with
+        //surface NEE and the planet body shadow since all three target the
+        //same physical effect: the sun does not reach a point that a cloud
+        //occludes.
+        float cloudVis = 1.0f;
+        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        {
+            cloudVis = CloudSunVisibilityPlanet(P, L);
+            // Diffuse multi-scatter floor; see IntegrateAtmosphereSegment
+            // in Clouds_v8.hlsli for the rationale. Without it, scene rays
+            // viewed through a thick cloud's shadow read as black-then-
+            // reddish-far-haze (sunset look) because the near blue scatter
+            // contribution is fully killed.
+            cloudVis = max(cloudVis, 0.04f);
+        }
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
         float3 scatterInteg;
@@ -794,7 +859,7 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
         scatterInteg.z = (med.extinction.z > 1e-10f)
             ? scatterPhase.z * (1.0f - segTr.z) / med.extinction.z : scatterPhase.z * ds;
 
-        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr;
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr * cloudVis;
         totalInScatter += throughput * sunIllum * scatterInteg;
         throughput *= segTr;
     }
@@ -1139,25 +1204,23 @@ float3 EvaluateSkyBackground(float3 rayDir)
     //is allowed to remain at its physical (sun-lit) value here.
 
     //planet body, attenuated by the outgoing atmospheric leg back to the
-    //observer. Sun-side cloud shadow uses the hit point (not the observer)
-    //because the planet ground may be far away and live under different
-    //cloud cover than the camera — same lookup pattern as mesh surface NEE
-    //in raygen.
+    //observer. Cloud shadow is applied as a global cover scalar instead
+    //of a per pixel hit point tap: the per pixel tap exposed the cloud
+    //cover pattern at the planet hit through any translucent cloud in
+    //the foreground (the planet body shadow shape ghosted through cloud
+    //as a "cover map projected on the ground"). For low sun the planet
+    //hit can be 100+ km away so the visible pattern looked completely
+    //unrelated to the local cloud being seen through. Global scalar
+    //removes the pattern entirely; loses spatially varying ground
+    //shadows but stops the cover map projection artefact.
     float3 planetBody = float3(0, 0, 0);
     if (hitPlanet)
     {
         planetBody = EvaluatePlanetBody(O, v, S.dirWS) * viewTr;
         if (cloud_cloudShadowOnSurfaces > 0.5f)
         {
-            float tG0, tG1;
-            if (RaySphereIntersect(O, v, ATMOS_BOTTOM_RADIUS, tG0, tG1) && tG0 > 0.0f)
-            {
-                float3 Pplanet    = O + v * tG0;
-                float3 PworldHit  = float3(Pplanet.x,
-                                           Pplanet.y - ATMOS_BOTTOM_RADIUS,
-                                           Pplanet.z) * WORLD_UNITS_PER_KM;
-                planetBody *= CloudSunVisibility(PworldHit, S.dirWS);
-            }
+            float coverage = saturate(CLOUD_COVERAGE_BASE);
+            planetBody    *= (1.0f - 0.85f * coverage);
         }
     }
 
@@ -1223,24 +1286,22 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
                                          * lerp(1.6f, 1.0f, pow(mu, 0.7f));
     nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f) * (1.0f - tw);
 
-    //Planet body with per-pixel cloud shadow at the ground hit point.
-    //The outgoing atmospheric transmittance from hit to observer is the
-    //combined transmittance applied by the caller — not multiplied here.
+    //Planet body with global cover proxy for cloud shadow. Per pixel
+    //hit point taps exposed the cover map at the planet hit through
+    //translucent foreground cloud (the planet body shadow shape ghosted
+    //through cloud as a projection of cloud cover at a far away
+    //horizon hit) — same fix as the bounce term and the
+    //EvaluateSkyBackground path. Outgoing atmospheric transmittance
+    //from hit to observer is the combined transmittance applied by
+    //the caller, not multiplied here.
     float3 planetBody = float3(0, 0, 0);
     if (hitPlanet)
     {
         planetBody = EvaluatePlanetBody(O, v, S.dirWS);
         if (cloud_cloudShadowOnSurfaces > 0.5f)
         {
-            float tG0, tG1;
-            if (RaySphereIntersect(O, v, ATMOS_BOTTOM_RADIUS, tG0, tG1) && tG0 > 0.0f)
-            {
-                float3 Pplanet   = O + v * tG0;
-                float3 PworldHit = float3(Pplanet.x,
-                                          Pplanet.y - ATMOS_BOTTOM_RADIUS,
-                                          Pplanet.z) * WORLD_UNITS_PER_KM;
-                planetBody *= CloudSunVisibility(PworldHit, S.dirWS);
-            }
+            float coverage = saturate(CLOUD_COVERAGE_BASE);
+            planetBody    *= (1.0f - 0.85f * coverage);
         }
     }
 

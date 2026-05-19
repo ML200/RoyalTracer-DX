@@ -1,6 +1,8 @@
 #include "FlyCamController.h"
 #include "../Input/InputManager.h"
 #include "../../rdn/manipulator.h"
+#include "../../rdn/Camera/Camera.h"
+#include "../../rdn/glm/gtc/matrix_transform.hpp"
 #include <cmath>
 #include <algorithm>
 
@@ -8,44 +10,77 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+//Mirrors ATMOS_BOTTOM_RADIUS (km) * WORLD_UNITS_PER_KM (1000 m/km) from
+//SunSampler_v8.hlsli. The shader's WorldToPlanet pins the world tangent
+//point at world Y=0, so the planet center sits this far below origin along
+//world -Y. Keep in sync if either shader constant changes.
+static constexpr float kPlanetRadiusM = 6360.0f * 1000.0f;
+
 void FlyCamController::InitFromManipulator() {
     glm::vec3 eye, center, up;
     nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
-    glm::vec3 fwd = glm::normalize(center - eye);
-    m_pitch = -asinf(glm::clamp(fwd.y, -1.0f, 1.0f)) * (180.0f / (float)M_PI);
-    m_yaw   = atan2f(fwd.x, fwd.z) * (180.0f / (float)M_PI);
+    m_fwd = glm::normalize(center - eye);
     m_initialized = true;
 }
 
 void FlyCamController::Update(float dt) {
     if (!m_initialized) InitFromManipulator();
 
+    glm::vec3 eye, center, manipUp;
+    nv_helpers_dx12::CameraManip.getLookat(eye, center, manipUp);
+
+    //Planet-radial up. Built from absolute world position (manipulator eye +
+    //floating origin offset) so the radial direction stays consistent across
+    //origin snaps. Near the world origin (where the test scene lives) this
+    //reduces to ~(0, 1, 0); the tilt only becomes visible after flying tens
+    //of km laterally or climbing to high altitude.
+    const glm::vec3 sceneOrigin = m_camera ? m_camera->getSceneOriginWorld() : glm::vec3(0.0f);
+    const glm::vec3 eyeAbs      = eye + sceneOrigin;
+    const glm::vec3 planetCenter(0.0f, -kPlanetRadiusM, 0.0f);
+    const glm::vec3 up          = glm::normalize(eyeAbs - planetCenter);
+
+    //Mouse rotation expressed in the local frame defined by up.
     if (InputManager::GetMouseButton(0)) {
-        XMFLOAT2 delta = InputManager::GetMouseDelta();
-        m_yaw   -= delta.x * mouseSensitivity;
-        m_pitch += delta.y * mouseSensitivity;
-        m_pitch  = std::clamp(m_pitch, -89.0f, 89.0f);
+        const XMFLOAT2 d = InputManager::GetMouseDelta();
+        const float toRad = (float)(M_PI / 180.0);
+        float dYaw   = -d.x * mouseSensitivity * toRad;
+        float dPitch = -d.y * mouseSensitivity * toRad;
+
+        //Pitch clamp at ±89° from the local horizon; prevents gimbal flip
+        //when looking straight along ±up.
+        const float kMaxPitch = 89.0f * toRad;
+        const float curPitch  = asinf(glm::clamp(glm::dot(m_fwd, up), -1.0f, 1.0f));
+        const float newPitch  = glm::clamp(curPitch + dPitch, -kMaxPitch, kMaxPitch);
+        dPitch = newPitch - curPitch;
+
+        const glm::mat3 Ryaw  = glm::mat3(glm::rotate(glm::mat4(1.0f), dYaw, up));
+        const glm::vec3 fwdY  = Ryaw * m_fwd;
+        const glm::vec3 right = glm::normalize(glm::cross(fwdY, up));
+        const glm::mat3 Rpit  = glm::mat3(glm::rotate(glm::mat4(1.0f), dPitch, right));
+        m_fwd                 = glm::normalize(Rpit * fwdY);
     }
 
-    float yawRad   = m_yaw   * ((float)M_PI / 180.0f);
-    float pitchRad = m_pitch * ((float)M_PI / 180.0f);
-
-    glm::vec3 fwd = glm::normalize(glm::vec3(
-        cosf(pitchRad) * sinf(yawRad), -sinf(pitchRad), cosf(pitchRad) * cosf(yawRad)));
-    glm::vec3 worldUp(0, 1, 0);
-    glm::vec3 right = glm::normalize(glm::cross(fwd, worldUp));
+    const glm::vec3 right = glm::normalize(glm::cross(m_fwd, up));
 
     glm::vec3 move(0.0f);
-    if (InputManager::GetKey('W'))        move += fwd;
-    if (InputManager::GetKey('S'))        move -= fwd;
+    if (InputManager::GetKey('W'))        move += m_fwd;
+    if (InputManager::GetKey('S'))        move -= m_fwd;
     if (InputManager::GetKey('D'))        move += right;
     if (InputManager::GetKey('A'))        move -= right;
-    if (InputManager::GetKey(VK_SPACE))   move += worldUp;
-    if (InputManager::GetKey(VK_CONTROL)) move -= worldUp;
+    if (InputManager::GetKey(VK_SPACE))   move += up;
+    if (InputManager::GetKey(VK_CONTROL)) move -= up;
 
-    glm::vec3 eye, center, up;
-    nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
     if (glm::length(move) > 0.0f) eye += glm::normalize(move) * (moveSpeed * dt);
-    center = eye + fwd;
-    nv_helpers_dx12::CameraManip.setLookat(eye, center, worldUp);
+
+    //Clamp the camera above the analytical planet surface. Done in absolute
+    //coords (eyeAbs vs planetCenter) so the floating origin offset is honoured.
+    //Project radially outward to the surface if the move pushed us inside.
+    const glm::vec3 eyeAbsNew = eye + sceneOrigin;
+    const glm::vec3 delta     = eyeAbsNew - planetCenter;
+    const float     r         = glm::length(delta);
+    if (r < kPlanetRadiusM && r > 1e-3f)
+        eye += delta * ((kPlanetRadiusM - r) / r);
+
+    center = eye + m_fwd;
+    nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
 }
