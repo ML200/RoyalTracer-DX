@@ -268,6 +268,19 @@ private:
     ComPtr<ID3D12Resource> m_cloudCoverageTexture;
     ComPtr<ID3D12Resource> m_cloudCoverageUploadHeap;
     void InitCloudCoverageTexture();
+
+    //Spatiotemporal blue noise array — 128x128x64 RGBA8 Texture2DArray
+    //filled once by Pass_stbn_bake_v8.hlsl. The cloud shader's CloudRand4
+    //samples this instead of evaluating a white noise hash, so the cone
+    //shadow taps and per pixel step jitter carry a blue noise spatial
+    //spectrum that DLSS RR's spatial filter cleanly removes. Wired up the
+    //same way as the cloud noise bake (private 1 UAV heap, root sig, PSO)
+    //because it runs before CreateShaderResourceHeap.
+    ComPtr<ID3D12Resource>       m_cloudSTBNTexture;
+    ComPtr<ID3D12DescriptorHeap> m_cloudSTBNBakeHeap;
+    ComPtr<ID3D12RootSignature>  m_cloudSTBNBakeSig;
+    ComPtr<ID3D12PipelineState>  m_cloudSTBNBakePSO;
+    void BakeCloudSTBNTexture();
     //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —
     //the shader formula `saturate(base * map * 2)` collapses to `base`
     //when `map = 0.5`, so a grey fallback restores the pre-coverage-map

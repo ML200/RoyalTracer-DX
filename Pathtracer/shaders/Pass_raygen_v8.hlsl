@@ -111,8 +111,14 @@ inline bool TraceCameraRay(
         //   output_primary = output_primary * cloudTr + cloudL
         //then resolves to (sun * combinedTr) + (everything else), giving
         //the sun the correct combined atmosphere+cloud attenuation
-        //automatically.
-        const float3 sun = EvaluateSun(rayDir);
+        //automatically. EvaluateSunUnattenuated (NOT EvaluateSun) is
+        //mandatory here: the standard EvaluateSun bakes
+        //AtmosphericTransmittance(sunDir) into S.tint, and combinedTr along
+        //a sun-disc view ray already integrates that same path, so the
+        //composite would double-attenuate. At sunset that crushes the disc
+        //below the cloud silver-lining inscatter (which only attenuates
+        //once, via per-sample sunAtmosT at cloud altitude).
+        const float3 sun = EvaluateSunUnattenuated(rayDir);
         float3 skyL1     = (length(sun) > 0.0f) ? sun : float3(0, 0, 0);
 
         gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);

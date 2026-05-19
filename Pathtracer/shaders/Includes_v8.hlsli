@@ -166,6 +166,17 @@ cbuffer CameraParams : register(b0)
     float skyStarLodBias;
     float skyStarThreshold;
     float skyNightBaseIntensity;
+    //atmosphere quality + look (Bruneton march). Mirror SunSettings tail
+    //in Common.h. Cast int fields at the use site because the cbuffer
+    //exposes them as float for uniform scalar packing.
+    float atmos_viewSteps;
+    float atmos_lightSteps;
+    float atmos_aerialViewSteps;
+    float atmos_aerialLightSteps;
+    float atmos_multiScatterFactor;
+    float atmos_cloudShadowConeDeg;
+    float atmos_cloudShadowFloor;
+    float atmos_earthShadowSoftness;
     //volumetric cloud knobs, mirror CloudSettings in Common.h (same order!)
     //Scalar packing concatenates these into the existing cbuffer register
     //layout — no padding needed because every field is float.
@@ -240,6 +251,9 @@ cbuffer CameraParams : register(b0)
     //keeps cumulus bottoms from going black at h=0.
     float cloud_msStrength;
     float cloud_msHeightFloor;
+    //Multi-scatter model selector (cast to int at the use site).
+    //0 = Nubis sqrt(Tdir) shortcut, 1 = 2 octave Wrenninge, 2 = 3 octave.
+    float cloud_msMode;
     //Sky ambient probe: brightness, AO scale on the column density
     //above the sample, and max optical depth cap so dense overcast
     //columns can actually shut the sky term down.
@@ -280,6 +294,24 @@ cbuffer CameraParams : register(b0)
 #define SKY_INTENSITY_VAL   (sunSunIntensity * sunSkyIntensity)
 #define SKY_INTENSITY       (sunSunIntensity * sunSkyIntensity)
 #define GLOBAL_EMISSION_STRENGTH globalEmissionStrength
+
+//Atmosphere quality + look redirects. SunSampler_v8.hlsli wraps each ATMOS_*
+//constant in #ifndef, so defining them here (which is included before that
+//file at line 467) overrides the static fallbacks and binds the atmosphere
+//integrator to the editor driven cbuffer fields. Loop bounds cast to int
+//at the use site because the CB exposes them as float for uniform packing.
+#define ATMOS_VIEW_STEPS              ((int)atmos_viewSteps)
+#define ATMOS_LIGHT_STEPS             ((int)atmos_lightSteps)
+#define ATMOS_AERIAL_VIEW_STEPS       ((int)atmos_aerialViewSteps)
+#define ATMOS_AERIAL_LIGHT_STEPS      ((int)atmos_aerialLightSteps)
+#define ATMOS_MULTI_SCATTER_FACTOR    atmos_multiScatterFactor
+//Atmosphere look knobs not used inside SunSampler_v8.hlsli — read directly
+//by Clouds_v8.hlsli (cloud shadow tap on atmospheric samples, earth shadow
+//smoothstep band). The macros below give the cloud integrator a stable
+//name in case the cbuffer field is renamed later.
+#define ATMOS_CLOUD_SHADOW_CONE_DEG   atmos_cloudShadowConeDeg
+#define ATMOS_CLOUD_SHADOW_FLOOR      atmos_cloudShadowFloor
+#define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
 
 //Volumetric cloud knob redirects. Clouds_v8.hlsli wraps each constant in
 //#ifndef so defining them here overrides the static fallbacks and binds
@@ -339,6 +371,10 @@ cbuffer CameraParams : register(b0)
 //Multi-scatter.
 #define CLOUD_MS_STRENGTH            cloud_msStrength
 #define CLOUD_MS_HEIGHT_FLOOR        cloud_msHeightFloor
+//Multi-scatter mode selector (0 = shortcut, 1 = 2-octave, 2 = 3-octave).
+//Cast at the use site because the cbuffer exposes it as float for uniform
+//packing — matches the same pattern as CLOUD_VIEW_STEPS_MAX et al.
+#define CLOUD_MS_MODE                ((int)cloud_msMode)
 //Sky ambient.
 #define CLOUD_AMBIENT_INTENSITY      cloud_ambientIntensity
 #define CLOUD_AMBIENT_AO_SCALE       cloud_ambientAOScale

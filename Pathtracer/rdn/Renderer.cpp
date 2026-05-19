@@ -237,6 +237,10 @@ void Renderer::InitDevice() {
         //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
         //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
         InitCloudCoverageTexture();
+        //Bake the 128x128x64 spatiotemporal blue noise array. SRV lands at
+        //CLOUD_STBN_HEAP_SLOT (register t41). Drives CloudRand4 so the
+        //cloud march's per pixel jitter has blue noise spatial spectrum.
+        BakeCloudSTBNTexture();
 
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(

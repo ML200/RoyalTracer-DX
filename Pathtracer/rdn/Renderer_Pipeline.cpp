@@ -362,14 +362,20 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 40, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Volumetric cloud noise 3D texture (t42, g_cloudNoise in Includes_v8.hlsli)
     // at heap slot CLOUD_NOISE_HEAP_SLOT (65). Baked once by BakeCloudNoiseTexture
-    // — see Pass_cloudnoise_bake_v8.hlsl. t41 is skipped to leave room for the
-    // optional STBN array in Clouds_v8.hlsli (gated by CLOUD_STBN_AVAILABLE).
+    // — see Pass_cloudnoise_bake_v8.hlsl.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 42, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Planet-scale cloud coverage 2D texture (t43, g_cloudCoverage in
     // Includes_v8.hlsli) at heap slot CLOUD_COVERAGE_HEAP_SLOT (66). NASA
     // Blue Marble equirectangular 8192×4096 luminance map, loaded once by
     // InitCloudCoverageTexture.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 43, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Spatiotemporal blue noise Texture2DArray (t41, g_cloudSTBN in
+    // Clouds_v8.hlsli) at heap slot CLOUD_STBN_HEAP_SLOT (67). 128×128×64
+    // RGBA8 baked once by BakeCloudSTBNTexture (Pass_stbn_bake_v8.hlsl).
+    // Placed last in the descriptor table because t41 was added after
+    // t42 / t43 were already wired up; the register binding is what the
+    // shader sees, the heap order doesn't matter.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 41, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -1010,6 +1016,24 @@ void Renderer::CreateShaderResourceHeap() {
         nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
     }
 
+    // Slot 67: spatiotemporal blue noise Texture2DArray SRV (t41, g_cloudSTBN
+    // in Clouds_v8.hlsli). 128x128x64 RGBA8 filled at startup by
+    // BakeCloudSTBNTexture (Pass_stbn_bake_v8.hlsl). Cloud shader's CloudRand4
+    // samples this via .Load(uint4(px, slice, 0)) to drive cone shadow taps,
+    // step jitter, and atmospheric cloud shadow cone with a blue noise spatial
+    // spectrum that DLSS RR cleanly removes.
+    if (m_cloudSTBNTexture) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                        = m_cloudSTBNTexture->GetDesc().Format;
+        d.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.MipLevels      = m_cloudSTBNTexture->GetDesc().MipLevels;
+        d.Texture2DArray.ArraySize      = m_cloudSTBNTexture->GetDesc().DepthOrArraySize;
+        dev->CreateShaderResourceView(m_cloudSTBNTexture.Get(), &d, handle); next();
+    } else {
+        nullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY);
+    }
+
     // Bindless textures
     UINT globalTexIdx = 0;
     auto writeBatch = [&](UINT heapBase, UINT count) {
@@ -1587,6 +1611,126 @@ void Renderer::BakeCloudNoiseTexture() {
     const auto cpu_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                             t_end - t_start).count() / 1000.0;
     LOG(L"[CloudNoise] Recorded bake dispatch in " << cpu_ms
+        << L" ms CPU (GPU work completes at init cmd list flush)");
+}
+
+//====================================
+//SPATIOTEMPORAL BLUE NOISE ARRAY (CloudRand4 source)
+//====================================
+//Bakes a 128x128x64 RGBA8 Texture2DArray of spatiotemporal blue noise. The
+//runtime cloud shader's CloudRand4 fetches from this array at register t41
+//instead of evaluating a white noise hash, so the cone shadow taps and per
+//pixel step jitter carry a blue noise spatial spectrum. DLSS RR's spatial
+//filter cleanly removes blue noise (energy lives in the high frequencies
+//the filter passes) but leaves visible per pixel grain on white noise.
+//
+//Single dispatch — see Pass_stbn_bake_v8.hlsl for the bake algorithm and
+//its limitations vs true void and cluster STBN.
+//
+//Mirrors the BakeCloudNoiseTexture structure: private 1 UAV heap, root
+//signature, and PSO, because the bake runs before CreateShaderResourceHeap.
+void Renderer::BakeCloudSTBNTexture() {
+    SCOPE_TIMER("BakeCloudSTBNTexture");
+    auto* dev = m_ctx.Device();
+
+    constexpr UINT kW      = 128;
+    constexpr UINT kH      = 128;
+    constexpr UINT kSlices = 64;
+
+    const auto t_start = std::chrono::high_resolution_clock::now();
+    LOG(L"[CloudSTBN] Baking " << kW << L"x" << kH << L"x" << kSlices
+        << L" RGBA8 spatiotemporal blue noise array ("
+        << ((size_t)kW * kH * kSlices * 4u / 1024u) << L" KB)...");
+
+    //--- 1. Create the destination Texture2DArray (UAV-capable).
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width              = kW;
+    td.Height             = kH;
+    td.DepthOrArraySize   = (UINT16)kSlices;
+    td.MipLevels          = 1;
+    td.Format             = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count   = 1;
+    td.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    td.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+        IID_PPV_ARGS(&m_cloudSTBNTexture)));
+    m_cloudSTBNTexture->SetName(L"CloudSTBNTexture");
+
+    //--- 2. Private shader-visible heap for the bake's UAV (1 descriptor).
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+        hd.NumDescriptors = 1;
+        hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        ThrowIfFailed(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_cloudSTBNBakeHeap)));
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension                  = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        ud.Format                         = DXGI_FORMAT_R8G8B8A8_UNORM;
+        ud.Texture2DArray.ArraySize       = kSlices;
+        dev->CreateUnorderedAccessView(m_cloudSTBNTexture.Get(), nullptr, &ud,
+            m_cloudSTBNBakeHeap->GetCPUDescriptorHandleForHeapStart());
+    }
+
+    //--- 3. Minimal root signature: one descriptor table holding one UAV at
+    //       register(u0) — matches Pass_stbn_bake_v8.hlsl.
+    {
+        CD3DX12_DESCRIPTOR_RANGE1 range;
+        range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0,
+                   D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
+        CD3DX12_ROOT_PARAMETER1 param;
+        param.InitAsDescriptorTable(1, &range);
+
+        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
+        desc.Init_1_1(1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+        ComPtr<ID3DBlob> sig, err;
+        HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &sig, &err);
+        if (FAILED(hr)) {
+            if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+            ThrowIfFailed(hr);
+        }
+        ThrowIfFailed(dev->CreateRootSignature(0,
+            sig->GetBufferPointer(), sig->GetBufferSize(),
+            IID_PPV_ARGS(&m_cloudSTBNBakeSig)));
+    }
+
+    //--- 4. Compile the CS and build the compute PSO.
+    {
+        ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(
+            L"Pass_stbn_bake_v8.hlsl", L"main");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = m_cloudSTBNBakeSig.Get();
+        pd.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
+        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
+            IID_PPV_ARGS(&m_cloudSTBNBakePSO)));
+    }
+
+    //--- 5. Dispatch on the init cmd list.
+    auto* cmd = m_ctx.CmdList();
+    ID3D12DescriptorHeap* heaps[] = { m_cloudSTBNBakeHeap.Get() };
+    cmd->SetDescriptorHeaps(1, heaps);
+    cmd->SetComputeRootSignature(m_cloudSTBNBakeSig.Get());
+    cmd->SetPipelineState(m_cloudSTBNBakePSO.Get());
+    cmd->SetComputeRootDescriptorTable(0,
+        m_cloudSTBNBakeHeap->GetGPUDescriptorHandleForHeapStart());
+    cmd->Dispatch(kW / 8, kH / 8, kSlices);
+
+    //--- 6. UAV barrier + transition to SRV state.
+    D3D12_RESOURCE_BARRIER bars[2] = {};
+    bars[0].Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    bars[0].UAV.pResource = m_cloudSTBNTexture.Get();
+    bars[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_cloudSTBNTexture.Get(),
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV);
+    cmd->ResourceBarrier(2, bars);
+
+    const auto t_end = std::chrono::high_resolution_clock::now();
+    const auto cpu_ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                            t_end - t_start).count() / 1000.0;
+    LOG(L"[CloudSTBN] Recorded bake dispatch in " << cpu_ms
         << L" ms CPU (GPU work completes at init cmd list flush)");
 }
 

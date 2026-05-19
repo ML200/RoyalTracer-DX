@@ -670,6 +670,96 @@ void Editor::DrawSunPanel(Camera& camera) {
         }
     }
 
+    if (ImGui::CollapsingHeader("Atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
+        //Bruneton atmosphere march quality. View / light steps drive the
+        //dominant cost of every sky / cloud pixel (each cloud shell phase
+        //integrates ATMOS_VIEW_STEPS atmospheric samples + ATMOS_LIGHT_STEPS
+        //sun ray taps per sample). Aerial perspective is a separate cheap
+        //march for the haze in front of meshes.
+        int v;
+
+        v = (int)s.atmosViewSteps;
+        if (ImGui::SliderInt("View Steps", &v, 4, 32))
+            s.atmosViewSteps = (float)v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Per ray atmosphere sample count. Dominant cost of\n"
+                              "the sky / unified cloud march. 12 = Bruneton\n"
+                              "baseline; raise for smoother gradients on long\n"
+                              "horizon rays, drop to 6..8 for cheap previews.");
+
+        v = (int)s.atmosLightSteps;
+        if (ImGui::SliderInt("Light Steps", &v, 2, 16))
+            s.atmosLightSteps = (float)v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Sun ray transmittance step count for each\n"
+                              "atmosphere sample. Mostly affects the spectral\n"
+                              "accuracy of the sunset tint; 8 is plenty for\n"
+                              "smooth gradients, raise only if you see banding\n"
+                              "in the orange band at low sun.");
+
+        v = (int)s.atmosAerialViewSteps;
+        if (ImGui::SliderInt("Aerial View Steps", &v, 2, 16))
+            s.atmosAerialViewSteps = (float)v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("View ray sample count inside ComputeAerialPerspective\n"
+                              "(haze in front of meshes). 4 is the baseline;\n"
+                              "doubling smooths long mesh ray haze gradients.");
+
+        v = (int)s.atmosAerialLightSteps;
+        if (ImGui::SliderInt("Aerial Light Steps", &v, 2, 16))
+            s.atmosAerialLightSteps = (float)v;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Sun ray step count inside ComputeAerialPerspective.\n"
+                              "Same rationale as the main Light Steps but for the\n"
+                              "aerial perspective march only.");
+
+        ImGui::SliderFloat("Multi Scatter Factor", &s.atmosMultiScatterFactor, 0.5f, 3.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Boost folded into the per sample atmospheric in\n"
+                              "scatter rate. 1.0 = pure single scatter (slightly\n"
+                              "dim), 1.1 = Hillaire's tuned factor, 1.3..1.6 =\n"
+                              "stylized brighter sky.");
+
+        ImGui::SliderFloat("Cloud Shadow Cone (deg)", &s.atmosCloudShadowConeDeg, 0.0f, 15.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Half angle of the cone the atmospheric cloud\n"
+                              "shadow tap samples. Wider = softer shafts of\n"
+                              "light through cloud gaps, more bleed across\n"
+                              "cloud edges; narrower = sharper shafts but more\n"
+                              "visible per pixel stepping until DLSS RR resolves\n"
+                              "the cone jitter. 5 degrees was the previous hard\n"
+                              "coded default.");
+
+        ImGui::SliderFloat("Cloud Shadow Floor", &s.atmosCloudShadowFloor, 0.0f, 0.5f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Diffuse MS floor for the cloud shadow tap on\n"
+                              "atmospheric samples. Without a floor, near\n"
+                              "atmospheric samples under thick cloud die\n"
+                              "completely and the integral is dominated by\n"
+                              "reddened far samples (sunset look mid day).\n"
+                              "0.04 keeps the near haze at ~4 percent of its\n"
+                              "unshadowed value.");
+
+        ImGui::SliderFloat("Earth Shadow Softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Half width (cosine units) of the planet shadow\n"
+                              "penumbra at the horizon. 0.005 cos ≈ 0.57 degrees\n"
+                              "angular, comparable to the sun's apparent\n"
+                              "diameter. Larger = wider soft band, smaller =\n"
+                              "sharper terminator on the horizon haze.");
+
+        if (ImGui::Button("Reset Atmosphere Defaults")) {
+            s.atmosViewSteps              = 12.0f;
+            s.atmosLightSteps             = 8.0f;
+            s.atmosAerialViewSteps        = 4.0f;
+            s.atmosAerialLightSteps       = 4.0f;
+            s.atmosMultiScatterFactor     = 1.1f;
+            s.atmosCloudShadowConeDeg     = 5.0f;
+            s.atmosCloudShadowFloor       = 0.04f;
+            s.atmosEarthShadowSoftness    = 0.005f;
+        }
+    }
+
     ImGui::End();
 }
 
@@ -785,18 +875,22 @@ void Editor::DrawCloudPanel(Camera& camera) {
     }
 
     if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Silver Intensity", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Droplet Size", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Amplitude of the narrow forward 'silver lining'\n"
-                              "HG lobe max-blended into the primary phase.\n"
-                              "Higher = brighter halo around the sun. 0 disables\n"
-                              "silver and falls back to pure forward HG.");
+            ImGui::SetTooltip("Effective cloud droplet diameter (Jendersie & d'Eon\n"
+                              "2023 Mie approximation), remapped 0..1 -> 5..30 um.\n"
+                              "Small (haze, drizzle ~5 um) = broad forward halo.\n"
+                              "Mid (cumulus ~10..15 um) = concentrated silver lining\n"
+                              "with proper Mie shape.\n"
+                              "Large (large droplets ~30 um) = very sharp silver\n"
+                              "lining peak within ~0.5 deg of the sun.");
 
-        ImGui::SliderFloat("Silver Spread",    &c.silverSpread,    0.01f, 0.3f, "%.3f");
+        ImGui::SliderFloat("Silver Spread (unused)", &c.silverSpread, 0.01f, 0.3f, "%.3f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Angular spread of the silver lobe. Smaller\n"
-                              "= tighter brighter halo against the sun, larger\n"
-                              "= broader softer glow around the sun direction.");
+            ImGui::SetTooltip("LEGACY: the dual-lobe HG silver-spread slider.\n"
+                              "No longer wired into the direct phase since the\n"
+                              "switch to the Jendersie-d'Eon Mie approximation.\n"
+                              "Kept in the cbuffer for layout compatibility.");
 
         ImGui::SliderFloat("Shadow Cone (deg)", &c.shadowConeDeg,  0.0f, 15.0f, "%.2f");
         if (ImGui::IsItemHovered())
@@ -824,6 +918,36 @@ void Editor::DrawCloudPanel(Camera& camera) {
     }
 
     if (ImGui::CollapsingHeader("Multi-Scatter Fill")) {
+        //MS model selector. 0 = current Nubis sqrt(Tdir) shortcut (one
+        //isotropic-ish MS lobe, cheapest). 1, 2 = Wrenninge multi octave
+        //(Hillaire 2016 §5.8) which adds 1 or 2 extra phase function evals
+        //per cloud sample with progressively attenuated extinction and
+        //broadened phase. No extra shadow taps so perf cost is small.
+        const char* msModeNames[] = {
+            "0: Nubis shortcut (1 lobe, cheapest)",
+            "1: Wrenninge 2 octave",
+            "2: Wrenninge 3 octave",
+        };
+        int msModeIdx = (int)c.msMode;
+        if (ImGui::Combo("MS Model", &msModeIdx, msModeNames, IM_ARRAYSIZE(msModeNames)))
+            c.msMode = (float)msModeIdx;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Multi-scatter model:\n"
+                              "0 = current Nubis Evolved single term following\n"
+                              "    sqrt(Tdir). Cheapest, one phase function eval\n"
+                              "    beyond direct. MS Strength + Floor sliders apply.\n"
+                              "1 = Wrenninge 2 octave (direct + one extra octave\n"
+                              "    with a^n / b^n / c^n per Hillaire 2016 §5.8).\n"
+                              "    Soft fill in deep cores the shortcut misses.\n"
+                              "2 = Wrenninge 3 octave (direct + two extra). Deep\n"
+                              "    cumulus cores read as illuminated rather than\n"
+                              "    just dark. Two extra phase evals per sample,\n"
+                              "    no extra shadow taps.\n\n"
+                              "MS Strength + Floor still scale octaves 1..N in\n"
+                              "modes 1 and 2 so the artist knobs keep working.\n"
+                              "Secondary Strength and Secondary G apply only in\n"
+                              "mode 0 (they parametrise the shortcut's MS lobe).");
+
         ImGui::SliderFloat("Secondary Strength", &c.secondaryStrength, 0.0f, 1.5f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Amplitude of the secondary multi-scatter phase.\n"

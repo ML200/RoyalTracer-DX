@@ -70,14 +70,15 @@ static constexpr int   LUT_RESOLUTION       = 16;
 static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //NRC reserves 5 UAVs at heap 58..62, autoexpose at heap 63, sky stars SRV at
 //heap 64 (register t40), cloud noise 3D SRV at heap 65 (register t42), cloud
-//coverage 2D SRV at heap 66 (register t43 — NASA Blue Marble equirect map).
-//t41 is intentionally left free for the optional STBN array in Clouds_v8.hlsli.
-//Bindless starts at 67.
+//coverage 2D SRV at heap 66 (register t43, NASA Blue Marble equirect map),
+//spatiotemporal blue noise array SRV at heap 67 (register t41, baked once by
+//BakeCloudSTBNTexture). Bindless starts at 68.
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT     = 63;
 static constexpr UINT  SKY_STARS_HEAP_SLOT      = 64;
 static constexpr UINT  CLOUD_NOISE_HEAP_SLOT    = 65;
 static constexpr UINT  CLOUD_COVERAGE_HEAP_SLOT = 66;
-static constexpr UINT  BINDLESS_HEAP_START      = 67;
+static constexpr UINT  CLOUD_STBN_HEAP_SLOT     = 67;
+static constexpr UINT  BINDLESS_HEAP_START      = 68;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -220,6 +221,47 @@ struct SunSettings {
     //Pass_autoexpose_finalize_v8.hlsl, so a clear night still reads as
     //"dim" rather than "black". Higher = stylized brighter night.
     float skyNightBaseIntensity = 0.57f;
+
+    //====================================
+    // atmosphere quality + look (Bruneton march)
+    //====================================
+    //Per ray sample count along the view ray inside the atmosphere shell.
+    //Drives the dominant cost of the atmosphere integration (per pixel,
+    //per cloud shell phase). 12 is the Bruneton baseline; raise for
+    //smoother haze gradients, drop to 6..8 for cheap preview modes where
+    //banding is acceptable.
+    float atmosViewSteps              = 12.0f;
+    //Sun ray transmittance step count. Drives the TransmittanceToSun
+    //integral; bumping this only helps if you see the sun's spectral
+    //tint stepping at sunset across long view rays. 8 is the baseline.
+    float atmosLightSteps             = 8.0f;
+    //Aerial perspective march step counts (view and light). Used by
+    //ComputeAerialPerspective. 4 / 4 is the baseline; doubling smooths
+    //the in front of cloud haze on long mesh rays.
+    float atmosAerialViewSteps        = 4.0f;
+    float atmosAerialLightSteps       = 4.0f;
+    //Multi scatter boost folded into the per sample atmospheric in
+    //scatter rate. 1.0 = pure single scatter (slightly dim), 1.1 =
+    //Hillaire's tuned factor, 1.3..1.6 = stylized brighter sky.
+    float atmosMultiScatterFactor     = 1.1f;
+    //Half angle of the cloud shadow cone sampled on each atmospheric
+    //sample inside and beyond the cloud shell. Wider = softer shafts of
+    //light but more bleed across cloud edges; narrower = sharper shafts
+    //but more visible stepping (the cone jitter is what breaks tap
+    //correlation). 5 degrees matches the previous hardcoded 0.9962 cos.
+    float atmosCloudShadowConeDeg     = 5.0f;
+    //Diffuse multi scatter floor for the cloud shadow tap on atmospheric
+    //samples. Without a floor, near atmospheric samples under thick
+    //cloud die completely and the integral becomes dominated by reddened
+    //far samples (reads as sunset coloured even at noon). 0.04 keeps
+    //the near haze at ~4 percent of its unshadowed value.
+    float atmosCloudShadowFloor       = 0.04f;
+    //Half width (in cosine units) of the planet shadow penumbra used by
+    //the smoothstep that softens the earth shadow boundary in the
+    //atmosphere march. 0.005 cos ≈ 0.57 degrees angular, comparable to
+    //the sun's apparent diameter. Larger = wider soft band, smaller =
+    //sharper terminator on the horizon haze.
+    float atmosEarthShadowSoftness    = 0.005f;
 };
 
 //====================================
@@ -431,6 +473,20 @@ struct CloudSettings {
     //Minimum MS amplitude floor at cloud base (h=0). Without this real
     //cumulus bases read as black; 0.18 keeps them "shaded white".
     float msHeightFloor      = 0.18f;
+    //Multi scatter model selector:
+    //  0 = Nubis single MS term following sqrt(Tdir) (cheapest — one phase
+    //      function eval per sample beyond direct)
+    //  1 = Wrenninge 2 octave (Hillaire 2016 §5.8): direct + one extra
+    //      octave with a^n attenuated extinction and isotropic fill
+    //  2 = Wrenninge 3 octave (default): direct + two extra octaves, deepest
+    //      cloud cores read as illuminated rather than dark. Combined with
+    //      the JD direct phase gives the sharpest silver lining plus the
+    //      most uniform frontlit body across modes.
+    //Octaves 1+ are isotropic (the c^n -> 0 limit of the Wrenninge
+    //prescription, see CloudPhaseDirectScaled rationale) and still scaled
+    //by msHeightFloor and msStrength so the artist controls keep working
+    //across all three modes.
+    float msMode             = 2.0f;
 
     //====================================
     // sky ambient probe
