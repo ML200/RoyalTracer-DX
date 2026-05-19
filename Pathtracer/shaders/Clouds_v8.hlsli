@@ -821,7 +821,20 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
     return inscatter + ambient;
 }
 
-// Bounce-ray cheap variant: fixed step count, no shadow cone, no ambient.
+// Bounce-ray cheap variant. Mirrors the primary's lighting model
+// (CloudComputeLighting equivalent — distFade, MS mode dispatch,
+// disk-fraction earth shadow) but trims the expensive parts: single
+// shadow tap (no cone), midpoint sunAtmos (one TransmittanceToSun),
+// no sky ambient / no ground bounce probe, no atmosphere coupling.
+//
+// Step sizing is adaptive (small step in cloud, coarse jump in empty)
+// ported from the primary path — the old fixed ds = (tFar-tNear)/N gave
+// 30..50 km steps at grazing angles, and one cloudy sample inside such
+// a step produced tau = density * 4 * 50 ≈ 20 → segTr ≈ 0, hard-zeroing
+// trCloud and killing the sky behind every reflection. The cheap empty
+// step is capped looser than the primary's (kCheapEmptyStepCap ≈ 8 km)
+// since this loop only has CLOUD_CHEAP_STEPS iterations (≈10) vs the
+// primary's CLOUD_VIEW_STEPS_MAX (≈256).
 float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                            out float3 cloudTrOut)
 {
@@ -844,12 +857,15 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     tFar = min(tFar, tNear + CLOUD_CHEAP_MAX_LEN_KM);
     if (tFar <= tNear) return float3(0, 0, 0);
 
-    const int   N        = CLOUD_CHEAP_STEPS;
-    const float ds       = (tFar - tNear) / (float)N;
     const float cosTheta = dot(V, L);
     const float phaseDir = CloudPhaseDirect(cosTheta);
+    const float kIso     = 1.0f / (4.0f * PI);
+    const int   msMode   = CLOUD_MS_MODE;
 
-    float3 PMid = O + V * (0.5f * (tNear + tFar));
+    // One sunAtmos tap at the shell midpoint — per-sample TransmittanceToSun
+    // is the most expensive thing in the primary path and the largest perf
+    // saving we get here. Bias shows up at low sun for samples far from PMid.
+    float3 PMid     = O + V * (0.5f * (tNear + tFar));
     float3 sunAtmos = TransmittanceToSun(PMid, L,
                                          ATMOS_BOTTOM_RADIUS,
                                          ATMOS_TOP_RADIUS);
@@ -860,53 +876,120 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     float3 L_acc   = float3(0, 0, 0);
     float3 trCloud = float3(1, 1, 1);
 
+    // 8 km empty cap × ~10 iters ≈ 80 km clear-sky coverage. Lerped against
+    // fineStep by lodT so near-camera samples stay tight and don't skip over
+    // visible cumulus, while distant empty space gets stridden through fast.
+    const float kCheapEmptyStepCap = 8.0f;
+
+    float t        = tNear;
+    float fineStep = CLOUD_TARGET_STEP_KM
+                   * lerp(0.55f, 1.0f, CloudLodT(tNear));
+
     [loop]
-    for (int i = 0; i < N; ++i)
+    for (int i = 0; i < CLOUD_CHEAP_STEPS; ++i)
     {
-        float  rJit = RandomFloatSingle(seed);
-        float  ti   = tNear + ((float)i + rJit) * ds;
-        float3 P    = O + V * ti;
-        float  lodT = CloudLodT(ti);
+        if (t >= tFar) break;
+        if (max(trCloud.r, max(trCloud.g, trCloud.b)) < CLOUD_TR_EPS) break;
 
-        // Hull-first skip: most bounce-ray samples land in empty sky.
-        // Ex variant hands components to the material call so they aren't
-        // computed twice.
-        float hCoverage, hProfile, hEffTop;
-        float hull = CloudProbeHullEx(P, walltime, hCoverage, hProfile, hEffTop);
-        if (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY) continue;
+        float distFade = 1.0f - smoothstep(CLOUD_FADE_DISTANCE_KM,
+                                            CLOUD_RENDER_DISTANCE_KM, t);
+        float lodT     = CloudLodT(t);
+        float rJit     = RandomFloatSingle(seed);
+        float tSample  = t + rJit * fineStep;
+        float3 P       = O + V * tSample;
 
-        CloudMaterial m = CloudSampleMaterialFromHull(
-            P, walltime, lodT, 0u, hCoverage, hProfile, hEffTop);
-        if (m.density <= CLOUD_EFFECTIVE_ZERO_DENSITY) continue;
+        float hCoverage = 0.0f, hProfile = 0.0f, hEffTop = CLOUD_LAYER_TOP_KM;
+        float hullRaw   = (distFade > 0.0f)
+                        ? CloudProbeHullEx(P, walltime, hCoverage, hProfile, hEffTop)
+                        : 0.0f;
+        float hull      = hullRaw * distFade;
+        bool  hullEmpty = (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY);
 
-        float sigma_t     = m.density * CLOUD_EXTINCTION;
-        float sunOD       = CloudOpticalDepthToSun(P, L, walltime);
-        float Tdir        = exp(-sunOD);
-        float earthShadow = CloudEarthShadowFactor(P, L);
-
-        float3 K = sunIrradiance * sunAtmos * earthShadow * CLOUD_ALBEDO;
-
-        // Direct + Nubis sqrt(Tdir) MS, same formulation as the full path.
-        float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
-        float heightBias  = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
-                                 pow(saturate(m.heightFrac), 0.5f));
-        float msAmount    = depthFactor * heightBias
-                          * (0.5f + CLOUD_SECONDARY_STRENGTH)
-                          * CLOUD_MS_STRENGTH;
-
-        float3 inscatter = K * Tdir * phaseDir
-                         + K * msAmount * CloudPhaseMS(cosTheta);
-
-        // Energy-conserving analytic segment integration (Hillaire §5.6.3).
-        float segTr = exp(-sigma_t * ds);
-        L_acc   += trCloud * inscatter * (1.0f - segTr);
-        trCloud *= segTr;
-
-        if (max(trCloud.r, max(trCloud.g, trCloud.b)) < CLOUD_TR_EPS)
+        float thisStep;
+        if (hullEmpty)
         {
-            trCloud = float3(0, 0, 0);
-            break;
+            float maxStepAdaptive = min(
+                kCheapEmptyStepCap * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
+                CLOUD_MAX_EMPTY_STEP_KM);
+            thisStep = lerp(fineStep, maxStepAdaptive, saturate(lodT));
         }
+        else
+        {
+            thisStep = fineStep;
+        }
+        thisStep = min(thisStep, tFar - t);
+
+        if (!hullEmpty)
+        {
+            CloudMaterial m = CloudSampleMaterialFromHull(
+                P, walltime, lodT, 0u, hCoverage, hProfile, hEffTop);
+            float cloudDensity = m.density * distFade;
+            if (cloudDensity > CLOUD_EFFECTIVE_ZERO_DENSITY)
+            {
+                float sigma_t = cloudDensity * CLOUD_EXTINCTION;
+                float sunOD   = CloudOpticalDepthToSun(P, L, walltime);
+                float Tdir    = exp(-sunOD);
+
+                // Match primary: physical disk-fraction earth shadow
+                // (smoothstep width = sun angular radius). The old
+                // CloudEarthShadowFactor used a fixed penumbra and didn't
+                // match the terminator transition the rest of the engine
+                // uses.
+                float3 Pnorm      = SafeNormalize(P);
+                float  sunCosZ    = dot(Pnorm, L);
+                float  cosHorizon = -sqrt(max(0.0f, 1.0f -
+                                              (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS)
+                                              / dot(P, P)));
+                float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
+
+                float3 K = sunIrradiance * sunAtmos * earthShadow * CLOUD_ALBEDO;
+
+                float h          = m.heightFrac;
+                float heightBias = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
+                                        pow(saturate(h), 0.5f));
+
+                // Same MS dispatch as CloudComputeLighting — without this
+                // the cheap path was locked to Mode 0 (Nubis sqrt(Tdir)),
+                // so reflections of MS Mode 2 scenes (the default) showed
+                // much darker cloud cores than the primary view.
+                float3 direct = K * Tdir * phaseDir;
+                float3 ms     = float3(0, 0, 0);
+                if (msMode == 0)
+                {
+                    float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
+                    float msAmount    = depthFactor * heightBias
+                                      * (0.5f + CLOUD_SECONDARY_STRENGTH)
+                                      * CLOUD_MS_STRENGTH;
+                    ms = K * msAmount * CloudPhaseMS(cosTheta);
+                }
+                else
+                {
+                    const float a = 0.5f;
+                    const float b = 0.5f;
+                    int extraOctaves = clamp(msMode, 1, 2);
+                    [unroll]
+                    for (int n = 1; n <= 2; ++n)
+                    {
+                        if (n > extraOctaves) break;
+                        float an = pow(a, (float)n);
+                        float bn = pow(b, (float)n);
+                        float Tn = exp(-sunOD * an);
+                        ms += K * bn * Tn * kIso;
+                    }
+                    ms *= heightBias * CLOUD_MS_STRENGTH;
+                }
+
+                float3 inscatter = direct + ms;
+
+                float segTr = exp(-sigma_t * thisStep);
+                L_acc   += trCloud * inscatter * (1.0f - segTr);
+                trCloud *= segTr;
+            }
+        }
+
+        if (!hullEmpty)
+            fineStep = min(fineStep * CLOUD_STEP_GROWTH, CLOUD_MAX_FINE_STEP_KM);
+        t += thisStep;
     }
 
     cloudTrOut = trCloud;
