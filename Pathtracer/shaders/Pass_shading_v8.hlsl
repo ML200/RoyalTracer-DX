@@ -50,6 +50,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
             reflContrib = max(float3(0, 0, 0), reflPack.rgb);
     }
 
+    //TEMP DEBUG (ATM_DEBUG_RING in Constants_v8): raw path-traced components,
+    //captured before the cloud composite so mode 2 can false-colour them.
+    const float3 dbgRawPrimary  = output_primary;
+    const float3 dbgRawIndirect = output_indirect;
+    const float3 dbgRawSun      = sunDirect;
+    const float3 dbgRawRefl     = reflContrib;
+
     //====================================
     //CLOUD + ATMOSPHERE COMPOSITE
     //====================================
@@ -93,6 +100,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
+
+    //==================== TEMP DEBUG: nadir-ring localisation, mode 2 ===========
+    //False-colours the path-traced mesh radiance so we can see which term the
+    //ring lives in:  RED = indirect / GI,  GREEN = reflection,  BLUE = direct.
+    //Report which channel(s) the ring appears in. Remove once the cause found.
+    #if ATM_DEBUG_RING == 2
+    {
+        float dr = 1.0f - exp(-max(Luma(dbgRawIndirect), 0.0f) * 3.0f);
+        float dg = 1.0f - exp(-max(Luma(dbgRawRefl),     0.0f) * 3.0f);
+        float db = 1.0f - exp(-max(Luma(dbgRawPrimary) + Luma(dbgRawSun), 0.0f) * 3.0f);
+        accumulation = float3(dr, dg, db);
+    }
+    #endif
+    //============================================================================
 
     bool cameraChanged = false;
     [unroll]
@@ -140,9 +161,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (hasPosition)
         {
             //emitter surface, depth and MV like regular geometry
-            uint emPrimID = load_primID(g_sample_current, pixelIdx);
-            float2 emBary = load_bary(g_sample_current, pixelIdx);
-            float3 emPos  = ReconstructPosition(emInstID, emPrimID, emBary);
+            float3 emPos  = load_x1(g_sample_current, pixelIdx);
             g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
@@ -359,11 +378,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         else
         {
-            //reconstruct surface for DLSS
+            //reconstruct surface for DLSS from the baked G-buffer - no
+            //per-triangle data, identical path for terrain and scene meshes.
             uint sInstID = load_instID(g_sample_current, pixelIdx);
-            uint sPrimID = load_primID(g_sample_current, pixelIdx);
-            float2 sBary = load_bary(g_sample_current, pixelIdx);
-            SurfaceVertex sv = BuildVertex(sInstID, sPrimID, sBary, camPosWorld);
+            float3 sPos  = load_x1(g_sample_current, pixelIdx);
+            SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, sPos, camPosWorld);
             //DLSS RR input data
             g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
 
@@ -377,8 +396,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
             //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
             //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
             //pure scene motion in pinhole space, the lens offset cancels out
-            float2 prevPix = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
+            float2 prevPix, curPinholePix;
+            //PLANET: terrain is world-static and has no instanceProps entry -
+            //use the world-static reprojection (skips the instance lookup).
+            if (IsTerrainInstance(sInstID))
+            {
+                prevPix       = GetLastFramePixelCoordinates_World(sv.x, prevView, prevProjection, dims);
+                curPinholePix = GetCurrentFramePixelCoordinates_World(sv.x, view, projection, dims);
+            }
+            else
+            {
+                prevPix       = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
+                curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
+            }
 
             bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
 
@@ -403,7 +433,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
                 uint   reflInstID = asuint(reflData.w);
-                if (specularity > 0.04f && reflInstID < 0xFFFFFFFEu)
+                //PLANET: terrain instIDs excluded - rough terrain doesn't use
+                //the specular reprojection, and it has no instanceProps entry.
+                if (specularity > 0.04f && reflInstID < TERRAIN_INSTANCE_BASE)
                 {
                     //DoF aware spec MV, pinhole on both ends like the surface MV above
                     float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
@@ -422,7 +454,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             //same Reinhard pre-tonemap as the emitter path so DLSS RR sees a
             //uniformly bounded input and the postprocess inversion is consistent
+#if ATM_DEBUG_RING == 4
+            //TEMP DEBUG: planet shading normal as RGB (n_s*0.5+0.5). A correct
+            //sphere is a smooth gradient; a flat patch or hard ring in the
+            //normal here = the "fucked normals" — the bug is in EvalSurfaceState.
+            g_dlssInput[DTid.xy] = float4(sv.n_s * 0.5f + 0.5f, 1.0f);
+#else
             g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+#endif
         }
     }
 

@@ -89,7 +89,12 @@ public:
     //projection-matrix params only, paths traced so no near-plane culling
     //keep near above ~0.01 so DLSS-RR projection stays well-conditioned
     float   nearPlane   = 0.01f;
-    float   farPlane    = 10000.0f;
+    //farPlane drives both the projection matrix (DLSS RR) and the sky
+    //depth fallback in Pass_shading_v8.hlsl. Must be >= the raygen ray
+    //TMax (RAY_TMAX_PLANET = 1e9 in Constants_v8.hlsli) or distant surface
+    //hits show up closer than the sky in the DLSS depth buffer. 1e9 m
+    //covers planet diameter (~1.27e7) and orbital-scale grazing rays.
+    float   farPlane    = 1.0e9f;
     float   moveSpeed   = 5.0f;
 
     //thin-lens DoF, aperture in world units, focus distance along view forward axis
@@ -102,6 +107,18 @@ public:
     //Volumetric cloud knobs, appended to the camera cbuffer tail after
     //SunSettings. Driven from the editor's Clouds panel.
     CloudSettings cloudSettings;
+
+    //====================================
+    //PLANET TERRAIN (Phase 5)
+    //====================================
+    //Procedural cube-sphere terrain params, appended to the camera cbuffer tail
+    //after CloudSettings (6 scalar floats). planetCenter is ABSOLUTE world
+    //coords. Set by the renderer from the planet StreamConfig at init so the
+    //HLSL terrain shader samples the same surface the CPU tessellator built.
+    glm::vec3 planetCenter           = glm::vec3(0.0f);
+    float     planetRadius           = 6371000.0f;
+    float     terrainHeightAmplitude = 0.001f;
+    float     terrainHeightFrequency = 8.0f;
 
 private:
     ComPtr<ID3D12Resource>         m_buffer;

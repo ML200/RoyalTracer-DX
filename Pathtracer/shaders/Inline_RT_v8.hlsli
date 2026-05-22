@@ -22,6 +22,207 @@ struct HitInfo {
 #ifdef ENABLE_RAY_QUERY_INLINE
 
 //====================================
+//PROCEDURAL TERRAIN SURFACE (Phase 5)
+//====================================
+//Streamed planet terrain has no per-vertex data at shade time - the geometry
+//pool recycles a chunk's vertex/index buffers once its BLAS is built. Terrain
+//is shaded procedurally and reconstructed from (instID, primID, bary): the
+//terrain table (g_terrainTable, indexed by instID - TERRAIN_INSTANCE_BASE)
+//gives the chunk's quadtree node; primID + bary then place the hit on the
+//cube-sphere patch, displaced by the same heightmap the CPU tessellator used.
+//This is frame-independent, so it works for primary rays AND for the ReSTIR GI
+//passes that reconstruct from stored G-buffer data. Keyed on the terrain
+//InstanceID range - streamed chunks AND the 6-face fallback layer.
+
+inline bool IsTerrainInstance(uint instID) { return instID >= TERRAIN_INSTANCE_BASE; }
+
+//planet centre in camera-local (sceneOrigin-shifted) space.
+inline float3 TerrainPlanetCenter()
+{
+    return float3(planetCenterX, planetCenterY, planetCenterZ) - sceneOriginWorld;
+}
+
+//heightmap displacement (metres). MUST match HeightmapProcedural::sample
+//(rdn/planet/heightmap_procedural.cpp) so shaded + tessellated surfaces agree.
+inline float TerrainHeight(float3 dir)
+{
+    return sin(dir.x * terrainHeightFrequency)
+         * cos(dir.z * terrainHeightFrequency)
+         * terrainHeightAmplitude;
+}
+
+//surface point measured FROM the planet centre (radius+height along dir).
+//~planetRadius in magnitude but carries no camera-local offset, so finite-
+//differencing it for the normal stays free of big-minus-big cancellation.
+inline float3 TerrainRadialPoint(float3 dir)
+{
+    return dir * (planetRadius + TerrainHeight(dir));
+}
+
+//displaced surface point in camera-local (shifted) space.
+inline float3 TerrainSurfacePoint(float3 dir, float3 planetCenterLocal)
+{
+    return planetCenterLocal + TerrainRadialPoint(dir);
+}
+
+//cube-sphere uv (dominant-axis face projection). Placeholder for the fixed
+//terrain material - terrain carries no texture yet.
+inline float2 TerrainCubeUV(float3 dir)
+{
+    float3 a = abs(dir);
+    float2 uv;
+    if (a.x >= a.y && a.x >= a.z)      uv = float2(-dir.z, dir.y) / dir.x;
+    else if (a.y >= a.z)               uv = float2( dir.x, -dir.z) / dir.y;
+    else                               uv = float2( dir.x,  dir.y) / dir.z;
+    return uv * 0.5f + 0.5f;
+}
+
+//cube-face basis - MUST match FACE_A/U/V in rdn/planet/cube_sphere.cpp.
+//Face order: +X -X +Y -Y +Z -Z.
+static const float3 TERRAIN_FACE_A[6] = {
+    float3( 1, 0, 0), float3(-1, 0, 0), float3( 0, 1, 0),
+    float3( 0,-1, 0), float3( 0, 0, 1), float3( 0, 0,-1) };
+static const float3 TERRAIN_FACE_U[6] = {
+    float3( 0, 0,-1), float3( 0, 0, 1), float3( 1, 0, 0),
+    float3( 1, 0, 0), float3( 1, 0, 0), float3(-1, 0, 0) };
+static const float3 TERRAIN_FACE_V[6] = {
+    float3( 0, 1, 0), float3( 0, 1, 0), float3( 0, 0,-1),
+    float3( 0, 0, 1), float3( 0, 1, 0), float3( 0, 1, 0) };
+
+//cube-face (s,t) in [-1,1] -> unit sphere direction (matches cube_to_sphere_dir).
+inline float3 TerrainCubeToSphere(uint face, float s, float t)
+{
+    return normalize(TERRAIN_FACE_A[face] + TERRAIN_FACE_U[face] * s
+                                          + TERRAIN_FACE_V[face] * t);
+}
+
+//surface point of a chunk grid vertex at face coordinate (s,t).
+inline float3 TerrainGridVertex(uint face, float s, float t, float3 planetCenterLocal)
+{
+    return TerrainSurfacePoint(TerrainCubeToSphere(face, s, t), planetCenterLocal);
+}
+
+//Build a HitInfo from the LIVE ray hit position. Used by the primary + bounce
+//rays: 'hitPosLocal' is the actual ray hit (rayOrigin + rayDir*hitT) in
+//camera-local space - precise and small for nearby hits. The position is used
+//AS-IS, never re-derived from planetCentre+radius, so there is no big-minus-big
+//cancellation. Only the normal/uv are derived (direction precision is ample).
+HitInfo EvalTerrainSurfaceFromHit(float3 hitPosLocal, float3 viewOrigin)
+{
+    HitInfo hit = (HitInfo)0.0f;
+
+    const float3 C   = TerrainPlanetCenter();
+    const float3 dir = normalize(hitPosLocal - C);
+
+    //normal: central differences of TerrainRadialPoint (planet-centre-relative,
+    //so the large camera-local offset C never enters the subtraction).
+    const float3 tA = normalize(cross(dir, (abs(dir.y) < 0.99f)
+                                             ? float3(0, 1, 0) : float3(1, 0, 0)));
+    const float3 tB = cross(dir, tA);
+    const float  e  = 1.0e-3f;
+    const float3 pR = TerrainRadialPoint(normalize(dir + tA * e));
+    const float3 pL = TerrainRadialPoint(normalize(dir - tA * e));
+    const float3 pU = TerrainRadialPoint(normalize(dir + tB * e));
+    const float3 pD = TerrainRadialPoint(normalize(dir - tB * e));
+    float3 n = cross(pR - pL, pU - pD);
+    if (dot(n, dir) < 0.0f) n = -n;
+    n = normalize(n);
+
+    const float3 viewDir  = normalize(hitPosLocal - viewOrigin);
+    const bool   backface = (dot(viewDir, n) > 0.0f);
+
+    hit.hitPos    = hitPosLocal;     // the LIVE ray hit - precise, not re-derived
+    hit.hitNormal = backface ? -n : n;
+    hit.backface  = backface;
+    hit.uv        = TerrainCubeUV(dir);
+    hit.lightID   = 0xFFFFFFFFu;
+    return hit;
+}
+
+//Build a HitInfo for a terrain hit, reconstructed from (instID, primID, bary)
+//via the terrain table. Frame-independent - no live ray, no vertex buffer.
+//NOTE: the position is re-derived (planetCentre + radius along dir), an FP32
+//big-minus-big with a ~sub-metre floor at planet radius. Used ONLY by the
+//ReSTIR GI reconnection passes (no live ray); the primary/bounce rays use
+//EvalTerrainSurfaceFromHit instead, which is precise.
+HitInfo EvalTerrainSurface(uint instID, uint primID, float2 bary, float3 viewOrigin)
+{
+    HitInfo hit = (HitInfo)0.0f;
+
+    //terrain table -> the chunk's 64-bit packed quadtree node, two words:
+    //lo = face | lod | x[24], hi = y[24].
+    const uint2 nodeRaw = g_terrainTable[instID - TERRAIN_INSTANCE_BASE].xy;
+    const uint face = nodeRaw.x & 0x7u;
+    const uint lod  = (nodeRaw.x >> 3) & 0x1Fu;
+    const uint nx   = (nodeRaw.x >> 8) & 0xFFFFFFu;
+    const uint ny   =  nodeRaw.y       & 0xFFFFFFu;
+
+    //node footprint in cube-face coordinates [-1,1], split into 2^lod cells,
+    //then the chunk's CHUNK_GRID x CHUNK_GRID quad grid over that.
+    const float cells = (float)(1u << lod);
+    const float s0 = -1.0f + 2.0f *  (float)nx         / cells;
+    const float s1 = -1.0f + 2.0f * ((float)nx + 1.0f) / cells;
+    const float t0 = -1.0f + 2.0f *  (float)ny         / cells;
+    const float t1 = -1.0f + 2.0f * ((float)ny + 1.0f) / cells;
+    const float ds = (s1 - s0) / (float)TERRAIN_CHUNK_GRID;
+    const float dt = (t1 - t0) / (float)TERRAIN_CHUNK_GRID;
+
+    //decode primID -> quad (qi,qj) + which of its 2 triangles. Winding matches
+    //the tessellator: tri0 = (i,j)(i+1,j)(i+1,j+1), tri1 = (i,j)(i+1,j+1)(i,j+1).
+    const uint quad = primID >> 1;
+    const uint tri  = primID & 1u;
+    const float qi  = (float)(quad % TERRAIN_CHUNK_GRID);
+    const float qj  = (float)(quad / TERRAIN_CHUNK_GRID);
+
+    float2 c0, c1, c2;   // (s,t) face coordinates of the 3 triangle corners
+    if (tri == 0u) {
+        c0 = float2(s0 + ds*qi,        t0 + dt*qj);
+        c1 = float2(s0 + ds*(qi+1.0f), t0 + dt*qj);
+        c2 = float2(s0 + ds*(qi+1.0f), t0 + dt*(qj+1.0f));
+    } else {
+        c0 = float2(s0 + ds*qi,        t0 + dt*qj);
+        c1 = float2(s0 + ds*(qi+1.0f), t0 + dt*(qj+1.0f));
+        c2 = float2(s0 + ds*qi,        t0 + dt*(qj+1.0f));
+    }
+
+    const float3 C  = TerrainPlanetCenter();
+    const float3 p0 = TerrainGridVertex(face, c0.x, c0.y, C);
+    const float3 p1 = TerrainGridVertex(face, c1.x, c1.y, C);
+    const float3 p2 = TerrainGridVertex(face, c2.x, c2.y, C);
+
+    //barycentric interpolation - matches hardware triangle attribute interp
+    const float  b0     = 1.0f - bary.x - bary.y;
+    const float3 hitPos = p0 * b0 + p1 * bary.x + p2 * bary.y;
+
+    //smooth analytic normal: central differences of the displaced surface
+    //across the sphere tangent plane at the hit direction.
+    const float3 dir = normalize(hitPos - C);
+    const float3 tA  = normalize(cross(dir, (abs(dir.y) < 0.99f)
+                                             ? float3(0, 1, 0) : float3(1, 0, 0)));
+    const float3 tB  = cross(dir, tA);
+    const float  e   = 1.0e-3f;
+    const float3 pR  = TerrainRadialPoint(normalize(dir + tA * e));
+    const float3 pL  = TerrainRadialPoint(normalize(dir - tA * e));
+    const float3 pU  = TerrainRadialPoint(normalize(dir + tB * e));
+    const float3 pD  = TerrainRadialPoint(normalize(dir - tB * e));
+    float3 n = cross(pR - pL, pU - pD);
+    if (dot(n, dir) < 0.0f) n = -n;            // force outward
+    n = normalize(n);
+
+    //build the HitInfo - mirror of EvalTerrainSurfaceFromHit's tail, using the
+    //re-derived hit position. terrain is never an emitter, so lightID is unset.
+    const float3 viewDir  = normalize(hitPos - viewOrigin);
+    const bool   backface = (dot(viewDir, n) > 0.0f);
+
+    hit.hitPos    = hitPos;
+    hit.hitNormal = backface ? -n : n;
+    hit.backface  = backface;
+    hit.uv        = TerrainCubeUV(dir);
+    hit.lightID   = 0xFFFFFFFFu;
+    return hit;
+}
+
+//====================================
 //RAY ORIGIN OFFSET, RTG CH 6
 //====================================
 //ULP-aware offset for self-intersection avoidance
@@ -113,6 +314,17 @@ inline bool IsVisibleOffset(float3 origin, float3 direction, float tMax)
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
     q.Proceed();
     return q.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+//env-miss visibility: a shadow ray from a surface point toward a far (sky)
+//direction. The origin is nudged off the surface along N (offset_ray) so it
+//does not self-intersect; tMax is the sky distance (RAY_TMAX_PLANET). The
+//ReSTIR GI passes (Pass_temp_gi / Pass_spat_gi_shift) call this for
+//MATID_ENV_MISS reservoir samples. 'instID' fed the planet-era 3-arg
+//offset_ray and is now unused - kept so those call sites compile unchanged.
+inline bool IsVisibleEnvMiss(float3 P, float3 N, float3 direction, float tMax, uint instID)
+{
+    return IsVisibleOffset(offset_ray(P, N), direction, tMax);
 }
 
 //====================================
@@ -239,6 +451,15 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
 //raygen passes depth to drop detail on deeper bounces
 inline void RefetchMaterial(uint matID, float2 uv, out float3 localKd, out float localPr, out float localPm, uint level = 0)
 {
+    //PLANET: terrain has no g_mat entry - the MATID_TERRAIN sentinel resolves
+    //to a fixed procedural material instead of a material-buffer fetch.
+    if (matID == MATID_TERRAIN)
+    {
+        localKd = TERRAIN_ALBEDO;
+        localPr = TERRAIN_ROUGHNESS;
+        localPm = 0.0f;
+        return;
+    }
     localKd = EvaluateAlbedo(matID, uv, level);
     float2 pbr = EvaluatePBRProperties(matID, uv, level);
     localPr = pbr.x;
@@ -284,6 +505,11 @@ HitInfo EvalSurfaceState(
     uint   level
 )
 {
+    //PLANET: terrain has no instanceProps / per-triangle data - shade it
+    //procedurally from (instID, primID, bary) via the terrain table.
+    if (IsTerrainInstance(instID))
+        return EvalTerrainSurface(instID, primID, bc2, origin);
+
     //data gather
     const uint baseI      = instanceProps[instID].indexBase;
     const uint baseM      = instanceProps[instID].materialBase;
@@ -447,6 +673,7 @@ HitInfo EvalSurfaceState(
 //====================================
 inline float3 GetEmissionFast(in uint instID, in uint primID)
 {
+    if (IsTerrainInstance(instID)) return float3(0.0f, 0.0f, 0.0f);   // PLANET: terrain never emits
     uint base = instanceProps[instID].triToLightBase;
     uint lightID = gTriToLightId[base + primID];
     if (lightID == 0xFFFFFFFF)
@@ -457,6 +684,7 @@ inline float3 GetEmissionFast(in uint instID, in uint primID)
 }
 
 inline uint GetMatIDFast(in uint instID, in uint primID){
+    if (IsTerrainInstance(instID)) return MATID_TERRAIN;   // PLANET: no instanceProps entry
     const uint baseI = instanceProps[instID].indexBase;
     const uint baseM = instanceProps[instID].materialBase;
     return materialIDs[baseM + primID];

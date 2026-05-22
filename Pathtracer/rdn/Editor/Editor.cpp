@@ -54,7 +54,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
-            ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
+            //ImGui::MenuItem("NRC",             nullptr, &m_showNRC);   // NRC disabled (planet bring-up)
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
@@ -87,7 +87,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
-    if (m_showNRC)       DrawNRCPanel(nrc);
+    //if (m_showNRC)       DrawNRCPanel(nrc);   // NRC disabled (planet bring-up)
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showClouds)    DrawCloudPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene, camera);
@@ -194,7 +194,7 @@ void Editor::DrawCameraPanel(Camera& camera, FlyCamController& flyCam) {
 
     ImGui::DragFloat("FOV",              &camera.fovDegrees, 0.5f, 10.0f, 170.0f);
     ImGui::DragFloat("Near Plane",       &camera.nearPlane,  0.001f, 0.001f, 10.0f, "%.3f");
-    ImGui::DragFloat("Far Plane",        &camera.farPlane,   10.0f, 100.0f, 100000.0f);
+    ImGui::DragFloat("Far Plane",        &camera.farPlane,   1000.0f, 100.0f, 1.0e9f, "%.0f");
     ImGui::SliderFloat("Move Speed",     &flyCam.moveSpeed,  0.01f, 1000000.0f, "%.3f",
                        ImGuiSliderFlags_Logarithmic);
     ImGui::DragFloat("Mouse Sensitivity",&flyCam.mouseSensitivity, 0.01f, 0.01f, 2.0f, "%.2f");

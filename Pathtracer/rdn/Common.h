@@ -72,13 +72,15 @@ static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //heap 64 (register t40), cloud noise 3D SRV at heap 65 (register t42), cloud
 //coverage 2D SRV at heap 66 (register t43, NASA Blue Marble equirect map),
 //spatiotemporal blue noise array SRV at heap 67 (register t41, baked once by
-//BakeCloudSTBNTexture). Bindless starts at 68.
+//BakeCloudSTBNTexture), planet terrain instance table SRV at heap 68 (register
+//t44, refilled per frame by the planet StreamOrchestrator). Bindless starts at 69.
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT     = 63;
 static constexpr UINT  SKY_STARS_HEAP_SLOT      = 64;
 static constexpr UINT  CLOUD_NOISE_HEAP_SLOT    = 65;
 static constexpr UINT  CLOUD_COVERAGE_HEAP_SLOT = 66;
 static constexpr UINT  CLOUD_STBN_HEAP_SLOT     = 67;
-static constexpr UINT  BINDLESS_HEAP_START      = 68;
+static constexpr UINT  TERRAIN_TABLE_HEAP_SLOT  = 68;
+static constexpr UINT  BINDLESS_HEAP_START      = 69;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |

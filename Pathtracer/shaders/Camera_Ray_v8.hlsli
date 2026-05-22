@@ -219,3 +219,23 @@ inline int2 GetBestReprojectedPixel_d(
 
     return p;
 }
+
+//PLANET: world-static variant of GetBestReprojectedPixel_d for points with no
+//instance (terrain) - skips the instanceProps[objID] lookup. Terrain is static,
+//so its reprojection is pure camera motion.
+inline int2 GetBestReprojectedPixel_World(
+    float3 worldPos,
+    float4x4 prevView,
+    float4x4 prevProjection,
+    float2 resolution)
+{
+    float2 px = GetLastFramePixelCoordinates_World(worldPos, prevView, prevProjection, resolution);
+    if (px.x < -1e8f) return int2(-1, -1);
+
+    int2 p = int2(floor(px + 0.5f));
+
+    int2 resi = int2(resolution);
+    if (any(p < 0) || any(p >= resi)) return int2(-1, -1);
+
+    return p;
+}

@@ -5,6 +5,7 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
+#include "Diagnostics.h"
 #include "Windowsx.h"
 #include "ReuseTextureGen.h"
 #include "NRC/NrcNetwork.h"
@@ -20,15 +21,18 @@ Renderer::Renderer(UINT width, UINT height)
     : m_width(width), m_height(height),
       m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
 {
+    /*m_passes.Build({
+        L"Pass_debug_v8.hlsl|rg",                       L"barrier",
+    });*/
     m_passes.Build({
-        L"cuda:nrc_frame_begin",                        L"barrier",
+        //L"cuda:nrc_frame_begin",                      L"barrier",   // NRC disabled (planet bring-up)
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
-        L"cuda:nrc_inference",                          L"barrier",
-        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
-        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
-        L"cuda:nrc_debug_inference",                    L"barrier",
-        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
+        //L"cuda:nrc_inference",                        L"barrier",   // NRC disabled
+        //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",           L"barrier",   // NRC disabled
+        //L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",       L"barrier",   // NRC disabled
+        //L"cuda:nrc_debug_inference",                  L"barrier",   // NRC disabled
+        //L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",     L"barrier",   // NRC disabled
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
@@ -40,6 +44,7 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_autoexpose_finalize_v8.hlsl|fx:1",       L"barrier",
         L"Pass_postprocess_v8.hlsl|cs:8x4",             L"barrier",
     });
+
 }
 
 //====================================
@@ -48,6 +53,34 @@ Renderer::Renderer(UINT width, UINT height)
 void Renderer::InitDevice() {
     try {
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
+
+        // PLANET_INTEGRATION: bring up the planet generation pipeline.
+        {
+            planet::StreamConfig cfg;
+            //==== PLANET ON/OFF — flip to false to disable terrain entirely ====
+            //false: scene-only unified TLAS, no generation built. Use this to
+            //bisect the planet out of the renderer.
+            cfg.enabled = true;
+            cfg.planet.radius = 6371000.0;
+            //The planet sits BELOW the world origin: its surface passes exactly
+            //through (0,0,0), so the camera spawns standing ON the surface and
+            //the planet body extends downward (-Y). center.y = -radius.
+            cfg.planet.center = { 0.0, -cfg.planet.radius, 0.0 };
+            cfg.max_lod       = 24;            // hard depth cap; the budget sets actual depth
+            cfg.max_triangles = 3000000u;      // planet-wide triangle budget - the quadtree
+                                               // auto-tunes its leaf cut to fit under this
+            //heightmap defaults (StreamConfig) are tiny test bumps - tune here.
+            m_planet.init(m_ctx.Device(), &m_ctx, cfg);
+
+            //mirror the planet params into the camera cbuffer so the HLSL
+            //terrain shader samples the exact surface the tessellator built.
+            m_camera.planetCenter = glm::vec3((float)cfg.planet.center.x,
+                                              (float)cfg.planet.center.y,
+                                              (float)cfg.planet.center.z);
+            m_camera.planetRadius           = (float)cfg.planet.radius;
+            m_camera.terrainHeightAmplitude = cfg.heightmap_amplitude;
+            m_camera.terrainHeightFrequency = cfg.heightmap_frequency;
+        }
 
         // CUDA/D3D12 interop. Optional — if this fails (no CUDA device, LUID
         // mismatch, etc.) the renderer runs fine; cuda:* passes become no-ops.
@@ -348,6 +381,13 @@ void Renderer::InitSceneGPU() {
 
         // Command list left open — EngineApp closes it.
     } catch (const std::exception& e) {
+        //A lost device (DXGI_ERROR_DEVICE_REMOVED) surfaces here as a generic
+        //failure from whatever resource call first noticed it — not where the
+        //GPU actually faulted. Poll up to 1s for the removal to latch into
+        //GetDeviceRemovedReason, then dump DRED: its breadcrumbs + page-fault
+        //data name the real faulting op. Returns fast if the device is
+        //healthy, so non-device-lost exceptions still reach the message box.
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
@@ -1039,6 +1079,65 @@ void Renderer::RebuildResolutionDependentDescriptors() {
 }
 
 //====================================
+//PLANET CAMERA ADAPTER
+//====================================
+planet::CameraView Renderer::MakePlanetCamera() const {
+    //derive the camera basis from the (floating-origin) view matrix, then add
+    //sceneOriginWorld back so the planet sees absolute FP64 world coordinates.
+    const XMMATRIX view    = m_camera.ViewMatrix();
+    const XMMATRIX invView = XMMatrixInverse(nullptr, view);
+    XMFLOAT3 pos, fwd, up;
+    XMStoreFloat3(&pos, invView.r[3]);
+    //invView.r[2] is the world-space direction of the view-space +Z axis. The
+    //view matrix is right-handed (glm::lookAt + XMMatrixPerspectiveFovRH), so
+    //the camera looks down -Z and +Z is BACKWARD — forward is its negation.
+    //Without this negate the planet LOD frustum (Frustum::from_camera) points
+    //behind the camera: descend() refines terrain off-screen and frustum-culls
+    //the terrain in view, so the visible surface never receives fine chunks.
+    XMStoreFloat3(&fwd, XMVector3Normalize(XMVectorNegate(invView.r[2])));
+    XMStoreFloat3(&up,  XMVector3Normalize(invView.r[1]));
+    const glm::vec3 origin = m_camera.getSceneOriginWorld();
+
+    planet::CameraView cv;
+    cv.position_world = { (double)pos.x + origin.x,
+                          (double)pos.y + origin.y,
+                          (double)pos.z + origin.z };
+    //unified-TLAS origin: the same floating origin the scene TLAS uses, so
+    //terrain and scene instances land in one consistent camera-local frame.
+    cv.scene_origin = { origin.x, origin.y, origin.z };
+    cv.forward    = { fwd.x, fwd.y, fwd.z };
+    cv.up         = { up.x,  up.y,  up.z  };
+    cv.fov_y      = m_camera.fovDegrees * 0.01745329252f;   // degrees -> radians
+    cv.aspect     = m_aspectRatio;
+    cv.near_plane = m_camera.nearPlane;
+    cv.far_plane  = m_camera.farPlane;
+    return cv;
+}
+
+//====================================
+//PLANET SCENE INSTANCES (unified TLAS)
+//====================================
+//Convert m_scene.tlasInstances (XMMATRIX, sceneOrigin-relative) into the planet
+//module's D3D12-only SceneInstanceDesc layout. Rebuilt every frame; the scene
+//is small enough that the loop is well under the TLAS-build budget.
+void Renderer::BuildPlanetSceneInstances() {
+    const auto& src = m_scene.tlasInstances;
+    m_planetSceneInstances.resize(src.size());
+    for (size_t i = 0; i < src.size(); ++i) {
+        planet::SceneInstanceDesc& d = m_planetSceneInstances[i];
+        d.blas = src[i].blas ? src[i].blas->GetGPUVirtualAddress() : 0;
+        //XMMATRIX (row-vector) -> DXR row-major 3x4: transpose, take the first
+        //12 floats - exactly what nv_helpers TopLevelASGenerator does.
+        XMFLOAT4X4 t;
+        XMStoreFloat4x4(&t, XMMatrixTranspose(src[i].transform));
+        memcpy(d.transform, &t, sizeof(float) * 12);
+        d.instance_id     = (uint32_t)i;            // scene InstanceID == TLAS index
+        d.hit_group_index = src[i].hitGroupContribution;
+        d.flags           = (uint32_t)src[i].flags;
+    }
+}
+
+//====================================
 //RENDER
 //====================================
 void Renderer::RenderFrame() {
@@ -1049,22 +1148,55 @@ void Renderer::RenderFrame() {
 
     m_ctx.BeginFrame();
 
+    // PLANET_INTEGRATION: Phase 4 stream pipeline - visibility + async tessellation.
+    // Pass a MONOTONIC counter - NOT m_ctx.FrameIndex() (the cycling swapchain
+    // back-buffer index): the chunk manager ages chunks by frame number for
+    // retire hysteresis, which is meaningless against an index that wraps every
+    // few frames.
+    m_planet.begin_frame(m_planetFrame++, MakePlanetCamera());
+
     // PCL: render submit start
     slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
 
     auto t_popStart = hrc::now();
-    PopulateCommandList();
-    auto t_popEnd = hrc::now();
-    m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+    try {
+        PopulateCommandList();
+        auto t_popEnd = hrc::now();
+        m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
 
-    // PCL: render submit end
-    slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
+        // PCL: render submit end
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
 
-    // PCL: present start
-    slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
-    m_ctx.ExecuteAndPresent();
-    // PCL: present end
-    slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
+        // PLANET_INTEGRATION: rebuild the scene TLAS instance list, convert it
+        // for the planet module, then submit the planet copy/BLAS work plus the
+        // per-frame unified TLAS rebuild (scene meshes + terrain + fallback).
+        m_scene.RebuildTLASInstanceList();
+        BuildPlanetSceneInstances();
+        const uint32_t terrainHitGroup = (uint32_t)m_scene.instances.size() * 2u;
+        m_planet.submit_work(m_planetSceneInstances.data(),
+                             (uint32_t)m_planetSceneInstances.size(),
+                             terrainHitGroup);
+
+        // PCL: present start
+        slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
+        m_ctx.ExecuteAndPresent();
+        // PCL: present end
+        slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
+    } catch (...) {
+        //A per-frame D3D failure that throws is, in practice, a lost device
+        //surfacing through whatever call first noticed it (a failed Map,
+        //Present, ...) — not where the GPU actually faulted. Dump DRED before
+        //the exception unwinds through the Win32 WindowProc as an opaque
+        //STATUS_FATAL_USER_CALLBACK_EXCEPTION: its breadcrumbs + page-fault
+        //data name the faulting GPU op. CheckDeviceRemoved polls 1s for the
+        //removal to latch, then terminates if the device is gone; if it
+        //returns, the device is healthy and the exception is something else.
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
+        throw;
+    }
+
+    // PLANET_INTEGRATION: advance built chunks to Ready; reclaim GPU pool slots
+    m_planet.end_frame();
 
     // CPU = total CPU work across UpdateRenderer + PopulateCommandList
     m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuPopulateMs;
@@ -1086,6 +1218,21 @@ void Renderer::RenderFrame() {
             ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
         }
         SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
+
+        // PLANET_INTEGRATION: per-second planet readout - the LIVE generation
+        // and any in-flight ping-pong rebuild (dirty = cells built / total).
+        const auto& ps = m_planet.stats();
+        std::wcout << L"[planet] built=" << ps.built
+                   << L" leaves=" << ps.leaf_count
+                   << L" cells=" << ps.cell_count
+                   << L" tris=" << ps.triangle_count
+                   << L" tlas=" << ps.tlas_instances
+                   << L" rebuilding=" << ps.rebuilding
+                   << L" dirty=" << ps.dirty_built << L"/" << ps.dirty_total
+                   << L" est=" << ps.rebuild_frames_est << L"f"
+                   << L" stepms=" << ps.step_ms
+                   << std::endl;
+
         s_frameCount = 0;
         s_lastTime = now;
     }
@@ -1256,62 +1403,17 @@ void Renderer::PopulateCommandList() {
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // TLAS update: full rebuild on structural change, periodic in-place rebuild
-    // to prevent BVH degradation, or partial refit for transform-only changes.
-    static constexpr uint32_t TLAS_REBUILD_INTERVAL = 120;
-    bool periodicRebuild = m_scene.tlasDirty && !m_scene.tlasFullRebuild
-                        && (m_time % TLAS_REBUILD_INTERVAL) == 0;
-
-    auto t_tlasStart = std::chrono::high_resolution_clock::now();
-    m_frameStats.tlasWasRefit = false;
+    // PLANET_INTEGRATION: the unified TLAS (scene meshes + terrain chunks +
+    // fallback) is rebuilt every frame by the planet StreamOrchestrator on the
+    // async compute queue (RenderFrame -> m_planet.submit_work). The SceneBVH SRV
+    // (heap slot 2) points at that TLAS, and the graphics queue waits the planet
+    // compute fence before ray dispatch (DeviceContext::ExecuteAndPresent). The
+    // renderer no longer builds a TLAS here - the old 3-tier dirty scheme is
+    // superseded; RebuildTLASInstanceList still runs each frame (in RenderFrame)
+    // to feed the orchestrator the current scene instances.
+    m_frameStats.tlasWasRefit   = false;
     m_frameStats.tlasWasRebuilt = false;
-    if (m_scene.tlasDirty) {
-        if (m_scene.tlasFullRebuild) {
-            // Structural change: new buffers, new generator
-            m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
-            CreateTopLevelAS(m_scene.tlasInstances, false);
-            m_scene.tlasFullRebuild = false;
-            m_frameStats.tlasWasRebuilt = true;
-
-            // Full rebuild allocates a new pResult buffer → update SRV
-            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSrv(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.Format = DXGI_FORMAT_UNKNOWN;
-            sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.RaytracingAccelerationStructure.Location =
-                m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
-            m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
-        } else if (!m_scene.dirtyInstanceList.empty()) {
-            if (periodicRebuild) {
-                // Periodic rebuild: reuse buffers, full BVH build (PREFER_FAST_BUILD)
-                m_topLevelASGenerator.RebuildInPlace(
-                    m_ctx.CmdList(),
-                    m_topLevelASBuffers.pScratch.Get(),
-                    m_topLevelASBuffers.pResult.Get(),
-                    m_topLevelASBuffers.pInstanceDesc.Get(),
-                    m_scene.dirtyInstanceList);
-                m_frameStats.tlasWasRebuilt = true;
-            } else {
-                // Transform-only: partial refit — only update dirty instance descriptors
-                m_topLevelASGenerator.UpdateAndRefit(
-                    m_ctx.CmdList(),
-                    m_topLevelASBuffers.pScratch.Get(),
-                    m_topLevelASBuffers.pResult.Get(),
-                    m_topLevelASBuffers.pInstanceDesc.Get(),
-                    m_scene.dirtyInstanceList);
-                m_frameStats.tlasWasRefit = true;
-            }
-        }
-        m_scene.tlasDirty = false;
-    }
-    m_frameStats.tlasMs = std::chrono::duration<float, std::milli>(
-        std::chrono::high_resolution_clock::now() - t_tlasStart).count();
-    { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
-      cmdList->ResourceBarrier(1, &b); }
+    m_frameStats.tlasMs         = 0.0f;
 
     // Bind main descriptor heap
     ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };

@@ -12,8 +12,11 @@ struct Reservoir
     float3 n2_s;
     uint   objID;
     uint   matID;
-    float2 uv;
     float  eta;
+    //resolved x2 material - baked by raygen so reconnection never re-fetches
+    float3 Kd;
+    float  Pr;
+    float  Pm;
 
     //varying payload
     float3 L2;
@@ -37,12 +40,12 @@ static const uint PLANE_PACK1 =  0u;
 static const uint PLANE_L2    = 16u;
 static const uint PLANE_V2    = 20u;
 static const uint PLANE_OBJID = 24u;
-static const uint PLANE_UV    = 28u;
+static const uint PLANE_KD    = 28u;   // was UV - now resolved albedo (RGB9E5)
 static const uint PLANE_MATID = 32u;
 static const uint PLANE_W     = 36u;
 static const uint PLANE_F     = 40u;
 static const uint PLANE_M     = 52u;
-static const uint PLANE_ETA   = 56u;
+static const uint PLANE_ETA   = 56u;   // packed: eta half16 | Pr unorm8 | Pm unorm8
 static const uint PLANE_WSUM  = 60u;
 
 //====================================
@@ -54,7 +57,7 @@ uint addr_pack1(uint px)           { return px * SZ_PACK1; }
 uint addr_l2(uint px)              { uint N = numPx(); return N * PLANE_L2    + px * SZ_4; }
 uint addr_v2(uint px)              { uint N = numPx(); return N * PLANE_V2    + px * SZ_4; }
 uint addr_objid(uint px)           { uint N = numPx(); return N * PLANE_OBJID + px * SZ_4; }
-uint addr_uv(uint px)              { uint N = numPx(); return N * PLANE_UV    + px * SZ_4; }
+uint addr_kd(uint px)              { uint N = numPx(); return N * PLANE_KD    + px * SZ_4; }
 uint addr_matid(uint px)           { uint N = numPx(); return N * PLANE_MATID + px * SZ_4; }
 uint addr_w(uint px)               { uint N = numPx(); return N * PLANE_W     + px * SZ_4; }
 uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_12; }
@@ -65,6 +68,25 @@ uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + 
 //luminance
 inline float GetPHat(float3 v) {
     return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
+}
+
+//====================================
+//ETA + PR + PM PACK (one 32-bit word)
+//====================================
+//eta as half16 (IOR ~1..2.6, ample precision), Pr/Pm as unorm8 (material-
+//native precision - g_mat stores Pr/Pm as unorm8 anyway). Lets the reservoir
+//carry the resolved x2 material without growing past 64 B/pixel.
+uint PackEtaPrPm(float eta, float pr, float pm)
+{
+    return (f32tof16(eta) & 0xFFFFu)
+         | (uint(saturate(pr) * 255.0f + 0.5f) << 16)
+         | (uint(saturate(pm) * 255.0f + 0.5f) << 24);
+}
+void UnpackEtaPrPm(uint p, out float eta, out float pr, out float pm)
+{
+    eta = f16tof32(p & 0xFFFFu);
+    pr  = float((p >> 16) & 0xFFu) * (1.0f / 255.0f);
+    pm  = float((p >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
 //====================================
@@ -105,12 +127,12 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     buf.Store (addr_l2(pixelIdx),    PackRGB9E5(r.L2));
     buf.Store (addr_v2(pixelIdx),    PackNormal(normalize(r.V2)));
     buf.Store (addr_objid(pixelIdx), r.objID);
-    buf.Store (addr_uv(pixelIdx),    PackFloat2x16(r.uv.x, r.uv.y));
+    buf.Store (addr_kd(pixelIdx),    PackRGB9E5(r.Kd));
     buf.Store (addr_matid(pixelIdx), r.matID);
     buf.Store (addr_w(pixelIdx),     asuint(r.W));
     buf.Store3(addr_f(pixelIdx),     asuint(r.F));
     buf.Store (addr_m(pixelIdx),     r.M);
-    buf.Store (addr_eta(pixelIdx),   asuint(r.eta));
+    buf.Store (addr_eta(pixelIdx),   PackEtaPrPm(r.eta, r.Pr, r.Pm));
 }
 
 Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
@@ -128,14 +150,13 @@ Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
     r.L2    = UnpackRGB9E5(buf.Load(addr_l2(pixelIdx)));
     r.V2    = UnpackNormal(buf.Load(addr_v2(pixelIdx)));
 
-    uint uv_packed = buf.Load(addr_uv(pixelIdx));
-    UnpackFloat2x16(uv_packed, r.uv.x, r.uv.y);
+    r.Kd    = UnpackRGB9E5(buf.Load(addr_kd(pixelIdx)));
 
     r.W     = asfloat(buf.Load(addr_w(pixelIdx)));
     r.F     = asfloat(buf.Load3(addr_f(pixelIdx)));
 
     r.M     = buf.Load(addr_m(pixelIdx));
-    r.eta   = asfloat(buf.Load(addr_eta(pixelIdx)));
+    UnpackEtaPrPm(buf.Load(addr_eta(pixelIdx)), r.eta, r.Pr, r.Pm);
     r.w_sum = 0.0f;
 
     return r;
@@ -150,7 +171,8 @@ uint load_objID(RWByteAddressBuffer b, uint pixelIdx)
     return b.Load(addr_objid(pixelIdx));
 }
 
-uint load_matID(RWByteAddressBuffer b, uint pixelIdx)
+//_res suffix: distinct from Sample_Data's load_matID which reads the G-buffer
+uint load_matID_res(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(addr_matid(pixelIdx));
 }
@@ -177,12 +199,17 @@ float3 load_V2(RWByteAddressBuffer b, uint pixelIdx)
     return UnpackNormal(b.Load(addr_v2(pixelIdx)));
 }
 
-//distinct from Sample_Data's load_uv which reads G-buffer
-float2 load_uv_res(RWByteAddressBuffer b, uint pixelIdx)
+//resolved x2 albedo
+float3 load_kd_res(RWByteAddressBuffer b, uint pixelIdx)
 {
-    float2 r;
-    UnpackFloat2x16(b.Load(addr_uv(pixelIdx)), r.x, r.y);
-    return r;
+    return UnpackRGB9E5(b.Load(addr_kd(pixelIdx)));
+}
+
+//resolved x2 roughness + metalness (share the eta word)
+void load_prpm_res(RWByteAddressBuffer b, uint pixelIdx, out float pr, out float pm)
+{
+    float eta;
+    UnpackEtaPrPm(b.Load(addr_eta(pixelIdx)), eta, pr, pm);
 }
 
 float load_W(RWByteAddressBuffer b, uint pixelIdx)
@@ -197,7 +224,7 @@ float3 load_F(RWByteAddressBuffer b, uint pixelIdx)
 
 float load_eta(RWByteAddressBuffer b, uint pixelIdx)
 {
-    return asfloat(b.Load(addr_eta(pixelIdx)));
+    return f16tof32(b.Load(addr_eta(pixelIdx)) & 0xFFFFu);
 }
 
 void store_wsum(RWByteAddressBuffer b, uint pixelIdx, float wsum)
@@ -438,7 +465,7 @@ bool UpdateReservoir(
     in float3 L2,
     in float3 V2,
 
-    in float2 uv,
+    in float3 Kd, in float Pr, in float Pm,
 
     in uint matID,
     in uint objID,
@@ -460,7 +487,9 @@ bool UpdateReservoir(
         reservoir.matID = matID;
         reservoir.eta   = eta;
 
-        reservoir.uv    = uv;
+        reservoir.Kd    = Kd;
+        reservoir.Pr    = Pr;
+        reservoir.Pm    = Pm;
 
         reservoir.L2    = L2;
         reservoir.V2    = V2;
@@ -484,7 +513,7 @@ inline bool AddInitialCandidate(
     float  wi,
     float3 x2, float3 n2_s,
     float3 L2, float3 V2,
-    float2 uv,
+    float3 Kd, float Pr, float Pm,
     uint   matID, uint objID, float eta,
     float3 F_contrib,
     inout uint seed)
@@ -502,8 +531,8 @@ inline bool AddInitialCandidate(
         buf.Store (addr_v2   (pixelIdx), PackNormal(normalize(V2)));
         buf.Store (addr_objid(pixelIdx), objID);
         buf.Store (addr_matid(pixelIdx), matID);
-        buf.Store (addr_eta  (pixelIdx), asuint(eta));
-        buf.Store (addr_uv   (pixelIdx), PackFloat2x16(uv.x, uv.y));
+        buf.Store (addr_eta  (pixelIdx), PackEtaPrPm(eta, Pr, Pm));
+        buf.Store (addr_kd   (pixelIdx), PackRGB9E5(Kd));
         buf.Store3(addr_f    (pixelIdx), asuint(F_contrib));
         return true;
     }
@@ -517,18 +546,9 @@ inline bool TestTemporalCandidate(
     int2   coord,
     float2 dims,
     RWByteAddressBuffer sampleBuf,
-    uint   myMatID,
-    float3 myN1s,
-    float3 myPos,
-    out uint   outPixelIdx,
-    out uint   outInstID,
-    out uint   outPrimID,
-    out float2 outBary)
+    out uint outPixelIdx)
 {
     outPixelIdx = 0xFFFFFFFFu;
-    outInstID   = 0;
-    outPrimID   = 0;
-    outBary     = float2(0, 0);
 
     if (coord.x < 0 || coord.y < 0 || coord.x >= (int)dims.x || coord.y >= (int)dims.y)
         return false;
@@ -538,14 +558,6 @@ inline bool TestTemporalCandidate(
     if (load_isEmitter(sampleBuf, tpx))
         return false;
 
-    uint rI = load_instID(sampleBuf, tpx);
-    uint rP = load_primID(sampleBuf, tpx);
-
-    float2 rB = load_bary(sampleBuf, tpx);
-
     outPixelIdx = tpx;
-    outInstID   = rI;
-    outPrimID   = rP;
-    outBary     = rB;
     return true;
 }

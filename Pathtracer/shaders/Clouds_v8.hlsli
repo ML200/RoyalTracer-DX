@@ -1094,6 +1094,9 @@ float3 EvaluateAtmosphereAndClouds(
 {
     transmittanceOut  = float3(1, 1, 1);
     hitPlanetOut      = false;
+#if ATM_DEBUG_RING == 3
+    return float3(0, 0, 0);            //sky/atmosphere disabled — ATM_DEBUG_RING
+#endif
 
     InitCloudEnuBasis();
     InitCloudJDPhase();
@@ -1112,6 +1115,25 @@ float3 EvaluateAtmosphereAndClouds(
     if (maxDistKm > 0.0f)
     {
         tEnd = min(tEnd, maxDistKm);
+        // Robust below ground clamp. A coarse mesh planet (Milestone 1 uses
+        // a UV sphere with chord drop on the order of km below ATMOS_BOTTOM_
+        // RADIUS) produces hit points at altitude < 0. Without this clip the
+        // march would step from camera through the analytical surface and
+        // into "underground" along the ray; the density saturation
+        // (max(0, alt) in the integrators) then makes every below ground
+        // step contribute at ground density and inscatter / transmittance
+        // both go to garbage. Clamping tEnd to the analytical ground entry
+        // makes the atmosphere see the mesh as if it terminated cleanly at
+        // ATMOS_BOTTOM_RADIUS; the residual transmittance error from the
+        // missing few km between Rb and the actual mesh hit is ~2% at most
+        // and disappears entirely once the cube sphere quadtree (M2+) is
+        // tessellated finely enough to keep mesh hits above the surface.
+        float tG0, tG1;
+        if (RaySphereIntersect(O, Vn, ATMOS_BOTTOM_RADIUS, tG0, tG1)
+            && tG0 > 0.0f && tG0 < tEnd)
+        {
+            tEnd = tG0;
+        }
     }
     else
     {

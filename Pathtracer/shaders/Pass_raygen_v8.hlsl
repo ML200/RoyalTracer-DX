@@ -3,7 +3,7 @@
 
 //safety net, real termination is RR at depth>2 plus NRC cache short circuit
 #ifndef MAX_BOUNCES
-#define MAX_BOUNCES 12
+#define MAX_BOUNCES 10
 #endif
 
 //====================================
@@ -96,7 +96,7 @@ inline bool TraceCameraRay(
     ray.Origin    = rayOrigin;
     ray.Direction = rayDir;
     ray.TMin      = 0.00001f;
-    ray.TMax      = 100000.0f;
+    ray.TMax      = RAY_TMAX_PLANET;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
     //----- MISS: only the sun disc written here -----
@@ -127,16 +127,30 @@ inline bool TraceCameraRay(
         return false;
     }
 
+    // PLANET_INTEGRATION: surface shading is resolved HERE from instID + primID
+    // (Hit_v8.hlsl's closest-hit is an unused stub). The terrain material branch,
+    // keyed on instID range, belongs in this block. See rdn/planet/INTEGRATION_NOTES.md.
     //----- HIT: extract surface state -----
     const float  hitT   = hitObj.GetRayTCurrent();
     const float3 hitPos = rayOrigin + rayDir * hitT;
-    const uint   instID = hitObj.GetInstanceIndex();
-    const uint   primID = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
-    const uint   matID  = GetMatIDFast(instID, primID);
-
+    // PLANET_INTEGRATION: GetInstanceID() (the user InstanceID), not the TLAS
+    // array index - terrain instances carry InstanceID >= TERRAIN_INSTANCE_BASE,
+    // scene instances carry their scene index (== array index).
+    const uint   instID = hitObj.GetInstanceID();
+    const uint    primID   = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
+    const uint    matID    = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
-    HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
+    const float2  hitBary  = attr.barycentrics;
+    // PLANET: terrain shades from the LIVE ray hit position (precise, camera-
+    // relative). Re-deriving it from planetCentre + radius is an FP32
+    // big-minus-big - EvalTerrainSurfaceFromHit takes the hit as-is.
+    HitInfo hinfo;
+    if (IsTerrainInstance(instID))
+        hinfo = EvalTerrainSurfaceFromHit(hitPos, rayOrigin);
+    else
+        hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
+    const float3  emission = GetEmissionFast(instID, primID);
 
     const float  matNi        = LoadNi(matID);
     const bool   transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
@@ -151,16 +165,17 @@ inline bool TraceCameraRay(
         ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
         : float3(1, 1, 1);
 
-    const float3 emission  = GetEmissionFast(instID, primID);
     const bool   isEmitter = any(emission > 0.0f);
 
-    //----- DLSS sample-buffer writes (drive reprojection) -----
+    //----- DLSS sample-buffer writes: bake the resolved surface so no pass
+    //      after raygen touches per-triangle data or a material texture -----
     store_instID    (g_sample_current, pixelIdx, instID);
-    store_primID    (g_sample_current, pixelIdx, primID, isEmitter, hinfo.backface);
-    store_bary      (g_sample_current, pixelIdx, attr.barycentrics);
+    store_flags     (g_sample_current, pixelIdx, isEmitter, hinfo.backface);
+    store_matID     (g_sample_current, pixelIdx, matID);
+    store_kd        (g_sample_current, pixelIdx, hitLocalKd);
+    store_prpm      (g_sample_current, pixelIdx, hitLocalPr, hitLocalPm);
     store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
-    store_uv        (g_sample_current, pixelIdx, hinfo.uv);
-    store_hitT      (g_sample_current, pixelIdx, hitT);
+    store_x1        (g_sample_current, pixelIdx, hitPos);
     if (isEmitter)
     {
         gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
@@ -181,7 +196,7 @@ inline bool TraceCameraRay(
             reflRay.Origin    = reflOrigin;
             reflRay.Direction = reflDir;
             reflRay.TMin      = 0.00001f;
-            reflRay.TMax      = 100000.0f;
+            reflRay.TMax      = RAY_TMAX_PLANET;
 
             RayQuery<RAY_FLAG_NONE> q;
             q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
@@ -247,7 +262,30 @@ inline bool TraceCameraRay(
 }
 
 
-//DI at d=2 and GI at d>=3 share one reservoir, cold state stashed in g_pathStateBuffer
+//====================================
+//DIRECT-AT-X1 CONTRIBUTION
+//====================================
+//x1 (primary-hit) direct SKY + SUN is pulled OUT of the RIS reservoir and
+//summed here, then written to scratch slot 3. Only the sky/sun techniques
+//leave - NEE sun, and the BSDF ray-miss atmosphere (which also carries the
+//BSDF-sampled sun disc). Emissive-triangle DI (point-light NEE + BSDF
+//emitter hits) stays in the reservoir. Collapses a lone depth==1 RIS
+//candidate to the radiance it would resolve to: F * W with W = wi/GetPHat(F)
+//- the MIS-weighted single-sample estimate. Guards mirror AddInitialCandidate.
+inline float3 DirectContribution(float wi, float3 F_contrib)
+{
+    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib)))
+        return float3(0, 0, 0);
+    const float ph = GetPHat(F_contrib);
+    if (ph <= 1e-20f)
+        return float3(0, 0, 0);
+    return F_contrib * (wi / ph);
+}
+
+
+//one reservoir: emissive-tri DI (d==1) + first-bounce DI (d==2) + GI (d>=3)
+//share it. d==1 direct sky + sun are split out to scratch slot 3. cold state
+//stashed in g_pathStateBuffer
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
@@ -265,6 +303,17 @@ void Pass_raygen_v8()
     uint pathClassInit = NrcClassifyPixel(pixel, asuint(time), nrcTileSide, nrcTileOffset,
                                           clsTraining, clsUnbiased);
     if (!(clsTraining && NrcIsTrainOn())) pathClassInit = NRC_CLASS_RENDER;
+
+    //==================== NRC TEMPORARILY DISABLED ======================
+    //NRC is off during planet bring-up: the cuda:nrc_* / Pass_nrc_* passes
+    //are commented out in Renderer.cpp and the NRC editor panel is disabled.
+    //Forcing RENDER class keeps nrcPathId == NRC_INVALID_PATH, so every NRC
+    //training / path-record write below self-gates to a no-op. The NRC code
+    //that follows is intentionally left in place - DO NOT REMOVE IT. Re-enable
+    //NRC by deleting this override (and the cacheElig override further down)
+    //and un-commenting the NRC passes + editor panel.
+    pathClassInit = NRC_CLASS_RENDER;
+    //====================================================================
 
     NrcClearPendingGI(pixelIdx);
 
@@ -366,11 +415,18 @@ void Pass_raygen_v8()
     //back-edge phi shrinks from 3 dwords to 1.
     uint rayDirPk = PackNormal(rayDir);
 
+    //x1 direct sky + sun (depth==1 NEE-sun + the BSDF ray-miss atmosphere) is
+    //summed here and written to scratch slot 3 at finalize, kept OUT of the
+    //RIS reservoir. Emissive-triangle DI still goes into the reservoir.
+    float3 directAtX1 = float3(0, 0, 0);
+
     //=====================================================================
     //BOUNCE LOOP: each iter processes vertex v_depth (already in ctx),
     //then traces v_depth -> v_{depth+1} and extracts the new ctx for the
     //next iter. Depth conventions:
-    //  depth==1 : process v_1 (primary). DI candidate's x2 = light position.
+    //  depth==1 : process v_1 (primary). Emissive-tri DI is a reservoir
+    //             candidate (x2 = light position); direct sky + sun go to
+    //             directAtX1 (scratch slot 3) instead of the reservoir.
     //  depth==2 : process v_2 (first bounce). DI's x2 = ctx.hitPos. Stores
     //             ps_depth1(v_2) at iter bottom after extracting v_2.
     //  depth>=3 : later GI. x2 from PathVertexState. RR + tpost update active.
@@ -410,7 +466,10 @@ void Pass_raygen_v8()
         //pathClass (bits 10..11) so no extra live register survives.
         {
             const uint  nrcPClass = pk_pclass(nrcStateA);
-            const bool  cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
+            //NRC TEMPORARILY DISABLED (planet bring-up) - DO NOT REMOVE.
+            //Original: cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
+            //Forcing false stops the NRC cache short-circuiting the bounce loop.
+            const bool  cacheElig = false;
             const float nrcA0     = load_rg_nrcA0(g_pathStateBuffer, pixelIdx);
             const float nrcA      = load_rg_nrcA (g_pathStateBuffer, pixelIdx);
             const bool  shouldFire = !prevSpec &&
@@ -505,7 +564,7 @@ void Pass_raygen_v8()
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     light.position, light.normal,
                                     light.emission, diMarkerFor(pixelIdx, time),
-                                    float2(0, 0),
+                                    float3(0,0,0), 0.0f, 0.0f,
                                     MATID_LIGHT_TRI, light.objID, 1.0f,
                                     F_contrib, seed);
                             }
@@ -515,7 +574,7 @@ void Pass_raygen_v8()
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ctx.hitPos, ctx.hitNormal,
                                     light.emission, -L,
-                                    ctx.uv,
+                                    (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
                                     ctx.matID, ctx.instID, ctx.iors.y,
                                     F_contrib, seed);
                             }
@@ -527,7 +586,7 @@ void Pass_raygen_v8()
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ps.x2, ps.n2_s,
                                     light.emission * tpostNEE, ps.v2,
-                                    ps.uv,
+                                    ps.Kd, ps.Pr, ps.Pm,
                                     ps.matID, ps.objID, ps.eta,
                                     F_contrib, seed);
                             }
@@ -587,7 +646,7 @@ void Pass_raygen_v8()
                         const float3 shadowOrigin = offset_ray(
                             ctx.hitPos,
                             dot(sun.direction, ctx.hitNormal) >= 0.0f ? ctx.hitNormal : -ctx.hitNormal);
-                        if (IsVisibleOffset(shadowOrigin, sun.direction, 10000.0f))
+                        if (IsVisibleOffset(shadowOrigin, sun.direction, RAY_TMAX_PLANET))
                         {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
@@ -596,19 +655,16 @@ void Pass_raygen_v8()
 
                             if (depth == 1)
                             {
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    sun.direction, float3(0, 1, 0),
-                                    sun.radiance, diMarkerFor(pixelIdx, time),
-                                    float2(0, 0),
-                                    MATID_ENV_MISS, MATID_ENV_MISS, 1.0f,
-                                    F_contrib, seed);
+                                //primary direct sun - summed to directAtX1
+                                //(scratch slot 3), kept out of the reservoir
+                                directAtX1 += DirectContribution(wi, F_contrib);
                             }
                             else if (depth == 2)
                             {
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ctx.hitPos, ctx.hitNormal,
                                     sun.radiance, -sun.direction,
-                                    ctx.uv,
+                                    (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
                                     ctx.matID, ctx.instID, ctx.iors.y,
                                     F_contrib, seed);
                             }
@@ -620,7 +676,7 @@ void Pass_raygen_v8()
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ps.x2, ps.n2_s,
                                     sun.radiance * tpostNEE, ps.v2,
-                                    ps.uv,
+                                    ps.Kd, ps.Pr, ps.Pm,
                                     ps.matID, ps.objID, ps.eta,
                                     F_contrib, seed);
                             }
@@ -718,7 +774,7 @@ void Pass_raygen_v8()
         rayB.Origin    = rayOrigin;
         rayB.Direction = rayDir;
         rayB.TMin      = 0.00001f;
-        rayB.TMax      = 100000.0f;
+        rayB.TMax      = RAY_TMAX_PLANET;
         //secondaries force 2-state to skip alpha any-hit
         dx::HitObject hitObjB = TraceRay_Custom(SceneBVH, rayB, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF);
 
@@ -726,6 +782,17 @@ void Pass_raygen_v8()
         if (!hitObjB.IsHit())
         {
             const float3 throughputCur = UnpackRGB9E5(throughputPk);
+
+            //GI bounce environment: evaluate the sky/sun from the bounce ray
+            //ORIGIN, not the camera. EvaluateSky's IntegrateScattering and its
+            //hitPlanet / EvaluatePlanetBody test are near field and depend on
+            //the observer position. Raygen left g_skyObserverPlanet at the
+            //camera (set for the primary pass), so every GI bounce sampled the
+            //sky as if from the camera: bounce directions that hit the planet
+            //from the camera's viewpoint picked up a spurious planet body and
+            //wrong atmosphere, baking a nadir centred ring into the indirect
+            //lighting. The bounce ray left rayOrigin, so that is the observer.
+            SetSkyObserver(rayOrigin + sceneOriginWorld);
 
             const float  sunSAPdf   = GetSunPdf(rayDir);
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
@@ -746,17 +813,13 @@ void Pass_raygen_v8()
             const float  p_hat     = GetPHat(F_contrib);
             const float  wi        = (pdf_product > 1e-20f) ? (p_hat / pdf_product) : 0.0f;
 
-            //v_{depth+1} == v_2 when depth==1, so the candidate is the
-            //first-bounce env miss with x2 = rayDir. depth>=2 uses the
-            //stored v_2 vertex (ps.x2 / ps.v2).
+            //depth==1: this BSDF ray left x1, so the miss is x1's direct sky
+            //- summed to directAtX1 (scratch slot 3), kept out of the
+            //reservoir. depth>=2 uses the stored v_2 vertex (ps.x2 / ps.v2)
+            //as the reservoir candidate.
             if (depth == 1)
             {
-                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                    rayDir, float3(0, 1, 0),
-                    envL, diMarkerFor(pixelIdx, time),
-                    float2(0, 0),
-                    MATID_ENV_MISS, MATID_ENV_MISS, 1.0f,
-                    F_contrib, seed);
+                directAtX1 += DirectContribution(wi, F_contrib);
             }
             else
             {
@@ -765,7 +828,7 @@ void Pass_raygen_v8()
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
                     envL * tpost, ps.v2,
-                    ps.uv,
+                    ps.Kd, ps.Pr, ps.Pm,
                     ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
@@ -775,13 +838,19 @@ void Pass_raygen_v8()
         //----- HIT: extract v_{depth+1} surface -----
         const float  hitT_n   = hitObjB.GetRayTCurrent();
         const float3 hitPos_n = rayOrigin + rayDir * hitT_n;
-        const uint   instID_n = hitObjB.GetInstanceIndex();
-        const uint   primID_n = FlatPrimID(instID_n, hitObjB.GetGeometryIndex(), hitObjB.GetPrimitiveIndex());
-        const uint   matID_n  = GetMatIDFast(instID_n, primID_n);
-
+        // PLANET_INTEGRATION: GetInstanceID() so terrain bounce hits are keyed
+        // on the terrain InstanceID range (see the primary hit above).
+        const uint   instID_n = hitObjB.GetInstanceID();
+        const uint    primID_n = FlatPrimID(instID_n, hitObjB.GetGeometryIndex(), hitObjB.GetPrimitiveIndex());
+        const uint    matID_n  = GetMatIDFast(instID_n, primID_n);
         BuiltInTriangleIntersectionAttributes attrB;
         hitObjB.GetAttributes(attrB);
-        HitInfo hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOrigin, (uint)depth);
+        // PLANET: terrain bounce hit shades from the live hit position too.
+        HitInfo hinfo_n;
+        if (IsTerrainInstance(instID_n))
+            hinfo_n = EvalTerrainSurfaceFromHit(hitPos_n, rayOrigin);
+        else
+            hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOrigin, (uint)depth);
 
         const float  matNi_n        = LoadNi(matID_n);
         const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
@@ -822,7 +891,7 @@ void Pass_raygen_v8()
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     hitPos_n, hinfo_n.hitNormal,
                     emission_n, diMarkerFor(pixelIdx, time),
-                    float2(0, 0),
+                    float3(0,0,0), 0.0f, 0.0f,
                     MATID_LIGHT_TRI, instID_n, 1.0f,
                     F_contrib, seed);
             }
@@ -833,7 +902,7 @@ void Pass_raygen_v8()
                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                     ps.x2, ps.n2_s,
                     emission_n * tpost, ps.v2,
-                    ps.uv,
+                    ps.Kd, ps.Pr, ps.Pm,
                     ps.matID, ps.objID, ps.eta,
                     F_contrib, seed);
             }
@@ -845,7 +914,8 @@ void Pass_raygen_v8()
         {
             store_ps_depth1(g_pathStateBuffer, pixelIdx,
                             hitPos_n, hinfo_n.hitNormal,
-                            hinfo_n.uv, matID_n, instID_n, iors_n.y);
+                            matID_n, instID_n, iors_n.y,
+                            hitLocalKd_n, hitLocalPr_n, hitLocalPm_n);
         }
 
         //----- Carry v_{depth+1} into ctx for the next iter -----
@@ -868,6 +938,13 @@ void Pass_raygen_v8()
     //=====================================================================
     //FINALIZE
     //=====================================================================
+    //x1 direct sky + sun -> scratch slot 3 (composited downstream as
+    //sunDirect). directAtX1 froze after the depth==1 iteration and survives
+    //every loop-exit path in a register, so one write here covers all of
+    //them. The camera-terminal early return above never reaches this and
+    //correctly leaves slot 3 at the 0 raygen cleared it to.
+    gScratchPing[uint3(pixel, 3)] = float4(directAtX1, 0);
+
     const uint nrcTrainVIdxFinal     = pk_vidx(nrcStateA);
     const bool nrcCacheTerminatedFin = pk_cterm(nrcStateA);
 

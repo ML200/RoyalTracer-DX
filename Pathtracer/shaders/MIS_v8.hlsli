@@ -39,60 +39,9 @@ inline float PairwiseMIS_Neighbour_Temp(
 //====================================
 //PAIRWISE MIS SPATIAL
 //====================================
-#ifdef ENABLE_RAY_QUERY_INLINE
-float PairwiseMIS_Canonical_Spat(
-    in float M_sum_in,
-    in float p_c,
-    in float M_c,
-    in uint nIds[SPAT_COUNT_MAX],
-    in float3 x2_c,
-    in float3 n2s_c,
-    in float3 L2_c,
-    in float3 V2_c,
-    in uint   matID_c,
-    in float3 localKd2_c,
-    in float  localPr2_c,
-    in float  localPm2_c,
-    in float  eta_c,
-    in float  J_c
-    )
-{
-    float M_sum = max(M_sum_in, 1.0f);
-    float m_c = M_c / M_sum;
-    float m_num = M_c * p_c;
-
-    [unroll]
-    for(int i = 0; i < SPAT_COUNT_MAX; i++){
-        if(nIds[i] != 0xFFFFFFFF){
-            uint id = nIds[i];
-            uint nInstID = load_instID(g_sample_current, id);
-            uint nPrimID = load_primID(g_sample_current, id);
-            float2 nBary = load_bary(g_sample_current, id);
-            SurfaceVertex sv_n1 = BuildVertexLight(nInstID, nPrimID, nBary,
-                load_n1_s_with_instID(g_sample_current, id, nInstID),
-                load_uv(g_sample_current, id),
-                InitOrigin());
-
-            float Jn = 0.0f;
-            float p_hat_from = GetPHat(Reconnect(
-                sv_n1.x, sv_n1.n_s, sv_n1.o, sv_n1.matID,
-                sv_n1.Kd, sv_n1.Pr, sv_n1.Pm, sv_n1.etai, sv_n1.etat,
-                matID_c, x2_c, n2s_c, L2_c, V2_c,
-                localKd2_c, localPr2_c, localPm2_c, eta_c,
-                Jn));
-            {
-                float3 _conn = x2_c - sv_n1.x; float _cd = length(_conn);
-                float J = JacobianRatio(Jn, J_c);
-                p_hat_from *= (_cd > EPSILON && IsVisible(sv_n1.x, sv_n1.n_s, _conn / _cd, _cd * 0.999f)) ? J : 0.0f;
-            }
-            float m_den = m_num + (M_sum - M_c) * p_hat_from;
-            if(m_den > EPSILON)
-                m_c += (min(SPAT_MCAP, load_M(g_Reservoirs_current, id)) / M_sum) * (m_num / m_den);
-        }
-    }
-    return m_c;
-}
-#endif
+//PairwiseMIS_Canonical_Spat removed: it was unused, and was the last caller of
+//BuildVertexLight (per-triangle reconstruction). Spatial-GI canonical MIS is
+//computed inline in Pass_spat_gi_v8_1.
 
 
 #ifdef ENABLE_RAY_QUERY_INLINE

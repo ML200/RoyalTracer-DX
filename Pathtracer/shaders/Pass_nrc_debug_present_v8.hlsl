@@ -21,21 +21,16 @@ void main(uint3 dtid : SV_DispatchThreadID)
     float3 L_s = float3(0, 0, 0);
     if (!load_isEmitter(g_sample_current, pixelIdx))
     {
-        const uint primID = load_primID(g_sample_current, pixelIdx);
-        if (primID != 0xFFFFFFFFu)
-        {
-            //MLP predicts irradiance, recover radiance via alpha+beta
-            const uint    instID = load_instID(g_sample_current, pixelIdx);
-            const uint    matID  = GetMatIDFast(instID, primID);
-            const float2  uv     = load_uv(g_sample_current, pixelIdx);
-            float3 kd; float pr, pm;
-            RefetchMaterial(matID, uv, kd, pr, pm, 0u);
-            const float3 alpha   = kd * (1.0f - pm);
-            const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, pm);
-            const float3 reflSum = alpha + betaC;
+        //MLP predicts irradiance, recover radiance via alpha+beta. Material
+        //is the baked G-buffer value - no per-triangle data, no texture.
+        const float3 kd = load_kd(g_sample_current, pixelIdx);
+        float pr, pm;
+        load_prpm(g_sample_current, pixelIdx, pr, pm);
+        const float3 alpha   = kd * (1.0f - pm);
+        const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, pm);
+        const float3 reflSum = alpha + betaC;
 
-            L_s = NrcLoadInferenceOutput(pixelIdx) * reflSum;
-        }
+        L_s = NrcLoadInferenceOutput(pixelIdx) * reflSum;
     }
 
     gScratchPing[uint3(pixel, 9)] = float4(L_s, 1.0f);

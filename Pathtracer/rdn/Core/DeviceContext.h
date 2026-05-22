@@ -14,7 +14,13 @@
 #include <sl_dlss.h>
 #include <sl_dlss_g.h>
 
+#include "../planet/queue_sync.h"   // planet::FenceTimeline
+
 struct DeviceContext {
+    // PLANET_INTEGRATION: single source of truth for the ID3D12Device, the one
+    // DIRECT command queue, the per-frame fence, and frames-in-flight (bufferCount).
+    // Planet BVH streaming (Phase 4) adds an async COMPUTE queue, a COPY queue, and
+    // their fences here. See rdn/planet/INTEGRATION_NOTES.md.
     //====================================
     //CREATION
     //====================================
@@ -41,6 +47,23 @@ struct DeviceContext {
     void CloseExecuteAndSignal(ID3D12Fence* extFence, UINT64 value);
     //queue-side wait, then reopen fresh cmd list on current frame allocator
     void WaitAndReopen(ID3D12Fence* extFence, UINT64 value);
+
+    //====================================
+    //PLANET STREAMING (Phase 4)
+    //====================================
+    //async COMPUTE + COPY command lists for the planet BVH stream pipeline
+    ID3D12GraphicsCommandList10* ComputeList() const { return planetComputeList.Get(); }
+    ID3D12GraphicsCommandList10* CopyList()    const { return planetCopyList.Get(); }
+    //reset the planet compute+copy allocators/lists for the current frame
+    void   ResetPlanetLists();
+    //close + execute the copy list on the COPY queue; signal + return the copy fence
+    UINT64 SubmitPlanetCopy();
+    //COMPUTE queue waits the copy fence, then close + execute + signal compute
+    UINT64 SubmitPlanetCompute(UINT64 waitCopyValue);
+    UINT64 PlanetComputeCompleted()    const;
+    UINT64 PlanetComputeLastSignaled() const;
+    void   PlanetCopyCpuWait(UINT64 value);
+    void   PlanetComputeCpuWait(UINT64 value);
 
     //====================================
     //ACCESSORS
@@ -74,6 +97,7 @@ private:
     void CreateDeviceAndSwapChain(HWND hwnd, bool useWarp);
     void CreateRTVsAndDepth();
     void InitStreamline();
+    void InitPlanetStreaming();
 
     UINT  width  = 0;
     UINT  height = 0;
@@ -97,4 +121,17 @@ private:
     //buffer count may differ from FRAME_COUNT with DLSS-G
     UINT                           bufferCount = FRAME_COUNT;
     bool                           tearingSupported = false;
+
+    //planet streaming (Phase 4): async COMPUTE + COPY queues, per-frame
+    //allocators/lists, and a copy -> compute fence pair.
+    ComPtr<ID3D12CommandQueue>          planetComputeQueue;
+    ComPtr<ID3D12CommandQueue>          planetCopyQueue;
+    ComPtr<ID3D12CommandAllocator>      planetComputeAllocators[MAX_BACK_BUFFERS];
+    ComPtr<ID3D12CommandAllocator>      planetCopyAllocators[MAX_BACK_BUFFERS];
+    ComPtr<ID3D12GraphicsCommandList10> planetComputeList;
+    ComPtr<ID3D12GraphicsCommandList10> planetCopyList;
+    planet::FenceTimeline               planetComputeFence;
+    planet::FenceTimeline               planetCopyFence;
+    UINT64                              planetComputeAtSlot[MAX_BACK_BUFFERS] = {};
+    UINT64                              planetCopyAtSlot[MAX_BACK_BUFFERS] = {};
 };

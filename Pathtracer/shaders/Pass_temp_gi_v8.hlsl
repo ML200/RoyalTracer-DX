@@ -44,16 +44,14 @@ void Pass_temp_gi_v8()
     //====================================
     //BASE REPROJECTION
     //====================================
-    //lightweight loads only
+    //lightweight loads only - all baked, no per-triangle / texture access
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float3 myPos    = ReconstructPosition(myInstID, myPrimID, myBary);
+    const uint   myMatID  = load_matID(g_sample_current, pixelIdx);
+    const float3 myPos    = load_x1(g_sample_current, pixelIdx);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
-    const float2 myUV = load_uv(g_sample_current, pixelIdx);
-    float3 myKd; float myPr, myPm;
-    RefetchMaterial(myMatID, myUV, myKd, myPr, myPm);
+    float3 myKd = load_kd(g_sample_current, pixelIdx);
+    float  myPr, myPm;
+    load_prpm(g_sample_current, pixelIdx, myPr, myPm);
 
     //specularity matches DLSS RR EnvBRDFApprox2
     const float3 camPos = InitOrigin();
@@ -63,12 +61,20 @@ void Pass_temp_gi_v8()
     //stochastic reprojection, specular vs diffuse MV weighted by specularity
     float4 reflData = gScratchPing[uint3(launchIndex, 4)];
     uint   reflInstID = asuint(reflData.w);
-    bool   reflValid = (reflInstID < 0xFFFFFFFEu);
+    //PLANET: terrain instIDs (>= TERRAIN_INSTANCE_BASE) excluded - terrain is
+    //rough and has no instanceProps entry, so no specular reprojection.
+    bool   reflValid = (reflInstID < TERRAIN_INSTANCE_BASE);
     float  rSpec = RandomFloatSingle(seed.x);
     bool   useSpecReproj = (rSpec < specularity) && reflValid;
 
     int2 baseCoord;
-    if (useSpecReproj)
+    if (IsTerrainInstance(myInstID))
+    {
+        //PLANET: terrain is world-static and has no instanceProps entry -
+        //reproject it without the per-instance transform lookup.
+        baseCoord = GetBestReprojectedPixel_World(myPos, prevView, prevProjection, dims_f);
+    }
+    else if (useSpecReproj)
     {
         baseCoord = GetBestReprojectedPixel_d(reflData.xyz, prevView, prevProjection, dims_f, reflInstID);
         if (baseCoord.x == -1)
@@ -103,14 +109,10 @@ void Pass_temp_gi_v8()
     bool valid = false;
     uint tempPixelIdx = 0xFFFFFFFFu;
 
-    //neighbor ids must survive rejection for the merge step
-    uint   rInstID = 0;
-    uint   rPrimID = 0;
-    float2 rBary   = float2(0, 0);
-
     if (permInBounds)
-        valid = TestTemporalCandidate(permCoord, dims_f, g_sample_last, myMatID, myN1s, myPos,
-                                         tempPixelIdx, rInstID, rPrimID, rBary);
+        valid = TestTemporalCandidate(permCoord, dims_f, g_sample_last, tempPixelIdx);
+    //PLANET: no terrain staleness check needed - the surface is rebuilt from
+    //the stored world hitT, which LOD re-tessellation cannot invalidate.
 
     [branch]
     if (valid)
@@ -128,6 +130,11 @@ void Pass_temp_gi_v8()
 
             {
                 const float3 cameraPos = InitOrigin();
+                //neighbour primary hit + instID, reconstructed from the stored
+                //hitT - no per-triangle data, identical for terrain and meshes.
+                //rInstID feeds IsVisibleEnvMiss' offset_ray (terrain/mesh branch).
+                const uint   rInstID = load_instID(g_sample_last, tempPixelIdx);
+                const float3 rPos = load_x1(g_sample_last, tempPixelIdx);
                 float Jnc = 0.0f, Jn = 0.0f;
 
                 const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
@@ -144,17 +151,13 @@ void Pass_temp_gi_v8()
 
                 //p_n, reconnect from neighbor to current GI sample
                 {
-                    SurfaceVertex sv_r = BuildVertex(rInstID, rPrimID, rBary, cameraPos);
-
-                    float3 rcKd = 0.0f; float rcPr = 0.0f, rcPm = 0.0f;
-                    if (!IsSentinelMatID(rdi.matID))
-                        RefetchMaterial(rdi.matID, rdi.uv, rcKd, rcPr, rcPm);
+                    SurfaceVertex sv_r = BuildVertex(g_sample_last, tempPixelIdx, rPos, cameraPos);
 
                     float3 c = Reconnect(
                         sv_r.x, sv_r.n_s, sv_r.o, sv_r.matID,
                         sv_r.Kd, sv_r.Pr, sv_r.Pm, sv_r.etai, sv_r.etat,
                         rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
-                        rcKd, rcPr, rcPm, rdi.eta,
+                        rdi.Kd, rdi.Pr, rdi.Pm, rdi.eta,
                         Jnc);
 
                     float ph = GetPHat(c);
@@ -163,7 +166,7 @@ void Pass_temp_gi_v8()
                         float vis;
                         if (rdi.matID == MATID_ENV_MISS)
                         {
-                            vis = IsVisible(sv_r.x, sv_r.n_s, normalize(rdi.x2), 10000.0f) ? 1.0f : 0.0f;
+                            vis = IsVisibleEnvMiss(sv_r.x, sv_r.n_s, normalize(rdi.x2), RAY_TMAX_PLANET, rInstID) ? 1.0f : 0.0f;
                         }
                         else
                         {
@@ -177,22 +180,17 @@ void Pass_temp_gi_v8()
                 //n_c, reconnect from current to neighbor GI sample
                 float J2;
                 {
-                    SurfaceVertex sv_c = BuildVertex(myInstID, myPrimID, myBary, cameraPos);
+                    SurfaceVertex sv_c = BuildVertex(g_sample_current, pixelIdx, myPos, cameraPos);
 
                     const float Jc_neighbor = (rdi_r.matID == MATID_ENV_MISS)
                         ? 1.0f
-                        : ComputeJc(ReconstructPosition(rInstID, rPrimID, rBary),
-                                    rdi_r.x2, rdi_r.n2_s);
-
-                    float3 rrKd = 0.0f; float rrPr = 0.0f, rrPm = 0.0f;
-                    if (!IsSentinelMatID(rdi_r.matID))
-                        RefetchMaterial(rdi_r.matID, rdi_r.uv, rrKd, rrPr, rrPm);
+                        : ComputeJc(rPos, rdi_r.x2, rdi_r.n2_s);
 
                     float3 c = Reconnect(
                         sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
                         sv_c.Kd, sv_c.Pr, sv_c.Pm, sv_c.etai, sv_c.etat,
                         rdi_r.matID, rdi_r.x2, rdi_r.n2_s, rdi_r.L2, rdi_r.V2,
-                        rrKd, rrPr, rrPm, rdi_r.eta,
+                        rdi_r.Kd, rdi_r.Pr, rdi_r.Pm, rdi_r.eta,
                         Jn);
 
                     J2 = JacobianRatio(Jn, Jc_neighbor);
@@ -201,7 +199,7 @@ void Pass_temp_gi_v8()
                         float vis_n;
                         if (rdi_r.matID == MATID_ENV_MISS)
                         {
-                            vis_n = IsVisible(sv_c.x, sv_c.n_s, normalize(rdi_r.x2), 10000.0f) ? 1.0f : 0.0f;
+                            vis_n = IsVisibleEnvMiss(sv_c.x, sv_c.n_s, normalize(rdi_r.x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
                         }
                         else
                         {
@@ -251,7 +249,7 @@ void Pass_temp_gi_v8()
                         w_n,
                         rdi_r.M,
                         rdi_r.x2, rdi_r.n2_s, rdi_r.L2, rdi_r.V2,
-                        rdi_r.uv,
+                        rdi_r.Kd, rdi_r.Pr, rdi_r.Pm,
                         rdi_r.matID, rdi_r.objID, rdi_r.eta,
                         contrib_n_from_me,
                         seed

@@ -276,6 +276,20 @@ cbuffer CameraParams : register(b0)
     float cloud_maxEmptyStepKm;
     float cloud_emptyStepGrowthPerKm;
     float cloud_maxFineStepKm;
+    //====================================
+    //PLANET TERRAIN (Phase 5)
+    //====================================
+    //Procedural cube-sphere terrain parameters. planetCenter* is ABSOLUTE world
+    //space - subtract sceneOriginWorld for camera-local (shifted) math. Six
+    //scalar floats, matching the Camera::UploadGPUBuffer tail exactly (scalar
+    //packing avoids the float3 16-byte-straddle padding the compiler would
+    //otherwise insert and which the C++ side does not write).
+    float planetCenterX;
+    float planetCenterY;
+    float planetCenterZ;
+    float planetRadius;
+    float terrainHeightAmplitude;
+    float terrainHeightFrequency;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -454,6 +468,13 @@ StructuredBuffer<MatPacked>          g_mat               : register(t5);
 
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
+
+//PLANET: terrain instance table - one uint3 per BLAS slot, indexed by
+//(terrain instID - TERRAIN_INSTANCE_BASE). .x/.y = the 64-bit packed quadtree
+//node_id of the chunk in that slot (lo = face|lod|x[24], hi = y[24]; all-ones
+//if empty); .z = 1 if that chunk changed since last frame. Refilled every
+//frame by the planet StreamOrchestrator.
+StructuredBuffer<uint3>              g_terrainTable      : register(t44);
 
 //====================================
 //LIGHT TREE

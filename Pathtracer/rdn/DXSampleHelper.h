@@ -14,11 +14,45 @@
 #include "Win32Application.h"
 #include <d3d12.h>
 #include <wrl/client.h>
-inline void ThrowIfFailed(HRESULT hr)
+#include <source_location>
+#include <stdexcept>
+#include <cstdio>
+
+//Readable name for the HRESULTs that actually turn up in D3D12/DXR work.
+//Anything unrecognised still prints as hex, which is enough to look up.
+inline const char* HrName(HRESULT hr)
+{
+	switch (static_cast<unsigned>(hr))
+	{
+	case 0x80070057u: return "E_INVALIDARG";
+	case 0x8007000Eu: return "E_OUTOFMEMORY";
+	case 0x80004005u: return "E_FAIL";
+	case 0x80004001u: return "E_NOTIMPL";
+	case 0x887A0001u: return "DXGI_ERROR_INVALID_CALL";
+	case 0x887A0002u: return "DXGI_ERROR_NOT_FOUND";
+	case 0x887A0005u: return "DXGI_ERROR_DEVICE_REMOVED";
+	case 0x887A0006u: return "DXGI_ERROR_DEVICE_HUNG";
+	case 0x887A0007u: return "DXGI_ERROR_DEVICE_RESET";
+	case 0x887A0020u: return "DXGI_ERROR_DRIVER_INTERNAL_ERROR";
+	default:          return "unrecognised HRESULT";
+	}
+}
+
+//Throws on failure with the HRESULT and the call site baked into the
+//message. The previous version threw a default-constructed std::exception,
+//whose what() is MSVC's useless literal "Unknown exception" — every D3D12
+//failure looked identical and the actual error code was discarded.
+inline void ThrowIfFailed(HRESULT hr,
+	const std::source_location loc = std::source_location::current())
 {
 	if (FAILED(hr))
 	{
-		throw std::exception();
+		char buf[1024];
+		sprintf_s(buf,
+			"D3D12 call failed: HRESULT 0x%08X (%s)\n%s:%u\n%s",
+			static_cast<unsigned>(hr), HrName(hr),
+			loc.file_name(), loc.line(), loc.function_name());
+		throw std::runtime_error(buf);
 	}
 }
 

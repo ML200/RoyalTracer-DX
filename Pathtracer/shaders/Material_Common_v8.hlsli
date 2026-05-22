@@ -151,5 +151,6 @@ inline float3 SampleVNDF_H(float alpha, float3 V, float3 N, inout uint seed)
 //====================================
 inline uint FlatPrimID(uint instID, uint geomIdx, uint primIdx)
 {
+    if (instID >= TERRAIN_INSTANCE_BASE) return (geomIdx << 16) | primIdx;  // no instanceProps entry
     return (geomIdx == 0) ? primIdx : (instanceProps[instID].opaqueTriCount + primIdx);
 }

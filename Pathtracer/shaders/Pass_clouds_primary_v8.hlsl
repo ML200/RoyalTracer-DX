@@ -86,14 +86,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     const SunState S = ComputeSunState();
 
-    //Mesh distance clip. Reuses raygen's hitT (centered pinhole ray) — the
-    //sub-meter divergence vs cloud_primary's lens-jittered ray is negligible
-    //against km-scale cloud distances, and even meshes near the focal plane
-    //land at the same world position from both rays so the clip is exact
-    //there. maxMarchKm = 0 means "sky pixel, no mesh clip" inside
+    //Mesh distance clip = distance from this pass's lens-ray origin to
+    //raygen's exact stored hit position x1. Sub-meter divergence vs raygen's
+    //own lens-jittered ray is negligible against km-scale cloud distances.
+    //maxMarchKm = 0 means "sky pixel, no mesh clip" inside
     //EvaluateAtmosphereAndClouds.
     const float maxMarchKm = isMeshHit
-        ? (load_hitT(g_sample_current, pixelIdx) * (1.0f / WORLD_UNITS_PER_KM))
+        ? (length(load_x1(g_sample_current, pixelIdx) - rayOrigin) * (1.0f / WORLD_UNITS_PER_KM))
         : 0.0f;
 
     //Unified march: atmosphere + cloud integrated against combined sigma_t
@@ -162,6 +161,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //pass branches on cloudHitDistKm > 0 to pick the cloud-aware vs
     //rotation-only sky vs mesh MV path.
     const float3 cloudHitPos = rayOrigin + rayDir * (cloudHitDistKm * WORLD_UNITS_PER_KM);
+
+    //==================== TEMP DEBUG: nadir-ring localisation ====================
+    //ATM_DEBUG_RING lives in Constants_v8.hlsli. Mode 1 = this block: a false
+    //colour view of the unified atmosphere march output (bypasses the mesh):
+    //   RED = combinedTr,  GREEN = unifiedInscatter (tone compressed).
+    //Mode 1 already showed the ring is NOT here. Mode 2 lives in Pass_shading.
+    #if ATM_DEBUG_RING == 1
+    {
+        float dbgTr  = saturate(dot(combinedTr, float3(0.33333f, 0.33333f, 0.33334f)));
+        float dbgIns = dot(unifiedInscatter, float3(0.33333f, 0.33333f, 0.33334f));
+        dbgIns       = saturate(1.0f - exp(-max(dbgIns, 0.0f) * 4.0f));
+        //*0.5 cancels the slot1+slot2 double-add in the shading composite
+        cloudL     = float3(dbgTr, dbgIns, 0.0f) * 0.5f;
+        combinedTr = float3(0.0f, 0.0f, 0.0f);
+    }
+    #endif
+    //=============================================================================
 
     gScratchPing[uint3(pixel, 10)] = float4(cloudL,        0.0f);
     gScratchPing[uint3(pixel, 11)] = float4(combinedTr,    0.0f);

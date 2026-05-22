@@ -189,21 +189,28 @@ uint ps_set_dsBounces(uint flags, uint n)
 struct PathVertexState {
     float3 x2;
     float3 n2_s;
-    float2 uv;
     uint   matID;
     uint   objID;
     float  eta;
+    float3 Kd;
+    float  Pr;
+    float  Pm;
     float3 v2;
 };
 
 
+//v_2 vertex stashed at depth==1, feeds depth>=3 reservoir candidates. Carries
+//the resolved material (Kd/Pr/Pm) so depth>=3 candidates need no re-fetch.
+//Pr|Pm ride the CLAS2 plane - wavefront-only, unused on the raygen path, the
+//same plane-aliasing the file already does for HOT1/HOT2.
 void store_ps_depth1(RWByteAddressBuffer buf, uint pixelIdx,
                      float3 x2_world, float3 n2_world,
-                     float2 uv, uint matID, uint objID, float eta)
+                     uint matID, uint objID, float eta,
+                     float3 Kd, float Pr, float Pm)
 {
     buf.Store4(ps_addr_pack1(pixelIdx), uint4(asuint(x2_world), PackNormal(n2_world)));
-    buf.Store4(ps_addr_pack2(pixelIdx), uint4(PackFloat2x16(uv.x, uv.y),
-                                              matID, objID, asuint(eta)));
+    buf.Store4(ps_addr_pack2(pixelIdx), uint4(matID, objID, asuint(eta), PackRGB9E5(Kd)));
+    buf.Store (ps_addr_clas2(pixelIdx), PackFloat2x16(Pr, Pm));
 }
 
 void store_ps_v2(RWByteAddressBuffer buf, uint pixelIdx, float3 v2_world)
@@ -221,10 +228,12 @@ PathVertexState load_ps(RWByteAddressBuffer buf, uint pixelIdx)
     s.n2_s = UnpackNormal(p1.w);
 
     const uint4 p2 = buf.Load4(ps_addr_pack2(pixelIdx));
-    UnpackFloat2x16(p2.x, s.uv.x, s.uv.y);
-    s.matID = p2.y;
-    s.objID = p2.z;
-    s.eta   = asfloat(p2.w);
+    s.matID = p2.x;
+    s.objID = p2.y;
+    s.eta   = asfloat(p2.z);
+    s.Kd    = UnpackRGB9E5(p2.w);
+
+    UnpackFloat2x16(buf.Load(ps_addr_clas2(pixelIdx)), s.Pr, s.Pm);
 
     s.v2 = UnpackNormal(buf.Load(ps_addr_v2(pixelIdx)));
     return s;
@@ -240,8 +249,8 @@ void init_ps(RWByteAddressBuffer buf, uint pixelIdx)
     buf.Store4(ps_addr_pack1(pixelIdx),
                uint4(asuint(float3(0, 0, 0)), PackNormal(float3(0, 1, 0))));
     buf.Store4(ps_addr_pack2(pixelIdx),
-               uint4(PackFloat2x16(0.0f, 0.0f),
-                     MATID_ENV_MISS, MATID_ENV_MISS, asuint(1.0f)));
+               uint4(MATID_ENV_MISS, MATID_ENV_MISS, asuint(1.0f), 0u));
+    buf.Store(ps_addr_clas2(pixelIdx), 0u);
     buf.Store(ps_addr_v2(pixelIdx), PackNormal(float3(0, 1, 0)));
 }
 

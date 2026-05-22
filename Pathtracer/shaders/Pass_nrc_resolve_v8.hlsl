@@ -74,7 +74,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
         wsum, g_Reservoirs_current, pixelIdx, wi,
         ps.x2, ps.n2_s,
         L2,    ps.v2,
-        ps.uv,
+        ps.Kd, ps.Pr, ps.Pm,
         ps.matID, ps.objID, ps.eta,
         F_contrib, seed);
 

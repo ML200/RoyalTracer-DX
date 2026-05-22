@@ -27,12 +27,14 @@
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
 
+#include "planet/stream_orchestrator.h"   // Phase 4 BVH stream pipeline
+
 //CPU-side sizing stubs matching shader SoA sizes
 // Sizes mirror the HLSL SoA strides exactly. Reservoir comes from
 // PLANE_WSUM(60) + SZ_4(4) in Reservoir_v8.hlsli. SampleData is BYTES_SD
 // in Sample_Data_v8.hlsli.
 struct Reservoir_GI  { uint8_t pad[64]; };
-struct SampleData    { uint8_t pad[28]; };
+struct SampleData    { uint8_t pad[36]; };
 
 class Renderer {
 public:
@@ -109,6 +111,15 @@ private:
     PassSystem          m_passes;
     DLSSManager         m_dlss;
     Editor              m_editor;
+    planet::StreamOrchestrator m_planet;   // Phase 4/5 BVH stream pipeline
+    //MONOTONIC frame counter for the planet streaming system. m_ctx.FrameIndex()
+    //is the cycling swapchain back-buffer index (0..bufferCount-1) - the chunk
+    //manager ages chunks by frame number for retire hysteresis and MUST get a
+    //true monotonic count, not a value that wraps every 2-3 frames.
+    uint32_t m_planetFrame = 0;
+    //scratch for the per-frame unified TLAS build - m_scene.tlasInstances
+    //converted into the planet module's D3D12-only SceneInstanceDesc layout.
+    std::vector<planet::SceneInstanceDesc> m_planetSceneInstances;
     FlyCamController*   m_flyCam = nullptr;
     ReSTIRSettings      m_restirSettings;
     lt::LightTreeBuilder m_lightTree;
@@ -300,6 +311,10 @@ private:
 
     uint32_t m_time = 0;
     void PopulateCommandList();
+    //adapt the engine Camera into a planet::CameraView (Phase 4/5)
+    planet::CameraView MakePlanetCamera() const;
+    //convert m_scene.tlasInstances into m_planetSceneInstances (Phase 5 TLAS)
+    void BuildPlanetSceneInstances();
     void UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList);
     void UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList);
     void KickLightTreeRefit();

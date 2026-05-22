@@ -28,6 +28,13 @@ inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
                                     D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES initState,
                                     const D3D12_HEAP_PROPERTIES& heapProps)
 {
+    //D3D12 rejects a zero-width buffer: the call fails and this helper would
+    //return null, crashing the caller on the first dereference. Empty
+    //geometry buffers can legitimately request size 0 — e.g. the global
+    //vertex/index buffers of a scene with no triangle meshes. Round up to a
+    //minimal valid allocation that such callers simply never read.
+    if (size == 0) size = 256;
+
     D3D12_RESOURCE_DESC bufDesc = {};
     bufDesc.Alignment = 0;
     bufDesc.DepthOrArraySize = 1;
@@ -42,13 +49,14 @@ inline ID3D12Resource* CreateBuffer(ID3D12Device* m_device, uint64_t size,
     bufDesc.Width = size;
 
     ID3D12Resource* pBuffer = nullptr;
-    HRESULT hr = m_device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
-                                                    initState, nullptr, IID_PPV_ARGS(&pBuffer));
-
-    if (FAILED(hr)) {
-        return nullptr;
-    }
-
+    //Throw on failure instead of returning null. A silent null return just
+    //defers the crash to the caller's first dereference, with no HRESULT and
+    //no call site — exactly the un-debuggable failure this used to produce.
+    //The size==0 guard above already covers the one legitimate empty-buffer
+    //case; anything else failing here is a real error and should be loud.
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc, initState, nullptr,
+        IID_PPV_ARGS(&pBuffer)));
     return pBuffer;
 }
 

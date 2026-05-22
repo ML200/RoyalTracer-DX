@@ -125,10 +125,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
 
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const uint   myMatID  = GetMatIDFast(myInstID, myPrimID);
-    const float  myHitT   = load_hitT(g_sample_current, pixelIdx);
-    const float3 myPos    = ReconstructPositionFromHitT(int2(launchIndex), myHitT);
+    const uint   myMatID  = load_matID(g_sample_current, pixelIdx);
+    const float3 myPos    = load_x1(g_sample_current, pixelIdx);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     //slab thickness scales with camera distance so pixel footprint at depth still passes
@@ -156,10 +154,8 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (load_isEmitter(g_sample_current, bID)) continue;
 
         const uint   bInstID = load_instID(g_sample_current, bID);
-        const uint   bPrimID = load_primID(g_sample_current, bID);
-        const uint   bMatID  = GetMatIDFast(bInstID, bPrimID);
-        const float  bHitT   = load_hitT(g_sample_current, bID);
-        const float3 bPos    = ReconstructPositionFromHitT(partner, bHitT);
+        const uint   bMatID  = load_matID(g_sample_current, bID);
+        const float3 bPos    = load_x1(g_sample_current, bID);
         const float3 bN1s    = load_n1_s_with_instID(g_sample_current, bID, bInstID);
 
         if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s, distThresh)) continue;

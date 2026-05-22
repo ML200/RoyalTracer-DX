@@ -42,10 +42,11 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
     //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3)
-    //+ SunSettings + CloudSettings appended at the tail.
+    //+ SunSettings + CloudSettings + 6 planet-terrain floats appended at the tail.
     uint32_t matCount = 6;
     m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8
-                 + sizeof(SunSettings) + sizeof(CloudSettings);
+                 + sizeof(SunSettings) + sizeof(CloudSettings)
+                 + sizeof(float) * 6;
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -198,6 +199,16 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     //HLSL CB packing rules concatenate them cleanly across register slots.
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra) + sizeof(SunSettings),
            &cloudSettings, sizeof(CloudSettings));
+    //Phase 5 procedural-terrain tail: 6 scalar floats (planet centre xyz,
+    //radius, heightmap amplitude, frequency) following CloudSettings. Scalar
+    //packing keeps it aligned with the CameraParams cbuffer with no padding.
+    const float planetTail[6] = {
+        planetCenter.x, planetCenter.y, planetCenter.z,
+        planetRadius, terrainHeightAmplitude, terrainHeightFrequency
+    };
+    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra)
+                 + sizeof(SunSettings) + sizeof(CloudSettings),
+           planetTail, sizeof(planetTail));
     m_buffer->Unmap(0, nullptr);
 
     m_viewMatrix           = matrices[0];

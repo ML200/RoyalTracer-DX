@@ -21,6 +21,31 @@
 #define NRC_TRAIN_ROUGHNESS_MIN 0.4f
 #define kInvalidPixel -1u
 
+//====================================
+//RAY TMAX
+//====================================
+//Planet wide ray range. Earth diameter is ~1.27e7 m; this leaves headroom
+//for tangent grazing rays from orbital altitudes and for second bounces
+//that escape upward into space before being marked as misses. Used for
+//primary, reflection, and bounce rays in Pass_raygen_v8.hlsl. The sky
+//depth fallback in Pass_shading_v8.hlsl reads cameraFar (CPU side),
+//which should stay >= this value or distant surface hits appear closer
+//than the sky in the DLSS RR depth buffer.
+#define RAY_TMAX_PLANET 1e9f
+
+//====================================
+//ATMOSPHERE RING DEBUG (temporary)
+//====================================
+//Localises the nadir-centred ring artifact. Set non-zero, rebuild, observe,
+//report. Ship as 0. Remove the #if blocks in Pass_clouds_primary_v8,
+//Pass_shading_v8 and Inline_RT_v8 once the cause is found.
+//  1 = cloud-pass false colour: R=combinedTr, G=unifiedInscatter
+//  2 = shading false colour:    R=indirect/GI, G=reflection, B=direct
+//  3 = sky fully OFF: EvaluateSky / EvaluateSkyBackground / *Behind and the
+//      atmosphere march all return black. Tests whether the ring is the sky.
+//  4 = planet shading normal (sv.n_s) shown as RGB. Tests for bad normals.
+#define ATM_DEBUG_RING 0
+
 
 //====================================
 //TEXTURE AND LUT INDICES
@@ -47,6 +72,25 @@
 #define MATID_ENV_MISS    0xFFFFFFFFu
 #define MATID_LIGHT_TRI   0xFFFFFFFEu
 #define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
+
+//====================================
+//PLANET TERRAIN (Phase 5)
+//====================================
+//Instance-ID base for terrain in the unified TLAS - streamed chunks + the
+//6-face fallback layer. MUST match planet::TERRAIN_INSTANCE_BASE
+//(rdn/planet/stream_orchestrator.h). Scene mesh instances keep InstanceID
+//0..N-1; any instID >= this is terrain and is shaded procedurally.
+#define TERRAIN_INSTANCE_BASE 0x100000u
+//Sentinel matID for terrain. Sits just below the env/light-tri sentinels so
+//IsSentinelMatID() stays false - terrain is a normal shadable opaque surface,
+//it just gets a procedural material instead of a g_mat entry.
+#define MATID_TERRAIN 0xFFFFFFFDu
+//First-cut fixed terrain material (procedural slope/altitude shading is later).
+#define TERRAIN_ALBEDO    float3(0.42f, 0.36f, 0.30f)
+#define TERRAIN_ROUGHNESS 0.92f
+//Chunk tessellation grid (quads per edge). MUST match planet::CHUNK_GRID
+//(rdn/planet/chunk_mesh.h) - the terrain shader decodes primID against it.
+#define TERRAIN_CHUNK_GRID 128u
 
 //====================================
 //ROUGHNESS REUSE GATE

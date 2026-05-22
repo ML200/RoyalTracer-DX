@@ -41,16 +41,15 @@ void Pass_spat_gi_shift_v8()
     const uint validCount = g_pathStateBuffer.Load(baseAddr);
     if (validCount == 0u) return;
 
-    //my vertex, persists across slots
+    //my vertex, persists across slots - rebuilt from the baked G-buffer
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myPrimID = load_primID(g_sample_current, pixelIdx);
-    const float2 myBary   = load_bary(g_sample_current, pixelIdx);
-    const SurfaceVertex sv = BuildVertex(myInstID, myPrimID, myBary, InitOrigin());
+    const float3 myPos    = load_x1(g_sample_current, pixelIdx);
+    const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, myPos, InitOrigin());
 
     //my Jc, env/miss uses Jc=1, shift preserves direction
     float my_Jc = 1.0f;
     {
-        const uint myMatID = load_matID(g_Reservoirs_current, pixelIdx);
+        const uint myMatID = load_matID_res(g_Reservoirs_current, pixelIdx);
         if (myMatID != MATID_ENV_MISS)
         {
             const uint   myObjID = load_objID(g_Reservoirs_current, pixelIdx);
@@ -78,19 +77,18 @@ void Pass_spat_gi_shift_v8()
         if (nID == 0xFFFFFFFFu) continue;
 
         const uint   p_objID = load_objID(g_Reservoirs_current, nID);
-        const uint   p_matID = load_matID(g_Reservoirs_current, nID);
+        const uint   p_matID = load_matID_res(g_Reservoirs_current, nID);
         const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
         const float3 p_x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
         const float3 p_n2s   = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
         const float3 p_L2    = load_L2(g_Reservoirs_current, nID);
         const float3 p_V2    = load_V2(g_Reservoirs_current, nID);
-        const float2 p_uv    = load_uv_res(g_Reservoirs_current, nID);
         const float  p_eta   = load_eta(g_Reservoirs_current, nID);
 
-        //sentinel matIDs have no BSDF at x2, skip material load
-        float3 rKd = 0.0f; float rPr = 0.0f, rPm = 0.0f;
-        if (!IsSentinelMatID(p_matID))
-            RefetchMaterial(p_matID, p_uv, rKd, rPr, rPm);
+        //resolved partner x2 material - baked into the reservoir, no re-fetch
+        float3 rKd = load_kd_res(g_Reservoirs_current, nID);
+        float  rPr, rPm;
+        load_prpm_res(g_Reservoirs_current, nID, rPr, rPm);
 
         //shift my x1 to partner x2
         float  Jn = 0.0f;
@@ -106,7 +104,7 @@ void Pass_spat_gi_shift_v8()
             float vis;
             if (p_matID == MATID_ENV_MISS)
             {
-                vis = IsVisible(sv.x, sv.n_s, normalize(p_x2), 10000.0f) ? 1.0f : 0.0f;
+                vis = IsVisibleEnvMiss(sv.x, sv.n_s, normalize(p_x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
             }
             else
             {

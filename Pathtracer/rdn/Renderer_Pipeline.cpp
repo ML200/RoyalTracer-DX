@@ -12,6 +12,7 @@
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
 #include "nv_helpers_dx12/RootSignatureGenerator.h"
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <fstream>
 #include <filesystem>
@@ -168,6 +169,9 @@ Renderer::CreateBottomLevelAS(
     return buffers;
 }
 
+// PLANET_INTEGRATION: TLAS build + buffer allocation. pScratch/pResult/pInstanceDesc
+// are reallocated on every full rebuild. Phase 5's per-frame rebuild needs them
+// pre-sized to a max instance count so no per-frame CreateBuffer happens on the hot path.
 void Renderer::CreateTopLevelAS(
     const std::vector<Scene::TLASInstance>& instances,
     bool updateOnly)
@@ -176,10 +180,14 @@ void Renderer::CreateTopLevelAS(
                << L" updateOnly=" << (updateOnly ? L"yes" : L"no") << std::endl;
 
     if (!updateOnly) {
+        //Per-instance logging suits a handful of GLB instances; a large scene
+        //has too many to log without stalling on console I/O, so gate it.
+        const bool logEachInstance = instances.size() <= 32;
         for (size_t i = 0; i < instances.size(); i++) {
-            std::wcout << L"[TLAS]   instance[" << i << L"] blas=" << instances[i].blas.Get()
-                       << L" hitGroup=" << instances[i].hitGroupContribution
-                       << L" flags=" << (UINT)instances[i].flags << std::endl;
+            if (logEachInstance)
+                std::wcout << L"[TLAS]   instance[" << i << L"] blas=" << instances[i].blas.Get()
+                           << L" hitGroup=" << instances[i].hitGroupContribution
+                           << L" flags=" << (UINT)instances[i].flags << std::endl;
             m_topLevelASGenerator.AddInstance(
                 instances[i].blas.Get(), instances[i].transform,
                 static_cast<UINT>(i), instances[i].hitGroupContribution,
@@ -376,6 +384,11 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // t42 / t43 were already wired up; the register binding is what the
     // shader sees, the heap order doesn't matter.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 41, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // PLANET_INTEGRATION: terrain instance table StructuredBuffer (t44,
+    // g_terrainTable in Includes_v8.hlsli) at heap slot TERRAIN_TABLE_HEAP_SLOT
+    // (68). Refilled each frame by the planet StreamOrchestrator; the terrain
+    // shader reads it to reconstruct chunk vertices and drop stale GI samples.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 44, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -451,6 +464,9 @@ void Renderer::CreateRaytracingPipeline() {
     m_csPSOs.clear();
     m_callableShaderNames.clear();
     uint32_t nextCs = 0, rgSlot = 0;
+    //export name of the first raygen pass — drives the stack-size query below
+    //so the pass list can be swapped (e.g. to a debug pass) without a hardcode.
+    std::wstring firstRayGenName;
 
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart ||
@@ -540,6 +556,7 @@ void Renderer::CreateRaytracingPipeline() {
         // RayGen
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
+        if (firstRayGenName.empty()) firstRayGenName = base;
         ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
         pipeline.AddLibrary(lib.Get(), { base.c_str() });
         m_passes.RegisterPassIndex(p.file, rgSlot);
@@ -555,15 +572,22 @@ void Renderer::CreateRaytracingPipeline() {
     pipeline.AddLibrary(hitLib.Get(),     { L"ClosestHit" });
     pipeline.AddLibrary(anyHitLib.Get(),  { L"AlphaTestAnyHit" });
 
+    // PLANET_INTEGRATION: streamed terrain chunks + the 6-face fallback share
+    // ONE hit group (FORCE_OPAQUE, no any-hit). Its closest-hit is the same
+    // stub - terrain is shaded procedurally in raygen, keyed on the terrain
+    // InstanceID range. The matching SBT entry is appended in CreateShaderBindingTable.
     // Two hit groups: opaque (no any-hit, fast path) and alpha (any-hit for transparency)
     pipeline.AddHitGroup(L"OpaqueHitGroup", L"ClosestHit");
     pipeline.AddHitGroup(L"AlphaHitGroup",  L"ClosestHit", L"AlphaTestAnyHit");
+    pipeline.AddHitGroup(L"TerrainHitGroup", L"ClosestHit");
 
     pipeline.AddRootSignatureAssociation(m_missSignature.Get(), { L"Miss" });
-    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),  { L"OpaqueHitGroup", L"AlphaHitGroup" });
+    pipeline.AddRootSignatureAssociation(m_hitSignature.Get(),
+        { L"OpaqueHitGroup", L"AlphaHitGroup", L"TerrainHitGroup" });
 
     //TracePayload is a single uint sentinel (4 B), HitObject SER carries the real hit data
     pipeline.SetMaxPayloadSize(4);
+    //triangle barycentrics (float2, 8 B)
     pipeline.SetMaxAttributeSize(2 * sizeof(float));
     pipeline.SetMaxRecursionDepth(1);
     pipeline.SetPipelineFlags(D3D12_RAYTRACING_PIPELINE_FLAG_ALLOW_OPACITY_MICROMAPS);
@@ -571,8 +595,12 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
-    // Compute pipeline stack size
-    UINT64 rgStack = m_rtStateObjectProps->GetShaderStackSize(L"Pass_raygen_v8");
+    // Compute pipeline stack size. The raygen export name is taken from the
+    // first raygen pass (not hardcoded) so swapping the pass list — e.g. to the
+    // debug pass — does not break this query.
+    UINT64 rgStack = firstRayGenName.empty()
+        ? 0
+        : m_rtStateObjectProps->GetShaderStackSize(firstRayGenName.c_str());
     UINT64 maxCallable = 0;
     for (const auto& name : m_callableShaderNames) {
         UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
@@ -690,11 +718,15 @@ void Renderer::CreateShaderResourceHeap() {
       dev->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &ud, handle); next(); }
 
     // Slot 2: SRV t0 — TLAS
+    // PLANET_INTEGRATION: points at the planet StreamOrchestrator's unified TLAS
+    // (scene meshes + terrain chunks + fallback), rebuilt every frame on the
+    // compute queue. The result buffer is preallocated once at orchestrator init,
+    // so this SRV is created once here and never re-pointed.
     { D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-      sd.RaytracingAccelerationStructure.Location = m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
+      sd.RaytracingAccelerationStructure.Location = m_planet.tlas_result()->GetGPUVirtualAddress();
       dev->CreateShaderResourceView(nullptr, &sd, handle); next(); }
 
     // Slot 3: SRV t1 — Global IB
@@ -702,7 +734,11 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_R32_UINT;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = m_scene.totalIndexCount;
+      //A scene with no triangle geometry has global index / vertex /
+      //material-ID element counts of 0. D3D12 rejects a buffer SRV with
+      //NumElements==0, so clamp to 1; the backing buffers are valid 256 B
+      //placeholders (CreateBuffer's size-0 guard) that nothing samples.
+      sd.Buffer.NumElements = std::max(m_scene.totalIndexCount, 1u);
       dev->CreateShaderResourceView(m_scene.indexGlobal.Get(), &sd, handle); next(); }
 
     // Slot 4: SRV t2 — Global VB
@@ -710,7 +746,7 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = m_scene.totalVertexCount;
+      sd.Buffer.NumElements = std::max(m_scene.totalVertexCount, 1u);  //see Slot 3
       sd.Buffer.StructureByteStride = sizeof(BTriVertex);
       dev->CreateShaderResourceView(m_scene.vertexGlobal.Get(), &sd, handle); next(); }
 
@@ -734,7 +770,7 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_R32_UINT;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = (UINT)m_scene.materialIDs.size();
+      sd.Buffer.NumElements = std::max((UINT)m_scene.materialIDs.size(), 1u);  //see Slot 3
       dev->CreateShaderResourceView(m_scene.materialIndexBuffer.Get(), &sd, handle); next(); }
 
     // Slot 8: SRV t5 — Materials (compressed AoS, 40 B / material).
@@ -757,8 +793,8 @@ void Renderer::CreateShaderResourceHeap() {
         sd.Buffer.NumElements = (UINT)m_scene.emissiveTriangles.size();
         sd.Buffer.StructureByteStride = sizeof(LightTriangle);
         dev->CreateShaderResourceView(m_scene.emissiveTrianglesBuffer.Get(), &sd, handle);
-    } else nullSRV();
-    next();
+        next();
+    } else nullSRV();   //nullSRV() advances the heap handle itself — no trailing next()
 
     // Slots 10-15: Reservoir / sample UAVs
     auto rawUAV = [&](ComPtr<ID3D12Resource>& res, UINT bytes) {
@@ -824,8 +860,8 @@ void Renderer::CreateShaderResourceHeap() {
         sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         sd.Buffer.NumElements = (UINT)m_scene.triToLightId.size();
         dev->CreateShaderResourceView(m_scene.triToLightIdBuffer.Get(), &sd, handle);
-    } else nullSRV();
-    next();
+        next();
+    } else nullSRV();   //nullSRV() advances the heap handle itself — no trailing next()
 
     // Slots 25-27: light tree lookup SRVs
     m_lightTree.WriteLookupSrvs(dev, handle);
@@ -1034,6 +1070,20 @@ void Renderer::CreateShaderResourceHeap() {
         nullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY);
     }
 
+    // Slot 68 (TERRAIN_TABLE_HEAP_SLOT): planet terrain instance table SRV
+    // (t44, g_terrainTable in Includes_v8.hlsli). StructuredBuffer<uint3>, one
+    // entry per BLAS slot, refilled each frame by the planet StreamOrchestrator
+    // (created in StreamOrchestrator::init, so always present).
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_UNKNOWN;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_BUFFER;
+        d.Buffer.NumElements          = planet::StreamOrchestrator::terrain_table_count();
+        d.Buffer.StructureByteStride  = sizeof(planet::TerrainSlotGPU);
+        dev->CreateShaderResourceView(m_planet.terrain_table(), &d, handle); next();
+    }
+
     // Bindless textures
     UINT globalTexIdx = 0;
     auto writeBatch = [&](UINT heapBase, UINT count) {
@@ -1095,7 +1145,7 @@ void Renderer::CreateShaderBindingTable() {
         bool hasAlpha  = mesh.alphaTriCount  > 0;
         bool hasOpaque = mesh.opaqueTriCount > 0;
 
-        // GeometryIndex 0: opaque if mesh has opaque tris, otherwise alpha-only
+        // GeometryIndex 0: opaque if present, else alpha
         if (hasOpaque)
             m_sbtHelper.AddHitGroup(L"OpaqueHitGroup", {});
         else
@@ -1104,6 +1154,12 @@ void Renderer::CreateShaderBindingTable() {
         // GeometryIndex 1: alpha (only reached if BLAS has 2 geometries)
         m_sbtHelper.AddHitGroup(L"AlphaHitGroup", {});
     }
+
+    // PLANET_INTEGRATION: one shared TerrainHitGroup entry for every terrain
+    // instance (streamed chunks + the 6-face fallback). It lands at SBT index
+    // 2 * sceneInstanceCount; the orchestrator sets exactly that value as the
+    // hitGroupContribution on every terrain instance in the unified TLAS.
+    m_sbtHelper.AddHitGroup(L"TerrainHitGroup", {});
 
     for (const auto& name : m_callableShaderNames)
         m_sbtHelper.AddCallableProgram(name, { heapPointer });

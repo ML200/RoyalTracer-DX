@@ -265,6 +265,10 @@ void Scene::UploadInstanceProperties() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// PLANET_INTEGRATION: TLAS instance list = triangle mesh instances only, no
+// procedural primitives. SBT layout is 2 hit-group entries per instance (i*2).
+// The floating-origin shift (sceneOriginWorld) is already applied here. Phase 5
+// adds streamed terrain chunks as instances sharing one hit group.
 void Scene::RebuildTLASInstanceList() {
     tlasInstances.clear();
     tlasInstances.reserve(instances.size());
@@ -370,13 +374,17 @@ void Scene::UploadMaterials(ID3D12Device* device) {
     }
 
     {
-        const UINT sz = (UINT)materialIDs.size() * sizeof(UINT);
+        //A scene with no triangle meshes has an empty materialIDs array. D3D12
+        //rejects a zero-width buffer with E_INVALIDARG, so round up to a
+        //minimal valid allocation that nothing then reads.
+        const UINT idCount = (UINT)materialIDs.size();
+        const UINT sz = std::max<UINT>(idCount * (UINT)sizeof(UINT), 256u);
         auto d = CD3DX12_RESOURCE_DESC::Buffer(sz);
         ThrowIfFailed(device->CreateCommittedResource(
             &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE, &d,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&materialIndexBuffer)));
         UINT8* p; materialIndexBuffer->Map(0, nullptr, (void**)&p);
-        memcpy(p, materialIDs.data(), sz);
+        if (idCount) memcpy(p, materialIDs.data(), idCount * sizeof(UINT));
         materialIndexBuffer->Unmap(0, nullptr);
     }
 }

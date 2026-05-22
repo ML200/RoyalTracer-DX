@@ -190,12 +190,13 @@ void main(uint3 tid : SV_DispatchThreadID)
             rdi.x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
             rdi.n2_s  = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
             rdi.objID = p_objID;
-            rdi.matID = load_matID(g_Reservoirs_current, nID);
+            rdi.matID = load_matID_res(g_Reservoirs_current, nID);
             rdi.eta   = load_eta  (g_Reservoirs_current, nID);
 
             rdi.L2    = load_L2(g_Reservoirs_current, nID);
             rdi.V2    = load_V2(g_Reservoirs_current, nID);
-            rdi.uv    = load_uv_res(g_Reservoirs_current, nID);
+            rdi.Kd    = load_kd_res(g_Reservoirs_current, nID);
+            load_prpm_res(g_Reservoirs_current, nID, rdi.Pr, rdi.Pm);
             //rdi.F overwritten below with shift to me contrib
 
             contrib_final = my_F;

@@ -59,12 +59,39 @@
 #endif
 
 // Atmosphere defaults (Bruneton 2017). Lengths in km, coefficients in 1/km.
+//
+// ATMOS_BOTTOM_RADIUS is the planet radius in km. It MUST stay equal to
+// FlyCamController::kPlanetRadiusM divided by WORLD_UNITS_PER_KM — the fly
+// camera clamps to the analytic planet surface at that radius, so a mismatch
+// puts the camera below (or floating above) the atmosphere's ground sphere.
+// The atmosphere shader treats the planet as a sphere of exactly this radius
+// centred at the planet space origin: WorldToPlanet maps world Y=0 onto it,
+// and the EvaluateAtmosphereAndClouds planet clip, the cosHorizon earth
+// shadow, the cloud shell anchor and the density altitude all derive from it.
+//
+// The sunset horizon sun block softening is a separate, local concern: a view
+// sample sitting on the ground surface must not be hard zeroed the instant the
+// sun touches the geometric horizon. That is handled by ATMOS_SUN_BLOCK_BIAS_KM
+// in TransmittanceToSun. Do NOT solve it by shrinking ATMOS_BOTTOM_RADIUS.
 #ifndef ATMOS_BOTTOM_RADIUS
 #define ATMOS_BOTTOM_RADIUS     6360.0f
 #endif
 
 #ifndef ATMOS_TOP_RADIUS
 #define ATMOS_TOP_RADIUS        6420.0f
+#endif
+
+// TransmittanceToSun tests its hard geometric planet block against a sphere
+// this many km below ATMOS_BOTTOM_RADIUS. A view sample on the planet surface
+// then sits above the block sphere, so its sun ray is not hard zeroed the
+// moment the sun touches the geometric horizon (the dark band that otherwise
+// appears along the horizon at sunset). cosHorizon and
+// SunDiskFractionAboveHorizon keep using the true radius, so the visible
+// terminator is unchanged; the hard cutoff just sinks deep enough into the
+// shadow that the earth shadow smoothstep has already faded the sample's
+// contribution to zero there. Replaces the old global 5 km radius drop.
+#ifndef ATMOS_SUN_BLOCK_BIAS_KM
+#define ATMOS_SUN_BLOCK_BIAS_KM 5.0f
 #endif
 
 #ifndef ATMOS_RAYLEIGH_SCATTER
@@ -174,10 +201,15 @@
 
 #define SKY_STAR_LOD_BIAS       skyStarLodBias
 
-// Zero: real planet ground is path-traced mesh; the analytic body here is
-// just a placeholder. Cloud bounce uses its own CLOUD_GROUND_ALBEDO.
+// Matches the planet mesh albedo (gray rock 0.4).
+// EvaluatePlanetBody is an analytic Lambertian stand in for the path traced
+// mesh. Since the radius realignment the analytic Rb sphere coincides with
+// the mesh, so the stand in carries the mesh albedo and shades consistently
+// wherever it is actually seen: the sub pixel polygon vs Rb horizon gap, or
+// past RAY_TMAX_PLANET where primary rays no longer reach the mesh. Cloud
+// bounce keeps its own CLOUD_GROUND_ALBEDO.
 #ifndef ATMOS_GROUND_ALBEDO
-#define ATMOS_GROUND_ALBEDO     float3(0.0f, 0.0f, 0.0f)
+#define ATMOS_GROUND_ALBEDO     float3(0.4f, 0.4f, 0.4f)
 #endif
 
 #ifndef WORLD_NORTH
@@ -474,9 +506,12 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 
     // Geometric planet block — must return zero, not the partial integral.
     // A partial would bleed bright yellow into the earth shadow band; the
-    // caller's SunDiskFractionAboveHorizon smooths the visibility edge.
+    // caller's SunDiskFractionAboveHorizon smooths the visibility edge. The
+    // block sphere sinks ATMOS_SUN_BLOCK_BIAS_KM below Rb so a sample on the
+    // mesh surface clears it at the sunset horizon.
     float tG0, tG1;
-    if (RaySphereIntersect(P, L, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
+    float RbBlock = Rb - ATMOS_SUN_BLOCK_BIAS_KM;
+    if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
         return float3(0, 0, 0);
 
     float ds = (tMax - tMin) / (float)ATMOS_LIGHT_STEPS;
@@ -609,8 +644,10 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
     if (tMax <= 0.0f) return float3(1, 1, 1);
     float tMin = max(0.0f, t0);
 
+    // Sun block sphere sunk below Rb; see ATMOS_SUN_BLOCK_BIAS_KM.
     float tG0, tG1;
-    if (RaySphereIntersect(P, L, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
+    float RbBlock = Rb - ATMOS_SUN_BLOCK_BIAS_KM;
+    if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
         return float3(0, 0, 0);
 
     float ds = (tMax - tMin) / (float)ATMOS_AERIAL_LIGHT_STEPS;
@@ -991,6 +1028,9 @@ float3 EvaluateStars(float3 rayDir)
 
 float3 EvaluateSkyBackground(float3 rayDir)
 {
+#if ATM_DEBUG_RING == 3
+    return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
+#endif
     SunState S = ComputeSunState();
 
     float3 v       = SafeNormalize(rayDir);
@@ -1053,6 +1093,9 @@ float3 EvaluateSkyBackground(float3 rayDir)
 float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
                                    bool hitPlanet, float3 unifiedInscatter)
 {
+#if ATM_DEBUG_RING == 3
+    return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
+#endif
     float3 v = SafeNormalize(rayDir);
     float3 O = g_skyObserverPlanet;
     float elevDeg = S.elevRad * RAD2DEG;
@@ -1096,7 +1139,9 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
 float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
 {
     cloudTrOut = float3(1.0f, 1.0f, 1.0f);
-
+#if ATM_DEBUG_RING == 3
+    return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
+#endif
     float3 v          = SafeNormalize(rayDir);
     float3 background = EvaluateSkyBackground(v);
 

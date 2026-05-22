@@ -20,20 +20,15 @@ void main(uint3 dtid : SV_DispatchThreadID)
     //sky and emitter primaries, leave slot untouched
     if (load_isEmitter(g_sample_current, pixelIdx)) return;
 
-    const uint instID = load_instID(g_sample_current, pixelIdx);
-    const uint primID = load_primID(g_sample_current, pixelIdx);
-    if (primID == 0xFFFFFFFFu) return;
+    const uint   instID = load_instID(g_sample_current, pixelIdx);
+    const float3 n1_s   = load_n1_s_with_instID(g_sample_current, pixelIdx, instID);
 
-    const float2 bary = load_bary (g_sample_current, pixelIdx);
-    const float3 n1_s = load_n1_s_with_instID(g_sample_current, pixelIdx, instID);
-    const float2 uv   = load_uv  (g_sample_current, pixelIdx);
+    const float3 x1    = load_x1(g_sample_current, pixelIdx);
+    const uint   matID = load_matID(g_sample_current, pixelIdx);
 
-    const float3 x1    = ReconstructPosition(instID, primID, bary);
-    const uint   matID = GetMatIDFast(instID, primID);
-
-    float3 localKd;
+    float3 localKd = load_kd(g_sample_current, pixelIdx);
     float  localPr, localPm;
-    RefetchMaterial(matID, uv, localKd, localPr, localPm, 0u);
+    load_prpm(g_sample_current, pixelIdx, localPr, localPm);
 
     //outgoing direction from x1 to camera
     const float3 camPos  = viewI[3].xyz;

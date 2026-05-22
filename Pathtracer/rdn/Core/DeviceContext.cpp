@@ -54,10 +54,14 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
     for (UINT n = 0; n < bufferCount; ++n) fenceValues[n] = 0;
     fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     if (!fenceEvent) ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+
+    InitPlanetStreaming();
 }
 
 void DeviceContext::Shutdown() {
     WaitForGPU();
+    planetComputeFence.shutdown();
+    planetCopyFence.shutdown();
     CloseHandle(fenceEvent);
     slShutdown();
 }
@@ -83,6 +87,12 @@ void DeviceContext::BeginFrame() {
 
 void DeviceContext::ExecuteAndPresent() {
     ThrowIfFailed(cmdList->Close());
+
+    // PLANET_INTEGRATION: ray dispatch reads the unified TLAS, which the planet
+    // compute queue rebuilds each frame. Gate the graphics queue on that build
+    // (planetComputeAtSlot was set by this frame's SubmitPlanetCompute).
+    cmdQueue->Wait(planetComputeFence.fence(), planetComputeAtSlot[frameIndex]);
+
     ID3D12CommandList* lists[] = { cmdList.Get() };
     cmdQueue->ExecuteCommandLists(1, lists);
 
@@ -103,7 +113,13 @@ void DeviceContext::ExecuteAndPresent() {
         //breadcrumb output is empty even when the GPU is mid hang.
         dxdiag::CheckDeviceRemoved(device.Get(), 1000);
 #endif
-        ThrowIfFailed(presentHr);
+        //Only a genuine device loss is fatal. A transient Present failure on
+        //a live device — e.g. DLSS-G's Present hook returning a non-removal
+        //error HRESULT — is survivable: drop the frame and continue. Throwing
+        //unconditionally here unwound a C++ exception out through the Win32
+        //WindowProc callback as a fatal STATUS_FATAL_USER_CALLBACK_EXCEPTION.
+        if (FAILED(device->GetDeviceRemovedReason()))
+            ThrowIfFailed(presentHr);
     }
 
     //signal AFTER Present, DLSS-G hook may submit additional work
@@ -305,6 +321,9 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
     if (sr != sl::Result::eOk)
         std::wcout << L"[DLSS-RR] not supported: " << (int)sr << std::endl;
 
+    // PLANET_INTEGRATION: only a DIRECT queue exists. Phase 4 BVH streaming needs
+    // an async COMPUTE queue (BLAS builds) and a COPY queue (vertex/index uploads),
+    // each with its own allocators + lists. See rdn/planet/INTEGRATION_NOTES.md.
     //command queue
     D3D12_COMMAND_QUEUE_DESC qd = {};
     qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -368,3 +387,69 @@ void DeviceContext::CreateRTVsAndDepth() {
     device->CreateDepthStencilView(depthStencil.Get(), &dsvDesc,
         dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
+
+//====================================
+//PLANET STREAMING (Phase 4)
+//====================================
+void DeviceContext::InitPlanetStreaming() {
+    //async COMPUTE queue (BLAS builds) + COPY queue (vertex/index uploads)
+    D3D12_COMMAND_QUEUE_DESC cqd = {};
+    cqd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+    ThrowIfFailed(device->CreateCommandQueue(&cqd, IID_PPV_ARGS(&planetComputeQueue)));
+    D3D12_COMMAND_QUEUE_DESC pqd = {};
+    pqd.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    ThrowIfFailed(device->CreateCommandQueue(&pqd, IID_PPV_ARGS(&planetCopyQueue)));
+
+    //per-frame allocators + one recording list per queue
+    for (UINT n = 0; n < bufferCount; ++n) {
+        ThrowIfFailed(device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&planetComputeAllocators[n])));
+        ThrowIfFailed(device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&planetCopyAllocators[n])));
+    }
+    ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE,
+        planetComputeAllocators[0].Get(), nullptr, IID_PPV_ARGS(&planetComputeList)));
+    ThrowIfFailed(planetComputeList->Close());
+    ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY,
+        planetCopyAllocators[0].Get(), nullptr, IID_PPV_ARGS(&planetCopyList)));
+    ThrowIfFailed(planetCopyList->Close());
+
+    planetComputeFence.init(device.Get());
+    planetCopyFence.init(device.Get());
+}
+
+void DeviceContext::ResetPlanetLists() {
+    //the allocator slot being reused: wait out its prior planet GPU work
+    planetCopyFence.cpu_wait(planetCopyAtSlot[frameIndex]);
+    planetComputeFence.cpu_wait(planetComputeAtSlot[frameIndex]);
+
+    ThrowIfFailed(planetCopyAllocators[frameIndex]->Reset());
+    ThrowIfFailed(planetCopyList->Reset(planetCopyAllocators[frameIndex].Get(), nullptr));
+    ThrowIfFailed(planetComputeAllocators[frameIndex]->Reset());
+    ThrowIfFailed(planetComputeList->Reset(planetComputeAllocators[frameIndex].Get(), nullptr));
+}
+
+UINT64 DeviceContext::SubmitPlanetCopy() {
+    ThrowIfFailed(planetCopyList->Close());
+    ID3D12CommandList* lists[] = { planetCopyList.Get() };
+    planetCopyQueue->ExecuteCommandLists(1, lists);
+    const UINT64 v = planetCopyFence.signal(planetCopyQueue.Get());
+    planetCopyAtSlot[frameIndex] = v;
+    return v;
+}
+
+UINT64 DeviceContext::SubmitPlanetCompute(UINT64 waitCopyValue) {
+    //the compute queue waits for the copy to land before it reads the geometry
+    planetCopyFence.queue_wait(planetComputeQueue.Get(), waitCopyValue);
+    ThrowIfFailed(planetComputeList->Close());
+    ID3D12CommandList* lists[] = { planetComputeList.Get() };
+    planetComputeQueue->ExecuteCommandLists(1, lists);
+    const UINT64 v = planetComputeFence.signal(planetComputeQueue.Get());
+    planetComputeAtSlot[frameIndex] = v;
+    return v;
+}
+
+UINT64 DeviceContext::PlanetComputeCompleted()    const { return planetComputeFence.completed(); }
+UINT64 DeviceContext::PlanetComputeLastSignaled() const { return planetComputeFence.last_signaled(); }
+void   DeviceContext::PlanetCopyCpuWait(UINT64 value)   { planetCopyFence.cpu_wait(value); }
+void   DeviceContext::PlanetComputeCpuWait(UINT64 value){ planetComputeFence.cpu_wait(value); }

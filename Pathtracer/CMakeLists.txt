@@ -242,6 +242,41 @@ add_executable(Pathtracer WIN32
         rdn/ThirdPartyImpl.cpp
         rdn/Lighting/LightTreeRefit.h
 
+        # Planet streaming (Phases 1-4) - all planet sources except planet_tests.cpp
+        rdn/planet/coordinate_system.h
+        rdn/planet/coordinate_system.cpp
+        rdn/planet/cube_sphere.h
+        rdn/planet/cube_sphere.cpp
+        rdn/planet/restricted_quadtree.h
+        rdn/planet/restricted_quadtree.cpp
+        rdn/planet/blas_cells.h
+        rdn/planet/blas_cells.cpp
+        rdn/planet/chunk_mesh.h
+        rdn/planet/blas_pool.h
+        rdn/planet/blas_pool.cpp
+        rdn/planet/scratch_pool.h
+        rdn/planet/scratch_pool.cpp
+        rdn/planet/upload_ring.h
+        rdn/planet/upload_ring.cpp
+        rdn/planet/heightmap_source.h
+        rdn/planet/heightmap_source.cpp
+        rdn/planet/heightmap_procedural.h
+        rdn/planet/heightmap_procedural.cpp
+        rdn/planet/worker_pool.h
+        rdn/planet/worker_pool.cpp
+        rdn/planet/tessellator.h
+        rdn/planet/tessellator.cpp
+        rdn/planet/queue_sync.h
+        rdn/planet/queue_sync.cpp
+        rdn/planet/geometry_pool.h
+        rdn/planet/geometry_pool.cpp
+        rdn/planet/generation.h
+        rdn/planet/generation.cpp
+        rdn/planet/stream_orchestrator.h
+        rdn/planet/stream_orchestrator.cpp
+        rdn/planet/tlas_builder.h
+        rdn/planet/tlas_builder.cpp
+
         # Engine layer
         engine/Core/Transform.h
         engine/Input/InputManager.h
@@ -391,3 +426,29 @@ foreach(dll_path IN LISTS ORT_DLLS)
         message(STATUS "ORT optional DLL missing (ok): ${dll_path}")
     endif()
 endforeach()
+
+# ───────────────────────── Planet streaming module (Phase 1) ────────────────
+# CPU chunk system: cube-sphere quadtree, FP64 coordinates, visibility/LOD pass.
+# Standalone test executable - no D3D12 / CUDA, links only the C++ runtime.
+# The planet/*.cpp sources join the Pathtracer target at Phase 5 integration.
+add_executable(PlanetTests
+        rdn/planet/coordinate_system.h
+        rdn/planet/coordinate_system.cpp
+        rdn/planet/cube_sphere.h
+        rdn/planet/cube_sphere.cpp
+        rdn/planet/restricted_quadtree.h
+        rdn/planet/restricted_quadtree.cpp
+        rdn/planet/blas_cells.h
+        rdn/planet/blas_cells.cpp
+        rdn/planet/chunk_mesh.h
+        rdn/planet/heightmap_source.h
+        rdn/planet/heightmap_source.cpp
+        rdn/planet/heightmap_procedural.h
+        rdn/planet/heightmap_procedural.cpp
+        rdn/planet/worker_pool.h
+        rdn/planet/worker_pool.cpp
+        rdn/planet/tessellator.h
+        rdn/planet/tessellator.cpp
+        rdn/planet/planet_tests.cpp
+)
+target_compile_features(PlanetTests PRIVATE cxx_std_23)

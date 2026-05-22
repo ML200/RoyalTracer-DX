@@ -1,17 +1,29 @@
 //====================================
-//COMPACT G-BUFFER 28 BYTES PER PIXEL
+//COMPACT G-BUFFER 36 BYTES PER PIXEL
 //====================================
-//cached normals/UV so BuildVertexLight skips scattered vertex loads per neighbor
-//offset 0  instID, offset 4 primID bits 0-30 + emitter flag bit 31
-//offset 8  bary.x, offset 12 bary.y
-//offset 16 n1_s object-space packed, offset 20 uv half2
-//offset 24 hitT, primary ray distance, used by ReconstructPositionFromHitT
-//          so spatial neighbor pixel position falls out of one coalesced load
-//          instead of an instanceProps + indices + BTriVertex chain
-//emitter flag set, primary hit is emitter or sky, L1 already in gScratchPing
-//sky sentinel, instID=0xFFFFFFFF with emitter flag
+//Resolved primary-hit surface for every pass AFTER Pass_raygen. Raygen bakes
+//the fully texture-resolved material here, so no later pass ever touches
+//per-triangle data (indices / BTriVertex / materialIDs / instanceProps) or
+//re-samples a material texture. That is what lets streamed planet terrain -
+//which has no per-triangle data at shade time - shade through the exact same
+//path as scene meshes: the surface is reconstructed from what is stored here,
+//never from (instID, primID, bary).
+//
+//offset 0  instID  scene index, terrain >= TERRAIN_INSTANCE_BASE, sky 0xFFFFFFFF
+//offset 4  flags    bit0 isEmitter, bit1 backface
+//offset 8  matID    resolved material id (sentinels: env / light-tri / terrain)
+//offset 12 Kd       texture-resolved albedo, RGB9E5
+//offset 16 PrPm     texture-resolved roughness + metalness, half2
+//offset 20 n1_s     shading normal (normal-mapped), object-space packed
+//offset 24 x1       exact world hit position (float3) - baked by raygen
+//
+//sky sentinel, instID=0xFFFFFFFF with the isEmitter flag set, matID=env-miss
 
-static const uint BYTES_SD = 28u;
+static const uint BYTES_SD = 36u;
+
+//flag bits in the offset-4 word
+static const uint SD_FLAG_EMITTER  = 1u;
+static const uint SD_FLAG_BACKFACE = 2u;
 
 uint pixelBaseAddr_SD(uint pixelIdx)
 {
@@ -21,25 +33,28 @@ uint pixelBaseAddr_SD(uint pixelIdx)
 //====================================
 //OBJECT-WORLD HELPERS
 //====================================
-//env/miss sentinels skip the transform, triangle-light uses its real instID
+//env/miss sentinels skip the transform; scene instances use their real instID.
+//PLANET: terrain instIDs (>= TERRAIN_INSTANCE_BASE) also skip it - terrain has
+//no instanceProps entry and its instance transform is translation-only, so the
+//object<->world NORMAL transform is identity (positions likewise).
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
-    if (id >= MATID_LIGHT_TRI) return Pw;
+    if (id >= TERRAIN_INSTANCE_BASE) return Pw;
     return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
 }
 float3 ObjectToWorldPos(uint id, float3 Po)
 {
-    if (id >= MATID_LIGHT_TRI) return Po;
+    if (id >= TERRAIN_INSTANCE_BASE) return Po;
     return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
 }
 float3 ObjectToWorldNrm(uint id, float3 No)
 {
-    if (id >= MATID_LIGHT_TRI) return No;
+    if (id >= TERRAIN_INSTANCE_BASE) return No;
     return normalize(mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
 }
 float3 WorldToObjectNrm(uint id, float3 Nw)
 {
-    if (id >= MATID_LIGHT_TRI) return Nw;
+    if (id >= TERRAIN_INSTANCE_BASE) return Nw;
     float3x3 MT = transpose((float3x3)instanceProps[id].objectToWorld);
     return normalize(mul(MT, Nw));
 }
@@ -50,48 +65,50 @@ float3 WorldToObjectNrm(uint id, float3 Nw)
 
 void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
-    buf.Store(pixelBaseAddr_SD(pixelIdx), instID);
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 0u, instID);
 }
 
-//bit 31: isEmitter, bit 30: backface, bits 0..29: primID (1B triangles cap)
-//backface lets the NRC debug query pass the correct side bit at the primary
-//hit, matching what the main raygen path passes for cache training/inference
-void store_primID(RWByteAddressBuffer buf, uint pixelIdx, uint primID,
-                  bool isEmitter, bool backface)
+//bit0 isEmitter, bit1 backface. backface lets the NRC debug query pass the
+//correct side bit at the primary hit, matching what raygen feeds NRC.
+void store_flags(RWByteAddressBuffer buf, uint pixelIdx, bool isEmitter, bool backface)
 {
-    uint packed = (primID & 0x3FFFFFFFu)
-                | (isEmitter ? 0x80000000u : 0u)
-                | (backface  ? 0x40000000u : 0u);
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, packed);
+    uint f = (isEmitter ? SD_FLAG_EMITTER  : 0u)
+           | (backface  ? SD_FLAG_BACKFACE : 0u);
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, f);
 }
 
-void store_bary(RWByteAddressBuffer buf, uint pixelIdx, float2 bary)
+void store_matID(RWByteAddressBuffer buf, uint pixelIdx, uint matID)
 {
-    buf.Store2(pixelBaseAddr_SD(pixelIdx) + 8u, asuint(bary));
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 8u, matID);
+}
+
+void store_kd(RWByteAddressBuffer buf, uint pixelIdx, float3 kd)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 12u, PackRGB9E5(kd));
+}
+
+void store_prpm(RWByteAddressBuffer buf, uint pixelIdx, float pr, float pm)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackFloat2x16(pr, pm));
 }
 
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
-    float3 n1s_obj = (instID < 0xFFFFFFFEu) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 16u, PackNormal(n1s_obj));
+    float3 n1s_obj = (instID < TERRAIN_INSTANCE_BASE) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1s_obj));
 }
 
-void store_uv(RWByteAddressBuffer buf, uint pixelIdx, float2 uv)
+void store_x1(RWByteAddressBuffer buf, uint pixelIdx, float3 x1)
 {
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackFloat2x16(uv.x, uv.y));
-}
-
-void store_hitT(RWByteAddressBuffer buf, uint pixelIdx, float hitT)
-{
-    buf.Store(pixelBaseAddr_SD(pixelIdx) + 24u, asuint(hitT));
+    buf.Store3(pixelBaseAddr_SD(pixelIdx) + 24u, asuint(x1));
 }
 
 void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
-    buf.Store4(base, uint4(0xFFFFFFFFu, 0x80000000u, 0u, 0u));
-    buf.Store2(base + 16u, uint2(0u, 0u));
-    buf.Store (base + 24u, 0u);
+    buf.Store4(base,       uint4(0xFFFFFFFFu, SD_FLAG_EMITTER, MATID_ENV_MISS, 0u));
+    buf.Store4(base + 16u, uint4(0u, 0u, 0u, 0u));
+    buf.Store (base + 32u, 0u);
 }
 
 //====================================
@@ -99,53 +116,50 @@ void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
 //====================================
 uint load_instID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return buf.Load(pixelBaseAddr_SD(pixelIdx));
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 0u);
 }
 
 bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x80000000u) != 0u;
-}
-
-uint load_primID(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x3FFFFFFFu;
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & SD_FLAG_EMITTER) != 0u;
 }
 
 bool load_backface(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & 0x40000000u) != 0u;
+    return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & SD_FLAG_BACKFACE) != 0u;
 }
 
-float2 load_bary(RWByteAddressBuffer buf, uint pixelIdx)
+uint load_matID(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load2(pixelBaseAddr_SD(pixelIdx) + 8u));
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 8u);
+}
+
+float3 load_kd(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return UnpackRGB9E5(buf.Load(pixelBaseAddr_SD(pixelIdx) + 12u));
+}
+
+void load_prpm(RWByteAddressBuffer buf, uint pixelIdx, out float pr, out float pm)
+{
+    UnpackFloat2x16(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u), pr, pm);
 }
 
 float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint instID = load_instID(buf, pixelIdx);
-    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u));
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
+    return (instID < TERRAIN_INSTANCE_BASE) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
 float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
-    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 16u));
-    return (instID < 0xFFFFFFFEu) ? ObjectToWorldNrm(instID, raw) : raw;
+    float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
+    return (instID < TERRAIN_INSTANCE_BASE) ? ObjectToWorldNrm(instID, raw) : raw;
 }
 
-float2 load_uv(RWByteAddressBuffer buf, uint pixelIdx)
+float3 load_x1(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    uint packed = buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u);
-    float a, b;
-    UnpackFloat2x16(packed, a, b);
-    return float2(a, b);
-}
-
-float load_hitT(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return asfloat(buf.Load(pixelBaseAddr_SD(pixelIdx) + 24u));
+    return asfloat(buf.Load3(pixelBaseAddr_SD(pixelIdx) + 24u));
 }
 
 //====================================
@@ -155,6 +169,6 @@ void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixel
 {
     uint base = pixelBaseAddr_SD(pixelIdx);
     dst.Store4(base,       src.Load4(base));
-    dst.Store2(base + 16u, src.Load2(base + 16u));
-    dst.Store (base + 24u, src.Load (base + 24u));
+    dst.Store4(base + 16u, src.Load4(base + 16u));
+    dst.Store (base + 32u, src.Load (base + 32u));
 }

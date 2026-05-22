@@ -78,7 +78,7 @@ namespace dxdiag
     //CPU overhead per draw / dispatch. DRED breadcrumbs (below) are cheap
     //and stay enabled regardless.
 #ifndef DXDIAG_ENABLE_DEBUG_LAYER
-#   define DXDIAG_ENABLE_DEBUG_LAYER 0
+#   define DXDIAG_ENABLE_DEBUG_LAYER 1
 #endif
 
     inline void EnableDebugLayerAndDred()
@@ -300,6 +300,6 @@ namespace dxdiag
     inline void EnableDebugLayerAndDred()  {}
     inline void HookDevice(ID3D12Device*)  {}
     inline void DumpNewMessages()          {}
-    inline void CheckDeviceRemoved(ID3D12Device*) {}
+    inline void CheckDeviceRemoved(ID3D12Device*, int = 0) {}
 #endif
 }
