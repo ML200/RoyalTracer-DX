@@ -58,6 +58,34 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
         m_terrainNodePrev[i] = INVALID_NODE;
     }
 
+    //GPU timestamp queries: one heap + one readback for the BLAS/TLAS GPU timings.
+    {
+        D3D12_QUERY_HEAP_DESC qhd = {};
+        qhd.Type  = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        qhd.Count = TS_RING * TS_PER_SLOT;
+        if (FAILED(device->CreateQueryHeap(&qhd, IID_PPV_ARGS(&m_queryHeap))))
+            throw std::runtime_error("planet: timestamp query-heap create failed");
+
+        const uint64_t tsBytes = (uint64_t)TS_RING * TS_PER_SLOT * sizeof(uint64_t);
+        //Enhanced-barriers devices ignore InitialResourceState for buffers and
+        //warn about non-COMMON values; pass COMMON. Readback heaps still can't
+        //transition - they stay effectively COMMON for the resource's lifetime,
+        //which is what ResolveQueryData expects.
+        m_tsReadback = create_buffer(device, tsBytes,
+                                     D3D12_RESOURCE_FLAG_NONE,
+                                     D3D12_RESOURCE_STATE_COMMON, HEAP_READBACK);
+        void* p = nullptr;
+        D3D12_RANGE full_read{ 0, (SIZE_T)tsBytes };
+        if (FAILED(m_tsReadback->Map(0, &full_read, &p)))
+            throw std::runtime_error("planet: timestamp readback Map failed");
+        m_tsReadbackMapped = static_cast<uint64_t*>(p);
+
+        //Timestamp frequency is per-queue. If the call fails, blas_gpu_ms /
+        //tlas_gpu_ms stay 0 (the conversion guards on m_tsFreq).
+        if (FAILED(ctx->PlanetComputeQueue()->GetTimestampFrequency(&m_tsFreq)))
+            m_tsFreq = 0;
+    }
+
     std::wcout << L"[planet] StreamOrchestrator ready (workers="
                << m_workers.thread_count() << L")" << std::endl;
 }
@@ -182,22 +210,71 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     const uint64_t copyVal = m_ctx->SubmitPlanetCopy();          // empty copy list - just close it
     ID3D12GraphicsCommandList10* cl = m_ctx->ComputeList();
 
-    //advance an in-flight rebuild: tessellate + record this frame's budget of
-    //dirty cells (their BLAS builds run async on the compute queue).
+    //--- read back the timestamp slot we are about to overwrite ---
+    //TS_RING > frames-in-flight, so the slot's fence has retired by now and the
+    //readback is non-blocking. If pending=false (first uses) we just skip; if
+    //the fence somehow hasn't retired (overflow), keep the prior datapoint.
+    const uint32_t slot = m_tsWrite % TS_RING;
+    if (m_tsRing[slot].pending &&
+        m_ctx->PlanetComputeCompleted() >= m_tsRing[slot].fence) {
+        const uint64_t* p = m_tsReadbackMapped + (size_t)slot * TS_PER_SLOT;
+        const uint64_t  t_start = p[0];
+        const uint64_t  t_blas  = p[1];
+        const uint64_t  t_tlas  = p[2];
+        const double inv_freq_ms = (m_tsFreq != 0) ? (1000.0 / double(m_tsFreq)) : 0.0;
+        m_stats.blas_gpu_ms = float(double(t_blas - t_start) * inv_freq_ms);
+        m_stats.tlas_gpu_ms = float(double(t_tlas - t_blas ) * inv_freq_ms);
+        m_tsRing[slot].pending = false;
+    }
+
+    //T0: start of this frame's compute list (before BLAS recording).
+    cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                 slot * TS_PER_SLOT + 0);
+
+    //--- advance an in-flight rebuild: tessellate + record this frame's budget
+    //of dirty cells (their BLAS builds run async on the compute queue). ---
     uint32_t recorded = 0;
     if (m_builder.active() && !m_builder.all_recorded()) {
         const auto t0 = std::chrono::high_resolution_clock::now();
         recorded = m_builder.step(m_device, m_heightmap, m_workers, cl, m_cfg.build_budget);
         const auto t1 = std::chrono::high_resolution_clock::now();
-        m_throughput.on_step(std::chrono::duration<float, std::milli>(t1 - t0).count());
+        const float step_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
+        m_throughput.on_step(step_ms);
+        m_stats.step_cpu_ms        = step_ms;
+        m_stats.tess_cpu_ms        = m_builder.tess_ms();
+        m_stats.blas_record_cpu_ms = m_builder.blas_record_ms();
+    } else {
+        m_stats.step_cpu_ms        = 0.0f;
+        m_stats.tess_cpu_ms        = 0.0f;
+        m_stats.blas_record_cpu_ms = 0.0f;
     }
+    m_stats.cells_recorded = recorded;
+
+    //T1: after BLAS recording, before TLAS. (T1 - T0) = BLAS GPU time.
+    cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                 slot * TS_PER_SLOT + 1);
 
     //the unified TLAS always renders the LIVE generation. The compute queue is
     //submitted every frame: the renderer's graphics queue waits its fence.
     record_tlas(scene, scene_count, terrain_hit_group, cl);
 
+    //T2: after TLAS. (T2 - T1) = TLAS GPU time.
+    cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                 slot * TS_PER_SLOT + 2);
+
+    //Resolve the 3 timestamps into this slot of the readback buffer. The
+    //readback is in COPY_DEST permanently (readback-heap rule) - no transitions.
+    cl->ResolveQueryData(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                         slot * TS_PER_SLOT, TS_PER_SLOT,
+                         m_tsReadback.Get(),
+                         (uint64_t)slot * TS_PER_SLOT * sizeof(uint64_t));
+
     const uint64_t cv = m_ctx->SubmitPlanetCompute(copyVal);
     if (recorded > 0) m_builder.on_submitted(cv);
+
+    //park this slot for fence-gated readback next time we come round.
+    m_tsRing[slot] = TsSlot{ cv, true };
+    m_tsWrite++;
 
     m_stats.built          = m_haveLive;
     m_stats.rebuilding     = m_builder.active();

@@ -1221,6 +1221,10 @@ void Renderer::RenderFrame() {
 
         // PLANET_INTEGRATION: per-second planet readout - the LIVE generation
         // and any in-flight ping-pong rebuild (dirty = cells built / total).
+        // Timings are last-frame snapshots: cpu_ms[] is the most recent
+        // builder.step(); gpu_ms[] is from a fence-gated timestamp readback a
+        // few frames behind. Both read 0 on idle frames - the printed value is
+        // whatever frame happened to land at the second boundary.
         const auto& ps = m_planet.stats();
         std::wcout << L"[planet] built=" << ps.built
                    << L" leaves=" << ps.leaf_count
@@ -1230,7 +1234,12 @@ void Renderer::RenderFrame() {
                    << L" rebuilding=" << ps.rebuilding
                    << L" dirty=" << ps.dirty_built << L"/" << ps.dirty_total
                    << L" est=" << ps.rebuild_frames_est << L"f"
-                   << L" stepms=" << ps.step_ms
+                   << L" rec=" << ps.cells_recorded
+                   << L" cpu_ms[step=" << ps.step_cpu_ms
+                   << L" tess="        << ps.tess_cpu_ms
+                   << L" blas_rec="    << ps.blas_record_cpu_ms << L"]"
+                   << L" gpu_ms[blas=" << ps.blas_gpu_ms
+                   << L" tlas="        << ps.tlas_gpu_ms << L"]"
                    << std::endl;
 
         s_frameCount = 0;

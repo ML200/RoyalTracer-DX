@@ -624,7 +624,11 @@ void Pass_raygen_v8()
                     //relative altitude before calling.
                     if (cloud_cloudShadowOnSurfaces > 0.5f)
                     {
-                        sun.radiance *= CloudSunVisibility(ctx.hitPos + sceneOriginWorld, sun.direction);
+                        float2 rCone = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
+                        float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
+                        float3 Lj = SampleConeAroundDir(sun.direction, cosCone, rCone);
+                        float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj);
+                        sun.radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
                     }
 
                     const float3 throughput = UnpackRGB9E5(throughputPk);

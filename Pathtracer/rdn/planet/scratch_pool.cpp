@@ -19,7 +19,7 @@ void ScratchPool::init(ID3D12Device5* device) {
     m_buffer = create_buffer(
         device, total,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+        D3D12_RESOURCE_STATE_COMMON,
         HEAP_DEFAULT);
     m_base_va = m_buffer->GetGPUVirtualAddress();
 

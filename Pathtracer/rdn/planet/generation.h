@@ -80,6 +80,12 @@ public:
     uint32_t dirty_total()  const { return (uint32_t)m_dirty.size(); }
     uint32_t dirty_built()  const { return m_built; }
 
+    //Last step()'s CPU timing breakdown (ms). 'tess' covers per-cell upload-buffer
+    //allocate/map + scratch alloc + parallel tessellation; 'blas_record' covers
+    //the BLAS-descriptor build + BuildRaytracingAccelerationStructure record loop.
+    float    tess_ms()        const { return m_lastTessMs; }
+    float    blas_record_ms() const { return m_lastBlasRecordMs; }
+
     Generation take();                           // move out the finished generation; ends the build
 
 private:
@@ -100,6 +106,10 @@ private:
     };
     std::vector<Batch> m_batches;                // recorded, fence pending
     Batch              m_pending;                // accumulated by step(), sealed by on_submitted()
+
+    //per-step CPU timing breakdown (ms); published via tess_ms / blas_record_ms.
+    float              m_lastTessMs       = 0.0f;
+    float              m_lastBlasRecordMs = 0.0f;
 };
 
 } // namespace planet

@@ -64,6 +64,7 @@ struct DeviceContext {
     UINT64 PlanetComputeLastSignaled() const;
     void   PlanetCopyCpuWait(UINT64 value);
     void   PlanetComputeCpuWait(UINT64 value);
+    ID3D12CommandQueue* PlanetComputeQueue() const { return planetComputeQueue.Get(); }
 
     //====================================
     //ACCESSORS

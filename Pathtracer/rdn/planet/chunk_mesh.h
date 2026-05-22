@@ -13,10 +13,10 @@ namespace planet {
 //A chunk is a CHUNK_GRID x CHUNK_GRID grid of quads -> (CHUNK_GRID+1)^2 vertices.
 //Every chunk uses the same grid resolution regardless of its LOD (finer LOD =
 //smaller world patch, same vertex count = more detail).
-constexpr uint32_t CHUNK_GRID       = 128;
-constexpr uint32_t CHUNK_EDGE_VERTS = CHUNK_GRID + 1;                       // 129
-constexpr uint32_t MAX_CHUNK_VERTS  = CHUNK_EDGE_VERTS * CHUNK_EDGE_VERTS;   // 16641
-constexpr uint32_t MAX_CHUNK_TRIS   = CHUNK_GRID * CHUNK_GRID * 2;           // 32768
+constexpr uint32_t CHUNK_GRID       = 32;
+constexpr uint32_t CHUNK_EDGE_VERTS = CHUNK_GRID + 1;                       // 33
+constexpr uint32_t MAX_CHUNK_VERTS  = CHUNK_EDGE_VERTS * CHUNK_EDGE_VERTS;   // 1089
+constexpr uint32_t MAX_CHUNK_TRIS   = CHUNK_GRID * CHUNK_GRID * 2;           // 2048
 
 constexpr uint32_t MAX_BUILDS_PER_FRAME = 16;   // orchestrator build cap (Phase 4)
 

@@ -325,7 +325,15 @@ cbuffer CameraParams : register(b0)
 //name in case the cbuffer field is renamed later.
 #define ATMOS_CLOUD_SHADOW_CONE_DEG   atmos_cloudShadowConeDeg
 #define ATMOS_CLOUD_SHADOW_FLOOR      atmos_cloudShadowFloor
+// Exponent applied to cloud visibility when shadowing atmospheric in-scatter.
+// < 1 softens the shadow (approximates multi-scattered cloud light filling
+// the shadow volume). 1.0 = full single-scatter shadow. 0.3 is a good start.
+#define ATMOS_CLOUD_SHADOW_SOFTNESS   0.3f
 #define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
+// Surface cloud shadow: softness exponent (< 1 lightens thin-cloud shadows)
+// and cone half-angle in degrees for spatial blur (0 = sharp point sample).
+#define SURFACE_CLOUD_SHADOW_SOFTNESS 0.3f
+#define SURFACE_CLOUD_SHADOW_CONE_DEG 3.0f
 
 //Volumetric cloud knob redirects. Clouds_v8.hlsli wraps each constant in
 //#ifndef so defining them here overrides the static fallbacks and binds
@@ -405,6 +413,13 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_MAX_EMPTY_STEP_KM      cloud_maxEmptyStepKm
 #define CLOUD_EMPTY_STEP_GROWTH_PER_KM cloud_emptyStepGrowthPerKm
 #define CLOUD_MAX_FINE_STEP_KM       cloud_maxFineStepKm
+
+inline float TerrainHeight(float3 dir)
+{
+    return sin(dir.x * terrainHeightFrequency)
+         * cos(dir.z * terrainHeightFrequency)
+         * terrainHeightAmplitude;
+}
 
 //====================================
 //CORE UTILITY HEADERS

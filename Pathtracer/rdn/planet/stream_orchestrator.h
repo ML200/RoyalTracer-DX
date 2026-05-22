@@ -55,13 +55,13 @@ struct StreamConfig {
     uint32_t max_triangles = 3000000u;           // planet-wide triangle budget; the
                                                  // quadtree auto-tunes its leaf cut
                                                  // to the nearest fit at or under it
-    uint32_t max_leaves_per_cell = 16;            // BLAS triangle budget (leaves per cell)
+    uint32_t max_leaves_per_cell = 64;            // BLAS triangle budget (leaves per cell)
     double   max_cell_radius_m = 1e30;           // FP32-precision cap on a cell's extent
     uint32_t max_scene_instances = 4096;         // unified-TLAS scene-instance allowance
     float    heightmap_amplitude = 1000.0f;       // procedural fBm peak height (metres)
     float    heightmap_frequency = 1000.0f;        // fBm base frequency on the unit sphere
     float    rebuild_trigger_m = 10.0f;        // camera drift that triggers a ping-pong rebuild
-    uint32_t build_budget = 2;                   // dirty cells built per frame during a rebuild
+    uint32_t build_budget = 4;                   // dirty cells built per frame during a rebuild
     bool     predict = true;                     // aim a rebuild at the predicted swap-time camera
 };
 
@@ -159,6 +159,19 @@ public:
         float    rebuild_frames_est  = 0.0f;   // EWMA estimate of a rebuild's frame span
         float    step_ms             = 0.0f;   // EWMA per-frame CPU build cost
         uint32_t last_rebuild_frames = 0;
+
+        //Per-frame builder timing breakdown (ms). step_cpu_ms covers the full
+        //CPU step (tess + BLAS record); tess + blas_record split it. blas_gpu /
+        //tlas_gpu come from GPU timestamps on the compute queue and lag a few
+        //frames (fence-gated readback) - they show 0 until the first slot is
+        //ready. Triangle-budget-only stat: not EWMA'd; raw last-frame values so
+        //hitches stay visible.
+        float    step_cpu_ms        = 0.0f;
+        float    tess_cpu_ms        = 0.0f;
+        float    blas_record_cpu_ms = 0.0f;
+        float    blas_gpu_ms        = 0.0f;
+        float    tlas_gpu_ms        = 0.0f;
+        uint32_t cells_recorded     = 0;   // cells recorded by this frame's step()
     };
     const Stats& stats() const { return m_stats; }
 
@@ -201,6 +214,21 @@ private:
     TerrainSlotGPU*        m_terrainTableMapped = nullptr;
     uint64_t               m_terrainNodePrev[MAX_TERRAIN_CELLS] = {};   // last frame's per-slot node
     uint64_t               m_curNode[MAX_TERRAIN_CELLS] = {};           // this frame's, scratch
+
+    //GPU timestamp queries on the planet compute queue (BLAS + TLAS GPU times).
+    //Ring of TS_RING slots, each holds TS_PER_SLOT timestamps; each frame writes
+    //the next slot and reads back the slot it is about to overwrite (gated on
+    //the planet-compute fence so we never read GPU-pending data). TS_RING >
+    //frames-in-flight, so a slot's fence has retired by the time we re-use it.
+    static constexpr uint32_t TS_RING     = 4;
+    static constexpr uint32_t TS_PER_SLOT = 3;       // T_start, after-BLAS, after-TLAS
+    ComPtr<ID3D12QueryHeap>   m_queryHeap;
+    ComPtr<ID3D12Resource>    m_tsReadback;
+    uint64_t*                 m_tsReadbackMapped = nullptr;
+    uint64_t                  m_tsFreq = 0;          // compute-queue timestamp ticks per second
+    struct TsSlot { uint64_t fence = 0; bool pending = false; };
+    TsSlot                    m_tsRing[TS_RING]{};
+    uint32_t                  m_tsWrite = 0;
 
     Stats m_stats;
 

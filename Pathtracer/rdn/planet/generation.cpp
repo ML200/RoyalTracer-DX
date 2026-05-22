@@ -5,6 +5,7 @@
 #include "generation.h"
 #include "tessellator.h"
 #include <algorithm>
+#include <chrono>
 #include <stdexcept>
 
 namespace planet {
@@ -105,10 +106,15 @@ void GenerationBuilder::begin(ID3D12Device5* device, const GenerationParams& par
 uint32_t GenerationBuilder::step(ID3D12Device5* device, const IHeightmapSource& heightmap,
                                  WorkerPool& workers, ID3D12GraphicsCommandList4* compute_cl,
                                  uint32_t budget) {
+    m_lastTessMs       = 0.0f;
+    m_lastBlasRecordMs = 0.0f;
     if (!m_active) return 0;
     const uint32_t remaining = (uint32_t)m_dirty.size() - m_cursor;
     const uint32_t n = budget < remaining ? budget : remaining;
     if (n == 0) return 0;
+
+    using clock = std::chrono::high_resolution_clock;
+    const auto t_step_start = clock::now();
 
     const std::vector<BlasCellSet::Cell>& cells  = m_gen.cellSet.cells();
     const std::vector<uint64_t>&          leaves = m_gen.cellSet.cell_leaves();
@@ -129,9 +135,12 @@ uint32_t GenerationBuilder::step(ID3D12Device5* device, const IHeightmapSource& 
         cb[k].vp = static_cast<uint8_t*>(vp);
         cb[k].ip = static_cast<uint8_t*>(ip);
     }
+    //Enhanced-barriers devices ignore InitialResourceState for buffers and warn
+    //about non-COMMON values; pass COMMON. The UAV barrier between BLAS builds
+    //(below) is what actually serialises GPU access to this scratch.
     ComPtr<ID3D12Resource> scratch = create_buffer(
         device, m_maxScratch, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, HEAP_DEFAULT);
+        D3D12_RESOURCE_STATE_COMMON, HEAP_DEFAULT);
 
     //--- tessellate every leaf of the batch in parallel (distinct destinations) ---
     struct LeafJob { uint32_t k; uint32_t slot; };
@@ -163,6 +172,9 @@ uint32_t GenerationBuilder::step(ID3D12Device5* device, const IHeightmapSource& 
         tj.index_capacity  = CHUNK_INDEX_BYTES;
         tessellate_chunk(tj, heightmap);
     });
+
+    const auto t_tess_end = clock::now();
+    m_lastTessMs = std::chrono::duration<float, std::milli>(t_tess_end - t_step_start).count();
 
     //--- record one multi-geometry BLAS build per cell ---
     std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geom(m_params.cells.max_leaves_per_cell);
@@ -219,6 +231,9 @@ uint32_t GenerationBuilder::step(ID3D12Device5* device, const IHeightmapSource& 
     m_pending.transient.push_back(scratch);
     m_pending.count += n;
     m_cursor += n;
+
+    const auto t_step_end = clock::now();
+    m_lastBlasRecordMs = std::chrono::duration<float, std::milli>(t_step_end - t_tess_end).count();
     return n;
 }
 

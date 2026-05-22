@@ -42,15 +42,6 @@ inline float3 TerrainPlanetCenter()
     return float3(planetCenterX, planetCenterY, planetCenterZ) - sceneOriginWorld;
 }
 
-//heightmap displacement (metres). MUST match HeightmapProcedural::sample
-//(rdn/planet/heightmap_procedural.cpp) so shaded + tessellated surfaces agree.
-inline float TerrainHeight(float3 dir)
-{
-    return sin(dir.x * terrainHeightFrequency)
-         * cos(dir.z * terrainHeightFrequency)
-         * terrainHeightAmplitude;
-}
-
 //surface point measured FROM the planet centre (radius+height along dir).
 //~planetRadius in magnitude but carries no camera-local offset, so finite-
 //differencing it for the normal stays free of big-minus-big cancellation.
@@ -102,6 +93,55 @@ inline float3 TerrainGridVertex(uint face, float s, float t, float3 planetCenter
     return TerrainSurfacePoint(TerrainCubeToSphere(face, s, t), planetCenterLocal);
 }
 
+//Outward surface normal of the displaced cube-sphere at unit direction 'dir'.
+//The surface is S(d) = C + d*(R + h(d)); its analytic normal works out to
+//    N  ~  (R + h)*d  -  (dh/dtA)*tA  -  (dh/dtB)*tB
+//for any orthonormal tangent pair (tA,tB) at d. The heightmap derivatives
+//dh/dt are finite-differenced from TerrainHeight ALONE - values of order the
+//amplitude (~1e3 m), never from the ~6.4e6 m radial points - so there is no
+//big-minus-big cancellation (the old central-difference of TerrainRadialPoint
+//lost most of its precision to that). With a mesh fine enough to resolve the
+//heightmap this matches the tessellated geometry, so the shading normal and
+//the geometry agree and grazing rays no longer flip to black.
+inline float3 TerrainNormal(float3 dir)
+{
+    const float3 tA = normalize(cross(dir, (abs(dir.y) < 0.99f)
+                                             ? float3(0, 1, 0) : float3(1, 0, 0)));
+    const float3 tB = cross(dir, tA);
+    const float  e     = 1.0e-3f;
+    const float  inv2e = 1.0f / (2.0f * e);
+    const float  hC  = TerrainHeight(dir);
+    const float  dhA = TerrainHeight(normalize(dir + tA * e))
+                     - TerrainHeight(normalize(dir - tA * e));
+    const float  dhB = TerrainHeight(normalize(dir + tB * e))
+                     - TerrainHeight(normalize(dir - tB * e));
+    //the (R+h)*d term dominates, so N is always outward - no flip needed.
+    const float3 n = dir * (planetRadius + hC)
+                   - tA  * (dhA * inv2e)
+                   - tB  * (dhB * inv2e);
+    return normalize(n);
+}
+
+//Assemble a terrain HitInfo from a hit position (camera-local). Terrain is
+//always the outward-facing ground surface - never a true backface. On a sphere,
+//the radial backface test (dot(viewDir, dir) > 0) falsely triggers for terrain
+//above the geometric horizon because viewDir and the radial direction start
+//aligning there, flipping the normal inward and making those areas black.
+HitInfo TerrainHitInfo(float3 hitPos, float3 viewOrigin)
+{
+    HitInfo hit = (HitInfo)0.0f;
+    const float3 C   = TerrainPlanetCenter();
+    const float3 dir = normalize(hitPos - C);
+    const float3 n   = TerrainNormal(dir);
+
+    hit.hitPos    = hitPos;
+    hit.hitNormal = n;
+    hit.backface  = false;
+    hit.uv        = TerrainCubeUV(dir);
+    hit.lightID   = 0xFFFFFFFFu;
+    return hit;
+}
+
 //Build a HitInfo from the LIVE ray hit position. Used by the primary + bounce
 //rays: 'hitPosLocal' is the actual ray hit (rayOrigin + rayDir*hitT) in
 //camera-local space - precise and small for nearby hits. The position is used
@@ -109,34 +149,7 @@ inline float3 TerrainGridVertex(uint face, float s, float t, float3 planetCenter
 //cancellation. Only the normal/uv are derived (direction precision is ample).
 HitInfo EvalTerrainSurfaceFromHit(float3 hitPosLocal, float3 viewOrigin)
 {
-    HitInfo hit = (HitInfo)0.0f;
-
-    const float3 C   = TerrainPlanetCenter();
-    const float3 dir = normalize(hitPosLocal - C);
-
-    //normal: central differences of TerrainRadialPoint (planet-centre-relative,
-    //so the large camera-local offset C never enters the subtraction).
-    const float3 tA = normalize(cross(dir, (abs(dir.y) < 0.99f)
-                                             ? float3(0, 1, 0) : float3(1, 0, 0)));
-    const float3 tB = cross(dir, tA);
-    const float  e  = 1.0e-3f;
-    const float3 pR = TerrainRadialPoint(normalize(dir + tA * e));
-    const float3 pL = TerrainRadialPoint(normalize(dir - tA * e));
-    const float3 pU = TerrainRadialPoint(normalize(dir + tB * e));
-    const float3 pD = TerrainRadialPoint(normalize(dir - tB * e));
-    float3 n = cross(pR - pL, pU - pD);
-    if (dot(n, dir) < 0.0f) n = -n;
-    n = normalize(n);
-
-    const float3 viewDir  = normalize(hitPosLocal - viewOrigin);
-    const bool   backface = (dot(viewDir, n) > 0.0f);
-
-    hit.hitPos    = hitPosLocal;     // the LIVE ray hit - precise, not re-derived
-    hit.hitNormal = backface ? -n : n;
-    hit.backface  = backface;
-    hit.uv        = TerrainCubeUV(dir);
-    hit.lightID   = 0xFFFFFFFFu;
-    return hit;
+    return TerrainHitInfo(hitPosLocal, viewOrigin);
 }
 
 //Build a HitInfo for a terrain hit, reconstructed from (instID, primID, bary)
@@ -147,8 +160,6 @@ HitInfo EvalTerrainSurfaceFromHit(float3 hitPosLocal, float3 viewOrigin)
 //EvalTerrainSurfaceFromHit instead, which is precise.
 HitInfo EvalTerrainSurface(uint instID, uint primID, float2 bary, float3 viewOrigin)
 {
-    HitInfo hit = (HitInfo)0.0f;
-
     //terrain table -> the chunk's 64-bit packed quadtree node, two words:
     //lo = face | lod | x[24], hi = y[24].
     const uint2 nodeRaw = g_terrainTable[instID - TERRAIN_INSTANCE_BASE].xy;
@@ -194,32 +205,8 @@ HitInfo EvalTerrainSurface(uint instID, uint primID, float2 bary, float3 viewOri
     const float  b0     = 1.0f - bary.x - bary.y;
     const float3 hitPos = p0 * b0 + p1 * bary.x + p2 * bary.y;
 
-    //smooth analytic normal: central differences of the displaced surface
-    //across the sphere tangent plane at the hit direction.
-    const float3 dir = normalize(hitPos - C);
-    const float3 tA  = normalize(cross(dir, (abs(dir.y) < 0.99f)
-                                             ? float3(0, 1, 0) : float3(1, 0, 0)));
-    const float3 tB  = cross(dir, tA);
-    const float  e   = 1.0e-3f;
-    const float3 pR  = TerrainRadialPoint(normalize(dir + tA * e));
-    const float3 pL  = TerrainRadialPoint(normalize(dir - tA * e));
-    const float3 pU  = TerrainRadialPoint(normalize(dir + tB * e));
-    const float3 pD  = TerrainRadialPoint(normalize(dir - tB * e));
-    float3 n = cross(pR - pL, pU - pD);
-    if (dot(n, dir) < 0.0f) n = -n;            // force outward
-    n = normalize(n);
-
-    //build the HitInfo - mirror of EvalTerrainSurfaceFromHit's tail, using the
-    //re-derived hit position. terrain is never an emitter, so lightID is unset.
-    const float3 viewDir  = normalize(hitPos - viewOrigin);
-    const bool   backface = (dot(viewDir, n) > 0.0f);
-
-    hit.hitPos    = hitPos;
-    hit.hitNormal = backface ? -n : n;
-    hit.backface  = backface;
-    hit.uv        = TerrainCubeUV(dir);
-    hit.lightID   = 0xFFFFFFFFu;
-    return hit;
+    //normal/backface/uv via the shared helper - terrain is never an emitter.
+    return TerrainHitInfo(hitPos, viewOrigin);
 }
 
 //====================================
@@ -269,9 +256,10 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
     //seen to feed in tMax = 0 here.
     if (tMax <= 1e-4f) return false;
 
-    //scenes are bounded. Origins past ~1e6 lose ULP precision in BVH
-    //traversal and have been observed when hitT itself diverges.
-    if (any(abs(origin) > 1.0e6f)) return false;
+    //origins well past the planet diameter (~1.3e7 m) lose FP32 precision
+    //in BVH traversal. With the floating origin the camera is near zero,
+    //but bounce rays from far-side terrain can reach ~2-3x planet radius.
+    if (any(abs(origin) > 5.0e7f)) return false;
 
     return true;
 }

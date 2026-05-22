@@ -514,6 +514,16 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
     if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
         return float3(0, 0, 0);
 
+    // Terrain block at closest approach — catches peaks between sparse samples.
+    float tClose = -dot(P, L);
+    if (tClose > 0.0f && tClose < tMax)
+    {
+        float3 Qc = P + L * tClose;
+        float  rC = length(Qc);
+        float  terrR = Rb + max(TerrainHeight(Qc / rC) * 0.001f, 0.0f);
+        if (rC < terrR) return float3(0, 0, 0);
+    }
+
     float ds = (tMax - tMin) / (float)ATMOS_LIGHT_STEPS;
     float3 od = float3(0, 0, 0);
 
@@ -521,14 +531,18 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
     {
         float t = tMin + ((float)i + 0.5f) * ds;
         float3 Q = P + L * t;
-        float alt = max(0.0f, length(Q) - Rb);
+        float  rQ = length(Q);
 
+        float alt = max(0.0f, rQ - Rb);
         MediumSample med = SampleMedium(alt);
         od += med.extinction * ds;
     }
 
     return exp(-od);
 }
+
+// Forward decl — defined in Clouds_v8.hlsli (included after this file).
+float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS);
 
 float3 IntegrateScattering(float3 viewDir, float3 sunDir,
                            out float3 transmittanceOut, out bool hitPlanetOut)
@@ -607,7 +621,15 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
         scatterInteg.z = (med.extinction.z > 1e-10f)
             ? scatterPhase.z * (1.0f - segTr.z) / med.extinction.z : scatterPhase.z * ds;
 
-        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr;
+        float cloudVis = 1.0f;
+        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        {
+            cloudVis = CloudSunVisibilityPlanet(P, L);
+            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
+            cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
+        }
+
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr * cloudVis;
         totalInScatter += throughput * sunIllum * scatterInteg;
 
         throughput *= segTr;
@@ -630,11 +652,6 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 #define ATMOS_AERIAL_LIGHT_STEPS 4
 #endif
 
-// Forward decl — defined in Clouds_v8.hlsli (included after this file).
-// Planet-space variant skips a WorldToPlanet round-trip that doesn't survive
-// spherical-projection inputs.
-float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS);
-
 inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
 {
     float t0, t1;
@@ -650,6 +667,16 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
     if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
         return float3(0, 0, 0);
 
+    // Terrain block at closest approach.
+    float tClose = -dot(P, L);
+    if (tClose > 0.0f && tClose < tMax)
+    {
+        float3 Qc = P + L * tClose;
+        float  rC = length(Qc);
+        float  terrR = Rb + max(TerrainHeight(Qc / rC) * 0.001f, 0.0f);
+        if (rC < terrR) return float3(0, 0, 0);
+    }
+
     float ds = (tMax - tMin) / (float)ATMOS_AERIAL_LIGHT_STEPS;
     float3 od = float3(0, 0, 0);
 
@@ -658,8 +685,9 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
     {
         float t = tMin + ((float)i + 0.5f) * ds;
         float3 Q = P + L * t;
-        float alt = max(0.0f, length(Q) - Rb);
+        float  rQ = length(Q);
 
+        float alt = max(0.0f, rQ - Rb);
         MediumSample med = SampleMedium(alt);
         od += med.extinction * ds;
     }
@@ -738,13 +766,12 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
 
         float3 sunTr = TransmittanceToSunCheap(P, L, Rb, Rt);
 
-        // Cloud shadow on air column. Floor 0.04 stops near-haze going black
-        // under thick cloud and tinting the result sunset-red.
         float cloudVis = 1.0f;
         if (cloud_cloudShadowOnSurfaces > 0.5f)
         {
             cloudVis = CloudSunVisibilityPlanet(P, L);
-            cloudVis = max(cloudVis, 0.04f);
+            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
+            cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
         }
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;

@@ -389,6 +389,11 @@ inline float CloudEarthShadowFactor(float3 P, float3 L)
     return saturate(0.5f - disc / penumbra);
 }
 
+inline float CloudTerrainCosHorizon(float3 P)
+{
+    return -sqrt(max(0.0f, 1.0f - (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS) / dot(P, P)));
+}
+
 inline float CloudHG(float cosT, float g)
 {
     float g2 = g * g;
@@ -597,6 +602,11 @@ void EvaluateCloudGBuffer(float3 V,
 
 // Per-sample sun shadow march. Geometric ramp out to ~380 km so low-sun
 // rays reach distant cloud banks; TAU_EARLYOUT keeps noon rays cheap.
+// After the local march, a geometric large-scale term estimates occlusion
+// from the far-side cloud-shell passage (the part of the sun ray that
+// re-enters the shell on the opposite side of the planet after dipping
+// below the cloud layer). Catches planet-scale blocking at sunrise/sunset
+// without extra density samples.
 float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 {
     const float SAMPLE_DIST_KM[12] = { 0.2f, 0.6f, 1.5f, 3.5f, 7.0f, 12.0f, 22.0f, 40.0f, 70.0f, 125.0f, 220.0f, 380.0f };
@@ -607,11 +617,40 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
     [loop]
     for (int i = 0; i < 12; ++i)
     {
-        float3 Q = P + L * SAMPLE_DIST_KM[i];
+        float3 Q  = P + L * SAMPLE_DIST_KM[i];
+        float  rQ = length(Q);
+        float  terrainR = ATMOS_BOTTOM_RADIUS + max(TerrainHeight(Q / rQ) * 0.001f, 0.0f);
+        if (rQ < terrainR) { tau = TAU_EARLYOUT; break; }
+
         float  d = CloudDensityForShadow(Q, timeSec);
         tau += d * CLOUD_EXTINCTION * SAMPLE_SEG_KM[i];
         if (tau >= TAU_EARLYOUT) break;
     }
+
+    if (tau < TAU_EARLYOUT)
+    {
+        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
+        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM;
+
+        float tT0, tT1, tM0, tM1;
+        bool hitOuter = RaySphereIntersect(P, L, Rt, tT0, tT1);
+        bool hitInner = RaySphereIntersect(P, L, Rm, tM0, tM1);
+
+        if (hitOuter && tT1 > 0.0f && hitInner && tM0 > 0.0f)
+        {
+            float tG0, tG1;
+            bool hitGround = RaySphereIntersect(P, L, ATMOS_BOTTOM_RADIUS, tG0, tG1);
+
+            if (!hitGround || tG0 <= 0.0f)
+            {
+                float3 Pmid = P + L * (0.5f * (tM1 + tT1));
+                float  cov  = CloudGlobalCoverage(Pmid);
+                if (cov > CLOUD_COVERAGE_BASE)
+                    tau += cov * TAU_EARLYOUT;
+            }
+        }
+    }
+
     return tau * CLOUD_SUN_TAU_MULT;
 }
 
@@ -691,10 +730,34 @@ float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
     if (cloud_enabled < 0.5f) return 1.0f;
     InitCloudEnuBasis();
 
-    float r = length(Pplanet);
+    float3 L = SafeNormalize(sunDirWS);
+    float  r = length(Pplanet);
     if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM + 1e-3f) return 1.0f;
 
-    float tau = CloudOpticalDepthAlongRay(Pplanet, SafeNormalize(sunDirWS), 50.0f, walltime);
+    float tau = CloudOpticalDepthAlongRay(Pplanet, L, 50.0f, walltime);
+
+    // Far-side cloud shell blocking (planet-scale sunset occlusion).
+    if (tau < 64.0f)
+    {
+        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
+        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM;
+        float tT0, tT1, tM0, tM1;
+        bool hitOuter = RaySphereIntersect(Pplanet, L, Rt, tT0, tT1);
+        bool hitInner = RaySphereIntersect(Pplanet, L, Rm, tM0, tM1);
+        if (hitOuter && tT1 > 0.0f && hitInner && tM0 > 0.0f)
+        {
+            float tG0, tG1;
+            bool hitGround = RaySphereIntersect(Pplanet, L, ATMOS_BOTTOM_RADIUS, tG0, tG1);
+            if (!hitGround || tG0 <= 0.0f)
+            {
+                float3 Pmid = Pplanet + L * (0.5f * (tM1 + tT1));
+                float  cov  = CloudGlobalCoverage(Pmid);
+                if (cov > CLOUD_COVERAGE_BASE)
+                    tau += cov * 64.0f;
+            }
+        }
+    }
+
     return exp(-tau);
 #endif
 }
@@ -937,9 +1000,7 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                 // uses.
                 float3 Pnorm      = SafeNormalize(P);
                 float  sunCosZ    = dot(Pnorm, L);
-                float  cosHorizon = -sqrt(max(0.0f, 1.0f -
-                                              (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS)
-                                              / dot(P, P)));
+                float  cosHorizon = CloudTerrainCosHorizon(P);
                 float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
                 float3 K = sunIrradiance * sunAtmos * earthShadow * CLOUD_ALBEDO;
@@ -1045,9 +1106,7 @@ inline void IntegrateAtmosphereSegment(
         // Disk-fraction earth shadow — smoothstep width = sun radius.
         float3 Pnorm      = SafeNormalize(P);
         float  sunCosZ    = dot(Pnorm, L);
-        float  cosHorizon = -sqrt(max(0.0f, 1.0f -
-                                      (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS)
-                                      / dot(P, P)));
+        float  cosHorizon = CloudTerrainCosHorizon(P);
         float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
         // Cone-jittered cloud shadow on the air column. Without jitter,
@@ -1061,6 +1120,7 @@ inline void IntegrateAtmosphereSegment(
             float3 Lj = SampleConeAroundDir(L, kAtmosShadowConeCos,
                                             float2(r.y, r.z));
             cloudVis = CloudSunVisibilityPlanet(P, Lj);
+            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
             cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
         }
 
@@ -1332,9 +1392,7 @@ float3 EvaluateAtmosphereAndClouds(
 
             float3 Pnorm      = SafeNormalize(P);
             float  sunCosZ    = dot(Pnorm, L);
-            float  cosHorizon = -sqrt(max(0.0f, 1.0f -
-                                          (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS)
-                                          / dot(P, P)));
+            float  cosHorizon = CloudTerrainCosHorizon(P);
             float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
             // Cloud shadow on the air column inside the shell — without
@@ -1347,6 +1405,7 @@ float3 EvaluateAtmosphereAndClouds(
                 float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
                                                      float2(rCone.x, rCone.y));
                 cloudVisAtmos = CloudSunVisibilityPlanet(P, LjAtmos);
+                cloudVisAtmos = pow(max(cloudVisAtmos, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
                 cloudVisAtmos = max(cloudVisAtmos, ATMOS_CLOUD_SHADOW_FLOOR);
             }
 

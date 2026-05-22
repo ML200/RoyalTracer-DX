@@ -33,7 +33,7 @@ void TlasBuilder::init(ID3D12Device5* device, uint32_t max_instances) {
                               HEAP_DEFAULT);
     m_scratch = create_buffer(device, info.ScratchDataSizeInBytes,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                              D3D12_RESOURCE_STATE_COMMON,
                               HEAP_DEFAULT);
 
     const uint64_t descBytes = (uint64_t)m_max * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);

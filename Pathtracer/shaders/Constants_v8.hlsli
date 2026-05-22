@@ -90,7 +90,7 @@
 #define TERRAIN_ROUGHNESS 0.92f
 //Chunk tessellation grid (quads per edge). MUST match planet::CHUNK_GRID
 //(rdn/planet/chunk_mesh.h) - the terrain shader decodes primID against it.
-#define TERRAIN_CHUNK_GRID 128u
+#define TERRAIN_CHUNK_GRID 32u
 
 //====================================
 //ROUGHNESS REUSE GATE

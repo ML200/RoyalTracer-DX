@@ -13,8 +13,14 @@
 //Mirrors ATMOS_BOTTOM_RADIUS (km) * WORLD_UNITS_PER_KM (1000 m/km) from
 //SunSampler_v8.hlsli. The shader's WorldToPlanet pins the world tangent
 //point at world Y=0, so the planet center sits this far below origin along
-//world -Y. Keep in sync if either shader constant changes.
+//world -Y. MUST also equal the planet StreamConfig::planet.radius
+//(rdn/Renderer.cpp) - the terrain mesh, the atmosphere ground and this
+//camera-collision sphere are one body. Keep all three in sync.
 static constexpr float kPlanetRadiusM = 6360.0f * 1000.0f;
+
+//Clearance the camera keeps above the terrain surface when the radial clamp
+//catches it - a thin float so the eye does not sit inside the displaced mesh.
+static constexpr float kCameraClearanceM = 2.0f;
 
 void FlyCamController::InitFromManipulator() {
     glm::vec3 eye, center, up;
@@ -71,15 +77,6 @@ void FlyCamController::Update(float dt) {
     if (InputManager::GetKey(VK_CONTROL)) move -= up;
 
     if (glm::length(move) > 0.0f) eye += glm::normalize(move) * (moveSpeed * dt);
-
-    //Clamp the camera above the analytical planet surface. Done in absolute
-    //coords (eyeAbs vs planetCenter) so the floating origin offset is honoured.
-    //Project radially outward to the surface if the move pushed us inside.
-    const glm::vec3 eyeAbsNew = eye + sceneOrigin;
-    const glm::vec3 delta     = eyeAbsNew - planetCenter;
-    const float     r         = glm::length(delta);
-    if (r < kPlanetRadiusM && r > 1e-3f)
-        eye += delta * ((kPlanetRadiusM - r) / r);
 
     center = eye + m_fwd;
     nv_helpers_dx12::CameraManip.setLookat(eye, center, up);
