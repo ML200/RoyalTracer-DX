@@ -61,7 +61,7 @@ struct StreamConfig {
     float    heightmap_amplitude = 1000.0f;       // procedural fBm peak height (metres)
     float    heightmap_frequency = 1000.0f;        // fBm base frequency on the unit sphere
     float    rebuild_trigger_m = 10.0f;        // camera drift that triggers a ping-pong rebuild
-    uint32_t build_budget = 4;                   // dirty cells built per frame during a rebuild
+    uint32_t build_budget = 2;                   // dirty cells built per frame during a rebuild
     bool     predict = true;                     // aim a rebuild at the predicted swap-time camera
 };
 
@@ -160,18 +160,23 @@ public:
         float    step_ms             = 0.0f;   // EWMA per-frame CPU build cost
         uint32_t last_rebuild_frames = 0;
 
-        //Per-frame builder timing breakdown (ms). step_cpu_ms covers the full
-        //CPU step (tess + BLAS record); tess + blas_record split it. blas_gpu /
-        //tlas_gpu come from GPU timestamps on the compute queue and lag a few
-        //frames (fence-gated readback) - they show 0 until the first slot is
-        //ready. Triangle-budget-only stat: not EWMA'd; raw last-frame values so
-        //hitches stay visible.
-        float    step_cpu_ms        = 0.0f;
-        float    tess_cpu_ms        = 0.0f;
+        //Per-frame timing breakdown (ms). With async tessellation the render
+        //thread's per-frame rebuild cost IS blas_record_cpu_ms - tess + alloc
+        //moved to the worker pool. plan_ms is the one-off plan-job duration
+        //(also off-thread). blas_gpu / tlas_gpu are GPU timestamps on the
+        //planet compute queue, fence-gated readback (lag a few frames). Raw
+        //last-frame values so hitches stay visible.
         float    blas_record_cpu_ms = 0.0f;
+        float    plan_ms            = 0.0f;
         float    blas_gpu_ms        = 0.0f;
         float    tlas_gpu_ms        = 0.0f;
-        uint32_t cells_recorded     = 0;   // cells recorded by this frame's step()
+
+        //Per-cell async-pipeline counts. cells_pending + cells_ready +
+        //cells_recorded_total + cells_built = dirty_total in steady state.
+        uint32_t cells_pending        = 0;   // tess in flight (workers or queued)
+        uint32_t cells_ready          = 0;   // tess done, BLAS not yet recorded
+        uint32_t cells_recorded       = 0;   // BLAS recorded THIS frame
+        uint32_t cells_recorded_total = 0;   // BLAS recorded, fence pending
     };
     const Stats& stats() const { return m_stats; }
 

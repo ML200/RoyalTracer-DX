@@ -1219,12 +1219,12 @@ void Renderer::RenderFrame() {
         }
         SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
 
-        // PLANET_INTEGRATION: per-second planet readout - the LIVE generation
-        // and any in-flight ping-pong rebuild (dirty = cells built / total).
-        // Timings are last-frame snapshots: cpu_ms[] is the most recent
-        // builder.step(); gpu_ms[] is from a fence-gated timestamp readback a
-        // few frames behind. Both read 0 on idle frames - the printed value is
-        // whatever frame happened to land at the second boundary.
+        // PLANET_INTEGRATION: per-second planet readout. With async generation
+        // the render-thread cost during a rebuild is just blas_record_cpu_ms;
+        // plan + tess + alloc all happen on the worker pool. plan_ms is the
+        // one-off plan-job duration (off-thread). pipe[p/r/b/B] = cells in
+        // Pending / Ready / BLAS-recorded-fence-pending / Built. gpu_ms[] is
+        // a fence-gated timestamp readback that lags ~4 frames.
         const auto& ps = m_planet.stats();
         std::wcout << L"[planet] built=" << ps.built
                    << L" leaves=" << ps.leaf_count
@@ -1235,9 +1235,12 @@ void Renderer::RenderFrame() {
                    << L" dirty=" << ps.dirty_built << L"/" << ps.dirty_total
                    << L" est=" << ps.rebuild_frames_est << L"f"
                    << L" rec=" << ps.cells_recorded
-                   << L" cpu_ms[step=" << ps.step_cpu_ms
-                   << L" tess="        << ps.tess_cpu_ms
-                   << L" blas_rec="    << ps.blas_record_cpu_ms << L"]"
+                   << L" pipe[p=" << ps.cells_pending
+                   << L" r="     << ps.cells_ready
+                   << L" b="     << ps.cells_recorded_total
+                   << L" B="     << ps.dirty_built << L"]"
+                   << L" cpu_ms[blas_rec=" << ps.blas_record_cpu_ms
+                   << L" plan="            << ps.plan_ms << L"]"
                    << L" gpu_ms[blas=" << ps.blas_gpu_ms
                    << L" tlas="        << ps.tlas_gpu_ms << L"]"
                    << std::endl;

@@ -7,10 +7,9 @@
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 namespace {
-//cells per batch when building the first generation synchronously at init.
-constexpr uint32_t FIRST_BUILD_BATCH = 32;
 //frames a retired generation is kept before release - long enough that no
 //in-flight TLAS still references its BLASes.
 constexpr uint32_t RETIRE_FRAMES = 8;
@@ -147,18 +146,25 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
         m_retiring.resize(w);
     }
 
-    //--- first generation: build synchronously (an init-time stall is fine) ---
+    //--- first generation: build synchronously (an init-time stall is fine).
+    //Uses the SAME async API but drains it on this thread: poll the plan job,
+    //then record + submit + cpu-wait + reclaim in a loop until every cell is
+    //Built. Spins briefly when nothing is Ready yet (workers still working).
     if (!m_haveLive) {
-        m_builder.begin(m_device, make_params(), cam, nullptr);
+        m_builder.begin(m_device, make_params(), cam, nullptr, m_heightmap, m_workers);
         while (!m_builder.done()) {
+            m_builder.poll();                            // plan -> tess fanout
             m_ctx->ResetPlanetLists();
             const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
-            m_builder.step(m_device, m_heightmap, m_workers,
-                           m_ctx->ComputeList(), FIRST_BUILD_BATCH);
-            const uint64_t cv = m_ctx->SubmitPlanetCompute(copyVal);
-            m_builder.on_submitted(cv);
+            //First-build path: no cap (drain everything ready) - it's an
+            //init-time stall anyway, throughput beats latency.
+            const uint32_t recorded = m_builder.record_ready_blas(m_ctx->ComputeList(), 0u);
+            const uint64_t cv       = m_ctx->SubmitPlanetCompute(copyVal);
+            if (recorded > 0) m_builder.on_submitted(cv);
             m_ctx->PlanetComputeCpuWait(cv);
             m_builder.reclaim(m_ctx->PlanetComputeCompleted());
+            if (recorded == 0)
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
         }
         m_live = m_builder.take();
         assign_stable_ids(m_live);
@@ -168,6 +174,9 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
                    << L" cells, " << m_live.leaf_count << L" leaves" << std::endl;
         return;
     }
+
+    //--- advance the builder's state machine (plan-done -> fan out tess jobs) ---
+    m_builder.poll();
 
     //--- a finished rebuild swaps in as the new LIVE generation ---
     if (m_builder.active() && m_builder.done()) {
@@ -194,7 +203,11 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
             }
             CameraView predCam = cam;
             predCam.position_world = predicted;
-            m_builder.begin(m_device, make_params(), predCam, &m_live);
+            //async begin: enqueues the plan job, returns immediately. The
+            //next poll() (above, next frame) sees plan_done and fans out the
+            //per-cell tess jobs onto the worker pool.
+            m_builder.begin(m_device, make_params(), predCam, &m_live,
+                            m_heightmap, m_workers);
             m_rebuildTargetPos = predicted;
             m_triggerFrame     = m_frame;
         }
@@ -231,21 +244,22 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 0);
 
-    //--- advance an in-flight rebuild: tessellate + record this frame's budget
-    //of dirty cells (their BLAS builds run async on the compute queue). ---
+    //--- record BLAS builds for every cell whose tess is complete. The
+    //tess + alloc happened on worker threads; this is the only render-thread
+    //rebuild cost. ---
     uint32_t recorded = 0;
-    if (m_builder.active() && !m_builder.all_recorded()) {
+    if (m_builder.active()) {
         const auto t0 = std::chrono::high_resolution_clock::now();
-        recorded = m_builder.step(m_device, m_heightmap, m_workers, cl, m_cfg.build_budget);
+        //build_budget caps BLAS-per-frame GPU work. With async tess, every cell
+        //finishes around the same time; without a cap one frame would record
+        //dozens of BLAS builds and the graphics queue (waiting the compute
+        //fence) stalls for all of them.
+        recorded = m_builder.record_ready_blas(cl, m_cfg.build_budget);
         const auto t1 = std::chrono::high_resolution_clock::now();
-        const float step_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-        m_throughput.on_step(step_ms);
-        m_stats.step_cpu_ms        = step_ms;
-        m_stats.tess_cpu_ms        = m_builder.tess_ms();
-        m_stats.blas_record_cpu_ms = m_builder.blas_record_ms();
+        const float blas_rec_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
+        m_throughput.on_step(blas_rec_ms);
+        m_stats.blas_record_cpu_ms = blas_rec_ms;
     } else {
-        m_stats.step_cpu_ms        = 0.0f;
-        m_stats.tess_cpu_ms        = 0.0f;
         m_stats.blas_record_cpu_ms = 0.0f;
     }
     m_stats.cells_recorded = recorded;
@@ -262,8 +276,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 2);
 
-    //Resolve the 3 timestamps into this slot of the readback buffer. The
-    //readback is in COPY_DEST permanently (readback-heap rule) - no transitions.
+    //Resolve the 3 timestamps into this slot of the readback buffer.
     cl->ResolveQueryData(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                          slot * TS_PER_SLOT, TS_PER_SLOT,
                          m_tsReadback.Get(),
@@ -276,14 +289,27 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     m_tsRing[slot] = TsSlot{ cv, true };
     m_tsWrite++;
 
+    //--- publish stats ---
     m_stats.built          = m_haveLive;
     m_stats.rebuilding     = m_builder.active();
     m_stats.leaf_count     = m_live.leaf_count;
     m_stats.cell_count     = (uint32_t)m_live.cells.size();
     m_stats.triangle_count = m_live.triangle_count;
     m_stats.tlas_instances = m_tlas.instance_count();
-    m_stats.dirty_total    = m_builder.active() ? m_builder.dirty_total() : 0;
-    m_stats.dirty_built    = m_builder.active() ? m_builder.dirty_built() : 0;
+    if (m_builder.active()) {
+        m_stats.dirty_total          = m_builder.dirty_total();
+        m_stats.dirty_built           = m_builder.dirty_built();
+        m_stats.cells_pending         = m_builder.dirty_tessellating();
+        m_stats.cells_ready           = m_builder.dirty_ready();
+        m_stats.cells_recorded_total  = m_builder.dirty_recorded();
+        m_stats.plan_ms               = m_builder.plan_ms();
+    } else {
+        m_stats.dirty_total           = 0;
+        m_stats.dirty_built           = 0;
+        m_stats.cells_pending         = 0;
+        m_stats.cells_ready           = 0;
+        m_stats.cells_recorded_total  = 0;
+    }
     m_stats.rebuild_frames_est  = m_throughput.rebuild_frames;
     m_stats.step_ms             = m_throughput.step_ms;
     m_stats.last_rebuild_frames = m_throughput.last_rebuild_frames;

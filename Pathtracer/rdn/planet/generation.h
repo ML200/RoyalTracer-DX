@@ -5,20 +5,36 @@
 //A Generation is one complete, renderable planet state: a restricted-quadtree
 //leaf cut, its BLAS cell cut, and one built BLAS per cell.
 //
-//GenerationBuilder builds a Generation incrementally:
-//  begin()        - compute the target leaf + cell cut; against a LIVE
-//                   generation, diff it (clean cells reuse the LIVE BLAS,
-//                   dirty cells are queued).
-//  step()         - tessellate + record the BLAS builds for a budget of dirty
-//                   cells onto a compute command list (parallel CPU tessellation).
-//  on_submitted() - the just-recorded batch executes under a compute fence.
-//  reclaim()      - free a batch's transient buffers once its fence retires.
-//  done() -> take() - yields the finished Generation.
+//GenerationBuilder builds a Generation FULLY ASYNC w.r.t. the render thread:
 //
-//This drives both the first generation (synchronous: step to completion with
-//CPU waits) and ping-pong rebuilds (one step per frame, fence-polled).
+//  begin()        - enqueue a 'plan' job (LOD select + cell cut + diff against
+//                   LIVE) onto the worker pool. Returns IMMEDIATELY.
+//  poll()         - render-thread tick: when the plan job finishes, enqueues
+//                   one tessellation job per dirty cell (each allocates its
+//                   own upload buffers + tessellates + sets state=Ready).
+//  record_ready_blas() - render-thread call inside submit_work: for every
+//                   dirty cell with state==Ready, records the BLAS build onto
+//                   the planet compute list. This is the only synchronous
+//                   render-thread CPU work for a rebuild.
+//  on_submitted() - the just-recorded batch executes under a compute fence.
+//  reclaim()      - cells whose fence retired transition Ready->Built;
+//                   recorded-batch transient buffers are freed.
+//  done() -> take() - every dirty cell built, full generation yields.
+//
+//The render thread never tessellates and never allocates upload buffers for
+//terrain - those move to the worker pool. The render thread only records BLAS
+//commands and the unified TLAS, which is sub-ms even with hundreds of cells.
+//
+//Memory-ordering note: tess jobs write to UPLOAD-heap (write-combining) memory
+//and signal completion via an atomic state flag. An _mm_sfence() before the
+//state store flushes the WC writes so the render thread (which sees Ready
+//via acquire-load) is guaranteed they reached the heap before recording a
+//BLAS build that references them. The earlier async-tess attempt failed
+//without this fence (GPU corruption).
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 #include "coordinate_system.h"
 #include "cube_sphere.h"
@@ -58,57 +74,106 @@ struct Generation {
 
 class GenerationBuilder {
 public:
-    //begin a build for this camera. live==nullptr -> first generation (every
-    //cell dirty); else diff against live and reuse its clean cells.
+    //Per-rebuild state. Streaming = plan finished, tess jobs in flight, BLAS
+    //builds being recorded as cells complete; the rebuild is 'done' when every
+    //dirty cell has retired its BLAS fence (state == Built).
+    enum class State : uint8_t { Idle, Planning, Streaming };
+
+    //Begin an async build. Enqueues the plan job on 'workers'; returns
+    //immediately. 'live' is captured by pointer and must outlive the build
+    //(the orchestrator only swaps LIVE on done()). 'heightmap' is captured
+    //similarly for the tess jobs.
     void begin(ID3D12Device5* device, const GenerationParams& params,
-               const CameraView& cam, const Generation* live);
+               const CameraView& cam, const Generation* live,
+               const IHeightmapSource& heightmap, WorkerPool& workers);
 
-    //tessellate (parallel) + record BLAS builds for up to 'budget' not-yet-built
-    //dirty cells onto compute_cl. Returns the number of cells recorded.
-    uint32_t step(ID3D12Device5* device, const IHeightmapSource& heightmap,
-                  WorkerPool& workers, ID3D12GraphicsCommandList4* compute_cl,
-                  uint32_t budget);
+    //Render-thread tick: when the plan job finishes, transitions Planning ->
+    //Streaming and enqueues one tess job per dirty cell. Cheap; safe to call
+    //every frame.
+    void poll();
 
-    //the batch step() just recorded executes under this compute-fence value.
+    //Record BLAS builds onto compute_cl for every dirty cell with state==Ready
+    //(tess complete, BLAS not yet recorded), up to 'budget' cells. Returns
+    //cells recorded. Uses one shared scratch buffer per call; UAV barriers
+    //serialise it. The call's transient buffers are sealed into a Batch by
+    //on_submitted(). budget=0 means "no cap" (drain everything Ready).
+    //
+    //Rate-limiting is GPU-side throughput control: tess jobs all finish
+    //roughly together (parallel workers), so without a cap the render thread
+    //records dozens of BLAS builds at once and the planet compute submission
+    //balloons - the graphics queue waits that whole submission via the planet
+    //compute fence. A small budget paces the BLAS work across frames.
+    uint32_t record_ready_blas(ID3D12GraphicsCommandList4* compute_cl,
+                               uint32_t budget);
+
+    //The just-recorded batch executes under this compute-fence value.
     void on_submitted(uint64_t compute_fence);
-    //free transient buffers of batches whose build fence has retired.
+    //Cells whose batch fence retired transition Ready -> Built; the batch's
+    //transient upload/scratch buffers are freed (the GPU is done reading them).
     void reclaim(uint64_t completed_fence);
 
-    bool     active()       const { return m_active; }
-    bool     all_recorded() const { return m_cursor >= (uint32_t)m_dirty.size(); }
-    bool     done()         const { return m_active && m_built >= (uint32_t)m_dirty.size(); }
+    State    state()        const { return m_state; }
+    bool     active()       const { return m_state != State::Idle; }
+    bool     all_recorded() const;
+    bool     done()         const;
     uint32_t dirty_total()  const { return (uint32_t)m_dirty.size(); }
-    uint32_t dirty_built()  const { return m_built; }
+    uint32_t dirty_built()  const;
+    uint32_t dirty_ready()  const;               // tess done, BLAS not yet recorded
+    uint32_t dirty_recorded() const;             // BLAS recorded, fence pending
+    uint32_t dirty_tessellating() const;         // workers still tessellating
 
-    //Last step()'s CPU timing breakdown (ms). 'tess' covers per-cell upload-buffer
-    //allocate/map + scratch alloc + parallel tessellation; 'blas_record' covers
-    //the BLAS-descriptor build + BuildRaytracingAccelerationStructure record loop.
-    float    tess_ms()        const { return m_lastTessMs; }
+    //Last record_ready_blas() duration (ms); render-thread CPU cost per frame
+    //during a rebuild. plan_ms() is the most recent plan-job duration (one
+    //per rebuild). Tessellation runs on workers in parallel with the render
+    //thread, so there is no per-frame render-thread tess cost to report.
     float    blas_record_ms() const { return m_lastBlasRecordMs; }
+    float    plan_ms()        const { return m_planMs.load(std::memory_order_acquire); }
 
-    Generation take();                           // move out the finished generation; ends the build
+    Generation take();                           // ends the build; yields the generation
 
 private:
-    bool             m_active = false;
+    void plan_job_(GenerationParams params, CameraView cam,
+                   const Generation* live);
+    void tess_job_(uint32_t dirty_idx);
+
+    State            m_state = State::Idle;
     Generation       m_gen;
     GenerationParams m_params;
-    std::vector<uint32_t> m_dirty;               // cell indices still to build
-    uint32_t         m_cursor = 0;               // next m_dirty[] entry to record
-    uint32_t         m_built  = 0;               // dirty cells whose build fence retired
+    ID3D12Device5*           m_device    = nullptr;
+    const IHeightmapSource*  m_heightmap = nullptr;
+    WorkerPool*              m_workers   = nullptr;
 
-    std::vector<uint64_t> m_resultSize;          // BLAS result size per geometry count K
+    std::atomic<bool>  m_planDone{false};         // plan job -> render thread
+    std::atomic<float> m_planMs{0.0f};            // most recent plan duration
+
+    std::vector<uint32_t> m_dirty;                // indices into m_gen.cells
+    std::vector<uint64_t> m_resultSize;           // BLAS result size per geometry count K
     uint64_t              m_maxScratch = 0;
 
+    //Per-dirty-cell async-build state. Lifetime: one rebuild. Heap-allocated
+    //in poll() once the plan completes so the atomic states aren't moved.
+    struct CellBuild {
+        std::atomic<uint8_t>   state{0};          // 0=Pending 1=Ready 2=Recorded 3=Built
+        ComPtr<ID3D12Resource> vtx;
+        ComPtr<ID3D12Resource> idx;
+        uint8_t*               vp = nullptr;      // mapped vtx pointer
+        uint8_t*               ip = nullptr;      // mapped idx pointer
+    };
+    std::unique_ptr<CellBuild[]> m_cellBuilds;
+    uint32_t                     m_cellBuildCount = 0;
+
+    //A Batch is one frame's record_ready_blas() output: the cells recorded
+    //together and their transient (vtx/idx/scratch) buffers. The buffers stay
+    //alive until the batch's fence retires; the cells transition to Built
+    //then too.
     struct Batch {
         uint64_t fence = 0;
-        uint32_t count = 0;                      // dirty cells this batch built
-        std::vector<ComPtr<ID3D12Resource>> transient;   // upload + scratch, freed on fence
+        std::vector<uint32_t> recordedDirty;      // dirty_idx values
+        std::vector<ComPtr<ID3D12Resource>> transients;
     };
-    std::vector<Batch> m_batches;                // recorded, fence pending
-    Batch              m_pending;                // accumulated by step(), sealed by on_submitted()
+    std::vector<Batch> m_batches;                 // recorded, fence pending
+    Batch              m_pending;                 // accumulating; sealed by on_submitted()
 
-    //per-step CPU timing breakdown (ms); published via tess_ms / blas_record_ms.
-    float              m_lastTessMs       = 0.0f;
     float              m_lastBlasRecordMs = 0.0f;
 };
 
