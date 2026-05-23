@@ -39,8 +39,13 @@ void Editor::Shutdown() {
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
                   PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
                   ReSTIRSettings& restir, nrc::Settings& nrc,
-                  float fps, const FrameStats& stats)
+                  float fps, const FrameStats& stats,
+                  const planet::StreamOrchestrator::Stats& planetStats)
 {
+    //Push the planet perf sample every frame, even when hidden, so opening
+    //the panel doesn't show an empty graph. Pausing freezes the rings.
+    if (!m_planetHist.paused) m_planetHist.push(planetStats, stats);
+
     if (!m_visible) return;
 
     ImGui_ImplDX12_NewFrame();
@@ -58,6 +63,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
+            ImGui::MenuItem("Planet Perf",     nullptr, &m_showPlanetPerf);
             ImGui::EndMenu();
         }
         ImGui::Separator();
@@ -91,6 +97,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showClouds)    DrawCloudPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene, camera);
+    if (m_showPlanetPerf) DrawPlanetPerfPanel(planetStats, stats, fps);
 
     // Material re-upload happens via dirty flag checked in Renderer
     ImGui::Render();
@@ -1250,3 +1257,181 @@ void Editor::DrawCloudPanel(Camera& camera) {
 
     ImGui::End();
 }
+
+//====================================
+//PLANET PERFORMANCE
+//====================================
+//Per-frame ring sample + the panel that visualises it. Frame pacing (total
+//frame CPU vs GPU), planet CPU/GPU breakdowns, and the async pipeline
+//(Pending/Ready/BLAS-recorded/Built cell counts) all plotted as wrapping
+//PlotLines so you can spot spikes at a glance.
+
+void Editor::PlanetPerfHistory::push(const planet::StreamOrchestrator::Stats& ps,
+                                     const FrameStats& fs)
+{
+    const int i = write;
+    frame_total_ms    [i] = fs.cpuFrameMs;
+    frame_gpu_ms      [i] = fs.gpuMs;
+    planet_cpu_ms     [i] = ps.blas_record_cpu_ms;
+    planet_plan_ms    [i] = ps.plan_ms;
+    planet_blas_gpu_ms[i] = ps.blas_gpu_ms;
+    planet_tlas_gpu_ms[i] = ps.tlas_gpu_ms;
+    cells_recorded    [i] = (float)ps.cells_recorded;
+    pipe_pending      [i] = (float)ps.cells_pending;
+    pipe_ready        [i] = (float)ps.cells_ready;
+    pipe_blas_pending [i] = (float)ps.cells_recorded_total;
+    pipe_built        [i] = (float)ps.dirty_built;
+
+    write  = (write + 1) % N;
+    if (filled < N) ++filled;
+}
+
+namespace {
+//Largest sample in a wrapping ring; used for auto-scale labels.
+inline float ring_max(const float* v, int n) {
+    float m = 0.0f;
+    for (int i = 0; i < n; ++i) if (v[i] > m) m = v[i];
+    return m;
+}
+inline float ring_avg(const float* v, int n) {
+    if (n == 0) return 0.0f;
+    double s = 0.0; for (int i = 0; i < n; ++i) s += v[i];
+    return (float)(s / n);
+}
+//Last sample written into a wrapping ring (i.e. the most recent value).
+inline float ring_last(const float* v, int write, int filled) {
+    if (filled == 0) return 0.0f;
+    const int idx = (write + Editor::PlanetPerfHistory::N - 1)
+                  % Editor::PlanetPerfHistory::N;
+    return v[idx];
+}
+
+//Plot a single metric with a min/max/avg/now readout next to it. Auto-scaled
+//to [0, max(samples)] with a small headroom so flat traces don't look like
+//noise on the y axis. 'offset' is the ring's OLDEST sample (= write index).
+void plot_metric(const char* label, const float* values, int count, int offset,
+                 int write, const char* unit, ImVec4 colour)
+{
+    const float vmax = ring_max(values, count);
+    const float vavg = ring_avg(values, count);
+    const float vnow = ring_last(values, write, count);
+    const float scale_max = vmax > 0.0f ? vmax * 1.1f : 1.0f;
+
+    char overlay[64];
+    snprintf(overlay, sizeof(overlay), "now %.3f  avg %.3f  max %.3f %s",
+             vnow, vavg, vmax, unit);
+
+    ImGui::PushStyleColor(ImGuiCol_PlotLines, colour);
+    ImGui::PlotLines(label, values, count, offset, overlay,
+                     0.0f, scale_max, ImVec2(-1, 60));
+    ImGui::PopStyleColor();
+}
+} // namespace
+
+void Editor::DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps,
+                                 const FrameStats& fs, float fps)
+{
+    ImGui::SetNextWindowPos(ImVec2(20, 60),   ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560, 760), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Planet Performance", &m_showPlanetPerf)) {
+        ImGui::End();
+        return;
+    }
+
+    //ImGui::PlotLines wraps a ring buffer when 'offset' = oldest-sample index.
+    //When the ring isn't yet full, the oldest is index 0; once full, it's the
+    //write cursor.
+    const int   count  = m_planetHist.filled;
+    const int   offset = (m_planetHist.filled < PlanetPerfHistory::N) ? 0
+                                                                      : m_planetHist.write;
+    const int   write  = m_planetHist.write;
+
+    //--- top bar: live readout + pause ---
+    ImGui::Text("%.1f fps  (%.2f ms frame)", fps, fps > 0 ? 1000.0f / fps : 0.0f);
+    ImGui::SameLine();
+    ImGui::Checkbox("Pause", &m_planetHist.paused);
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        m_planetHist = PlanetPerfHistory{};
+    }
+    ImGui::Separator();
+
+    //--- LIVE generation state (static numbers, no graph) ---
+    ImGui::SeparatorText("LIVE generation");
+    ImGui::Text("built=%d  cells=%u  leaves=%u  tris=%llu  tlas_instances=%u",
+                (int)ps.built, ps.cell_count, ps.leaf_count,
+                (unsigned long long)ps.triangle_count, ps.tlas_instances);
+
+    ImGui::SeparatorText("Rebuild");
+    if (ps.rebuilding) {
+        ImGui::Text("ACTIVE  dirty=%u/%u  recorded=%u  recorded_pending=%u  ready=%u  pending=%u",
+                    ps.dirty_built, ps.dirty_total,
+                    ps.cells_recorded, ps.cells_recorded_total,
+                    ps.cells_ready, ps.cells_pending);
+    } else {
+        ImGui::TextDisabled("idle  (last rebuild %u frames, est %.1f f)",
+                            ps.last_rebuild_frames, ps.rebuild_frames_est);
+    }
+
+    //--- frame pacing ---
+    ImGui::SeparatorText("Frame pacing");
+    plot_metric("##frame_cpu", m_planetHist.frame_total_ms, count, offset, write,
+                "ms", ImVec4(0.40f, 0.85f, 0.40f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("CPU frame");
+    plot_metric("##frame_gpu", m_planetHist.frame_gpu_ms,   count, offset, write,
+                "ms", ImVec4(0.95f, 0.55f, 0.20f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("GPU frame");
+
+    //--- planet CPU (render-thread cost: BLAS recording + plan job) ---
+    ImGui::SeparatorText("Planet CPU (render thread)");
+    plot_metric("##blas_rec_cpu", m_planetHist.planet_cpu_ms, count, offset, write,
+                "ms", ImVec4(0.30f, 0.70f, 1.00f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("blas_record");
+    ImGui::TextDisabled("plan job runs on the worker pool - this is the "
+                        "render thread cost of recording BLAS commands.");
+
+    //--- plan job (worker thread - one shot per rebuild) ---
+    ImGui::SeparatorText("Planet plan job (worker thread)");
+    plot_metric("##plan", m_planetHist.planet_plan_ms, count, offset, write,
+                "ms", ImVec4(0.85f, 0.40f, 0.85f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("plan_ms");
+    ImGui::TextDisabled("non-zero only on the frame after a rebuild was "
+                        "triggered (the plan job's LOD select + cell cut + "
+                        "diff). All other frames read the cached last value.");
+
+    //--- planet GPU (BLAS builds + TLAS rebuild on the compute queue) ---
+    ImGui::SeparatorText("Planet GPU (compute queue)");
+    plot_metric("##blas_gpu", m_planetHist.planet_blas_gpu_ms, count, offset, write,
+                "ms", ImVec4(1.00f, 0.50f, 0.50f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("BLAS builds");
+    plot_metric("##tlas_gpu", m_planetHist.planet_tlas_gpu_ms, count, offset, write,
+                "ms", ImVec4(1.00f, 0.85f, 0.30f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("TLAS rebuild");
+    ImGui::TextDisabled("GPU timestamps lag ~4 frames (fence-gated readback).");
+
+    //--- async pipeline state (cells in each stage) ---
+    ImGui::SeparatorText("Async pipeline (cells per stage)");
+    plot_metric("##pending", m_planetHist.pipe_pending, count, offset, write,
+                "", ImVec4(0.60f, 0.60f, 0.60f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("Pending  (tess in flight)");
+    plot_metric("##ready",   m_planetHist.pipe_ready,   count, offset, write,
+                "", ImVec4(0.30f, 0.80f, 1.00f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("Ready    (waiting for BLAS record)");
+    plot_metric("##blasrec", m_planetHist.pipe_blas_pending, count, offset, write,
+                "", ImVec4(1.00f, 0.55f, 0.30f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("Recorded (BLAS fence pending)");
+    plot_metric("##built",   m_planetHist.pipe_built,   count, offset, write,
+                "", ImVec4(0.40f, 0.95f, 0.40f, 1.0f));
+    ImGui::SameLine(); ImGui::TextUnformatted("Built    (BLAS done)");
+
+    //--- BLAS recordings per frame (throughput at the render-thread side) ---
+    ImGui::SeparatorText("BLAS recordings per frame");
+    plot_metric("##rec_count", m_planetHist.cells_recorded, count, offset, write,
+                "cells", ImVec4(0.80f, 0.80f, 0.30f, 1.0f));
+    ImGui::TextDisabled("capped by StreamConfig::build_budget - controls how "
+                        "many BLAS the compute queue does per frame.");
+
+    ImGui::End();
+}
+

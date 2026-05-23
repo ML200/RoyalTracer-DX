@@ -55,13 +55,13 @@ struct StreamConfig {
     uint32_t max_triangles = 3000000u;           // planet-wide triangle budget; the
                                                  // quadtree auto-tunes its leaf cut
                                                  // to the nearest fit at or under it
-    uint32_t max_leaves_per_cell = 64;            // BLAS triangle budget (leaves per cell)
+    uint32_t max_leaves_per_cell = 128;            // BLAS triangle budget (leaves per cell)
     double   max_cell_radius_m = 1e30;           // FP32-precision cap on a cell's extent
     uint32_t max_scene_instances = 4096;         // unified-TLAS scene-instance allowance
     float    heightmap_amplitude = 1000.0f;       // procedural fBm peak height (metres)
     float    heightmap_frequency = 1000.0f;        // fBm base frequency on the unit sphere
     float    rebuild_trigger_m = 10.0f;        // camera drift that triggers a ping-pong rebuild
-    uint32_t build_budget = 2;                   // dirty cells built per frame during a rebuild
+    uint32_t build_budget = 1;                   // dirty cells built per frame during a rebuild
     bool     predict = true;                     // aim a rebuild at the predicted swap-time camera
 };
 

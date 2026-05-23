@@ -9,6 +9,7 @@
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
 #include "../NRC/NrcLayout.h"
+#include "../planet/stream_orchestrator.h"
 #include "../../engine/Camera/FlyCamController.h"
 
 #include "../lib/imgui/imgui.h"
@@ -26,7 +27,8 @@ public:
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
               PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
               ReSTIRSettings& restir, nrc::Settings& nrc,
-              float fps, const FrameStats& stats);
+              float fps, const FrameStats& stats,
+              const planet::StreamOrchestrator::Stats& planetStats);
     void Render(ID3D12GraphicsCommandList* cmdList);
 
     bool IsVisible() const { return m_visible; }
@@ -42,6 +44,8 @@ private:
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
     void DrawCloudPanel(Camera& camera);
+    void DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps,
+                             const FrameStats& fs, float fps);
 
     bool m_visible        = true;
     bool m_showScene      = false;
@@ -53,6 +57,7 @@ private:
     bool m_showSun        = false;
     bool m_showClouds     = false;
     bool m_showMaterials  = false;
+    bool m_showPlanetPerf = false;
     int  m_selectedModel  = -1;
     int  m_selectedMat    = -1;
 
@@ -62,4 +67,39 @@ private:
 
     //persisted name filter, case-insensitive substring, digits match index
     char m_matFilter[128] = {0};
+
+public:
+    //====================================
+    //PLANET PERF HISTORY
+    //====================================
+    //Ring buffer of per-frame samples for the planet performance panel.
+    //ImGui::PlotLines takes (values, count, offset) - 'offset' is the index
+    //of the OLDEST sample, so the plot wraps naturally. Sized for a few
+    //seconds at 60-240 fps (= 256 frames, ~1-4 seconds).
+    //
+    //Made public so the free plot helpers in Editor.cpp can reference 'N';
+    //the member m_planetHist below stays private.
+    struct PlanetPerfHistory {
+        static constexpr int N = 256;
+        int      write  = 0;                 // next slot to overwrite
+        int      filled = 0;                 // samples pushed so far (<= N)
+        bool     paused = false;              // freeze the rings for inspection
+
+        float frame_total_ms     [N] = {};   // FrameStats::cpuFrameMs
+        float frame_gpu_ms       [N] = {};   // FrameStats::gpuMs
+        float planet_cpu_ms      [N] = {};   // Stats::blas_record_cpu_ms
+        float planet_plan_ms     [N] = {};   // Stats::plan_ms (one shot per rebuild)
+        float planet_blas_gpu_ms [N] = {};   // Stats::blas_gpu_ms
+        float planet_tlas_gpu_ms [N] = {};   // Stats::tlas_gpu_ms
+        float cells_recorded     [N] = {};   // Stats::cells_recorded per frame
+        float pipe_pending       [N] = {};   // Stats::cells_pending
+        float pipe_ready         [N] = {};   // Stats::cells_ready
+        float pipe_blas_pending  [N] = {};   // Stats::cells_recorded_total
+        float pipe_built         [N] = {};   // Stats::dirty_built
+
+        void push(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs);
+    };
+
+private:
+    PlanetPerfHistory m_planetHist;
 };

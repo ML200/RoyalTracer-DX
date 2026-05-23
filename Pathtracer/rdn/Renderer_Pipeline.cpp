@@ -666,12 +666,21 @@ void Renderer::CreateRaytracingOutputBuffer() {
 
 void Renderer::CreatePathStateBuffer() {
     ResourceFactory rf(m_ctx.Device());
+    //resolution-DEPENDENT: always recreate.
     m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
+
     // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),
     // [20..31]=pad. 32 B keeps the UAV 16 B aligned for D3D12. Cleared once at
     // create; finalize shader manages it after that.
-    m_autoExposeBuffer = rf.CreateUAVBuffer(32, L"AutoExposeState");
+    //
+    //NOT resolution-dependent and holds persistent auto-exposure history that
+    //the finalize shader integrates over time. Reallocating on resize a) wipes
+    //the exposure (=> a re-converge flash), and b) leaves the descriptor at
+    //slot 63 pointing at the freed buffer (-> #1042 stale-resource crash).
+    //Guard so this only runs on the first call from InitSceneGPU.
+    if (!m_autoExposeBuffer)
+        m_autoExposeBuffer = rf.CreateUAVBuffer(32, L"AutoExposeState");
 }
 
 //====================================
@@ -1180,39 +1189,59 @@ void Renderer::CreateStreamingCompactionBuffers() {
     ResourceFactory rf(dev);
     UINT totalPx = GetWidth() * GetHeight();
 
+    //resolution-DEPENDENT: always recreate at the new screen size. OnResize
+    //has already Reset()'d these, so the old VRAM is freed before we alloc.
     for (int i = 0; i < MAX_STACKS; ++i)
         m_stackBuffers[i] = rf.CreateUAVBuffer(totalPx * 8,
             L"PixelStack_" + std::to_wstring(i));
 
-    m_globalCounterBuffer = rf.CreateUAVBuffer(MAX_STACKS * sizeof(uint32_t), L"GlobalCounters");
-    m_indirectArgsBuffer  = rf.CreateUAVBuffer(
-        MAX_INDIRECT_COMMANDS * sizeof(D3D12_DISPATCH_ARGUMENTS), L"IndirectArgs");
+    //Everything below is sized by compile-time constants (MAX_STACKS,
+    //MAX_INDIRECT_COMMANDS, SORT_BUCKETS) and DOES NOT depend on the screen
+    //resolution. Recreating them on resize silently invalidates their cached
+    //descriptors at slots 33/34/52-54 (since RebuildResolutionDependentDescriptors
+    //doesn't refresh them) -> 'stale or released resource' crash on next bind.
+    //Skip the recreate path on resize by guarding on the ComPtr; the first
+    //call (from InitSceneGPU) populates them, subsequent calls are no-ops.
+
+    if (!m_globalCounterBuffer)
+        m_globalCounterBuffer = rf.CreateUAVBuffer(MAX_STACKS * sizeof(uint32_t), L"GlobalCounters");
+
+    if (!m_indirectArgsBuffer)
+        m_indirectArgsBuffer = rf.CreateUAVBuffer(
+            MAX_INDIRECT_COMMANDS * sizeof(D3D12_DISPATCH_ARGUMENTS), L"IndirectArgs");
 
     // Zero buffer (upload)
-    { auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-      auto bd = CD3DX12_RESOURCE_DESC::Buffer(MAX_STACKS * sizeof(uint32_t));
-      ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
-          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_zeroBuffer)));
-      void* p; m_zeroBuffer->Map(0, nullptr, &p);
-      memset(p, 0, MAX_STACKS * sizeof(uint32_t));
-      m_zeroBuffer->Unmap(0, nullptr); }
+    if (!m_zeroBuffer) {
+        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(MAX_STACKS * sizeof(uint32_t));
+        ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_zeroBuffer)));
+        void* p; m_zeroBuffer->Map(0, nullptr, &p);
+        memset(p, 0, MAX_STACKS * sizeof(uint32_t));
+        m_zeroBuffer->Unmap(0, nullptr);
+    }
 
     // Sort buffers
-    m_sortCountBuffer  = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortCount");
-    m_sortOffsetBuffer = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortOffset");
-    m_sortBoundsBuffer = rf.CreateUAVBuffer(8 * sizeof(uint32_t), L"SortBounds");
+    if (!m_sortCountBuffer)
+        m_sortCountBuffer  = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortCount");
+    if (!m_sortOffsetBuffer)
+        m_sortOffsetBuffer = rf.CreateUAVBuffer(SORT_BUCKETS * sizeof(uint32_t), L"SortOffset");
+    if (!m_sortBoundsBuffer)
+        m_sortBoundsBuffer = rf.CreateUAVBuffer(8 * sizeof(uint32_t), L"SortBounds");
 
     // Sort bounds reset
-    { const UINT MAX_U = 0xFFFFFFFF, MIN_U = 0;
-      const UINT initData[8] = { MAX_U, MAX_U, MAX_U, MIN_U, MIN_U, MIN_U, MAX_U, MIN_U };
-      auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-      auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(initData));
-      ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
-          D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_sortBoundsResetBuffer)));
-      void* p; CD3DX12_RANGE rr(0,0);
-      ThrowIfFailed(m_sortBoundsResetBuffer->Map(0, &rr, &p));
-      memcpy(p, initData, sizeof(initData));
-      m_sortBoundsResetBuffer->Unmap(0, nullptr); }
+    if (!m_sortBoundsResetBuffer) {
+        const UINT MAX_U = 0xFFFFFFFF, MIN_U = 0;
+        const UINT initData[8] = { MAX_U, MAX_U, MAX_U, MIN_U, MIN_U, MIN_U, MAX_U, MIN_U };
+        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(initData));
+        ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_sortBoundsResetBuffer)));
+        void* p; CD3DX12_RANGE rr(0,0);
+        ThrowIfFailed(m_sortBoundsResetBuffer->Map(0, &rr, &p));
+        memcpy(p, initData, sizeof(initData));
+        m_sortBoundsResetBuffer->Unmap(0, nullptr);
+    }
 }
 
 void Renderer::CreateIndirectCommandSignature() {

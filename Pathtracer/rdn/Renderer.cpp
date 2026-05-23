@@ -466,7 +466,7 @@ void Renderer::UpdateRenderer(float dt) {
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
                   m_passes, m_dlss, m_dlssG, m_restirSettings, m_nrcSettings,
-                  m_fps, m_frameStats);
+                  m_fps, m_frameStats, m_planet.stats());
     // Debug-view checkbox only enables the calculation into slice 3.
     // Cycle to it with 'C' when you want to look at it.
 
@@ -1065,6 +1065,11 @@ void Renderer::RebuildResolutionDependentDescriptors() {
 
     // Slot 32: path state UAV
     rawUAVAt(32, m_pathStateBuffer, px * 88);
+
+    // Slots 33 (global counters), 34 (indirect args), 52-54 (sort buffers) are
+    // bound to non-resolution-dependent buffers and are NOT recreated on resize
+    // (see the if-not-null guards in CreateStreamingCompactionBuffers), so their
+    // init-time descriptors stay valid - nothing to refresh here.
 
     // Slots 35-38: stack buffers UAV
     for (int s = 0; s < 4; ++s) {
