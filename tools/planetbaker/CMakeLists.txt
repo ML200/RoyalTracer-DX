@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 if(NOT DEFINED CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -104,7 +104,53 @@ CPMAddPackage(
 )
 
 #====================================
-# Main executable
+# planet_bake_core: simulation + GPU primitives, shared by app and tests
+#====================================
+add_library(planet_bake_core STATIC
+    src/core/neighbor_table.cpp
+    src/core/field.cu
+    src/core/planet_state.cpp
+    src/core/log.cpp
+    src/core/param_registry.cpp
+    src/core/cache.cpp
+    src/core/pipeline.cpp
+    src/passes/bedrock_noise.cu
+    src/passes/impacts_pass.cu
+    src/passes/thermal_erosion_pass.cu
+    src/passes/bake_pass.cu
+)
+
+target_include_directories(planet_bake_core PUBLIC src)
+
+target_link_libraries(planet_bake_core PUBLIC
+    CUDA::cudart
+    nlohmann_json::nlohmann_json
+    glm::glm
+)
+
+set_target_properties(planet_bake_core PROPERTIES
+    CUDA_SEPARABLE_COMPILATION OFF
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
+    POSITION_INDEPENDENT_CODE ON
+)
+
+if(MSVC)
+    target_compile_options(planet_bake_core PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /Zc:__cplusplus /utf-8>
+    )
+    target_compile_definitions(planet_bake_core PUBLIC
+        _CRT_SECURE_NO_WARNINGS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+    )
+else()
+    target_compile_options(planet_bake_core PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
+    )
+endif()
+
+#====================================
+# planet_bake: main app (viewer + CUDA + OpenGL)
 #====================================
 add_executable(planet_bake
     src/main.cpp
@@ -116,16 +162,14 @@ add_executable(planet_bake
     src/render/preview.cpp
 )
 
-target_include_directories(planet_bake PRIVATE src)
-
 target_link_libraries(planet_bake PRIVATE
+    planet_bake_core
     imgui
     glfw
     libglew_static
     glm::glm
     nlohmann_json::nlohmann_json
     OpenGL::GL
-    CUDA::cudart
 )
 
 target_compile_definitions(planet_bake PRIVATE GLEW_STATIC)
@@ -139,11 +183,6 @@ if(MSVC)
     target_compile_options(planet_bake PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /Zc:__cplusplus /utf-8>
     )
-    target_compile_definitions(planet_bake PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
-    )
 else()
     target_compile_options(planet_bake PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic>
@@ -151,12 +190,22 @@ else()
 endif()
 
 #====================================
-# Tests
+# planet_bake_tests
 #====================================
 enable_testing()
 add_executable(planet_bake_tests
-    tests/sanity_test.cpp
+    tests/test_main.cpp
+    tests/cubed_sphere_test.cpp
+    tests/neighbor_table_test.cpp
+    tests/param_registry_test.cpp
+    tests/cache_test.cpp
+    tests/pipeline_test.cpp
+    tests/impacts_test.cpp
+    tests/thermal_erosion_test.cpp
+    tests/bake_test.cpp
 )
-target_link_libraries(planet_bake_tests PRIVATE doctest::doctest)
-target_include_directories(planet_bake_tests PRIVATE src)
+target_link_libraries(planet_bake_tests PRIVATE
+    planet_bake_core
+    doctest::doctest
+)
 add_test(NAME planet_bake_tests COMMAND planet_bake_tests)

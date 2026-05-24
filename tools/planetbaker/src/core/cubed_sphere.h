@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __CUDACC__
 #define PB_HOSTDEVICE __host__ __device__
@@ -60,5 +62,77 @@ PB_HOSTDEVICE inline void sphere_to_face_uv(Vec3f p, int& face, float& u, float&
     u = atanf(ut) * 4.0f / PI;
     v = atanf(vt) * 4.0f / PI;
 }
+
+//====================================
+//CubedSphereGrid describes a single resolution (face_resolution N) for the
+//six-face simulation domain. All Field<T> instances and the NeighborTable
+//are sized by this grid.
+//
+//Storage layout per face: (N + 2*HALO) x (N + 2*HALO) cells, row major,
+//j-major. Interior cells have i,j in [0, N). Ghost (halo) cells have
+//i or j in [-HALO, -1] or [N, N+HALO-1].
+//
+//A cell center in local face coords is u(i) = (i + 0.5)/N * 2 - 1, same for v.
+//====================================
+
+struct CubedSphereGrid {
+    static constexpr int HALO = 2;
+
+    int n = 0;
+
+    CubedSphereGrid() = default;
+    explicit CubedSphereGrid(int face_resolution) : n(face_resolution) {}
+
+    PB_HOSTDEVICE int stride()           const { return n + 2 * HALO; }
+    PB_HOSTDEVICE int cells_per_face()   const { return stride() * stride(); }
+    PB_HOSTDEVICE int total_cells()      const { return 6 * cells_per_face(); }
+    PB_HOSTDEVICE int interior_per_face()const { return n * n; }
+    PB_HOSTDEVICE int total_interior()   const { return 6 * interior_per_face(); }
+
+    //Linear index of cell (i, j) on a face. i, j may be in [-HALO, N+HALO).
+    PB_HOSTDEVICE int cell_index(int i, int j) const {
+        return (j + HALO) * stride() + (i + HALO);
+    }
+
+    //Linear index of cell (face, i, j) in the full 6-face buffer.
+    PB_HOSTDEVICE int global_index(int face, int i, int j) const {
+        return face * cells_per_face() + cell_index(i, j);
+    }
+
+    PB_HOSTDEVICE float u_of_i(int i) const {
+        return ((static_cast<float>(i) + 0.5f) / static_cast<float>(n)) * 2.0f - 1.0f;
+    }
+    PB_HOSTDEVICE float v_of_j(int j) const { return u_of_i(j); }
+
+    //Nearest integer cell index for a u in [-1, +1]. Result clamped to [0, N-1].
+    PB_HOSTDEVICE int i_of_u(float u) const {
+        float fi = (u + 1.0f) * 0.5f * static_cast<float>(n) - 0.5f;
+        int   i  = static_cast<int>(fi + (fi >= 0.0f ? 0.5f : -0.5f));
+        if (i < 0)       i = 0;
+        if (i >= n)      i = n - 1;
+        return i;
+    }
+    PB_HOSTDEVICE int j_of_v(float v) const { return i_of_u(v); }
+};
+
+//====================================
+//Per-cell 4-neighbor lookup. The four (face, i, j) triplets are the neighbor
+//cells in the +i, -i, +j, -j directions. Interior cells return neighbors on
+//the same face. Edge cells return neighbors on the adjacent face. Corner
+//cells pick whichever face the diagonal step lands on.
+//====================================
+
+struct Neighbor {
+    int face;
+    int i;
+    int j;
+};
+
+struct Neighbors4 {
+    Neighbor plus_i;
+    Neighbor minus_i;
+    Neighbor plus_j;
+    Neighbor minus_j;
+};
 
 }
