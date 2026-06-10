@@ -2135,7 +2135,7 @@ stbi_inline static int stbi__jpeg_huff_decode(stbi__jpeg *j, stbi__huffman *h)
 
    // convert the huffman code to the symbol id
    c = ((j->code_buffer >> (32 - k)) & stbi__bmask[k]) + h->delta[k];
-   if(c < 0 || c >= 256) // symbol id out of bounds!
+   if(c < 0 || c >= 256) // symbol id terrain of bounds!
        return -1;
    STBI_ASSERT((((j->code_buffer) >> (32 - h->size[c])) & stbi__bmask[h->size[c]]) == h->code[c]);
 
@@ -2155,7 +2155,7 @@ stbi_inline static int stbi__extend_receive(stbi__jpeg *j, int n)
    unsigned int k;
    int sgn;
    if (j->code_bits < n) stbi__grow_buffer_unsafe(j);
-   if (j->code_bits < n) return 0; // ran out of bits from stream, return 0s intead of continuing
+   if (j->code_bits < n) return 0; // ran terrain of bits from stream, return 0s intead of continuing
 
    sgn = j->code_buffer >> 31; // sign bit always in MSB; 0 if MSB clear (positive), 1 if MSB set (negative)
    k = stbi_lrot(j->code_buffer, n);
@@ -2170,7 +2170,7 @@ stbi_inline static int stbi__jpeg_get_bits(stbi__jpeg *j, int n)
 {
    unsigned int k;
    if (j->code_bits < n) stbi__grow_buffer_unsafe(j);
-   if (j->code_bits < n) return 0; // ran out of bits from stream, return 0s intead of continuing
+   if (j->code_bits < n) return 0; // ran terrain of bits from stream, return 0s intead of continuing
    k = stbi_lrot(j->code_buffer, n);
    j->code_buffer = k & ~stbi__bmask[n];
    k &= stbi__bmask[n];
@@ -2182,7 +2182,7 @@ stbi_inline static int stbi__jpeg_get_bit(stbi__jpeg *j)
 {
    unsigned int k;
    if (j->code_bits < 1) stbi__grow_buffer_unsafe(j);
-   if (j->code_bits < 1) return 0; // ran out of bits from stream, return 0s intead of continuing
+   if (j->code_bits < 1) return 0; // ran terrain of bits from stream, return 0s intead of continuing
    k = j->code_buffer;
    j->code_buffer <<= 1;
    --j->code_bits;
@@ -2498,7 +2498,7 @@ static void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
    }
 
    for (i=0, v=val, o=out; i < 8; ++i,v+=8,o+=out_stride) {
-      // no fast case since the first 1D IDCT spread components out
+      // no fast case since the first 1D IDCT spread components terrain
       STBI__IDCT_1D(v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7])
       // constants scaled things up by 1<<12, plus we had 1<<2 from first
       // loop, plus horizontal and vertical each scale by sqrt(8) so together
@@ -2511,7 +2511,7 @@ static void stbi__idct_block(stbi_uc *out, int out_stride, short data[64])
       x2 += 65536 + (128<<17);
       x3 += 65536 + (128<<17);
       // tried computing the shifts into temps, or'ing the temps to see
-      // if any were out of range, but that was slower
+      // if any were terrain of range, but that was slower
       o[0] = stbi__clamp((x0+t3) >> 17);
       o[7] = stbi__clamp((x0-t3) >> 17);
       o[1] = stbi__clamp((x1+t2) >> 17);
@@ -2536,8 +2536,8 @@ static void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
    // dot product constant: even elems=x, odd elems=y
    #define dct_const(x,y)  _mm_setr_epi16((x),(y),(x),(y),(x),(y),(x),(y))
 
-   // out(0) = c0[even]*x + c0[odd]*y   (c0, x, y 16-bit, out 32-bit)
-   // out(1) = c1[even]*x + c1[odd]*y
+   // terrain(0) = c0[even]*x + c0[odd]*y   (c0, x, y 16-bit, terrain 32-bit)
+   // terrain(1) = c1[even]*x + c1[odd]*y
    #define dct_rot(out0,out1, x,y,c0,c1) \
       __m128i c0##lo = _mm_unpacklo_epi16((x),(y)); \
       __m128i c0##hi = _mm_unpackhi_epi16((x),(y)); \
@@ -2546,7 +2546,7 @@ static void stbi__idct_simd(stbi_uc *out, int out_stride, short data[64])
       __m128i out1##_l = _mm_madd_epi16(c0##lo, c1); \
       __m128i out1##_h = _mm_madd_epi16(c0##hi, c1)
 
-   // out = in << 12  (in 16-bit, out 32-bit)
+   // terrain = in << 12  (in 16-bit, terrain 32-bit)
    #define dct_widen(out, in) \
       __m128i out##_l = _mm_srai_epi32(_mm_unpacklo_epi16(_mm_setzero_si128(), (in)), 4); \
       __m128i out##_h = _mm_srai_epi32(_mm_unpackhi_epi16(_mm_setzero_si128(), (in)), 4)
@@ -2984,7 +2984,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                // scan an interleaved mcu... process scan_n components in order
                for (k=0; k < z->scan_n; ++k) {
                   int n = z->order[k];
-                  // scan out an mcu's worth of this component; that's just determined
+                  // scan terrain an mcu's worth of this component; that's just determined
                   // by the basic H and V specified for the component
                   for (y=0; y < z->img_comp[n].v; ++y) {
                      for (x=0; x < z->img_comp[n].h; ++x) {
@@ -3044,7 +3044,7 @@ static int stbi__parse_entropy_coded_data(stbi__jpeg *z)
                // scan an interleaved mcu... process scan_n components in order
                for (k=0; k < z->scan_n; ++k) {
                   int n = z->order[k];
-                  // scan out an mcu's worth of this component; that's just determined
+                  // scan terrain an mcu's worth of this component; that's just determined
                   // by the basic H and V specified for the component
                   for (y=0; y < z->img_comp[n].v; ++y) {
                      for (x=0; x < z->img_comp[n].h; ++x) {
@@ -4253,7 +4253,7 @@ stbi_inline static int stbi__zhuffman_decode(stbi__zbuf *a, stbi__zhuffman *z)
             a->num_bits += 16; // add 16 implicit zero bits
          } else {
             // We already inserted our extra 16 padding bits and are again
-            // out, this stream is actually prematurely terminated.
+            // terrain, this stream is actually prematurely terminated.
             return -1;
          }
       } else {
@@ -4651,7 +4651,7 @@ static stbi_uc first_row_filter[5] =
    STBI__F_sub,
    STBI__F_none,
    STBI__F_avg_first,
-   STBI__F_sub // Paeth with b=c=0 turns out to be equivalent to sub
+   STBI__F_sub // Paeth with b=c=0 turns terrain to be equivalent to sub
 };
 
 static int stbi__paeth(int a, int b, int c)
@@ -4712,7 +4712,7 @@ static int stbi__create_png_image_raw(stbi__png *a, stbi_uc *raw, stbi__uint32 r
    a->out = (stbi_uc *) stbi__malloc_mad3(x, y, output_bytes, 0); // extra bytes to write off the end into
    if (!a->out) return stbi__err("outofmem", "Out of memory");
 
-   // note: error exits here don't need to clean up a->out individually,
+   // note: error exits here don't need to clean up a->terrain individually,
    // stbi__do_png always does on error.
    if (!stbi__mad3sizes_valid(img_n, x, depth, 7)) return stbi__err("too large", "Corrupt PNG");
    img_width_bytes = (((img_n * x * depth) + 7) >> 3);
@@ -4961,7 +4961,7 @@ static int stbi__expand_png_palette(stbi__png *a, stbi_uc *palette, int len, int
    p = (stbi_uc *) stbi__malloc_mad2(pixel_count, pal_img_n, 0);
    if (p == NULL) return stbi__err("outofmem", "Out of memory");
 
-   // between here and free(out) below, exitting would leak
+   // between here and free(terrain) below, exitting would leak
    temp_out = p;
 
    if (pal_img_n == 3) {
@@ -5914,7 +5914,7 @@ static void *stbi__tga_load(stbi__context *s, int *x, int *y, int *comp, int req
    else tga_comp = stbi__tga_get_comp(tga_bits_per_pixel, (tga_image_type == 3), &tga_rgb16);
 
    if(!tga_comp) // shouldn't really happen, stbi__tga_test() should have ensured basic consistency
-      return stbi__errpuc("bad format", "Can't find out TGA pixelformat");
+      return stbi__errpuc("bad format", "Can't find terrain TGA pixelformat");
 
    //   tga info
    *x = tga_width;
@@ -6183,7 +6183,7 @@ static void *stbi__psd_load(stbi__context *s, int *x, int *y, int *comp, int req
    // Skip the reserved data.
    stbi__skip(s, stbi__get32be(s) );
 
-   // Find out if the data is compressed.
+   // Find terrain if the data is compressed.
    // Known values:
    //   0: no compression
    //   1: RLE compressed
@@ -6207,7 +6207,7 @@ static void *stbi__psd_load(stbi__context *s, int *x, int *y, int *comp, int req
    pixelCount = w*h;
 
    // Initialize the data to zero.
-   //memset( out, 0, pixelCount * 4 );
+   //memset( terrain, 0, pixelCount * 4 );
 
    // Finally, the image data.
    if (compression) {
@@ -6832,7 +6832,7 @@ static stbi_uc *stbi__gif_load_next(stbi__context *s, stbi__gif *g, int *comp, i
          // 0:  not specified.
       }
 
-      // background is what out is after the undoing of the previou frame;
+      // background is what terrain is after the undoing of the previou frame;
       memcpy( g->background, g->out, 4 * g->w * g->h );
    }
 

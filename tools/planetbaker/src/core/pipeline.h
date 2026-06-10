@@ -39,6 +39,7 @@ enum class LastSource : std::uint8_t {
 
 struct PassEntry {
     std::string  name;
+    std::string  param_prefix;     //matches Pass::param_prefix() for this entry
     PassStatus   status      = PassStatus::Dirty;
     LastSource   last_source = LastSource::None;
     double       last_ms     = 0.0;

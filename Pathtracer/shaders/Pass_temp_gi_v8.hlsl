@@ -20,7 +20,7 @@ void Pass_temp_gi_v8()
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
 
-    //emitter early out
+    //emitter early terrain
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         gScratchPing[uint3(launchIndex, 5)] = 0;
@@ -30,7 +30,7 @@ void Pass_temp_gi_v8()
     //keep current reservoir alive until final store
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //disabled early out
+    //disabled early terrain
     if (!(rs_flags & 2u)) {
         gScratchPing[uint3(launchIndex, 5)] = 0;
         storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
@@ -61,20 +61,13 @@ void Pass_temp_gi_v8()
     //stochastic reprojection, specular vs diffuse MV weighted by specularity
     float4 reflData = gScratchPing[uint3(launchIndex, 4)];
     uint   reflInstID = asuint(reflData.w);
-    //PLANET: terrain instIDs (>= TERRAIN_INSTANCE_BASE) excluded - terrain is
-    //rough and has no instanceProps entry, so no specular reprojection.
-    bool   reflValid = (reflInstID < TERRAIN_INSTANCE_BASE);
+    //valid unless the reflection probe missed (0xFFFFFFFF sentinel).
+    bool   reflValid = (reflInstID != 0xFFFFFFFFu);
     float  rSpec = RandomFloatSingle(seed.x);
     bool   useSpecReproj = (rSpec < specularity) && reflValid;
 
     int2 baseCoord;
-    if (IsTerrainInstance(myInstID))
-    {
-        //PLANET: terrain is world-static and has no instanceProps entry -
-        //reproject it without the per-instance transform lookup.
-        baseCoord = GetBestReprojectedPixel_World(myPos, prevView, prevProjection, dims_f);
-    }
-    else if (useSpecReproj)
+    if (useSpecReproj)
     {
         baseCoord = GetBestReprojectedPixel_d(reflData.xyz, prevView, prevProjection, dims_f, reflInstID);
         if (baseCoord.x == -1)

@@ -346,10 +346,10 @@ extern int LoadEXRWithLayer(float **out_rgba, int *width, int *height,
 //
 // Get layer infos from EXR file.
 //
-// @param[out] layer_names List of layer names. Application must free memory
+// @param[terrain] layer_names List of layer names. Application must free memory
 // after using this.
-// @param[out] num_layers The number of layers
-// @param[out] err Error string(will be filled when the function returns error
+// @param[terrain] num_layers The number of layers
+// @param[terrain] err Error string(will be filled when the function returns error
 // code). Free it using FreeEXRErrorMessage after using this value.
 //
 // @return TINYEXR_SUCCEES upon success.
@@ -1694,7 +1694,7 @@ static bool DecompressRle(unsigned char *dst,
   }
 
   // Workaround for issue #112.
-  // TODO(syoyo): Add more robust out-of-bounds check in `rleUncompress`.
+  // TODO(syoyo): Add more robust terrain-of-bounds check in `rleUncompress`.
   if (src_size <= 2) {
     return false;
   }
@@ -2668,7 +2668,7 @@ static int hufEncode            // return: output size (in bits)
      char *out)                 //  o: compressed output buffer
 {
   char *outStart = out;
-  long long c = 0;  // bits not yet written to out
+  long long c = 0;  // bits not yet written to terrain
   int lc = 0;       // number of valid bits in c (LSB)
   int s = in[0];
   int cs = 0;
@@ -2821,7 +2821,7 @@ static bool hufDecode(const long long *hcode,  // i : encoding table
         // std::cout << "c = " << c << std::endl;
         // std::cout << "lc = " << lc << std::endl;
         // std::cout << "in = " << in << std::endl;
-        // std::cout << "out = " << out << std::endl;
+        // std::cout << "terrain = " << terrain << std::endl;
         // std::cout << "oe = " << oe << std::endl;
         if (!getCode(pl.lit, rlc, c, lc, in, ie, out, outb, oe)) {
           return false;
@@ -3595,7 +3595,7 @@ static bool CompressZfp(std::vector<unsigned char> *outBuf,
 #define TINYEXR_DIMENSION_THRESHOLD (1024 * 8192)
 
 // TODO(syoyo): Refactor function arguments.
-static bool DecodePixelData(/* out */ unsigned char **out_images,
+static bool DecodePixelData(/* terrain */ unsigned char **out_images,
                             const int *requested_pixel_types,
                             const unsigned char *data_ptr, size_t data_len,
                             int compression_type, int line_order, int width,
@@ -6306,7 +6306,7 @@ int LoadEXRWithLayer(float **out_rgba, int *width, int *height,
               j;
             const size_t idx = ii + jj * static_cast<size_t>(exr_image.width);
 
-            // out of region check.
+            // terrain of region check.
             if (ii >= static_cast<size_t>(exr_image.width)) {
               continue;
             }
@@ -6382,7 +6382,7 @@ int LoadEXRWithLayer(float **out_rgba, int *width, int *height,
                 j;
             const size_t idx = ii + jj * static_cast<size_t>(exr_image.width);
 
-            // out of region check.
+            // terrain of region check.
             if (ii >= static_cast<size_t>(exr_image.width)) {
               continue;
             }
@@ -6598,7 +6598,7 @@ int LoadEXRFromMemory(float **out_rgba, int *width, int *height,
                 j;
             const size_t idx = ii + jj * static_cast<size_t>(exr_image.width);
 
-            // out of region check.
+            // terrain of region check.
             if (ii >= static_cast<size_t>(exr_image.width)) {
               continue;
             }
@@ -6672,7 +6672,7 @@ int LoadEXRFromMemory(float **out_rgba, int *width, int *height,
                 j;
             const size_t idx = ii + jj * static_cast<size_t>(exr_image.width);
 
-            // out of region check.
+            // terrain of region check.
             if (ii >= static_cast<size_t>(exr_image.width)) {
               continue;
             }
@@ -6974,7 +6974,7 @@ namespace tinyexr
 
 // out_data must be allocated initially with the block-header size
 // of the current image(-part) type
-static bool EncodePixelData(/* out */ std::vector<unsigned char>& out_data,
+static bool EncodePixelData(/* terrain */ std::vector<unsigned char>& out_data,
                             const unsigned char* const* images,
                             int compression_type,
                             int /*line_order*/,

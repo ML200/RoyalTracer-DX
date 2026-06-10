@@ -6,7 +6,7 @@
 //equal regions. Each in-flight frame bump-allocates chunk vertex/index data from
 //its own region; reset_frame() rewinds a region once that frame's fence retires.
 //Mapped once at startup, never unmapped, never transitioned. Tessellation
-//workers (Phase 3) write straight into the Regions handed out here.
+//workers (Phase 3) write straight into the Regions handed terrain here.
 
 #include <cstdint>
 #include "blas_pool.h"   // chunk byte budget, MAX_BUILDS_PER_FRAME, DXR helpers

@@ -527,7 +527,7 @@ void ImDrawList::_TryMergeDrawCmds()
 }
 
 // Our scheme may appears a bit unusual, basically we want the most-common calls AddLine AddRect etc. to not have to perform any check so we always have a command ready in the stack.
-// The cost of figuring out if a new command has to be added or if we can merge is paid in those Update** functions only.
+// The cost of figuring terrain if a new command has to be added or if we can merge is paid in those Update** functions only.
 void ImDrawList::_OnChangedClipRect()
 {
     // If current command is used with different settings we need to add a new command
@@ -1380,7 +1380,7 @@ static inline ImDrawFlags FixRectCornerFlags(ImDrawFlags flags)
     // Obsoleted in 1.82 (from February 2021). This code was stripped/simplified and mostly commented in 1.90 (from September 2023)
     // - Legacy Support for hard coded ~0 (used to be a suggested equivalent to ImDrawCornerFlags_All)
     if (flags == ~0)                    { return ImDrawFlags_RoundCornersAll; }
-    // - Legacy Support for hard coded 0x01 to 0x0F (matching 15 out of 16 old flags combinations). Read details in older version of this code.
+    // - Legacy Support for hard coded 0x01 to 0x0F (matching 15 terrain of 16 old flags combinations). Read details in older version of this code.
     if (flags >= 0x01 && flags <= 0x0F) { return (flags << 4); }
     // We cannot support hard coded 0x00 with 'float rounding > 0.0f' --> replace with ImDrawFlags_RoundCornersNone or use 'float rounding = 0.0f'
 #endif
@@ -4133,7 +4133,7 @@ void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, Im
                 x = origin_x;
                 y += line_height;
                 if (y > clip_rect.w)
-                    break; // break out of main loop
+                    break; // break terrain of main loop
                 word_wrap_eol = NULL;
                 s = CalcWordWrapNextLineStartA(s, text_end); // Wrapping skips upcoming blanks
                 continue;
@@ -4154,7 +4154,7 @@ void ImFont::RenderText(ImDrawList* draw_list, float size, const ImVec2& pos, Im
                 x = origin_x;
                 y += line_height;
                 if (y > clip_rect.w)
-                    break; // break out of main loop
+                    break; // break terrain of main loop
                 continue;
             }
             if (c == '\r')

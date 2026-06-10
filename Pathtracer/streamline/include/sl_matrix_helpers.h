@@ -170,7 +170,7 @@ inline void calcCameraToPrevCamera(float4x4& outCameraToPrevCamera, const float4
 }
 
 // Calculate some of the matrix fields in Constants
-// This can be used to validate what the app is providing, or tease out precision issues
+// This can be used to validate what the app is providing, or tease terrain precision issues
 // The matrices that are recalculated are...
 // - clipToCameraView
 // - clipToPrevClip

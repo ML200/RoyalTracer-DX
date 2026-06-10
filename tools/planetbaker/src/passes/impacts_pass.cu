@@ -26,25 +26,11 @@ constexpr float kBedrockFloorKm = -25.0f;        //prevents pathological accumul
 constexpr int   kCraterCountCap = 10000;
 constexpr float kBaseCountPerFlux = 1500.0f;
 
-enum CraterMorphology : std::uint8_t {
-    MorphSimple    = 0,
-    MorphComplex   = 1,
-    MorphBasin     = 2,
-    MorphMultiring = 3,
-};
-
-struct Crater {
-    float pos_x;
-    float pos_y;
-    float pos_z;
-    float diameter_km;
-    float age_myr;
-    float ejecta_extent;
-    std::uint32_t morphology;
-};
+//(CraterMorphology enum lives in impacts_pass.h now - exposed so callers
+//like bake_pass can count basins / multi-ring craters and filter results.)
 
 //====================================
-//SFD sampler
+//SFD sampler helpers
 //====================================
 
 float random_uniform(std::mt19937_64& rng, float lo, float hi) {
@@ -76,20 +62,11 @@ std::uint32_t classify_morphology(float D, float t_sc, float t_basin, float t_mu
     return MorphMultiring;
 }
 
-struct ImpactsParams {
-    float flux_multiplier;
-    float size_distribution_exponent;
-    float min_diameter_km;
-    float max_diameter_km;
-    float epoch_start_myr;
-    float epoch_end_myr;
-    float simple_complex_threshold_km;
-    float basin_threshold_km;
-    float multiring_threshold_km;
-    float ejecta_extent_radii;
-    std::uint64_t seed;
-};
+} //namespace
 
+//====================================
+//Public SFD sampler (declared in impacts_pass.h)
+//====================================
 std::vector<Crater> sample_craters(const ImpactsParams& p) {
     int n_craters = static_cast<int>(p.flux_multiplier * kBaseCountPerFlux);
     if (n_craters < 0) n_craters = 0;
@@ -128,6 +105,27 @@ std::vector<Crater> sample_craters(const ImpactsParams& p) {
 
     return out;
 }
+
+//====================================
+//Public param loader (declared in impacts_pass.h)
+//====================================
+ImpactsParams load_impacts_params(const ParamRegistry& reg) {
+    ImpactsParams p;
+    p.flux_multiplier             = reg.get_float("impacts.flux_multiplier");
+    p.size_distribution_exponent  = reg.get_float("impacts.size_distribution_exponent");
+    p.min_diameter_km             = reg.get_float("impacts.min_diameter_km");
+    p.max_diameter_km             = reg.get_float("impacts.max_diameter_km");
+    p.epoch_start_myr             = reg.get_float("impacts.epoch_start_myr");
+    p.epoch_end_myr               = reg.get_float("impacts.epoch_end_myr");
+    p.simple_complex_threshold_km = reg.get_float("impacts.simple_complex_threshold_km");
+    p.basin_threshold_km          = reg.get_float("impacts.basin_threshold_km");
+    p.multiring_threshold_km      = reg.get_float("impacts.multiring_threshold_km");
+    p.ejecta_extent_radii         = reg.get_float("impacts.ejecta_extent_radii");
+    p.seed                        = static_cast<std::uint64_t>(static_cast<std::uint32_t>(reg.get_int("impacts.seed")));
+    return p;
+}
+
+namespace {
 
 //====================================
 //Splat kernel
@@ -232,6 +230,86 @@ __global__ void impacts_kernel(float* __restrict__ bedrock,
     crust_type[idx] = type;
 }
 
+//====================================
+//Bake-only single-face splat. Identical per-pixel evaluation to impacts_kernel,
+//but writes to a tight n*n bedrock buffer (no halo, no stride, no padding)
+//for ONE face, and folds ejecta into the same bedrock buffer (since the
+//direct-synthesis bake path doesn't carry a separate sediment field).
+//Bedrock is read-modify-written; the buffer must already contain the bedrock
+//noise output that this kernel will stamp craters on top of.
+//====================================
+__global__ void bake_impacts_kernel(float* __restrict__ dst,
+                                    int n, int face,
+                                    const Crater* __restrict__ craters,
+                                    int crater_count,
+                                    float planet_radius_km) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= n || j >= n) return;
+
+    float u = ((static_cast<float>(i) + 0.5f) / static_cast<float>(n)) * 2.0f - 1.0f;
+    float v = ((static_cast<float>(j) + 0.5f) / static_cast<float>(n)) * 2.0f - 1.0f;
+    Vec3f p = face_uv_to_sphere(face, u, v);
+
+    const std::size_t idx = static_cast<std::size_t>(j) * n + i;
+    float bed = dst[idx];
+
+    for (int k = 0; k < crater_count; ++k) {
+        Crater c = craters[k];
+        float dot_p = p.x * c.pos_x + p.y * c.pos_y + p.z * c.pos_z;
+        if (dot_p > 1.0f) dot_p = 1.0f;
+        if (dot_p < -1.0f) dot_p = -1.0f;
+        float ang_dist = acosf(dot_p);
+
+        float r_rad      = c.diameter_km * 0.5f / planet_radius_km;
+        float ejecta_rad = r_rad * c.ejecta_extent;
+        if (ang_dist > ejecta_rad) continue;
+
+        if (ang_dist <= r_rad) {
+            float r_norm = ang_dist / r_rad;
+            float depth  = crater_depth_at(c.diameter_km, r_norm, c.morphology);
+            bed -= depth;
+        } else {
+            float e_norm = (ang_dist - r_rad) / (ejecta_rad - r_rad);
+            float rim    = crater_rim_height(c.diameter_km, c.morphology);
+            float rim_decay = expf(-e_norm * 3.0f);
+            //Fold ejecta into bedrock directly: the direct-synthesis bake
+            //has no sediment field, so the ejecta thickness becomes part of
+            //the bedrock elevation. Renderer doesn't care which "field"
+            //the rim came from - only the final elevation matters.
+            bed += rim * rim_decay * 0.5f;
+            bed += ejecta_thickness_at(c.diameter_km, e_norm, c.morphology);
+        }
+
+        if (bed < kBedrockFloorKm) bed = kBedrockFloorKm;
+    }
+
+    dst[idx] = bed;
+}
+
+}
+
+//====================================
+//Public bake-only host wrapper (declared in impacts_pass.h)
+//====================================
+void bake_impacts_face(int face, int n,
+                       const Crater* craters_device,
+                       int crater_count,
+                       float planet_radius_km,
+                       float* dst_device) {
+    if (face < 0 || face >= 6) return;
+    if (n <= 0 || !dst_device)  return;
+    if (crater_count <= 0)      return;
+
+    dim3 block(16, 16, 1);
+    dim3 grid((n + block.x - 1) / block.x,
+              (n + block.y - 1) / block.y,
+              1);
+    bake_impacts_kernel<<<grid, block>>>(dst_device, n, face,
+                                         craters_device, crater_count,
+                                         planet_radius_km);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 //====================================
@@ -240,14 +318,37 @@ __global__ void impacts_kernel(float* __restrict__ bedrock,
 
 void ImpactsPass::declare_params(ParamRegistry& reg) const {
     const char* o = name();
-    reg.declare_float("impacts.flux_multiplier",             1.0f,  0.0f, 10.0f,
-                      "flux multiplier", "Scales total crater count", "", o);
-    reg.declare_float("impacts.size_distribution_exponent",  2.0f,  1.0f, 4.0f,
-                      "SFD exponent", "Power-law slope of crater diameters", "", o);
-    reg.declare_float("impacts.min_diameter_km",             1.0f,  0.1f, 100.0f,
-                      "min diameter", "Smallest crater sampled", "km", o);
-    reg.declare_float("impacts.max_diameter_km",             1500.0f, 100.0f, 3000.0f,
-                      "max diameter", "Largest crater sampled", "km", o);
+    //v3 defaults (2026-05-26): the previous defaults (flux=1, b=2, Dmin=1,
+    //Dmax=1500) produced a power-law SFD heavily biased to sub-2 km craters
+    //that are invisible at the bake's effective sub-km/pixel preview
+    //resolution AND statistically yield zero basins per 1500 samples.
+    //New defaults target a visible-from-preview population: flatter SFD
+    //(b=1.8) over a narrower diameter range (Dmin=15..Dmax=800) so the
+    //sampled mass lands in the basin-visible band, and a 2x flux for
+    //~3000 craters total. Expected counts: ~36 basins, ~90 craters
+    //100-150 km, ~265 craters 50-100 km, rest smaller but still pixel-sized.
+    reg.declare_float("impacts.flux_multiplier",             2.0f,  0.0f, 10.0f,
+                      "flux multiplier",
+                      "Scales total crater count. 1.0 = 1500 craters, 2.0 = 3000, "
+                      "etc., capped at kCraterCountCap (10000).", "", o);
+    reg.declare_float("impacts.size_distribution_exponent",  1.8f,  1.0f, 4.0f,
+                      "SFD exponent",
+                      "Power-law slope of crater diameters. P(D > X) ~ X^-b. "
+                      "b=2.0 = Mars/Moon realistic but heavily biased to small "
+                      "craters that are sub-pixel in the 4k preview. b=1.5..1.8 "
+                      "flattens the SFD so visible-sized craters dominate the "
+                      "stamped population.", "", o);
+    reg.declare_float("impacts.min_diameter_km",             15.0f, 0.1f, 100.0f,
+                      "min diameter",
+                      "Smallest crater sampled. Default raised from 1 km to 15 km "
+                      "so the sampled population skips the sub-pixel band on a "
+                      "4k preview (~2.4 km/pixel at 90deg face).", "km", o);
+    reg.declare_float("impacts.max_diameter_km",             800.0f, 100.0f, 3000.0f,
+                      "max diameter",
+                      "Largest crater sampled. Default lowered from 1500 to 800 "
+                      "so the SFD concentrates more samples in the visible 50-300 "
+                      "km band rather than spreading thin to 1500 km giants that "
+                      "almost never get sampled with b>=1.8.", "km", o);
     reg.declare_float("impacts.epoch_start_myr",             4000.0f, 100.0f, 4500.0f,
                       "epoch start", "Oldest crater age", "Myr", o);
     reg.declare_float("impacts.epoch_end_myr",               100.0f,  0.0f, 4000.0f,
@@ -267,18 +368,7 @@ void ImpactsPass::declare_params(ParamRegistry& reg) const {
 }
 
 void ImpactsPass::run(PlanetState& state, const ParamRegistry& reg, ProgressSink& progress) {
-    ImpactsParams p;
-    p.flux_multiplier             = reg.get_float("impacts.flux_multiplier");
-    p.size_distribution_exponent  = reg.get_float("impacts.size_distribution_exponent");
-    p.min_diameter_km             = reg.get_float("impacts.min_diameter_km");
-    p.max_diameter_km             = reg.get_float("impacts.max_diameter_km");
-    p.epoch_start_myr             = reg.get_float("impacts.epoch_start_myr");
-    p.epoch_end_myr               = reg.get_float("impacts.epoch_end_myr");
-    p.simple_complex_threshold_km = reg.get_float("impacts.simple_complex_threshold_km");
-    p.basin_threshold_km          = reg.get_float("impacts.basin_threshold_km");
-    p.multiring_threshold_km      = reg.get_float("impacts.multiring_threshold_km");
-    p.ejecta_extent_radii         = reg.get_float("impacts.ejecta_extent_radii");
-    p.seed                        = static_cast<std::uint64_t>(static_cast<std::uint32_t>(reg.get_int("impacts.seed")));
+    const ImpactsParams p = load_impacts_params(reg);
 
     progress.stage("sample craters");
     progress.fraction(0.0f);

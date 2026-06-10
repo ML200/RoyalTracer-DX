@@ -105,6 +105,7 @@ struct PlanetState {
     //Derived
     Field<float4>        biome_weights;
     Field<float>         surface_elevation;
+    Field<float4>        surface_color;       // RGBA, .w currently unused
 
     static std::span<const FieldDescriptor> descriptors();
 

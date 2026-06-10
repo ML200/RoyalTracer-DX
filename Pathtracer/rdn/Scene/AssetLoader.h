@@ -57,6 +57,6 @@ private:
     static std::vector<LoadedMesh> SplitMeshSpatial(LoadedMesh mesh, UINT maxTris);
 
     // Walks scene.meshes; oversized meshes get replaced by their split pieces,
-    // and the corresponding instances fan out 1→N.
+    // and the corresponding instances fan terrain 1→N.
     static void SplitOversizedMeshes(LoadedScene& scene, UINT maxTris);
 };

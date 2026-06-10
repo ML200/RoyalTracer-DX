@@ -1,9 +1,150 @@
 #pragma once
 
+#include <cstdint>
+
 #include "core/field_set.h"
 #include "core/pass.h"
 
 namespace pb {
+
+class ParamRegistry;
+
+//====================================
+//BedrockNoiseParams: all knobs the per-pixel noise kernel consumes. Moved
+//out of the anonymous .cu namespace so BakePass can synthesize bedrock
+//directly at the bake resolution instead of bicubic-upsampling the working
+//PlanetState (the upsample blew the file size up without adding any
+//frequency content beyond the source grid's Nyquist).
+//
+//Defaults match the values in declare_params(); load_bedrock_params() reads
+//the live registry into this struct and applies the planet-radius freq
+//scaling, so the result is ready to feed straight to a synthesis kernel.
+//====================================
+struct BedrockNoiseParams {
+    float planet_radius_km      = 6371.0f;
+
+    //v16 "alien dramatic" preset. Continental dichotomy reduced to a whisper
+    //(+/-0.2 km total span) so the planet's silhouette is dominated by the
+    //mountain belts + near-camera detail, not by the regional fBm hemispheres
+    //which were drowning everything in Earth-scale v13. plateau and mesoscale
+    //also compressed proportionally so they don't reintroduce big continental
+    //bumps. See changelog above for the rationale.
+    float lowland_base_km       = -0.1f;
+    float highland_base_km      = 0.2f;
+
+    float regional_warp_freq    = 0.9f;
+    float regional_warp_amount  = 0.30f;
+    int   regional_warp_octaves = 3;
+    float regional_freq         = 2.5f;
+    int   regional_octaves      = 7;
+
+    float plateau_threshold     = 0.68f;
+    float plateau_softness      = 0.05f;
+    float plateau_lift_km       = 0.2f;   // v16: tiny plateau bumps
+
+    float mesoscale_freq        = 6.0f;
+    int   mesoscale_octaves     = 5;
+    float mesoscale_amp_km      = 0.15f;  // v16: tiny mesoscale
+
+    float plate_freq            = 0.8f;
+    float plate_warp_freq       = 0.4f;
+    float plate_warp_amount     = 0.18f;
+    int   plate_warp_octaves    = 2;
+    float boundary_sharpness    = 12.0f;
+    float convergence_freq      = 1.5f;
+    int   convergence_octaves   = 3;
+    float convergence_threshold = 0.55f;
+    float convergence_softness  = 0.08f;
+
+    //v15: revert v14's mountain shape changes - they pushed energy past
+    //the 16k bake's Nyquist (5 km wavelength) and the 4k GPU heightmap's
+    //Nyquist (20 km), so the "sharper peaks" became aliased noise at every
+    //view distance. Back to v13's smoother-but-resolvable values.
+    float mountain_warp_freq    = 30.0f;
+    float mountain_warp_amount  = 0.04f;
+    int   mountain_warp_octaves = 4;
+    float mountain_freq         = 120.0f;
+    int   mountain_octaves      = 6;
+    float mountain_amp_km       = 12.0f;  // v16: Olympus-Mons class belt peaks
+    float mountain_exponent     = 2.6f;
+    float mountain_lacunarity   = 2.0f;
+    float mountain_gain         = 0.55f;
+    float mountain_regional_lo  = 0.30f;
+    float mountain_regional_hi  = 1.00f;
+
+    float peak_freq             = 80.0f;
+    float peak_radius           = 0.55f;
+    float peak_sharpness        = 4.0f;
+    float peak_amp_km           = 4.0f;   // v16: stacks with mountain_amp for ~+16 km total summits
+
+    float hill_freq             = 45.0f;
+    int   hill_octaves          = 4;
+    float hill_amp_km           = 1.0f;   // v16: visible rolling-hills texture in plains
+
+    float lowland_rough_freq    = 70.0f;
+    int   lowland_rough_octaves = 4;
+    float lowland_rough_amp_km  = 1.0f;   // v16: chaotic-basin texture in lowlands
+
+    //fine layer 1 (v16 amp: ~1 km of high-freq detail in every region,
+    //so plains carry visible noise instead of reading as flat between
+    //the geological-scale layers). Frequency varies across the surface
+    //via fine_freq_var driven by terrain_var_n.
+    float fine_freq             = 280.0f;
+    int   fine_octaves          = 3;
+    float fine_amp_km           = 1.0f;
+    float fine_freq_var         = 0.5f;   // local freq = base * mix(1-var, 1+var, terrain_var_n)
+
+    //fine layer 2 (v16 amp: half of layer 1, ~500 m). Higher base freq
+    //for a different scale; freq variation driven by mesoscale_n so its
+    //spatial pattern decorrelates from layer 1.
+    float fine2_freq            = 700.0f;
+    int   fine2_octaves         = 3;
+    float fine2_amp_km          = 0.5f;
+    float fine2_freq_var        = 0.5f;   // local freq = base * mix(1-var, 1+var, mesoscale_n)
+
+    float terrain_var_freq      = 1.8f;
+    int   terrain_var_octaves   = 4;
+    float terrain_var_amp       = 0.7f;
+
+    float mountain_freq_var     = 0.5f;
+    float mountain_exp_var      = 0.3f;
+
+    float dune_threshold        = 0.25f;
+    float dune_softness         = 0.08f;
+    float dune_freq             = 90.0f;
+    float dune_warp_freq        = 3.0f;
+    float dune_warp_amount      = 0.07f;
+    float dune_amp_km           = 0.5f;   // v16: visible dune crests in low-terrain_var regions
+
+    float age_freq              = 2.8f;
+    float age_mid_myr           = 2500.0f;
+    float age_var_myr           = 1500.0f;
+
+    std::uint32_t seed          = 0xC0FFEE17u;
+};
+
+//====================================
+//Reads `bedrock.*` params from the registry and applies the planet-radius
+//frequency scaling (so the returned struct is ready for a synthesis launch).
+//The pass's own run() uses the same logic - this function lets BakePass
+//share the loaded params without rerunning the pass.
+//====================================
+BedrockNoiseParams load_bedrock_params(const ParamRegistry& reg);
+
+//====================================
+//Per-pixel bedrock synthesis at an arbitrary resolution, single face. Writes
+//`n * n` floats (no halo, no padding) into `dst_device` in row-major order;
+//the value is the bedrock elevation in KILOMETRES at the equiangular
+//cubed-sphere cell (face, i, j). face must be in [0, 6).
+//
+//Used by BakePass to write the on-disk cubemap at its OWN resolution
+//instead of upsampling a low-resolution working grid. CUDA host code -
+//synchronises on the default stream before return.
+//====================================
+void bake_bedrock_face(int face, int n,
+                       const BedrockNoiseParams& P,
+                       float* dst_device);
+
 
 //====================================
 //BedrockNoisePass: per-pixel layered noise synthesis of a rocky planet's
@@ -35,6 +176,10 @@ namespace pb {
 class BedrockNoisePass : public Pass {
 public:
     const char*   name()    const override { return "bedrock_noise"; }
+    //declare_params registers under "bedrock.*" for terseness (the keys
+    //pre-date the pass rename); override the default `<name>.` so dirty
+    //tracking, cache hashing and the UI prefix_iter walk all find them.
+    std::string   param_prefix() const override { return "bedrock."; }
     //v4: multi-octave fBm domain warp + macro contrast bump.
     //v3's single-octave warp couldn't simultaneously bend continents AND
     //distort individual ridges. Result: ridged-Perlin's zero-crossings stayed
@@ -109,7 +254,75 @@ public:
     //mesoscale field dips negative (local depressions) instead of v10's
     //tie to the coarse terrain_var. Dunes are now decorrelated from the
     //regional dichotomy and naturally biased to lower local elevations.
-    std::uint64_t version() const override { return 11; }
+    //
+    //v12: rebalances the layer stack for a "near-camera dominated" look.
+    //Continental-scale amplitudes (lowland/highland/plateau/mesoscale/
+    //mountain/peak/hill/lowland_rough/dune) all reduced ~20x; v11's
+    //fine_amp boosted 10x. NEW fine2 layer stacks a second high-freq fBm
+    //(default 2.5x finer base freq) on top of fine layer 1, so near-camera
+    //pixels see two layered scales of detail instead of one. BOTH fine
+    //layers also get FREQUENCY variation across the surface, driven by
+    //decorrelated existing noise fields: fine layer 1 freq follows
+    //terrain_var_n (correlates with mountain shape - rough regions get
+    //finer near-camera detail); fine layer 2 freq follows mesoscale_n
+    //(decorrelates from layer 1, gives spatial heterogeneity even where
+    //terrain_var_n is uniform). Amplitudes still vary via the existing
+    //roughness mask. Param adds: fine_freq_var, fine2_freq, fine2_octaves,
+    //fine2_amp_km, fine2_freq_var. Default lowland/highland/plateau/
+    //mesoscale/mountain/peak/hill/lowland_rough/dune amp values reduced 20x.
+    //
+    //v13: Earth-scale amplitudes. v12's 20x-reduced continental + 10x-
+    //boosted fine ended up reading as "flat" because the geological-scale
+    //layers were too quiet to register at any view distance and the fine
+    //layer dominated everything within a few hundred metres of the camera.
+    //v13 restores v11's amplitudes for continental, plateau, mesoscale,
+    //mountain, peak, hill, lowland_rough, dune (so peaks reach ~9 km and
+    //the planet is geologically structured like Earth) AND drops fine_amp
+    //back to v11's 0.15 km. fine layer 2 sits at half of layer 1
+    //(0.075 km / 75 m) for a subtle second-scale texture. The layered
+    //frequency-variation architecture introduced in v12 stays. Param set
+    //unchanged from v12; only default values change.
+    //
+    //v14: mountain ridge SHAPE knobs re-tuned to fix "no sharper peaks /
+    //no mountains in the distance" - the v13 mountain layer was tall but
+    //smooth (broad rounded ridges), so amp bumps just scaled the smooth
+    //lumps up rather than adding visible detail. v14 increases base freq
+    //(120->200), octave count (6->8), gain (0.55->0.70), and exponent
+    //(2.6->3.5). Continental / fine layers and their amplitudes are
+    //unchanged - the fix is purely in the mid-scale ridge frequency
+    //content and peak sharpness. After v14, bumping mountain_amp_km
+    //scales VISIBLE detail up instead of just smoother lumps. Param set
+    //unchanged from v13; only mountain_freq, mountain_octaves,
+    //mountain_gain, mountain_exponent defaults change.
+    //
+    //v15: REVERT v14's mountain shape changes. v14's highest mountain octave
+    //was at ~1.6 km wavelength, well below the 16k bake's ~5 km Nyquist and
+    //massively below the 4k GPU heightmap's ~20 km Nyquist - the "sharper
+    //ridges" became aliasing artifacts that looked WORSE than v13's smoother
+    //resolvable ridges, especially when the camera approached the surface.
+    //v15 restores v13 mountain shape values. The actual fix for "no
+    //close-to-surface detail" is renderer-side: either bump
+    //TERRAIN_HEIGHTMAP_GPU_RESOLUTION (4k -> 8k or 16k) so the shading
+    //normal sees finer features, or add a runtime procedural displacement
+    //layer that doesn't depend on the baked heightmap resolution. Param set
+    //and defaults match v13 for the mountain layer; everything else stays
+    //at v13.
+    //
+    //v16: "alien dramatic" preset. v15's Earth-scale dichotomy made the
+    //continental layer visually dominant (peaks of the +/-4 km dichotomy
+    //showed as the main feature of the planet), drowning the mountain belts
+    //and near-camera detail. v16 shrinks the continental layer to a whisper
+    //(+/-0.2 km total span) and boosts mountain belts to Olympus-Mons class
+    //(+12 km mountain_amp + 4 km peak_amp + plateau + highland = ~+16 km
+    //summits in convergent belts), with proportionally larger hill /
+    //lowland_rough / fine / fine2 amplitudes so plains carry ~+/-2 km of
+    //visible texture - no more flat-looking expanses between belts.
+    //
+    //Implies kHeightExaggeration = 1.0 in the renderer; these absolute
+    //amplitudes ARE the displayed relief, no multiplier needed.
+    //
+    //Param set unchanged from v15; only the amp defaults change.
+    std::uint64_t version() const override { return 16; }
 
     FieldSet reads()  const override { return {}; }
     FieldSet writes() const override {

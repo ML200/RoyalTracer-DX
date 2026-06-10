@@ -2384,7 +2384,7 @@ HRESULT DirectX::SaveToTGAFile(
 
     if (slicePitch < 65535)
     {
-        // For small images, it is better to create an in-memory file and write it out
+        // For small images, it is better to create an in-memory file and write it terrain
         Blob blob;
 
         hr = SaveToTGAMemory(image, flags, blob, metadata);

@@ -59,14 +59,21 @@ void Renderer::InitDevice() {
             planet::StreamConfig cfg;
             //==== PLANET ON/OFF — flip to false to disable terrain entirely ====
             //false: scene-only unified TLAS, no generation built. Use this to
-            //bisect the planet out of the renderer.
-            cfg.enabled = true;
+            //bisect the planet terrain of the renderer.
+            // PLANET DISABLED 2026-06-10: terrain mesh system turned off (the
+            // perf cost and image-quality gain weren't worth it). With this
+            // false, begin_frame() is a no-op, terrain_reservation() returns
+            // zero, and the rock scatter / bind_geometry blocks below are
+            // skipped — but submit_work() still rebuilds the scene-only unified
+            // TLAS every frame, so the renderer is unaffected. All planet code
+            // stays compiled and in the tree; flip back to true to re-enable.
+            cfg.enabled = false;
             cfg.planet.radius = 6371000.0;
             //The planet sits BELOW the world origin: its surface passes exactly
             //through (0,0,0), so the camera spawns standing ON the surface and
             //the planet body extends downward (-Y). center.y = -radius.
             cfg.planet.center = { 0.0, -cfg.planet.radius, 0.0 };
-            cfg.max_lod       = 24;            // hard depth cap; the budget sets actual depth
+            cfg.max_lod       = 16;            // hard depth cap; the budget sets actual depth
             cfg.max_triangles = 3000000u;      // planet-wide triangle budget - the quadtree
                                                // auto-tunes its leaf cut to fit under this
             //heightmap defaults (StreamConfig) are tiny test bumps - tune here.
@@ -78,8 +85,11 @@ void Renderer::InitDevice() {
                                               (float)cfg.planet.center.y,
                                               (float)cfg.planet.center.z);
             m_camera.planetRadius           = (float)cfg.planet.radius;
-            m_camera.terrainHeightAmplitude = cfg.heightmap_amplitude;
-            m_camera.terrainHeightFrequency = cfg.heightmap_frequency;
+            //terrainHeightAmplitude / terrainHeightFrequency are vestigial from
+            //the sin/cos era - the shader now samples a baked heightmap. Left
+            //at zero until the cbuffer slots are repurposed.
+            m_camera.terrainHeightAmplitude = 0.0f;
+            m_camera.terrainHeightFrequency = 0.0f;
         }
 
         // CUDA/D3D12 interop. Optional — if this fails (no CUDA device, LUID
@@ -182,7 +192,7 @@ void Renderer::InitDevice() {
                     static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
                     static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
                     padded);
-                //async sum of |out| over the batch, harvested next frame by
+                //async sum of |terrain| over the batch, harvested next frame by
                 //the collapse detector in the NRC tick block
                 m_nrcNetwork.ScheduleInferenceOutSumReadback(
                     s,
@@ -270,6 +280,28 @@ void Renderer::InitDevice() {
         //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
         //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
         InitCloudCoverageTexture();
+        //Upload the baked planet heightmap cubemap (downsample to 4k per
+        //face). SRV at TERRAIN_HEIGHTMAP_HEAP_SLOT (register t45). Requires
+        //m_planet.init to have run already so its HeightmapCubemap is loaded.
+        // PLANET DISABLED 2026-06-10: skip the terrain texture uploads. The
+        // orchestrator still loads the heightmap from disk at init(), so these
+        // would otherwise upload regardless of cfg.enabled and keep perturbing
+        // the sky. With them commented out, m_terrain*Texture stay null and the
+        // SRV heap binds NULL descriptors at slots 69-72 (t45-t48) — the
+        // shaders already treat a null/zero sample as "no terrain":
+        // TerrainHeight()/TerrainCloudBaseHeight() return 0 (flat sphere, so
+        // clouds/atmosphere/sun get no terrain relief) and TerrainTintFromUV()
+        // returns false. Also avoids the large 8192^2 x6 cubemap uploads.
+        // Re-enable alongside cfg.enabled above.
+        //InitTerrainHeightmapTexture();
+        //Companion textures from the baker v8 output: surface_color (Mars
+        //tint, t46), normal map (t47), and cloud_offset (smoothed elevation
+        //for cloud base lookup, t48). Each Init is a no-op if the bake
+        //didn't produce that layer; the shaders fall back to the legacy
+        //constants in that case.
+        //InitTerrainSurfaceColorTexture();
+        //InitTerrainNormalTexture();
+        //InitTerrainCloudOffsetTexture();
         //Bake the 128x128x64 spatiotemporal blue noise array. SRV lands at
         //CLOUD_STBN_HEAP_SLOT (register t41). Drives CloudRand4 so the
         //cloud march's per pixel jitter has blue noise spatial spectrum.
@@ -340,9 +372,70 @@ void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
 
 void Renderer::InitSceneGPU() {
     try {
+        //PLANET ROCKS: generate boulder variants and register them as ordinary
+        //scene meshes (geometry -> combined buffers, one BLAS each) BEFORE the
+        //buffers are built. No scene instances are created for them; the rock
+        //streamer emits their TLAS instances per frame. CreateProceduralMesh
+        //builds each BLAS, so CreateAccelerationStructures below skips them.
+        m_rockMeshIndices.clear();
+        if (m_planet.enabled()) {
+            const auto rockVariants =
+                planet::generate_rock_variants(/*count*/6, /*subdiv*/2, /*seed*/0xB0DECA11u);
+            Material rockMat;
+            rockMat.Kd             = DirectX::XMFLOAT4(0.30f, 0.27f, 0.24f, 1.0f);
+            rockMat.Ke             = DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f);
+            rockMat.Ni             = 1.0f;
+            rockMat.Pr_Pm_Ps_Pc    = DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
+            rockMat.albedoTexID    = -1;
+            rockMat.normalTexID    = -1;
+            rockMat.rmaTexID       = -1;
+            rockMat.alphaThreshold = 1.0f;
+            for (const auto& rm : rockVariants) {
+                std::vector<Vertex> rvtx;
+                rvtx.reserve(rm.vertices.size());
+                for (const auto& rv : rm.vertices)
+                    rvtx.emplace_back(DirectX::XMFLOAT3(rv.position.x, rv.position.y, rv.position.z),
+                                      DirectX::XMFLOAT4(rv.normal.x, rv.normal.y, rv.normal.z, 0.0f),
+                                      DirectX::XMFLOAT2(rv.u, rv.v));
+                m_rockMeshIndices.push_back(CreateProceduralMesh(rvtx, rm.indices, rockMat));
+            }
+        }
         CreateAccelerationStructures();
+        //PLANET: reserve the terrain region in the combined scene buffers (and
+        //append the flat terrain material) BEFORE the buffers are built. No-op
+        //when terrain is disabled (terrain_reservation() returns all zero).
+        {
+            const auto tr = m_planet.terrain_reservation();
+            m_scene.ReserveTerrain(tr.vertexElems, tr.indexElems, tr.matIDElems,
+                                   tr.triLightElems, tr.instanceSlots, tr.propsBase);
+        }
+        //PLANET ROCKS: reserve the rock instanceProps range after the terrain
+        //region (must precede CreateInstancePropertiesBuffer below).
+        if (m_planet.enabled()) m_scene.ReserveRocks(planet::MAX_ROCK_INSTANCES);
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
         m_ctx.FlushAndReset();
+        //PLANET ROCKS: variant geometry now lives in the combined buffers - read
+        //back each variant's base offsets + BLAS, hand them to the orchestrator,
+        //then configure the camera-following scatter.
+        if (m_planet.enabled() && !m_rockMeshIndices.empty()) {
+            std::vector<planet::StreamOrchestrator::RockVariantGPU> rockDescs;
+            rockDescs.reserve(m_rockMeshIndices.size());
+            for (UINT mi : m_rockMeshIndices) {
+                const auto& rmesh = m_scene.meshes[mi];
+                planet::StreamOrchestrator::RockVariantGPU d;
+                d.blas_va    = rmesh.blas ? rmesh.blas->GetGPUVirtualAddress() : 0;
+                d.vertexBase = rmesh.globalVertexBase;
+                d.indexBase  = rmesh.globalIndexBase;
+                d.triCount   = rmesh.opaqueTriCount;
+                rockDescs.push_back(d);
+            }
+            m_planet.set_rock_variants(m_scene.rockPropsBase, rockDescs);
+
+            planet::RockScatterConfig rc;
+            rc.planet    = m_planet.planet_geometry();
+            rc.max_rocks = planet::MAX_ROCK_INSTANCES;
+            m_rockScatter.configure(rc, (int)m_rockMeshIndices.size());
+        }
         m_lutUploadHeaps.clear();
         m_skyStarsUploadHeap.Reset();
 
@@ -358,6 +451,22 @@ void Renderer::InitSceneGPU() {
         m_dlss.CreateResources(m_ctx.Device(), GetWidth(), GetHeight());
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
+
+        //PLANET: hand the unified scene+terrain buffers to the orchestrator.
+        //Must run AFTER BuildGlobalMeshBuffers (combined buffers + mapped ptrs),
+        //CreateInstancePropertiesBuffer (terrain-slot capacity), UploadMaterials
+        //(terrainMatIDBase) and CreateShaderResourceHeap (terrainTriLightBase,
+        //set when CreateTriToLightIdBuffer runs inside it).
+        if (m_planet.enabled()) {
+            const auto tr = m_planet.terrain_reservation();
+            m_planet.bind_geometry(
+                m_scene.vertexGlobal.Get(), m_scene.vertexGlobalMapped,
+                m_scene.indexGlobal.Get(),  m_scene.indexGlobalMapped,
+                m_scene.instanceProperties.Get(),
+                m_scene.totalVertexCount, m_scene.totalIndexCount,
+                m_scene.combinedVertexCount(), tr.propsBase,
+                tr.leafSlots, m_scene.terrainMatIDBase, m_scene.terrainTriLightBase);
+        }
 
         m_scene.tlasDirty       = false;
         m_scene.tlasFullRebuild = false;
@@ -518,7 +627,7 @@ void Renderer::UpdateRenderer(float dt) {
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
     //ResetView (editor button) snapped prevView = view inside UploadGPUBuffer
-    //so MVs come out at zero this frame; tell DLSS RR to discard its history
+    //so MVs come terrain at zero this frame; tell DLSS RR to discard its history
     //so it doesn't blend the pre-reset frame on top of the new pose. Must
     //run before slEvaluateFeature(DLSS_RR) downstream.
     if (m_camera.ConsumeResetPending()) {
@@ -1177,6 +1286,21 @@ void Renderer::RenderFrame() {
         // per-frame unified TLAS rebuild (scene meshes + terrain + fallback).
         m_scene.RebuildTLASInstanceList();
         BuildPlanetSceneInstances();
+        //PLANET ROCKS: refresh the camera-following live set (hysteresis-gated
+        //inside update) and hand it to the orchestrator for this frame's TLAS.
+        if (m_planet.enabled() && !m_rockMeshIndices.empty()) {
+            const planet::CameraView pcam = MakePlanetCamera();
+            struct RockHeightAdapter : planet::IRockHeight {
+                const planet::HeightmapCubemap* hm = nullptr;
+                float sample_height_m(const planet::DVec3& d) const override {
+                    return hm ? hm->sample(d, 0) : 0.0f;
+                }
+            } adapter;
+            adapter.hm = &m_planet.heightmap();
+            m_rockScatter.update(pcam.position_world, adapter);
+            m_planet.set_rock_instances(m_rockScatter.live().data(),
+                                        (uint32_t)m_rockScatter.live().size());
+        }
         const uint32_t terrainHitGroup = (uint32_t)m_scene.instances.size() * 2u;
         m_planet.submit_work(m_planetSceneInstances.data(),
                              (uint32_t)m_planetSceneInstances.size(),
@@ -1248,6 +1372,9 @@ void Renderer::RenderFrame() {
                    << L" plan="            << ps.plan_ms << L"]"
                    << L" gpu_ms[blas=" << ps.blas_gpu_ms
                    << L" tlas="        << ps.tlas_gpu_ms << L"]"
+                   << L" DROPPED=" << ps.cells_dropped
+                   << L" geo_free=" << ps.geo_free_leaves
+                   << L" id_peak=" << ps.stable_id_peak
                    << std::endl;
 
         s_frameCount = 0;
@@ -1365,7 +1492,10 @@ void Renderer::HandleSceneStructuralChange() {
       D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN; sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = (UINT)m_scene.instances.size();
+      //PLANET: cover the terrain region too (and the buffer is the same fixed-
+      //size resource, since CreateInstancePropertiesBuffer is idempotent in
+      //terrain mode - so this just re-points the SRV at the unchanged buffer).
+      sd.Buffer.NumElements = m_scene.instancePropsCount();
       sd.Buffer.StructureByteStride = sizeof(InstanceProperties);
       m_ctx.Device()->CreateShaderResourceView(m_scene.instanceProperties.Get(), &sd, h); }
 
@@ -1535,7 +1665,7 @@ void Renderer::PopulateCommandList() {
 
     // NRC control constants (slots 24-27). NRC is only driving the
     // pipeline when the interop + tcnn stack initialised successfully —
-    // we mask out enabled/training when m_nrcReady is false so the
+    // we mask terrain enabled/training when m_nrcReady is false so the
     // fallback path stays exactly like the pre-NRC pipeline.
     //
     // Scene AABB is auto-recomputed every frame from mesh localAabbs +

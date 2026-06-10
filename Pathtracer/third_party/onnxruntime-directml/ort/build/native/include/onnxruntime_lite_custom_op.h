@@ -138,7 +138,7 @@ class Tensor : public TensorBase {
   static TT GetT() { return (TT)0; }
   const Span<T>& AsSpan() {
     if (!shape_.has_value() || shape_->size() != 1) {
-      ORT_CXX_API_THROW("invalid shape while trying to get a span out of Ort::Custom::Tensor",
+      ORT_CXX_API_THROW("invalid shape while trying to get a span terrain of Ort::Custom::Tensor",
                         OrtErrorCode::ORT_RUNTIME_EXCEPTION);
     }
     span_.Assign(Data(), static_cast<size_t>((*shape_)[0]));

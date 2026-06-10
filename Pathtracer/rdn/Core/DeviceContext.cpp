@@ -116,7 +116,7 @@ void DeviceContext::ExecuteAndPresent() {
         //Only a genuine device loss is fatal. A transient Present failure on
         //a live device — e.g. DLSS-G's Present hook returning a non-removal
         //error HRESULT — is survivable: drop the frame and continue. Throwing
-        //unconditionally here unwound a C++ exception out through the Win32
+        //unconditionally here unwound a C++ exception terrain through the Win32
         //WindowProc callback as a fatal STATUS_FATAL_USER_CALLBACK_EXCEPTION.
         if (FAILED(device->GetDeviceRemovedReason()))
             ThrowIfFailed(presentHr);
@@ -419,7 +419,7 @@ void DeviceContext::InitPlanetStreaming() {
 }
 
 void DeviceContext::ResetPlanetLists() {
-    //the allocator slot being reused: wait out its prior planet GPU work
+    //the allocator slot being reused: wait terrain its prior planet GPU work
     planetCopyFence.cpu_wait(planetCopyAtSlot[frameIndex]);
     planetComputeFence.cpu_wait(planetComputeAtSlot[frameIndex]);
 

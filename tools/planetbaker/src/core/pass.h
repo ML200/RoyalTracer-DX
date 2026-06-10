@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 #include "core/field_set.h"
@@ -46,6 +47,16 @@ public:
 
     virtual const char*   name()    const = 0;
     virtual std::uint64_t version() const = 0;
+
+    //Param-tree prefix this pass owns. Default is `<name>.`, so most passes
+    //don't need to override (impacts -> "impacts.", thermal -> "thermal.",
+    //hydraulic -> "hydraulic.", etc). Override when the pass-name and the
+    //declare_params prefix intentionally diverge - BedrockNoisePass is the
+    //only existing case (name = "bedrock_noise", prefix = "bedrock."). The
+    //Pipeline uses this for dirty-tracking and cache-key hashing; the UI
+    //uses it to iterate params for display. Returning the wrong prefix
+    //silently breaks both.
+    virtual std::string param_prefix() const { return std::string(name()) + "."; }
 
     virtual FieldSet reads()  const = 0;
     virtual FieldSet writes() const = 0;

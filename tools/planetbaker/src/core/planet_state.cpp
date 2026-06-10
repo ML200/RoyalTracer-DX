@@ -9,8 +9,16 @@ PlanetState::PlanetState(int face_resolution, PlanetFieldSet which)
       crust_age                 (CubedSphereGrid(face_resolution)),
       crust_type                (CubedSphereGrid(face_resolution)),
       sediment_thickness        (CubedSphereGrid(face_resolution)),
-      //Remaining fields default-construct empty (grid.n == 0). They're
-      //move-assigned a real allocation below when PlanetFieldSet::All is requested.
+      //water_column is allocated in BedrockOnly because HydraulicErosionPass
+      //runs in the bedrock-only pipeline; the rest of the climate / cloud /
+      //biome fields stay default-constructed (grid.n == 0) and are filled in
+      //below only when PlanetFieldSet::All is requested.
+      water_column              (CubedSphereGrid(face_resolution)),
+      //surface_color is allocated in BedrockOnly too because SurfaceColorPass
+      //runs as part of the heightmap pipeline; the viewer + BakePass both
+      //consume the result. ~16 bytes/cell adds ~6.4 GB at 8 k and ~100 MB at
+      //2 k preview.
+      surface_color             (CubedSphereGrid(face_resolution)),
       grid_                     (face_resolution),
       neighbors_                (grid_)
 {
@@ -20,11 +28,12 @@ PlanetState::PlanetState(int face_resolution, PlanetFieldSet which)
     crust_age.zero();
     crust_type.zero();
     sediment_thickness.zero();
+    water_column.zero();
+    surface_color.zero();
 
     if (which == PlanetFieldSet::All) {
         soil_thickness            = Field<float>       (grid_);
         ice_thickness             = Field<float>       (grid_);
-        water_column              = Field<float>       (grid_);
         vegetation_density        = Field<float>       (grid_);
         surface_temperature_mean  = Field<float>       (grid_);
         surface_temperature_range = Field<float>       (grid_);
@@ -41,7 +50,6 @@ PlanetState::PlanetState(int face_resolution, PlanetFieldSet which)
 
         soil_thickness.zero();
         ice_thickness.zero();
-        water_column.zero();
         vegetation_density.zero();
         surface_temperature_mean.zero();
         surface_temperature_range.zero();
@@ -62,16 +70,22 @@ std::size_t estimate_planet_state_bytes(int face_resolution, PlanetFieldSet whic
     const std::size_t cells_per_face = static_cast<std::size_t>(face_resolution + 2 * CubedSphereGrid::HALO);
     const std::size_t total_cells    = 6 * cells_per_face * cells_per_face;
 
-    //Bedrock-pipeline fields always allocated: 5 float (bedrock_elevation,
-    //crust_thickness/density/age + sediment_thickness for impacts ejecta)
-    //+ 1 uint8 (crust_type) per cell = 21 bytes.
-    const std::size_t bedrock_bytes_per_cell = 5 * sizeof(float) + sizeof(std::uint8_t);
+    //Bedrock-pipeline fields always allocated: 6 float (bedrock_elevation,
+    //crust_thickness/density/age + sediment_thickness for impacts ejecta +
+    //water_column for hydraulic erosion) + 1 uint8 (crust_type) + 1 float4
+    //(surface_color RGBA for SurfaceColorPass) per cell.
+    const std::size_t bedrock_bytes_per_cell =
+          6 * sizeof(float)
+        +  sizeof(std::uint8_t)
+        +  4 * sizeof(float);   //surface_color RGBA
     std::size_t bytes = total_cells * bedrock_bytes_per_cell;
 
     if (which == PlanetFieldSet::All) {
-        //14 additional float fields + 1 float2 + 1 float4.
+        //13 additional float fields + 1 float2 + 1 float4 (water_column +
+        //surface_color moved out of the All-only block into the always-
+        //allocated set).
         const std::size_t extra_bytes_per_cell =
-              14 * sizeof(float)
+              13 * sizeof(float)
             +  1 * 2 * sizeof(float)
             +  1 * 4 * sizeof(float);
         bytes += total_cells * extra_bytes_per_cell;
@@ -115,6 +129,7 @@ std::span<const FieldDescriptor> PlanetState::descriptors() {
         PB_F(cloud_top_altitude,        F1, 1,    0.0f,   20.0f),
         PB_F(biome_weights,             F4, 4,    0.0f,    1.0f),
         PB_F(surface_elevation,         F1, 1,   -3.0f,    3.0f),
+        PB_F(surface_color,             F4, 4,    0.0f,    1.0f),
     };
     return std::span<const FieldDescriptor>(table, sizeof(table) / sizeof(table[0]));
 }

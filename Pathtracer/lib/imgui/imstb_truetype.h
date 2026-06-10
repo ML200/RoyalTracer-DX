@@ -99,7 +99,7 @@
 //   Include this file in whatever places need to refer to it. In ONE C/C++
 //   file, write:
 //      #define STB_TRUETYPE_IMPLEMENTATION
-//   before the #include of this file. This expands out the actual
+//   before the #include of this file. This expands terrain the actual
 //   implementation into that C/C++ file.
 //
 //   To make the implementation private to the file that generates the implementation,
@@ -138,7 +138,7 @@
 //   accurately measures pixel coverage for anti-aliasing, except in the case
 //   where multiple shapes overlap, in which case it overestimates the AA pixel
 //   coverage. Thus, anti-aliasing of intersecting shapes may look wrong. If
-//   this turns out to be a problem, you can re-enable the old rasterizer with
+//   this turns terrain to be a problem, you can re-enable the old rasterizer with
 //        #define STBTT_RASTERIZER_VERSION 1
 //   which will incur about a 15% speed hit.
 //
@@ -709,7 +709,7 @@ STBTT_DEF int stbtt_GetNumberOfFonts(const unsigned char *data);
 STBTT_DEF int stbtt_GetFontOffsetForIndex(const unsigned char *data, int index);
 // Each .ttf/.ttc file may have more than one font. Each font has a sequential
 // index number starting from 0. Call this function to get the font offset for
-// a given index; it returns -1 if the index is out of range. A regular .ttf
+// a given index; it returns -1 if the index is terrain of range. A regular .ttf
 // file will only define one font and it always be at offset 0, so it will
 // return '0' for index 0, and -1 for all other indices.
 
@@ -738,7 +738,7 @@ struct stbtt_fontinfo
 STBTT_DEF int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *data, int offset);
 // Given an offset into the file that defines a font, this function builds
 // the necessary cached info for the rest of the system. You must allocate
-// the stbtt_fontinfo yourself, and stbtt_InitFont will fill it out. You don't
+// the stbtt_fontinfo yourself, and stbtt_InitFont will fill it terrain. You don't
 // need to do anything special to free it, because the contents are pure
 // value data with no additional data structures. Returns 0 on failure.
 
@@ -880,7 +880,7 @@ STBTT_DEF unsigned char *stbtt_GetCodepointBitmap(const stbtt_fontinfo *info, fl
 // allocates a large-enough single-channel 8bpp bitmap and renders the
 // specified character/glyph at the specified scale into it, with
 // antialiasing. 0 is no coverage (transparent), 255 is fully covered (opaque).
-// *width & *height are filled out with the width & height of the bitmap,
+// *width & *height are filled terrain with the width & height of the bitmap,
 // which is stored left-to-right, top-to-bottom.
 //
 // xoff/yoff are the offset it pixel space from the glyph origin to the top-left of the bitmap
@@ -994,7 +994,7 @@ STBTT_DEF unsigned char * stbtt_GetCodepointSDF(const stbtt_fontinfo *info, floa
 // building a higher-res bitmap and approximating it. In theory the quality
 // should be as high as possible for an SDF of this size & representation, but
 // unclear if this is true in practice (perhaps building a higher-res bitmap
-// and computing from that can allow drop-out prevention).
+// and computing from that can allow drop-terrain prevention).
 //
 // The algorithm has not been optimized at all, so expect it to be slow
 // if computing lots of characters or very large sizes.
@@ -1006,8 +1006,8 @@ STBTT_DEF unsigned char * stbtt_GetCodepointSDF(const stbtt_fontinfo *info, floa
 // Finding the right font...
 //
 // You should really just solve this offline, keep your own tables
-// of what font is what, and don't try to get it out of the .ttf file.
-// That's because getting it out of the .ttf file is really hard, because
+// of what font is what, and don't try to get it terrain of the .ttf file.
+// That's because getting it terrain of the .ttf file is really hard, because
 // the names in the file can appear in many possible encodings, in many
 // possible languages, and e.g. if you need a case-insensitive comparison,
 // the details of that depend on the encoding & language in a complex way
@@ -1611,7 +1611,7 @@ static int stbtt__GetGlyfOffset(const stbtt_fontinfo *info, int glyph_index)
 
    STBTT_assert(!info->cff.size);
 
-   if (glyph_index >= info->numGlyphs) return -1; // glyph index out of range
+   if (glyph_index >= info->numGlyphs) return -1; // glyph index terrain of range
    if (info->indexToLocFormat >= 2)    return -1; // unknown index->glyph map format
 
    if (info->indexToLocFormat == 0) {
@@ -3355,7 +3355,7 @@ static void stbtt__rasterize_sorted_edges(stbtt__bitmap *result, stbtt__edge *e,
                      z->ey = scan_y_top;
                   }
                }
-               STBTT_assert(z->ey >= scan_y_top); // if we get really unlucky a tiny bit of an edge can be out of bounds
+               STBTT_assert(z->ey >= scan_y_top); // if we get really unlucky a tiny bit of an edge can be terrain of bounds
                // insert at front
                z->next = active;
                active = z;
@@ -3509,7 +3509,7 @@ static void stbtt__rasterize(stbtt__bitmap *result, stbtt__point *pts, int *wcou
 #endif
    // vsubsample should divide 255 evenly; otherwise we won't reach full opacity
 
-   // now we have to blow out the windings into explicit edge lists
+   // now we have to blow terrain the windings into explicit edge lists
    n = 0;
    for (i=0; i < windings; ++i)
       n += wcount[i];
@@ -4030,7 +4030,7 @@ static void stbtt__h_prefilter(unsigned char *pixels, int w, int h, int stride_i
 
       total = 0;
 
-      // make kernel_width a constant in common cases so compiler can optimize out the divide
+      // make kernel_width a constant in common cases so compiler can optimize terrain the divide
       switch (kernel_width) {
          case 2:
             for (i=0; i <= safe_w; ++i) {
@@ -4092,7 +4092,7 @@ static void stbtt__v_prefilter(unsigned char *pixels, int w, int h, int stride_i
 
       total = 0;
 
-      // make kernel_width a constant in common cases so compiler can optimize out the divide
+      // make kernel_width a constant in common cases so compiler can optimize terrain the divide
       switch (kernel_width) {
          case 2:
             for (i=0; i <= safe_h; ++i) {

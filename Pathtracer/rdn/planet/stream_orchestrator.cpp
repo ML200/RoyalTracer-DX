@@ -4,10 +4,12 @@
 
 #include "stream_orchestrator.h"
 #include "../Core/DeviceContext.h"
+#include "../Common.h"          // InstanceProperties + DirectXMath (terrain instance props)
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 namespace {
 //frames a retired generation is kept before release - long enough that no
@@ -19,6 +21,88 @@ inline void make_translation(float m[12], const planet::DVec3& t) {
     m[0]=1.f; m[1]=0.f; m[2]=0.f;  m[3]=(float)t.x;
     m[4]=0.f; m[5]=1.f; m[6]=0.f;  m[7]=(float)t.y;
     m[8]=0.f; m[9]=0.f; m[10]=1.f; m[11]=(float)t.z;
+}
+
+//Fill a terrain cell's InstanceProperties. The cell geometry is cell-local
+//(relative to anchor_world), so object->world is a pure translation by
+//(anchor - sceneOrigin) - same as the TLAS instance transform - and the normal
+//matrix is identity. index/vertex bases point at the cell's slot in the
+//combined buffer; material/light bases at the shared terrain regions;
+//opaqueTriCount = K*MAX_CHUNK_TRIS (single opaque geometry).
+//
+//prev == cur: terrain is WORLD-STATIC, and the camera's prevView is already
+//re-expressed in the CURRENT floating-origin frame (the camera adjusts it on a
+//snap - exactly how Scene handles static meshes), so the previous-frame
+//object->world is the current one. Using (anchor - prevOrigin) here instead put
+//prev in the OLD origin frame, skewing motion vectors by the snap delta on
+//every floating-origin snap - rare when crawling, frequent when flying fast,
+//which is why fast flight ghosted/mis-loaded freshly-streamed cells.
+inline void fill_terrain_props(InstanceProperties& p, const planet::CellInstance& c,
+                               const planet::DVec3& origin,
+                               uint32_t matIDBase, uint32_t triLightBase) {
+    using namespace DirectX;
+    const double dx  = c.anchor_world.x - origin.x;
+    const double dy  = c.anchor_world.y - origin.y;
+    const double dz  = c.anchor_world.z - origin.z;
+    const XMMATRIX M    = XMMatrixTranslation( (float)dx,  (float)dy,  (float)dz);
+    const XMMATRIX Minv = XMMatrixTranslation(-(float)dx, -(float)dy, -(float)dz);
+    p.objectToWorld            = M;
+    p.objectToWorldInverse     = Minv;
+    p.prevObjectToWorld        = M;
+    p.prevObjectToWorldInverse = Minv;
+    p.objectToWorldNormal      = XMMatrixIdentity();
+    p.prevObjectToWorldNormal  = XMMatrixIdentity();
+    p.indexBase      = c.idx_base_elems;
+    p.vertexBase     = c.vtx_base_elems;
+    p.materialBase   = matIDBase;
+    p.triToLightBase = triLightBase;
+    p.opaqueTriCount = c.geo_tri_count;
+    //_pad[0] = terrain marker + cube face: 0 = scene mesh, 1..6 = terrain on
+    //face 0..5. Scene InstanceProperties zero-init _pad and never write it, so
+    //the raygen tint lookup keys on this alone (no instID-range assumption).
+    //A cell is a single-face subtree, so node_id's face is the whole cell's.
+    const uint8_t face = planet::unpack_node_id(c.node_id).face;
+    p._pad[0] = 1u + (uint32_t)(face & 0x7u);
+    p._pad[1] = 1u;   // flat per-triangle shading (planet terrain)
+    p._pad[2] = 0u;
+}
+
+//PLANET ROCKS: fill a scene-style InstanceProperties for one scatter rock.
+//Rocks shade as scene meshes (_pad[0]=0 -> no terrain tint / detail-normal) and
+//reuse the terrain shared material + tri-light regions (both filled with the
+//flat terrain material / no-light sentinel), so they render as rough terrain-
+//coloured boulders. objectToWorld is built so HLSL's mul(objectToWorld,
+//float4(local,1)) == rot_scale*local + (anchor-origin), i.e. it matches the
+//TLAS instance 3x4 that record_tlas emits for the same rock.
+inline void fill_rock_props(InstanceProperties& p,
+                            const planet::RockInstance& r,
+                            const planet::StreamOrchestrator::RockVariantGPU& var,
+                            const planet::DVec3& origin,
+                            uint32_t matIDBase, uint32_t triLightBase) {
+    using namespace DirectX;
+    const float tx = (float)(r.anchor_world.x - origin.x);
+    const float ty = (float)(r.anchor_world.y - origin.y);
+    const float tz = (float)(r.anchor_world.z - origin.z);
+    const XMMATRIX M = XMMatrixSet(
+        r.rot_scale[0], r.rot_scale[3], r.rot_scale[6], 0.0f,
+        r.rot_scale[1], r.rot_scale[4], r.rot_scale[7], 0.0f,
+        r.rot_scale[2], r.rot_scale[5], r.rot_scale[8], 0.0f,
+        tx,             ty,             tz,             1.0f);
+    const XMMATRIX Minv = XMMatrixInverse(nullptr, M);
+    p.objectToWorld            = M;
+    p.objectToWorldInverse     = Minv;
+    p.prevObjectToWorld        = M;
+    p.prevObjectToWorldInverse = Minv;
+    p.objectToWorldNormal      = M;   // uniform scale -> the shading path renormalizes
+    p.prevObjectToWorldNormal  = M;
+    p.indexBase      = var.indexBase;
+    p.vertexBase     = var.vertexBase;
+    p.materialBase   = matIDBase;     // reuse terrain's shared flat-material region
+    p.triToLightBase = triLightBase;  // reuse terrain's no-light region
+    p.opaqueTriCount = var.triCount;
+    p._pad[0] = 0u;                   // scene mesh: no terrain tint / detail-normal
+    p._pad[1] = 1u;                   // but DO flat per-triangle shade (planet rock)
+    p._pad[2] = 0u;
 }
 }
 
@@ -33,11 +117,28 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
     m_ctx    = ctx;
     m_cfg    = cfg;
 
-    m_heightmap.amplitude = cfg.heightmap_amplitude;
-    m_heightmap.frequency = cfg.heightmap_frequency;
+    //Load the baked cubemap heightmap from the runtime include/terrain/ copy.
+    //Failure leaves the heightmap empty - the tessellator will see all zeros,
+    //which renders a perfect sphere instead of crashing.
+    // PLANET DISABLED 2026-06-10: skip the terrain-data load entirely when the
+    // planet is off. The baked terrain set (include/terrain/: elevation_face*.r32,
+    // surface_color/normal PNGs, cloud_offset_face*.r32, manifest.json) is too
+    // large to commit, so it is no longer shipped. With the planet disabled
+    // nothing consumes the heightmap anyway — generation is gated off and the
+    // InitTerrain* GPU uploads are commented out in Renderer — so gating the
+    // load on cfg.enabled keeps the runtime free of any ./terrain dependency
+    // (no disk probe, no "load failed" log). Re-enabling the planet restores
+    // this load, which still degrades gracefully to a flat sphere if the data
+    // files happen to be absent.
+    if (cfg.enabled) {
+        if (!m_heightmap.load(cfg.heightmap_dir)) {
+            std::wcout << L"[planet] heightmap load failed; planet will render flat"
+                       << std::endl;
+        }
+    }
 
     //unified TLAS: every terrain cell + the scene-instance allowance.
-    m_tlas.init(device, MAX_TERRAIN_CELLS + cfg.max_scene_instances);
+    m_tlas.init(device, MAX_TERRAIN_CELLS + cfg.max_scene_instances + MAX_ROCK_INSTANCES);
 
     //terrain table: one TerrainSlotGPU per stable id, persistently-mapped upload heap.
     m_terrainTable = create_buffer(device, (uint64_t)MAX_TERRAIN_CELLS * sizeof(TerrainSlotGPU),
@@ -89,6 +190,40 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
                << m_workers.thread_count() << L")" << std::endl;
 }
 
+void StreamOrchestrator::set_rock_variants(uint32_t propsBase,
+                                           const std::vector<RockVariantGPU>& variants) {
+    m_rockPropsBase = propsBase;
+    m_rockVariants  = variants;
+}
+
+void StreamOrchestrator::set_rock_instances(const RockInstance* insts, uint32_t count) {
+    if (insts && count) m_rockInstances.assign(insts, insts + count);
+    else                m_rockInstances.clear();
+}
+
+//====================================
+//BIND GEOMETRY - wire the unified scene+terrain buffers (after scene load)
+//====================================
+void StreamOrchestrator::bind_geometry(ID3D12Resource* combinedVtx, uint8_t* vtxMapped,
+                                       ID3D12Resource* combinedIdx, uint8_t* idxMapped,
+                                       ID3D12Resource* instanceProps,
+                                       uint32_t sceneVertexCount, uint32_t sceneIndexCount,
+                                       uint32_t combinedVertexCount, uint32_t terrainPropsBase,
+                                       uint32_t terrainLeafSlots, uint32_t terrainMatIDBase,
+                                       uint32_t terrainTriLightBase) {
+    //the terrain region begins right after the scene data in the combined
+    //buffers (vertex base = sceneVertexCount, index base = sceneIndexCount).
+    m_geoPool.init(sceneVertexCount, sceneIndexCount, terrainLeafSlots);
+    m_instanceProps       = instanceProps;
+    m_terrainPropsBase    = terrainPropsBase;   // FIXED (= scene capacity), not the live scene count
+    m_terrainMatIDBase    = terrainMatIDBase;
+    m_terrainTriLightBase = terrainTriLightBase;
+    m_builder.set_geometry(&m_geoPool, vtxMapped, idxMapped,
+                           combinedVtx->GetGPUVirtualAddress(),
+                           combinedIdx->GetGPUVirtualAddress(),
+                           combinedVertexCount);
+}
+
 //====================================
 //PARAMS
 //====================================
@@ -105,11 +240,20 @@ GenerationParams StreamOrchestrator::make_params() const {
 }
 
 //assign each cell a stable terrain-table id by its node; a cell reused across a
-//ping-pong swap keeps its id, so its ReSTIR/DLSS history survives.
+//ping-pong swap keeps its id, so its ReSTIR/DLSS history survives. Retain by the
+//set of LIVE cell nodes (not just cellSet cells) so split-fallback sub-cells -
+//whose node_id is a leaf, not a cellSet cell node - keep their id; without this
+//their id would be recycled while they still render, colliding with another
+//cell. INVALID_NODE cells are split originals that were replaced - skip them.
 void StreamOrchestrator::assign_stable_ids(Generation& g) {
-    for (CellInstance& c : g.cells)
+    std::unordered_set<uint64_t> liveNodes;
+    liveNodes.reserve(g.cells.size());
+    for (CellInstance& c : g.cells) {
+        if (c.node_id == INVALID_NODE) continue;   // replaced-by-split original; not rendered
         c.stable_id = m_ids.get(c.node_id);
-    m_ids.retain([&g](uint64_t node) { return g.cellSet.is_cell(node); });
+        liveNodes.insert(c.node_id);
+    }
+    m_ids.retain([&liveNodes](uint64_t node) { return liveNodes.count(node) != 0; });
 }
 
 //====================================
@@ -175,7 +319,7 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
         return;
     }
 
-    //--- advance the builder's state machine (plan-done -> fan out tess jobs) ---
+    //--- advance the builder's state machine (plan-done -> fan terrain tess jobs) ---
     m_builder.poll();
 
     //--- a finished rebuild swaps in as the new LIVE generation ---
@@ -193,18 +337,28 @@ void StreamOrchestrator::begin_frame(uint32_t frame_index, const CameraView& cam
         if (length(d) > (double)m_cfg.rebuild_trigger_m) {
             //predict where the camera will be when this rebuild completes, and
             //aim the new LOD there - so it lands fresh, not already stale.
+            //
+            //The clamp is a sanity cap against velocity spikes (a teleport
+            //would otherwise push the predicted target hundreds of km off and
+            //all chunks would be rebuilt at the wrong LOD). The earlier 4 x
+            //trigger_m cap was way too tight: any camera moving faster than
+            //~0.2 m/frame had its prediction clipped to 4 m, so the rebuilt
+            //LOD landed several seconds behind the actual camera and chunks
+            //read as stuck at the previous resolution. 256 m comfortably
+            //covers normal flight (a 100 m/s camera + 30-frame rebuild moves
+            //50 m) while still discarding genuine teleports.
             DVec3 predicted = cam.position_world;
             if (m_cfg.predict) {
                 DVec3        off    = m_camVel * (double)m_throughput.rebuild_frames;
                 const double L      = length(off);
-                const double maxoff = 4.0 * (double)m_cfg.rebuild_trigger_m;
+                const double maxoff = 256.0;
                 if (L > maxoff && L > 0.0) off = off * (maxoff / L);   // clamp a wild prediction
                 predicted = cam.position_world + off;
             }
             CameraView predCam = cam;
             predCam.position_world = predicted;
             //async begin: enqueues the plan job, returns immediately. The
-            //next poll() (above, next frame) sees plan_done and fans out the
+            //next poll() (above, next frame) sees plan_done and fans terrain the
             //per-cell tess jobs onto the worker pool.
             m_builder.begin(m_device, make_params(), predCam, &m_live,
                             m_heightmap, m_workers);
@@ -296,6 +450,8 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     m_stats.cell_count     = (uint32_t)m_live.cells.size();
     m_stats.triangle_count = m_live.triangle_count;
     m_stats.tlas_instances = m_tlas.instance_count();
+    m_stats.geo_free_leaves = m_geoPool.free_leaves();
+    m_stats.stable_id_peak  = m_ids.peak();
     if (m_builder.active()) {
         m_stats.dirty_total          = m_builder.dirty_total();
         m_stats.dirty_built           = m_builder.dirty_built();
@@ -330,28 +486,70 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
                             (D3D12_RAYTRACING_INSTANCE_FLAGS)s.flags);
     }
 
-    for (uint32_t i = 0; i < MAX_TERRAIN_CELLS; ++i) m_curNode[i] = INVALID_NODE;
+    //map the instance-properties terrain region for this frame's terrain entries
+    //(disjoint from the scene region the Scene writes; both are UPLOAD heap).
+    InstanceProperties* props = nullptr;
+    if (m_instanceProps) {
+        D3D12_RANGE nr{ 0, 0 };
+        if (FAILED(m_instanceProps->Map(0, &nr, (void**)&props))) props = nullptr;
+    }
 
-    //one TLAS instance per LIVE cell. InstanceID = base + the cell's stable id
-    //(stable across ping-pong swaps). The cell geometry is cell-local, so the
-    //instance transform is a pure translation by the cell anchor.
+    //one TLAS instance per LIVE cell. InstanceID = m_terrainPropsBase (FIXED =
+    //scene capacity) + the cell's stable id - a REAL instanceProps index
+    //(< TERRAIN_INSTANCE_BASE), so terrain shades through the unified
+    //EvalSurfaceState path. The base is FIXED (independent of the live scene
+    //instance count), and stable_id is hard-capped below, so instID is provably
+    //in [m_terrainPropsBase, m_terrainPropsBase + MAX_TERRAIN_CELLS) - always
+    //within the instanceProps buffer (sized propsBase + MAX_TERRAIN_CELLS) and
+    //never overlapping the scene region [0, propsBase). The cell geometry is
+    //cell-local, so the instance transform is a pure translation.
+    uint32_t dropped = 0;
     for (const CellInstance& c : m_live.cells) {
-        if (c.stable_id >= MAX_TERRAIN_CELLS) continue;          // fail-soft
+        if (c.node_id == INVALID_NODE) continue;   // split original, replaced by sub-cells (not a hole)
+        //HARD safety bound: stable_id MUST be < MAX_TERRAIN_CELLS or the write
+        //below (and the shader's instanceProps[instID]) would run past the
+        //reserved terrain region. The StableIdMap's high-water mark is bounded
+        //by the peak live-cell count (< MAX_TERRAIN_CELLS for any sane budget),
+        //but a pathological cut is dropped here rather than risking an OOB.
+        if (c.stable_id >= MAX_TERRAIN_CELLS) { ++dropped; continue; }  // id overflow -> HOLE
+        if (c.blas_va == 0)                   { ++dropped; continue; }  // pool exhausted -> HOLE
+        const uint32_t instID = m_terrainPropsBase + c.stable_id;
         float xform[12];
         make_translation(xform, c.anchor_world - m_sceneOrigin);
-        m_tlas.add_instance(c.blas_va, xform, TERRAIN_INSTANCE_BASE + c.stable_id,
+        m_tlas.add_instance(c.blas_va, xform, instID,
                             terrain_hit_group, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE);
-        m_curNode[c.stable_id] = c.node_id;
+        if (props)
+            fill_terrain_props(props[instID], c, m_sceneOrigin,
+                               m_terrainMatIDBase, m_terrainTriLightBase);
     }
 
-    //publish the terrain table: per slot the current cell node, and 'changed'
-    //if a different cell took that slot since last frame (a swap reshuffled it).
-    for (uint32_t i = 0; i < MAX_TERRAIN_CELLS; ++i) {
-        m_terrainTableMapped[i].node_lo = (uint32_t)(m_curNode[i] & 0xFFFFFFFFull);
-        m_terrainTableMapped[i].node_hi = (uint32_t)(m_curNode[i] >> 32);
-        m_terrainTableMapped[i].changed = (m_curNode[i] != m_terrainNodePrev[i]) ? 1u : 0u;
-        m_terrainNodePrev[i] = m_curNode[i];
+    //PLANET ROCKS: one TLAS instance + InstanceProperties per live scatter rock,
+    //in the reserved range [m_rockPropsBase, m_rockPropsBase + MAX_ROCK_INSTANCES).
+    //Rocks shade as scene meshes sharing the terrain material/tri-light regions.
+    for (const RockInstance& r : m_rockInstances) {
+        if (r.stable_id >= MAX_ROCK_INSTANCES)    continue;
+        if (r.variant   >= m_rockVariants.size()) continue;
+        const RockVariantGPU& var = m_rockVariants[r.variant];
+        if (var.blas_va == 0)                     continue;
+        const uint32_t instID = m_rockPropsBase + r.stable_id;
+        const float tx = (float)(r.anchor_world.x - m_sceneOrigin.x);
+        const float ty = (float)(r.anchor_world.y - m_sceneOrigin.y);
+        const float tz = (float)(r.anchor_world.z - m_sceneOrigin.z);
+        //row-major 3x4 (world = M * [local,1]); 3x3 = rot_scale, translation in col 3.
+        const float xform[12] = {
+            r.rot_scale[0], r.rot_scale[1], r.rot_scale[2], tx,
+            r.rot_scale[3], r.rot_scale[4], r.rot_scale[5], ty,
+            r.rot_scale[6], r.rot_scale[7], r.rot_scale[8], tz,
+        };
+        m_tlas.add_instance(var.blas_va, xform, instID,
+                            terrain_hit_group, D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE);
+        if (props)
+            fill_rock_props(props[instID], r, var, m_sceneOrigin,
+                            m_terrainMatIDBase, m_terrainTriLightBase);
     }
+
+    if (props) m_instanceProps->Unmap(0, nullptr);
+    m_stats.cells_dropped = dropped;
 
     m_tlas.build(compute_cl);
 }

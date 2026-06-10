@@ -122,7 +122,7 @@ namespace detail
 		GLM_FUNC_QUALIFIER void _apply_op(vecType<T, P> const& that, U op)
 		{
 			// Make a copy of the data in this == &that.
-			// The copier should optimize out the copy in cases where the function is
+			// The copier should optimize terrain the copy in cases where the function is
 			// properly inlined and the copy is not necessary.
 			T t[N];
 			for (int i = 0; i < N; ++i)

@@ -18,7 +18,7 @@ public:
     //surface displacement (metres) along a unit direction, at a given LOD.
     virtual float sample(const DVec3& dir_normalized, uint8_t lod) const = 0;
 
-    //fill out[0 .. n*n) with samples over an n x n grid of directions spanning
+    //fill terrain[0 .. n*n) with samples over an n x n grid of directions spanning
     //the patch  normalize(corner + s*du + t*dv)  for s,t in [0,1]. The default
     //loops sample(); override for a faster batched path. Must stay thread-safe.
     virtual void sample_grid(const DVec3& corner, const DVec3& du, const DVec3& dv,

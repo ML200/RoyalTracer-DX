@@ -50,7 +50,41 @@ void Scene::MarkAllInstancesDirty() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
+void Scene::ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems,
+                           UINT triLightElems, UINT instanceSlots, UINT propsBase) {
+    terrainVertexElems   = vertexElems;
+    terrainIndexElems    = indexElems;
+    terrainMatIDElems    = matIDElems;
+    terrainTriLightElems = triLightElems;
+    terrainInstanceSlots = instanceSlots;
+    terrainPropsBase     = propsBase;
+
+    //Append one flat terrain material (mirrors TERRAIN_ALBEDO / TERRAIN_ROUGHNESS
+    //in Constants_v8.hlsli): opaque, no textures, no emission. Every terrain
+    //triangle's materialID points here, so terrain decodes through the normal
+    //material path with no shader branch.
+    Material tm;
+    tm.Kd             = XMFLOAT4(0.42f, 0.36f, 0.30f, 1.0f);   // w=1 -> opaque
+    tm.Ke             = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    tm.Ni             = 1.0f;
+    tm.Pr_Pm_Ps_Pc    = XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);      // roughness=1 (fully diffuse), metalness=0
+    tm.albedoTexID    = -1;
+    tm.normalTexID    = -1;
+    tm.rmaTexID       = -1;
+    tm.alphaThreshold = 1.0f;
+    materials.push_back(tm);
+    terrainMatIndex = (UINT)materials.size() - 1;
+}
+
+void Scene::ReserveRocks(UINT instanceSlots) {
+    //Rocks live in a disjoint instanceProps range right after the terrain
+    //region; terrain occupies [terrainPropsBase, +terrainInstanceSlots).
+    rockInstanceSlots = instanceSlots;
+    rockPropsBase     = terrainPropsBase + terrainInstanceSlots;
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* /*cmdList*/) {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
 
     geoOffsets.resize(meshes.size());
@@ -66,28 +100,34 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     totalVertexCount = (UINT)totalV;
     totalIndexCount  = (UINT)totalI;
 
-    const UINT vbBytes = totalVertexCount * sizeof(BTriVertex);
-    const UINT ibBytes = totalIndexCount  * sizeof(uint32_t);
+    //PLANET: the terrain region follows the scene data in the same buffers.
+    terrainVertexBase = totalVertexCount;
+    terrainIndexBase  = totalIndexCount;
 
-    auto makeDefault = [&](UINT bytes, ComPtr<ID3D12Resource>& dst, const wchar_t* name) {
-        dst = nv_helpers_dx12::CreateBuffer(device, bytes,
-            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
-            nv_helpers_dx12::kDefaultHeapProps);
-        dst->SetName(name);
-    };
-    makeDefault(vbBytes, vertexGlobal, L"GlobalVertexBuffer");
-    makeDefault(ibBytes, indexGlobal,  L"GlobalIndexBuffer");
+    //UPLOAD-heap + persistently mapped: the planet tessellator writes terrain
+    //chunk meshes straight into their reserved slots (write-once before a cell
+    //is live), so no GPU copy / barrier is needed. The scene region is written
+    //here once. (Perf follow-up: move the SCENE region back to a DEFAULT heap +
+    //copy if scene-vertex fetch from system memory shows up in profiles.)
+    const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
+    const uint64_t ibBytes = (uint64_t)combinedIndexCount()  * sizeof(uint32_t);
 
-    ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(
-        device, vbBytes + ibBytes, D3D12_RESOURCE_FLAG_NONE,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+    vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes,
+        D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+        nv_helpers_dx12::kUploadHeapProps);
+    vertexGlobal->SetName(L"GlobalVertexBuffer");
+    indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes,
+        D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+        nv_helpers_dx12::kUploadHeapProps);
+    indexGlobal->SetName(L"GlobalIndexBuffer");
 
-    uint8_t* pUpload = nullptr;
-    CD3DX12_RANGE r(0, 0);
-    upload->Map(0, &r, (void**)&pUpload);
+    //persistent map (never unmapped; the planet writes into the terrain region).
+    CD3DX12_RANGE noRead(0, 0);
+    vertexGlobal->Map(0, &noRead, (void**)&vertexGlobalMapped);
+    indexGlobal->Map (0, &noRead, (void**)&indexGlobalMapped);
 
-    auto* dstVerts = reinterpret_cast<BTriVertex*>(pUpload);
-    auto* dstIdx   = reinterpret_cast<uint32_t*>(pUpload + vbBytes);
+    auto* dstVerts = reinterpret_cast<BTriVertex*>(vertexGlobalMapped);
+    auto* dstIdx   = reinterpret_cast<uint32_t*>(indexGlobalMapped);
 
     for (size_t m = 0; m < meshes.size(); ++m) {
         const auto& mesh = meshes[m];
@@ -108,25 +148,32 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
         for (UINT i = 0; i < mesh.indexCount; ++i)
             outI[i] = mesh.cpuIndices[i] + vBase;
     }
-    upload->Unmap(0, nullptr);
-
-    cmdList->CopyBufferRegion(vertexGlobal.Get(), 0, upload.Get(), 0, vbBytes);
-    cmdList->CopyBufferRegion(indexGlobal.Get(),  0, upload.Get(), vbBytes, ibBytes);
-
-    CD3DX12_RESOURCE_BARRIER br[] = {
-        CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
-        CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
-    };
-    cmdList->ResourceBarrier(_countof(br), br);
+    //terrain region left uninitialized: only LIVE cells (with a built BLAS and
+    //valid instanceProps) are referenced by the TLAS, and those slots are
+    //always written by the tessellator before the cell goes live.
 }
 
 // ─────────────────────────────────────────────────────────────────
 void Scene::CreateInstancePropertiesBuffer(ID3D12Device* device) {
-    uint32_t size = ROUND_UP(
-        static_cast<uint32_t>(instances.size()) * sizeof(InstanceProperties),
+    //PLANET: with terrain enabled the count is FIXED (terrainPropsBase +
+    //terrainInstanceSlots) - scene instances occupy [0, terrainPropsBase),
+    //terrain occupies [terrainPropsBase, +terrainInstanceSlots). Because the
+    //size is fixed, this buffer is created ONCE and reused across scene
+    //structural changes; that is what keeps the orchestrator's bound pointer
+    //(StreamOrchestrator::m_instanceProps) valid - reallocating it would dangle
+    //that pointer and leave terrain writing freed memory.
+    const uint32_t count = instancePropsCount();
+    const uint32_t size  = ROUND_UP(
+        count * sizeof(InstanceProperties),
         D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
+
+    //idempotent: keep the existing buffer if it already covers `size`. (Terrain
+    //mode: always true after the first create. No-terrain mode: grows as the
+    //scene instance count grows, matching the original behaviour.)
+    if (instanceProperties) {
+        const D3D12_RESOURCE_DESC d = instanceProperties->GetDesc();
+        if (d.Width >= size) return;
+    }
     instanceProperties = nv_helpers_dx12::CreateBuffer(
         device, size, D3D12_RESOURCE_FLAG_NONE,
         D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
@@ -252,7 +299,7 @@ void Scene::UploadInstanceProperties() {
     }
 
     // Finalize prev = current and keep dirty for one settle frame so the
-    // GPU receives the zeroed-out motion (prev == current) on the next upload.
+    // GPU receives the zeroed-terrain motion (prev == current) on the next upload.
     for (uint32_t idx : dirtyInstanceList) {
         auto& p = cpuInstanceProps[idx];
         bool alreadySettled = (memcmp(&p.prevObjectToWorld, &p.objectToWorld, sizeof(XMMATRIX)) == 0);
@@ -360,6 +407,15 @@ float Scene::ComputeTriangleWeight(
 // per-primitive materialID buffer. See MaterialSoA::BuildGpuPacked
 // and shaders/Material_Decoder_v8.hlsli for the layout.
 void Scene::UploadMaterials(ID3D12Device* device) {
+    //PLANET: append the shared terrain materialID region (every terrain
+    //triangle uses the one flat terrain material appended in ReserveTerrain).
+    //terrainMatIDBase is the element start; every terrain cell points its
+    //materialBase here. Done before the upload below picks up materialIDs.size().
+    if (terrainMatIDElems && terrainMatIDBase == 0) {
+        terrainMatIDBase = (UINT)materialIDs.size();
+        materialIDs.resize((size_t)terrainMatIDBase + terrainMatIDElems, terrainMatIndex);
+    }
+
     materials.BuildGpuPacked(materialPacked);
 
     {
@@ -406,6 +462,14 @@ void Scene::UpdateMaterialBuffer() {
 
 // ─────────────────────────────────────────────────────────────────
 void Scene::CreateTriToLightIdBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
+    //PLANET: append the shared terrain triToLightId region (all 0xFFFFFFFF =
+    //"not a light"), so terrain - shaded through the unified path - reports no
+    //emission and lightID = none. Done before the empty check so a scene with
+    //no emissive triangles still gets a valid buffer when terrain is enabled.
+    if (terrainTriLightElems && terrainTriLightBase == 0) {
+        terrainTriLightBase = (UINT)triToLightId.size();
+        triToLightId.resize((size_t)terrainTriLightBase + terrainTriLightElems, 0xFFFFFFFFu);
+    }
     if (triToLightId.empty()) return;
     const UINT bytes = (UINT)(triToLightId.size() * sizeof(uint32_t));
     ComPtr<ID3D12Resource> upload = nv_helpers_dx12::CreateBuffer(

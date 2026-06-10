@@ -38,6 +38,7 @@ enum class FieldId : std::uint8_t {
 
     BiomeWeights,
     SurfaceElevation,
+    SurfaceColor,
 
     Count
 };
@@ -111,6 +112,7 @@ inline const char* field_id_name(FieldId f) {
         case FieldId::CloudTopAltitude:         return "cloud_top_altitude";
         case FieldId::BiomeWeights:             return "biome_weights";
         case FieldId::SurfaceElevation:         return "surface_elevation";
+        case FieldId::SurfaceColor:             return "surface_color";
         case FieldId::Count:                    return "<count>";
     }
     return "<unknown>";

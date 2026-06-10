@@ -16,7 +16,6 @@ inline float3 LoadKd_rgb(uint matID)
 
 inline float LoadKd_w(uint matID)
 {
-    if (matID == MATID_TERRAIN) return 1.0f;   // PLANET: terrain is fully opaque
     return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
@@ -28,7 +27,6 @@ inline float4 LoadKd(uint matID)
 
 inline float LoadNi(uint matID)
 {
-    if (matID == MATID_TERRAIN) return 1.5f;   // PLANET: unused (terrain is opaque)
     return f16tof32(g_mat[matID].w_Ni >> 16);
 }
 

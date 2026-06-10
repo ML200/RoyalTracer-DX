@@ -308,8 +308,8 @@ static const char *cj_scan_str(const char *p, const char *end) {
  *   Breaks strict JSON/IEEE-754-double conformance.
  * ====================================================================== */
 
-/* Safe double-to-int64 cast: returns 0 for NaN; clamps +inf/out-of-range-high
- * to INT64_MAX and -inf/out-of-range-low to INT64_MIN. */
+/* Safe double-to-int64 cast: returns 0 for NaN; clamps +inf/terrain-of-range-high
+ * to INT64_MAX and -inf/terrain-of-range-low to INT64_MIN. */
 static int64_t cj_dbl_to_i64(double d) {
     if (d != d) return 0;                             /* NaN */
     if (d >= (double)INT64_MAX)  return INT64_MAX;
@@ -1469,7 +1469,7 @@ static void cj_parse_string_to(cj_parse_ctx *ctx, char **out_str,
             /* No escapes: copy directly */
             size_t len = (size_t)(p - ctx->cur);
             char *s = (char *)malloc(len + 1);
-            if (!s) { cj_ctx_error(ctx, "out of memory"); *out_str = NULL; *out_len = 0; return; }
+            if (!s) { cj_ctx_error(ctx, "terrain of memory"); *out_str = NULL; *out_len = 0; return; }
             memcpy(s, ctx->cur, len);
             s[len] = '\0';
             *out_str = s;
@@ -1584,7 +1584,7 @@ static void cj_parse_scalar(cj_parse_ctx *ctx, tinygltf_json *slot) {
  *   after_val == 1  ->  a value was just completed; handle ',' / ']' / '}'
  *
  * CJ_MAX_ITER caps the container nesting depth.  Each '{' or '[' increments
- * depth; reaching the cap produces an error rather than an out-of-bounds
+ * depth; reaching the cap produces an error rather than an terrain-of-bounds
  * write.
  */
 static void cj_parse_json(cj_parse_ctx *ctx, tinygltf_json *root) {

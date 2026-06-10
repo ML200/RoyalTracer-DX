@@ -219,7 +219,7 @@ GLM_FUNC_QUALIFIER glm_vec4 glm_vec4_smoothstep(glm_vec4 edge0, glm_vec4 edge1, 
 GLM_FUNC_QUALIFIER glm_vec4 glm_vec4_nan(glm_vec4 x)
 {
 	glm_ivec4 const t1 = _mm_castps_si128(x);						// reinterpret as 32-bit integer
-	glm_ivec4 const t2 = _mm_sll_epi32(t1, _mm_cvtsi32_si128(1));	// shift out sign bit
+	glm_ivec4 const t2 = _mm_sll_epi32(t1, _mm_cvtsi32_si128(1));	// shift terrain sign bit
 	glm_ivec4 const t3 = _mm_set1_epi32(0xFF000000);				// exponent mask
 	glm_ivec4 const t4 = _mm_and_si128(t2, t3);						// exponent
 	glm_ivec4 const t5 = _mm_andnot_si128(t3, t2);					// fraction
@@ -233,7 +233,7 @@ GLM_FUNC_QUALIFIER glm_vec4 glm_vec4_nan(glm_vec4 x)
 GLM_FUNC_QUALIFIER glm_vec4 glm_vec4_inf(glm_vec4 x)
 {
 	glm_ivec4 const t1 = _mm_castps_si128(x);										// reinterpret as 32-bit integer
-	glm_ivec4 const t2 = _mm_sll_epi32(t1, _mm_cvtsi32_si128(1));					// shift out sign bit
+	glm_ivec4 const t2 = _mm_sll_epi32(t1, _mm_cvtsi32_si128(1));					// shift terrain sign bit
 	return _mm_castsi128_ps(_mm_cmpeq_epi32(t2, _mm_set1_epi32(0xFF000000)));		// exponent is all 1s, fraction is 0
 }
 

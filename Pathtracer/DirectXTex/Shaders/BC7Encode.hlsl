@@ -356,7 +356,7 @@ void TryMode456CS(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID) // mode 4
     uint rotation = 0;
 
     uint2 indexPrec;
-    if (threadInBlock < 8) // all threads of threadInBlock < 8 will be working on trying out mode 4, since only mode 4 has index selector bit
+    if (threadInBlock < 8) // all threads of threadInBlock < 8 will be working on trying terrain mode 4, since only mode 4 has index selector bit
     {
         if (0 == (threadInBlock & 1)) // thread 0, 2, 4, 6
         {
@@ -503,7 +503,7 @@ void TryMode456CS(uint GI : SV_GroupIndex, uint3 groupID : SV_GroupID) // mode 4
             alpha_index = (span_norm_sqr.y <= 0 || dotProduct.y <= 0) ? 0
                 : ((dotProduct.y < span_norm_sqr.y) ? aStep[indexPrec.y][uint(dotProduct.y * 63.49999 / span_norm_sqr.y)] : aStep[indexPrec.y][63]);
 
-            // the same color_index and alpha_index should be used for reconstruction, so this should be left commented out
+            // the same color_index and alpha_index should be used for reconstruction, so this should be left commented terrain
             /*if (index_selector)
             {
                 swap(color_index, alpha_index);

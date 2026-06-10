@@ -117,8 +117,8 @@ public:
     //HLSL terrain shader samples the same surface the CPU tessellator built.
     glm::vec3 planetCenter           = glm::vec3(0.0f);
     float     planetRadius           = 6371000.0f;
-    float     terrainHeightAmplitude = 0.001f;
-    float     terrainHeightFrequency = 8.0f;
+    float     terrainHeightAmplitude = 0.0f;   // vestigial (baked heightmap now)
+    float     terrainHeightFrequency = 0.0f;   // vestigial
 
 private:
     ComPtr<ID3D12Resource>         m_buffer;

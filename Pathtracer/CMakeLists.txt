@@ -262,6 +262,8 @@ add_executable(Pathtracer WIN32
         rdn/planet/heightmap_source.cpp
         rdn/planet/heightmap_procedural.h
         rdn/planet/heightmap_procedural.cpp
+        rdn/planet/heightmap_cubemap.h
+        rdn/planet/heightmap_cubemap.cpp
         rdn/planet/worker_pool.h
         rdn/planet/worker_pool.cpp
         rdn/planet/tessellator.h
@@ -272,6 +274,8 @@ add_executable(Pathtracer WIN32
         rdn/planet/geometry_pool.cpp
         rdn/planet/generation.h
         rdn/planet/generation.cpp
+        rdn/planet/rock_scatter.h
+        rdn/planet/rock_scatter.cpp
         rdn/planet/stream_orchestrator.h
         rdn/planet/stream_orchestrator.cpp
         rdn/planet/tlas_builder.h

@@ -43,6 +43,7 @@
 #include "heightmap_source.h"
 #include "worker_pool.h"
 #include "blas_pool.h"        // create_buffer, HEAP_*, PLANET_BLAS_BUILD_FLAGS, ComPtr, <d3d12.h>
+#include "terrain_geo_pool.h"
 
 namespace planet {
 
@@ -51,14 +52,48 @@ struct GenerationParams {
     CellCutParams  cells{};
 };
 
+//RAII owner of a terrain geometry-pool slot. Frees the K-leaf range back to the
+//pool when the LAST CellInstance referencing it is destroyed. A clean cell
+//reused across a ping-pong swap shares this via shared_ptr, so the slot (and
+//its vertex/index bytes in the combined buffer) stays valid as long as ANY
+//generation still renders the cell. All frees happen on the render thread,
+//where generations are torn down - the pool is not thread-safe.
+struct GeoSlot {
+    TerrainGeoPool* pool       = nullptr;
+    uint32_t        leaf_off   = TERRAIN_GEO_INVALID;
+    uint32_t        leaf_count = 0;
+    GeoSlot(TerrainGeoPool* p, uint32_t off, uint32_t k)
+        : pool(p), leaf_off(off), leaf_count(k) {}
+    ~GeoSlot() { if (pool && leaf_off != TERRAIN_GEO_INVALID) pool->free(leaf_off, leaf_count); }
+    //non-copyable: the slot is owned once and shared via shared_ptr, so the
+    //free() in the destructor must run exactly once (a copy would double-free).
+    GeoSlot(const GeoSlot&)            = delete;
+    GeoSlot& operator=(const GeoSlot&) = delete;
+};
+
 //one renderable terrain cell: its BLAS, world anchor, quadtree node (the
-//world-stable identity), and the stable terrain-table id assigned to that node.
+//world-stable identity), the stable id assigned to that node (= its terrain
+//InstanceProperties slot / TLAS InstanceID offset), and its slot in the unified
+//geometry buffer.
 struct CellInstance {
     ComPtr<ID3D12Resource>    blas;
     D3D12_GPU_VIRTUAL_ADDRESS blas_va   = 0;
     DVec3                     anchor_world{};
     uint64_t                  node_id   = INVALID_NODE;
     uint32_t                  stable_id = 0;
+    //unified-buffer geometry slot (set when the cell's geometry is built;
+    //copied along with the shared BLAS when a clean cell is reused).
+    std::shared_ptr<GeoSlot>  geo;
+    uint32_t                  vtx_base_elems = 0;   // first vertex element in the combined buffer
+    uint32_t                  idx_base_elems = 0;   // first index  element in the combined buffer
+    uint32_t                  geo_tri_count  = 0;   // leaf_count * MAX_CHUNK_TRIS
+    //The cell's leaves, as a range into BlasCellSet::cell_leaves(). Usually the
+    //whole cellSet cell; a SPLIT fallback sub-cell (when the pool couldn't fit
+    //the whole cell contiguously) carries a sub-range. Carrying the range here
+    //decouples a CellInstance from the 1:1 cellSet mapping so sub-cells can be
+    //appended past the cellSet cell count.
+    uint32_t                  leaf_begin     = 0;
+    uint32_t                  leaf_count     = 0;
 };
 
 //a complete, renderable planet state. Produced by GenerationBuilder; the
@@ -78,6 +113,18 @@ public:
     //builds being recorded as cells complete; the rebuild is 'done' when every
     //dirty cell has retired its BLAS fence (state == Built).
     enum class State : uint8_t { Idle, Planning, Streaming };
+
+    //Bind the unified geometry buffers once (after scene load). The builder
+    //allocates each dirty cell a slot from `pool`, tessellates straight into
+    //the cell's region of the mapped combined vertex/index buffers, and builds
+    //a single-geometry BLAS over it (vtxVA = combined vertex buffer base, so the
+    //tessellator's absolute indices resolve). Persists across begin() calls.
+    void set_geometry(TerrainGeoPool* pool, uint8_t* vtxMapped, uint8_t* idxMapped,
+                      D3D12_GPU_VIRTUAL_ADDRESS vtxVA, D3D12_GPU_VIRTUAL_ADDRESS idxVA,
+                      uint32_t combinedVertexCount) {
+        m_pool = pool; m_vtxMapped = vtxMapped; m_idxMapped = idxMapped;
+        m_vtxVA = vtxVA; m_idxVA = idxVA; m_combinedVertexCount = combinedVertexCount;
+    }
 
     //Begin an async build. Enqueues the plan job on 'workers'; returns
     //immediately. 'live' is captured by pointer and must outlive the build
@@ -139,6 +186,15 @@ private:
     State            m_state = State::Idle;
     Generation       m_gen;
     GenerationParams m_params;
+    //Scene origin captured at begin() for the lifetime of this rebuild. The
+    //tessellator pre-compensates each vertex by FP32(anchor - scene_origin)
+    //quantisation error against THIS value; the renderer's TLAS instance
+    //transform also uses (anchor - sceneOrigin) with the current scene
+    //origin. Both must agree (within an FP32-exact 1 km snap delta) for the
+    //compensation to be valid - they do, because cam.scene_origin only
+    //changes on the renderer's 1 km grid snaps and the snap delta is
+    //FP32-exact, leaving the per-vertex correction `e` invariant.
+    DVec3            m_sceneOrigin{};
     ID3D12Device5*           m_device    = nullptr;
     const IHeightmapSource*  m_heightmap = nullptr;
     WorkerPool*              m_workers   = nullptr;
@@ -151,16 +207,22 @@ private:
     uint64_t              m_maxScratch = 0;
 
     //Per-dirty-cell async-build state. Lifetime: one rebuild. Heap-allocated
-    //in poll() once the plan completes so the atomic states aren't moved.
+    //in poll() once the plan completes so the atomic states aren't moved. The
+    //tessellator writes straight into the cell's slot of the mapped combined
+    //buffers (no per-cell upload buffer), so only the state flag is needed.
     struct CellBuild {
         std::atomic<uint8_t>   state{0};          // 0=Pending 1=Ready 2=Recorded 3=Built
-        ComPtr<ID3D12Resource> vtx;
-        ComPtr<ID3D12Resource> idx;
-        uint8_t*               vp = nullptr;      // mapped vtx pointer
-        uint8_t*               ip = nullptr;      // mapped idx pointer
     };
     std::unique_ptr<CellBuild[]> m_cellBuilds;
     uint32_t                     m_cellBuildCount = 0;
+
+    //Unified geometry binding (set_geometry, persists across rebuilds).
+    TerrainGeoPool*           m_pool       = nullptr;
+    uint8_t*                  m_vtxMapped  = nullptr;   // combined vertex buffer base (mapped)
+    uint8_t*                  m_idxMapped  = nullptr;   // combined index  buffer base (mapped)
+    D3D12_GPU_VIRTUAL_ADDRESS m_vtxVA      = 0;         // combined vertex buffer GPU VA
+    D3D12_GPU_VIRTUAL_ADDRESS m_idxVA      = 0;         // combined index  buffer GPU VA
+    uint32_t                  m_combinedVertexCount = 0;
 
     //A Batch is one frame's record_ready_blas() output: the cells recorded
     //together and their transient (vtx/idx/scratch) buffers. The buffers stay

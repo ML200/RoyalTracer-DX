@@ -30,6 +30,7 @@
 
 /Pathtracer/cmake-build-debug-visual-studio
 /Pathtracer/cmake-build-release-visual-studio
+/Pathtracer/cmake-build-relwithdebinfo-visual-studio
 /Pathtracer/out
 /Pathtracer/.vs
 *.idea

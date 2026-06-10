@@ -107,11 +107,58 @@ struct Scene {
     };
     std::vector<TLASInstance> tlasInstances;
 
-    //global merged GPU buffers
+    //global merged GPU buffers. PLANET: these now hold a SCENE region followed
+    //by a reserved TERRAIN region (the streamed planet writes its chunk meshes
+    //there so terrain shades through the unified EvalSurfaceState). They are
+    //UPLOAD-heap + persistently mapped so the planet tessellator can write a
+    //cell's slot directly (write-once before the cell goes live -> no GPU copy,
+    //no barrier). vertexGlobalMapped/indexGlobalMapped point at the buffer base.
     ComPtr<ID3D12Resource> vertexGlobal;
     ComPtr<ID3D12Resource> indexGlobal;
-    UINT totalVertexCount = 0;
-    UINT totalIndexCount  = 0;
+    uint8_t* vertexGlobalMapped = nullptr;   // persistent map (UPLOAD)
+    uint8_t* indexGlobalMapped  = nullptr;
+    UINT totalVertexCount = 0;                // scene vertices (terrain region starts here)
+    UINT totalIndexCount  = 0;                // scene indices
+
+    //====================================
+    //PLANET TERRAIN REGION (reserved in the combined buffers)
+    //====================================
+    //Element counts reserved AFTER the scene data, set by Renderer::ReserveTerrain
+    //before the buffers are built. The per-triangle material/light regions are
+    //SHARED by every terrain cell (all terrain triangles use one flat material
+    //and no light), so they are sized to one cell's worst case.
+    UINT terrainVertexElems     = 0;   // = terrainLeafSlots * MAX_CHUNK_VERTS
+    UINT terrainIndexElems      = 0;   // = terrainLeafSlots * MAX_CHUNK_TRIS*3
+    UINT terrainMatIDElems      = 0;   // = max_leaves_per_cell * MAX_CHUNK_TRIS (shared)
+    UINT terrainTriLightElems   = 0;   // = max_leaves_per_cell * MAX_CHUNK_TRIS (shared)
+    UINT terrainInstanceSlots   = 0;   // = MAX_TERRAIN_CELLS
+    UINT terrainVertexBase      = 0;   // element offset where terrain verts begin (= totalVertexCount)
+    UINT terrainIndexBase       = 0;   // element offset where terrain indices begin (= totalIndexCount)
+    UINT terrainMatIDBase       = 0;   // element offset of the shared terrain materialID region
+    UINT terrainTriLightBase    = 0;   // element offset of the shared terrain triToLightId region
+    UINT terrainMatIndex        = 0;   // g_mat index of the flat terrain material
+    //FIXED base where terrain InstanceProperties begin (= scene-instance
+    //capacity). Terrain InstanceID = terrainPropsBase + stable_id, so it never
+    //shifts when scene instances are added/removed at runtime. Scene instances
+    //occupy [0, terrainPropsBase) (capped there by the TLAS), terrain occupies
+    //[terrainPropsBase, terrainPropsBase + terrainInstanceSlots) - disjoint.
+    UINT terrainPropsBase       = 0;
+    //PLANET ROCKS: a second reserved instanceProps range after the terrain
+    //region, for camera-streamed scatter rocks. Set by ReserveRocks AFTER
+    //ReserveTerrain: rockPropsBase = terrainPropsBase + terrainInstanceSlots.
+    UINT rockPropsBase          = 0;
+    UINT rockInstanceSlots      = 0;
+    UINT combinedVertexCount() const { return totalVertexCount + terrainVertexElems; }
+    UINT combinedIndexCount()  const { return totalIndexCount  + terrainIndexElems;  }
+    //element count of the instanceProperties buffer / SRV. With terrain enabled
+    //this is FIXED (terrainPropsBase + terrainInstanceSlots) so the buffer never
+    //needs reallocation when scene instances change, and the terrain region is
+    //always covered. Without terrain it tracks the scene instance count.
+    UINT instancePropsCount() const {
+        const UINT base = terrainInstanceSlots ? (terrainPropsBase + terrainInstanceSlots)
+                                               : (UINT)instances.size();
+        return base + rockInstanceSlots;
+    }
 
     //material GPU, 40B compressed AoS, see Material_Decoder_v8.hlsli
     ComPtr<ID3D12Resource> materialBuffer;
@@ -188,6 +235,17 @@ struct Scene {
     void MarkMaterialsDirty(bool emissionChanged = false);
     void MarkInstanceDirty(UINT instanceIndex);
     void MarkAllInstancesDirty();
+
+    //PLANET: reserve the terrain region in the combined buffers + append the
+    //flat terrain material. MUST be called after assets/materials are loaded
+    //and BEFORE BuildGlobalMeshBuffers / UploadMaterials / CreateTriToLightIdBuffer
+    /// CreateInstancePropertiesBuffer. Element counts are computed by the
+    //Renderer from the planet config + chunk constants.
+    void ReserveTerrain(UINT vertexElems, UINT indexElems, UINT matIDElems,
+                        UINT triLightElems, UINT instanceSlots, UINT propsBase);
+    //PLANET ROCKS: reserve `instanceSlots` instanceProps slots after the terrain
+    //region. Call AFTER ReserveTerrain (needs terrainPropsBase/terrainInstanceSlots).
+    void ReserveRocks(UINT instanceSlots);
 
     void BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
     void CreateInstancePropertiesBuffer(ID3D12Device* device);

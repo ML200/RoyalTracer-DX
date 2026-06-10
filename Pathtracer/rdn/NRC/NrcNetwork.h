@@ -26,7 +26,7 @@ uint32_t ReadU32(void* stream, const void* devPtr);
 //====================================
 //NETWORK
 //====================================
-//17-input raw feature vector, composite encoding, 5 hidden x 128 ReLU, 3 out
+//17-input raw feature vector, composite encoding, 5 hidden x 128 ReLU, 3 terrain
 //(topology lives in NrcLayout.h kRawInputDim/kHiddenWidth/kHiddenLayers/kOutputDim)
 class Network {
 public:
@@ -87,7 +87,7 @@ public:
     uint32_t LastInferenceCount() const;
 
     //schedule async D2H copy of the inference output magnitude on `stream`.
-    //Launches a reduction kernel that sums |out| across the batch, then
+    //Launches a reduction kernel that sums |terrain| across the batch, then
     //memcpys the scalar to host. Non blocking, harvested next frame by
     //LastInferenceOutMagnitudeMean. Used by the renderer to detect weight
     //collapse (output saturates near zero across many frames -> ReinitWeights).
@@ -96,7 +96,7 @@ public:
         const float* outputDevPtr,
         uint32_t     count);
 
-    //mean |out| per channel from the last completed readback. Returns -1
+    //mean |terrain| per channel from the last completed readback. Returns -1
     //until the first readback lands so the caller can distinguish "no data"
     //from "zero output". A healthy network produces nonzero output for any
     //non degenerate features so this stays well above 0; a collapsed network

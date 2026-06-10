@@ -19,7 +19,9 @@
 #include "core/planet_state.h"
 #include "passes/bake_pass.h"
 #include "passes/bedrock_noise.h"
+#include "passes/hydraulic_erosion_pass.h"
 #include "passes/impacts_pass.h"
+#include "passes/surface_color_pass.h"
 #include "passes/thermal_erosion_pass.h"
 #include "render/preview.h"
 
@@ -34,8 +36,12 @@ static void glfw_error_callback(int error, const char* description) {
 
 int main(int argc, char** argv) {
     //--preview-resolution=N: cells per face. Cap is 16384; on a 32 GB card
-    //the BedrockOnly field set fits all the way up. Default 1024.
-    int preview_n = 1024;
+    //the BedrockOnly field set fits all the way up. Default 2048 is the
+    //middle ground that picks up most of the bedrock-noise frequency
+    //content while keeping cold-cache pipeline runs interactive (~few
+    //seconds rather than the multi-minute 8k cost). Bump via CLI to
+    //--preview-resolution=8192 to make the viewer match the bake exactly.
+    int preview_n = 2048;
     for (int a = 1; a < argc; ++a) {
         const char* arg = argv[a];
         constexpr char kPrefix[] = "--preview-resolution=";
@@ -130,6 +136,8 @@ int main(int argc, char** argv) {
     pipeline.add_pass(std::make_unique<pb::BedrockNoisePass>());
     pipeline.add_pass(std::make_unique<pb::ImpactsPass>());
     pipeline.add_pass(std::make_unique<pb::ThermalErosionPass>());
+    pipeline.add_pass(std::make_unique<pb::HydraulicErosionPass>());
+    pipeline.add_pass(std::make_unique<pb::SurfaceColorPass>());
     pipeline.add_pass(std::make_unique<pb::BakePass>());
     pipeline.declare_all(registry);
 

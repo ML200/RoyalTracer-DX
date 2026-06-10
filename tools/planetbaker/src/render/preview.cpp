@@ -10,6 +10,7 @@
 #include "core/pass.h"
 #include "core/pipeline.h"
 #include "core/planet_state.h"
+#include "gpu/color_preview_field.h"
 #include "gpu/preview_field.h"
 
 #include <GL/glew.h>
@@ -107,10 +108,18 @@ uniform sampler2D u_face3;
 uniform sampler2D u_face4;
 uniform sampler2D u_face5;
 
+uniform sampler2D u_color_face0;
+uniform sampler2D u_color_face1;
+uniform sampler2D u_color_face2;
+uniform sampler2D u_color_face3;
+uniform sampler2D u_color_face4;
+uniform sampler2D u_color_face5;
+
 uniform float u_value_min;
 uniform float u_value_max;
 uniform int   u_show_seams;
 uniform int   u_lit;
+uniform int   u_color_mode;        // 1 = sample RGB from u_color_face*; 0 = viridis scalar
 uniform float u_displace_scale;
 uniform float u_face_resolution;
 
@@ -140,6 +149,15 @@ float sample_face(int face, vec2 uv) {
     if (face == 3) return texture(u_face3, uv).r;
     if (face == 4) return texture(u_face4, uv).r;
     return texture(u_face5, uv).r;
+}
+
+vec3 sample_color_face(int face, vec2 uv) {
+    if (face == 0) return texture(u_color_face0, uv).rgb;
+    if (face == 1) return texture(u_color_face1, uv).rgb;
+    if (face == 2) return texture(u_color_face2, uv).rgb;
+    if (face == 3) return texture(u_color_face3, uv).rgb;
+    if (face == 4) return texture(u_color_face4, uv).rgb;
+    return texture(u_color_face5, uv).rgb;
 }
 
 //Inverse of sphere_to_face_uv: face + uv (in [0,1]) -> sphere direction.
@@ -198,9 +216,16 @@ void main() {
     vec2 uv;
     sphere_to_face_uv(dir, face, uv);
 
-    float val = sample_face(face, uv);
-    float t   = (val - u_value_min) / max(u_value_max - u_value_min, 1e-6);
-    vec3 col  = viridis(t);
+    vec3 col;
+    if (u_color_mode == 1) {
+        //Direct RGB albedo. u_face* still holds the elevation buffer so the
+        //relief shading below can central-difference a real per-pixel normal.
+        col = sample_color_face(face, uv);
+    } else {
+        float val = sample_face(face, uv);
+        float t   = (val - u_value_min) / max(u_value_max - u_value_min, 1e-6);
+        col       = viridis(t);
+    }
 
     if (u_lit == 1) {
         //Per-pixel normal via central difference on texture-rate elevation
@@ -319,6 +344,72 @@ struct HoverInfo {
     Vec3f  position{};
 };
 
+
+//====================================
+//Bedrock-noise pass declares ~60 params under "bedrock.*". A flat list is
+//unworkable; group them into CollapsingHeader sections that reflect the
+//layer stack inside synth_kernel (regional dichotomy -> plateau ->
+//mesoscale -> plates -> mountains -> peaks -> hills -> fine -> dunes etc).
+//
+//A section matches a param by the suffix after "bedrock.". The order of
+//entries is the order shown in the UI. Anything that doesn't match falls
+//into an "Other" bucket so we never silently hide a param.
+//====================================
+namespace bedrock_ui {
+
+inline bool starts_with(std::string_view sv, std::string_view prefix) {
+    return sv.size() >= prefix.size()
+        && sv.substr(0, prefix.size()) == prefix;
+}
+
+using MatcherFn = bool(*)(std::string_view);
+struct Section { const char* label; MatcherFn match; };
+
+inline const std::vector<Section>& sections() {
+    static const std::vector<Section> table = {
+        {"Planet scale",
+            [](std::string_view s){ return s == "planet_radius_km"; }},
+        {"Regional baselines",
+            [](std::string_view s){ return s == "lowland_base_km" || s == "highland_base_km"; }},
+        {"Regional dichotomy",
+            [](std::string_view s){ return starts_with(s, "regional_"); }},
+        {"Plateau",
+            [](std::string_view s){ return starts_with(s, "plateau_"); }},
+        {"Mesoscale relief",
+            [](std::string_view s){ return starts_with(s, "mesoscale_"); }},
+        {"Tectonic plates",
+            [](std::string_view s){ return starts_with(s, "plate_") || s == "boundary_sharpness"; }},
+        {"Plate convergence",
+            [](std::string_view s){ return starts_with(s, "convergence_"); }},
+        {"Mountain ridges",
+            [](std::string_view s){ return starts_with(s, "mountain_"); }},
+        {"Singular peaks",
+            [](std::string_view s){ return starts_with(s, "peak_"); }},
+        {"Hills",
+            [](std::string_view s){ return starts_with(s, "hill_"); }},
+        {"Lowland chaos",
+            [](std::string_view s){ return starts_with(s, "lowland_rough_"); }},
+        {"Fine detail (layer 1)",
+            [](std::string_view s){
+                return s == "fine_freq" || s == "fine_octaves"
+                    || s == "fine_amp_km" || s == "fine_freq_var";
+            }},
+        {"Fine detail (layer 2)",
+            [](std::string_view s){ return starts_with(s, "fine2_"); }},
+        {"Terrain variation",
+            [](std::string_view s){ return starts_with(s, "terrain_var_"); }},
+        {"Dunes",
+            [](std::string_view s){ return starts_with(s, "dune_"); }},
+        {"Crust age",
+            [](std::string_view s){ return starts_with(s, "age_"); }},
+        {"Seed",
+            [](std::string_view s){ return s == "seed"; }},
+    };
+    return table;
+}
+
+}
+
 class ViewerProgressSink final : public ProgressSink {
 public:
     void stage(std::string_view label) override {
@@ -344,10 +435,16 @@ struct PreviewViewer::Impl {
     ParamRegistry*                 registry = nullptr;
     Pipeline*                      pipeline = nullptr;
 
-    OrbitCamera                    cam;
-    SphereMesh                     mesh;
-    std::unique_ptr<ShaderProgram> prog;
-    std::unique_ptr<PreviewField>  preview;
+    OrbitCamera                        cam;
+    SphereMesh                         mesh;
+    std::unique_ptr<ShaderProgram>     prog;
+    std::unique_ptr<PreviewField>      preview;
+    std::unique_ptr<ColorPreviewField> color_preview;
+    //True while the currently selected field is "surface_color"; tells the
+    //refresh path to push bedrock_elevation into `preview` (for displacement
+    //+ relief normal) and surface_color into `color_preview` (for albedo),
+    //and toggles the fragment shader's u_color_mode.
+    bool                               color_mode = false;
 
     ViewerProgressSink             progress;
 
@@ -391,7 +488,8 @@ struct PreviewViewer::Impl {
           pipeline(&pl),
           mesh(make_icosphere(6)),
           prog(std::make_unique<ShaderProgram>(kVertSrc, kFragSrc)),
-          preview(std::make_unique<PreviewField>(s.grid().n))
+          preview(std::make_unique<PreviewField>(s.grid().n)),
+          color_preview(std::make_unique<ColorPreviewField>(s.grid().n))
     {
         glGenVertexArrays(1, &vao);
         glGenBuffers(1, &vbo);
@@ -436,6 +534,7 @@ struct PreviewViewer::Impl {
     }
 
     void refresh_display() {
+        color_mode = false;
         if (show_pattern) {
             preview->fill_test_pattern(test_freq, test_warp);
             cpu_mirror.clear();
@@ -454,6 +553,23 @@ struct PreviewViewer::Impl {
             texture_dirty = false;
             return;
         }
+
+        //surface_color: special-case so the planet renders with a real RGB
+        //albedo + bedrock-driven relief, not scalar-on-one-channel viridis.
+        //Uploads bedrock_elevation to PreviewField (the vertex + relief
+        //paths sample it) and the float4 colour into ColorPreviewField.
+        if (std::string_view(d.name) == "surface_color") {
+            color_preview->fill_from(state->surface_color);
+            preview->fill_from(state->bedrock_elevation);
+            //Hover mirror reflects the bedrock value so the UI can still
+            //show meaningful elevation when the user hovers the planet.
+            state->bedrock_elevation.download(cpu_mirror);
+            color_mode    = true;
+            texture_dirty = false;
+            mirror_dirty  = false;
+            return;
+        }
+
         void* p = d.field_ptr(*state);
 
         switch (d.kind) {
@@ -664,6 +780,49 @@ struct PreviewViewer::Impl {
         }
     }
 
+    //Sectioned rendering for the bedrock_noise pass. The flat ~60-row list
+    //the generic prefix_iter walk produces is too dense to navigate; this
+    //buckets params into the layer-stack sections defined in
+    //bedrock_ui::sections() and renders each in a CollapsingHeader.
+    void draw_bedrock_sections(const std::string& prefix) {
+        const auto& sections = bedrock_ui::sections();
+
+        struct Row { std::string_view path; const ParamSlot* slot; };
+        std::vector<std::vector<Row>> buckets(sections.size());
+        std::vector<Row> other;
+
+        registry->prefix_iter(prefix,
+            [&](std::string_view path, const ParamSlot& slot) {
+                std::string_view leaf = path;
+                if (bedrock_ui::starts_with(leaf, prefix)) {
+                    leaf.remove_prefix(prefix.size());
+                }
+                for (std::size_t k = 0; k < sections.size(); ++k) {
+                    if (sections[k].match(leaf)) {
+                        buckets[k].push_back({path, &slot});
+                        return;
+                    }
+                }
+                other.push_back({path, &slot});
+            });
+
+        for (std::size_t k = 0; k < sections.size(); ++k) {
+            if (buckets[k].empty()) continue;
+            if (ImGui::CollapsingHeader(sections[k].label)) {
+                for (const auto& r : buckets[k]) {
+                    draw_param_row(r.path, *r.slot);
+                }
+            }
+        }
+        if (!other.empty()) {
+            if (ImGui::CollapsingHeader("Other")) {
+                for (const auto& r : other) {
+                    draw_param_row(r.path, *r.slot);
+                }
+            }
+        }
+    }
+
     void draw_pipeline_panel() {
         ImGui::Begin("Pipeline");
 
@@ -701,11 +860,15 @@ struct PreviewViewer::Impl {
 
             std::string header = "params: " + e.name;
             if (ImGui::TreeNodeEx(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
-                std::string prefix = e.name + ".";
-                registry->prefix_iter(prefix,
-                    [this](std::string_view path, const ParamSlot& slot) {
-                        draw_param_row(path, slot);
-                    });
+                const std::string& prefix = e.param_prefix;
+                if (e.name == "bedrock_noise") {
+                    draw_bedrock_sections(prefix);
+                } else {
+                    registry->prefix_iter(prefix,
+                        [this](std::string_view path, const ParamSlot& slot) {
+                            draw_param_row(path, slot);
+                        });
+                }
                 ImGui::TreePop();
             }
 
@@ -841,6 +1004,7 @@ void PreviewViewer::render(int fb_w, int fb_h) {
     glUniform1f(im.prog->uniform("u_value_min"), im.value_min);
     glUniform1f(im.prog->uniform("u_value_max"), im.value_max);
     glUniform1i(im.prog->uniform("u_show_seams"), im.show_seams ? 1 : 0);
+    glUniform1i(im.prog->uniform("u_color_mode"), im.color_mode ? 1 : 0);
     glUniform1f(im.prog->uniform("u_displace_scale"),
                 im.show_relief ? im.relief_scale : 0.0f);
     glUniform1i(im.prog->uniform("u_lit"), im.show_relief ? 1 : 0);
@@ -857,6 +1021,19 @@ void PreviewViewer::render(int fb_w, int fb_h) {
     glUniform1i(im.prog->uniform("u_face3"), 3);
     glUniform1i(im.prog->uniform("u_face4"), 4);
     glUniform1i(im.prog->uniform("u_face5"), 5);
+
+    //Color textures live on units 6-11 so the scalar set (0-5) keeps its
+    //slots. They're bound unconditionally; the shader picks via u_color_mode.
+    for (int f = 0; f < 6; ++f) {
+        glActiveTexture(GL_TEXTURE6 + f);
+        glBindTexture(GL_TEXTURE_2D, im.color_preview->gl_texture(f));
+    }
+    glUniform1i(im.prog->uniform("u_color_face0"), 6);
+    glUniform1i(im.prog->uniform("u_color_face1"), 7);
+    glUniform1i(im.prog->uniform("u_color_face2"), 8);
+    glUniform1i(im.prog->uniform("u_color_face3"), 9);
+    glUniform1i(im.prog->uniform("u_color_face4"), 10);
+    glUniform1i(im.prog->uniform("u_color_face5"), 11);
 
     glBindVertexArray(im.vao);
     glDrawElements(GL_TRIANGLES, im.index_count, GL_UNSIGNED_INT, nullptr);

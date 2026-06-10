@@ -36,14 +36,14 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //emitter early out, no reuse
+    //emitter early terrain, no reuse
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
         storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
 
-    //disabled early out, canonical passthrough
+    //disabled early terrain, canonical passthrough
     if (!(rs_flags & 8u))
     {
         const float  W = (rdi.W > 0.0f) ? rdi.W : 0.0f;

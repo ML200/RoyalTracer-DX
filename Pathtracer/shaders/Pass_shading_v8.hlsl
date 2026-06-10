@@ -166,7 +166,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             float2 curPix = DTid.xy;
             //DoF aware MV, pinhole projection on both ends so the lens offset
-            //(curPix is the lens jittered pixel, emPos is the lens jittered hit) cancels out
+            //(curPix is the lens jittered pixel, emPos is the lens jittered hit) cancels terrain
             float2 prevPix = GetLastFramePixelCoordinates_Unclamped(
                 emPos, prevView, prevProjection, dims, emInstID);
             float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(
@@ -395,20 +395,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float2 curPix = DTid.xy;
             //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
             //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
-            //pure scene motion in pinhole space, the lens offset cancels out
-            float2 prevPix, curPinholePix;
-            //PLANET: terrain is world-static and has no instanceProps entry -
-            //use the world-static reprojection (skips the instance lookup).
-            if (IsTerrainInstance(sInstID))
-            {
-                prevPix       = GetLastFramePixelCoordinates_World(sv.x, prevView, prevProjection, dims);
-                curPinholePix = GetCurrentFramePixelCoordinates_World(sv.x, view, projection, dims);
-            }
-            else
-            {
-                prevPix       = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-                curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
-            }
+            //pure scene motion in pinhole space, the lens offset cancels terrain
+            //terrain uses the same instanceProps reprojection as scene meshes
+            //(its transform is a translation, so the MV is correct).
+            float2 prevPix       = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
+            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
 
             bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
 
@@ -433,9 +424,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
                 uint   reflInstID = asuint(reflData.w);
-                //PLANET: terrain instIDs excluded - rough terrain doesn't use
-                //the specular reprojection, and it has no instanceProps entry.
-                if (specularity > 0.04f && reflInstID < TERRAIN_INSTANCE_BASE)
+                //reflInstID is a valid instance index unless the reflection
+                //probe missed (0xFFFFFFFF sentinel) - guard that, not terrain.
+                if (specularity > 0.04f && reflInstID != 0xFFFFFFFFu)
                 {
                     //DoF aware spec MV, pinhole on both ends like the surface MV above
                     float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(

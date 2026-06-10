@@ -77,20 +77,11 @@ namespace {
 //downstream HydraulicErosionPass when its iterations are nonzero.
 //====================================
 
-struct BedrockNoiseParams {
-    //Planet radius. All frequency knobs below are tuned for Earth scale
-    //(6371 km); at other radii, run() multiplies every freq param by
-    //(planet_radius_km / 6371) before the kernel launch, so the same freq
-    //value produces the same km-spacing of features regardless of body
-    //size. Earth=6371, Mars=3389, Moon=1737, Mercury=2440. Amplitudes
-    //(*_km) and warp amounts are NOT scaled - those are absolute or
-    //unit-sphere angular and stay the user's responsibility per body.
-    float planet_radius_km      = 6371.0f;
-
-    //Regional elevation extremes. Mean rocky-body radius is the reference;
-    //elevation is the offset from that. Mars's dichotomy is roughly -2 to
-    //+3 km between northern lowlands and southern highlands, so the
-    //defaults are tuned to that range.
+//BedrockNoiseParams is declared publicly in bedrock_noise.h so BakePass can
+//feed it directly to a bake-resolution synthesis kernel. The body that used
+//to live here moved verbatim into the header. Per-field comments + defaults
+//are at the declaration site.
+#if 0
     float lowland_base_km       = -1.8f;
     float highland_base_km      = 2.4f;
 
@@ -258,7 +249,7 @@ struct BedrockNoiseParams {
     float age_var_myr           = 1500.0f;
 
     std::uint32_t seed          = 0xC0FFEE17u;
-};
+#endif
 
 //====================================
 //Device noise primitives.
@@ -728,19 +719,42 @@ __global__ void synth_kernel(
     float lowland_contrib = (lowland_n - 0.40f) * P.lowland_rough_amp_km * lowland_mask * roughness;
 
     //========================================
-    //7. Fine universal roughness.
+    //7. Fine universal roughness. v12: TWO stacked layers, each with a
+    //   per-region frequency modulation in addition to the existing
+    //   amplitude modulation via `roughness`. The two layers use
+    //   DECORRELATED freq drivers (terrain_var_n vs mesoscale_n) so their
+    //   spatial frequency-variation patterns don't line up - the surface
+    //   reads as multi-scale heterogeneous detail instead of one
+    //   coherently-frequency-shifted layer. Both base freqs are tuned so
+    //   layer 2 is ~2.5x finer than layer 1.
     //========================================
+    float fine_freq_scale = d_mix(1.0f - P.fine_freq_var,
+                                  1.0f + P.fine_freq_var,
+                                  terrain_var_n);
+    if (fine_freq_scale < 0.05f) fine_freq_scale = 0.05f;
+    float fine_freq_local = P.fine_freq * fine_freq_scale;
     float fine_n = d_fbm(p.x, p.y, p.z,
-                         P.fine_octaves, P.fine_freq,
+                         P.fine_octaves, fine_freq_local,
                          2.0f, 0.5f, P.seed + 97u);
     float fine_contrib = (fine_n - 0.5f) * 2.0f * P.fine_amp_km * roughness;
+
+    float fine2_freq_scale = d_mix(1.0f - P.fine2_freq_var,
+                                   1.0f + P.fine2_freq_var,
+                                   mesoscale_n);
+    if (fine2_freq_scale < 0.05f) fine2_freq_scale = 0.05f;
+    float fine2_freq_local = P.fine2_freq * fine2_freq_scale;
+    float fine2_n = d_fbm(p.x, p.y, p.z,
+                          P.fine2_octaves, fine2_freq_local,
+                          2.0f, 0.5f, P.seed + 311u);
+    float fine2_contrib = (fine2_n - 0.5f) * 2.0f * P.fine2_amp_km * roughness;
 
     //========================================
     //Compose.
     //========================================
     float elev = base_elev + plateau_contrib + mesoscale_contrib
                            + mountain_contrib + peak_contrib + dune_contrib
-                           + hill_contrib + lowland_contrib + fine_contrib;
+                           + hill_contrib + lowland_contrib
+                           + fine_contrib + fine2_contrib;
 
     //========================================
     //Crust fields. Single rocky-body composition: continental-rock
@@ -795,6 +809,158 @@ void run_synth(Field<float>&         bedrock,
     CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+//====================================
+//Bake-only single-face bedrock synthesis. Identical per-pixel evaluation to
+//synth_kernel, but writes ONLY the bedrock elevation (km) to a tight n*n
+//buffer for a single face. No halo, no per-cell crust outputs. BakePass
+//calls this at the bake's own resolution so the on-disk cubemap actually
+//carries detail at the output resolution instead of bicubic-upsampling a
+//low-resolution working grid.
+//====================================
+__global__ void bake_bedrock_kernel(
+    float* __restrict__ dst,
+    int n, int face,
+    BedrockNoiseParams P) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i >= n || j >= n) return;
+
+    float u = ((static_cast<float>(i) + 0.5f) / static_cast<float>(n)) * 2.0f - 1.0f;
+    float v = ((static_cast<float>(j) + 0.5f) / static_cast<float>(n)) * 2.0f - 1.0f;
+    Vec3f p = face_uv_to_sphere(face, u, v);
+
+    //----- regional dichotomy -----
+    Vec3f p_reg = d_fbm_warp(p, P.regional_warp_freq, P.regional_warp_amount,
+                             P.regional_warp_octaves, 2.0f, 0.5f, P.seed + 11u);
+    float regional_n = d_fbm(p_reg.x, p_reg.y, p_reg.z,
+                             P.regional_octaves, P.regional_freq,
+                             2.0f, 0.5f, P.seed + 23u);
+    float regional_curve = d_smoothstep(0.40f, 0.60f, regional_n);
+    float base_elev = d_mix(P.lowland_base_km, P.highland_base_km, regional_curve);
+
+    //----- plateau -----
+    float plateau_mask = d_smoothstep(P.plateau_threshold - P.plateau_softness,
+                                      P.plateau_threshold + P.plateau_softness,
+                                      regional_n);
+    float plateau_contrib = plateau_mask * P.plateau_lift_km;
+
+    //----- mesoscale -----
+    float mesoscale_n = d_fbm(p.x, p.y, p.z,
+                              P.mesoscale_octaves, P.mesoscale_freq,
+                              2.0f, 0.5f, P.seed + 271u);
+    float mesoscale_contrib = (mesoscale_n - 0.5f) * 2.0f * P.mesoscale_amp_km;
+
+    //----- plate boundary belt -----
+    Vec3f p_plate = d_fbm_warp(p, P.plate_warp_freq, P.plate_warp_amount,
+                               P.plate_warp_octaves, 2.0f, 0.5f, P.seed + 137u);
+    float plate_edge_dist = d_worley_f2_minus_f1(p_plate.x * P.plate_freq,
+                                                 p_plate.y * P.plate_freq,
+                                                 p_plate.z * P.plate_freq,
+                                                 P.seed + 149u);
+    float boundary_mask = expf(-plate_edge_dist * P.boundary_sharpness);
+    float convergence_n = d_fbm(p_plate.x, p_plate.y, p_plate.z,
+                                P.convergence_octaves, P.convergence_freq,
+                                2.0f, 0.5f, P.seed + 163u);
+    float convergence_mask = d_smoothstep(P.convergence_threshold - P.convergence_softness,
+                                          P.convergence_threshold + P.convergence_softness,
+                                          convergence_n);
+    float belt_mask = boundary_mask * convergence_mask;
+
+    //----- terrain variation + dune regime -----
+    float terrain_var_n = d_fbm(p.x, p.y, p.z,
+                                P.terrain_var_octaves, P.terrain_var_freq,
+                                2.0f, 0.5f, P.seed + 191u);
+    float roughness = d_mix(1.0f - P.terrain_var_amp,
+                            1.0f + P.terrain_var_amp,
+                            terrain_var_n);
+    if (roughness < 0.0f) roughness = 0.0f;
+
+    float mtn_freq_scale = d_mix(1.0f - P.mountain_freq_var,
+                                 1.0f + P.mountain_freq_var,
+                                 terrain_var_n);
+    float mtn_exp_scale  = d_mix(1.0f - P.mountain_exp_var,
+                                 1.0f + P.mountain_exp_var,
+                                 terrain_var_n);
+    float mtn_freq_local = P.mountain_freq     * mtn_freq_scale;
+    float mtn_exp_local  = P.mountain_exponent * mtn_exp_scale;
+
+    float dune_mask = 1.0f - d_smoothstep(P.dune_threshold - P.dune_softness,
+                                          P.dune_threshold + P.dune_softness,
+                                          mesoscale_n);
+
+    //----- mountains -----
+    Vec3f p_mnt = d_fbm_warp(p, P.mountain_warp_freq, P.mountain_warp_amount,
+                             P.mountain_warp_octaves, 2.0f, 0.5f, P.seed + 53u);
+    float mountain_n = d_ridged_mfbm(p_mnt.x, p_mnt.y, p_mnt.z,
+                                     P.mountain_octaves, mtn_freq_local,
+                                     P.mountain_lacunarity, P.mountain_gain,
+                                     P.seed + 67u);
+    float mountain_v = powf(fmaxf(mountain_n, 0.0f), mtn_exp_local);
+    float reg_boost  = d_mix(P.mountain_regional_lo, P.mountain_regional_hi, regional_curve);
+    float mountain_contrib = mountain_v * P.mountain_amp_km * belt_mask * reg_boost
+                           * roughness * (1.0f - dune_mask);
+
+    //----- peaks -----
+    float peak_d = d_worley_f1(p_mnt.x * P.peak_freq,
+                               p_mnt.y * P.peak_freq,
+                               p_mnt.z * P.peak_freq,
+                               P.seed + 83u);
+    float peak_t = peak_d / fmaxf(P.peak_radius, 1.0e-4f);
+    if (peak_t > 1.0f) peak_t = 1.0f;
+    float peak_v = powf(1.0f - peak_t, P.peak_sharpness);
+    float peak_contrib = peak_v * P.peak_amp_km * belt_mask * reg_boost
+                       * roughness * (1.0f - dune_mask);
+
+    //----- dunes -----
+    Vec3f p_dune = d_fbm_warp(p, P.dune_warp_freq, P.dune_warp_amount,
+                              2, 2.0f, 0.5f, P.seed + 251u);
+    float dune_a = sinf(p_dune.x * P.dune_freq) * cosf(p_dune.y * P.dune_freq * 1.05f);
+    float dune_v = 0.5f + 0.5f * dune_a;
+    dune_v = dune_v * dune_v;
+    float dune_contrib = dune_v * P.dune_amp_km * dune_mask;
+
+    //----- hills -----
+    float hill_n = d_fbm(p.x, p.y, p.z,
+                         P.hill_octaves, P.hill_freq,
+                         2.0f, 0.5f, P.seed + 71u);
+    float hill_contrib = (hill_n - 0.5f) * 2.0f * P.hill_amp_km * roughness;
+
+    //----- lowland chaos -----
+    float lowland_n = d_ridged_mfbm(p.x, p.y, p.z,
+                                    P.lowland_rough_octaves, P.lowland_rough_freq,
+                                    2.05f, 0.55f, P.seed + 79u);
+    float lowland_mask    = 1.0f - regional_curve;
+    float lowland_contrib = (lowland_n - 0.40f) * P.lowland_rough_amp_km * lowland_mask * roughness;
+
+    //----- fine layer 1 + 2 (v12) ----- see synth_kernel for the rationale.
+    float fine_freq_scale = d_mix(1.0f - P.fine_freq_var,
+                                  1.0f + P.fine_freq_var,
+                                  terrain_var_n);
+    if (fine_freq_scale < 0.05f) fine_freq_scale = 0.05f;
+    float fine_freq_local = P.fine_freq * fine_freq_scale;
+    float fine_n = d_fbm(p.x, p.y, p.z,
+                         P.fine_octaves, fine_freq_local,
+                         2.0f, 0.5f, P.seed + 97u);
+    float fine_contrib = (fine_n - 0.5f) * 2.0f * P.fine_amp_km * roughness;
+
+    float fine2_freq_scale = d_mix(1.0f - P.fine2_freq_var,
+                                   1.0f + P.fine2_freq_var,
+                                   mesoscale_n);
+    if (fine2_freq_scale < 0.05f) fine2_freq_scale = 0.05f;
+    float fine2_freq_local = P.fine2_freq * fine2_freq_scale;
+    float fine2_n = d_fbm(p.x, p.y, p.z,
+                          P.fine2_octaves, fine2_freq_local,
+                          2.0f, 0.5f, P.seed + 311u);
+    float fine2_contrib = (fine2_n - 0.5f) * 2.0f * P.fine2_amp_km * roughness;
+
+    float elev = base_elev + plateau_contrib + mesoscale_contrib
+                           + mountain_contrib + peak_contrib + dune_contrib
+                           + hill_contrib + lowland_contrib
+                           + fine_contrib + fine2_contrib;
+
+    dst[static_cast<std::size_t>(j) * n + i] = elev;
+}
+
 }
 
 //====================================
@@ -814,15 +980,20 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "Amplitudes (*_km) and warp amounts are NOT auto-scaled - tune those "
                       "per body if needed.", "km", o);
 
-    //Regional baselines
-    reg.declare_float("bedrock.lowland_base_km",      -1.8f, -8.0f, 2.0f,
+    //Regional baselines. v16 "alien dramatic": continental dichotomy is now
+    //a +/-0.2 km whisper. The planet's silhouette comes from mountain belts
+    //and near-camera fine detail, not from regional fBm hemispheres.
+    reg.declare_float("bedrock.lowland_base_km",      -0.1f, -8.0f, 2.0f,
                       "lowland base",
-                      "Mean elevation of regional lowland basins (Mars: ~-2 km)",
-                      "km", o);
-    reg.declare_float("bedrock.highland_base_km",      2.4f, -2.0f, 8.0f,
+                      "Mean elevation of regional lowland basins. v16 default -0.1 km "
+                      "gives a very subtle dichotomy; the planet looks visually "
+                      "round at orbit and is dominated by mountain belts at "
+                      "ground level.", "km", o);
+    reg.declare_float("bedrock.highland_base_km",      0.2f, -2.0f, 8.0f,
                       "highland base",
-                      "Mean elevation of regional highlands before plateau/mountain detail "
-                      "(Mars: ~+2.5 km)", "km", o);
+                      "Mean elevation of regional highlands before plateau/mountain detail. "
+                      "v16 default 0.2 km - paired with lowland_base -0.1 km this gives "
+                      "0.3 km of continental dichotomy total.", "km", o);
 
     //Regional fBm
     reg.declare_float("bedrock.regional_warp_freq",    0.9f,  0.1f, 4.0f,
@@ -857,8 +1028,11 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "Above this regional value, plateau lift kicks in", "", o);
     reg.declare_float("bedrock.plateau_softness",      0.05f, 0.005f, 0.20f,
                       "plateau softness", "Smoothstep width on plateau threshold", "", o);
-    reg.declare_float("bedrock.plateau_lift_km",       2.0f,  0.0f,  5.0f,
-                      "plateau lift", "Elevation bump on plateau patches", "km", o);
+    reg.declare_float("bedrock.plateau_lift_km",       0.2f,  0.0f,  5.0f,
+                      "plateau lift",
+                      "Elevation bump on plateau patches. v16 default 0.2 km keeps "
+                      "plateaus subtle so mountain belts remain the dominant feature.",
+                      "km", o);
 
     //Mesoscale layer (v11)
     reg.declare_float("bedrock.mesoscale_freq",        6.0f,  0.5f, 30.0f,
@@ -871,10 +1045,11 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "", o);
     reg.declare_int  ("bedrock.mesoscale_octaves",     5,     1,    8,
                       "mesoscale octaves", "fBm octaves for mesoscale layer", "", o);
-    reg.declare_float("bedrock.mesoscale_amp_km",      1.5f,  0.0f,  5.0f,
+    reg.declare_float("bedrock.mesoscale_amp_km",      0.15f, 0.0f,  5.0f,
                       "mesoscale amp",
-                      "RMS amplitude of the mesoscale layer. The actual range "
-                      "is roughly +/- this value across the planet. Also "
+                      "RMS amplitude of the mesoscale layer. v16 default 0.15 km "
+                      "shrinks mesoscale to match the small continental dichotomy. "
+                      "Also "
                       "controls how 'deep' dune basins get since the dune mask "
                       "reads the mesoscale field.", "km", o);
 
@@ -948,29 +1123,39 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "", o);
     reg.declare_float("bedrock.mountain_freq",       120.0f,  10.0f, 600.0f,
                       "mountain freq",
-                      "Ridged multifractal base freq. CRITICAL knob - controls ridge "
-                      "spacing. ~120 gives ridges ~170 km apart (~8 px at N=1024). "
-                      "Lower values produce smooth blobs that look like bubbles.",
-                      "", o);
+                      "Ridged multifractal base freq. ~120 gives ridges ~333 km "
+                      "apart at Earth radius. The 4k GPU heightmap can only resolve "
+                      "down to ~20 km wavelength, so the renderer's shading normals "
+                      "can see roughly the first 4 octaves (120 to 1920) and the "
+                      "rest gets averaged - bump GPU heightmap resolution if you "
+                      "want sharper ridges in the rendered normal.", "", o);
     reg.declare_int  ("bedrock.mountain_octaves",      6,     1,   12,
                       "mountain octaves",
-                      "Ridged multifractal octave count. 5-7 is the sweet spot; "
-                      "more = aliasing at preview resolution.", "", o);
-    reg.declare_float("bedrock.mountain_amp_km",       4.5f,  0.0f, 15.0f,
+                      "Ridged multifractal octave count. v15 reverted to 6 (from "
+                      "v14's 8) because the extra octaves landed below the GPU "
+                      "heightmap's Nyquist and aliased.", "", o);
+    reg.declare_float("bedrock.mountain_amp_km",      12.0f,  0.0f, 30.0f,
                       "mountain amp",
-                      "Peak ridge-line height in belts. Leaves headroom for the peak "
-                      "layer (default peak_amp_km=3.0) so total summit height tops out "
-                      "around 7-8 km - Himalaya range.", "km", o);
+                      "Peak ridge-line height in belts. v16 default 12 km - paired "
+                      "with peak_amp_km 4.0 this gives ~16 km total summits in "
+                      "convergent belts (Olympus-Mons class). Stacks on top of "
+                      "highland_base + plateau_lift, but those are 0.2 km each now "
+                      "so they don't add much.", "km", o);
     reg.declare_float("bedrock.mountain_exponent",     2.6f,  1.0f,  4.0f,
                       "mountain exponent",
                       "Ridge peak sharpness (1.0 = soft rounded, 2.5 = jagged Alps, "
-                      "4.0 = razor crests)", "", o);
+                      "3.5 = Karakoram chiseled, 4.0 = razor needles). v15 reverted "
+                      "to 2.6 - higher exponents make peaks 1-pixel narrow at the "
+                      "current bake resolution and read as aliasing rather than "
+                      "sharpness.", "", o);
     reg.declare_float("bedrock.mountain_lacunarity",   2.0f,  1.5f,  3.0f,
                       "mountain lacunarity", "Freq multiplier per octave", "", o);
     reg.declare_float("bedrock.mountain_gain",         0.55f, 0.3f,  0.8f,
                       "mountain gain",
                       "Amplitude multiplier per octave. Higher = more high-freq "
-                      "energy = sharper-looking mountains.", "", o);
+                      "energy = sharper-looking mountains. v15 reverted to 0.55 - "
+                      "0.70 over-emphasised octaves that the 4k GPU heightmap "
+                      "couldn't resolve, producing aliasing.", "", o);
     reg.declare_float("bedrock.mountain_regional_lo",  0.30f, 0.0f,  1.0f,
                       "mountain in lowlands",
                       "Mountain amplitude in deepest lowlands (0 = no mountains there)",
@@ -998,11 +1183,11 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "Profile exponent on (1 - r/peak_radius). 1.0 = linear cone, "
                       "4.0 = sharp Gaussian-style summit, 8.0+ = needle-like spikes.",
                       "", o);
-    reg.declare_float("bedrock.peak_amp_km",           3.0f,  0.0f, 10.0f,
+    reg.declare_float("bedrock.peak_amp_km",           4.0f,  0.0f, 10.0f,
                       "peak amp",
                       "Maximum height of a singular peak above the ridge it sits on. "
-                      "Stacks with mountain_amp_km, so total summit height = ridge "
-                      "amp + peak amp.", "km", o);
+                      "v16 default 4.0 km - stacks with mountain_amp 12.0 km for "
+                      "~16 km total summits in convergent belts.", "km", o);
 
     //Hills
     reg.declare_float("bedrock.hill_freq",            45.0f,  5.0f, 150.0f,
@@ -1010,11 +1195,11 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "Mid-freq fBm freq for rolling hills (~5 deg = 560 km)", "", o);
     reg.declare_int  ("bedrock.hill_octaves",          4,     1,    8,
                       "hill octaves", "fBm octaves for hills", "", o);
-    reg.declare_float("bedrock.hill_amp_km",           0.40f, 0.0f,  3.0f,
+    reg.declare_float("bedrock.hill_amp_km",           1.0f,  0.0f,  3.0f,
                       "hill amp",
-                      "Hill amplitude RMS. Kept moderate so plains read as plains "
-                      "rather than busy textured noise that competes with the "
-                      "mountain belt signal.", "km", o);
+                      "Hill amplitude RMS. v16 default 1.0 km gives visible rolling-"
+                      "hills texture in every region - plains carry +/-1 km of relief "
+                      "without competing with the +12 km mountain belts.", "km", o);
 
     //Lowland chaos
     reg.declare_float("bedrock.lowland_rough_freq",   70.0f, 10.0f, 300.0f,
@@ -1022,16 +1207,60 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "Ridged-noise freq for lowland chaos terrain (~3 deg)", "", o);
     reg.declare_int  ("bedrock.lowland_rough_octaves", 4,     1,    8,
                       "lowland rough octaves", "Octaves for lowland chaos", "", o);
-    reg.declare_float("bedrock.lowland_rough_amp_km",  0.45f, 0.0f,  2.0f,
-                      "lowland rough amp", "Lowland chaos amplitude", "km", o);
+    reg.declare_float("bedrock.lowland_rough_amp_km",  1.0f,  0.0f,  3.0f,
+                      "lowland rough amp",
+                      "Lowland chaos amplitude. v16 default 1.0 km - visible "
+                      "chaotic-basin texture in low-elevation regions.", "km", o);
 
-    //Fine
+    //Fine - layer 1 (v12: amp 10x v11, plus frequency variation across the
+    //surface driven by terrain_var_n).
     reg.declare_float("bedrock.fine_freq",           280.0f, 60.0f, 800.0f,
-                      "fine freq", "High-freq detail noise (~1.2 deg, ~130 km)", "", o);
+                      "fine freq",
+                      "High-freq detail noise base freq (~1.2 deg, ~130 km on Earth). "
+                      "Local freq across the surface is base * mix(1 - fine_freq_var, "
+                      "1 + fine_freq_var, terrain_var_n), so rough regions get finer "
+                      "ridges and smooth regions get coarser ones.", "", o);
     reg.declare_int  ("bedrock.fine_octaves",          3,     1,    6,
                       "fine octaves", "Detail noise octaves", "", o);
-    reg.declare_float("bedrock.fine_amp_km",           0.15f, 0.0f,  0.6f,
-                      "fine amp", "Detail roughness amplitude", "km", o);
+    reg.declare_float("bedrock.fine_amp_km",           1.0f,  0.0f, 5.0f,
+                      "fine amp",
+                      "Detail roughness amplitude. v16 default 1.0 km gives visible "
+                      "high-freq detail in every region, so plains carry texture "
+                      "instead of reading as flat between the geological layers. "
+                      "Stacks with fine2 (0.5 km) for ~1.5 km of total small-scale "
+                      "noise at the surface.", "km", o);
+    reg.declare_float("bedrock.fine_freq_var",         0.5f,  0.0f, 1.0f,
+                      "fine freq variation",
+                      "How much the fine layer 1 base freq varies across the surface. "
+                      "0 = uniform (every region uses base fine_freq). 0.5 = freq "
+                      "ranges 50%% to 150%% across the planet, driven by terrain_var_n "
+                      "(correlates with mountain shape). 1.0 = full 0..200%% range.",
+                      "", o);
+
+    //Fine - layer 2 (v12 NEW). A second high-freq layer stacked on top of layer 1.
+    //Higher base freq so the two layers cover different scales; freq variation
+    //is driven by mesoscale_n so the spatial pattern of layer-2 freq is
+    //decorrelated from layer-1's terrain_var_n driver.
+    reg.declare_float("bedrock.fine2_freq",          700.0f, 60.0f, 2000.0f,
+                      "fine2 freq",
+                      "Second fine-detail layer base freq (default 2.5x finer than "
+                      "fine layer 1). Stacks on top of layer 1 to give two scales of "
+                      "near-camera detail. Local freq across the surface is base * "
+                      "mix(1 - fine2_freq_var, 1 + fine2_freq_var, mesoscale_n).",
+                      "", o);
+    reg.declare_int  ("bedrock.fine2_octaves",         3,     1,    6,
+                      "fine2 octaves", "Octaves of the fine layer 2 fBm", "", o);
+    reg.declare_float("bedrock.fine2_amp_km",          0.5f,  0.0f, 5.0f,
+                      "fine2 amp",
+                      "Amplitude of the fine layer 2 contribution. v16 default 0.5 km "
+                      "(half of fine layer 1), so the two layers add to ~1.5 km of "
+                      "high-freq near-camera texture.", "km", o);
+    reg.declare_float("bedrock.fine2_freq_var",        0.5f,  0.0f, 1.0f,
+                      "fine2 freq variation",
+                      "How much the fine layer 2 base freq varies across the surface. "
+                      "Same semantics as fine_freq_var but driven by mesoscale_n "
+                      "instead of terrain_var_n, so the per-region freq pattern of "
+                      "layer 2 is uncorrelated from layer 1.", "", o);
 
     //Terrain variation (v9). One mask that decorrelates per-region roughness
     //from the regional dichotomy, so smooth plains and rough plains can sit
@@ -1095,8 +1324,10 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "dune warp amount",
                       "Magnitude of the dune position-warp. 0.07 gives natural "
                       "long-curving dune crests like Olympia Undae.", "", o);
-    reg.declare_float("bedrock.dune_amp_km",           0.4f,  0.0f, 3.0f,
-                      "dune amplitude", "Peak dune-crest height", "km", o);
+    reg.declare_float("bedrock.dune_amp_km",           0.5f,  0.0f, 3.0f,
+                      "dune amplitude",
+                      "Peak dune-crest height. v16 default 0.5 km gives visible dune "
+                      "fields in low-terrain_var regions.", "km", o);
 
     //Age
     reg.declare_float("bedrock.age_freq",              2.8f,  0.3f, 12.0f,
@@ -1112,7 +1343,7 @@ void BedrockNoisePass::declare_params(ParamRegistry& reg) const {
                       "seed", "RNG seed (cast to uint32)", "", o);
 }
 
-void BedrockNoisePass::run(PlanetState& state, const ParamRegistry& reg, ProgressSink& progress) {
+BedrockNoiseParams load_bedrock_params(const ParamRegistry& reg) {
     BedrockNoiseParams p;
     p.planet_radius_km      = reg.get_float("bedrock.planet_radius_km");
     p.lowland_base_km       = reg.get_float("bedrock.lowland_base_km");
@@ -1161,6 +1392,11 @@ void BedrockNoisePass::run(PlanetState& state, const ParamRegistry& reg, Progres
     p.fine_freq             = reg.get_float("bedrock.fine_freq");
     p.fine_octaves          = reg.get_int  ("bedrock.fine_octaves");
     p.fine_amp_km           = reg.get_float("bedrock.fine_amp_km");
+    p.fine_freq_var         = reg.get_float("bedrock.fine_freq_var");
+    p.fine2_freq            = reg.get_float("bedrock.fine2_freq");
+    p.fine2_octaves         = reg.get_int  ("bedrock.fine2_octaves");
+    p.fine2_amp_km          = reg.get_float("bedrock.fine2_amp_km");
+    p.fine2_freq_var        = reg.get_float("bedrock.fine2_freq_var");
     p.terrain_var_freq      = reg.get_float("bedrock.terrain_var_freq");
     p.terrain_var_octaves   = reg.get_int  ("bedrock.terrain_var_octaves");
     p.terrain_var_amp       = reg.get_float("bedrock.terrain_var_amp");
@@ -1196,10 +1432,31 @@ void BedrockNoisePass::run(PlanetState& state, const ParamRegistry& reg, Progres
     p.hill_freq          *= rs;
     p.lowland_rough_freq *= rs;
     p.fine_freq          *= rs;
+    p.fine2_freq         *= rs;
     p.terrain_var_freq   *= rs;
     p.dune_freq          *= rs;
     p.dune_warp_freq     *= rs;
     p.age_freq           *= rs;
+    return p;
+}
+
+void bake_bedrock_face(int face, int n,
+                       const BedrockNoiseParams& P,
+                       float* dst_device) {
+    if (face < 0 || face >= 6) return;
+    if (n <= 0 || !dst_device)  return;
+
+    dim3 block(16, 16, 1);
+    dim3 grid((n + block.x - 1) / block.x,
+              (n + block.y - 1) / block.y,
+              1);
+    bake_bedrock_kernel<<<grid, block>>>(dst_device, n, face, P);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+void BedrockNoisePass::run(PlanetState& state, const ParamRegistry& reg, ProgressSink& progress) {
+    const BedrockNoiseParams p = load_bedrock_params(reg);
 
     progress.stage("noise");
     progress.fraction(0.0f);
@@ -1210,11 +1467,10 @@ void BedrockNoisePass::run(PlanetState& state, const ParamRegistry& reg, Progres
               state.crust_type,
               p);
     PB_LOG_INFO("bedrock_noise",
-                "rocky body synthesised: radius %.0f km (scale %.3f), regional "
+                "rocky body synthesised: radius %.0f km, regional "
                 "%d octaves @ freq %.2f, mountain %d-oct mfbm @ freq %.2f, "
                 "tectonic plate_freq %.2f, convergence threshold %.2f",
                 static_cast<double>(p.planet_radius_km),
-                static_cast<double>(rs),
                 p.regional_octaves, static_cast<double>(p.regional_freq),
                 p.mountain_octaves, static_cast<double>(p.mountain_freq),
                 static_cast<double>(p.plate_freq),

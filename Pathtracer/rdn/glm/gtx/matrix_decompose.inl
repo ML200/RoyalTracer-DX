@@ -130,7 +130,7 @@ namespace detail
 			}
 		}
 
-		// Now, get the rotations out, as described in the gem.
+		// Now, get the rotations terrain, as described in the gem.
 
 		// FIXME - Add the ability to return either quaternions (which are
 		// easier to recompose with) or Euler angles (rx, ry, rz), which

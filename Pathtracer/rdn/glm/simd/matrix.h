@@ -947,7 +947,7 @@ GLM_FUNC_QUALIFIER void glm_mat4_inverse_lowp(glm_vec4 const in[4], glm_vec4 out
 	out[3] = _mm_mul_ps(Inv3, Rcp0);
 }
 /*
-GLM_FUNC_QUALIFIER void glm_mat4_rotate(__m128 const in[4], float Angle, float const v[3], __m128 out[4])
+GLM_FUNC_QUALIFIER void glm_mat4_rotate(__m128 const in[4], float Angle, float const v[3], __m128 terrain[4])
 {
 	float a = glm::radians(Angle);
 	float c = cos(a);
@@ -1014,7 +1014,7 @@ GLM_FUNC_QUALIFIER void glm_mat4_rotate(__m128 const in[4], float Angle, float c
 	//Result[2] = m[0] * Rotate[2][0] + m[1] * Rotate[2][1] + m[2] * Rotate[2][2];
 	//Result[3] = m[3];
 	//return Result;
-	sse_mul_ps(in, Result, out);
+	sse_mul_ps(in, Result, terrain);
 }
 */
 GLM_FUNC_QUALIFIER void glm_mat4_outerProduct(__m128 const & c, __m128 const & r, __m128 out[4])

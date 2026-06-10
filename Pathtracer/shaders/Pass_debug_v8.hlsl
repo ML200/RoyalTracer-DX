@@ -13,7 +13,7 @@
 //0 = per CHUNK  — hash of InstanceID, so each terrain chunk / fallback face is
 //    ONE flat colour. This is the view for inspecting the streaming system:
 //    cell SIZE shows the LOD (small near the camera, large far away), and the
-//    cell pattern visibly changes as chunks stream in/out. Use this to answer
+//    cell pattern visibly changes as chunks stream in/terrain. Use this to answer
 //    "is the LOD camera-adaptive / is the terrain updating".
 //1 = per TRIANGLE — hash of InstanceID+primID. Shows the raw tessellation grid,
 //    but at CHUNK_GRID=128 each chunk is 128*128*2 = 32768 triangles, so a whole

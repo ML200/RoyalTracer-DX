@@ -86,6 +86,8 @@ void diff_generations(const RestrictedQuadtree& live_qt,   const BlasCellSet& li
 
     //(2) a changed TARGET leaf dirties its own cell and the cells of every leaf
     //bordering it - those cells' seam stitching depended on the changed leaf.
+    //That includes the DIAGONAL (corner-only) neighbours too, since the
+    //corner-stitch bits in tess_job_ pick footprint based on corner_lod.
     auto mark = [&](int cell_idx) {
         if (cell_idx >= 0) out_dirty[(size_t)cell_idx] = 1;
     };
@@ -98,6 +100,11 @@ void diff_generations(const RestrictedQuadtree& live_qt,   const BlasCellSet& li
             const int n = target_qt.adjacent_leaves(L, (QuadEdge)e, adj);
             for (int k = 0; k < n; ++k)
                 mark(target_cells.cell_of_leaf(adj[k]));
+        }
+        for (int c = 0; c < 4; ++c) {
+            uint64_t diag = 0;
+            if (target_qt.corner_leaf(L, c, diag))
+                mark(target_cells.cell_of_leaf(diag));
         }
     }
 }

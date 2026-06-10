@@ -111,12 +111,50 @@ inline float CloudEffectiveTopKm(float3 P)
     return CLOUD_LAYER_TOP_KM + n * CLOUD_TOP_VARIATION_KM;
 }
 
+// PLANET v8: smoothed-terrain offset (km) used to shift the cloud layer
+// with general terrain elevation so individual mountain peaks poke through
+// instead of being buried in cloud. The baker writes a 256^2 per-face
+// cloud_offset map (block-averaged elevation in km); TerrainCloudBaseHeight
+// returns the same value in METRES via the equiangular projection. Returns 0
+// for null SRV (legacy bake), keeping the cloud layer at its constant
+// spherical altitude in that case.
+//
+// LIFT ONLY: clamped to >= 0 so basins (negative bedrock) don't drag the
+// cloud layer below CLOUD_LAYER_BOT_KM. Negative shifts would push the
+// shell underground in deep-basin areas and visually leave clouds
+// hugging the surface across the planet (mean bake elevation is ~+1 km,
+// but the global range spans -5..+5 km; without the clamp the entire
+// basin half of the planet had clouds clipped against the body).
+// Matches the max(TerrainHeight, 0) pattern used by every other terrain
+// shadow probe (Clouds_v8.hlsli, SunSampler_v8.hlsli).
+inline float CloudLocalBaseShiftKm(float3 P)
+{
+    float r = length(P);
+    if (r <= 1e-6f) return 0.0f;
+    return max(TerrainCloudBaseHeight(P / r) * 0.001f, 0.0f);
+}
+
+// PLANET v8: expected magnitude of the cloud-base shift. The ray-cloud-shell
+// intersection expands by this margin so the marching range still covers
+// the per-direction cloud layer when terrain pushes it up. Since the shift
+// is clamped to >= 0 (see CloudLocalBaseShiftKm) only the OUTER radius
+// actually needs the expansion; the inner expansion is kept symmetric as a
+// cheap safety net (a few km of extra empty shell costs nothing because the
+// profile gate zeros density outside the layer). 6 km matches the bake's
+// ~+5 km max smoothed elevation with a small margin; bump if you tune the
+// baker to a planet with higher peaks.
+#define CLOUD_TERRAIN_SHIFT_BOUND_KM 6.0f
+
 // Heart-shape vertical profile (Nubis). FromTop variant skips the
 // CloudEffectiveTopKm tap when the caller already has effTop.
-inline float CloudAltitudeProfileFromTop(float altKm, float effTop)
+// PLANET v8: takes the local cloud-base shift so the layer follows
+// general terrain. baseShiftKm = 0 reproduces the legacy spherical-shell
+// profile exactly.
+inline float CloudAltitudeProfileFromTop(float altKm, float effTop, float baseShiftKm)
 {
-    float h = (altKm - CLOUD_LAYER_BOT_KM)
-            / max(1e-4f, effTop - CLOUD_LAYER_BOT_KM);
+    float botKm = CLOUD_LAYER_BOT_KM + baseShiftKm;
+    float topKm = effTop              + baseShiftKm;
+    float h = (altKm - botKm) / max(1e-4f, topKm - botKm);
     if (h <= 0.0f || h >= 1.0f) return 0.0f;
     float bottomRamp = smoothstep(0.00f, 0.18f, h);
     float topCap     = 1.0f - smoothstep(0.55f, 1.00f, h);
@@ -125,7 +163,9 @@ inline float CloudAltitudeProfileFromTop(float altKm, float effTop)
 
 inline float CloudAltitudeProfile(float altKm, float3 P)
 {
-    return CloudAltitudeProfileFromTop(altKm, CloudEffectiveTopKm(P));
+    return CloudAltitudeProfileFromTop(altKm,
+                                       CloudEffectiveTopKm(P),
+                                       CloudLocalBaseShiftKm(P));
 }
 
 inline float coverageModulation(float coverage, float detail, float filterWidth)
@@ -198,7 +238,7 @@ float CloudProbeHullEx(float3 P, float timeSec,
     float alt = r - ATMOS_BOTTOM_RADIUS;
 
     effTop  = CloudEffectiveTopKm(P);
-    profile = CloudAltitudeProfileFromTop(alt, effTop);
+    profile = CloudAltitudeProfileFromTop(alt, effTop, CloudLocalBaseShiftKm(P));
     if (profile <= 0.0f) return 0.0f;
 
     coverage = CloudGlobalCoverage(P);
@@ -231,9 +271,13 @@ CloudMaterial CloudSampleMaterialFromHull(
 
     float alt = length(P) - ATMOS_BOTTOM_RADIUS;
     // heightFrac uses per-cloud effTop so MS height-bias reads correctly
-    // for tall vs short cumulus.
-    float h   = (alt - CLOUD_LAYER_BOT_KM)
-              / max(1e-4f, effTop - CLOUD_LAYER_BOT_KM);
+    // for tall vs short cumulus. PLANET v8: shift by the local cloud-base
+    // offset so heightFrac stays correctly in [0,1] when the cloud layer
+    // is riding above general terrain.
+    float baseShiftKm = CloudLocalBaseShiftKm(P);
+    float botKm = CLOUD_LAYER_BOT_KM + baseShiftKm;
+    float topKm = effTop              + baseShiftKm;
+    float h     = (alt - botKm) / max(1e-4f, topKm - botKm);
     m.heightFrac = saturate(h);
 
     float3 q = CloudNoiseCoord(P, timeSec);
@@ -297,7 +341,7 @@ CloudMaterial CloudSampleMaterialFromHull(
         }
     }
 
-    // Soft density curve lifts mid-densities so the body fills out.
+    // Soft density curve lifts mid-densities so the body fills terrain.
     d = pow(saturate(d), lerp(0.85f, 1.0f, d));
 
     m.density = d;
@@ -326,9 +370,13 @@ bool RayCloudShell(float3 ro, float3 rd, out float tNear, out float tFar)
 
     float Rb = ATMOS_BOTTOM_RADIUS;
     // Rt uses the MAX possible cloud top so the shell captures tall cumulus
-    // variation; out-of-cloud shell samples cost nothing via the profile gate.
-    float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
-    float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM;
+    // variation; terrain-of-cloud shell samples cost nothing via the profile gate.
+    // PLANET v8: extra +/- CLOUD_TERRAIN_SHIFT_BOUND_KM so the shell still
+    // wraps the cloud layer when it's been shifted by terrain.
+    float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                    + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+    float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM
+                                    - CLOUD_TERRAIN_SHIFT_BOUND_KM;
 
     float tT0, tT1, tM0, tM1;
     bool  hitTop = RaySphereIntersect(ro, rd, Rt, tT0, tT1);
@@ -600,7 +648,7 @@ void EvaluateCloudGBuffer(float3 V,
 #endif
 }
 
-// Per-sample sun shadow march. Geometric ramp out to ~380 km so low-sun
+// Per-sample sun shadow march. Geometric ramp terrain to ~380 km so low-sun
 // rays reach distant cloud banks; TAU_EARLYOUT keeps noon rays cheap.
 // After the local march, a geometric large-scale term estimates occlusion
 // from the far-side cloud-shell passage (the part of the sun ray that
@@ -629,8 +677,12 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 
     if (tau < TAU_EARLYOUT)
     {
-        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
-        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM;
+        // PLANET v8: +/-CLOUD_TERRAIN_SHIFT_BOUND_KM so the long-distance
+        // shadow probe stays inside the shifted cloud shell at any terrain.
+        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                       + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM
+                                       - CLOUD_TERRAIN_SHIFT_BOUND_KM;
 
         float tT0, tT1, tM0, tM1;
         bool hitOuter = RaySphereIntersect(P, L, Rt, tT0, tT1);
@@ -712,7 +764,9 @@ float CloudSunVisibility(float3 surfacePosWorld, float3 sunDirWS)
     float3 P = WorldToPlanet(surfacePosWorld);
     float  r = length(P);
     // MAX top so tall cumulus still cast when observer is above baseline.
-    if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM + 1e-3f) return 1.0f;
+    // PLANET v8: include terrain-shift margin in the "above cloud" early-out.
+    if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                  + CLOUD_TERRAIN_SHIFT_BOUND_KM + 1e-3f) return 1.0f;
 
     float tau = CloudOpticalDepthAlongRay(P, SafeNormalize(sunDirWS), 50.0f, walltime);
     return exp(-tau);
@@ -732,15 +786,21 @@ float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
 
     float3 L = SafeNormalize(sunDirWS);
     float  r = length(Pplanet);
-    if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM + 1e-3f) return 1.0f;
+    // PLANET v8: include terrain-shift margin in the "above cloud" early-out.
+    if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                  + CLOUD_TERRAIN_SHIFT_BOUND_KM + 1e-3f) return 1.0f;
 
     float tau = CloudOpticalDepthAlongRay(Pplanet, L, 50.0f, walltime);
 
     // Far-side cloud shell blocking (planet-scale sunset occlusion).
     if (tau < 64.0f)
     {
-        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
-        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM;
+        // PLANET v8: +/-CLOUD_TERRAIN_SHIFT_BOUND_KM as elsewhere so the
+        // limb-crossing shell still wraps the terrain-shifted cloud layer.
+        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                       + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM
+                                       - CLOUD_TERRAIN_SHIFT_BOUND_KM;
         float tT0, tT1, tM0, tM1;
         bool hitOuter = RaySphereIntersect(Pplanet, L, Rt, tT0, tT1);
         bool hitInner = RaySphereIntersect(Pplanet, L, Rm, tM0, tM1);
@@ -1354,8 +1414,15 @@ float3 EvaluateAtmosphereAndClouds(
             bool  hullEmpty = (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY);
 
             CloudMaterial m = (CloudMaterial)0;
-            m.heightFrac    = saturate((alt - CLOUD_LAYER_BOT_KM)
-                                       / max(1e-4f, CLOUD_LAYER_TOP_KM - CLOUD_LAYER_BOT_KM));
+            {
+                // PLANET v8: shift heightFrac by the local cloud-base offset,
+                // matching CloudSampleMaterialFromHull above so the two paths
+                // agree on which slab is "cloud".
+                float baseShiftKm = CloudLocalBaseShiftKm(P);
+                float botKm = CLOUD_LAYER_BOT_KM + baseShiftKm;
+                float topKm = CLOUD_LAYER_TOP_KM + baseShiftKm;
+                m.heightFrac = saturate((alt - botKm) / max(1e-4f, topKm - botKm));
+            }
             float cloudDensity = 0.0f;
             if (!hullEmpty)
             {

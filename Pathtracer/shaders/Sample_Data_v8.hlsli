@@ -33,28 +33,28 @@ uint pixelBaseAddr_SD(uint pixelIdx)
 //====================================
 //OBJECT-WORLD HELPERS
 //====================================
-//env/miss sentinels skip the transform; scene instances use their real instID.
-//PLANET: terrain instIDs (>= TERRAIN_INSTANCE_BASE) also skip it - terrain has
-//no instanceProps entry and its instance transform is translation-only, so the
-//object<->world NORMAL transform is identity (positions likewise).
+//Only the env/miss sentinel (instID 0xFFFFFFFF) skips the transform; every
+//real instance - scene mesh AND terrain cell - has an instanceProps entry.
+//(Terrain's transform is a pure translation, so its normal transform is the
+//identity, but it still goes through the same path.)
 float3 WorldToObjectPos(uint id, float3 Pw)
 {
-    if (id >= TERRAIN_INSTANCE_BASE) return Pw;
+    if (id == 0xFFFFFFFFu) return Pw;
     return mul(instanceProps[id].objectToWorldInverse, float4(Pw, 1.0)).xyz;
 }
 float3 ObjectToWorldPos(uint id, float3 Po)
 {
-    if (id >= TERRAIN_INSTANCE_BASE) return Po;
+    if (id == 0xFFFFFFFFu) return Po;
     return mul(instanceProps[id].objectToWorld, float4(Po, 1.0)).xyz;
 }
 float3 ObjectToWorldNrm(uint id, float3 No)
 {
-    if (id >= TERRAIN_INSTANCE_BASE) return No;
+    if (id == 0xFFFFFFFFu) return No;
     return normalize(mul(instanceProps[id].objectToWorldNormal, float4(No, 0.0f)).xyz);
 }
 float3 WorldToObjectNrm(uint id, float3 Nw)
 {
-    if (id >= TERRAIN_INSTANCE_BASE) return Nw;
+    if (id == 0xFFFFFFFFu) return Nw;
     float3x3 MT = transpose((float3x3)instanceProps[id].objectToWorld);
     return normalize(mul(MT, Nw));
 }
@@ -94,7 +94,7 @@ void store_prpm(RWByteAddressBuffer buf, uint pixelIdx, float pr, float pm)
 
 void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, uint instID)
 {
-    float3 n1s_obj = (instID < TERRAIN_INSTANCE_BASE) ? WorldToObjectNrm(instID, n1s_world) : n1s_world;
+    float3 n1s_obj = WorldToObjectNrm(instID, n1s_world);   // sentinel handled inside
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1s_obj));
 }
 
@@ -148,13 +148,13 @@ float3 load_n1_s(RWByteAddressBuffer buf, uint pixelIdx)
 {
     uint instID = load_instID(buf, pixelIdx);
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < TERRAIN_INSTANCE_BASE) ? ObjectToWorldNrm(instID, raw) : raw;
+    return ObjectToWorldNrm(instID, raw);   // sentinel handled inside
 }
 
 float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
 {
     float3 raw = UnpackNormal(buf.Load(pixelBaseAddr_SD(pixelIdx) + 20u));
-    return (instID < TERRAIN_INSTANCE_BASE) ? ObjectToWorldNrm(instID, raw) : raw;
+    return ObjectToWorldNrm(instID, raw);   // sentinel handled inside
 }
 
 float3 load_x1(RWByteAddressBuffer buf, uint pixelIdx)

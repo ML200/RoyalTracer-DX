@@ -176,7 +176,7 @@ void AssetLoader::SplitOversizedMeshes(LoadedScene& scene, UINT maxTris)
     }
     scene.meshes = std::move(newMeshes);
 
-    // Fan out instances: one input instance referring to mesh i becomes
+    // Fan terrain instances: one input instance referring to mesh i becomes
     // |oldToNew[i]| instances, all sharing the original local transform.
     std::vector<std::pair<UINT, XMMATRIX>> newInstances;
     newInstances.reserve(scene.instances.size());
@@ -247,7 +247,7 @@ void AssetLoader::LoadModels(
             loaded = ObjLoader::loadObjFile(modelPath, textureMap,
                 albedoTextures, normalTextures, rmaTextures, matSearchPath);
 
-        // Spatial split — driver BLAS builds blow out VRAM on multi-hundred-million
+        // Spatial split — driver BLAS builds blow terrain VRAM on multi-hundred-million
         // triangle meshes, so cap each piece at MAX_TRIS_PER_MESH and let the TLAS
         // stitch them back together.
         SplitOversizedMeshes(loaded, MAX_TRIS_PER_MESH);

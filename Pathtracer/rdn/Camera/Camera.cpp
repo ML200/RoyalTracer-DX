@@ -15,7 +15,7 @@ void Camera::ResetView() {
     //Snap the floating origin back to absolute zero. Without this, the
     //manipulator eye lives at (-1.5, 1.5, 3.5) in the OLD shifted frame
     //while sceneOriginWorld is still parked far away from a previous
-    //flight — the absolute spawn comes out at (-1.5 + sceneOrigin,
+    //flight — the absolute spawn comes terrain at (-1.5 + sceneOrigin,
     //1.5 + sceneOrigin.y, 3.5 + sceneOrigin.z), nowhere near the
     //expected world zero. Mirrors PollSceneOrigin's prev-view fix-up so
     //the snap stays MV-continuous even before UploadGPUBuffer overrides
@@ -42,11 +42,13 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
     //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3)
-    //+ SunSettings + CloudSettings + 6 planet-terrain floats appended at the tail.
+    //+ SunSettings + CloudSettings + 16 planet-terrain floats appended at the
+    //tail (6 base: centre xyz, radius, amp, freq; +10 camera-local noise
+    //frame: noiseOrigin xyz, noiseFrac xyz, camDir xyz, radialScale).
     uint32_t matCount = 6;
     m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8
                  + sizeof(SunSettings) + sizeof(CloudSettings)
-                 + sizeof(float) * 6;
+                 + sizeof(float) * 16;
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -199,9 +201,10 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     //HLSL CB packing rules concatenate them cleanly across register slots.
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra) + sizeof(SunSettings),
            &cloudSettings, sizeof(CloudSettings));
-    //Phase 5 procedural-terrain tail: 6 scalar floats (planet centre xyz,
-    //radius, heightmap amplitude, frequency) following CloudSettings. Scalar
-    //packing keeps it aligned with the CameraParams cbuffer with no padding.
+    //Procedural-terrain tail: 6 scalar floats following CloudSettings - planet
+    //centre xyz, radius, and the (vestigial) heightmap amplitude/frequency.
+    //planetCentre/radius feed the cloud + atmosphere code (TerrainHeight, planet
+    //sphere). Must match the cbuffer tail in Includes_v8.hlsli exactly.
     const float planetTail[6] = {
         planetCenter.x, planetCenter.y, planetCenter.z,
         planetRadius, terrainHeightAmplitude, terrainHeightFrequency

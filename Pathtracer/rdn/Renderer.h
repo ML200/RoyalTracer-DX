@@ -120,6 +120,11 @@ private:
     //scratch for the per-frame unified TLAS build - m_scene.tlasInstances
     //converted into the planet module's D3D12-only SceneInstanceDesc layout.
     std::vector<planet::SceneInstanceDesc> m_planetSceneInstances;
+    //PLANET ROCKS: scene-mesh slots of the generated boulder variants (geometry
+    //in the combined buffers + one BLAS each) and the camera-following streamer
+    //that emits their per-frame instance set.
+    planet::RockScatter   m_rockScatter;
+    std::vector<UINT>     m_rockMeshIndices;
     FlyCamController*   m_flyCam = nullptr;
     ReSTIRSettings      m_restirSettings;
     lt::LightTreeBuilder m_lightTree;
@@ -279,6 +284,34 @@ private:
     ComPtr<ID3D12Resource> m_cloudCoverageTexture;
     ComPtr<ID3D12Resource> m_cloudCoverageUploadHeap;
     void InitCloudCoverageTexture();
+
+    //Terrain heightmap cubemap — 6-layer Texture2DArray<R32F> downsampled
+    //from the baker output (CPU side keeps full bake resolution; this is
+    //the GPU-friendly version the shader samples for shadows + normal
+    //finite-diff + cloud bottom). Uploaded once at startup from the
+    //planet::StreamOrchestrator's HeightmapCubemap (which loads from
+    //./terrain/). Sampled by Includes_v8.hlsli's TerrainHeight at register
+    //t45 via equiangular cubed-sphere projection.
+    ComPtr<ID3D12Resource> m_terrainHeightmapTexture;
+    ComPtr<ID3D12Resource> m_terrainHeightmapUploadHeap;
+    void InitTerrainHeightmapTexture();
+
+    //Baker v8 companion textures. Each is a Texture2DArray with 6 layers
+    //(one per cube face). Surface_color (RGBA8) is the Mars-tint albedo
+    //at t46; normal (RGBA8) is the tangent-space normal map at t47; both
+    //at the same resolution as the heightmap (downsampled to GPU res from
+    //the CPU bake). Cloud_offset (R32F km, 256^2) at t48 is a heavily-
+    //smoothed elevation reference the cloud renderer uses to set local
+    //cloud base. Uploaded once at startup from the planet::HeightmapCubemap
+    //companion arrays. A missing layer leaves the resource null and the
+    //SRV becomes a null fallback, keeping the legacy look intact.
+    ComPtr<ID3D12Resource> m_terrainSurfaceColorTexture;
+    ComPtr<ID3D12Resource> m_terrainNormalTexture;
+    ComPtr<ID3D12Resource> m_terrainCloudOffsetTexture;
+    ComPtr<ID3D12Resource> m_terrainCompanionUploadHeap;
+    void InitTerrainSurfaceColorTexture();
+    void InitTerrainNormalTexture();
+    void InitTerrainCloudOffsetTexture();
 
     //Spatiotemporal blue noise array — 128x128x64 RGBA8 Texture2DArray
     //filled once by Pass_stbn_bake_v8.hlsl. The cloud shader's CloudRand4

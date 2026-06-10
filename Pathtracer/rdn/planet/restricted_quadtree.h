@@ -28,6 +28,8 @@
 
 namespace planet {
 
+class IHeightmapSource;   // optional terrain displacement for the LOD distance metric
+
 //====================================
 //PARAMS
 //====================================
@@ -48,7 +50,14 @@ public:
     //balance-preserving budget-greedy refinement for this camera; replaces the
     //previous cut. The result is always restricted (<=1 LOD-delta, crack-free)
     //and within the max_leaves budget.
-    void select(const QuadtreeParams& params, const CameraView& cam);
+    //
+    //'heightmap' (optional) displaces each node's centre/corners by the terrain
+    //elevation when computing screen error, so LOD tracks the ACTUAL displaced
+    //surface rather than the analytical sphere - the ground under a camera
+    //standing on a mountain refines correctly instead of reading as `height`
+    //metres away. Null = analytical sphere (unit tests).
+    void select(const QuadtreeParams& params, const CameraView& cam,
+                const IHeightmapSource* heightmap = nullptr);
 
     //the balanced leaf set (packed node_ids), ascending.
     const std::vector<uint64_t>& leaves() const { return m_leaves; }
@@ -63,9 +72,29 @@ public:
     uint8_t neighbor_lod(const QuadNode& leaf, QuadEdge edge) const;
 
     //Leaves across one edge of 'leaf': 1 for a same-LOD or coarser neighbour,
-    //2 for a finer one. Fills out[] with packed node_ids and returns the count.
+    //2 for a finer one. Fills terrain[] with packed node_ids and returns the count.
     //Used by the generation diff to find cells a changed leaf's seam affects.
     int adjacent_leaves(const QuadNode& leaf, QuadEdge edge, uint64_t out[2]) const;
+
+    //LOD of the leaf at the diagonal of one CORNER of 'leaf'. corner_idx
+    //encoding matches child quadrant order: bit 0 = +s, bit 1 = +t. The
+    //diagonal is reached by composing two neighbor_node steps (handles cube-
+    //face seam crossings since neighbor_node does). Returns the lod of the
+    //covering leaf at that diagonal position, or leaf.lod+1 if the diagonal
+    //has been subdivided into finer leaves. Edge balance only enforces 1-LOD
+    //diffs between EDGE neighbours; the diagonal can be coarser without any
+    //edge bit being set, so corner-only LOD differences need their own seam
+    //bookkeeping to avoid sub-metre cracks at the shared corner vertex.
+    uint8_t corner_lod(const QuadNode& leaf, int corner_idx) const;
+
+    //Leaf at the diagonal corner of 'leaf'. Returns 1 with `out` set to the
+    //covering leaf's packed id, or 1 with `out` set to the finer leaf that
+    //actually touches the corner POINT (the (3 ^ corner_idx)-quadrant chain
+    //of the diagonal node, since the diagonal chunk's corner touching us is
+    //the OPPOSITE quadrant of its own subdivision). Returns 0 only at cube
+    //vertices where the topology breaks (3 faces meet, not 4) - callers
+    //should treat that case as "no extra cell to mark".
+    int corner_leaf(const QuadNode& leaf, int corner_idx, uint64_t& out) const;
 
 private:
     void balance();   //safety net only - select()'s greedy keeps the invariant

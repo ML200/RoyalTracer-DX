@@ -66,7 +66,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //     so the shading pass falls back to the mesh's own depth/normal.
     //  3. Whether the planet body / stars / airglow are added behind the
     //     atmosphere (sky pixel sees them through the gaps; mesh occludes
-    //     them entirely so backgroundBehind drops out).
+    //     them entirely so backgroundBehind drops terrain).
     const uint instID    = load_instID(g_sample_current, pixelIdx);
     const bool isMeshHit = (instID != 0xFFFFFFFFu);
 

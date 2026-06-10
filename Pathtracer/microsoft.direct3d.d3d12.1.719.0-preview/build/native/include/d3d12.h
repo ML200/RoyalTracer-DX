@@ -9846,7 +9846,7 @@ EXTERN_C const IID IID_ID3D12Device;
         virtual HRESULT STDMETHODCALLTYPE OpenSharedHandleByName( 
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle) = 0;
         
         virtual HRESULT STDMETHODCALLTYPE MakeResident( 
@@ -10176,7 +10176,7 @@ EXTERN_C const IID IID_ID3D12Device;
             ID3D12Device * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -11136,7 +11136,7 @@ EXTERN_C const IID IID_ID3D12Device1;
             ID3D12Device1 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -11716,7 +11716,7 @@ EXTERN_C const IID IID_ID3D12Device2;
             ID3D12Device2 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -12335,7 +12335,7 @@ EXTERN_C const IID IID_ID3D12Device3;
             ID3D12Device3 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -13382,7 +13382,7 @@ EXTERN_C const IID IID_ID3D12Device4;
             ID3D12Device4 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -16401,7 +16401,7 @@ EXTERN_C const IID IID_ID3D12Device5;
             ID3D12Device5 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -18216,7 +18216,7 @@ EXTERN_C const IID IID_ID3D12Device6;
             ID3D12Device6 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -19242,7 +19242,7 @@ EXTERN_C const IID IID_ID3D12Device7;
             ID3D12Device7 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -20114,7 +20114,7 @@ EXTERN_C const IID IID_ID3D12Device8;
             ID3D12Device8 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -23511,7 +23511,7 @@ EXTERN_C const IID IID_ID3D12ShaderCacheSession;
             /* [annotation][in] */ 
             _In_reads_bytes_(KeySize)  const void *pKey,
             UINT KeySize,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_writes_bytes_(*pValueSize)  void *pValue,
             _Inout_  UINT *pValueSize) = 0;
         
@@ -23592,7 +23592,7 @@ EXTERN_C const IID IID_ID3D12ShaderCacheSession;
             /* [annotation][in] */ 
             _In_reads_bytes_(KeySize)  const void *pKey,
             UINT KeySize,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_writes_bytes_(*pValueSize)  void *pValue,
             _Inout_  UINT *pValueSize);
         
@@ -24018,7 +24018,7 @@ EXTERN_C const IID IID_ID3D12Device9;
             ID3D12Device9 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -24988,7 +24988,7 @@ EXTERN_C const IID IID_ID3D12Device10;
             ID3D12Device10 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -25978,7 +25978,7 @@ EXTERN_C const IID IID_ID3D12Device11;
             ID3D12Device11 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -26993,7 +26993,7 @@ EXTERN_C const IID IID_ID3D12Device12;
             ID3D12Device12 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -28028,7 +28028,7 @@ EXTERN_C const IID IID_ID3D12Device13;
             ID3D12Device13 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -29077,7 +29077,7 @@ EXTERN_C const IID IID_ID3D12Device14;
             ID3D12Device14 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)
@@ -30227,7 +30227,7 @@ EXTERN_C const IID IID_ID3D12Device15;
             ID3D12Device15 * This,
             _In_  LPCWSTR Name,
             DWORD Access,
-            /* [annotation][out] */ 
+            /* [annotation][terrain] */
             _Out_  HANDLE *pNTHandle);
         
         DECLSPEC_XFGVIRT(ID3D12Device, MakeResident)

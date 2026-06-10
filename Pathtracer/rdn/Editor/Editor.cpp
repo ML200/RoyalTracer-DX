@@ -788,7 +788,7 @@ void Editor::DrawCloudPanel(Camera& camera) {
     if (ImGui::Checkbox("Enabled", &enabled)) c.enabled = enabled ? 1.0f : 0.0f;
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Runtime master switch. The shader takes an\n"
-                          "early-out path when off, so the cost is\n"
+                          "early-terrain path when off, so the cost is\n"
                           "essentially free. ENABLE_CLOUDS in\n"
                           "Clouds_v8.hlsli is the compile-time kill\n"
                           "switch that dead-codes the integrator.");
@@ -1205,7 +1205,7 @@ void Editor::DrawCloudPanel(Camera& camera) {
                            50.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Distance along the view ray at which clouds\n"
-                              "start fading out. Must be < Render Distance.\n"
+                              "start fading terrain. Must be < Render Distance.\n"
                               "Drop to ~200 km for ground-level scenes where\n"
                               "the horizon hides anything beyond.");
 

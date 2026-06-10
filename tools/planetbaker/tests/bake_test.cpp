@@ -7,6 +7,9 @@
 #include "core/pipeline.h"
 #include "core/planet_state.h"
 #include "passes/bake_pass.h"
+#include "passes/bedrock_noise.h"
+#include "passes/impacts_pass.h"
+#include "passes/thermal_erosion_pass.h"
 
 #include <nlohmann/json.hpp>
 
@@ -68,13 +71,17 @@ TEST_CASE("BakePass writes 6 cube faces + manifest with correct sizes") {
     PlanetState   state(kSrcN, PlanetFieldSet::BedrockOnly);
     ParamRegistry reg;
     Pipeline      pipeline(scratch_dir("write_cache"));
+    //BakePass's full-pipeline path constructs BedrockNoise / Impacts /
+    //Thermal locally and runs them at the bake resolution. Their params
+    //(bedrock.*, impacts.*, thermal.*) must already be declared in the
+    //registry, so we add the passes here too - their declare_params is
+    //the source of truth.
+    pipeline.add_pass(std::make_unique<BedrockNoisePass>());
+    pipeline.add_pass(std::make_unique<ImpactsPass>());
+    pipeline.add_pass(std::make_unique<ThermalErosionPass>());
     pipeline.add_pass(std::make_unique<BakePass>(out));
     pipeline.declare_all(reg);
     pipeline.wire_dirty_tracking(reg);
-
-    //Seed bedrock + sediment with non-trivial values.
-    fill(state.bedrock_elevation, 1.5f);
-    fill(state.sediment_thickness, 250.0f);   //m
 
     reg.set_bool("bake.enabled", true);
     reg.set_int ("bake.elevation_resolution", kDstN);
@@ -82,8 +89,8 @@ TEST_CASE("BakePass writes 6 cube faces + manifest with correct sizes") {
     NullProgressSink null;
     pipeline.run(state, reg, null);
 
-    REQUIRE(pipeline.entries().size() == 1);
-    CHECK(pipeline.entries()[0].status == PassStatus::Clean);
+    REQUIRE(pipeline.entries().size() == 4);
+    CHECK(pipeline.entries()[3].status == PassStatus::Clean);   // bake clean
 
     //Each face file must exist and be exactly N*N*sizeof(float) bytes.
     const std::uintmax_t expected_bytes =
@@ -109,7 +116,7 @@ TEST_CASE("BakePass writes 6 cube faces + manifest with correct sizes") {
     CHECK(m["layers"]["elevation"]["element_type"] == "float32");
 }
 
-TEST_CASE("BakePass output values track bedrock + sediment composition") {
+TEST_CASE("BakePass synthesises non-degenerate noise at bake resolution") {
     const int kSrcN = 16;
     const int kDstN = 64;
     const auto out  = scratch_dir("values") / "out";
@@ -117,16 +124,15 @@ TEST_CASE("BakePass output values track bedrock + sediment composition") {
     PlanetState   state(kSrcN, PlanetFieldSet::BedrockOnly);
     ParamRegistry reg;
     Pipeline      pipeline(scratch_dir("values_cache"));
+    //All four passes registered so their declare_params populate the
+    //registry (BakePass's full-pipeline path needs impacts.* / thermal.*
+    //in addition to bedrock.*).
+    pipeline.add_pass(std::make_unique<BedrockNoisePass>());
+    pipeline.add_pass(std::make_unique<ImpactsPass>());
+    pipeline.add_pass(std::make_unique<ThermalErosionPass>());
     pipeline.add_pass(std::make_unique<BakePass>(out));
     pipeline.declare_all(reg);
     pipeline.wire_dirty_tracking(reg);
-
-    //bed = 2 km, sed = 500 m → surface = 2 + 0.5 = 2.5 km everywhere.
-    //(Halo cells are also filled to 2 km / 500 m so halo_exchange + bicubic
-    //sample stays at the same constant; cross-face boundaries don't intro
-    //transients in this test.)
-    fill(state.bedrock_elevation,  2.0f);
-    fill(state.sediment_thickness, 500.0f);
 
     reg.set_bool("bake.enabled", true);
     reg.set_int ("bake.elevation_resolution", kDstN);
@@ -134,10 +140,9 @@ TEST_CASE("BakePass output values track bedrock + sediment composition") {
     NullProgressSink null;
     pipeline.run(state, reg, null);
 
-    //Read back face 0 and verify constant surface. Skip a 4-pixel border to
-    //avoid the bicubic transient where the halo's clamped boundary samples
-    //blend with interior cells. With a constant source the interior should
-    //be exactly 2.5 km up to floating-point error.
+    //Read back face 0 and verify the synthesised values: finite, in a
+    //reasonable km range, AND varying (per-pixel noise should produce
+    //distinct values across the face).
     auto path = out / "elevation_face0.r32";
     REQUIRE(std::filesystem::exists(path));
     std::ifstream is(path, std::ios::binary);
@@ -147,14 +152,18 @@ TEST_CASE("BakePass output values track bedrock + sediment composition") {
     REQUIRE(static_cast<std::streamsize>(is.gcount()) ==
             static_cast<std::streamsize>(data.size() * sizeof(float)));
 
-    int sampled = 0;
-    for (int y = 4; y < kDstN - 4; ++y) {
-        for (int x = 4; x < kDstN - 4; ++x) {
-            float v = data[y * kDstN + x];
-            CHECK(std::isfinite(v));
-            CHECK(v == doctest::Approx(2.5f).epsilon(1e-4));
-            ++sampled;
-        }
+    float vmin = +1e30f, vmax = -1e30f;
+    double  sum = 0.0;
+    for (float v : data) {
+        CHECK(std::isfinite(v));
+        CHECK(v >= -20.0f);
+        CHECK(v <= +20.0f);
+        if (v < vmin) vmin = v;
+        if (v > vmax) vmax = v;
+        sum += v;
     }
-    REQUIRE(sampled > 0);
+    INFO("face0 min=" << vmin << ", max=" << vmax << ", mean=" << (sum / data.size()));
+    //A constant face would have vmax - vmin == 0. Bedrock noise across a
+    //whole cube face should span at least a few hundred metres.
+    CHECK(vmax - vmin > 0.2f);   // km
 }

@@ -233,7 +233,7 @@ int Manipulator::getHeight() const
 //
 // Start trackball calculation
 // Calculate the axis and the angle (radians) by the given mouse coordinates.
-// Project the points onto the virtual trackball, then figure out the axis of rotation, which is the
+// Project the points onto the virtual trackball, then figure terrain the axis of rotation, which is the
 // cross product of p0 p1 and O p0 (O is the center of the ball, 0,0,0)
 //
 // NOTE: This is a deformed trackball -- is a trackball in the center, but is deformed into a

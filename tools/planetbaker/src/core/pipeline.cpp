@@ -99,7 +99,8 @@ Pipeline::Pipeline(std::filesystem::path cache_dir)
 
 void Pipeline::add_pass(std::unique_ptr<Pass> pass) {
     PassEntry entry;
-    entry.name = pass->name();
+    entry.name         = pass->name();
+    entry.param_prefix = pass->param_prefix();
     entries_.push_back(std::move(entry));
     passes_.push_back(std::move(pass));
 }
@@ -113,7 +114,7 @@ void Pipeline::declare_all(ParamRegistry& reg) const {
 void Pipeline::wire_dirty_tracking(ParamRegistry& reg) {
     reg.on_change([this](std::string_view path) {
         for (const auto& p : passes_) {
-            std::string prefix = std::string(p->name()) + ".";
+            std::string prefix = p->param_prefix();
             if (path.size() >= prefix.size()
              && path.substr(0, prefix.size()) == prefix) {
                 invalidate_pass(p->name());
@@ -176,8 +177,9 @@ std::uint64_t Pipeline::compute_key(const Pass& p,
     h.feed_pod(static_cast<std::uint32_t>(state.grid().n));
     h.feed_pod(static_cast<std::uint32_t>(CubedSphereGrid::HALO));
     h.feed_pod(static_cast<std::uint32_t>(6));
-    //params under "<name>."
-    std::string prefix = std::string(p.name()) + ".";
+    //params under the pass's declared param-tree prefix (usually "<name>.",
+    //but BedrockNoisePass overrides to "bedrock." - see Pass::param_prefix).
+    std::string prefix = p.param_prefix();
     reg.hash_prefix_into(prefix, h);
     //Input field content hashes, in stable FieldId order. Downloads each
     //input to host and FNV-1a's the bytes. Adds a few ms per input field

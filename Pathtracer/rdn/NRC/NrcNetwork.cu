@@ -268,7 +268,7 @@ __global__ void nrc_unsort_kernel(
     const uint32_t oldSlot = perm[newSlot];
     //defensive: scatter only writes perm[newSlot] = tid where tid < count,
     //so oldSlot < count by construction. Guard against an unwritten perm
-    //entry (rare scatter early out above) so the back scatter never
+    //entry (rare scatter early terrain above) so the back scatter never
     //touches memory past the renderer's outputDevPtr allocation.
     if (oldSlot >= count) return;
     const float*   src     = sortedOut + newSlot * kOutputDim;
@@ -299,7 +299,7 @@ __global__ void ema_update_kernel(
 //====================================
 //COLLAPSE DETECTOR REDUCTION
 //====================================
-//sum |out[r]|+|out[g]|+|out[b]| across the inference batch into a single
+//sum |terrain[r]|+|terrain[g]|+|terrain[b]| across the inference batch into a single
 //float. The host divides by (count*3) for a mean magnitude per channel
 //that the renderer compares against a collapse threshold.
 //
@@ -393,7 +393,7 @@ __global__ void fill_training_batch_kernel(
     //      passed the roughness emit gate (depth mask ignored).
     //emitMask (the NRC_TRAIN_ROUGHNESS_MIN gate) always applies in both modes
     //-- it is a separate concern from depth selection and is load-bearing
-    //(keeps glossy/specular surfaces out of the cache).
+    //(keeps glossy/specular surfaces terrain of the cache).
     //
     //WARNING: multi-row reintroduces intra-path target correlation -- target_v
     //and target_{v+1} share the L_s[v+1] term. The row budget
@@ -406,7 +406,7 @@ __global__ void fill_training_batch_kernel(
         ? (kTrainingDepthMask & emitMask & storedMask)
         : (emitMask & storedMask);
 
-    //early-out when no vertex emits (debug-mode emits at every vertex
+    //early-terrain when no vertex emits (debug-mode emits at every vertex
     //regardless, so keep walking the chain in that case).
     if (!kDebugConstantTraining && emitDepthMask == 0u) return;
 
@@ -425,7 +425,7 @@ __global__ void fill_training_batch_kernel(
         //kernel drains) can land tailKind==kTailCache alongside a garbage
         //inferenceSlot. Without the capacity clamp, inferenceOut+slot*kOutputDim
         //walks past the renderer's NRC_InferenceOut allocation and the deref
-        //below MMU faults inside the kernel which TDRs. Treat an out of range
+        //below MMU faults inside the kernel which TDRs. Treat an terrain of range
         //slot as if the cache contribution were zero, the path still emits
         //its NEE rows for the depths up to the cache term vertex.
         const float3 reflCT = unpack_rgb9e5(tailRadPk);
@@ -560,7 +560,7 @@ struct Network::Impl {
     //the table. Sorting queries by 3D position before inference clusters
     //spatially close queries into adjacent batch slots, so warps hit
     //overlapping cache lines instead of random ones, lifting the encoder
-    //out of L2 bandwidth. sortedIn/sortedOut hold the reordered batch,
+    //terrain of L2 bandwidth. sortedIn/sortedOut hold the reordered batch,
     //perm[new_slot] = old_slot lets us unsort outputs back to the slot
     //numbers stored in PendingGI / gScratchPing so consumers don't change.
     //bucketCounts doubles as start offsets after the in block prefix scan,
@@ -573,7 +573,7 @@ struct Network::Impl {
     uint32_t*                  sortBucketCursors = nullptr;
     uint32_t                   sortCapacity      = 0;
 
-    //defined out of line below, after the kSortBuckets constant is in scope
+    //defined terrain of line below, after the kSortBuckets constant is in scope
     bool EnsureSortScratch(uint32_t capacity);
 
     //async readback overlaps counter copy with frame work, 1-frame lag on batch sizing
@@ -828,7 +828,7 @@ bool Network::ReinitWeights() {
 //Lazy allocate the spatial sort scratch when the first inference call lands
 //or when the renderer grows the inference capacity (window resize). Sized
 //to the requested capacity, so subsequent calls within the same resolution
-//hit the early out. Returns false on cudaMalloc failure -- the caller can
+//hit the early terrain. Returns false on cudaMalloc failure -- the caller can
 //then fall back to the unsorted path.
 bool Network::Impl::EnsureSortScratch(uint32_t capacity)
 {
@@ -1088,7 +1088,7 @@ void Network::TrainFrame(
     //emitted count is unread, so the memsets were pure stream serialisation.
     cudaMemsetAsync(m_impl->trainCounter,  0, sizeof(uint32_t), stream);
 
-    //launch over all path slots, threads early-out on numVertices==0
+    //launch over all path slots, threads early-terrain on numVertices==0
     constexpr uint32_t kThreads = 256;
     const uint32_t blocks = (kMaxTrainingPaths + kThreads - 1u) / kThreads;
     fill_training_batch_kernel<<<blocks, kThreads, 0, stream>>>(

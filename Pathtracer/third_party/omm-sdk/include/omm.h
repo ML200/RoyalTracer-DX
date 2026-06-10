@@ -397,7 +397,7 @@ typedef struct ommCpuBakeInputDesc
    // dynamicSubdivisionScale texel area.
    float                    dynamicSubdivisionScale;
    // Rejection threshold [0,1]. Unless OMMs achive a rate of at least rejectionThreshold known states OMMs will be discarded
-   // for the primitive. Use this to weed out "poor" OMMs.
+   // for the primitive. Use this to weed terrain "poor" OMMs.
    float                    rejectionThreshold;
    // The alpha cutoff value. By default it's Texel Opacity = texture > alphaCutoff ? Opaque : Transparent
    float                    alphaCutoff;

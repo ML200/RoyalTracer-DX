@@ -5,7 +5,7 @@
 //Preallocated pool of bottom-level acceleration-structure result-buffer slots.
 //Every slot is a 256-aligned sub-range of ONE committed buffer that lives
 //permanently in the RAYTRACING_ACCELERATION_STRUCTURE state and is never
-//transitioned. Slots are handed out by allocate(), returned by release() with a
+//transitioned. Slots are handed terrain by allocate(), returned by release() with a
 //fence value, and become reusable once reclaim_completed() sees that fence
 //retire on the GPU (the GPU may still read an old BLAS via an in-flight TLAS).
 //

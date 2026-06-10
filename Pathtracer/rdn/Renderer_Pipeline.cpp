@@ -389,6 +389,24 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // (68). Refilled each frame by the planet StreamOrchestrator; the terrain
     // shader reads it to reconstruct chunk vertices and drop stale GI samples.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 44, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Planet heightmap cubemap Texture2DArray<R32F> (t45, g_terrainHeightmap
+    // in Includes_v8.hlsli) at heap slot TERRAIN_HEIGHTMAP_HEAP_SLOT (69).
+    // Uploaded once by InitTerrainHeightmapTexture from the baker output;
+    // sampled by Includes_v8.hlsli::TerrainHeight via equiangular cubed-sphere
+    // projection.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 45, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // PLANET v8 companion textures. Each is a Texture2DArray with 6 layers.
+    //   t46 (g_terrainSurfaceColor, RGBA8): Mars-style albedo, heap 70.
+    //   t47 (g_terrainNormalMap,    RGBA8): tangent-space normal, heap 71.
+    //   t48 (g_terrainCloudOffset,  R32F): smoothed elevation for cloud
+    //                                      base lookup, heap 72.
+    // Uploaded once at startup by Renderer::InitTerrainSurfaceColorTexture /
+    // InitTerrainNormalTexture / InitTerrainCloudOffsetTexture. Null SRVs
+    // are bound when the bake didn't produce the layer; the shader handles
+    // that via alpha-channel sentinels.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 46, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 47, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 48, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -747,7 +765,7 @@ void Renderer::CreateShaderResourceHeap() {
       //material-ID element counts of 0. D3D12 rejects a buffer SRV with
       //NumElements==0, so clamp to 1; the backing buffers are valid 256 B
       //placeholders (CreateBuffer's size-0 guard) that nothing samples.
-      sd.Buffer.NumElements = std::max(m_scene.totalIndexCount, 1u);
+      sd.Buffer.NumElements = std::max(m_scene.combinedIndexCount(), 1u);  // scene + terrain region
       dev->CreateShaderResourceView(m_scene.indexGlobal.Get(), &sd, handle); next(); }
 
     // Slot 4: SRV t2 — Global VB
@@ -755,7 +773,7 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = std::max(m_scene.totalVertexCount, 1u);  //see Slot 3
+      sd.Buffer.NumElements = std::max(m_scene.combinedVertexCount(), 1u);  // scene + terrain region
       sd.Buffer.StructureByteStride = sizeof(BTriVertex);
       dev->CreateShaderResourceView(m_scene.vertexGlobal.Get(), &sd, handle); next(); }
 
@@ -770,7 +788,7 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = (UINT)m_scene.instances.size();
+      sd.Buffer.NumElements = m_scene.instancePropsCount();  // scene capacity + terrain region (fixed)
       sd.Buffer.StructureByteStride = sizeof(InstanceProperties);
       dev->CreateShaderResourceView(m_scene.instanceProperties.Get(), &sd, handle); next(); }
 
@@ -1091,6 +1109,78 @@ void Renderer::CreateShaderResourceHeap() {
         d.Buffer.NumElements          = planet::StreamOrchestrator::terrain_table_count();
         d.Buffer.StructureByteStride  = sizeof(planet::TerrainSlotGPU);
         dev->CreateShaderResourceView(m_planet.terrain_table(), &d, handle); next();
+    }
+
+    // Slot 69 (TERRAIN_HEIGHTMAP_HEAP_SLOT): baked planet heightmap cubemap
+    // (t45, g_terrainHeightmap in Includes_v8.hlsli). Texture2DArray<R32F>
+    // with 6 layers, one per cube face, uploaded once by
+    // InitTerrainHeightmapTexture. Bind a null SRV if the upload failed so
+    // the shader's sample returns 0 (flat sphere).
+    if (m_terrainHeightmapTexture) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.MostDetailedMip     = 0;
+        d.Texture2DArray.MipLevels           = m_terrainHeightmapTexture->GetDesc().MipLevels;
+        d.Texture2DArray.FirstArraySlice     = 0;
+        d.Texture2DArray.ArraySize           = 6;
+        d.Texture2DArray.PlaneSlice          = 0;
+        d.Texture2DArray.ResourceMinLODClamp = 0.0f;
+        dev->CreateShaderResourceView(m_terrainHeightmapTexture.Get(), &d, handle); next();
+    } else {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.ArraySize    = 6;
+        dev->CreateShaderResourceView(nullptr, &d, handle); next();
+    }
+
+    // Slot 70 (TERRAIN_SURFACE_COLOR_HEAP_SLOT): baked Mars-tint surface
+    // colour cubemap (t46, g_terrainSurfaceColor in Includes_v8.hlsli).
+    // Texture2DArray<RGBA8> with 6 layers. Null SRV when the bake didn't
+    // produce the layer; the shader then falls back to the TERRAIN_ALBEDO
+    // constant for terrain hits.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.ArraySize    = 6;
+        // MipLevels must be > 0 even for null SRVs - 1 matches the single-mip
+        // texture we allocate in InitTerrainSurfaceColorTexture.
+        d.Texture2DArray.MipLevels = 1;
+        dev->CreateShaderResourceView(m_terrainSurfaceColorTexture.Get(), &d, handle); next();
+    }
+
+    // Slot 71 (TERRAIN_NORMAL_HEAP_SLOT): baked tangent-space normal map
+    // cubemap (t47, g_terrainNormalMap in Includes_v8.hlsli). Null SRV
+    // when the bake didn't produce the layer; the shader's TerrainNormal
+    // path falls back to the analytic finite-difference normal alone.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_R8G8B8A8_UNORM;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.ArraySize    = 6;
+        d.Texture2DArray.MipLevels    = 1;
+        dev->CreateShaderResourceView(m_terrainNormalTexture.Get(), &d, handle); next();
+    }
+
+    // Slot 72 (TERRAIN_CLOUD_OFFSET_HEAP_SLOT): baked smoothed-elevation
+    // cubemap for cloud base lookup (t48, g_terrainCloudOffset in
+    // Includes_v8.hlsli). Texture2DArray<R32F> typically 256^2. Null SRV
+    // when the bake didn't produce the layer; the cloud shader then uses
+    // CLOUD_LAYER_BOT_KM unmodified (flat spherical cloud shell).
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                      = DXGI_FORMAT_R32_FLOAT;
+        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.ArraySize    = 6;
+        d.Texture2DArray.MipLevels    = 1;
+        dev->CreateShaderResourceView(m_terrainCloudOffsetTexture.Get(), &d, handle); next();
     }
 
     // Bindless textures
@@ -1994,6 +2084,441 @@ void Renderer::InitCloudCoverageTexture() {
         << L" R8 luminance ("
         << ((size_t)width * height / (1024 * 1024))
         << L" MB) in " << ms << L" ms");
+}
+
+//====================================
+//TERRAIN HEIGHTMAP CUBEMAP
+//====================================
+//Reads the CPU heightmap loaded by planet::StreamOrchestrator (which decodes
+//./terrain/manifest.json + the 6 elevation_face<N>.r32 files from the baker),
+//downsamples each face to TERRAIN_HEIGHTMAP_GPU_RESOLUTION, and uploads as a
+//6-layer Texture2DArray<R32F>. The shader's TerrainHeight() samples this via
+//equiangular cubed-sphere projection (matching the baker's projection in
+//tools/planetbaker/src/core/cubed_sphere.h::face_uv_to_sphere).
+//
+//4k per face was picked over the bake's native 16k to keep VRAM at ~384 MB
+//(R32F * 4096^2 * 6) instead of 6 GB. That's enough for shadow rays / cloud
+//bottom checks / ReSTIR reconnection - the CPU mesh tessellator still uses
+//full bake resolution so the actual triangle geometry retains detail.
+
+//Per-face dimension of the GPU heightmap Texture2DArray. Must divide the
+//bake's resolution evenly (downsample_face_km in heightmap_cubemap.cpp
+//requires integer step). Trade-off:
+//  4096:  384 MB, ~20 km Nyquist on Earth-radius planet
+//  8192:  1.5 GB, ~10 km Nyquist  <- current sweet spot
+//  16384:  6 GB,  ~5 km Nyquist (bake-limited)
+//Above ~8k a single committed D3D12 resource can OOM on memory
+//fragmentation even with 32 GB VRAM - prior init allocations (DLSS-G,
+//DXR scratch, ReSTIR, etc.) eat into free contiguous space. 16k texture
+//is fine on hardware that supports it AND if it's allocated EARLY in
+//init before fragmentation builds up.
+static constexpr UINT TERRAIN_HEIGHTMAP_GPU_RESOLUTION = 8192;
+
+void Renderer::InitTerrainHeightmapTexture() {
+    SCOPE_TIMER("InitTerrainHeightmapTexture");
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
+    const planet::HeightmapCubemap& src = m_planet.heightmap();
+    if (!src.loaded()) {
+        LOG(L"[TerrainHeightmap] planet heightmap not loaded - binding null SRV "
+            L"(shader treats as flat sphere)");
+        return;
+    }
+
+    const UINT dstN = TERRAIN_HEIGHTMAP_GPU_RESOLUTION;
+    if (src.resolution() % dstN != 0) {
+        LOG(L"[TerrainHeightmap] CPU resolution " << src.resolution()
+            << L" is not an integer multiple of GPU resolution " << dstN
+            << L" - skipping upload; sin-bump fallback active");
+        return;
+    }
+
+    //GPU resource: Texture2DArray, R32F, 6 layers, no mips. Created first so
+    //GetRequiredIntermediateSize can compute upload sizes from its desc.
+    //Mips are not required - we sample with explicit LOD 0 in the shader.
+    auto* dev = m_ctx.Device();
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width              = dstN;
+    td.Height             = dstN;
+    td.DepthOrArraySize   = 6;
+    td.MipLevels          = 1;
+    td.Format             = DXGI_FORMAT_R32_FLOAT;
+    td.SampleDesc.Count   = 1;
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&m_terrainHeightmapTexture)));
+    m_terrainHeightmapTexture->SetName(L"TerrainHeightmapCubemap");
+
+    //Per-face streamed upload. Allocates ONE face's worth of upload buffer
+    //(64 MB at 4k, 1 GB at 16k) and reuses it for all 6 faces - flushing
+    //the command list between faces so the GPU drains the previous copy
+    //before the upload buffer is overwritten. Likewise the CPU
+    //downsample buffer holds one face at a time. Peak memory in-flight:
+    //~3x face size (host + upload + texture-portion) instead of the
+    //previous ~3x TOTAL (host + upload + texture all sized for all 6
+    //faces at once). At 16k that turns an 18 GB peak into ~3 GB and
+    //unblocks E_OUTOFMEMORY on the texture creation.
+    const size_t face_floats = (size_t)dstN * (size_t)dstN;
+    std::vector<float> face_buf(face_floats);
+
+    const UINT64 uploadSizeOne = GetRequiredIntermediateSize(
+        m_terrainHeightmapTexture.Get(), 0, 1);   // size for ONE subresource
+    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSizeOne);
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_terrainHeightmapUploadHeap)));
+    m_terrainHeightmapUploadHeap->SetName(L"TerrainHeightmapUploadHeap");
+
+    for (UINT f = 0; f < 6; ++f) {
+        if (!src.downsample_face_km(static_cast<uint8_t>(f), dstN, face_buf.data())) {
+            LOG(L"[TerrainHeightmap] downsample failed for face " << f
+                << L" - aborting upload");
+            return;
+        }
+
+        D3D12_SUBRESOURCE_DATA sr = {};
+        sr.pData      = face_buf.data();
+        sr.RowPitch   = (LONG_PTR)dstN * sizeof(float);
+        sr.SlicePitch = sr.RowPitch * (LONG_PTR)dstN;
+
+        //Upload into subresource `f` of the texture. UpdateSubresources
+        //with FirstSubresource=f, NumSubresources=1 copies through the
+        //SHARED upload heap. We must drain the prior face's copy before
+        //writing the next one, hence the FlushAndReset() at the end of
+        //the loop body.
+        UpdateSubresources(m_ctx.CmdList(), m_terrainHeightmapTexture.Get(),
+                           m_terrainHeightmapUploadHeap.Get(),
+                           /*intermediateOffset=*/0,
+                           /*FirstSubresource=*/f,
+                           /*NumSubresources=*/1,
+                           &sr);
+
+        //Drain the GPU before reusing the upload buffer for the next face.
+        //One-time init cost; not on any hot path. The texture stays in
+        //COPY_DEST through the whole loop and only transitions to SRV
+        //after the last face.
+        m_ctx.FlushAndReset();
+    }
+
+    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_terrainHeightmapTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+    m_ctx.CmdList()->ResourceBarrier(1, &bar);
+
+    //Release the upload heap once the GPU has drained - it's only needed
+    //during the per-face copies above. Saves a permanent 6 GB allocation
+    //at 16k. The flush in the loop already serialised the last copy.
+    m_terrainHeightmapUploadHeap.Reset();
+
+    const auto t_end = std::chrono::high_resolution_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                        t_end - t_start).count() / 1000.0;
+    LOG(L"[TerrainHeightmap] Uploaded 6 x " << dstN << L"x" << dstN
+        << L" R32F faces ("
+        << (6 * face_floats * sizeof(float) / (1024 * 1024))
+        << L" MB) in " << ms << L" ms (downsampled from "
+        << src.resolution() << L"); upload heap released");
+}
+
+//====================================
+//TERRAIN COMPANION TEXTURES (baker v8)
+//====================================
+//surface_color, normal, cloud_offset. Same per-face upload pattern as
+//InitTerrainHeightmapTexture - allocate one upload buffer sized for the
+//largest face, reuse it across faces, flush between copies. Each Init is
+//independent so a partial bake (e.g. color present but normal missing)
+//still uploads what it can.
+
+namespace {
+
+//Allocate a 2D-array texture (6 layers) at `n^2` with the given format.
+//`mipLevels` defaults to 1; pass > 1 for mip-mapped textures (caller must
+//generate and upload the lower mips itself - this helper only sizes the
+//resource).
+ComPtr<ID3D12Resource> create_terrain_array_texture(ID3D12Device* dev,
+                                                     UINT n,
+                                                     DXGI_FORMAT fmt,
+                                                     const wchar_t* name,
+                                                     UINT mipLevels = 1) {
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width              = n;
+    td.Height             = n;
+    td.DepthOrArraySize   = 6;
+    td.MipLevels          = static_cast<UINT16>(mipLevels);
+    td.Format             = fmt;
+    td.SampleDesc.Count   = 1;
+    ComPtr<ID3D12Resource> tex;
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+        IID_PPV_ARGS(&tex)));
+    tex->SetName(name);
+    return tex;
+}
+
+} // namespace
+
+//Same target resolution as the heightmap (TERRAIN_HEIGHTMAP_GPU_RESOLUTION,
+//defined above near InitTerrainHeightmapTexture) so the equiangular
+//projection math in the shader lines up texel-for-texel between height,
+//color, and normal lookups.
+
+void Renderer::InitTerrainSurfaceColorTexture() {
+    SCOPE_TIMER("InitTerrainSurfaceColorTexture");
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
+    const planet::HeightmapCubemap& src = m_planet.heightmap();
+    if (!src.surface_color_loaded()) {
+        LOG(L"[TerrainSurfaceColor] not present in bake - leaving null SRV "
+            L"(shader falls back to TERRAIN_ALBEDO constant)");
+        return;
+    }
+
+    const UINT dstN = TERRAIN_HEIGHTMAP_GPU_RESOLUTION;
+    if (src.surface_color_resolution() % dstN != 0) {
+        LOG(L"[TerrainSurfaceColor] CPU resolution " << src.surface_color_resolution()
+            << L" is not an integer multiple of GPU resolution " << dstN
+            << L" - skipping upload");
+        return;
+    }
+
+    auto* dev = m_ctx.Device();
+    m_terrainSurfaceColorTexture = create_terrain_array_texture(
+        dev, dstN, DXGI_FORMAT_R8G8B8A8_UNORM, L"TerrainSurfaceColorCubemap");
+
+    const size_t face_bytes = static_cast<size_t>(dstN) * dstN * 4;
+    std::vector<std::uint8_t> face_buf(face_bytes);
+
+    const UINT64 uploadSizeOne = GetRequiredIntermediateSize(
+        m_terrainSurfaceColorTexture.Get(), 0, 1);
+    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSizeOne);
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_terrainCompanionUploadHeap)));
+    m_terrainCompanionUploadHeap->SetName(L"TerrainCompanionUploadHeap");
+
+    for (UINT f = 0; f < 6; ++f) {
+        if (!src.surface_color_face(static_cast<uint8_t>(f), dstN, face_buf.data())) {
+            LOG(L"[TerrainSurfaceColor] downsample failed for face " << f);
+            m_terrainSurfaceColorTexture.Reset();
+            m_terrainCompanionUploadHeap.Reset();
+            return;
+        }
+        D3D12_SUBRESOURCE_DATA sr = {};
+        sr.pData      = face_buf.data();
+        sr.RowPitch   = (LONG_PTR)dstN * 4;
+        sr.SlicePitch = sr.RowPitch * (LONG_PTR)dstN;
+        UpdateSubresources(m_ctx.CmdList(), m_terrainSurfaceColorTexture.Get(),
+                           m_terrainCompanionUploadHeap.Get(), 0, f, 1, &sr);
+        m_ctx.FlushAndReset();
+    }
+
+    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_terrainSurfaceColorTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+    m_ctx.CmdList()->ResourceBarrier(1, &bar);
+
+    m_terrainCompanionUploadHeap.Reset();
+
+    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - t_start).count() / 1000.0;
+    LOG(L"[TerrainSurfaceColor] Uploaded 6 x " << dstN << L"x" << dstN
+        << L" RGBA8 faces (" << (6 * face_bytes / (1024 * 1024)) << L" MB) in "
+        << ms << L" ms (downsampled from " << src.surface_color_resolution() << L")");
+}
+
+void Renderer::InitTerrainNormalTexture() {
+    SCOPE_TIMER("InitTerrainNormalTexture");
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
+    const planet::HeightmapCubemap& src = m_planet.heightmap();
+    if (!src.normal_loaded()) {
+        LOG(L"[TerrainNormal] not present in bake - leaving null SRV "
+            L"(shader falls back to analytic finite-diff normal)");
+        return;
+    }
+
+    const UINT dstN = TERRAIN_HEIGHTMAP_GPU_RESOLUTION;
+    if (src.normal_resolution() % dstN != 0) {
+        LOG(L"[TerrainNormal] CPU resolution " << src.normal_resolution()
+            << L" is not an integer multiple of GPU resolution " << dstN
+            << L" - skipping upload");
+        return;
+    }
+
+    // Mip chain: TerrainNormal samples this texture at a distance-derived
+    // LOD so orbital views read pre-filtered detail instead of aliasing
+    // to ~radial noise. Number of mips = floor(log2(dstN)) + 1; for the
+    // 8K bake that's 14 mips.
+    UINT numMips = 1;
+    {
+        UINT n = dstN;
+        while (n > 1u) { n >>= 1; ++numMips; }
+    }
+
+    auto* dev = m_ctx.Device();
+    m_terrainNormalTexture = create_terrain_array_texture(
+        dev, dstN, DXGI_FORMAT_R8G8B8A8_UNORM, L"TerrainNormalCubemap",
+        numMips);
+
+    // Per-mip pixel counts and offsets into a flat one-face buffer that
+    // holds mip 0..numMips-1 contiguously. The full mip pyramid weighs
+    // 4/3x the base mip so total is bounded.
+    std::vector<size_t> mipOffsets(numMips + 1, 0);
+    std::vector<UINT>   mipResolutions(numMips);
+    for (UINT m = 0; m < numMips; ++m) {
+        const UINT mn = std::max<UINT>(1u, dstN >> m);
+        mipResolutions[m] = mn;
+        mipOffsets[m + 1] = mipOffsets[m] + static_cast<size_t>(mn) * mn * 4;
+    }
+    const size_t face_bytes_all_mips = mipOffsets[numMips];
+    std::vector<std::uint8_t> face_buf(face_bytes_all_mips);
+
+    // Upload heap sized for one face's worth of mips. UpdateSubresources
+    // pulls all numMips subresources of the current face in a single call.
+    const UINT64 uploadSizeFace = GetRequiredIntermediateSize(
+        m_terrainNormalTexture.Get(), 0, numMips);
+    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSizeFace);
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_terrainCompanionUploadHeap)));
+    m_terrainCompanionUploadHeap->SetName(L"TerrainCompanionUploadHeap");
+
+    std::vector<D3D12_SUBRESOURCE_DATA> srs(numMips);
+
+    for (UINT f = 0; f < 6; ++f) {
+        // Mip 0 comes from the source bake (already RGBA8 with alpha = 255
+        // for real data; HeightmapCubemap::normal_face writes the full 4
+        // channels into face_buf at offset 0).
+        if (!src.normal_face(static_cast<uint8_t>(f), dstN, face_buf.data())) {
+            LOG(L"[TerrainNormal] downsample failed for face " << f);
+            m_terrainNormalTexture.Reset();
+            m_terrainCompanionUploadHeap.Reset();
+            return;
+        }
+
+        // Generate mips by 2x2 box average. The packed normal channels
+        // are linear in their unit-vector components (r = nx*0.5+0.5
+        // etc.), so byte-averaging is equivalent to averaging unpacked
+        // gradients; the shader's normalize after unpack restores unit
+        // length. Alpha is uniformly 255 across real data so the
+        // sentinel `nrm.a < 0.5` (no-data fallback) stays intact at
+        // every mip.
+        for (UINT m = 1; m < numMips; ++m) {
+            const UINT srcN = mipResolutions[m - 1];
+            const UINT dstM = mipResolutions[m];
+            const std::uint8_t* srcMip = face_buf.data() + mipOffsets[m - 1];
+            std::uint8_t*       dstMip = face_buf.data() + mipOffsets[m];
+            for (UINT j = 0; j < dstM; ++j) {
+                for (UINT i = 0; i < dstM; ++i) {
+                    const UINT si = i * 2u;
+                    const UINT sj = j * 2u;
+                    for (UINT c = 0; c < 4u; ++c) {
+                        const uint32_t s00 = srcMip[((sj    ) * srcN + si    ) * 4 + c];
+                        const uint32_t s10 = srcMip[((sj    ) * srcN + si + 1) * 4 + c];
+                        const uint32_t s01 = srcMip[((sj + 1) * srcN + si    ) * 4 + c];
+                        const uint32_t s11 = srcMip[((sj + 1) * srcN + si + 1) * 4 + c];
+                        const uint32_t sum = s00 + s10 + s01 + s11;
+                        dstMip[(j * dstM + i) * 4 + c] =
+                            static_cast<std::uint8_t>((sum + 2u) / 4u);
+                    }
+                }
+            }
+        }
+
+        for (UINT m = 0; m < numMips; ++m) {
+            const UINT mn = mipResolutions[m];
+            srs[m].pData      = face_buf.data() + mipOffsets[m];
+            srs[m].RowPitch   = static_cast<LONG_PTR>(mn) * 4;
+            srs[m].SlicePitch = srs[m].RowPitch * static_cast<LONG_PTR>(mn);
+        }
+
+        // Subresources are laid out as MipSlice + ArraySlice*MipLevels;
+        // face f's first subresource is f*numMips.
+        UpdateSubresources(m_ctx.CmdList(), m_terrainNormalTexture.Get(),
+                           m_terrainCompanionUploadHeap.Get(), 0,
+                           f * numMips, numMips, srs.data());
+        m_ctx.FlushAndReset();
+    }
+
+    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_terrainNormalTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+    m_ctx.CmdList()->ResourceBarrier(1, &bar);
+
+    m_terrainCompanionUploadHeap.Reset();
+
+    const size_t mip0_bytes = static_cast<size_t>(dstN) * dstN * 4;
+    const size_t total_bytes = 6 * face_bytes_all_mips;
+    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - t_start).count() / 1000.0;
+    LOG(L"[TerrainNormal] Uploaded 6 x " << dstN << L"x" << dstN
+        << L" RGBA8 faces, " << numMips << L" mips ("
+        << (total_bytes / (1024 * 1024)) << L" MB, mip 0 = "
+        << (6 * mip0_bytes / (1024 * 1024)) << L" MB) in "
+        << ms << L" ms (from " << src.normal_resolution() << L" bake)");
+}
+
+void Renderer::InitTerrainCloudOffsetTexture() {
+    SCOPE_TIMER("InitTerrainCloudOffsetTexture");
+    const auto t_start = std::chrono::high_resolution_clock::now();
+
+    const planet::HeightmapCubemap& src = m_planet.heightmap();
+    if (!src.cloud_offset_loaded()) {
+        LOG(L"[TerrainCloudOffset] not present in bake - leaving null SRV "
+            L"(shader falls back to flat cloud shell at CLOUD_LAYER_BOT_KM)");
+        return;
+    }
+
+    //cloud_offset is uploaded at its native resolution (typically 256). It's
+    //already aggressively smoothed - no need to downsample further.
+    const UINT dstN = src.cloud_offset_resolution();
+    auto* dev = m_ctx.Device();
+    m_terrainCloudOffsetTexture = create_terrain_array_texture(
+        dev, dstN, DXGI_FORMAT_R32_FLOAT, L"TerrainCloudOffsetCubemap");
+
+    const size_t face_floats = static_cast<size_t>(dstN) * dstN;
+    std::vector<float> face_buf(face_floats);
+
+    const UINT64 uploadSizeOne = GetRequiredIntermediateSize(
+        m_terrainCloudOffsetTexture.Get(), 0, 1);
+    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSizeOne);
+    ThrowIfFailed(dev->CreateCommittedResource(
+        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
+        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+        IID_PPV_ARGS(&m_terrainCompanionUploadHeap)));
+    m_terrainCompanionUploadHeap->SetName(L"TerrainCompanionUploadHeap");
+
+    for (UINT f = 0; f < 6; ++f) {
+        if (!src.cloud_offset_face(static_cast<uint8_t>(f), face_buf.data())) {
+            LOG(L"[TerrainCloudOffset] face " << f << L" read failed");
+            m_terrainCloudOffsetTexture.Reset();
+            m_terrainCompanionUploadHeap.Reset();
+            return;
+        }
+        D3D12_SUBRESOURCE_DATA sr = {};
+        sr.pData      = face_buf.data();
+        sr.RowPitch   = (LONG_PTR)dstN * sizeof(float);
+        sr.SlicePitch = sr.RowPitch * (LONG_PTR)dstN;
+        UpdateSubresources(m_ctx.CmdList(), m_terrainCloudOffsetTexture.Get(),
+                           m_terrainCompanionUploadHeap.Get(), 0, f, 1, &sr);
+        m_ctx.FlushAndReset();
+    }
+
+    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
+        m_terrainCloudOffsetTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
+    m_ctx.CmdList()->ResourceBarrier(1, &bar);
+
+    m_terrainCompanionUploadHeap.Reset();
+
+    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - t_start).count() / 1000.0;
+    LOG(L"[TerrainCloudOffset] Uploaded 6 x " << dstN << L"x" << dstN
+        << L" R32F faces (" << (6 * face_floats * sizeof(float) / 1024) << L" KB) in "
+        << ms << L" ms");
 }
 
 //====================================

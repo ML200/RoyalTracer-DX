@@ -883,7 +883,7 @@ inline SunState ComputeSunState()
     float3 observerUp     = g_skyObserverPlanet / obsR;
     float  sunCosFromUp   = dot(d, observerUp);
 
-    // Smoothstep over ~1° prevents "lights out" pop at horizon crossing
+    // Smoothstep over ~1° prevents "lights terrain" pop at horizon crossing
     // while still reading as a real sunset, not a dimmer.
     const float kHorizonFadeDeg = 1.0f;
     const float visEdge         = sin(kHorizonFadeDeg * DEG2RAD);

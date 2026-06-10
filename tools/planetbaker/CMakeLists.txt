@@ -117,10 +117,17 @@ add_library(planet_bake_core STATIC
     src/passes/bedrock_noise.cu
     src/passes/impacts_pass.cu
     src/passes/thermal_erosion_pass.cu
+    src/passes/hydraulic_erosion_pass.cu
+    src/passes/surface_color_pass.cu
     src/passes/bake_pass.cu
+    src/passes/stb_image_write_impl.cpp
 )
 
 target_include_directories(planet_bake_core PUBLIC src)
+#stb_image_write.h is a single-header library used by bake_pass.cu to dump a
+#PNG preview of one face. PRIVATE because nothing in planet_bake_core's
+#public interface exposes it.
+target_include_directories(planet_bake_core PRIVATE third_party)
 
 target_link_libraries(planet_bake_core PUBLIC
     CUDA::cudart
@@ -156,6 +163,7 @@ add_executable(planet_bake
     src/main.cpp
     src/gpu/device_info.cu
     src/gpu/preview_field.cu
+    src/gpu/color_preview_field.cu
     src/render/sphere_mesh.cpp
     src/render/shader.cpp
     src/render/camera.cpp

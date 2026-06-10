@@ -358,7 +358,7 @@ inline GGXResult EvalGGXAll(
             //separate blocks keeps the eval peak register count down --
             //F0_d / F_d_vec die before F_c is computed, and F_c / specular_c
             //die before the final combine. Pulls DG2_over_den + kms scalars
-            //out so they're shared across both sub-blocks instead of recomputed.
+            //terrain so they're shared across both sub-blocks instead of recomputed.
             const float DG2_over_den = (D * G2) / (4.0f * NdotV * NdotL);
             const float Ess          = GetEssLUT((float)Pr, NdotV);
             const float kms          = (1.0f - Ess) / max(Ess, 1e-6f);

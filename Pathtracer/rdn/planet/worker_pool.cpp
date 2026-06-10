@@ -77,7 +77,7 @@ void WorkerPool::parallel_for(uint32_t count, const std::function<void(uint32_t)
             remaining.fetch_sub(1, std::memory_order_release);
         });
     }
-    //the calling thread helps drain the queue, then waits out any stragglers
+    //the calling thread helps drain the queue, then waits terrain any stragglers
     while (remaining.load(std::memory_order_acquire) != 0) {
         if (!pop_and_run())
             std::this_thread::yield();

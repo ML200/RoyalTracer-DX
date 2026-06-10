@@ -564,7 +564,7 @@ typedef OrtStatus*(ORT_API_CALL* OrtWriteBufferFunc)(_In_ void* state,
  * \param[in] external_info If the initializer is originally stored in an external file, `external_info` contains
  *                          the file path, file offset, and the data's byte size within the file. Otherwise,
  *                          `external_info` is NULL if the initializer is not originally stored in a file.
- * \param[out] new_external_info Output parameter set to a new OrtExternalInitializerInfo instance indicating the
+ * \param[terrain] new_external_info Output parameter set to a new OrtExternalInitializerInfo instance indicating the
  *                               location where the function implementation stored the initializer data.
  *                               The function implementation must use `OrtApi::CreateExternalInitializerInfo()` to
  *                               create the instance.
@@ -940,9 +940,9 @@ typedef OrtStatus*(ORT_API_CALL* RegisterCustomOpsFn)(OrtSessionOptions* options
 /** \brief Callback function for RunAsync
  *
  * \param[in] user_data User specific data that passed back to the callback
- * \param[out] outputs On succeed, outputs host inference results, on error, the value will be nullptr
- * \param[out] num_outputs Number of outputs, on error, the value will be zero
- * \param[out] status On error, status will provide details
+ * \param[terrain] outputs On succeed, outputs host inference results, on error, the value will be nullptr
+ * \param[terrain] num_outputs Number of outputs, on error, the value will be zero
+ * \param[terrain] status On error, status will provide details
  */
 typedef void (*RunAsyncCallbackFn)(void* user_data, OrtValue** outputs, size_t num_outputs, OrtStatusPtr status);
 
@@ -1000,7 +1000,7 @@ struct OrtApi {
    * to another env creation function; all arguments to this function will be ignored.
    * \param[in] log_severity_level The log severity level.
    * \param[in] logid The log identifier.
-   * \param[out] out Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
+   * \param[terrain] terrain Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1016,7 +1016,7 @@ struct OrtApi {
    *                         `logging_function`. This parameter is optional.
    * \param[in] log_severity_level The log severity level.
    * \param[in] logid The log identifier.
-   * \param[out] out Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
+   * \param[terrain] terrain Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1049,7 +1049,7 @@ struct OrtApi {
    * \param[in] env
    * \param[in] model_path
    * \param[in] options
-   * \param[out] out Returned newly created OrtSession. Must be freed with OrtApi::ReleaseSession
+   * \param[terrain] terrain Returned newly created OrtSession. Must be freed with OrtApi::ReleaseSession
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1067,7 +1067,7 @@ struct OrtApi {
    * \param[in] model_data
    * \param[in] model_data_length
    * \param[in] options
-   * \param[out] out Returned newly created OrtSession. Must be freed with OrtApi::ReleaseSession
+   * \param[terrain] terrain Returned newly created OrtSession. Must be freed with OrtApi::ReleaseSession
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1087,7 +1087,7 @@ struct OrtApi {
    * \param[in] input_len Number of elements in the input_names and inputs arrays
    * \param[in] output_names Array of null terminated UTF8 encoded strings of the output names
    * \param[in] output_names_len Number of elements in the output_names and outputs array
-   * \param[out] outputs Array of ::OrtValue%s that the outputs are stored in. This can also be
+   * \param[terrain] outputs Array of ::OrtValue%s that the outputs are stored in. This can also be
    *     an array of nullptr values, in this case ::OrtValue objects will be allocated and pointers
    *     to them will be set into the `outputs` array.
    *
@@ -1114,7 +1114,7 @@ struct OrtApi {
    * on your most preferred execution provider first followed by the less preferred ones.
    * If none are called Ort will use its internal CPU execution provider.
    *
-   * \param[out] options The newly created OrtSessionOptions. Must be freed with OrtApi::ReleaseSessionOptions
+   * \param[terrain] options The newly created OrtSessionOptions. Must be freed with OrtApi::ReleaseSessionOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1133,7 +1133,7 @@ struct OrtApi {
   /** \brief Create a copy of an existing ::OrtSessionOptions
    *
    * \param[in] in_options OrtSessionOptions to copy
-   * \param[out] out_options Returned newly created ::OrtSessionOptions. Must be freed with OrtApi::ReleaseSessionOptions
+   * \param[terrain] out_options Returned newly created ::OrtSessionOptions. Must be freed with OrtApi::ReleaseSessionOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1245,7 +1245,7 @@ struct OrtApi {
   /** \brief Set the optimization level to apply when loading a graph
    *
    * Please see https://onnxruntime.ai/docs/performance/model-optimizations/graph-optimizations.html for an in-depth explanation
-   * \param[in,out] options The session options object
+   * \param[in,terrain] options The session options object
    * \param[in] graph_optimization_level The optimization level
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -1289,7 +1289,7 @@ struct OrtApi {
   /** \brief Create a custom op domain
    *
    * \param[in] domain
-   * \param[out] out Newly created domain. Must be freed with OrtApi::ReleaseCustomOpDomain
+   * \param[terrain] terrain Newly created domain. Must be freed with OrtApi::ReleaseCustomOpDomain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1333,7 +1333,7 @@ struct OrtApi {
    *
    * \param[in] options
    * \param[in] library_path
-   * \param[out] library_handle OS specific handle to the loaded library (Use FreeLibrary on Windows, dlclose on Linux, etc.. to unload)
+   * \param[terrain] library_handle OS specific handle to the loaded library (Use FreeLibrary on Windows, dlclose on Linux, etc.. to unload)
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1350,7 +1350,7 @@ struct OrtApi {
    * \see OrtApi::SessionGetInputTypeInfo, OrtApi::SessionGetInputName, OrtApi::Session
    *
    * \param[in] session
-   * \param[out] out Number of inputs
+   * \param[terrain] terrain Number of inputs
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1363,7 +1363,7 @@ struct OrtApi {
    * \see OrtApi::SessionGetOutputTypeInfo, OrtApi::SessionGetOutputName, OrtApi::Session
    *
    * \param[in] session
-   * \param[out] out Number of outputs
+   * \param[terrain] terrain Number of outputs
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1374,7 +1374,7 @@ struct OrtApi {
    * \see OrtApi::SessionGetOverridableInitializerTypeInfo, OrtApi::SessionGetOverridableInitializerName
    *
    * \param[in] session
-   * \param[in] out
+   * \param[in] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1384,7 +1384,7 @@ struct OrtApi {
    *
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetInputCount returns (exclusive)
-   * \param[out] type_info Must be freed with OrtApi::ReleaseTypeInfo
+   * \param[terrain] type_info Must be freed with OrtApi::ReleaseTypeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1394,7 +1394,7 @@ struct OrtApi {
    *
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetOutputCount returns (exclusive)
-   * \param[out] type_info Must be freed with OrtApi::ReleaseTypeInfo
+   * \param[terrain] type_info Must be freed with OrtApi::ReleaseTypeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1404,7 +1404,7 @@ struct OrtApi {
    *
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetOverridableInitializerCount returns (exclusive)
-   * \param[out] type_info Must be freed with OrtApi::ReleaseTypeInfo
+   * \param[terrain] type_info Must be freed with OrtApi::ReleaseTypeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1415,7 +1415,7 @@ struct OrtApi {
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetInputCount returns (exclusive)
    * \param[in] allocator
-   * \param[out] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
+   * \param[terrain] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1426,7 +1426,7 @@ struct OrtApi {
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetOutputCount returns (exclusive)
    * \param[in] allocator
-   * \param[out] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
+   * \param[terrain] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1437,7 +1437,7 @@ struct OrtApi {
    * \param[in] session
    * \param[in] index Must be between 0 (inclusive) and what OrtApi::SessionGetOverridableInitializerCount returns (exclusive)
    * \param[in] allocator
-   * \param[out] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
+   * \param[terrain] value Set to a null terminated UTF-8 encoded string allocated using `allocator`. Must be freed using `allocator`.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1450,7 +1450,7 @@ struct OrtApi {
 
   /** \brief Create an OrtRunOptions
    *
-   * \param[out] out Returned newly created ::OrtRunOptions. Must be freed with OrtApi::ReleaseRunOptions
+   * \param[terrain] terrain Returned newly created ::OrtRunOptions. Must be freed with OrtApi::ReleaseRunOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1492,7 +1492,7 @@ struct OrtApi {
    * \see OrtApi::RunOptionsSetRunLogVerbosityLevel
    *
    * \param[in] options
-   * \param[out] log_verbosity_level \snippet{doc} snippets.dox Log Verbosity Level
+   * \param[terrain] log_verbosity_level \snippet{doc} snippets.dox Log Verbosity Level
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1504,7 +1504,7 @@ struct OrtApi {
    * \see OrtApi::RunOptionsSetRunLogSeverityLevel
    *
    * \param[in] options
-   * \param[out] log_severity_level The log severity level (refer to ::OrtLoggingLevel for possible values).
+   * \param[terrain] log_severity_level The log severity level (refer to ::OrtLoggingLevel for possible values).
    */
   ORT_API2_STATUS(RunOptionsGetRunLogSeverityLevel, _In_ const OrtRunOptions* options, _Out_ int* log_severity_level);
 
@@ -1515,7 +1515,7 @@ struct OrtApi {
    * \see OrtApi::RunOptionsSetRunTag
    *
    * \param[in] options
-   * \param[out] run_tag The run tag.
+   * \param[terrain] run_tag The run tag.
    *                     Do not free this value, it is owned by `options`. It will be invalidated if the run tag
    *                     changes (i.e., with OrtApi::RunOptionsSetRunTag) or `options` is freed.
    */
@@ -1553,7 +1553,7 @@ struct OrtApi {
    * \param[in] shape Pointer to the tensor shape dimensions.
    * \param[in] shape_len The number of tensor shape dimensions.
    * \param[in] type
-   * \param[out] out Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1573,7 +1573,7 @@ struct OrtApi {
    * \param[in] shape Pointer to the tensor shape dimensions.
    * \param[in] shape_len The number of tensor shape dimensions.
    * \param[in] type The data type.
-   * \param[out] out Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1584,7 +1584,7 @@ struct OrtApi {
   /** \brief Return if an ::OrtValue is a tensor type
    *
    * \param[in] value A tensor type (string tensors are not supported)
-   * \param[out] out Set to 1 iff ::OrtValue is a tensor, 0 otherwise
+   * \param[terrain] terrain Set to 1 iff ::OrtValue is a tensor, 0 otherwise
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1596,7 +1596,7 @@ struct OrtApi {
    * \note The returned pointer is valid until the \p value is destroyed.
    *
    * \param[in] value A tensor type (string tensors are not supported)
-   * \param[out] out Filled in with a pointer to the internal storage
+   * \param[terrain] terrain Filled in with a pointer to the internal storage
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1604,7 +1604,7 @@ struct OrtApi {
 
   /** \brief Set all strings at once in a string tensor
    *
-   * \param[in,out] value A tensor of type ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING
+   * \param[in,terrain] value A tensor of type ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING
    * \param[in] s An array of strings. Each string in this array must be null terminated.
    * \param[in] s_len Count of strings in s (Must match the size of \p value's tensor shape)
    *
@@ -1617,7 +1617,7 @@ struct OrtApi {
    * Typically used with OrtApi::GetStringTensorContent
    *
    * \param[in] value A tensor of type ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING
-   * \param[out] len Total byte length of all strings (does not include trailing nulls)
+   * \param[terrain] len Total byte length of all strings (does not include trailing nulls)
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1637,7 +1637,7 @@ struct OrtApi {
    * \param[in] value A tensor of type ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING
    * \param[in] s Buffer to sequentially write all tensor strings to. Each string is NOT null-terminated.
    * \param[in] s_len Number of bytes of buffer pointed to by \p s (Get it from OrtApi::GetStringTensorDataLength)
-   * \param[out] offsets Array of start offsets into the strings written to \p s
+   * \param[terrain] offsets Array of start offsets into the strings written to \p s
    * \param[in] offsets_len Number of elements in offsets
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -1652,7 +1652,7 @@ struct OrtApi {
   /** \brief Get ::OrtTensorTypeAndShapeInfo from an ::OrtTypeInfo
    *
    * \param[in] type_info
-   * \param[out] out Do not free this value, it will be valid until type_info is freed.
+   * \param[terrain] terrain Do not free this value, it will be valid until type_info is freed.
    *             If type_info does not represent tensor, this value will be set to nullptr.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -1663,7 +1663,7 @@ struct OrtApi {
   /** \brief Get ::ONNXType from ::OrtTypeInfo
    *
    * \param[in] type_info
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1675,7 +1675,7 @@ struct OrtApi {
 
   /** \brief Create an ::OrtTensorTypeAndShapeInfo object
    *
-   * \param[out] out Returns newly created ::OrtTensorTypeAndShapeInfo. Must be freed with OrtApi::ReleaseTensorTypeAndShapeInfo
+   * \param[terrain] terrain Returns newly created ::OrtTensorTypeAndShapeInfo. Must be freed with OrtApi::ReleaseTensorTypeAndShapeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1705,7 +1705,7 @@ struct OrtApi {
    * \see OrtApi::SetTensorElementType
    *
    * \param[in] info
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1717,7 +1717,7 @@ struct OrtApi {
    * \see OrtApi::GetDimensions
    *
    * \param[in] info
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1726,7 +1726,7 @@ struct OrtApi {
   /** \brief Get dimensions in ::OrtTensorTypeAndShapeInfo
    *
    * \param[in] info
-   * \param[out] dim_values Array with `dim_values_length` elements. On return, filled with the dimensions stored in the ::OrtTensorTypeAndShapeInfo
+   * \param[terrain] dim_values Array with `dim_values_length` elements. On return, filled with the dimensions stored in the ::OrtTensorTypeAndShapeInfo
    * \param[in] dim_values_length Number of elements in `dim_values`. Use OrtApi::GetDimensionsCount to get this value
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -1757,7 +1757,7 @@ struct OrtApi {
    * [-1,3,4] = -1<br>
    *
    * \param[in] info
-   * \param[out] out Number of elements
+   * \param[terrain] terrain Number of elements
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1770,7 +1770,7 @@ struct OrtApi {
   /** \brief Get type and shape information from a tensor ::OrtValue
    *
    * \param[in] value Must be a tensor (not a map/sequence/etc) or will return failure
-   * \param[out] out Newly created ::OrtTensorTypeAndShapeInfo. Must be freed with OrtApi::ReleaseTensorTypeAndShapeInfo
+   * \param[terrain] terrain Newly created ::OrtTensorTypeAndShapeInfo. Must be freed with OrtApi::ReleaseTensorTypeAndShapeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1779,7 +1779,7 @@ struct OrtApi {
   /** \brief Get type information of an OrtValue
    *
    * \param[in] value
-   * \param[out] out Newly created ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo
+   * \param[terrain] terrain Newly created ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1788,7 +1788,7 @@ struct OrtApi {
   /** \brief Get ONNXType of an ::OrtValue
    *
    * \param[in] value
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1804,7 +1804,7 @@ struct OrtApi {
    * \param[in] type
    * \param[in] id
    * \param[in] mem_type
-   * \param[out] out Newly created ::OrtMemoryInfo. Must be freed with OrtAPi::ReleaseMemoryInfo
+   * \param[terrain] terrain Newly created ::OrtMemoryInfo. Must be freed with OrtAPi::ReleaseMemoryInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1817,7 +1817,7 @@ struct OrtApi {
    *
    * \param[in] type
    * \param[in] mem_type
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1830,7 +1830,7 @@ struct OrtApi {
    *
    * \param[in] info1
    * \param[in] info2
-   * \param[out] out Set to 0 if equal, -1 if not equal
+   * \param[terrain] terrain Set to 0 if equal, -1 if not equal
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1839,7 +1839,7 @@ struct OrtApi {
   /** \brief Get name from ::OrtMemoryInfo
    *
    * \param[in] ptr
-   * \param[out] out Writes null terminated string to this pointer. Do NOT free the returned pointer. It is valid for the lifetime of the ::OrtMemoryInfo
+   * \param[terrain] terrain Writes null terminated string to this pointer. Do NOT free the returned pointer. It is valid for the lifetime of the ::OrtMemoryInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1872,7 +1872,7 @@ struct OrtApi {
    *
    * The default allocator is a CPU based, non-arena. Always returns the same pointer to the same default allocator.
    *
-   * \param[out] out Returned value should NOT be freed
+   * \param[terrain] terrain Returned value should NOT be freed
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1936,7 +1936,7 @@ struct OrtApi {
    * \param[in] value
    * \param[in] index See above for usage based on `value` type
    * \param[in] allocator Allocator used to allocate ::OrtValue
-   * \param[out] out Created ::OrtValue that holds the element requested. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Created ::OrtValue that holds the element requested. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1949,7 +1949,7 @@ struct OrtApi {
    * the number of elements in the sequence will be returned
    *
    * \param[in] value
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1966,7 +1966,7 @@ struct OrtApi {
    * \param[in] in See above for details
    * \param[in] num_values
    * \param[in] value_type Must be either ONNX_TYPE_MAP or ONNX_TYPE_SEQUENCE
-   * \param[out] out Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -1991,7 +1991,7 @@ struct OrtApi {
    * \param[in] type_name Null terminated string of the type name
    * \param[in] data_container User pointer Data to populate ::OrtValue
    * \param[in] data_container_size Size in bytes of what `data_container` points to
-   * \param[out] out Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2007,8 +2007,8 @@ struct OrtApi {
    * \param[in] domain_name Null terminated string of the domain name
    * \param[in] type_name Null terminated string of the type name
    * \param[in] in The opaque ::OrtValue
-   * \param[out] data_container Buffer to copy data into
-   * \param[out] data_container_size Size in bytes of the buffer pointed to by data_container. Must match the size of the internal buffer.
+   * \param[terrain] data_container Buffer to copy data into
+   * \param[terrain] data_container_size Size in bytes of the buffer pointed to by data_container. Must match the size of the internal buffer.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2024,7 +2024,7 @@ struct OrtApi {
    *
    * \param[in] info ::OrtKernelInfo instance
    * \param[in] name Null terminated string of the name of the attribute
-   * \param[out] out Pointer to memory where the attribute will be stored
+   * \param[terrain] terrain Pointer to memory where the attribute will be stored
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2035,7 +2035,7 @@ struct OrtApi {
    *
    * \param[in] info ::OrtKernelInfo instance
    * \param[in] name Null terminated string of the name of the attribute
-   * \param[out] out Pointer to memory where the attribute will be stored
+   * \param[terrain] terrain Pointer to memory where the attribute will be stored
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2044,21 +2044,21 @@ struct OrtApi {
 
   /** \brief Fetch a string stored as an attribute in the graph node
    *
-   * If `out` is nullptr, the value of `size` is set to the true size of the string
+   * If `terrain` is nullptr, the value of `size` is set to the true size of the string
    * attribute, and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the actual string attribute's size,
    * the value of `size` is set to the true size of the string attribute, the provided memory
    * is filled with the attribute's contents, and a success status is returned.
    *
-   * If the `size` parameter is less than the actual string attribute's size and `out`
+   * If the `size` parameter is less than the actual string attribute's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the string attribute
    * and a failure status is returned.)
    *
    * \param[in] info ::OrtKernelInfo instance
    * \param[in] name Null terminated string of the name of the attribute
-   * \param[out] out Pointer to memory where the attribute will be stored
-   * \param[in,out] size See above comments for details
+   * \param[terrain] terrain Pointer to memory where the attribute will be stored
+   * \param[in,terrain] size See above comments for details
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2085,11 +2085,11 @@ struct OrtApi {
   /** \brief Used for custom operators, get an input of a kernel
    *
    * The function attempts fetches the input of the kernel. If the input is optional
-   * and not present, the function returns success and out is set to nullptr.
+   * and not present, the function returns success and terrain is set to nullptr.
    *
    * \param[in] context ::OrtKernelContext instance
    * \param[in] index See KernelContext_GetInputCount for boundaries check.
-   * \param[out] out OrtValue if the input is present otherwise is set nullptr
+   * \param[terrain] terrain OrtValue if the input is present otherwise is set nullptr
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2099,13 +2099,13 @@ struct OrtApi {
   /** \brief Used for custom operators, get an output of a kernel
    *
    * The function attempts fetches the output of the kernel. If the output is optional
-   * and not present, the function returns success and out is set to nullptr.
+   * and not present, the function returns success and terrain is set to nullptr.
    *
    * \param[in] context ::OrtKernelContext instance
    * \param[in] index See KernelContext_GetOutputCount for boundaries check.
    * \param[in] dim_values output dimensions
    * \param[in] dim_count number of dimensions
-   * \param[out] out a ptr to OrtValue to output otherwise set to nullptr
+   * \param[terrain] terrain a ptr to OrtValue to output otherwise set to nullptr
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2164,8 +2164,8 @@ struct OrtApi {
    * This is used by WinML to determine if an input/output is intended to be an Image or a Tensor.
    *
    * \param[in] type_info
-   * \param[out] denotation Pointer to the null terminated denotation string is written to this pointer. This pointer is valid until the object is destroyed or the name is changed, do not free.
-   * \param[out] len Length in bytes of the string returned in `denotation`
+   * \param[terrain] denotation Pointer to the null terminated denotation string is written to this pointer. This pointer is valid until the object is destroyed or the name is changed, do not free.
+   * \param[terrain] len Length in bytes of the string returned in `denotation`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2179,8 +2179,8 @@ struct OrtApi {
    *
    * This is used by WinML to support model reflection APIs.
    *
-   * \param[out] type_info
-   * \param[out] out A pointer to the ::OrtMapTypeInfo. Do not free this value. If type_info
+   * \param[terrain] type_info
+   * \param[terrain] terrain A pointer to the ::OrtMapTypeInfo. Do not free this value. If type_info
    *             does not contain a map, this value will be set to nullptr.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2196,7 +2196,7 @@ struct OrtApi {
    * This is used by WinML to support model reflection APIs.
    *
    * \param[in] type_info
-   * \param[out] out A pointer to the OrtSequenceTypeInfo. Do not free this value. If type_info
+   * \param[terrain] terrain A pointer to the OrtSequenceTypeInfo. Do not free this value. If type_info
    *             doesn not contain a sequence, this value will be set to nullptr.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2215,7 +2215,7 @@ struct OrtApi {
    * This is used by WinML to support model reflection APIs.
    *
    * \param[in] map_type_info
-   * \param[out] out
+   * \param[terrain] terrain
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2224,7 +2224,7 @@ struct OrtApi {
   /** \brief Get the value type from an ::OrtMapTypeInfo
    *
    * \param[in] map_type_info
-   * \param[out] type_info A copy of the OrtTypeInfo for the map value type.
+   * \param[terrain] type_info A copy of the OrtTypeInfo for the map value type.
    *                       The user must free this value with ReleaseTypeInfo.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2240,7 +2240,7 @@ struct OrtApi {
    * This is used by WinML to support model reflection APIs.
    *
    * \param[in] sequence_type_info
-   * \param[out] type_info A copy of the OrtTypeInfo for the sequence element type.
+   * \param[terrain] type_info A copy of the OrtTypeInfo for the sequence element type.
    *                       The user must free this value with ReleaseTypeInfo.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2267,7 +2267,7 @@ struct OrtApi {
    *
    * \param[in] session
    * \param[in] allocator
-   * \param[out] out Null terminated string of the filename, allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] terrain Null terminated string of the filename, allocated using `allocator`. Must be freed using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2276,7 +2276,7 @@ struct OrtApi {
   /** \brief Get ::OrtModelMetadata from an ::OrtSession
    *
    * \param[in] session
-   * \param[out] out Newly created ::OrtModelMetadata. Must be freed using OrtApi::ReleaseModelMetadata
+   * \param[terrain] terrain Newly created ::OrtModelMetadata. Must be freed using OrtApi::ReleaseModelMetadata
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2290,7 +2290,7 @@ struct OrtApi {
    *
    * \param[in] model_metadata
    * \param[in] allocator
-   * \param[out] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2301,7 +2301,7 @@ struct OrtApi {
    *
    * \param[in] model_metadata
    * \param[in] allocator
-   * \param[out] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2312,7 +2312,7 @@ struct OrtApi {
    *
    * \param[in] model_metadata
    * \param[in] allocator
-   * \param[out] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2323,7 +2323,7 @@ struct OrtApi {
    *
    * \param[in] model_metadata
    * \param[in] allocator
-   * \param[out] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2335,7 +2335,7 @@ struct OrtApi {
    * \param[in] model_metadata
    * \param[in] allocator
    * \param[in] key Null terminated string
-   * \param[out] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`. Must be freed using `allocator`
    * `value` will be set to nullptr if the given key is not found in the custom metadata map.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2346,7 +2346,7 @@ struct OrtApi {
   /** \brief Get version number from an ::OrtModelMetadata
    *
    * \param[in] model_metadata
-   * \param[out] value Set to the version number
+   * \param[terrain] value Set to the version number
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2367,7 +2367,7 @@ struct OrtApi {
    * \param[in] log_severity_level The log severity level.
    * \param[in] logid The log identifier.
    * \param[in] tp_options
-   * \param[out] out Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
+   * \param[terrain] terrain Returned newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2395,7 +2395,7 @@ struct OrtApi {
 
   /** \brief Create an ::OrtThreadingOptions
    *
-   * \param[out] out Newly created ::OrtThreadingOptions. Must be freed with OrtApi::ReleaseThreadingOptions
+   * \param[terrain] terrain Newly created ::OrtThreadingOptions. Must be freed with OrtApi::ReleaseThreadingOptions
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(CreateThreadingOptions, _Outptr_ OrtThreadingOptions** out);
@@ -2410,10 +2410,10 @@ struct OrtApi {
    *
    * \param[in] model_metadata
    * \param[in] allocator
-   * \param[out] keys Array of null terminated strings (array count = num_keys) allocated using `allocator`.
+   * \param[terrain] keys Array of null terminated strings (array count = num_keys) allocated using `allocator`.
    *  The strings and the pointer array must be freed using `allocator`
    *  `keys` will be set to nullptr if the custom metadata map is empty.
-   * \param[out] num_keys Set to the number of elements in the `keys` array
+   * \param[terrain] num_keys Set to the number of elements in the `keys` array
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2444,9 +2444,9 @@ struct OrtApi {
    * \note The providers in the list are not guaranteed to be usable. They may fail to load due to missing system dependencies.
    *    For example, if the CUDA/cuDNN libraries are not installed, the CUDA provider will report an error when it is added to the session options.
    *
-   * \param[out] out_ptr Set to a pointer to an array of null terminated strings of the available providers. The entries and the
+   * \param[terrain] out_ptr Set to a pointer to an array of null terminated strings of the available providers. The entries and the
    *    array itself must be freed using OrtApi::ReleaseAvailableProviders
-   * \param[out] provider_length Set to the number of entries in the `out_ptr` array
+   * \param[terrain] provider_length Set to the number of entries in the `out_ptr` array
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2471,7 +2471,7 @@ struct OrtApi {
    *
    * \param[in] value A string tensor
    * \param[in] index Index of the string in the tensor
-   * \param[out] out Set to number of bytes of the string element
+   * \param[terrain] terrain Set to number of bytes of the string element
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2482,7 +2482,7 @@ struct OrtApi {
    * \param[in] value A string tensor
    * \param[in] s_len Number of bytes in the `s` buffer. Must match the value returned by OrtApi::GetStringTensorElementLength.
    * \param[in] index Index of the string in the tensor
-   * \param[out] s The string element contents in UTF-8 encoding. The string is NOT null-terminated.
+   * \param[terrain] s The string element contents in UTF-8 encoding. The string is NOT null-terminated.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2527,7 +2527,7 @@ struct OrtApi {
    *
    * \param[in] session
    * \param[in] mem_info valid ::OrtMemoryInfo instance
-   * \param[out] out Newly created ::OrtAllocator. Must be freed with OrtApi::ReleaseAllocator
+   * \param[terrain] terrain Newly created ::OrtAllocator. Must be freed with OrtApi::ReleaseAllocator
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2561,7 +2561,7 @@ struct OrtApi {
    * extra copy during runtime.
    *
    * \param[in] session
-   * \param[out] out Newly created ::OrtIoBinding. Must be freed with OrtApi::ReleaseIoBinding
+   * \param[terrain] terrain Newly created ::OrtIoBinding. Must be freed with OrtApi::ReleaseIoBinding
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2624,11 +2624,11 @@ struct OrtApi {
    *
    * \param[in] binding_ptr
    * \param[in] allocator Allocator used to allocate continuous buffers for output strings and lengths.
-   * \param[out] buffer Returns an array of non-null terminated UTF-8 strings. The number of strings stored is returned in the count parameter.
+   * \param[terrain] buffer Returns an array of non-null terminated UTF-8 strings. The number of strings stored is returned in the count parameter.
    *   This buffer is allocated using `allocator` and must be freed using it.
-   * \param[out] lengths Returns an array of `count` lengths of the strings returned in `buffer`
+   * \param[terrain] lengths Returns an array of `count` lengths of the strings returned in `buffer`
    *   This buffer is allocated using `allocator` and must be freed using it.
-   * \param[out] count Number of strings returned. If `binding_ptr` has no bound outputs, zero is returned,
+   * \param[terrain] count Number of strings returned. If `binding_ptr` has no bound outputs, zero is returned,
    *              no memory allocation is performed and buffer and lengths are set to nullptr.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -2648,8 +2648,8 @@ struct OrtApi {
    *
    * \param[in] binding_ptr
    * \param[in] allocator Allocator used to allocate output array
-   * \param[out] output Set to the allocated array of allocated ::OrtValue outputs. Set to nullptr if there are 0 outputs.
-   * \param[out] output_count Set to number of ::OrtValue%s returned
+   * \param[terrain] output Set to the allocated array of allocated ::OrtValue outputs. Set to nullptr if there are 0 outputs.
+   * \param[terrain] output_count Set to number of ::OrtValue%s returned
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2678,7 +2678,7 @@ struct OrtApi {
    * \param[in] value
    * \param[in] location_values Pointer to an array of index values that specify an element's location relative to its shape
    * \param[in] location_values_count Number of elements in location_values. Must match the number of elements in the tensor's shape.
-   * \param[out] out Set to a pointer to the element specified
+   * \param[terrain] terrain Set to a pointer to the element specified
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2727,7 +2727,7 @@ struct OrtApi {
    * \note The timer precision varies per platform. On Windows and MacOS, the precision will be ~100ns
    *
    * \param[in] session
-   * \param[out] out nanoseconds of profiling's start time
+   * \param[terrain] terrain nanoseconds of profiling's start time
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2814,7 +2814,7 @@ struct OrtApi {
    * \param[in] log_severity_level The log severity level.
    * \param[in] logid The log identifier.
    * \param[in] tp_options
-   * \param[out] out Newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
+   * \param[terrain] terrain Newly created OrtEnv. Must be freed with OrtApi::ReleaseEnv
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2889,7 +2889,7 @@ struct OrtApi {
    * \param[in] arena_extend_strategy Use -1 to allow ORT to choose the default, 0 = kNextPowerOfTwo, 1 = kSameAsRequested
    * \param[in] initial_chunk_size_bytes Use -1 to allow ORT to choose the default
    * \param[in] max_dead_bytes_per_chunk Use -1 to allow ORT to choose the default
-   * \param[in] out A pointer to an OrtArenaCfg instance
+   * \param[in] terrain A pointer to an OrtArenaCfg instance
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2909,7 +2909,7 @@ struct OrtApi {
    *
    * \param[in] model_metadata An instance of ::OrtModelMetadata
    * \param[in] allocator Allocator used to allocate the string that will be returned back
-   * \param[out] value Set to a null terminated string allocated using `allocator`.  The caller is responsible for freeing it using `allocator`
+   * \param[terrain] value Set to a null terminated string allocated using `allocator`.  The caller is responsible for freeing it using `allocator`
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2954,7 +2954,7 @@ struct OrtApi {
    *
    * \see OrtApi::SetCurrentGpuDeviceId
    *
-   * \param[out] device_id
+   * \param[terrain] device_id
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2968,7 +2968,7 @@ struct OrtApi {
   /** \brief Fetch an array of int64_t values stored as an attribute in the graph node
    *
    *
-   * If `out` is nullptr, the value of `size` is set to the true size of the attribute
+   * If `terrain` is nullptr, the value of `size` is set to the true size of the attribute
    * array's size, and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the actual attribute array's size,
@@ -2976,14 +2976,14 @@ struct OrtApi {
    * the provided memory is filled with the attribute's contents,
    * and a success status is returned.
    *
-   * If the `size` parameter is less than the actual attribute array's size and `out`
+   * If the `size` parameter is less than the actual attribute array's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the attribute array's size
    * and a failure status is returned.)
    *
    * \param[in] info instance
    * \param[in] name name of the attribute to be parsed
-   * \param[out] out pointer to memory where the attribute's contents are to be stored
-   * \param[in, out] size actual size of attribute array
+   * \param[terrain] terrain pointer to memory where the attribute's contents are to be stored
+   * \param[in, terrain] size actual size of attribute array
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -2992,7 +2992,7 @@ struct OrtApi {
 
   /** \brief Fetch an array of int64_t values stored as an attribute in the graph node
    *
-   * If `out` is nullptr, the value of `size` is set to the true size of the attribute
+   * If `terrain` is nullptr, the value of `size` is set to the true size of the attribute
    * array's size, and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the actual attribute array's size,
@@ -3000,14 +3000,14 @@ struct OrtApi {
    * the provided memory is filled with the attribute's contents,
    * and a success status is returned.
    *
-   * If the `size` parameter is less than the actual attribute array's size and `out`
+   * If the `size` parameter is less than the actual attribute array's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the attribute array's size
    * and a failure status is returned.)
    *
    * \param[in] info instance
    * \param[in] name name of the attribute to be parsed
-   * \param[out] out pointer to memory where the attribute's contents are to be stored
-   * \param[in, out] size actual size of attribute array
+   * \param[terrain] terrain pointer to memory where the attribute's contents are to be stored
+   * \param[in, terrain] size actual size of attribute array
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3045,7 +3045,7 @@ struct OrtApi {
    * \param[in] arena_config_keys Keys to configure the arena
    * \param[in] arena_config_values Values to configure the arena
    * \param[in] num_keys Number of keys in `arena_config_keys` and `arena_config_values`
-   * \param[out] out Newly created ::OrtArenaCfg. Must be freed with OrtApi::ReleaseArenaCfg
+   * \param[terrain] terrain Newly created ::OrtArenaCfg. Must be freed with OrtApi::ReleaseArenaCfg
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3084,7 +3084,7 @@ struct OrtApi {
    * to sessions that you would like to share pre-packed buffers of shared initializers at session
    * creation time.
    *
-   *  \param[out] out Newly created ::OrtPrepackedWeightsContainer. Must be freed with OrtApi::ReleasePrepackedWeightsContainer
+   *  \param[terrain] terrain Newly created ::OrtPrepackedWeightsContainer. Must be freed with OrtApi::ReleasePrepackedWeightsContainer
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3113,7 +3113,7 @@ struct OrtApi {
    * \param[in] model_path Null terminated string of the path (wchar on Windows, char otherwise)
    * \param[in] options
    * \param[in] prepacked_weights_container
-   * \param[out] out Newly created ::OrtSession. Must be freed with OrtApi::ReleaseSession
+   * \param[terrain] terrain Newly created ::OrtSession. Must be freed with OrtApi::ReleaseSession
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3136,7 +3136,7 @@ struct OrtApi {
    * \param[in] model_data_length Number of bytes in `model_data_model`
    * \param[in] options
    * \param[in] prepacked_weights_container
-   * \param[out] out Newly created ::OrtSession. Must be freed with OrtApi::ReleaseSession
+   * \param[terrain] terrain Newly created ::OrtSession. Must be freed with OrtApi::ReleaseSession
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3176,7 +3176,7 @@ struct OrtApi {
 
   /** \brief Create an OrtTensorRTProviderOptionsV2
    *
-   * \param[out] out Newly created ::OrtTensorRTProviderOptionsV2. Must be released with OrtApi::ReleaseTensorRTProviderOptions
+   * \param[terrain] terrain Newly created ::OrtTensorRTProviderOptionsV2. Must be released with OrtApi::ReleaseTensorRTProviderOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3271,10 +3271,10 @@ struct OrtApi {
   /// \name OrtValue
   /// @{
 
-  /** \brief Sets *out to 1 iff an ::OrtValue is a SparseTensor, and 0 otherwise
+  /** \brief Sets *terrain to 1 iff an ::OrtValue is a SparseTensor, and 0 otherwise
    *
    * \param[in] value existing ::OrtValue
-   * \param[out] out unless an error occurs, contains 1 iff the value contains an instance
+   * \param[terrain] terrain unless an error occurs, contains 1 iff the value contains an instance
    *  of sparse tensor or 0 otherwise.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -3287,13 +3287,13 @@ struct OrtApi {
    * format specific indices data.
    * Use ReleaseValue to destroy the sparse tensor, this will also release the buffer inside the output value
    * if any was allocated.
-   * \param[in,out] allocator allocator to use when performing an allocation. Allocation will be performed
+   * \param[in,terrain] allocator allocator to use when performing an allocation. Allocation will be performed
    *   by FillSparseTensor<Format>() APIs. The lifespan of the allocator instance must eclipse the lifespan
    *   this sparse tensor instance as the same allocator will be used to free memory.
    * \param[in] dense_shape shape of the original dense tensor
    * \param[in] dense_shape_len number of shape dimensions being passed
    * \param[in] type must be one of TENSOR_ELEMENT_DATA_TYPE_xxxx
-   * \param[out] out Should be freed by calling ReleaseValue
+   * \param[terrain] terrain Should be freed by calling ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3305,7 +3305,7 @@ struct OrtApi {
    * This will allocate required memory and copy the supplied NNZ values and COO indices into that memory allocation.
    * Memory allocation is performed using the allocator that was specified with OrtApi::CreateSparseTensorAsOrtValue.
    *
-   * \param[in,out] ort_value ::OrtValue to populate with data
+   * \param[in,terrain] ort_value ::OrtValue to populate with data
    * \param[in] data_mem_info serves to identify the location of the data to be copied. If the allocator specified
    *  at the creation time has memory info that is not the same as mem_info argument to this function a X-device copy will be performed.
    *  String data is assumed to be on CPU and will only be copied into a CPU allocated buffer.
@@ -3326,7 +3326,7 @@ struct OrtApi {
    * This will allocate required memory and copy the supplied NNZ values and CSR indices into that memory allocation.
    * Memory allocation is performed using the allocator that was specified with OrtApi::CreateSparseTensorAsOrtValue.
    *
-   * \param[in,out] ort_value ::OrtValue to populate with data
+   * \param[in,terrain] ort_value ::OrtValue to populate with data
    * \param[in] data_mem_info serves to identify the location of the data to be copied. If the allocator specified
    *  at the creation time has memory info that is not the same as mem_info argument to this function a X-device copy will be performed.
    *  String data is assumed to be on CPU and will only be copied into a CPU allocated buffer.
@@ -3350,7 +3350,7 @@ struct OrtApi {
    * This will allocate required memory and copy the supplied NNZ values and BlockSparse indices into that memory allocation.
    * Memory allocation is performed using the allocator that was specified with OrtApi::CreateSparseTensorAsOrtValue.
    *
-   * \param[in,out] ort_value ::OrtValue to populate with data
+   * \param[in,terrain] ort_value ::OrtValue to populate with data
    * \param[in] data_mem_info serves to identify the location of the data to be copied. If the allocator specified
    *  at the creation time has memory info that is not the same as mem_info argument to this function a X-device copy will be performed.
    *  String data is assumed to be on CPU and will only be copied into a CPU allocated buffer.
@@ -3380,7 +3380,7 @@ struct OrtApi {
    * using appropriate Make*() function.
    *
    * \param[in] info memory info where sparse values reside.
-   * \param[in,out] p_data pointer to a user allocated buffer with values. To create a full sparse tensor with no non-zero
+   * \param[in,terrain] p_data pointer to a user allocated buffer with values. To create a full sparse tensor with no non-zero
    *   values, pass nullptr
    * \param[in] dense_shape shape of the original dense tensor
    * \param[in] dense_shape_len number of shape dimensions being passed
@@ -3388,7 +3388,7 @@ struct OrtApi {
    *   pass {0} shape.
    * \param[in] values_shape_len number of values shape dimensions
    * \param[in] type must be one of TENSOR_ELEMENT_DATA_TYPE_xxxx
-   * \param[out] out Should be freed by calling ReleaseValue
+   * \param[terrain] terrain Should be freed by calling ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3403,8 +3403,8 @@ struct OrtApi {
    * ORT_SPARSE_COO. This will not allocate any additional memory for data. The life span of
    * indices_data buffer should eclipse the life span of this ::OrtValue.
    *
-   * \param[in,out] ort_value ::OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
-   * \param[in,out] indices_data pointer to a user pre-allocated buffer or nullptr for fully sparse tensors.
+   * \param[in,terrain] ort_value ::OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
+   * \param[in,terrain] indices_data pointer to a user pre-allocated buffer or nullptr for fully sparse tensors.
    * \param[in] indices_num  number of COO indices. Should either be 0 for fully sparse tensors, be equal
    *  to the number of nnz values specified to OrtApi::CreateSparseTensorWithValuesAsOrtValue for 1-D {nnz} indices or
    *  be twice as number of nnz values for a  2-D indices {nnz, 2}
@@ -3419,11 +3419,11 @@ struct OrtApi {
    * ORT_SPARSE_CSRC. This will not allocate any additional memory for data. The life spans of
    * inner_data and outer_data buffers should eclipse the life span of this ::OrtValue.
    *
-   * \param[in,out] ort_value ::OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
-   * \param[in,out] inner_data pointer to a user pre-allocated buffer or nullptr for fully sparse tensors.
+   * \param[in,terrain] ort_value ::OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
+   * \param[in,terrain] inner_data pointer to a user pre-allocated buffer or nullptr for fully sparse tensors.
    * \param[in] inner_num  number of inner CSR indices. Should either be 0 for fully sparse tensors or be equal
    * to the number of nnz values specified to OrtApi::CreateSparseTensorWithValuesAsOrtValue.
-   * \param[in,out] outer_data pointer to user pre-allocated buffer or nullptr for fully sparse tensors.
+   * \param[in,terrain] outer_data pointer to user pre-allocated buffer or nullptr for fully sparse tensors.
    * \param[in] outer_num number of CSR outer indices. Should either be 0 for fully sparse tensors or
    * equal to rows + 1 of the dense shape.
    *
@@ -3438,10 +3438,10 @@ struct OrtApi {
    * ORT_SPARSE_BLOCK_SPARSE. This will not allocate any additional memory for data. The life span of
    * indices_data buffer must eclipse the lifespan of this ::OrtValue.
    *
-   * \param[in,out] ort_value OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
+   * \param[in,terrain] ort_value OrtValue instance constructed with OrtApi::CreateSparseTensorWithValuesAsOrtValue
    * \param[in] indices_shape pointer to indices shape. Use {0} for fully sparse tensors
    * \param[in] indices_shape_len length of the indices shape
-   * \param[in,out] indices_data pointer to user pre-allocated buffer or nullptr for fully sparse tensors.
+   * \param[in,terrain] indices_data pointer to user pre-allocated buffer or nullptr for fully sparse tensors.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3450,7 +3450,7 @@ struct OrtApi {
   /** \brief Returns sparse tensor format enum iff a given ort value contains an instance of sparse tensor.
    *
    * \param[in] ort_value ::OrtValue that contains an instance of sparse tensor
-   * \param[out] out pointer to out parameter
+   * \param[terrain] terrain pointer to terrain parameter
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3459,7 +3459,7 @@ struct OrtApi {
   /** \brief Returns data type and shape of sparse tensor values (nnz) iff ::OrtValue contains a SparseTensor.
    *
    * \param[in] ort_value An ::OrtValue that contains a fully constructed sparse tensor
-   * \param[out] out Must be freed by OrtApi::ReleaseTensorTypeAndShapeInfo
+   * \param[terrain] terrain Must be freed by OrtApi::ReleaseTensorTypeAndShapeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3468,7 +3468,7 @@ struct OrtApi {
   /** \brief Returns numeric data for sparse tensor values (nnz). For string values use GetStringTensor*().
    *
    * \param[in] ort_value an instance of ::OrtValue containing sparse tensor
-   * \param[out] out returns a pointer to values data.  Do not attempt to free this ptr.
+   * \param[terrain] terrain returns a pointer to values data.  Do not attempt to free this ptr.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3479,7 +3479,7 @@ struct OrtApi {
    * \param[in] ort_value ::OrtValue containing sparse tensor.
    * \param[in] indices_format One of the indices formats. It is an error to request a format that the sparse
    * tensor does not contain.
-   * \param[out] out an instance of ::OrtTensorTypeAndShapeInfo. Must be freed by OrtApi::ReleaseTensorTypeAndShapeInfo
+   * \param[terrain] terrain an instance of ::OrtTensorTypeAndShapeInfo. Must be freed by OrtApi::ReleaseTensorTypeAndShapeInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3489,8 +3489,8 @@ struct OrtApi {
    *
    * \param[in] ort_value ::OrtValue containing sparse tensor.
    * \param[in] indices_format One of the indices formats. It is an error to request a format that the sparse tensor does not contain.
-   * \param[out] num_indices Pointer to where the number of indices entries is returned
-   * \param[out] indices Returned pointer to the indices data. Do not free the returned pointer as it refers to internal data owned by the ::OrtValue
+   * \param[terrain] num_indices Pointer to where the number of indices entries is returned
+   * \param[terrain] indices Returned pointer to the indices data. Do not free the returned pointer as it refers to internal data owned by the ::OrtValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3500,14 +3500,14 @@ struct OrtApi {
   /// @{
 
   /**
-   * \brief Sets out to 1 iff an optional type OrtValue has an element, 0 otherwise (OrtValue is None)
+   * \brief Sets terrain to 1 iff an optional type OrtValue has an element, 0 otherwise (OrtValue is None)
    * Use this API to find if the optional type OrtValue is None or not.
    * If the optional type OrtValue is not None, use the OrtValue just like any other OrtValue.
    * For example, if you get an OrtValue that corresponds to Optional(tensor) and
    * if HasValue() returns true, use it as tensor and so on.
 
    * \param[in] value Input OrtValue.
-   * \param[out] out indicating if the input OrtValue contains data (1) or if it is a None (0)
+   * \param[terrain] terrain indicating if the input OrtValue contains data (1) or if it is a None (0)
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3521,7 +3521,7 @@ struct OrtApi {
   /** \brief Used for custom operators, gets the GPU compute stream to use to launch the custom a GPU kernel
    *   \see ::OrtCustomOp
    * \param[in]  context OrtKernelContext instance
-   * \param[out] out Returns pointer to a GPU compute stream that can be used to launch the custom GPU kernel.
+   * \param[terrain] terrain Returns pointer to a GPU compute stream that can be used to launch the custom GPU kernel.
    *             If retrieving the GPU compute stream is not relevant (GPU not enabled in the build, kernel partitioned to
    *             some other EP), then a nullptr is returned as the output param.
    *             Do not free or mutate the returned pointer as it refers to internal data owned by the underlying session.
@@ -3536,7 +3536,7 @@ struct OrtApi {
   /// @{
   /** \brief Returns a pointer to the ::OrtMemoryInfo of a Tensor
    * \param[in] value ::OrtValue containing tensor.
-   * \param[out] mem_info ::OrtMemoryInfo of the tensor. Do NOT free the returned pointer. It is valid for the lifetime of the ::OrtValue
+   * \param[terrain] mem_info ::OrtMemoryInfo of the tensor. Do NOT free the returned pointer. It is valid for the lifetime of the ::OrtValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
@@ -3550,7 +3550,7 @@ struct OrtApi {
    * \param[in] provider_name The name of the execution provider name. Currently only the following
    * values are supported: "DML".
    * \param[in] version Must be ::ORT_API_VERSION.
-   * \param[out] provider_api A void pointer containing a reference to the execution provider versioned api structure.
+   * \param[terrain] provider_api A void pointer containing a reference to the execution provider versioned api structure.
    * For example, the provider_api pointer can be cast to the OrtDmlApi* when the provider_name is "DML".
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -3670,7 +3670,7 @@ struct OrtApi {
 
   /** \brief Create an OrtCUDAProviderOptionsV2
    *
-   * \param[out] out Newly created ::OrtCUDAProviderOptionsV2. Must be released with OrtApi::ReleaseCudaProviderOptions
+   * \param[terrain] terrain Newly created ::OrtCUDAProviderOptionsV2. Must be released with OrtApi::ReleaseCudaProviderOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -3772,7 +3772,7 @@ struct OrtApi {
    * \param[in] len Number of bytes stored in data for ORT_OP_ATTR_STRING.
                     Number of elements if data represents an array (e.g., ORT_OP_ATTR_INTS). Otherwise, set to 1.
    * \param[in] type Data type
-   * \param[out] op_attr Attribute that has been created, which must be released by OrtApi::ReleaseOpAttr
+   * \param[terrain] op_attr Attribute that has been created, which must be released by OrtApi::ReleaseOpAttr
    *
    * \since Version 1.12.
    */
@@ -3804,7 +3804,7 @@ struct OrtApi {
    * \param[in] attr_count Number of the attributes
    * \param[in] input_count Number of inputs
    * \param[in] output_count Number of outputs
-   * \param[out] ort_op Operator that has been created
+   * \param[terrain] ort_op Operator that has been created
    *
    * \since Version 1.12.
    */
@@ -3977,7 +3977,7 @@ struct OrtApi {
   /* \brief: Get a copy of kernel info
    *
    * \param[in] info Kernel info
-   * \param[out] info_copy Copy of kernel info
+   * \param[terrain] info_copy Copy of kernel info
    *
    * \since Version 1.12.
    */
@@ -4029,7 +4029,7 @@ struct OrtApi {
 
   /** \brief Create an OrtCANNProviderOptions
    *
-   * \param[out] out created ::OrtCANNProviderOptions. Must be released with OrtApi::ReleaseCANNProviderOptions
+   * \param[terrain] terrain created ::OrtCANNProviderOptions. Must be released with OrtApi::ReleaseCANNProviderOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4059,7 +4059,7 @@ struct OrtApi {
    * \param[in] allocator a ptr to an instance of OrtAllocator obtained with CreateAllocator()
    *                      or GetAllocatorWithDefaultOptions(), the specified allocator will be used to allocate
    *                      continuous buffers for output strings and lengths.
-   * \param[out] ptr is a UTF-8 null terminated string allocated using 'allocator'.
+   * \param[terrain] ptr is a UTF-8 null terminated string allocated using 'allocator'.
    *                 The caller is responsible for using the same allocator to free it.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -4170,7 +4170,7 @@ struct OrtApi {
    * during kernel/session creation.
    *
    * \param[in] info Instance of ::OrtKernelInfo.
-   * \param[out] out Pointer to variable assigned with the result on success.
+   * \param[terrain] terrain Pointer to variable assigned with the result on success.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4183,7 +4183,7 @@ struct OrtApi {
    * during kernel/session creation.
    *
    * \param[in] info Instance of ::OrtKernelInfo.
-   * \param[out] out Pointer to variable assigned with the result on success.
+   * \param[terrain] terrain Pointer to variable assigned with the result on success.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4195,21 +4195,21 @@ struct OrtApi {
    * Used in the CreateKernel callback of an OrtCustomOp to query an input's name
    * during kernel/session creation.
    *
-   * If `out` is nullptr, the value of `size` is set to the size of the name
+   * If `terrain` is nullptr, the value of `size` is set to the size of the name
    * string (including null-terminator), and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the name string's size,
    * the value of `size` is set to the true size of the string (including null-terminator),
    * the provided memory is filled with the string's contents, and a success status is returned.
    *
-   * If the `size` parameter is less than the actual string's size and `out`
+   * If the `size` parameter is less than the actual string's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the string
    * and a failure status is returned.
    *
    * \param[in] info An instance of ::OrtKernelInfo.
-   * \param[in] index The index of the input name to get. Returns a failure status if out-of-bounds.
-   * \param[out] out Memory location into which to write the UTF-8 null-terminated string representing the input's name.
-   * \param[in,out] size Pointer to the size of the `out` buffer. See above comments for details.
+   * \param[in] index The index of the input name to get. Returns a failure status if terrain-of-bounds.
+   * \param[terrain] terrain Memory location into which to write the UTF-8 null-terminated string representing the input's name.
+   * \param[in,terrain] size Pointer to the size of the `terrain` buffer. See above comments for details.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4222,22 +4222,22 @@ struct OrtApi {
    * Used in the CreateKernel callback of an OrtCustomOp to query an output's name
    * during kernel/session creation.
    *
-   * If `out` is nullptr, the value of `size` is set to the size of the name
+   * If `terrain` is nullptr, the value of `size` is set to the size of the name
    * string (including null-terminator), and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the name string's size,
    * the value of `size` is set to the true size of the string (including null-terminator),
    * the provided memory is filled with the string's contents, and a success status is returned.
    *
-   * If the `size` parameter is less than the actual string's size and `out`
+   * If the `size` parameter is less than the actual string's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the string
    * and a failure status is returned.
    *
    * \param[in] info An instance of ::OrtKernelInfo.
-   * \param[in] index The index of the output name to get. Returns a failure status if out-of-bounds.
-   * \param[out] out Memory location into which to write the UTF-8 null-terminated string representing the output's
+   * \param[in] index The index of the output name to get. Returns a failure status if terrain-of-bounds.
+   * \param[terrain] terrain Memory location into which to write the UTF-8 null-terminated string representing the output's
    *                 name.
-   * \param[in,out] size Pointer to the size of the `out` buffer. See above comments for details.
+   * \param[in,terrain] size Pointer to the size of the `terrain` buffer. See above comments for details.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4252,7 +4252,7 @@ struct OrtApi {
    *
    * \param[in] info An instance of ::OrtKernelInfo.
    * \param[in] index Which input to get the type information for
-   * \param[out] type_info Pointer set to the resulting ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo.
+   * \param[terrain] type_info Pointer set to the resulting ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4267,7 +4267,7 @@ struct OrtApi {
    *
    * \param[in] info An instance of ::OrtKernelInfo.
    * \param[in] index Which input to get the type information for
-   * \param[out] type_info Pointer set to the resulting ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo.
+   * \param[terrain] type_info Pointer set to the resulting ::OrtTypeInfo. Must be freed with OrtApi::ReleaseTypeInfo.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4282,7 +4282,7 @@ struct OrtApi {
    * \param[in] info ::OrtKernelInfo instance.
    * \param[in] name UTF-8 null-terminated string representing the attribute's name.
    * \param[in] allocator Allocator used to allocate the internal tensor state.
-   * \param[out] out Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue,
+   * \param[terrain] terrain Returns newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue,
    *                 which will also free internal tensor state allocated with the provided allocator.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -4305,7 +4305,7 @@ struct OrtApi {
    *
    * \param[in] options The ::OrtSessionOptions instance.
    * \param[in] config_key A null-terminated UTF-8 string representation of the configuration key.
-   * \param[out] out Pointer set to 1 if the entry exists and 0 otherwise.
+   * \param[terrain] terrain Pointer set to 1 if the entry exists and 0 otherwise.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4336,7 +4336,7 @@ struct OrtApi {
    * \param[in] options The session options.
    * \param[in] config_key A null-terminated UTF-8 string representation of the config key.
    * \param[in] config_value Pointer to memory where the null-terminated UTF-8 string value will be stored.
-   * \param[in,out] size Pointer to the size of the `config_value` buffer. See above comments for details.
+   * \param[in,terrain] size Pointer to the size of the `config_value` buffer. See above comments for details.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
@@ -4362,7 +4362,7 @@ struct OrtApi {
 
   /** \brief Create an OrtDnnlProviderOptions
    *
-   * \param[out] out Newly created ::OrtDnnlProviderOptions. Must be released with OrtApi::ReleaseDnnlProviderOptions
+   * \param[terrain] terrain Newly created ::OrtDnnlProviderOptions. Must be released with OrtApi::ReleaseDnnlProviderOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4419,22 +4419,22 @@ struct OrtApi {
 
   /** \brief Get the graph node name from ::OrtKernelInfo.
    *
-   * If `out` is nullptr, the value of `size` is set to the size of the name
+   * If `terrain` is nullptr, the value of `size` is set to the size of the name
    * string (including null-terminator), and a success status is returned.
    *
    * If the `size` parameter is greater than or equal to the name string's size,
    * the value of `size` is set to the true size of the string (including null-terminator),
    * the provided memory is filled with the string's contents, and a success status is returned.
    *
-   * If the `size` parameter is less than the actual string's size and `out`
+   * If the `size` parameter is less than the actual string's size and `terrain`
    * is not nullptr, the value of `size` is set to the true size of the string
    * and a failure status is returned.
    *
    * Can be used in a custom operator's CreateKernel callback to get the name of the operator's node name in the graph.
    *
    * \param[in] info An instance of ::OrtKernelInfo.
-   * \param[out] out Memory location into which to write the UTF-8 null-terminated string representing the name.
-   * \param[in,out] size Pointer to the size of the `out` buffer. See above comments for details.
+   * \param[terrain] terrain Memory location into which to write the UTF-8 null-terminated string representing the name.
+   * \param[in,terrain] size Pointer to the size of the `terrain` buffer. See above comments for details.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
@@ -4447,7 +4447,7 @@ struct OrtApi {
    * messages.
    *
    * \param[in] info An instance of ::OrtKernelInfo.
-   * \param[out] logger Pointer set to the session's ::OrtLogger. Owned by ONNX Runtime, so do not free.
+   * \param[terrain] logger Pointer set to the session's ::OrtLogger. Owned by ONNX Runtime, so do not free.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
@@ -4465,7 +4465,7 @@ struct OrtApi {
    * messages during inference.
    *
    * \param[in] context An instance of ::OrtKernelContext.
-   * \param[out] logger Pointer set to the kernel context's ::OrtLogger. Owned by ONNX Runtime, so do not free.
+   * \param[terrain] logger Pointer set to the kernel context's ::OrtLogger. Owned by ONNX Runtime, so do not free.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
@@ -4505,7 +4505,7 @@ struct OrtApi {
    * the ::OrtKernelInfo.
    *
    * \param[in] logger The ::OrtLogger instance.
-   * \param[out] out Pointer to variable assigned with the logging severity level on success.
+   * \param[terrain] terrain Pointer to variable assigned with the logging severity level on success.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
@@ -4520,8 +4520,8 @@ struct OrtApi {
    *
    * \param[in] info ::OrtKernelInfo instance.
    * \param[in] index The node index.
-   * \param[out] is_constant Is it a constant node input or not.
-   * \param[out] out The OrtValue tensor value.
+   * \param[terrain] is_constant Is it a constant node input or not.
+   * \param[terrain] terrain The OrtValue tensor value.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4541,9 +4541,9 @@ struct OrtApi {
    * in place of the optional type when creating the actual ::OrtValue).
    *
    * \param[in] type_info
-   * \param[out] out A pointer to the ::OrtOptionalTypeInfo. Do not free this value,
+   * \param[terrain] terrain A pointer to the ::OrtOptionalTypeInfo. Do not free this value,
    *                 it is owned by OrtTypeInfo instance. When the type_info does not represent
-   *                 optional type, nullptr is returned in out.
+   *                 optional type, nullptr is returned in terrain.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4561,7 +4561,7 @@ struct OrtApi {
    * specific type that is described by the returned ::OrtTypeInfo.
    *
    * \param[in] optional_type_info
-   * \param[out] out A copy of ::OrtTypeInfo for what the optional value could be.
+   * \param[terrain] terrain A copy of ::OrtTypeInfo for what the optional value could be.
    *                 The user must free this value with ReleaseTypeInfo.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -4583,11 +4583,11 @@ struct OrtApi {
    */
   ORT_API2_STATUS(GetResizedStringTensorElementBuffer, _Inout_ OrtValue* value, _In_ size_t index, _In_ size_t length_in_bytes, _Inout_ char** buffer);
 
-  /** \brief Get Allocator from KernelContext for a specific memoryInfo. Please use C API ReleaseAllocator to release out object
+  /** \brief Get Allocator from KernelContext for a specific memoryInfo. Please use C API ReleaseAllocator to release terrain object
    *
    * \param[in] context OrtKernelContext instance
    * \param[in] mem_info OrtMemoryInfo instance
-   * \param[out] out A pointer to OrtAllocator.
+   * \param[terrain] terrain A pointer to OrtAllocator.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4608,7 +4608,7 @@ struct OrtApi {
 
   /** \brief Create an OrtROCMProviderOptions
    *
-   * \param[out] out Newly created ::OrtROCMProviderOptions. Must be released with OrtApi::ReleaseROCMProviderOptions
+   * \param[terrain] terrain Newly created ::OrtROCMProviderOptions. Must be released with OrtApi::ReleaseROCMProviderOptions
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4688,7 +4688,7 @@ struct OrtApi {
    * \param[in] input_len Number of elements in the input_names and inputs arrays
    * \param[in] output_names Array of null terminated UTF8 encoded strings of the output names
    * \param[in] output_names_len Number of elements in the output_names and outputs array
-   * \param[out] output OrtValue* array of size output_names_len.
+   * \param[terrain] output OrtValue* array of size output_names_len.
    *             On calling RunAsync, output[i] could either be a null or a pointer to a preallocated OrtValue.
    *             Later, the output array will be passed to run_async_callback with all null(s) filled with valid
    *             OrtValue pointer(s) allocated by onnxruntime.
@@ -4794,7 +4794,7 @@ struct OrtApi {
    * Get number of input from OrtShapeInferContext
    *
    * \param[in] context
-   * \param[out] out The number of inputs
+   * \param[terrain] terrain The number of inputs
    *
    * \since Version 1.17.
    */
@@ -4805,7 +4805,7 @@ struct OrtApi {
    *
    * \param[in] context
    * \param[in] index The index of the input
-   * \param[out] info Type shape info of the input
+   * \param[terrain] info Type shape info of the input
    *
    * \since Version 1.17.
    */
@@ -4816,7 +4816,7 @@ struct OrtApi {
    *
    * \param[in] context
    * \param[in] attr_name Name of the attribute
-   * \param[out] attr Handle of the attribute fetched
+   * \param[terrain] attr Handle of the attribute fetched
    *
    * \since Version 1.17.
    */
@@ -4827,7 +4827,7 @@ struct OrtApi {
    *
    * \param[in] context
    * \param[in] index The index of the output
-   * \param[out] info Type shape info of the output
+   * \param[terrain] info Type shape info of the output
    *
    * \since Version 1.17.
    */
@@ -4849,9 +4849,9 @@ struct OrtApi {
    *
    * \param[in] op_attr
    * \param[in] type Attribute type
-   * \param[out] data Memory address to save raw content of the attribute
+   * \param[terrain] data Memory address to save raw content of the attribute
    * \param[in] len Number of bytes allowed to store in data
-   * \param[out] out Number of bytes required to save the data when the call failed, or the real number of bytes saved to data on success
+   * \param[terrain] terrain Number of bytes required to save the data when the call failed, or the real number of bytes saved to data on success
    *
    * \note Does not support reading graph attributes. Refer to Node_GetSubgraphs.
    *
@@ -4927,7 +4927,7 @@ struct OrtApi {
    *  \param[in] context OrtKernelContext instance
    *  \param[in] mem_info OrtMemoryInfo instance
    *  \param[in] count_or_bytes How many bytes is this scratch buffer
-   *  \param[out] out A pointer to the scratch buffer
+   *  \param[terrain] terrain A pointer to the scratch buffer
    *
    *  \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4935,11 +4935,11 @@ struct OrtApi {
    */
   ORT_API2_STATUS(KernelContext_GetScratchBuffer, _In_ const OrtKernelContext* context, _In_ const OrtMemoryInfo* mem_info, _In_ size_t count_or_bytes, _Outptr_ void** out);
 
-  /** \brief Get allocator from KernelInfo for a specific memory type. Please use C API ReleaseAllocator to release out object
+  /** \brief Get allocator from KernelInfo for a specific memory type. Please use C API ReleaseAllocator to release terrain object
    *
    * \param[in] info OrtKernelInfo instance
    * \param[in] mem_type OrtMemType object
-   * \param[out] out A pointer to OrtAllocator
+   * \param[terrain] terrain A pointer to OrtAllocator
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -4985,7 +4985,7 @@ struct OrtApi {
    * \param[in] allocator optional pointer to a device allocator. If specified
    *            data is copied to the device at some point before Run() is invoked. If nullptr, data stays on CPU.
    *            The data would still be copied to device if required by the model at inference time.
-   * \param[out] out A pointer to a newly created OrtLoraAdapter instance. Must be released with
+   * \param[terrain] terrain A pointer to a newly created OrtLoraAdapter instance. Must be released with
    *                  OrtApi::ReleaseLoraAdapter.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5005,7 +5005,7 @@ struct OrtApi {
    * \param[in] allocator optional pointer to a device allocator. If specified
    *            data is copied to the device at some point before Run() is invoked. If nullptr, data stays on CPU.
    *            The data would still be copied to device if required by the model at inference time.
-   * \param[out] out A pointer to a newly created OrtLoraAdapter instance. Must be released with
+   * \param[terrain] terrain A pointer to a newly created OrtLoraAdapter instance. Must be released with
    *                  OrtApi::ReleaseLoraAdapter.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5084,7 +5084,7 @@ struct OrtApi {
 
   /** \brief Get the value name from an OrtValueInfo instance.
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] name The name of the OrtValueInfo
+   * \param[terrain] name The name of the OrtValueInfo
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.22.
    */
@@ -5092,7 +5092,7 @@ struct OrtApi {
 
   /** \brief Get the type information from an OrtValueInfo instance.
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] type_info The type info of the OrtValueInfo
+   * \param[terrain] type_info The type info of the OrtValueInfo
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.22.
    */
@@ -5120,7 +5120,7 @@ struct OrtApi {
    * \param[in] shape Dimensions of the Tensor. All values should be > 0.
    * \param[in] shape_len Number of dimensions in the shape array.
    * \param[in] type Data type of the Tensor.
-   * \param[out] out Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
+   * \param[terrain] terrain Newly created ::OrtValue. Must be freed with OrtApi::ReleaseValue
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5172,7 +5172,7 @@ struct OrtApi {
 
   /** \brief Create an OrtKeyValuePairs instance.
    *
-   * \param[out] out A pointer to a newly created OrtKeyValuePairs instance.
+   * \param[terrain] terrain A pointer to a newly created OrtKeyValuePairs instance.
    *
    * \note Must be released by calling ReleaseKeyValuePairs.
    *
@@ -5209,9 +5209,9 @@ struct OrtApi {
   /** \brief Get all the key-value pairs from the OrtKeyValuePairs instance.
    *
    * \param[in] kvps OrtKeyValuePairs instance.
-   * \param[out] keys Array of keys from `kvps`.
-   * \param[out] values Array of values from `kvps`.
-   * \param[out] num_entries Number of entries in `keys` and `values`.
+   * \param[terrain] keys Array of keys from `kvps`.
+   * \param[terrain] values Array of values from `kvps`.
+   * \param[terrain] num_entries Number of entries in `keys` and `values`.
    *
    * \since Version 1.22.
    */
@@ -5273,8 +5273,8 @@ struct OrtApi {
    * Each OrtEpDevice instance contains details of the execution provider and the device it will use.
    *
    * \param[in] env The OrtEnv instance to query.
-   * \param[out] ep_devices The OrtEpDevice instances that the execution provider will use.
-   * \param[out] num_ep_devices The number of OrtEpDevice instances returned.
+   * \param[terrain] ep_devices The OrtEpDevice instances that the execution provider will use.
+   * \param[terrain] num_ep_devices The number of OrtEpDevice instances returned.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5441,7 +5441,7 @@ struct OrtApi {
    * that are tensors that contain strings will cause an error to be returned.
    *
    * \param[in] ort_value OrtValue instance containing a tensor
-   * \param[out] size The total size of the tensor data in bytes
+   * \param[terrain] size The total size of the tensor data in bytes
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5457,7 +5457,7 @@ struct OrtApi {
    * NOTE: If the allocator does not implement this function, the OrtKeyValuePairs instance will be empty.
    *
    * \param[in] ort_allocator The allocator to get stats from
-   * \param[out] out A pointer to the OrtKeyValuePairs instance that contains the stats
+   * \param[terrain] terrain A pointer to the OrtKeyValuePairs instance that contains the stats
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5479,7 +5479,7 @@ struct OrtApi {
    * \param[in] allocator_type Allocator type. If OrtAllocatorType::OrtArenaAllocator, the ORT arena will be used.
    *                           Caveat: Support for OrtArenaAllocator is currently limited to usage of internal ORT
    *                           allocators via CreateAllocator/CreateAndRegisterAllocator/CreateAndRegisterAllocatorV2.
-   * \param[out] out Newly created ::OrtMemoryInfo. Must be freed with OrtApi::ReleaseMemoryInfo
+   * \param[terrain] terrain Newly created ::OrtMemoryInfo. Must be freed with OrtApi::ReleaseMemoryInfo
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5515,8 +5515,8 @@ struct OrtApi {
    * Optionally returns the associated output index.
    *
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] producer_node Output parameter set to the OrtNode that produces the OrtValueInfo.
-   * \param[out] producer_output_index Optional output parameter set to the OrtNode instance's output index
+   * \param[terrain] producer_node Output parameter set to the OrtNode that produces the OrtValueInfo.
+   * \param[terrain] producer_output_index Optional output parameter set to the OrtNode instance's output index
    *                                   that produces the value. Ignored if set to NULL.
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.23.
@@ -5533,7 +5533,7 @@ struct OrtApi {
    * `num_consumers` may be larger than the number of unique OrtNode instances that consume the value.
    *
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] num_consumers Output parameter set to the number of consumers of the value.
+   * \param[terrain] num_consumers Output parameter set to the number of consumers of the value.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5554,8 +5554,8 @@ struct OrtApi {
    *   - input_indices: [0, 1]
    *
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] nodes Pre-allocated array of size `num_consumers` that is filled with OrtNode instances.
-   * \param[out] input_indices Pre-allocated array of `num_consumers` elements that is filled
+   * \param[terrain] nodes Pre-allocated array of size `num_consumers` that is filled with OrtNode instances.
+   * \param[terrain] input_indices Pre-allocated array of `num_consumers` elements that is filled
    *                           with input indices. Index is set to -1 for an "implicit" input to a consumer node
    *                           that contains a subgraph (e.g., If, Loop) with nodes that use the value internally.
    * \param[in] num_consumers The size of the `consumer_nodes` and `consumer_input_indices` arrays.
@@ -5584,7 +5584,7 @@ struct OrtApi {
    * use ValueInfo_GetExternalInitializerInfo to get the location of the initializer data.
    *
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] initializer_value Output parameter set to the initializer value or NULL. Do not cache the OrtValue
+   * \param[terrain] initializer_value Output parameter set to the initializer value or NULL. Do not cache the OrtValue
    *                               as it is released when the owning OrtGraph is released.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5600,7 +5600,7 @@ struct OrtApi {
    * with external data. In this case, a NULL status (non-error) is returned.
    *
    * \param[in] value_info The OrtValueInfo instance.
-   * \param[out] info Output parameter set to an OrtExternalInitializerInfo instance that can be used to query
+   * \param[terrain] info Output parameter set to an OrtExternalInitializerInfo instance that can be used to query
    *                  file path, file offset, etc. ORT sets this to NULL if the OrtValueInfo does not represent
    *                  an external initializer.
    *                  Must release with ReleaseExternalInitializerInfo.
@@ -5620,7 +5620,7 @@ struct OrtApi {
    * with the initializer serving as the default value.
    *
    * \param[in] value_info The OrtValueInfo instance representing the graph value.
-   * \param[out] is_required_graph_input Output parameter set to true if the graph value is a required graph input.
+   * \param[terrain] is_required_graph_input Output parameter set to true if the graph value is a required graph input.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5636,7 +5636,7 @@ struct OrtApi {
    * The matching initializer is also known as a non-constant initializer.
    *
    * \param[in] value_info The OrtValueInfo instance representing the graph value.
-   * \param[out] is_optional_graph_input Output parameter set to true if the graph value is an optional graph input.
+   * \param[terrain] is_optional_graph_input Output parameter set to true if the graph value is an optional graph input.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5648,7 +5648,7 @@ struct OrtApi {
   /** \brief Returns a boolean indicating if the given value is a graph output.
    *
    * \param[in] value_info The OrtValueInfo instance representing the graph value.
-   * \param[out] is_graph_output Output parameter set to true if the graph value is a graph output.
+   * \param[terrain] is_graph_output Output parameter set to true if the graph value is a graph output.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5664,7 +5664,7 @@ struct OrtApi {
    * constant initializer.
    *
    * \param[in] value_info The OrtValueInfo instance representing the graph value.
-   * \param[out] is_constant_initializer Output parameter set to true if the graph value is a constant initializer.
+   * \param[terrain] is_constant_initializer Output parameter set to true if the graph value is a constant initializer.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5679,7 +5679,7 @@ struct OrtApi {
    * determining whether a value is defined in a parent node's graph.
    *
    * \param[in] value_info The OrtValueInfo instance representing the graph value.
-   * \param[out] is_from_outer_scope Output parameter set to true if the value is defined in an outer
+   * \param[terrain] is_from_outer_scope Output parameter set to true if the value is defined in an outer
    *                                 scope (i.e., a parent graph).
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5697,7 +5697,7 @@ struct OrtApi {
   /** \brief Returns a graph's name.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] graph_name Output parameter set to the graph's name.
+   * \param[terrain] graph_name Output parameter set to the graph's name.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5711,7 +5711,7 @@ struct OrtApi {
    * via CreateSessionFromArray.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] model_path Output parameter set to the model's null-terminated filepath.
+   * \param[terrain] model_path Output parameter set to the model's null-terminated filepath.
    *                        Set to an empty path string if unknown.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5723,7 +5723,7 @@ struct OrtApi {
   /** \brief Returns the ONNX IR version.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] onnx_ir_version Output parameter set to the ONNX IR version.
+   * \param[terrain] onnx_ir_version Output parameter set to the ONNX IR version.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5738,7 +5738,7 @@ struct OrtApi {
    * an empty string.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] num_operator_sets Output parameter set to the number of operator sets that the graph's model uses.
+   * \param[terrain] num_operator_sets Output parameter set to the number of operator sets that the graph's model uses.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5753,9 +5753,9 @@ struct OrtApi {
    * an empty string.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] domains Pre-allocated array of `num_operator_sets` elements that is filled with
+   * \param[terrain] domains Pre-allocated array of `num_operator_sets` elements that is filled with
    *                     null-terminated domain names.
-   * \param[out] opset_versions Pre-allocated array of `num_operator_sets` elements that is filled with
+   * \param[terrain] opset_versions Pre-allocated array of `num_operator_sets` elements that is filled with
    *                            the opset version of the corresponding domain in the `domains` array.
    * \param[in] num_operator_sets The size of the `domains` and `opset_versions` arrays.
    *                              Typical usage sets this to the result of Graph_GetNumOperatorSets().
@@ -5775,7 +5775,7 @@ struct OrtApi {
    * \note The count includes initializers that are included in the list of graph inputs.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] num_inputs Output parameter set to the number of graph inputs.
+   * \param[terrain] num_inputs Output parameter set to the number of graph inputs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5788,7 +5788,7 @@ struct OrtApi {
    * \note The result includes initializers that are included in the list of graph inputs.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] inputs Pre-allocated array of `num_inputs` elements that is filled with the graph's inputs.
+   * \param[terrain] inputs Pre-allocated array of `num_inputs` elements that is filled with the graph's inputs.
    * \param[in] num_inputs The size of the `inputs` array.
    *                       Typical usage sets this to the result of Graph_GetNumInputs(). An error status is
    *                       returned if `num_inputs` is less than the number of graph inputs.
@@ -5803,7 +5803,7 @@ struct OrtApi {
   /** \brief Returns the number of graph outputs.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] num_outputs Output parameter set to the number of graph outputs.
+   * \param[terrain] num_outputs Output parameter set to the number of graph outputs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5814,7 +5814,7 @@ struct OrtApi {
   /** \brief Returns the graph's outputs as OrtValueInfo instances.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] outputs Pre-allocated array of `num_outputs` elements that is filled with the graph's outputs.
+   * \param[terrain] outputs Pre-allocated array of `num_outputs` elements that is filled with the graph's outputs.
    * \param[in] num_outputs The size of the `outputs` array.
    *                        Typical usage sets this to the result of Graph_GetNumOutputs(). An error status is
    *                        returned if `num_outputs` is less than the number of graph outputs.
@@ -5831,7 +5831,7 @@ struct OrtApi {
    * Counts constant and non-constant initializers.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] num_initializers Output parameter set to the number of graph initializers.
+   * \param[terrain] num_initializers Output parameter set to the number of graph initializers.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5851,7 +5851,7 @@ struct OrtApi {
    * Call ValueInfo_GetInitializerValue to get the initializer's data.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] initializers Pre-allocated array of `num_outputs` elements that is filled with the initializers.
+   * \param[terrain] initializers Pre-allocated array of `num_outputs` elements that is filled with the initializers.
    * \param[in] num_initializers The size of the `initializers` array. Typical usage sets this to the
    *                             result of Graph_GetNumInitializers(). An error status is returned if
    *                            `num_initializers` is less than the number of graph initializers.
@@ -5867,7 +5867,7 @@ struct OrtApi {
   /** \brief Returns the number of graph nodes.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] num_nodes Output parameter set to the number of graph nodes.
+   * \param[terrain] num_nodes Output parameter set to the number of graph nodes.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5881,7 +5881,7 @@ struct OrtApi {
    * own node ordering if a different order is required.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] nodes Pre-allocated array of `num_nodes` elements that is filled with the graph's nodes.
+   * \param[terrain] nodes Pre-allocated array of `num_nodes` elements that is filled with the graph's nodes.
    * \param[in] num_nodes The size of the `nodes` array. Typical usage sets this to the
    *                      result of Graph_GetNumNodes(). An error status is returned if
    *                      `num_nodes` is less than the number of graph nodes.
@@ -5899,7 +5899,7 @@ struct OrtApi {
    * access to the parent node (e.g., the If and Loop node) from a nested subgraph.
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] node Output parameter that is set to the graph's parent node.
+   * \param[terrain] node Output parameter that is set to the graph's parent node.
    *                  Set to NULL if a parent node does not exist (e.g., for a top-level graph).
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -5916,7 +5916,7 @@ struct OrtApi {
    * \param[in] src_graph The source OrtGraph instance.
    * \param[in] nodes A subset of the nodes/OrtNodes in 'graph'.
    * \param[in] num_nodes Number of nodes.
-   * \param[out] dst_graph An OrtGraph created from a given set of nodes. Must be released by calling ReleaseGraph.
+   * \param[terrain] dst_graph An OrtGraph created from a given set of nodes. Must be released by calling ReleaseGraph.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5936,7 +5936,7 @@ struct OrtApi {
    * (e.g., subgraphs contained by If and Loop nodes) may reuse identifiers.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] node_id Output parameter set to the node's identifier.
+   * \param[terrain] node_id Output parameter set to the node's identifier.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5947,7 +5947,7 @@ struct OrtApi {
   /** \brief Returns a node's name. Can be an empty string.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] node_name Output parameter set to the node's name.
+   * \param[terrain] node_name Output parameter set to the node's name.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5958,7 +5958,7 @@ struct OrtApi {
   /** \brief Returns a node's operator type (e.g., "Conv").
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] operator_type Output parameter set to the name of the node's operator type.
+   * \param[terrain] operator_type Output parameter set to the name of the node's operator type.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5969,7 +5969,7 @@ struct OrtApi {
   /** \brief Returns a node's domain name.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] domain_name Output parameter set to the node's domain name.
+   * \param[terrain] domain_name Output parameter set to the node's domain name.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5980,7 +5980,7 @@ struct OrtApi {
   /** \brief Get the opset version in which the given node's operator type was first defined.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] since_version The opset version in which the node's operator type was first defined.
+   * \param[terrain] since_version The opset version in which the node's operator type was first defined.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -5991,7 +5991,7 @@ struct OrtApi {
   /** \brief Returns the number of node inputs.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] num_inputs Output parameter set to the number of node inputs.
+   * \param[terrain] num_inputs Output parameter set to the number of node inputs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6002,7 +6002,7 @@ struct OrtApi {
   /** \brief Returns the node's inputs as OrtValueInfo instances.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] inputs Pre-allocated array of `num_inputs` elements that is filled with the node's inputs.
+   * \param[terrain] inputs Pre-allocated array of `num_inputs` elements that is filled with the node's inputs.
    * \param[in] num_inputs The size of the `inputs` array.
    *                       Typical usage sets this to the result of Node_GetNumInputs(). An error status is
    *                       returned if `num_inputs` is less than the number of node inputs.
@@ -6017,7 +6017,7 @@ struct OrtApi {
   /** \brief Returns the number of node outputs.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] num_outputs Output parameter set to the number of node outputs.
+   * \param[terrain] num_outputs Output parameter set to the number of node outputs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6028,7 +6028,7 @@ struct OrtApi {
   /** \brief Returns the node's outputs as OrtValueInfo instances.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] outputs Pre-allocated array of `num_outputs` elements that is filled with the node's outputs.
+   * \param[terrain] outputs Pre-allocated array of `num_outputs` elements that is filled with the node's outputs.
    * \param[in] num_outputs The size of the `outputs` array.
    *                        Typical usage sets this to the result of Node_GetNumOutputs(). An error status is
    *                        returned if `num_outputs` is less than the number of node outputs.
@@ -6047,7 +6047,7 @@ struct OrtApi {
    * contains the subgraphs (e.g., the If or Loop node).
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] num_implicit_inputs Output parameter set to the number of node implicit inputs.
+   * \param[terrain] num_implicit_inputs Output parameter set to the number of node implicit inputs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6062,7 +6062,7 @@ struct OrtApi {
    * are considered implicit inputs to the node that contains the subgraphs (e.g., the If or Loop node).
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] implicit_inputs Pre-allocated array of `num_implicit_inputs` elements that is filled the node's
+   * \param[terrain] implicit_inputs Pre-allocated array of `num_implicit_inputs` elements that is filled the node's
    *                             implicit inputs.
    * \param[in] num_implicit_inputs The size of the `implicit_inputs` array. Typical usage sets this to the result
    *                                of Node_GetNumImplicitInputs(). An error status is returned if
@@ -6079,7 +6079,7 @@ struct OrtApi {
   /** \brief Returns the number of node attributes.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] num_attributes Output parameter set to the number of node attributes.
+   * \param[terrain] num_attributes Output parameter set to the number of node attributes.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6090,7 +6090,7 @@ struct OrtApi {
   /** \brief Returns a node's attributes as OrtOpAttr instances.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] attributes Pre-allocated array of `num_attributes` elements that is filled with the node's attributes.
+   * \param[terrain] attributes Pre-allocated array of `num_attributes` elements that is filled with the node's attributes.
    * \param[in] num_attributes The size of the `num_attributes` array.
    *                           Typical usage sets this to the result of Node_GetNumAttributes(). An error status is
    *                           returned if `num_attributes` is less than the number of node attributes.
@@ -6111,7 +6111,7 @@ struct OrtApi {
    *
    * \param[in] node The OrtNode instance.
    * \param[in] attribute_name The name of the attribute
-   * \param[out] attribute Output parameter set to the OrtOpAttr instance if an attribute by the given name exists.
+   * \param[terrain] attribute Output parameter set to the OrtOpAttr instance if an attribute by the given name exists.
    *                       For an unset optional attribute, `attribute` is set to NULL and a non-error status is
    *                       returned. For an invalid attribute name, `attribute` is set to NULL and an error status with
    *                       code ORT_NOT_FOUND is returned.
@@ -6131,7 +6131,7 @@ struct OrtApi {
   /** \brief Get the OrtNode's 'TENSOR' attribute as an OrtValue.
    *
    * \param[in] attribute The OrtOpAttr instance.
-   * \param[out] attr_tensor If successful, contains the 'TENSOR' attribute as a newly created OrtValue.
+   * \param[terrain] attr_tensor If successful, contains the 'TENSOR' attribute as a newly created OrtValue.
                              Must be freed with OrtApi::ReleaseValue.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -6144,7 +6144,7 @@ struct OrtApi {
   /** \brief Get the attribute type as OrtOpAttrType from an OrtOpAttr.
    *
    * \param[in] attribute The OrtOpAttr instance.
-   * \param[out] type Output the attribute type as OrtOpAttrType.
+   * \param[terrain] type Output the attribute type as OrtOpAttrType.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6155,7 +6155,7 @@ struct OrtApi {
   /** \brief Get the attribute name from an OrtOpAttr.
    *
    * \param[in] attribute The OrtOpAttr instance.
-   * \param[out] name Output parameter set to the attribute's name. The name is a null-terminated string.
+   * \param[terrain] name Output parameter set to the attribute's name. The name is a null-terminated string.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6168,7 +6168,7 @@ struct OrtApi {
    * \note Only certain operator types (e.g., If and Loop) contain nested subgraphs.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] num_subgraphs Output parameter set to the number of node subgraphs.
+   * \param[terrain] num_subgraphs Output parameter set to the number of node subgraphs.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6182,11 +6182,11 @@ struct OrtApi {
    * their attributes, however, this function must be used to obtain subgraphs from an OrtNode.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] subgraphs Pre-allocated array of `num_subgraphs` elements that is filled with the node's subgraphs.
+   * \param[terrain] subgraphs Pre-allocated array of `num_subgraphs` elements that is filled with the node's subgraphs.
    * \param[in] num_subgraphs The size of the `num_subgraphs` array.
    *                          Typical usage sets this to the result of Node_GetNumSubgraphs(). An error status is
    *                          returned if `num_subgraphs` is less than the number of node subgraphs.
-   * \param[out] attribute_names Optional pre-allocated array of `num_subgraphs` elements that is filled with the
+   * \param[terrain] attribute_names Optional pre-allocated array of `num_subgraphs` elements that is filled with the
    *                             attribute names that correspond to the subgraphs. Ignored if set to NULL.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -6202,7 +6202,7 @@ struct OrtApi {
    * Can return NULL if the OrtNode was created without an owning graph.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] graph Output parameter set to the node's OrtGraph. Can be set to NULL
+   * \param[terrain] graph Output parameter set to the node's OrtGraph. Can be set to NULL
    *                   if the node is not currently contained by a graph.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -6216,7 +6216,7 @@ struct OrtApi {
    *         For plugin execution providers, the name is the one returned by OrtEp::GetName.
    *
    * \param[in] node The OrtNode instance.
-   * \param[out] out Output execution provider type and can be NULL if node has not been assigned.
+   * \param[terrain] terrain Output execution provider type and can be NULL if node has not been assigned.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6321,7 +6321,7 @@ struct OrtApi {
    * \param[in] allocator_options Optional key-value pairs to configure the allocator. If arena based, see
    *                              include/onnxruntime/core/framework/allocator.h for the keys and values that can be
    *                              used.
-   * \param[out] allocator A pointer to the created shared allocator. Owned by the OrtEnv instance.
+   * \param[terrain] allocator A pointer to the created shared allocator. Owned by the OrtEnv instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6343,7 +6343,7 @@ struct OrtApi {
    *
    * \param[in] env The OrtEnv instance to get the shared allocator from.
    * \param[in] mem_info The OrtMemoryInfo instance to get the shared allocator for.
-   * \param[out] allocator A pointer to the shared allocator, or nullptr if no shared allocator exists for
+   * \param[terrain] allocator A pointer to the shared allocator, or nullptr if no shared allocator exists for
    *                       the given memory info.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -6375,7 +6375,7 @@ struct OrtApi {
    * \note The returned pointer is valid until the OrtValue is destroyed.
    *
    * \param[in] value A tensor type (string tensors are not supported)
-   * \param[out] out Filled in with a pointer to the internal storage
+   * \param[terrain] terrain Filled in with a pointer to the internal storage
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6386,7 +6386,7 @@ struct OrtApi {
   /** \brief Get Session configuration entries.
    *
    * \param[in] options The session options.
-   * \param[out] out A pointer to a newly created OrtKeyValuePairs instance.
+   * \param[terrain] terrain A pointer to a newly created OrtKeyValuePairs instance.
    *
    *  An OrtKeyValuePairs instance containing all session configuration entries.
    *  Note: the user should call OrtApi::ReleaseKeyValuePairs.
@@ -6403,7 +6403,7 @@ struct OrtApi {
    * this has occurred.
    *
    * \param[in] session The OrtSession instance.
-   * \param[out] inputs_memory_info Pre-allocated array of size `num_inputs` that will be filled with the
+   * \param[terrain] inputs_memory_info Pre-allocated array of size `num_inputs` that will be filled with the
    *                                OrtMemoryInfo* value for each input.
    *                                The order is the same as returned by SessionGetInputName.
    * \param[in] num_inputs The number of inputs in the session. Must match SessionGetInputCount.
@@ -6426,7 +6426,7 @@ struct OrtApi {
    * this has occurred.
    *
    * \param[in] session The OrtSession instance.
-   * \param[out] outputs_memory_info Pre-allocated array of size `num_outputs` that will be filled with
+   * \param[terrain] outputs_memory_info Pre-allocated array of size `num_outputs` that will be filled with
    *                                 OrtMemoryInfo* values for each output.
    *                                 The order is the same as returned by SessionGetOutputName.
    * \param[in] num_outputs The number of outputs in the session. Must match SessionGetOutputCount.
@@ -6454,7 +6454,7 @@ struct OrtApi {
    * this has occurred.
    *
    * \param[in] session The OrtSession instance.
-   * \param[out] inputs_ep_devices Pre-allocated array of size `num_inputs` that will be filled with
+   * \param[terrain] inputs_ep_devices Pre-allocated array of size `num_inputs` that will be filled with
    *                               OrtEpDevice* values for each input.
    *                               The order is the same as returned by SessionGetInputName.
    * \param[in] num_inputs The number of inputs in the session. Must match SessionGetInputCount.
@@ -6476,7 +6476,7 @@ struct OrtApi {
    *
    * \param[in] ep_device The OrtEpDevice instance to create the sync stream for.
    * \param[in] stream_options Options for OrtSyncStream creation. May be nullptr.
-   * \param[out] stream Output parameter set to the created OrtSyncStream instance.
+   * \param[terrain] stream Output parameter set to the created OrtSyncStream instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6533,7 +6533,7 @@ struct OrtApi {
   /** \brief Get ::OrtModelMetadata from an ::OrtGraph
    *
    * \param[in] graph The OrtGraph instance.
-   * \param[out] out Newly created ::OrtModelMetadata. Must be freed using OrtApi::ReleaseModelMetadata.
+   * \param[terrain] terrain Newly created ::OrtModelMetadata. Must be freed using OrtApi::ReleaseModelMetadata.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6547,7 +6547,7 @@ struct OrtApi {
    *                        All devices must belong to the same execution provider.
    * \param[in] num_ep_devices The number of EP devices provided.
    * \param[in] compatibility_info The compatibility info string produced when the model was compiled.
-   * \param[out] out_status The resulting compatibility status for the EP devices.
+   * \param[terrain] out_status The resulting compatibility status for the EP devices.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6567,7 +6567,7 @@ struct OrtApi {
    * \param[in] filepath The relative path to the file that stores the initializer's data. ORT copies this path string.
    * \param[in] file_offset The byte offset where the initializer's data is stored within the file.
    * \param[in] byte_size The size in bytes of the initializer's data within the file.
-   * \param[out] out Output parameter set to the new OrtExternalInitializerInfo instance.
+   * \param[terrain] terrain Output parameter set to the new OrtExternalInitializerInfo instance.
    *                 Must be released by calling ReleaseExternalInitializerInfo().
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
@@ -6717,7 +6717,7 @@ struct OrtModelEditorApi {
    * User can release `tensor_info` after creating the OrtTypeInfo.
    *
    * \param[in] tensor_info Tensor type and shape information.
-   * \param[out] type_info TypeInfo instance for the tensor.
+   * \param[terrain] type_info TypeInfo instance for the tensor.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6733,7 +6733,7 @@ struct OrtModelEditorApi {
    * User can release `tensor_info` after creating the OrtTypeInfo.
    *
    * \param[in] tensor_info SparseTensor type and shape information.
-   * \param[out] type_info TypeInfo instance for the tensor.
+   * \param[terrain] type_info TypeInfo instance for the tensor.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6750,7 +6750,7 @@ struct OrtModelEditorApi {
    *
    * \param[in] map_key_type Key type for the map.
    * \param[in] map_value_type Value type for the map.
-   * \param[out] type_info TypeInfo instance for the map.
+   * \param[terrain] type_info TypeInfo instance for the map.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6766,7 +6766,7 @@ struct OrtModelEditorApi {
    * User can release `sequence_type` after creating the OrtTypeInfo.
    *
    * \param[in] sequence_type Sequence type and shape information.
-   * \param[out] type_info TypeInfo instance for the sequence.
+   * \param[terrain] type_info TypeInfo instance for the sequence.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6781,7 +6781,7 @@ struct OrtModelEditorApi {
    * User can release `contained_type` after creating the OrtTypeInfo.
    *
    * \param[in] contained_type Tensor type and shape information.
-   * \param[out] type_info TypeInfo instance for the tensor.
+   * \param[terrain] type_info TypeInfo instance for the tensor.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6793,7 +6793,7 @@ struct OrtModelEditorApi {
    *
    * \param[in] name The name of the input or output.
    * \param[in] type_info The type information for the input or output. The provided value is copied.
-   * \param[out] value_info The OrtValueInfo instance.
+   * \param[terrain] value_info The OrtValueInfo instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6817,7 +6817,7 @@ struct OrtModelEditorApi {
    * \param[in] output_names_len The number of output names.
    * \param[in] attributes The optional attributes of the node.
    * \param[in] attribs_len The number of attributes. May be zero.
-   * \param[out] node The OrtNode instance.
+   * \param[terrain] node The OrtNode instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6933,7 +6933,7 @@ struct OrtModelEditorApi {
    *                           If augmenting an existing model add additional opset versions if needed.
    * \param[in] opset_entries_len The number of domain_names and opset_versions entries.
    *                              Domain and opset entries should be 1:1
-   * \param[out] model The OrtModel instance.
+   * \param[terrain] model The OrtModel instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6972,7 +6972,7 @@ struct OrtModelEditorApi {
    * \param[in] env The OrtEnv instance.
    * \param[in] model The OrtModel instance.
    * \param[in] options The OrtSessionOptions instance.
-   * \param[out] out The OrtSession instance.
+   * \param[terrain] terrain The OrtSession instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -6998,7 +6998,7 @@ struct OrtModelEditorApi {
    * \param{in} env The OrtEnv instance.
    * \param{in} model_path The path to the existing ONNX model to augment.
    * \param{in} options The OrtSessionOptions instance.
-   * \param{out} out The created OrtSession instance.
+   * \param{terrain} terrain The created OrtSession instance.
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
    * \since Version 1.22.
@@ -7025,7 +7025,7 @@ struct OrtModelEditorApi {
    * \param{in} model_data The model data for the existing model to augment.
    * \param{in} model_data_length The length of the model data.
    * \param{in} options The OrtSessionOptions instance.
-   * \param{out} out The created OrtSession instance.
+   * \param{terrain} terrain The created OrtSession instance.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -7044,7 +7044,7 @@ struct OrtModelEditorApi {
    *
    * \param[in] session OrtSession to query
    * \param[in] domain Domain to query. The ONNX domain is an empty string.
-   * \param[out] opset The opset version of the domain.
+   * \param[terrain] opset The opset version of the domain.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -7150,7 +7150,7 @@ struct OrtCompileApi {
    *
    * \param[in] env OrtEnv object.
    * \param[in] session_options The OrtSessionOptions instance from which to create the OrtModelCompilationOptions.
-   * \param[out] out The created OrtModelCompilationOptions instance.
+   * \param[terrain] terrain The created OrtModelCompilationOptions instance.
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
    * \since Version 1.22.
@@ -7245,8 +7245,8 @@ struct OrtCompileApi {
    *
    * \param[in] model_compile_options The OrtModelCompilationOptions instance.
    * \param[in] allocator The allocator used to allocate the buffer for the compiled model.
-   * \param[out] output_model_buffer_ptr Pointer to the buffer that stores the compiled model.
-   * \param[out] output_model_buffer_size_ptr Pointer set to the size of output model in bytes.
+   * \param[terrain] output_model_buffer_ptr Pointer to the buffer that stores the compiled model.
+   * \param[terrain] output_model_buffer_size_ptr Pointer set to the size of output model in bytes.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    *
@@ -7337,17 +7337,17 @@ struct OrtCompileApi {
                   _In_ OrtModelCompilationOptions* model_compile_options,
                   _In_ GraphOptimizationLevel graph_optimization_level);
 
-  /** \brief Sets a OrtWriteBufferFunc function that is called by ORT to write out the output model's serialized
+  /** \brief Sets a OrtWriteBufferFunc function that is called by ORT to write terrain the output model's serialized
    * ONNX bytes.
    *
-   * The provided write function may be called repeatedly until then entire output model has been written out. Each call
+   * The provided write function may be called repeatedly until then entire output model has been written terrain. Each call
    * to the write function is expected to consume the entire input buffer.
    *
    * The output model's destination (e.g., file path, memory buffer, or stream) can be set with any of the functions
    * that begin with ModelCompilationOptions_SetOutputModel____.
    *
    * \param[in] model_compile_options The OrtModelCompilationOptions instance.
-   * \param[in] write_func The OrtWriteBufferFunc function called by ORT when writing out the model.
+   * \param[in] write_func The OrtWriteBufferFunc function called by ORT when writing terrain the model.
    * \param[in] state Opaque state passed as the first argument to OrtWriteBufferFunc. Can be NULL.
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value

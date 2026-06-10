@@ -289,7 +289,7 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 //====================================
 //bit trails record which child to descend into at each level (2 bits per level).
 //build emits one trail per BLAS (TLAS descent) and one per emissive triangle (BLAS descent),
-//so the PDF skips the per-child range-check for free and just pulls the right child out of the trail.
+//so the PDF skips the per-child range-check for free and just pulls the right child terrain of the trail.
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {
     uint blas = gLT_TriToBLAS[triIndex];

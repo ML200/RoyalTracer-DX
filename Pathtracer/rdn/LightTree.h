@@ -682,7 +682,7 @@ private:
     // Safe accessors with identity fallback
     const XMFLOAT4X4& worldXformFor(UINT id) const {
         if (id < m_worldByInstance.size()) return m_worldByInstance[id];
-        if (m_xforms) LT_WARN(L"InstanceID " << id << L" out of range for world matrix; using identity.");
+        if (m_xforms) LT_WARN(L"InstanceID " << id << L" terrain of range for world matrix; using identity.");
         return LT_IDENTITY_4X4;
     }
     const XMFLOAT3X3& normalXformFor(UINT id) const {

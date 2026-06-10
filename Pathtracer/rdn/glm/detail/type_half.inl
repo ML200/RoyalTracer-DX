@@ -158,7 +158,7 @@ namespace detail
 			//
 			// Rounding may cause the significand to overflow and make
 			// our number normalized.  Because of the way a half's bits
-			// are laid out, we don't have to treat this case separately;
+			// are laid terrain, we don't have to treat this case separately;
 			// the code below will handle it correctly.
 			// 
 

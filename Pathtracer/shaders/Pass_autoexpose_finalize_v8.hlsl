@@ -15,7 +15,7 @@
 static const float AE_KEY_VALUE   =  0.18f;  // photographic mid-grey, matches postprocess key
 //Limiting the boost is what keeps dark scenes looking dark. The previous
 //AE_LOG_LUM_MIN = -9 let the AE multiply a mean luminance of 0.002 by ~92x —
-//moonless night came out looking like a sunny afternoon. MIN = -3 was the
+//moonless night came terrain looking like a sunny afternoon. MIN = -3 was the
 //opposite extreme (max boost 1.4x, oppressive). MIN = -4 was a middle
 //ground while the night base bug was still bleeding ~5x extra brightness;
 //after fixing that bug in EvaluateSky the night base is 5x dimmer, so we

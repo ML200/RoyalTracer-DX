@@ -126,6 +126,35 @@ Texture3D<float4> g_cloudNoise : register(t42);
 //smooth gradients (no blocky pixel boundaries).
 Texture2D<float> g_cloudCoverage : register(t43);
 
+//PLANET: baked surface elevation cubemap. 6 layers, one per cube face,
+//R32F, values in KILOMETRES. Sampled via equiangular cubed-sphere
+//projection (see TerrainHeight below); face order matches the baker
+//(+X, -X, +Y, -Y, +Z, -Z). Uploaded once by
+//Renderer::InitTerrainHeightmapTexture from the planet::HeightmapCubemap
+//CPU mirror. Declared up here (rather than near g_terrainTable at t44)
+//so it's visible to TerrainHeight() lower down - HLSL is single-pass.
+Texture2DArray<float> g_terrainHeightmap : register(t45);
+
+//PLANET: baker v8 companion layers. All 6-face Texture2DArrays, equiangular
+//cubed-sphere projection identical to the heightmap so a single
+//SphereToEquiangularFaceUV() lookup feeds all four samples.
+//
+//  surface_color (t46): Mars-style RGB tint baked by SurfaceColorPass.
+//    Alpha channel forced to 1.0 by the baker; a 0 alpha indicates a null
+//    SRV (the bake didn't produce the layer) so the shader should fall
+//    back to the legacy TERRAIN_ALBEDO constant.
+//  normal (t47): tangent-space normal map (-gx, -gy, +1 normalised, packed
+//    [-1,1] -> [0,1]). Alpha = 1.0 sentinel as above. Same resolution as
+//    the heightmap so a sample picks up bake-resolution gradient detail
+//    finer than the runtime central-difference eps would resolve.
+//  cloud_offset (t48): block-averaged surface elevation in KILOMETRES,
+//    much smaller (typically 256^2 per face). Used by Clouds_v8.hlsli to
+//    shift the cloud layer with general terrain so sharp peaks poke through
+//    clouds while gentle plateaus do not.
+Texture2DArray<float4> g_terrainSurfaceColor : register(t46);
+Texture2DArray<float4> g_terrainNormalMap    : register(t47);
+Texture2DArray<float>  g_terrainCloudOffset  : register(t48);
+
 //====================================
 //CAMERA
 //====================================
@@ -284,6 +313,10 @@ cbuffer CameraParams : register(b0)
     //scalar floats, matching the Camera::UploadGPUBuffer tail exactly (scalar
     //packing avoids the float3 16-byte-straddle padding the compiler would
     //otherwise insert and which the C++ side does not write).
+    //planetCenter/Radius are read by the cloud + atmosphere code (TerrainHeight,
+    //planet sphere intersection). amplitude/frequency are vestigial (the terrain
+    //is now a baked heightmap + real mesh), kept as zero to preserve the tail
+    //layout that Camera::UploadGPUBuffer writes.
     float planetCenterX;
     float planetCenterY;
     float planetCenterZ;
@@ -414,11 +447,82 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_EMPTY_STEP_GROWTH_PER_KM cloud_emptyStepGrowthPerKm
 #define CLOUD_MAX_FINE_STEP_KM       cloud_maxFineStepKm
 
+//PLANET: equiangular cubed-sphere lookup. Used by every per-direction
+//terrain sample (heightmap, surface_color, normal, cloud_offset). Mirror
+//of tools/planetbaker/src/core/cubed_sphere.h::sphere_to_face_uv so the
+//baker's pixel layout lines up with this lookup texel-for-texel.
+inline void SphereToEquiangularFaceUV(float3 dir, out int face, out float2 uv)
+{
+    float3 a = abs(dir);
+    float  ut, vt;
+    if (a.x >= a.y && a.x >= a.z) {
+        if (dir.x > 0.0f) { face = 0; ut = -dir.z / a.x; vt = -dir.y / a.x; }
+        else              { face = 1; ut =  dir.z / a.x; vt = -dir.y / a.x; }
+    } else if (a.y >= a.x && a.y >= a.z) {
+        if (dir.y > 0.0f) { face = 2; ut =  dir.x / a.y; vt =  dir.z / a.y; }
+        else              { face = 3; ut =  dir.x / a.y; vt = -dir.z / a.y; }
+    } else {
+        if (dir.z > 0.0f) { face = 4; ut =  dir.x / a.z; vt = -dir.y / a.z; }
+        else              { face = 5; ut = -dir.x / a.z; vt = -dir.y / a.z; }
+    }
+    //Equiangular: u,v = atan(*) * 4/PI in [-1, +1]. Tangent-warped
+    //cube projection -> face-local equal-area cells (the baker's pixel
+    //layout; a linear cube projection would mis-align).
+    const float kInv = 4.0f / 3.14159265358979f;
+    uv = float2(atan(ut), atan(vt)) * kInv * 0.5f + 0.5f;
+}
+
+//PLANET: surface elevation (metres) along a unit direction. Samples the
+//baker cubemap via equiangular cubed-sphere projection.
+//Used by Inline_RT_v8.hlsli (normal finite-difference + ReSTIR reconnect),
+//Clouds_v8.hlsli (terrain shadow occluder), SunSampler_v8.hlsli (terrain
+//shadow at closest approach). Adding to planetRadius gives the surface
+//point along `dir`.
 inline float TerrainHeight(float3 dir)
 {
-    return sin(dir.x * terrainHeightFrequency)
-         * cos(dir.z * terrainHeightFrequency)
-         * terrainHeightAmplitude;
+    int    face;
+    float2 uv;
+    SphereToEquiangularFaceUV(dir, face, uv);
+    //Bilinear + clamp via g_sampler_LUT (s1). Explicit LOD 0 - the texture
+    //is mip-0 only. .r is the elevation in KILOMETRES; convert to m so
+    //the cbuffer math stays in metres.
+    float km = g_terrainHeightmap.SampleLevel(g_sampler_LUT, float3(uv, (float)face), 0.0f);
+    return km * 1000.0f;
+}
+
+//PLANET: smoothed surface elevation (metres) used as the local cloud-base
+//reference. Same projection as TerrainHeight but reads the much smaller
+//cloud_offset cubemap (typically 256^2 per face) so individual mountain
+//peaks don't perturb the cloud base. Clouds_v8.hlsli adds this to
+//CLOUD_LAYER_BOT_KM to get the per-direction cloud bottom altitude.
+inline float TerrainCloudBaseHeight(float3 dir)
+{
+    int    face;
+    float2 uv;
+    SphereToEquiangularFaceUV(dir, face, uv);
+    float km = g_terrainCloudOffset.SampleLevel(g_sampler_LUT,
+                                                 float3(uv, (float)face), 0.0f);
+    return km * 1000.0f;
+}
+
+//PLANET: per-vertex-UV terrain tint. `faceMarker` is InstanceProperties._pad[0]
+//(0 = scene mesh, 1..6 = terrain on cube face 0..5). `uv` is the equiangular
+//face UV baked into the terrain vertices by the tessellator, already
+//barycentric-interpolated by EvalSurfaceState - so this is just an array
+//sample, no atan. Returns false (leaving Kd untouched) for scene meshes and
+//when the surface_color layer is absent: a null SRV samples 0, and the baker
+//forces alpha = 1 on real texels, so alpha <= 0 is the "fall back to the flat
+//TERRAIN_ALBEDO material" sentinel.
+inline bool TerrainTintFromUV(float2 uv, uint faceMarker, out float3 kd)
+{
+    kd = float3(0.0f, 0.0f, 0.0f);
+    if (faceMarker == 0u) return false;
+    const float face = (float)(faceMarker - 1u);
+    const float4 c = g_terrainSurfaceColor.SampleLevel(g_sampler_LUT,
+                                                       float3(uv, face), 0.0f);
+    if (c.a <= 0.0f) return false;
+    kd = c.rgb;
+    return true;
 }
 
 //====================================
@@ -484,12 +588,9 @@ StructuredBuffer<MatPacked>          g_mat               : register(t5);
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-//PLANET: terrain instance table - one uint3 per BLAS slot, indexed by
-//(terrain instID - TERRAIN_INSTANCE_BASE). .x/.y = the 64-bit packed quadtree
-//node_id of the chunk in that slot (lo = face|lod|x[24], hi = y[24]; all-ones
-//if empty); .z = 1 if that chunk changed since last frame. Refilled every
-//frame by the planet StreamOrchestrator.
-StructuredBuffer<uint3>              g_terrainTable      : register(t44);
+//(g_terrainHeightmap at t45 is declared earlier, with the other SRVs, so
+// the TerrainHeight() function - used by the cloud/atmosphere code - can see
+// it. HLSL is single-pass.)
 
 //====================================
 //LIGHT TREE
@@ -519,6 +620,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 //====================================
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
+#include "procedural_terrain_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Reservoir_v8.hlsli"
 #include "Path_State_v8.hlsli"

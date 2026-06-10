@@ -127,29 +127,20 @@ inline bool TraceCameraRay(
         return false;
     }
 
-    // PLANET_INTEGRATION: surface shading is resolved HERE from instID + primID
-    // (Hit_v8.hlsl's closest-hit is an unused stub). The terrain material branch,
-    // keyed on instID range, belongs in this block. See rdn/planet/INTEGRATION_NOTES.md.
+    // Surface shading is resolved HERE from instID + primID (Hit_v8.hlsl's
+    // closest-hit is an unused stub). Scene meshes AND planet terrain cells
+    // shade through the one EvalSurfaceState path - terrain has real
+    // instanceProps + vertex/index data in the unified buffers.
     //----- HIT: extract surface state -----
     const float  hitT   = hitObj.GetRayTCurrent();
     const float3 hitPos = rayOrigin + rayDir * hitT;
-    // PLANET_INTEGRATION: GetInstanceID() (the user InstanceID), not the TLAS
-    // array index - terrain instances carry InstanceID >= TERRAIN_INSTANCE_BASE,
-    // scene instances carry their scene index (== array index).
-    const uint   instID = hitObj.GetInstanceID();
+    const uint   instID = hitObj.GetInstanceID();   // user InstanceID == instanceProps index
     const uint    primID   = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
     const uint    matID    = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
     const float2  hitBary  = attr.barycentrics;
-    // PLANET: terrain shades from the LIVE ray hit position (precise, camera-
-    // relative). Re-deriving it from planetCentre + radius is an FP32
-    // big-minus-big - EvalTerrainSurfaceFromHit takes the hit as-is.
-    HitInfo hinfo;
-    if (IsTerrainInstance(instID))
-        hinfo = EvalTerrainSurfaceFromHit(hitPos, rayOrigin);
-    else
-        hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
+    HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
     const float3  emission = GetEmissionFast(instID, primID);
 
     const float  matNi        = LoadNi(matID);
@@ -160,6 +151,14 @@ inline bool TraceCameraRay(
 
     float3 hitLocalKd; float hitLocalPr, hitLocalPm;
     RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, 0u);
+
+    //PLANET: override the flat terrain albedo with the baked surface_color tint
+    //sampled through the vertex face-UVs. No-op for scene meshes (_pad[0] == 0).
+    {
+        float3 terrainKd;
+        if (TerrainTintFromUV(hinfo.uv, instanceProps[instID]._pad[0], terrainKd))
+            hitLocalKd = terrainKd;
+    }
 
     const float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
         ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
@@ -284,7 +283,7 @@ inline float3 DirectContribution(float wi, float3 F_contrib)
 
 
 //one reservoir: emissive-tri DI (d==1) + first-bounce DI (d==2) + GI (d>=3)
-//share it. d==1 direct sky + sun are split out to scratch slot 3. cold state
+//share it. d==1 direct sky + sun are split terrain to scratch slot 3. cold state
 //stashed in g_pathStateBuffer
 [shader("raygeneration")]
 void Pass_raygen_v8()
@@ -306,7 +305,7 @@ void Pass_raygen_v8()
 
     //==================== NRC TEMPORARILY DISABLED ======================
     //NRC is off during planet bring-up: the cuda:nrc_* / Pass_nrc_* passes
-    //are commented out in Renderer.cpp and the NRC editor panel is disabled.
+    //are commented terrain in Renderer.cpp and the NRC editor panel is disabled.
     //Forcing RENDER class keeps nrcPathId == NRC_INVALID_PATH, so every NRC
     //training / path-record write below self-gates to a no-op. The NRC code
     //that follows is intentionally left in place - DO NOT REMOVE IT. Re-enable
@@ -660,7 +659,7 @@ void Pass_raygen_v8()
                             if (depth == 1)
                             {
                                 //primary direct sun - summed to directAtX1
-                                //(scratch slot 3), kept out of the reservoir
+                                //(scratch slot 3), kept terrain of the reservoir
                                 directAtX1 += DirectContribution(wi, F_contrib);
                             }
                             else if (depth == 2)
@@ -818,7 +817,7 @@ void Pass_raygen_v8()
             const float  wi        = (pdf_product > 1e-20f) ? (p_hat / pdf_product) : 0.0f;
 
             //depth==1: this BSDF ray left x1, so the miss is x1's direct sky
-            //- summed to directAtX1 (scratch slot 3), kept out of the
+            //- summed to directAtX1 (scratch slot 3), kept terrain of the
             //reservoir. depth>=2 uses the stored v_2 vertex (ps.x2 / ps.v2)
             //as the reservoir candidate.
             if (depth == 1)
@@ -849,12 +848,7 @@ void Pass_raygen_v8()
         const uint    matID_n  = GetMatIDFast(instID_n, primID_n);
         BuiltInTriangleIntersectionAttributes attrB;
         hitObjB.GetAttributes(attrB);
-        // PLANET: terrain bounce hit shades from the live hit position too.
-        HitInfo hinfo_n;
-        if (IsTerrainInstance(instID_n))
-            hinfo_n = EvalTerrainSurfaceFromHit(hitPos_n, rayOrigin);
-        else
-            hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOrigin, (uint)depth);
+        HitInfo hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOrigin, (uint)depth);
 
         const float  matNi_n        = LoadNi(matID_n);
         const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
@@ -864,6 +858,13 @@ void Pass_raygen_v8()
 
         float3 hitLocalKd_n; float hitLocalPr_n, hitLocalPm_n;
         RefetchMaterial(matID_n, hinfo_n.uv, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n, (uint)depth);
+
+        //PLANET: terrain tint on bounce hits (matches the primary-hit override).
+        {
+            float3 terrainKd;
+            if (TerrainTintFromUV(hinfo_n.uv, instanceProps[instID_n]._pad[0], terrainKd))
+                hitLocalKd_n = terrainKd;
+        }
 
         const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID)
             ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)

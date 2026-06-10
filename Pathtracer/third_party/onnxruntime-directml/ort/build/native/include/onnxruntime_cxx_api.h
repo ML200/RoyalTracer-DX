@@ -605,7 +605,7 @@ struct Unowned {
  *  a) serve as containers for pointers to objects that are created by the underlying C API.
  *     Their size is just a pointer size, no need to dynamically allocate them. Use them by value.
  *  b) Each of struct XXXX, XXX instances function as smart pointers to the underlying C API objects.
- *     they would release objects owned automatically when going out of scope, they are move-only.
+ *     they would release objects owned automatically when going terrain of scope, they are move-only.
  *  c) ConstXXXX and UnownedXXX structs function as non-owning, copyable containers for the above pointers.
  *     ConstXXXX allow calling const interfaces only. They give access to objects that are owned by somebody else
  *     such as Onnxruntime or instances of XXXX classes.
@@ -732,9 +732,9 @@ struct Status : detail::Base<OrtStatus> {
   Status() = default;                              // Same as with std::nullptr_t. But can be used in re-sizable containers and represent success.
   explicit Status(std::nullptr_t) noexcept {}      ///< Create an empty object, must be assigned a valid one to be used
   explicit Status(OrtStatus* status) noexcept;     ///< Takes ownership of OrtStatus instance returned from the C API.
-  explicit Status(const Exception&);               ///< Creates status instance out of exception
-  explicit Status(const std::exception&);          ///< Creates status instance out of exception
-  Status(const char* message, OrtErrorCode code);  ///< Creates status instance out of null-terminated string message.
+  explicit Status(const Exception&);               ///< Creates status instance terrain of exception
+  explicit Status(const std::exception&);          ///< Creates status instance terrain of exception
+  Status(const char* message, OrtErrorCode code);  ///< Creates status instance terrain of null-terminated string message.
   std::string GetErrorMessage() const;
   OrtErrorCode GetErrorCode() const;
   bool IsOK() const noexcept;  ///< Returns true if instance represents an OK (non-error) status.
@@ -859,7 +859,7 @@ struct ExternalInitializerInfo : detail::ConstExternalInitializerInfoImpl<OrtExt
 
   ///< Wrapper around CreateExternalInitializerInfo that does not throw an exception.
   static Status Create(const ORTCHAR_T* filepath, int64_t file_offset, size_t byte_size,
-                       /*out*/ ExternalInitializerInfo& out);
+                       /*terrain*/ ExternalInitializerInfo& out);
 };
 
 namespace detail {
@@ -1440,7 +1440,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a copy of the producer name.
    *
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetProducerNameAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetProducerName
@@ -1448,7 +1448,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a copy of the graph name.
    *
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetGraphNameAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetGraphName
@@ -1456,7 +1456,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a copy of the domain name.
    *
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetDomainAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetDomain
@@ -1464,7 +1464,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a copy of the description.
    *
    * \param allocator to allocate memory for the copy of the string returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetDescriptionAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetDescription
@@ -1472,7 +1472,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a copy of the graph description.
    *
    * \param allocator to allocate memory for the copy of the string returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetGraphDescriptionAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetGraphDescription
@@ -1480,7 +1480,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
   /** \brief Returns a vector of copies of the custom metadata keys.
    *
    * \param allocator to allocate memory for the copy of the string returned
-   * \return a instance std::vector of smart pointers that would deallocate the buffers when out of scope.
+   * \return a instance std::vector of smart pointers that would deallocate the buffers when terrain of scope.
    *  The OrtAllocator instance must be valid at the point of memory release.
    */
   std::vector<AllocatedStringPtr> GetCustomMetadataMapKeysAllocated(OrtAllocator* allocator) const;  ///< Wraps OrtApi::ModelMetadataGetCustomMetadataMapKeys
@@ -1489,7 +1489,7 @@ struct ModelMetadata : detail::Base<OrtModelMetadata> {
    *
    * \param key zero terminated string key to lookup
    * \param allocator to allocate memory for the copy of the string returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  maybe nullptr if key is not found.
    *
    *  The OrtAllocator instances must be valid at the point of memory release.
@@ -1526,7 +1526,7 @@ struct ConstSessionImpl : Base<T> {
    *
    * \param index must less than the value returned by GetInputCount()
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetInputNameAllocated(size_t index, OrtAllocator* allocator) const;
@@ -1535,7 +1535,7 @@ struct ConstSessionImpl : Base<T> {
    *
    * \param index must less than the value returned by GetOutputCount()
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetOutputNameAllocated(size_t index, OrtAllocator* allocator) const;
@@ -1544,7 +1544,7 @@ struct ConstSessionImpl : Base<T> {
    *
    * \param index must less than the value returned by GetOverridableInitializerCount()
    * \param allocator to allocate memory for the copy of the name returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr GetOverridableInitializerNameAllocated(size_t index, OrtAllocator* allocator) const;  ///< Wraps OrtApi::SessionGetOverridableInitializerName
@@ -1605,7 +1605,7 @@ struct SessionImpl : ConstSessionImpl<T> {
    * \param[in] input_values Array of Value objects of length input_count
    * \param[in] input_count Number of elements in the input_names and inputs arrays
    * \param[in] output_names Array of null terminated UTF8 encoded strings of the output names
-   * \param[out] output_values Array of provided Values to be filled with outputs.
+   * \param[terrain] output_values Array of provided Values to be filled with outputs.
    *             On calling RunAsync, output_values[i] could either be initialized by a null pointer or a preallocated OrtValue*.
    *             Later, on invoking the callback, each output_values[i] of null will be filled with an OrtValue* allocated by onnxruntime.
    *             Then, an OrtValue** pointer will be casted from output_values, and pass to the callback.
@@ -1621,7 +1621,7 @@ struct SessionImpl : ConstSessionImpl<T> {
   /** \brief End profiling and return a copy of the profiling file name.
    *
    * \param allocator to allocate memory for the copy of the string returned
-   * \return a instance of smart pointer that would deallocate the buffer when out of scope.
+   * \return a instance of smart pointer that would deallocate the buffer when terrain of scope.
    *  The OrtAllocator instances must be valid at the point of memory release.
    */
   AllocatedStringPtr EndProfilingAllocated(OrtAllocator* allocator);  ///< Wraps OrtApi::SessionEndProfiling
@@ -1892,7 +1892,7 @@ struct ConstValueImpl : Base<T> {
 
   /// <summary>
   /// The API copies all of the UTF-8 encoded string data contained within a tensor or a sparse tensor
-  /// into a supplied buffer. Use GetStringTensorDataLength() to find out the length of the buffer to allocate.
+  /// into a supplied buffer. Use GetStringTensorDataLength() to find terrain the length of the buffer to allocate.
   /// The user must also allocate offsets buffer with the number of entries equal to that of the contained
   /// strings.
   ///
@@ -2350,7 +2350,7 @@ struct Value : detail::ValueImpl<OrtValue> {
 
 namespace detail {
 namespace binding_utils {
-// Bring these out of template
+// Bring these terrain of template
 std::vector<std::string> GetOutputNamesHelper(const OrtIoBinding* binding, OrtAllocator*);
 std::vector<Value> GetOutputValuesHelper(const OrtIoBinding* binding, OrtAllocator*);
 }  // namespace binding_utils

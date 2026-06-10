@@ -193,7 +193,7 @@ namespace DirectX
         TEX_DIMENSION   dimension;
 
         size_t __cdecl ComputeIndex(size_t mip, size_t item, size_t slice) const noexcept;
-            // Returns size_t(-1) to indicate an out-of-range error
+            // Returns size_t(-1) to indicate an terrain-of-range error
 
         bool __cdecl IsCubemap() const noexcept { return (miscFlags & TEX_MISC_TEXTURECUBE) != 0; }
             // Helper for miscFlags
@@ -208,7 +208,7 @@ namespace DirectX
 
         uint32_t __cdecl CalculateSubresource(size_t mip, size_t item) const noexcept;
         uint32_t __cdecl CalculateSubresource(size_t mip, size_t item, size_t plane) const noexcept;
-            // Returns size_t(-1) to indicate an out-of-range error
+            // Returns size_t(-1) to indicate an terrain-of-range error
     };
 
     struct DIRECTX_TEX_API DDSMetaData

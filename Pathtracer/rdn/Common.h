@@ -73,14 +73,23 @@ static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //coverage 2D SRV at heap 66 (register t43, NASA Blue Marble equirect map),
 //spatiotemporal blue noise array SRV at heap 67 (register t41, baked once by
 //BakeCloudSTBNTexture), planet terrain instance table SRV at heap 68 (register
-//t44, refilled per frame by the planet StreamOrchestrator). Bindless starts at 69.
-static constexpr UINT  AUTOEXPOSE_HEAP_SLOT     = 63;
-static constexpr UINT  SKY_STARS_HEAP_SLOT      = 64;
-static constexpr UINT  CLOUD_NOISE_HEAP_SLOT    = 65;
-static constexpr UINT  CLOUD_COVERAGE_HEAP_SLOT = 66;
-static constexpr UINT  CLOUD_STBN_HEAP_SLOT     = 67;
-static constexpr UINT  TERRAIN_TABLE_HEAP_SLOT  = 68;
-static constexpr UINT  BINDLESS_HEAP_START      = 69;
+//t44, refilled per frame by the planet StreamOrchestrator), planet terrain
+//heightmap cubemap (Texture2DArray<R32F>, 6 layers) at heap 69 (register t45,
+//uploaded once from the bake at startup). Surface_color (Texture2DArray<RGBA8>,
+//t46) at heap 70, normal map (Texture2DArray<RGBA8>, t47) at heap 71, and
+//cloud_offset (Texture2DArray<R32F>, 256x256, t48) at heap 72 - all loaded
+//once from the bake. Bindless starts at 73.
+static constexpr UINT  AUTOEXPOSE_HEAP_SLOT             = 63;
+static constexpr UINT  SKY_STARS_HEAP_SLOT              = 64;
+static constexpr UINT  CLOUD_NOISE_HEAP_SLOT            = 65;
+static constexpr UINT  CLOUD_COVERAGE_HEAP_SLOT         = 66;
+static constexpr UINT  CLOUD_STBN_HEAP_SLOT             = 67;
+static constexpr UINT  TERRAIN_TABLE_HEAP_SLOT          = 68;
+static constexpr UINT  TERRAIN_HEIGHTMAP_HEAP_SLOT      = 69;
+static constexpr UINT  TERRAIN_SURFACE_COLOR_HEAP_SLOT  = 70;
+static constexpr UINT  TERRAIN_NORMAL_HEAP_SLOT         = 71;
+static constexpr UINT  TERRAIN_CLOUD_OFFSET_HEAP_SLOT   = 72;
+static constexpr UINT  BINDLESS_HEAP_START              = 73;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -278,7 +287,7 @@ struct SunSettings {
 //knobs only take effect once the host has uploaded a non-zero buffer, so
 //the visual baseline is identical to the pre-editor state.
 struct CloudSettings {
-    //master toggle: 0 = clouds OFF (early-out, cheap), 1 = clouds ON.
+    //master toggle: 0 = clouds OFF (early-terrain, cheap), 1 = clouds ON.
     //ENABLE_CLOUDS at compile time still wins over this (kill switch).
     float enabled            = 1.0f;
     //coverage controls how much of the sky is filled with cumulus. 0
@@ -335,7 +344,7 @@ struct CloudSettings {
     //wind drift in km/s (horizontal only). Animates noise via walltime.
     float windX              = -0.026f;
     float windZ              = -0.037f;
-    //view-transmittance cutoff for early-out — below this the cumulative
+    //view-transmittance cutoff for early-terrain — below this the cumulative
     //radiance contribution is below the sensor noise floor.
     float trEps              = 0.005f;
 
@@ -471,7 +480,7 @@ struct CloudSettings {
     //Global multiplier on the secondary multi scatter contribution.
     //4.0 is the Nubis Evolved baseline; 0 disables MS and clouds collapse
     //to pure single scatter (very dark cores).
-    float msStrength         = 4.05f;
+    float msStrength         = 4.00f;
     //Minimum MS amplitude floor at cloud base (h=0). Without this real
     //cumulus bases read as black; 0.18 keeps them "shaded white".
     float msHeightFloor      = 0.18f;
@@ -497,16 +506,16 @@ struct CloudSettings {
     //ambientAOScale scales how much the column density above a sample
     //occludes the sky probe. ambientODMax caps the resulting optical
     //depth so dense overcast columns still shut the sky term down.
-    float ambientIntensity   = 0.85f;
-    float ambientAOScale     = 0.35f;
-    float ambientODMax       = 8.0f;
+    float ambientIntensity   = 1.0f;
+    float ambientAOScale     = 1.0f;
+    float ambientODMax       = 2.0f;
 
     //====================================
     // sun shadow march
     //====================================
     //Multiplier on the optical depth accumulated along the sun shadow
     //ray. >1 deepens self shadows, <1 brightens them. 1.0 = physical.
-    float sunTauMult         = 2.01f;
+    float sunTauMult         = 2.00f;
 
     //====================================
     // distance LOD blend (noise quality fall off)
@@ -514,8 +523,8 @@ struct CloudSettings {
     //Distance band over which cloud noise tapers from full quality
     //(<lodNearKm) to simplified (>lodFarKm). Larger band = smoother
     //quality transition, smaller = sharper LOD step.
-    float lodNearKm          = 2.0f;
-    float lodFarKm           = 30.0f;
+    float lodNearKm          = 20.0f;
+    float lodFarKm           = 300.0f;
 
     //====================================
     // adaptive march step bounds

@@ -54,7 +54,7 @@
 /* #define TINYGLTF3_ENABLE_STB_IMAGE */
 /* #define TINYGLTF3_ENABLE_STB_IMAGE_WRITE */
 
-/* Opt-out */
+/* Opt-terrain */
 /* #define TINYGLTF3_NO_IMAGE_DECODE */
 
 /* C++20 coroutines (auto-detected, or force) */
@@ -1759,7 +1759,7 @@ static int tg3__parse_int(tg3__parse_ctx *ctx, const tg3__json &o,
         if (v < (int64_t)INT32_MIN || v > (int64_t)INT32_MAX) {
             tg3__error_pushf(ctx->errors, ctx->arena, TG3_SEVERITY_ERROR,
                              TG3_ERR_JSON_TYPE_MISMATCH, parent,
-                             "Field '%s' value %" PRId64 " is out of range for int32", key, v);
+                             "Field '%s' value %" PRId64 " is terrain of range for int32", key, v);
             return 0;
         }
         *out = (int32_t)v;
@@ -1768,7 +1768,7 @@ static int tg3__parse_int(tg3__parse_ctx *ctx, const tg3__json &o,
         if (d < (double)INT32_MIN || d > (double)INT32_MAX) {
             tg3__error_pushf(ctx->errors, ctx->arena, TG3_SEVERITY_ERROR,
                              TG3_ERR_JSON_TYPE_MISMATCH, parent,
-                             "Field '%s' value %f is out of range for int32", key, d);
+                             "Field '%s' value %f is terrain of range for int32", key, d);
             return 0;
         }
         *out = (int32_t)d;
