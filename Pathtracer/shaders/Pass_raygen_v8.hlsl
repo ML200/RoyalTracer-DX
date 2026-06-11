@@ -651,10 +651,16 @@ void Pass_raygen_v8()
                     //relative altitude before calling.
                     if (cloud_cloudShadowOnSurfaces > 0.5f)
                     {
+                        //Cone jitter (direction) + altitude-slice jitter
+                        //(which layer slice the fast-path tap samples) —
+                        //together they estimate the true column OD; the
+                        //fixed mid-slice under-read thick clouds and let
+                        //surfaces stay sunlit beneath them.
                         float2 rCone = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                         float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
                         float3 Lj = SampleConeAroundDir(sun.direction, cosCone, rCone);
-                        float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj);
+                        float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj,
+                                                        RandomFloatSingle(seed));
                         sun.radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
                     }
 

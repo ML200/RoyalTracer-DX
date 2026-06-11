@@ -149,8 +149,10 @@
 #define ATMOS_SOLAR_IRRADIANCE  float3(1.0f, 1.0f, 1.0f)
 #endif
 
+// 1.0 = physical now that the Psi_ms LUT supplies real multiple scattering
+// (the old 1.1 was the flat stand-in). Boost applies to single scatter only.
 #ifndef ATMOS_MULTI_SCATTER_FACTOR
-#define ATMOS_MULTI_SCATTER_FACTOR  1.1f
+#define ATMOS_MULTI_SCATTER_FACTOR  1.0f
 #endif
 
 #ifndef SKY_INTENSITY
@@ -228,6 +230,19 @@ static const float SKY_OBSERVER_MIN_RADIUS = ATMOS_BOTTOM_RADIUS + 0.0002f;
 // the top; default = surface tangent point for callers that skip the set.
 static float3 g_skyObserverPlanet = float3(0.0f, SKY_OBSERVER_MIN_RADIUS, 0.0f);
 
+//Set by SetSkyObserver when the observer sits below the analytic planet
+//surface by more than this tolerance. Sky evaluators and the unified
+//march early-out to BLACK on it: inside the planet body no sky, cloud,
+//sun disc or aerial perspective is geometrically visible, and the old
+//clamp-to-surface behavior lit underground scenes with a sky that isn't
+//there. Default false, so passes that never set an observer keep legacy
+//behavior. 1 m tolerance: world Y = 0 maps exactly onto the surface, so
+//ground-level cameras must not trip the flag through float slop.
+#define SKY_UNDERGROUND_EPS_KM 0.001f
+static bool g_skyObserverUnderground = false;
+
+inline bool SkyObserverIsUnderground() { return g_skyObserverUnderground; }
+
 inline float3 WorldToPlanet(float3 worldPos)
 {
     float scale = 1.0f / WORLD_UNITS_PER_KM;
@@ -240,6 +255,8 @@ inline void SetSkyObserver(float3 worldPos)
 {
     float3 P = WorldToPlanet(worldPos);
     float r = length(P);
+    g_skyObserverUnderground =
+        (r < ATMOS_BOTTOM_RADIUS - SKY_UNDERGROUND_EPS_KM);
     if (r < SKY_OBSERVER_MIN_RADIUS) P *= SKY_OBSERVER_MIN_RADIUS / max(1e-6f, r);
     g_skyObserverPlanet = P;
 }
@@ -495,6 +512,84 @@ inline float SunDiskFractionAboveHorizon(float sunCosZ, float cosHorizon)
 }
 
 //====================================
+//THROUGH-DECK DIFFUSE SKYLIGHT (cloud-shadowed air)
+//====================================
+//Air under an overcast deck is lit almost entirely by white DIFFUSE
+//transmission through the deck, not by attenuated direct sun. The old model
+//had no such source: it pushed directional sun through pow(vis, 0.3) + a
+//0.04 floor, so shadowed air kept the clear-sky spectral signature
+//(Rayleigh blue away from the sun, forward-Mie orange toward it) and the
+//horizon integral under wide overcast degenerated into "floored blue near
+//air + red-shifted sunlit far air" — the off-color band this replaces.
+//
+//Returns the isotropic through-deck source per unit sun irradiance for a
+//sample whose sun shadow optical depth is tauSlant, given the local
+//overhead cloud cover fraction (CloudGlobalCoverage at the sample):
+//  (1 - exp(-tau))           gate to actually-shadowed air; clear sky = 0
+//  deckT                     conservative-slab two-stream diffuse
+//                            transmittance 1/(1 + 0.75*(1-g)*tau_v) with
+//                            droplet asymmetry g ~ 0.85; tau_v un-slants
+//                            the shadow OD by the sun-zenith cosine
+//  saturate(sunCosZ)         flux projection onto the deck top
+//  cov                       hemispheric source fraction — the slab model
+//                            assumes the whole upper hemisphere is deck,
+//                            only true under genuine overcast
+//  1/(8*PI)                  Lambertian 1/(2*pi) x 1/4 CALIBRATION to the
+//                            radiance the engine actually renders for a
+//                            deck interior/base (CloudComputeLighting's
+//                            OD-capped ambient + MS octaves sit ~4x below
+//                            an ideal transmitting slab). The uncalibrated
+//                            value saturated long under-deck paths ~6-10x
+//                            brighter than the deck itself, so any few-%
+//                            transmissive sightline through cloud showed a
+//                            glowing horizon slot with DLSS parallax smear
+//                            ("can see into thick clouds"). Raise toward
+//                            1/(2*pi) only if the cloud interior lighting
+//                            is ever brightened to match the slab.
+//
+//msGateOut: survival fraction for AMBIENT (Psi_ms) skylight under the same
+//deck — the MS LUT integrates a cloudless atmosphere, so under a deck its
+//light must be attenuated like any other skylight: the clear fraction of
+//the dome passes fully, the covered fraction passes deckT, blended by how
+//shadowed this sample actually is. 1 in clear sky (no change), ~deckT
+//under full overcast.
+//
+//Consumers multiply the returned source by sigma_s (per-channel) and the
+//usual earthShadow * sunTr chain; NO phase function — the source is
+//isotropic, which is what turns the under-deck horizon gray instead of
+//blue/orange.
+// Conservative-slab two-stream diffuse transmittance of the deck blocking
+// a sun ray of optical depth tauSlant; sunCosZ un-slants to vertical.
+inline float CloudDeckDiffuseT(float tauSlant, float sunCosZ)
+{
+    float tauVert = tauSlant * clamp(sunCosZ, 0.15f, 1.0f);
+    return 1.0f / (1.0f + 0.1125f * tauVert);
+}
+
+inline float CloudShadowAmbientTermsOD(float tauSlant, float sunCosZ,
+                                       float cov, out float msGateOut)
+{
+    float vis   = exp(-tauSlant);
+    float deckT = CloudDeckDiffuseT(tauSlant, sunCosZ);
+
+    msGateOut = lerp(1.0f, 1.0f - cov + cov * deckT, 1.0f - vis);
+
+    return (1.0f - vis) * deckT * saturate(sunCosZ) * cov
+         * (1.0f / (8.0f * PI));
+}
+
+// Visibility-based wrapper. 1e-20 keeps the log finite while letting thick
+// decks register their real optical depth (tau ~ 46 at the clamp): a 1e-6
+// clamp would cap tau at ~13.8 and floor deckT at ~0.39 — very thick
+// clouds would glow as if they transmitted 40% no matter how dense.
+inline float CloudShadowAmbientTerms(float visRaw, float sunCosZ,
+                                     float cov, out float msGateOut)
+{
+    return CloudShadowAmbientTermsOD(-log(max(visRaw, 1e-20f)), sunCosZ,
+                                     cov, msGateOut);
+}
+
+//====================================
 //SUN TRANSMITTANCE — PER-FRAME 2D LUT
 //====================================
 //The atmosphere is spherically symmetric, so the to-space transmittance
@@ -634,8 +729,39 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
         g_sampler_LUT, TransmittanceLutUvFromRMu(r, mu), 0).rgb;
 }
 
-// Forward decl — defined in Clouds_v8.hlsli (included after this file).
+//====================================
+//ATMOSPHERIC MULTIPLE SCATTERING — PER-FRAME 2D LUT (Hillaire 2020)
+//====================================
+//g_skyMultiScatterLUT (t51, 32x32 RGBA16F, baked per frame by
+//Pass_skylut_bake_v8.hlsl::mainMultiScatter) stores Psi_ms(sunCosZ, r): the
+//radiance a point at radius r receives from second-and-higher-order
+//atmospheric scattering, per unit sun irradiance, under the isotropic-phase
+//approximation ("A Scalable and Production Ready Sky and Atmosphere
+//Rendering Technique", eq. 10). Runtime usage per march step:
+//    rate_ms = (scatterR + scatterM) * PsiMS * sunIrradiance
+//with NO phase function, NO sun transmittance and NO earth-shadow factor —
+//all three are integrated inside the LUT. This is what keeps twilight and
+//the horizon lit (and desaturated) after the direct term dies; the old flat
+//ATMOS_MULTI_SCATTER_FACTOR stand-in kept single-scatter's saturation and
+//phase signature at every range. The factor remains as an artistic boost on
+//the single-scatter term only (default now 1.0 = physical).
+#define SKY_MS_LUT_SIZE 32.0f
+
+inline float3 MultiScatterPsi(float r, float sunCosZ)
+{
+    float xR  = saturate((r - ATMOS_BOTTOM_RADIUS)
+                       / (ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float xMu = saturate(sunCosZ * 0.5f + 0.5f);
+    float2 uv = float2(LutCoordFromUnitRange(xMu, SKY_MS_LUT_SIZE),
+                       LutCoordFromUnitRange(xR,  SKY_MS_LUT_SIZE));
+    return g_skyMultiScatterLUT.SampleLevel(g_sampler_LUT, uv, 0).rgb;
+}
+
+// Forward decls — defined in Clouds_v8.hlsli (included after this file).
+// CloudGlobalCoverage is safe to call here only AFTER a CloudSunVisibility*
+// call has run on this thread (it initializes the ENU basis statics).
 float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS);
+float CloudGlobalCoverage(float3 P);
 
 float3 IntegrateScattering(float3 viewDir, float3 sunDir,
                            out float3 transmittanceOut, out bool hitPlanetOut)
@@ -693,7 +819,8 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
         float ds   = (s1 - s0) * totalDist;
 
         float3 P = O + V * tMid;
-        float alt = max(0.0f, length(P) - Rb);
+        float  rP  = length(P);
+        float  alt = max(0.0f, rP - Rb);
 
         MediumSample med = SampleMedium(alt);
         float3 segTr = exp(-med.extinction * ds);
@@ -704,31 +831,63 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
         float earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
-        float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
-
-        float3 scatterInteg;
-        scatterInteg.x = (med.extinction.x > 1e-10f)
-            ? scatterPhase.x * (1.0f - segTr.x) / med.extinction.x : scatterPhase.x * ds;
-        scatterInteg.y = (med.extinction.y > 1e-10f)
-            ? scatterPhase.y * (1.0f - segTr.y) / med.extinction.y : scatterPhase.y * ds;
-        scatterInteg.z = (med.extinction.z > 1e-10f)
-            ? scatterPhase.z * (1.0f - segTr.z) / med.extinction.z : scatterPhase.z * ds;
-
+        // earthShadow gate: every term cloudVis/cloudAmb feed is multiplied
+        // by earthShadow anyway, so on the night side of the terminator the
+        // whole tap (1-5 density/coverage fetches) is wasted work — and
+        // since the geometric shadow reach landed, low-sun taps actually
+        // sample instead of early-rejecting, making the skip worth real
+        // time at sunset. msGate stays 1 there; psiMS already carries the
+        // earth shadow inside the LUT and is ~0 on that side.
         float cloudVis = 1.0f;
-        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        float cloudAmb = 0.0f;
+        float msGate   = 1.0f;
+        if (cloud_cloudShadowOnSurfaces > 0.5f && earthShadow > 1e-4f)
         {
-            cloudVis = CloudSunVisibilityPlanet(P, L);
-            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
+            float visRaw = CloudSunVisibilityPlanet(P, L);
+            // Coverage fetch + ambient terms only where actually shadowed
+            // (clear sky skips both and msGate stays 1).
+            if (visRaw < 0.999f)
+            {
+                float cov = CloudGlobalCoverage(P);
+                cloudAmb  = CloudShadowAmbientTerms(visRaw, sunCosZ, cov,
+                                                    msGate);
+            }
+            cloudVis = pow(max(visRaw, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
             cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
         }
 
-        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr * cloudVis;
-        totalInScatter += throughput * sunIllum * scatterInteg;
+        float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
+        float3 scatterIso   = med.scatterR + med.scatterM;
+
+        // Directional single scatter (multi-scatter slider = artistic boost
+        // on this term only) + isotropic through-deck skylight for the
+        // cloud-shadowed fraction + Hillaire 2nd+ order air scattering
+        // (phase / sun transmittance / earth shadow live inside the LUT;
+        // msGate attenuates it under cloud decks).
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr
+                        * ATMOS_MULTI_SCATTER_FACTOR;
+        float3 psiMS    = MultiScatterPsi(rP, sunCosZ);
+        float3 rate     = scatterPhase * sunIllum * cloudVis
+                        + scatterIso * (sunIllum * cloudAmb
+                                        + psiMS * ATMOS_SOLAR_IRRADIANCE
+                                                * msGate);
+
+        float3 scatterInteg;
+        scatterInteg.x = (med.extinction.x > 1e-10f)
+            ? rate.x * (1.0f - segTr.x) / med.extinction.x : rate.x * ds;
+        scatterInteg.y = (med.extinction.y > 1e-10f)
+            ? rate.y * (1.0f - segTr.y) / med.extinction.y : rate.y * ds;
+        scatterInteg.z = (med.extinction.z > 1e-10f)
+            ? rate.z * (1.0f - segTr.z) / med.extinction.z : rate.z * ds;
+
+        totalInScatter += throughput * scatterInteg;
 
         throughput *= segTr;
     }
 
-    totalInScatter *= ATMOS_MULTI_SCATTER_FACTOR;
+    // No trailing ATMOS_MULTI_SCATTER_FACTOR: the factor moved into the
+    // per-step directional term, and the real multiple scattering now
+    // comes from the Psi_ms LUT (which must NOT be double-boosted).
 
     transmittanceOut = throughput;
     return totalInScatter;
@@ -1117,6 +1276,10 @@ float3 EvaluateSkyBackground(float3 rayDir)
 #if ATM_DEBUG_RING == 3
     return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
 #endif
+    //Underground observer: no sky is geometrically visible from inside
+    //the planet body.
+    if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);
+
     SunState S = ComputeSunState();
 
     float3 v       = SafeNormalize(rayDir);
@@ -1210,6 +1373,13 @@ float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
 #if ATM_DEBUG_RING == 3
     return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
 #endif
+    //Underground observer: black sky, and cloudTr = 0 so the caller's
+    //MIS-sun radiance is extinguished with it.
+    if (SkyObserverIsUnderground())
+    {
+        cloudTrOut = float3(0.0f, 0.0f, 0.0f);
+        return float3(0.0f, 0.0f, 0.0f);
+    }
     float3 v          = SafeNormalize(rayDir);
     float3 background = EvaluateSkyBackground(v);
 

@@ -722,10 +722,12 @@ void Editor::DrawSunPanel(Camera& camera) {
 
         ImGui::SliderFloat("Multi Scatter Factor", &s.atmosMultiScatterFactor, 0.5f, 3.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Boost folded into the per sample atmospheric in\n"
-                              "scatter rate. 1.0 = pure single scatter (slightly\n"
-                              "dim), 1.1 = Hillaire's tuned factor, 1.3..1.6 =\n"
-                              "stylized brighter sky.");
+            ImGui::SetTooltip("Artistic boost on the DIRECTIONAL single scatter\n"
+                              "term only. Real 2nd+ order scattering now comes\n"
+                              "from the per frame Hillaire Psi_ms LUT, which this\n"
+                              "slider deliberately does not touch (the old 1.1\n"
+                              "default was the flat stand-in for that term).\n"
+                              "1.0 = physical, 1.2..1.5 = stylized brighter sky.");
 
         ImGui::SliderFloat("Cloud Shadow Cone (deg)", &s.atmosCloudShadowConeDeg, 0.0f, 15.0f, "%.2f");
         if (ImGui::IsItemHovered())
@@ -739,13 +741,14 @@ void Editor::DrawSunPanel(Camera& camera) {
 
         ImGui::SliderFloat("Cloud Shadow Floor", &s.atmosCloudShadowFloor, 0.0f, 0.5f, "%.3f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Diffuse MS floor for the cloud shadow tap on\n"
-                              "atmospheric samples. Without a floor, near\n"
-                              "atmospheric samples under thick cloud die\n"
-                              "completely and the integral is dominated by\n"
-                              "reddened far samples (sunset look mid day).\n"
-                              "0.04 keeps the near haze at ~4 percent of its\n"
-                              "unshadowed value.");
+            ImGui::SetTooltip("Safety floor on the cloud shadow tap for\n"
+                              "atmospheric samples. Shadowed air is now lit by\n"
+                              "the physically based through deck diffuse source,\n"
+                              "so this only guards numeric corner cases (0.01).\n"
+                              "Raising it re-tints under deck air with the\n"
+                              "clear sky spectrum - the old sunset-at-noon\n"
+                              "band - so treat values above ~0.05 as a look,\n"
+                              "not a fix.");
 
         ImGui::SliderFloat("Earth Shadow Softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
         if (ImGui::IsItemHovered())
@@ -760,9 +763,9 @@ void Editor::DrawSunPanel(Camera& camera) {
             s.atmosLightSteps             = 8.0f;
             s.atmosAerialViewSteps        = 4.0f;
             s.atmosAerialLightSteps       = 4.0f;
-            s.atmosMultiScatterFactor     = 1.1f;
+            s.atmosMultiScatterFactor     = 1.0f;
             s.atmosCloudShadowConeDeg     = 5.0f;
-            s.atmosCloudShadowFloor       = 0.04f;
+            s.atmosCloudShadowFloor       = 0.01f;
             s.atmosEarthShadowSoftness    = 0.005f;
         }
     }
@@ -815,11 +818,9 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "3 km (small) to 12 km (cumulonimbus). Must be\n"
                               "above Layer Bottom or the shell is empty.");
 
-        ImGui::SliderFloat("Horizon Fade",   &c.horizonFadeKm, 0.0f, 10.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Limb softening distance (orbital views). Without\n"
-                              "this the cloud layer reads as a hard bright ring\n"
-                              "against the planet's silhouette.");
+        // (Horizon Fade slider removed 2026-06-11 — cloud_horizonFadeKm has
+        // had no shader consumer since the unified-march refactor. The
+        // struct field stays for cbuffer layout; see Common.h.)
 
         ImGui::SliderFloat("Top Variation",  &c.topVariationKm, 0.0f, 10.0f, "%.2f km");
         if (ImGui::IsItemHovered())
@@ -1030,10 +1031,12 @@ void Editor::DrawCloudPanel(Camera& camera) {
         ImGui::SliderFloat("Sky AO Max OD",      &c.ambientODMax,      0.5f, 50.0f, "%.2f",
                            ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Optical depth cap on the sky AO term. With this\n"
-                              "low (e.g. 2) thick overcast columns still leak\n"
-                              "~13%% sky into the base; raise to 8+ so dense\n"
-                              "overhead columns actually shut the sky term down.");
+            ImGui::SetTooltip("Optical depth cap on the sky AO term. Default 8\n"
+                              "lets dense overhead columns actually shut the sky\n"
+                              "term down (exp(-8) ~ 0.03%%). Lowering it floors\n"
+                              "the leakage — at 2 every thick base kept ~13%%\n"
+                              "sky light, a thickness-independent brightness\n"
+                              "floor.");
 
         bool gnd = c.groundBounce >= 0.5f;
         if (ImGui::Checkbox("Ground Bounce", &gnd))
@@ -1205,7 +1208,7 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "interiors at the cost of banding.");
     }
 
-    if (ImGui::CollapsingHeader("Distance / Haze")) {
+    if (ImGui::CollapsingHeader("Distance / LOD")) {
         ImGui::SliderFloat("Fade Distance", &c.fadeDistanceKm,
                            50.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered())
@@ -1228,11 +1231,10 @@ void Editor::DrawCloudPanel(Camera& camera) {
         if (c.fadeDistanceKm >= c.renderDistanceKm)
             c.fadeDistanceKm = c.renderDistanceKm * 0.9f;
 
-        ImGui::SliderFloat("Haze Strength", &c.hazeStrength, 0.0f, 2.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Atmospheric aerial-perspective multiplier in\n"
-                              "front of clouds. 1.0 = physical, 0.0 = clouds\n"
-                              "pop without haze attenuation against the sky.");
+        // (Haze Strength slider removed 2026-06-11 — cloud_hazeStrength has
+        // had no shader consumer since the unified-march refactor folded
+        // atmosphere and cloud into one integral. The struct field stays
+        // for cbuffer layout; see Common.h.)
 
         ImGui::SliderFloat("LOD Near",  &c.lodNearKm, 0.0f, 100.0f, "%.1f km",
                            ImGuiSliderFlags_Logarithmic);

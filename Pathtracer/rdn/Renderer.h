@@ -350,17 +350,23 @@ private:
     //  - cloud ambient probe scatter over sun-zenith cosine, 128x2 RGBA16F
     //    → t50. Replaces the two per-pixel IntegrateScattering probes in
     //    EvaluateAtmosphereAndClouds.
+    //  - Hillaire 2020 multiple-scattering transfer Psi_ms over (sun-zenith
+    //    cosine, altitude), 32x32 RGBA16F → t51. Real 2nd+ order air
+    //    scattering; the ambient bake reads its UAV, so RecordSkyLUTBake
+    //    dispatches it before mainAmbient with a UAV barrier between.
     //InitSkyLUTBake creates the textures + private root sig/heap/PSOs at
-    //startup; RecordSkyLUTBake records the two dispatches at the top of
+    //startup; RecordSkyLUTBake records the three dispatches at the top of
     //every PopulateCommandList, before any consumer pass. Rebaked per frame
     //because the integrals depend on live cbuffer params (turbidity, cloud
-    //layer sliders); the whole bake is ~17K texels.
+    //layer sliders); the whole bake is ~18K texels.
     ComPtr<ID3D12Resource>       m_skyTransmittanceLUT;
     ComPtr<ID3D12Resource>       m_cloudAmbientLUT;
+    ComPtr<ID3D12Resource>       m_skyMultiScatterLUT;
     ComPtr<ID3D12DescriptorHeap> m_skyLutBakeHeap;
     ComPtr<ID3D12RootSignature>  m_skyLutBakeSig;
     ComPtr<ID3D12PipelineState>  m_skyLutTransmittancePSO;
     ComPtr<ID3D12PipelineState>  m_skyLutAmbientPSO;
+    ComPtr<ID3D12PipelineState>  m_skyLutMultiScatterPSO;
     void InitSkyLUTBake();
     void RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd);
     //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —

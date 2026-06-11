@@ -84,6 +84,25 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //center is unmeasurable in atmospheric km units.
     SetSkyObserver(rayOrigin + sceneOriginWorld);
 
+    //Underground camera (below the analytic planet surface): sky, clouds,
+    //sun disc and aerial perspective are all geometrically invisible from
+    //inside the planet body — write the identity composite and skip the
+    //march so underground scenes aren't lit by a sky that isn't there.
+    //Mesh pixels: combinedTr = 1 passes the scene radiance through with
+    //zero added in-scatter. Sky pixels: combinedTr = 0 also extinguishes
+    //raygen's sun disc in the shading composite. Slots 12/13 say "no
+    //cloud" so DLSS falls back to mesh depth / rotation-only sky MVs.
+    if (SkyObserverIsUnderground())
+    {
+        const float3 trUnder = isMeshHit ? float3(1.0f, 1.0f, 1.0f)
+                                         : float3(0.0f, 0.0f, 0.0f);
+        gScratchPing[uint3(pixel, 10)] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        gScratchPing[uint3(pixel, 11)] = float4(trUnder,         0.0f);
+        gScratchPing[uint3(pixel, 12)] = float4(rayOrigin,       0.0f);
+        gScratchPing[uint3(pixel, 13)] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+
     const SunState S = ComputeSunState();
 
     //Mesh distance clip = distance from this pass's lens-ray origin to
@@ -151,6 +170,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //all attenuated by the combined transmittance. Sky pixels see them
     //through the partial cloud cover; mesh pixels occlude them entirely
     //(the mesh is in front of the background sphere by construction).
+    //Planet-clipped rays composite against black on purpose — see the
+    //"NO analytic ground backstop" note in Clouds_v8.hlsli.
     float3 backgroundBehind = float3(0, 0, 0);
     if (!isMeshHit)
     {

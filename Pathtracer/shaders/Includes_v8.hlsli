@@ -167,9 +167,15 @@ Texture2DArray<float>  g_terrainCloudOffset  : register(t48);
 //    row 1 = horizon probe — see CloudAmbientLutU in Clouds_v8.hlsli.
 //    Replaces the two per-pixel IntegrateScattering probe marches in
 //    EvaluateAtmosphereAndClouds.
-//Both sampled with g_sampler_LUT (s1, bilinear clamp), SampleLevel 0.
+//  t51 g_skyMultiScatterLUT: 32x32 RGBA16F. Hillaire 2020 multiple-
+//    scattering transfer Psi_ms over (sun-zenith cosine, normalized
+//    altitude) — see MultiScatterPsi in SunSampler_v8.hlsli. Supplies the
+//    isotropic 2nd+ order air scattering the flat multi-scatter factor
+//    used to stand in for.
+//All sampled with g_sampler_LUT (s1, bilinear clamp), SampleLevel 0.
 Texture2D<float4> g_skyTransmittanceLUT : register(t49);
 Texture2D<float4> g_cloudAmbientLUT     : register(t50);
+Texture2D<float4> g_skyMultiScatterLUT  : register(t51);
 
 //====================================
 //CAMERA
@@ -375,13 +381,23 @@ cbuffer CameraParams : register(b0)
 #define ATMOS_CLOUD_SHADOW_CONE_DEG   atmos_cloudShadowConeDeg
 #define ATMOS_CLOUD_SHADOW_FLOOR      atmos_cloudShadowFloor
 // Exponent applied to cloud visibility when shadowing atmospheric in-scatter.
-// < 1 softens the shadow (approximates multi-scattered cloud light filling
-// the shadow volume). 1.0 = full single-scatter shadow. 0.3 is a good start.
-#define ATMOS_CLOUD_SHADOW_SOFTNESS   0.3f
+// 1.0 = the real single-scatter shadow. The old 0.3 softening stood in for
+// multi-scattered fill light, but it brightened the DIRECTIONAL term — air
+// under an opaque deck kept scattering 10-30% of full sun with the clear-sky
+// phase/spectrum (blue band away from the sun, orange Mie glow toward it).
+// That fill role moved to the explicit isotropic through-deck source
+// (CloudShadowAmbientTerms) + the Hillaire MS LUT, so the directional term
+// now takes the physical shadow.
+#define ATMOS_CLOUD_SHADOW_SOFTNESS   1.0f
 #define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
-// Surface cloud shadow: softness exponent (< 1 lightens thin-cloud shadows)
-// and cone half-angle in degrees for spatial blur (0 = sharp point sample).
-#define SURFACE_CLOUD_SHADOW_SOFTNESS 0.3f
+// Surface cloud shadow: softness exponent and cone half-angle in degrees
+// for spatial blur (0 = sharp point sample). Softness 1.0 = the physical
+// single-scatter shadow: a tau-8 deck passes exp(-8) ~ 0.03% direct sun,
+// not the 9% the old 0.3 exponent leaked (same band-aid class as the
+// retired atmosphere softness — the diffuse light on ground under cloud
+// comes from path-traced sky GI off the bright deck, not from softened
+// direct sun).
+#define SURFACE_CLOUD_SHADOW_SOFTNESS 1.0f
 #define SURFACE_CLOUD_SHADOW_CONE_DEG 3.0f
 
 //Volumetric cloud knob redirects. Clouds_v8.hlsli wraps each constant in
@@ -392,7 +408,8 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_COVERAGE_BASE     cloud_coverage
 #define CLOUD_LAYER_BOT_KM      cloud_layerBotKm
 #define CLOUD_LAYER_TOP_KM      cloud_layerTopKm
-#define CLOUD_HORIZON_FADE_KM   cloud_horizonFadeKm
+// (cloud_horizonFadeKm has no consumer — INERT field kept for cbuffer
+// layout, no macro so dead usage can't silently come back.)
 #define CLOUD_EXTINCTION        cloud_extinction
 #define CLOUD_BASE_FREQ              cloud_baseFrequency
 #define CLOUD_HF_FREQ                cloud_hfFrequency
@@ -427,8 +444,8 @@ cbuffer CameraParams : register(b0)
 //Cloud-eval distance window (fade + hard clamp).
 #define CLOUD_FADE_DISTANCE_KM       cloud_fadeDistanceKm
 #define CLOUD_RENDER_DISTANCE_KM     cloud_renderDistanceKm
-//Aerial-perspective haze multiplier.
-#define CLOUD_HAZE_STRENGTH          cloud_hazeStrength
+// (cloud_hazeStrength has no consumer since the unified march — INERT
+// field kept for cbuffer layout, macro removed.)
 //Top altitude variability (per-cloud tops).
 #define CLOUD_TOP_VARIATION_KM       cloud_topVariationKm
 #define CLOUD_TOP_FREQ               cloud_topFrequency

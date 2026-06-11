@@ -78,10 +78,11 @@ static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //uploaded once from the bake at startup). Surface_color (Texture2DArray<RGBA8>,
 //t46) at heap 70, normal map (Texture2DArray<RGBA8>, t47) at heap 71, and
 //cloud_offset (Texture2DArray<R32F>, 256x256, t48) at heap 72 - all loaded
-//once from the bake. Sky transmittance LUT (256x64 RGBA16F, t49) at heap 73
-//and cloud ambient probe LUT (128x2 RGBA16F, t50) at heap 74 - both rebaked
-//every frame by RecordSkyLUTBake (Pass_skylut_bake_v8.hlsl) via a private
-//UAV heap, read here as SRVs. Bindless starts at 75.
+//once from the bake. Sky transmittance LUT (256x64 RGBA16F, t49) at heap 73,
+//cloud ambient probe LUT (128x2 RGBA16F, t50) at heap 74 and atmospheric
+//multiple-scattering LUT (32x32 RGBA16F, t51, Hillaire 2020 Psi_ms) at heap
+//75 - all rebaked every frame by RecordSkyLUTBake (Pass_skylut_bake_v8.hlsl)
+//via a private UAV heap, read here as SRVs. Bindless starts at 76.
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT             = 63;
 static constexpr UINT  SKY_STARS_HEAP_SLOT              = 64;
 static constexpr UINT  CLOUD_NOISE_HEAP_SLOT            = 65;
@@ -94,7 +95,8 @@ static constexpr UINT  TERRAIN_NORMAL_HEAP_SLOT         = 71;
 static constexpr UINT  TERRAIN_CLOUD_OFFSET_HEAP_SLOT   = 72;
 static constexpr UINT  SKY_TRANSMITTANCE_LUT_HEAP_SLOT  = 73;
 static constexpr UINT  CLOUD_AMBIENT_LUT_HEAP_SLOT      = 74;
-static constexpr UINT  BINDLESS_HEAP_START              = 75;
+static constexpr UINT  SKY_MULTISCATTER_LUT_HEAP_SLOT   = 75;
+static constexpr UINT  BINDLESS_HEAP_START              = 76;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -256,22 +258,27 @@ struct SunSettings {
     //the in front of cloud haze on long mesh rays.
     float atmosAerialViewSteps        = 4.0f;
     float atmosAerialLightSteps       = 4.0f;
-    //Multi scatter boost folded into the per sample atmospheric in
-    //scatter rate. 1.0 = pure single scatter (slightly dim), 1.1 =
-    //Hillaire's tuned factor, 1.3..1.6 = stylized brighter sky.
-    float atmosMultiScatterFactor     = 1.1f;
+    //Artistic boost on the per sample DIRECTIONAL single scatter rate
+    //only. Real 2nd+ order scattering now comes from the per frame
+    //Hillaire Psi_ms LUT (Pass_skylut_bake_v8.hlsl::mainMultiScatter),
+    //which this factor deliberately does NOT touch — the old 1.1 default
+    //was the flat stand-in for that missing term. 1.0 = physical;
+    //1.2..1.5 = stylized brighter sky.
+    float atmosMultiScatterFactor     = 1.0f;
     //Half angle of the cloud shadow cone sampled on each atmospheric
     //sample inside and beyond the cloud shell. Wider = softer shafts of
     //light but more bleed across cloud edges; narrower = sharper shafts
     //but more visible stepping (the cone jitter is what breaks tap
     //correlation). 5 degrees matches the previous hardcoded 0.9962 cos.
     float atmosCloudShadowConeDeg     = 5.0f;
-    //Diffuse multi scatter floor for the cloud shadow tap on atmospheric
-    //samples. Without a floor, near atmospheric samples under thick
-    //cloud die completely and the integral becomes dominated by reddened
-    //far samples (reads as sunset coloured even at noon). 0.04 keeps
-    //the near haze at ~4 percent of its unshadowed value.
-    float atmosCloudShadowFloor       = 0.04f;
+    //Safety floor on the cloud shadow tap for atmospheric samples. The
+    //old 0.04 default fought the "sunset coloured at noon" failure mode
+    //by keeping shadowed near haze artificially sunlit; that light now
+    //comes from the physically based through-deck diffuse source
+    //(CloudShadowAmbientSource in SunSampler_v8.hlsli), so the floor only
+    //guards numeric corner cases. Raise it back up only as a stylistic
+    //choice — it re-tints under-deck air with the clear-sky spectrum.
+    float atmosCloudShadowFloor       = 0.01f;
     //Half width (in cosine units) of the planet shadow penumbra used by
     //the smoothstep that softens the earth shadow boundary in the
     //atmosphere march. 0.005 cos ≈ 0.57 degrees angular, comparable to
@@ -302,8 +309,10 @@ struct CloudSettings {
     //surface. Typical fair-weather cumulus base sits 1..2 km, top 3..6.
     float layerBotKm         = 1.5f;
     float layerTopKm         = 3.73f;
-    //limb softening from orbit, in km of fade distance above cloud base
-    //(prevents the layer reading as a hard ring at the planet horizon).
+    //INERT (2026-06-11): no shader consumer since the unified-march
+    //refactor — kept only to preserve the cbuffer mirror layout (same
+    //pattern as the vestigial terrain amplitude/frequency tail). Was:
+    //limb softening from orbit, km of fade above cloud base.
     float horizonFadeKm      = 2.0f;
     //sigma_t at unit density (1/km). 9 matches the Nubis tuned baseline
     //(thin stratocumulus); raise to 25..40 for thick / opaque cumulus.
@@ -390,13 +399,14 @@ struct CloudSettings {
     // (cheapest), 3..5 = visibly softer self shadow if shadowConeDeg
     // is non zero.
     // ambientSteps: number of upward density samples used to estimate
-    // sky ambient occlusion per scattering event. 2 default cuts the
-    // single-sample variance in half — important for tall cloud
-    // layers (3+ km) where individual cumulus can be tall enough
-    // that a single random sample's outcome (in-cloud vs above-cloud)
-    // varies wildly. Bump to 3-4 if dark patches still appear.
+    // sky ambient occlusion per scattering event. The probes are pure
+    // ALU since the hull refactor (no fetches), so 4 is nearly free.
+    // 4 matters since ambientODMax went to 8: skyOcc now spans
+    // exp(0)..exp(-8) across the cloud height, and the old 2-probe
+    // trapezoid (z = 0.3/0.8 km only) quantized that gradient into
+    // visible brightness layers on distant decks seen edge-on.
     float shadowConeSamples  = 1.0f;
-    float ambientSteps       = 2.0f;
+    float ambientSteps       = 4.0f;
 
     //====================================
     // adaptive march loop bounds (the big perf levers)
@@ -438,9 +448,10 @@ struct CloudSettings {
     //visible anyway.
     float fadeDistanceKm     = 94.0f;
     float renderDistanceKm   = 10000.0f;
-    //Atmospheric haze in front of clouds (artistic multiplier on
-    //the aerial perspective). 1.0 = physically calibrated, 0.0 =
-    //clouds pop without haze attenuation against the sky.
+    //INERT (2026-06-11): no shader consumer since the unified-march
+    //refactor (atmosphere and cloud share one integral, so "haze in
+    //front of clouds only" no longer exists as a separable quantity).
+    //Kept only to preserve the cbuffer mirror layout.
     float hazeStrength       = 0.96f;
 
     //====================================
@@ -514,10 +525,13 @@ struct CloudSettings {
     //Brightness multiplier on the sky dome ambient contribution.
     //ambientAOScale scales how much the column density above a sample
     //occludes the sky probe. ambientODMax caps the resulting optical
-    //depth so dense overcast columns still shut the sky term down.
+    //depth; 8 lets dense columns actually shut the sky term down
+    //(exp(-8) ~ 0.03%). The old 2.0 floored leakage at exp(-2) ~ 13.5%,
+    //which gave every cloud base a thickness-independent brightness
+    //floor — thick storm decks read as lit from below.
     float ambientIntensity   = 1.0f;
     float ambientAOScale     = 1.0f;
-    float ambientODMax       = 2.0f;
+    float ambientODMax       = 8.0f;
 
     //====================================
     // sun shadow march

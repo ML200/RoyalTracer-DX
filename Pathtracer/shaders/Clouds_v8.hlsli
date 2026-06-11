@@ -787,23 +787,58 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
     return tau * CLOUD_SUN_TAU_MULT;
 }
 
+// Distance along a sun ray to the outer cloud-shell exit, capped to the
+// same ~380 km reach the table-based CloudOpticalDepthToSun uses. This is
+// the maxLenKm the CloudSunVisibility* callers must pass to
+// CloudOpticalDepthAlongRay: the old fixed 50 km cap silently dropped the
+// deck once the sun fell below ~3° elevation (the oblique in-shell path
+// from a below-deck sample exceeds 50 km there), popping under-deck haze
+// and surfaces to fully sunlit at exactly the sun angles where the
+// overcast horizon look matters most. Callers sit at or below the shell
+// (they early-out above it), so the ray always exits through Rt and
+// tT1 > 0 holds.
+inline float CloudShadowReachKm(float3 P, float3 D)
+{
+    float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                   + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+    float tT0, tT1;
+    if (!RaySphereIntersect(P, D, Rt, tT0, tT1) || tT1 <= 0.0f) return 0.0f;
+    return min(tT1, 380.0f);
+}
+
 // Surface shadow march (ground NEE + aerial perspective). MUST use the
 // real noise density — the 2D hull is uniform across the shell and
 // over-darkens surfaces where no cloud actually sits overhead.
-// CLOUD_SHADOW_STEPS=1 takes a single-midpoint fast path (~4x cheaper,
-// visually fine for overhead cumulus). N≥2 walks the shell.
-float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSec)
+// CLOUD_SHADOW_STEPS=1 takes a single-sample fast path (~4x cheaper).
+// N≥2 walks the shell. maxLenKm comes from CloudShadowReachKm —
+// geometric, not a tuning knob.
+//
+// xiAlt picks WHICH altitude slice of the layer the fast path samples
+// (0 = layer bottom, 1 = layer top; 0.5 = the old fixed midpoint).
+// A DETERMINISTIC slice is a ghost surface: the sample always lies on one
+// world-space sphere, so the Perlin-Worley pattern of that single slice
+// gets painted onto every haze/fog sample's shadow and parallaxes as a
+// sphere DECOUPLED from the visible clouds (dense cloud samples use the
+// table march anchored to the sample, so the cloud bodies themselves look
+// right — which is what made the sphere read as a separate layer).
+// Jittering xiAlt per tap (STBN at the integrator call sites) turns the
+// slice into an unbiased estimate of the full column: pathLen is the slab
+// path, the slice average over xi is the slab's mean density, and DLSS
+// resolves the per-pixel slice noise to the true column shadow.
+float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSec,
+                                float xiAlt)
 {
     int N = max(CLOUD_SHADOW_STEPS, 1);
 
     if (N == 1)
     {
-        // One midpoint sample × oblique-path correction (1/cos sun zenith).
-        float midAlt = 0.5f * (CLOUD_LAYER_BOT_KM + CLOUD_LAYER_TOP_KM);
-        float Rmid   = ATMOS_BOTTOM_RADIUS + midAlt;
+        // One slice sample × oblique-path correction (1/cos sun zenith).
+        float sliceAlt = lerp(CLOUD_LAYER_BOT_KM, CLOUD_LAYER_TOP_KM,
+                              saturate(xiAlt));
+        float Rslice   = ATMOS_BOTTOM_RADIUS + sliceAlt;
         float r      = length(P);
         float dotPD  = dot(P, D);
-        float disc   = dotPD * dotPD - (r * r - Rmid * Rmid);
+        float disc   = dotPD * dotPD - (r * r - Rslice * Rslice);
         if (disc < 0.0f) return 0.0f;
         float tMid   = -dotPD + sqrt(disc);
         if (tMid <= 0.0f || tMid > maxLenKm) return 0.0f;
@@ -834,7 +869,52 @@ float CloudOpticalDepthAlongRay(float3 P, float3 D, float maxLenKm, float timeSe
     return tau;
 }
 
-float CloudSunVisibility(float3 surfacePosWorld, float3 sunDirWS)
+// Stratified 3-slice column OD for SURFACE sun shadows. A single-slice
+// estimator is unbiased in OD, but the surface lighting averages
+// exp(-tau) across NEE samples, and E[exp(-tau_slice)] >> exp(-tau_column)
+// when slices vary (Jensen, exp is convex): every jitter landing in the
+// heart profile's transparent bottom ramp / top cap reported "fully lit",
+// and those samples dominated the average — a thick cumulus converged to
+// ~15% direct sun and object shadows survived under overcast. Three
+// stratified slices (one per third of the layer, rotated by xiAlt per NEE
+// sample) collapse the variance so the exp bias is negligible, sum in
+// OPTICAL DEPTH before the single exp, and stay anchored to the actual
+// cloud along the sun ray — shadow opacity now grows exponentially with
+// thickness, which is exactly how fast real object shadows vanish under a
+// thickening deck.
+float CloudSunOpticalDepthColumn(float3 P, float3 L, float maxLenKm,
+                                 float timeSec, float xiAlt)
+{
+    float r       = length(P);
+    float dotPL   = dot(P, L);
+    float shellTh = CLOUD_LAYER_TOP_KM - CLOUD_LAYER_BOT_KM;
+
+    float tau = 0.0f;
+    [unroll]
+    for (int i = 0; i < 3; ++i)
+    {
+        float hFrac = ((float)i + saturate(xiAlt)) * (1.0f / 3.0f);
+        float Rs    = ATMOS_BOTTOM_RADIUS
+                    + lerp(CLOUD_LAYER_BOT_KM, CLOUD_LAYER_TOP_KM, hFrac);
+        float disc  = dotPL * dotPL - (r * r - Rs * Rs);
+        if (disc < 0.0f) continue;
+        float tMid  = -dotPL + sqrt(disc);
+        if (tMid <= 0.0f || tMid > maxLenKm) continue;
+
+        float3 Q    = P + L * tMid;
+        float  d    = CloudDensityForShadow(Q, timeSec);
+        float  cosZ = saturate(dot(L, SafeNormalize(Q)));
+        // Each slice stands in for its third of the slab path.
+        tau += d * CLOUD_EXTINCTION
+             * (shellTh / (3.0f * max(cosZ, 0.15f)));
+    }
+    return tau;
+}
+
+// xiAlt rotates the shadow strata (see CloudSunOpticalDepthColumn);
+// surface NEE passes a fresh rand per call, the 2-arg overload uses the
+// deterministic midpoints.
+float CloudSunVisibility(float3 surfacePosWorld, float3 sunDirWS, float xiAlt)
 {
 #if !ENABLE_CLOUDS
     return 1.0f;
@@ -849,15 +929,24 @@ float CloudSunVisibility(float3 surfacePosWorld, float3 sunDirWS)
     if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
                                   + CLOUD_TERRAIN_SHIFT_BOUND_KM + 1e-3f) return 1.0f;
 
-    float tau = CloudOpticalDepthAlongRay(P, SafeNormalize(sunDirWS), 50.0f, walltime);
+    float3 L = SafeNormalize(sunDirWS);
+    float tau = CloudSunOpticalDepthColumn(P, L, CloudShadowReachKm(P, L),
+                                           walltime, xiAlt);
     return exp(-tau);
 #endif
 }
 
+float CloudSunVisibility(float3 surfacePosWorld, float3 sunDirWS)
+{
+    return CloudSunVisibility(surfacePosWorld, sunDirWS, 0.5f);
+}
+
 // Planet-space variant — skips WorldToPlanet's flat-earth reprojection,
 // which doesn't round-trip spherical-projection inputs (cloud foot on
-// planet surface).
-float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
+// planet surface). xiAlt = altitude-slice jitter for the fast-path shadow
+// tap (see CloudOpticalDepthAlongRay) — pass per-step STBN; the 2-arg
+// overload keeps the deterministic mid-slice for callers without a rand.
+float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS, float xiAlt)
 {
 #if !ENABLE_CLOUDS
     return 1.0f;
@@ -871,7 +960,8 @@ float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
     if (r - ATMOS_BOTTOM_RADIUS > CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
                                   + CLOUD_TERRAIN_SHIFT_BOUND_KM + 1e-3f) return 1.0f;
 
-    float tau = CloudOpticalDepthAlongRay(Pplanet, L, 50.0f, walltime);
+    float tau = CloudOpticalDepthAlongRay(Pplanet, L, CloudShadowReachKm(Pplanet, L),
+                                          walltime, xiAlt);
 
     // Far-side cloud shell blocking (planet-scale sunset occlusion).
     if (tau < 64.0f)
@@ -902,6 +992,20 @@ float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
     return exp(-tau);
 #endif
 }
+
+// Deterministic mid-slice overload for callers without a per-step rand
+// (bounce-miss sky in IntegrateScattering via the SunSampler forward decl).
+float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
+{
+    return CloudSunVisibilityPlanet(Pplanet, sunDirWS, 0.5f);
+}
+
+// NO analytic ground backstop (added and removed 2026-06-11): planet-
+// clipped sky rays deliberately composite against black — the scene's own
+// geometry provides any visible ground, and the dark below-horizon void
+// is the intended look. (The "dark patches on clouds" that briefly
+// motivated a backstop turned out to be the coverage-map-at-cloudMid
+// modulation, fixed at the covGlobal proxy.)
 
 // Trapezoidal column density above the sample at exponentially-spaced
 // altitudes. The probe column is exactly radial (localUp = normalize(P), so
@@ -1043,13 +1147,22 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
         }
         if (CLOUD_GROUND_BOUNCE > 0.5f)
         {
-            // No local Tdir gate: bounce light arrives from BELOW, from a
-            // wide ground area whose average illumination is the global
-            // cover proxy already applied to groundIrrad. Gating by the sun
-            // transmittance through the cloud ABOVE this sample pointed the
-            // wrong way and switched off the dominant base illuminant under
-            // every thick cloud.
-            ambient += groundIrrad * (1.0f - h);
+            // The ground a base bounces off is mostly this cloud's OWN
+            // footprint: it sees direct sun attenuated by this column
+            // (visG) plus the diffusely transmitted fraction (deckT) —
+            // thick decks bounce only their diffuse transmission, thin
+            // wisps bounce nearly full sun. The old un-gated version gave
+            // every base a thickness-independent light floor. (The
+            // earlier "no local Tdir gate" rationale predates deckT: a
+            // pure exp(-sunOD) gate really did zero the term under thick
+            // cloud — the diffuse path is what makes the gate physical.)
+            // groundIrrad itself still carries the global-cover proxy for
+            // neighbouring clouds shading the wider bounce area.
+            float sunCosZb = saturate(dot(SafeNormalize(P), L));
+            float visG     = exp(-sunOD);
+            float bounceT  = visG + (1.0f - visG)
+                           * CloudDeckDiffuseT(sunOD, sunCosZb);
+            ambient += groundIrrad * bounceT * (1.0f - h);
         }
     }
 
@@ -1133,7 +1246,16 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                                             CLOUD_RENDER_DISTANCE_KM, t);
         float lodT     = CloudLodT(t);
         float rJit     = RandomFloatSingle(seed);
-        float tSample  = t + rJit * fineStep;
+
+        // Jitter window = smallest possible stride (see the primary
+        // phase-2 march for the rationale — the raw fineStep window
+        // aliased the heart profile into layers on distant decks).
+        float strideMin = max(fineStep, t * CLOUD_STEP_DIST_FRAC_FINE);
+        if (i * 2 >= CLOUD_CHEAP_STEPS)
+            strideMin = max(strideMin, (tFar - t) / (float)(CLOUD_CHEAP_STEPS - i));
+        strideMin = min(strideMin, tFar - t);
+
+        float tSample  = t + rJit * strideMin;
         float3 P       = O + V * tSample;
 
         float hCoverage = 0.0f, hProfile = 0.0f, hEffTop = CLOUD_LAYER_TOP_KM;
@@ -1158,13 +1280,12 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                     * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
                 CLOUD_MAX_EMPTY_STEP_KM);
             thisStep = lerp(fineStep, maxStepAdaptive, saturate(lodT));
+            thisStep = max(thisStep, strideMin);
         }
         else
         {
-            thisStep = max(fineStep, t * CLOUD_STEP_DIST_FRAC_FINE);
+            thisStep = strideMin;
         }
-        if (i * 2 >= CLOUD_CHEAP_STEPS)
-            thisStep = max(thisStep, (tFar - t) / (float)(CLOUD_CHEAP_STEPS - i));
         thisStep = min(thisStep, tFar - t);
 
         if (!hullEmpty)
@@ -1282,7 +1403,8 @@ inline void IntegrateAtmosphereSegment(
         float4 r  = CloudRand4(pixel, frameU, (uint)i + 500u);
         float  t  = tStart + ((float)i + r.x) * ds;
         float3 P  = O + V * t;
-        float alt = max(0.0f, length(P) - ATMOS_BOTTOM_RADIUS);
+        float  rP  = length(P);
+        float  alt = max(0.0f, rP - ATMOS_BOTTOM_RADIUS);
 
         MediumSample med  = SampleMedium(alt);
         float3       segTr = exp(-med.extinction * ds);
@@ -1296,25 +1418,47 @@ inline void IntegrateAtmosphereSegment(
         float  cosHorizon = CloudTerrainCosHorizon(P);
         float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
-        // Cone-jittered cloud shadow on the air column. Without jitter,
-        // the fast-path single-tap correlates across pixels and the
-        // Perlin-Worley pattern wallpapers onto haze as horizontal bands.
-        // Floor keeps near-haze contributing so the far reddened samples
-        // don't dominate and tint the integral sunset-orange at noon.
+        // Cone-jittered (r.yz) + altitude-slice-jittered (r.w) cloud shadow
+        // on the air column. Without BOTH jitters the fast-path single tap
+        // correlates across pixels and the Perlin-Worley slice paints onto
+        // the haze as a ghost sphere surface decoupled from the clouds.
+        // The shadowed fraction re-emerges as isotropic through-deck
+        // skylight (CloudShadowAmbientTerms) instead of the old
+        // softness/floor brightening of the directional term.
+        // earthShadow gate: everything the tap feeds is multiplied by
+        // earthShadow, so night-side samples skip the fetches outright
+        // (psiMS carries its own earth shadow and is ~0 there).
         float cloudVis = 1.0f;
-        if (cloud_cloudShadowOnSurfaces > 0.5f)
+        float cloudAmb = 0.0f;
+        float msGate   = 1.0f;
+        if (cloud_cloudShadowOnSurfaces > 0.5f && earthShadow > 1e-4f)
         {
             float3 Lj = SampleConeAroundDir(L, kAtmosShadowConeCos,
                                             float2(r.y, r.z));
-            cloudVis = CloudSunVisibilityPlanet(P, Lj);
-            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
+            float visRaw = CloudSunVisibilityPlanet(P, Lj, r.w);
+            // Coverage fetch + ambient terms only where actually shadowed
+            // (clear sky skips both and msGate stays 1).
+            if (visRaw < 0.999f)
+            {
+                float cov = CloudGlobalCoverage(P);
+                cloudAmb  = CloudShadowAmbientTerms(visRaw, sunCosZ, cov,
+                                                    msGate);
+            }
+            cloudVis = pow(max(visRaw, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
             cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
         }
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
-        float3 sunIllum     = sunIrradiance * earthShadow * sunTr * cloudVis
+        float3 scatterIso   = med.scatterR + med.scatterM;
+        float3 sunIllum     = sunIrradiance * earthShadow * sunTr
                             * ATMOS_MULTI_SCATTER_FACTOR;
-        float3 rate         = scatterPhase * sunIllum;
+        // Hillaire MS: phase, sun transmittance and earth shadow live
+        // inside the LUT — multiply by sigma_s and sun irradiance only;
+        // msGate attenuates it under cloud decks.
+        float3 psiMS        = MultiScatterPsi(rP, sunCosZ);
+        float3 rate         = scatterPhase * sunIllum * cloudVis
+                            + scatterIso * (sunIllum * cloudAmb
+                                            + psiMS * sunIrradiance * msGate);
 
         float3 scatterInteg;
         scatterInteg.x = (med.extinction.x > 1e-10f)
@@ -1455,15 +1599,27 @@ float3 EvaluateAtmosphereAndClouds(
     // an inner sun-transmittance march); Pass_skylut_bake_v8.hlsl now bakes
     // them once per frame into g_cloudAmbientLUT (row 0 = zenith probe,
     // row 1 = horizon probe) and this is two bilinear fetches. The baked
-    // values exclude cloud shadowing — the global-cover proxy below stands
-    // in for the old per-step CloudSunVisibilityPlanet term (same proxy the
-    // ground bounce already used).
+    // values exclude cloud shadowing — the global-cover proxy below
+    // (covGlobal) stands in for the old per-step CloudSunVisibilityPlanet
+    // term.
     float3 cloudMid       = O + Vn * (0.5f * (tC0 + tC1));
     float3 probeUp        = SafeNormalize(cloudMid);
     float3 cloudProbePos  = probeUp * (ATMOS_BOTTOM_RADIUS
                                      + CLOUD_LAYER_TOP_KM
                                      + CLOUD_TOP_VARIATION_KM + 0.5f);
     float  probeSunCosZ   = dot(probeUp, L);
+
+    // GLOBAL cover proxy — deliberately a per-frame CONSTANT, not a map
+    // sample. Sampling the coverage map at the per-ray cloud midpoint
+    // (introduced and reverted 2026-06-11) painted the Blue-Marble pattern
+    // onto every cloud's ambient / ground bounce as up-to-85%-dark
+    // patches: the remote sample point (mid-ray, tens of km from the lit
+    // cloud) decouples the pattern from the visible clouds, so it slides
+    // over them under camera motion — a ghost "sphere surface" visible
+    // only on cloud bodies. A constant cannot pattern anything. The
+    // per-SAMPLE coverage weights in the air integrators are a different
+    // story and stay: they are anchored at the exact positions they light.
+    float covGlobal = saturate(CLOUD_COVERAGE_BASE);
 
     float3 skyAmbientTop     = float3(0, 0, 0);
     float3 skyAmbientHorizon = float3(0, 0, 0);
@@ -1481,11 +1637,19 @@ float3 EvaluateAtmosphereAndClouds(
         float horizonLum = Luma(skyAmbientHorizon);
         if (horizonLum > topLum) skyAmbientHorizon *= topLum / horizonLum;
 
-        // NO global-cover darkening here: the probe sits at cloud-top
+        // Zenith row: NO cover darkening — the probe sits at cloud-top
         // radius and integrates the air ABOVE the deck, which the deck
-        // does not shadow. Self-occlusion within the cloud is skyOcc's
-        // job (CloudComputeLighting). The old 1-0.85*coverage proxy
-        // multiplied overcast undersides by ~0.15 for no physical reason.
+        // does not shadow; self-occlusion within the cloud is skyOcc's
+        // job (CloudComputeLighting).
+        // Horizon row: the probe's ~390 km sunlit clear-air path is
+        // exactly what a base under wide overcast does NOT see — looking
+        // sideways it faces the dark under-deck cavity, an occlusion the
+        // radial-column AO cannot capture. Attenuate by the GLOBAL cover
+        // constant (same proxy as the ground bounce; see covGlobal note
+        // above for why this must not be a map sample); clear skies keep
+        // the full horizon ring, and the heightFrac lerp already retires
+        // this row near cloud tops.
+        skyAmbientHorizon *= (1.0f - 0.85f * covGlobal);
     }
 
     float3 groundIrrad = float3(0, 0, 0);
@@ -1499,14 +1663,13 @@ float3 EvaluateAtmosphereAndClouds(
                     * CLOUD_GROUND_ALBEDO * CLOUD_GROUND_SCALE
                     * (1.0f / PI);
 
-        // Global cover proxy — tracking per-pixel cloud shadow on the
-        // ground caused DLSS RR to read the parallax between ground-depth
-        // shadow and cloud-depth surface as a separate layer.
+        // GLOBAL cover proxy (covGlobal, per-frame constant — see note
+        // above). Tracking per-pixel cloud shadow on the ground caused
+        // DLSS RR to read the parallax between ground-depth shadow and
+        // cloud-depth surface as a separate layer; the map-at-cloudMid
+        // variant painted the coverage map onto cloud bases the same way.
         if (cloud_cloudShadowOnSurfaces > 0.5f)
-        {
-            float coverage = saturate(CLOUD_COVERAGE_BASE);
-            groundIrrad   *= (1.0f - 0.85f * coverage);
-        }
+            groundIrrad *= (1.0f - 0.85f * covGlobal);
     }
 
     // Phase 2 — combined atmosphere + cloud march through cloud shell.
@@ -1536,10 +1699,28 @@ float3 EvaluateAtmosphereAndClouds(
                                                 CLOUD_RENDER_DISTANCE_KM, t);
             float lodT     = CloudLodT(t);
             float rJit     = RandomFloatSingle(seed);
-            float tSample  = t + rJit * stepSize;
+
+            // Jitter window = the smallest stride this step can take: the
+            // in-cloud stride incl. its distance floor and, in the second
+            // half of the budget, the reach floor (both hull-independent,
+            // so they're known BEFORE sampling). The old window was the
+            // raw stepSize alone — at horizon distances the actual stride
+            // is 2-10x larger, so samples clustered in the first fraction
+            // of every segment and the heart profile's vertical bands
+            // aliased into horizontal LAYERS on far decks. Empty strides
+            // may still exceed the window (harmless — empty segments add
+            // no cloud shading); in-cloud strides never do.
+            float strideMin = max(stepSize, t * CLOUD_STEP_DIST_FRAC_FINE);
+            if (ts * 2 >= CLOUD_VIEW_STEPS_MAX)
+                strideMin = max(strideMin,
+                                (tC1 - t) / (float)(CLOUD_VIEW_STEPS_MAX - ts));
+            strideMin = min(strideMin, tC1 - t);
+
+            float tSample  = t + rJit * strideMin;
             float3 P       = O + Vn * tSample;
 
-            float alt           = max(0.0f, length(P) - ATMOS_BOTTOM_RADIUS);
+            float rP            = length(P);
+            float alt           = max(0.0f, rP - ATMOS_BOTTOM_RADIUS);
             MediumSample atmosMed = SampleMedium(alt);
 
             // Hull-Ex passes (coverage, profile, effTop, baseShift) to the
@@ -1590,13 +1771,17 @@ float3 EvaluateAtmosphereAndClouds(
                         * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
                     CLOUD_MAX_EMPTY_STEP_KM);
                 thisStep = lerp(stepSize, maxStepAdaptive, saturate(lodT));
+                // Never below the jitter window so the sample always lies
+                // inside the segment it stands for.
+                thisStep = max(thisStep, strideMin);
             }
             else
             {
-                thisStep = max(stepSize, t * CLOUD_STEP_DIST_FRAC_FINE);
+                // strideMin IS the in-cloud stride (fine + distance floor
+                // + reach floor) — and exactly the window tSample was
+                // jittered over.
+                thisStep = strideMin;
             }
-            if (ts * 2 >= CLOUD_VIEW_STEPS_MAX)
-                thisStep = max(thisStep, (tC1 - t) / (float)(CLOUD_VIEW_STEPS_MAX - ts));
             thisStep = min(thisStep, tC1 - t);
 
             float3 segTr = exp(-sigma_t_total * thisStep);
@@ -1637,28 +1822,61 @@ float3 EvaluateAtmosphereAndClouds(
             // reach + far-side term, already cone-averaged) instead of
             // paying a second CloudOpticalDepthAlongRay march for the same
             // occlusion at the same point.
+            // earthShadow gate as in IntegrateAtmosphereSegment — skips
+            // the cone tap + ambient fetches on the night side, where the
+            // directional and deck terms are zeroed by earthShadow anyway.
             float cloudVisAtmos = 1.0f;
-            if (cloud_cloudShadowOnSurfaces > 0.5f)
+            float cloudAmbAtmos = 0.0f;
+            float msGateAtmos   = 1.0f;
+            if (cloud_cloudShadowOnSurfaces > 0.5f && earthShadow > 1e-4f)
             {
+                float visRaw;
+                float tauAmb;
                 if (cloudSunOD >= 0.0f)
                 {
-                    cloudVisAtmos = exp(-cloudSunOD);
+                    // OD-direct — exp/log round-tripping the vis would cap
+                    // thick-deck tau at the float clamp.
+                    visRaw = exp(-cloudSunOD);
+                    tauAmb = cloudSunOD;
                 }
                 else
                 {
+                    // rCone.xy = cone jitter, rCone.z = altitude-slice
+                    // jitter — both needed or the fast path's single tap
+                    // paints a ghost mid-shell sphere onto the fog (see
+                    // CloudOpticalDepthAlongRay).
                     float4 rCone = CloudRand4(pixel, frame, (uint)ts + 700u);
                     float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
                                                          float2(rCone.x, rCone.y));
-                    cloudVisAtmos = CloudSunVisibilityPlanet(P, LjAtmos);
+                    visRaw = CloudSunVisibilityPlanet(P, LjAtmos, rCone.z);
+                    tauAmb = -log(max(visRaw, 1e-20f));
                 }
-                cloudVisAtmos = pow(max(cloudVisAtmos, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
+                // Ambient terms only where actually shadowed. In-band
+                // samples reuse the hull's coverage fetch; sub-deck strides
+                // (hull empty on altitude) pay one equirect fetch.
+                if (visRaw < 0.999f)
+                {
+                    float cov = (hullRaw > 0.0f) ? hCoverage
+                                                 : CloudGlobalCoverage(P);
+                    cloudAmbAtmos = CloudShadowAmbientTermsOD(tauAmb, sunCosZ,
+                                                              cov, msGateAtmos);
+                }
+                cloudVisAtmos = pow(max(visRaw, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
                 cloudVisAtmos = max(cloudVisAtmos, ATMOS_CLOUD_SHADOW_FLOOR);
             }
 
             float3 atmosScatterPhase = atmosMed.scatterR * phR + atmosMed.scatterM * phM;
+            float3 atmosScatterIso   = atmosMed.scatterR + atmosMed.scatterM;
             float3 atmosSunIllum     = sunIrradiance * earthShadow * sunAtmosT
-                                     * cloudVisAtmos * ATMOS_MULTI_SCATTER_FACTOR;
-            float3 atmosRate         = atmosScatterPhase * atmosSunIllum;
+                                     * ATMOS_MULTI_SCATTER_FACTOR;
+            // Hillaire MS: phase / sun transmittance / earth shadow live
+            // inside the LUT — multiply by sigma_s and sun irradiance only;
+            // msGateAtmos attenuates it under (and inside) cloud decks.
+            float3 psiMS             = MultiScatterPsi(rP, sunCosZ);
+            float3 atmosRate         = atmosScatterPhase * atmosSunIllum * cloudVisAtmos
+                                     + atmosScatterIso * (atmosSunIllum * cloudAmbAtmos
+                                                          + psiMS * sunIrradiance
+                                                                  * msGateAtmos);
 
             float3 totalRate = atmosRate + cloudRate;
 
