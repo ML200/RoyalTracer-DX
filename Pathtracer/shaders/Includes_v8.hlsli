@@ -155,6 +155,22 @@ Texture2DArray<float4> g_terrainSurfaceColor : register(t46);
 Texture2DArray<float4> g_terrainNormalMap    : register(t47);
 Texture2DArray<float>  g_terrainCloudOffset  : register(t48);
 
+//Per-frame sky LUTs, baked by Pass_skylut_bake_v8.hlsl (dedicated dispatch
+//recorded at the top of PopulateCommandList, before any consumer pass).
+//
+//  t49 g_skyTransmittanceLUT: 256x64 RGBA16F. rgb = atmosphere transmittance
+//    to space, Bruneton (r, mu) parameterization — see
+//    TransmittanceLutUvFromRMu in SunSampler_v8.hlsli. Replaces the old
+//    per-call ATMOS_LIGHT_STEPS inner march in TransmittanceToSun.
+//  t50 g_cloudAmbientLUT: 128x2 RGBA16F. Cloud ambient probe scatter over
+//    sun-zenith cosine at the cloud-top probe radius; row 0 = zenith probe,
+//    row 1 = horizon probe — see CloudAmbientLutU in Clouds_v8.hlsli.
+//    Replaces the two per-pixel IntegrateScattering probe marches in
+//    EvaluateAtmosphereAndClouds.
+//Both sampled with g_sampler_LUT (s1, bilinear clamp), SampleLevel 0.
+Texture2D<float4> g_skyTransmittanceLUT : register(t49);
+Texture2D<float4> g_cloudAmbientLUT     : register(t50);
+
 //====================================
 //CAMERA
 //====================================

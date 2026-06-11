@@ -52,9 +52,12 @@ void Pass_spat_gi_shift_v8()
         const uint myMatID = load_matID_res(g_Reservoirs_current, pixelIdx);
         if (myMatID != MATID_ENV_MISS)
         {
+            //one pack1 fetch for both x2 and n2 (load_x2/load_n2_s each did
+            //their own Load4 of the same record)
             const uint   myObjID = load_objID(g_Reservoirs_current, pixelIdx);
-            const float3 my_x2   = load_x2   (g_Reservoirs_current, pixelIdx, myObjID);
-            const float3 my_n2s  = load_n2_s (g_Reservoirs_current, pixelIdx, myObjID);
+            const uint4  p1      = g_Reservoirs_current.Load4(addr_pack1(pixelIdx));
+            const float3 my_x2   = ObjectToWorldPos(myObjID, asfloat(p1.xyz));
+            const float3 my_n2s  = ObjectToWorldNrm(myObjID, UnpackNormal(p1.w));
             my_Jc = ComputeJc(sv.x, my_x2, my_n2s);
         }
     }
@@ -76,39 +79,33 @@ void Pass_spat_gi_shift_v8()
         const uint nID      = g_pathStateBuffer.Load(slotAddr);
         if (nID == 0xFFFFFFFFu) continue;
 
-        const uint   p_objID = load_objID(g_Reservoirs_current, nID);
-        const uint   p_matID = load_matID_res(g_Reservoirs_current, nID);
-        const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
-        const float3 p_x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
-        const float3 p_n2s   = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
-        const float3 p_L2    = load_L2(g_Reservoirs_current, nID);
-        const float3 p_V2    = load_V2(g_Reservoirs_current, nID);
-        const float  p_eta   = load_eta(g_Reservoirs_current, nID);
-
-        //resolved partner x2 material - baked into the reservoir, no re-fetch
-        float3 rKd = load_kd_res(g_Reservoirs_current, nID);
-        float  rPr, rPm;
-        load_prpm_res(g_Reservoirs_current, nID, rPr, rPm);
+        //partner reconnection payload in 4 grouped fetches (pack1 | pay |
+        //v2 | objID) - was ~8 scattered single-field loads
+        Reservoir pr = (Reservoir)0;
+        loadReservoirPayload(g_Reservoirs_current, nID, pr);
 
         //shift my x1 to partner x2
         float  Jn = 0.0f;
         float3 c  = Reconnect(
             sv.x, sv.n_s, sv.o, sv.matID,
             sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat,
-            p_matID, p_x2, p_n2s, p_L2, p_V2,
-            rKd, rPr, rPm, p_eta,
+            pr.matID, pr.x2, pr.n2_s, pr.L2, pr.V2,
+            pr.Kd, pr.Pr, pr.Pm, pr.eta,
             Jn);
 
-        //bake visibility into the stored contribution
+        //bake visibility into the stored contribution. The ray is skipped
+        //when the reconnection already evaluated to zero
+        //(c == 0 <=> GetPHat(c) == 0: luminance weights positive, c >= 0)
+        if (GetPHat(c) > 0.0f)
         {
             float vis;
-            if (p_matID == MATID_ENV_MISS)
+            if (pr.matID == MATID_ENV_MISS)
             {
-                vis = IsVisibleEnvMiss(sv.x, sv.n_s, normalize(p_x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
+                vis = IsVisibleEnvMiss(sv.x, sv.n_s, normalize(pr.x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
             }
             else
             {
-                const float3 conn = p_x2 - sv.x;
+                const float3 conn = pr.x2 - sv.x;
                 const float  cd   = length(conn);
                 vis = (cd > EPSILON &&
                        IsVisible(sv.x, sv.n_s, conn / cd, cd * 0.999f))

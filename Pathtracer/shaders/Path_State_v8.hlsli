@@ -9,17 +9,23 @@
 //plane 2  V2       4B  v2_pk                      depth-2 direction
 //plane 3  HOT1    16B  throughput + prevNormal + prev_pdf + pdf_product
 //plane 4  HOT2    16B  tpost + wsum + flags + pad
-//plane 5  SEED     4B
-//plane 6  RAY_O   12B  rayOrigin
-//plane 7  RAY_D   12B  rayDir
-//plane 8  HP      16B  hitT + instID + primID + baryPk
-//plane 9  CLAS1   16B  hitNormal + matID + etaOut + uv
-//plane 10 CLAS2    4B  absTintPk
+//plane 5  CLAS2    4B  Pr|Pm of the v_2 vertex (raygen-LIVE: store_ps_depth1)
+//plane 6  SEED     4B
+//plane 7  RAY_O   12B  rayOrigin
+//plane 8  RAY_D   12B  rayDir
+//plane 9  HP      16B  hitT + instID + primID + baryPk
+//plane 10 CLAS1   16B  hitNormal + matID + etaOut + uv
 //plane 11 CAND_WI 12B
 //plane 12 CAND_M  16B  L + lightPdf + meta + lightObjID
 //plane 13 CAND_LP 12B
 //plane 14 CAND_LN  4B
-//total 176B/pixel, tile-aligned via ps_numPx
+//total 176B/pixel layout, tile-aligned via ps_numPx. The CPU allocation
+//(Renderer.h kPathStateBytesPerPx = 88) backs only the raygen-live prefix
+//(planes 0..5, 72B) plus headroom for the spat-select scratch that aliases
+//the buffer from offset 0 (76B/px); the wavefront-only planes past 88B are
+//dead code and intentionally unbacked. CLAS2 used to sit at plane offset 128
+//- past the allocation, so its Pr/Pm round-trip silently read zeros (robust
+//OOB access). Any plane the raygen path touches MUST stay below 88B/px.
 static const uint PS_SZ_PACK1    = 16u;
 static const uint PS_SZ_PACK2    = 16u;
 static const uint PS_SZ_V2       =  4u;
@@ -41,19 +47,22 @@ static const uint PS_PLANE_PACK2    =  16u;
 static const uint PS_PLANE_V2       =  32u;
 static const uint PS_PLANE_HOT1     =  36u;
 static const uint PS_PLANE_HOT2     =  52u;
-static const uint PS_PLANE_SEED     =  68u;
-static const uint PS_PLANE_RAY_O    =  72u;
-static const uint PS_PLANE_RAY_D    =  84u;
-static const uint PS_PLANE_HP       =  96u;
-static const uint PS_PLANE_CLAS1    = 112u;
-static const uint PS_PLANE_CLAS2    = 128u;
+static const uint PS_PLANE_CLAS2    =  68u;
+static const uint PS_PLANE_SEED     =  72u;
+static const uint PS_PLANE_RAY_O    =  76u;
+static const uint PS_PLANE_RAY_D    =  88u;
+static const uint PS_PLANE_HP       = 100u;
+static const uint PS_PLANE_CLAS1    = 116u;
 static const uint PS_PLANE_CAND_WI  = 132u;
 static const uint PS_PLANE_CAND_M   = 144u;
 static const uint PS_PLANE_CAND_LP  = 160u;
 static const uint PS_PLANE_CAND_LN  = 172u;
 
-//tile-aligned pixel count, matches MapPixelID 4x8 swizzle
-uint ps_numPx() { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
+//tile-aligned pixel count, matches MapPixelID's 8-wide x 4-tall tile swizzle
+//(Common_v8.hlsli) and the CPU-side TileAlignedPx (Renderer.h). The old
+//4x8-shaped formula diverged from MapPixelID's actual max index at
+//non-tile-divisible resolutions, overlapping the SoA planes.
+uint ps_numPx() { return ((IMG_W + 7u) / 8u) * ((IMG_H + 3u) / 4u) * 32u; }
 
 uint ps_addr_pack1   (uint px) { return px * PS_SZ_PACK1; }
 uint ps_addr_pack2   (uint px) { uint N = ps_numPx(); return N * PS_PLANE_PACK2    + px * PS_SZ_PACK2; }
@@ -201,8 +210,8 @@ struct PathVertexState {
 
 //v_2 vertex stashed at depth==1, feeds depth>=3 reservoir candidates. Carries
 //the resolved material (Kd/Pr/Pm) so depth>=3 candidates need no re-fetch.
-//Pr|Pm ride the CLAS2 plane - wavefront-only, unused on the raygen path, the
-//same plane-aliasing the file already does for HOT1/HOT2.
+//Pr|Pm ride the CLAS2 plane, which lives in the backed raygen-live prefix of
+//the buffer (see the plane table above).
 void store_ps_depth1(RWByteAddressBuffer buf, uint pixelIdx,
                      float3 x2_world, float3 n2_world,
                      uint matID, uint objID, float eta,

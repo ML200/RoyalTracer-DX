@@ -201,13 +201,12 @@
 
 #define SKY_STAR_LOD_BIAS       skyStarLodBias
 
-// Matches the planet mesh albedo (gray rock 0.4).
-// EvaluatePlanetBody is an analytic Lambertian stand in for the path traced
-// mesh. Since the radius realignment the analytic Rb sphere coincides with
-// the mesh, so the stand in carries the mesh albedo and shades consistently
-// wherever it is actually seen: the sub pixel polygon vs Rb horizon gap, or
-// past RAY_TMAX_PLANET where primary rays no longer reach the mesh. Cloud
-// bounce keeps its own CLOUD_GROUND_ALBEDO.
+// EvaluatePlanetBody is NO LONGER RENDERED (2026-06-11): the analytic
+// Lambertian Rb sphere is gone from EvaluateSkyBackground /
+// EvaluateSkyBackgroundBehind — the scene's own geometry provides any
+// ground, and the stand-in leaked gray light into GI bounce misses. The
+// function + albedo stay for debugging. Cloud ground bounce keeps its own
+// CLOUD_GROUND_ALBEDO.
 #ifndef ATMOS_GROUND_ALBEDO
 #define ATMOS_GROUND_ALBEDO     float3(0.4f, 0.4f, 0.4f)
 #endif
@@ -495,6 +494,103 @@ inline float SunDiskFractionAboveHorizon(float sunCosZ, float cosHorizon)
                       cosHorizon + kSinSunRadius, sunCosZ);
 }
 
+//====================================
+//SUN TRANSMITTANCE — PER-FRAME 2D LUT
+//====================================
+//The atmosphere is spherically symmetric, so the to-space transmittance
+//integral depends only on (r, mu) = (sample radius, cosine of the ray vs
+//local zenith). It used to be marched per call (ATMOS_LIGHT_STEPS x
+//SampleMedium) — and TransmittanceToSun is called per STEP of every outer
+//march (cloud phase-2 strides, atmosphere segments, IntegrateScattering,
+//aerial perspective), i.e. hundreds of inner marches per pixel.
+//Pass_skylut_bake_v8.hlsl now integrates it once per frame into a 256x64
+//LUT (g_skyTransmittanceLUT, t49) with the Bruneton 2017 parameterization,
+//and the runtime call is one bilinear fetch. The geometric planet/terrain
+//block checks stay at the call — they depend on the actual 3D position,
+//not on (r, mu).
+//
+//ATMOS_LIGHT_STEPS no longer drives a per-call cost; the bake uses a fixed
+//64-step integral (16K texels, negligible).
+
+#define SKY_TRANSMITTANCE_LUT_W 256.0f
+#define SKY_TRANSMITTANCE_LUT_H 64.0f
+
+// x in [0,1] <-> texel-center-inset texture coord (Bruneton).
+inline float LutCoordFromUnitRange(float x, float texSize)
+{
+    return 0.5f / texSize + x * (1.0f - 1.0f / texSize);
+}
+
+inline float LutUnitRangeFromCoord(float u, float texSize)
+{
+    return saturate((u - 0.5f / texSize) / (1.0f - 1.0f / texSize));
+}
+
+// Bruneton mapping: x_r = rho/H, x_mu = (d - dmin)/(dmax - dmin) with
+// d = distance to the atmosphere top along the ray, rho = sqrt(r²-Rb²),
+// H = sqrt(Rt²-Rb²). Follows the horizon line, so the steep near-horizon
+// falloff gets texel density exactly where it changes fastest. Domain is
+// mu >= horizon (rays that reach space); below-horizon rays are rejected
+// by the geometric block checks before lookup, and the sliver that
+// survives the sunken block sphere clamps to the darkest stored column.
+inline float2 TransmittanceLutUvFromRMu(float r, float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    const float H  = sqrt(max(1e-3f, Rt * Rt - Rb * Rb));
+    float rho  = sqrt(max(0.0f, r * r - Rb * Rb));
+    float disc = max(0.0f, r * r * (mu * mu - 1.0f) + Rt * Rt);
+    float d    = max(0.0f, -r * mu + sqrt(disc));
+    float dMin = Rt - r;
+    float dMax = rho + H;
+    float xMu  = saturate((d - dMin) / max(1e-6f, dMax - dMin));
+    float xR   = saturate(rho / H);
+    return float2(LutCoordFromUnitRange(xMu, SKY_TRANSMITTANCE_LUT_W),
+                  LutCoordFromUnitRange(xR,  SKY_TRANSMITTANCE_LUT_H));
+}
+
+// Inverse of the mapping above — used by the bake pass only.
+inline void TransmittanceLutRMuFromUv(float2 uv, out float r, out float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    const float H  = sqrt(max(1e-3f, Rt * Rt - Rb * Rb));
+    float xMu = LutUnitRangeFromCoord(uv.x, SKY_TRANSMITTANCE_LUT_W);
+    float xR  = LutUnitRangeFromCoord(uv.y, SKY_TRANSMITTANCE_LUT_H);
+    float rho = H * xR;
+    r = sqrt(rho * rho + Rb * Rb);
+    float dMin = Rt - r;
+    float dMax = rho + H;
+    float d    = dMin + xMu * (dMax - dMin);
+    mu = (d <= 1e-4f) ? 1.0f
+       : clamp((H * H - rho * rho - d * d) / (2.0f * r * d), -1.0f, 1.0f);
+}
+
+// Reference integral (r, mu) -> transmittance to the atmosphere top.
+// Bake-side only; the runtime path samples the LUT instead.
+inline float3 ComputeTransmittanceToTopRMu(float r, float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    float disc = max(0.0f, r * r * (mu * mu - 1.0f) + Rt * Rt);
+    float dTop = max(0.0f, -r * mu + sqrt(disc));
+
+    const int N = 64;
+    float  ds = dTop / (float)N;
+    float3 od = float3(0, 0, 0);
+    [loop]
+    for (int i = 0; i < N; ++i)
+    {
+        float t  = ((float)i + 0.5f) * ds;
+        float rT = sqrt(max(Rb * Rb, r * r + t * t + 2.0f * r * t * mu));
+        MediumSample med = SampleMedium(max(0.0f, rT - Rb));
+        od += med.extinction * ds;
+    }
+    return exp(-od);
+}
+
+// Rb/Rt params kept for call-site compatibility; the LUT itself is baked
+// for ATMOS_BOTTOM_RADIUS / ATMOS_TOP_RADIUS (every caller passes those).
 inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 {
     float t0, t1;
@@ -502,7 +598,6 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 
     float tMax = t1;
     if (tMax <= 0.0f) return float3(1, 1, 1);
-    float tMin = max(0.0f, t0);
 
     // Geometric planet block — must return zero, not the partial integral.
     // A partial would bleed bright yellow into the earth shadow band; the
@@ -524,21 +619,19 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
         if (rC < terrR) return float3(0, 0, 0);
     }
 
-    float ds = (tMax - tMin) / (float)ATMOS_LIGHT_STEPS;
-    float3 od = float3(0, 0, 0);
-
-    for (int i = 0; i < ATMOS_LIGHT_STEPS; i++)
+    // From-space rays: advance to the atmosphere entry so (r, mu) lands in
+    // the LUT domain. The mesh-bias band slightly below Rb clamps to ground.
+    float r = length(P);
+    if (r > Rt && t0 > 0.0f)
     {
-        float t = tMin + ((float)i + 0.5f) * ds;
-        float3 Q = P + L * t;
-        float  rQ = length(Q);
-
-        float alt = max(0.0f, rQ - Rb);
-        MediumSample med = SampleMedium(alt);
-        od += med.extinction * ds;
+        P += L * t0;
+        r  = Rt;
     }
+    r = clamp(r, Rb, Rt);
+    float mu = clamp(dot(P, L) / max(r, 1e-4f), -1.0f, 1.0f);
 
-    return exp(-od);
+    return g_skyTransmittanceLUT.SampleLevel(
+        g_sampler_LUT, TransmittanceLutUvFromRMu(r, mu), 0).rgb;
 }
 
 // Forward decl — defined in Clouds_v8.hlsli (included after this file).
@@ -652,47 +745,12 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 #define ATMOS_AERIAL_LIGHT_STEPS 4
 #endif
 
+// Historical "cheap" variant — it existed to cap the inner-march step count
+// for aerial perspective. The LUT-backed TransmittanceToSun is now a single
+// fetch, so this is a plain alias kept for its call sites.
 inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
 {
-    float t0, t1;
-    if (!RaySphereIntersect(P, L, Rt, t0, t1)) return float3(1, 1, 1);
-
-    float tMax = t1;
-    if (tMax <= 0.0f) return float3(1, 1, 1);
-    float tMin = max(0.0f, t0);
-
-    // Sun block sphere sunk below Rb; see ATMOS_SUN_BLOCK_BIAS_KM.
-    float tG0, tG1;
-    float RbBlock = Rb - ATMOS_SUN_BLOCK_BIAS_KM;
-    if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
-        return float3(0, 0, 0);
-
-    // Terrain block at closest approach.
-    float tClose = -dot(P, L);
-    if (tClose > 0.0f && tClose < tMax)
-    {
-        float3 Qc = P + L * tClose;
-        float  rC = length(Qc);
-        float  terrR = Rb + max(TerrainHeight(Qc / rC) * 0.001f, 0.0f);
-        if (rC < terrR) return float3(0, 0, 0);
-    }
-
-    float ds = (tMax - tMin) / (float)ATMOS_AERIAL_LIGHT_STEPS;
-    float3 od = float3(0, 0, 0);
-
-    [unroll]
-    for (int i = 0; i < ATMOS_AERIAL_LIGHT_STEPS; i++)
-    {
-        float t = tMin + ((float)i + 0.5f) * ds;
-        float3 Q = P + L * t;
-        float  rQ = length(Q);
-
-        float alt = max(0.0f, rQ - Rb);
-        MediumSample med = SampleMedium(alt);
-        od += med.extinction * ds;
-    }
-
-    return exp(-od);
+    return TransmittanceToSun(P, L, Rb, Rt);
 }
 
 //Returns in-scatter in units of ATMOS_SOLAR_IRRADIANCE; caller scales by
@@ -830,6 +888,7 @@ float3 AtmosphericTransmittance(float3 dir)
 
 // Lambertian planet sphere. Exposure uses SUN_INTENSITY_VAL (not the
 // SKY_INTENSITY-amplified sky model) so the lit ground reads as a surface.
+// UNUSED since 2026-06-11 (no analytic planet surface) — kept for debugging.
 inline float3 EvaluatePlanetBody(float3 O, float3 V, float3 L)
 {
     float tG0, tG1;
@@ -1076,20 +1135,12 @@ float3 EvaluateSkyBackground(float3 rayDir)
     // the camera entered any cloud shadow. Per-pixel cloudTr from the
     // dedicated cloud pass handles this correctly.
 
-    // Planet body uses a global cover scalar for cloud shadow. Per-pixel
-    // hit-point taps ghosted the cover pattern through translucent
-    // foreground cloud (planet hit can be 100+ km away from the visible
-    // cloud), so it's now a single scalar.
-    float3 planetBody = float3(0, 0, 0);
-    if (hitPlanet)
-    {
-        planetBody = EvaluatePlanetBody(O, v, S.dirWS) * viewTr;
-        if (cloud_cloudShadowOnSurfaces > 0.5f)
-        {
-            float coverage = saturate(CLOUD_COVERAGE_BASE);
-            planetBody    *= (1.0f - 0.85f * coverage);
-        }
-    }
+    // NO analytic planet body: below-horizon rays return aerial in-scatter
+    // only, fading to black. The scene's own geometry provides any visible
+    // ground; the old Lambertian Rb sphere also leaked gray "ground light"
+    // into GI bounce misses (the nadir-ring class of artifacts). hitPlanet
+    // still clips the march and gates stars/airglow below — only the shaded
+    // body is gone.
 
     // Night base airglow. MUST NOT scale by SKY_INTENSITY — airglow and
     // integrated starlight don't depend on sun brightness, otherwise
@@ -1109,7 +1160,7 @@ float3 EvaluateSkyBackground(float3 rayDir)
     float3 stars      = hitPlanet ? float3(0, 0, 0)
                                   : (EvaluateStars(v) * viewTr * starShield);
 
-    return lerp(nightBase, daySky, tw) + stars + planetBody;
+    return lerp(nightBase, daySky, tw) + stars;
 }
 
 // Components "behind" the unified march's scatter — planet body, stars,
@@ -1136,18 +1187,8 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
                                          * lerp(1.6f, 1.0f, pow(mu, 0.7f));
     nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f) * (1.0f - tw);
 
-    // Global cover proxy — see EvaluateSkyBackground for the per-pixel
-    // ghosting rationale.
-    float3 planetBody = float3(0, 0, 0);
-    if (hitPlanet)
-    {
-        planetBody = EvaluatePlanetBody(O, v, S.dirWS);
-        if (cloud_cloudShadowOnSurfaces > 0.5f)
-        {
-            float coverage = saturate(CLOUD_COVERAGE_BASE);
-            planetBody    *= (1.0f - 0.85f * coverage);
-        }
-    }
+    // NO analytic planet body (see EvaluateSkyBackground) — hitPlanet only
+    // gates stars/airglow here.
 
     // Sunlit clouds contribute to the shield too — they hide stars behind them.
     float3 stars = float3(0, 0, 0);
@@ -1158,7 +1199,7 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
         stars = EvaluateStars(v) * starShield;
     }
 
-    return nightBase + planetBody + stars;
+    return nightBase + stars;
 }
 
 // Background + cheap clouds for bounce/inline-RT miss. cloudTrOut lets

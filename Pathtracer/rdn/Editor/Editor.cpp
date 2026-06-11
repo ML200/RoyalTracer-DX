@@ -926,14 +926,19 @@ void Editor::DrawCloudPanel(Camera& camera) {
 
     if (ImGui::CollapsingHeader("Multi-Scatter Fill")) {
         //MS model selector. 0 = current Nubis sqrt(Tdir) shortcut (one
-        //isotropic-ish MS lobe, cheapest). 1, 2 = Wrenninge multi octave
-        //(Hillaire 2016 §5.8) which adds 1 or 2 extra phase function evals
-        //per cloud sample with progressively attenuated extinction and
-        //broadened phase. No extra shadow taps so perf cost is small.
+        //isotropic-ish MS lobe, cheapest). 1..4 = Wrenninge multi octave
+        //(Hillaire 2016 §5.8) which adds N extra extinction evals per cloud
+        //sample with progressively attenuated extinction (a^n = 0.5^n) and
+        //isotropic phase. No extra shadow taps so perf cost is small.
+        //Octaves 3/4 reach exp(-tau/8) and exp(-tau/16) — the similarity-
+        //theory diffusion scale that keeps thick-cloud undersides from
+        //going exponentially black.
         const char* msModeNames[] = {
             "0: Nubis shortcut (1 lobe, cheapest)",
             "1: Wrenninge 2 octave",
             "2: Wrenninge 3 octave",
+            "3: Wrenninge 4 octave (deep)",
+            "4: Wrenninge 5 octave (deepest)",
         };
         int msModeIdx = (int)c.msMode;
         if (ImGui::Combo("MS Model", &msModeIdx, msModeNames, IM_ARRAYSIZE(msModeNames)))

@@ -30,40 +30,49 @@ struct Reservoir
 
 
 //====================================
-//SOA FIELD SIZES AND PLANE OFFSETS
+//SOA GROUP PLANES
 //====================================
-static const uint SZ_PACK1 = 16u;
-static const uint SZ_4     =  4u;
-static const uint SZ_12    = 12u;
-
+//64 B/px in 5 planes, grouped by co-access so scattered partner reads
+//(temporal candidate, spatial shift / merge lazy accept) touch 4-5 cache
+//lines instead of the former 11 single-field planes. Coalesced own-pixel
+//access is unchanged (same bytes, fewer transactions + less address math).
+//  PACK1 16B  x2(12) | n2pk(4)              reconnection geometry
+//  PAY   16B  L2 | Kd | eta/Pr/Pm | matID   reconnection material payload
+//  FW    16B  F(12) | W(4)                  RIS state, one Load4 in merge
+//  V2     4B  solo plane                    dup pass streams it at 4B stride
+//  MISC  12B  objID | M | wsum
 static const uint PLANE_PACK1 =  0u;
-static const uint PLANE_L2    = 16u;
-static const uint PLANE_V2    = 20u;
-static const uint PLANE_OBJID = 24u;
-static const uint PLANE_KD    = 28u;   // was UV - now resolved albedo (RGB9E5)
-static const uint PLANE_MATID = 32u;
-static const uint PLANE_W     = 36u;
-static const uint PLANE_F     = 40u;
-static const uint PLANE_M     = 52u;
-static const uint PLANE_ETA   = 56u;   // packed: eta half16 | Pr unorm8 | Pm unorm8
-static const uint PLANE_WSUM  = 60u;
+static const uint PLANE_PAY   = 16u;
+static const uint PLANE_FW    = 32u;
+static const uint PLANE_V2    = 48u;
+static const uint PLANE_MISC  = 52u;
 
 //====================================
 //SOA ADDRESS HELPERS
 //====================================
-//tile-aligned pixel count, must match MapPixelID's 4x8 swizzle
-uint numPx()                       { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
-uint addr_pack1(uint px)           { return px * SZ_PACK1; }
-uint addr_l2(uint px)              { uint N = numPx(); return N * PLANE_L2    + px * SZ_4; }
-uint addr_v2(uint px)              { uint N = numPx(); return N * PLANE_V2    + px * SZ_4; }
-uint addr_objid(uint px)           { uint N = numPx(); return N * PLANE_OBJID + px * SZ_4; }
-uint addr_kd(uint px)              { uint N = numPx(); return N * PLANE_KD    + px * SZ_4; }
-uint addr_matid(uint px)           { uint N = numPx(); return N * PLANE_MATID + px * SZ_4; }
-uint addr_w(uint px)               { uint N = numPx(); return N * PLANE_W     + px * SZ_4; }
-uint addr_f(uint px)               { uint N = numPx(); return N * PLANE_F     + px * SZ_12; }
-uint addr_m(uint px)               { uint N = numPx(); return N * PLANE_M     + px * SZ_4; }
-uint addr_eta(uint px)             { uint N = numPx(); return N * PLANE_ETA   + px * SZ_4; }
-uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM  + px * SZ_4; }
+//tile-aligned pixel count, must match MapPixelID's 8-wide x 4-tall tile
+//swizzle (Common_v8.hlsli) and the CPU-side TileAlignedPx (Renderer.h).
+//The old 4x8-shaped formula diverged from MapPixelID's actual max index at
+//non-tile-divisible resolutions, overlapping the SoA planes.
+uint numPx()                       { return ((IMG_W + 7u) / 8u) * ((IMG_H + 3u) / 4u) * 32u; }
+
+//group bases
+uint addr_pack1(uint px)           { return px * 16u; }
+uint addr_pay  (uint px)           { uint N = numPx(); return N * PLANE_PAY  + px * 16u; }
+uint addr_fw   (uint px)           { uint N = numPx(); return N * PLANE_FW   + px * 16u; }
+uint addr_v2   (uint px)           { uint N = numPx(); return N * PLANE_V2   + px *  4u; }
+uint addr_misc (uint px)           { uint N = numPx(); return N * PLANE_MISC + px * 12u; }
+
+//per-field addresses inside the groups (legacy helper API preserved)
+uint addr_l2(uint px)              { return addr_pay(px); }
+uint addr_kd(uint px)              { return addr_pay(px)  +  4u; }
+uint addr_eta(uint px)             { return addr_pay(px)  +  8u; }
+uint addr_matid(uint px)           { return addr_pay(px)  + 12u; }
+uint addr_f(uint px)               { return addr_fw(px); }
+uint addr_w(uint px)               { return addr_fw(px)   + 12u; }
+uint addr_objid(uint px)           { return addr_misc(px); }
+uint addr_m(uint px)               { return addr_misc(px) +  4u; }
+uint addr_wsum(uint px)            { return addr_misc(px) +  8u; }
 
 //luminance
 inline float GetPHat(float3 v) {
@@ -123,40 +132,51 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     float3 xO  = WorldToObjectPos(r.objID, r.x2);
     float3 nSO = WorldToObjectNrm(r.objID, r.n2_s);
 
-    buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
-    buf.Store (addr_l2(pixelIdx),    PackRGB9E5(r.L2));
-    buf.Store (addr_v2(pixelIdx),    PackNormal(normalize(r.V2)));
-    buf.Store (addr_objid(pixelIdx), r.objID);
-    buf.Store (addr_kd(pixelIdx),    PackRGB9E5(r.Kd));
-    buf.Store (addr_matid(pixelIdx), r.matID);
-    buf.Store (addr_w(pixelIdx),     asuint(r.W));
-    buf.Store3(addr_f(pixelIdx),     asuint(r.F));
-    buf.Store (addr_m(pixelIdx),     r.M);
-    buf.Store (addr_eta(pixelIdx),   PackEtaPrPm(r.eta, r.Pr, r.Pm));
+    //no outer normalize: PackNormal normalizes internally, and its zero/NaN
+    //guard must see the raw vector so a cleared reservoir packs the
+    //invalid-normal sentinel instead of garbage bits
+    buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(nSO)));
+    buf.Store4(addr_pay(pixelIdx),
+               uint4(PackRGB9E5(r.L2), PackRGB9E5(r.Kd),
+                     PackEtaPrPm(r.eta, r.Pr, r.Pm), r.matID));
+    buf.Store4(addr_fw(pixelIdx), uint4(asuint(r.F), asuint(r.W)));
+    buf.Store (addr_v2(pixelIdx), PackNormal(r.V2));
+    //objID + M only: wsum (addr_misc + 8) is raygen-owned and not part of
+    //the merged record
+    buf.Store2(addr_misc(pixelIdx), uint2(r.objID, r.M));
 }
 
-Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
+//payload-only load: everything Reconnect needs (x2/n2/L2/V2/Kd/Pr/Pm/eta/
+//matID/objID) in 4 grouped fetches; F/W/M/w_sum of 'r' are left untouched.
+//For scattered partner reads (spat shift, merge lazy accept) where the RIS
+//state either is not needed or is being accumulated in place.
+void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoir r)
 {
-    Reservoir r;
-
-    uint4 p1 = buf.Load4(addr_pack1(pixelIdx));
+    const uint4 p1  = buf.Load4(addr_pack1(pixelIdx));
+    const uint4 pay = buf.Load4(addr_pay(pixelIdx));
 
     r.objID = buf.Load(addr_objid(pixelIdx));
-    r.matID = buf.Load(addr_matid(pixelIdx));
+    r.matID = pay.w;
 
     r.x2    = ObjectToWorldPos(r.objID, asfloat(p1.xyz));
     r.n2_s  = ObjectToWorldNrm(r.objID, UnpackNormal(p1.w));
 
-    r.L2    = UnpackRGB9E5(buf.Load(addr_l2(pixelIdx)));
+    r.L2    = UnpackRGB9E5(pay.x);
+    r.Kd    = UnpackRGB9E5(pay.y);
+    UnpackEtaPrPm(pay.z, r.eta, r.Pr, r.Pm);
+
     r.V2    = UnpackNormal(buf.Load(addr_v2(pixelIdx)));
+}
 
-    r.Kd    = UnpackRGB9E5(buf.Load(addr_kd(pixelIdx)));
+Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    Reservoir r = (Reservoir)0;
+    loadReservoirPayload(buf, pixelIdx, r);
 
-    r.W     = asfloat(buf.Load(addr_w(pixelIdx)));
-    r.F     = asfloat(buf.Load3(addr_f(pixelIdx)));
-
+    const uint4 fw = buf.Load4(addr_fw(pixelIdx));
+    r.F     = asfloat(fw.xyz);
+    r.W     = asfloat(fw.w);
     r.M     = buf.Load(addr_m(pixelIdx));
-    UnpackEtaPrPm(buf.Load(addr_eta(pixelIdx)), r.eta, r.Pr, r.Pm);
     r.w_sum = 0.0f;
 
     return r;
@@ -282,8 +302,11 @@ inline void InvalidateReservoir_ShadingNormal(
     uint pixelIdx
 )
 {
-    //n2_s stored in PACK1.w
-    buf.Store(addr_pack1(pixelIdx) + 12u, 0u);
+    //n2_s stored in PACK1.w. Must be the zero-normal sentinel: UnpackNormal
+    //decodes it to (0,0,0) so IsValidReservoir fails. A raw 0u (the old
+    //value) octahedral-decodes to a VALID unit vector and never invalidated
+    //anything.
+    buf.Store(addr_pack1(pixelIdx) + 12u, PROBE_DI_NORMAL_ZERO_CODE);
 }
 
 
@@ -526,14 +549,14 @@ inline bool AddInitialCandidate(
     {
         const float3 xO  = WorldToObjectPos(objID, x2);
         const float3 nSO = WorldToObjectNrm(objID, n2_s);
-        buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(normalize(nSO))));
-        buf.Store (addr_l2   (pixelIdx), PackRGB9E5(L2));
-        buf.Store (addr_v2   (pixelIdx), PackNormal(normalize(V2)));
-        buf.Store (addr_objid(pixelIdx), objID);
-        buf.Store (addr_matid(pixelIdx), matID);
-        buf.Store (addr_eta  (pixelIdx), PackEtaPrPm(eta, Pr, Pm));
-        buf.Store (addr_kd   (pixelIdx), PackRGB9E5(Kd));
+        buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(nSO)));
+        buf.Store4(addr_pay  (pixelIdx),
+                   uint4(PackRGB9E5(L2), PackRGB9E5(Kd),
+                         PackEtaPrPm(eta, Pr, Pm), matID));
+        //F only - W and M land in the FW/MISC groups at raygen finalize
         buf.Store3(addr_f    (pixelIdx), asuint(F_contrib));
+        buf.Store (addr_v2   (pixelIdx), PackNormal(V2));
+        buf.Store (addr_objid(pixelIdx), objID);
         return true;
     }
     return false;

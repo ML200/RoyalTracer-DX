@@ -277,6 +277,11 @@ void Renderer::InitDevice() {
         //runs, so the heap can pick up the resulting SRV at heap slot
         //CLOUD_NOISE_HEAP_SLOT. One-time GPU work on the init cmd list.
         BakeCloudNoiseTexture();
+        //Create the per-frame sky LUT textures (sun transmittance t49 +
+        //cloud ambient probes t50) before CreateShaderResourceHeap so their
+        //SRVs land at heap slots 73/74. The actual bake dispatches run every
+        //frame from PopulateCommandList (RecordSkyLUTBake).
+        InitSkyLUTBake();
         //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
         //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
         InitCloudCoverageTexture();
@@ -624,6 +629,10 @@ void Renderer::UpdateRenderer(float dt) {
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
     m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+
+    //current/last sample-buffer ping-pong - must come right after the full
+    //GPU sync and before any command recording for this frame
+    SwapSampleBuffers();
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
     //ResetView (editor button) snapped prevView = view inside UploadGPUBuffer
@@ -1104,7 +1113,9 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         writeFn(h);
     };
 
-    UINT px = GetWidth() * GetHeight();
+    //tile-aligned (MapPixelID 8x4 swizzle) - must match the allocations in
+    //CreateRaytracingOutputBuffer / CreatePathStateBuffer.
+    UINT px = TileAlignedPx(GetWidth(), GetHeight());
 
     // Slot 0: output array UAV
     writeUAVAt(0, m_outputResource, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
@@ -1173,7 +1184,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     }
 
     // Slot 32: path state UAV
-    rawUAVAt(32, m_pathStateBuffer, px * 88);
+    rawUAVAt(32, m_pathStateBuffer, px * kPathStateBytesPerPx);
 
     // Slots 33 (global counters), 34 (indirect args), 52-54 (sort buffers) are
     // bound to non-resolution-dependent buffers and are NOT recreated on resize
@@ -1190,6 +1201,36 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         ud.Buffer.StructureByteStride = 8;
         dev->CreateUnorderedAccessView(m_stackBuffers[s].Get(), nullptr, &ud, h);
     }
+}
+
+//====================================
+//SAMPLE BUFFER PING-PONG
+//====================================
+//Raygen fully rewrites g_sample_current (u6) every frame and g_sample_last
+//(u7) is read-only within the frame, so swapping the two bindings each frame
+//replaces the merge pass's copySampleData (72 B/px of pure copy traffic).
+//Safe to rewrite the live descriptor heap here: UpdateRenderer fully syncs
+//CPU<->GPU (WaitForPreviousFrame) before calling this, so no in-flight frame
+//references the old contents. Slots match WriteDescriptors /
+//RebuildResolutionDependentDescriptors (14 = u6 current, 15 = u7 last).
+void Renderer::SwapSampleBuffers() {
+    m_sampleBuffer_current.Swap(m_sampleBuffer_last);
+
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const UINT bytes = TileAlignedPx(GetWidth(), GetHeight()) * sizeof(SampleData);
+
+    auto rawUAVAt = [&](UINT slot, ID3D12Resource* res) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = bytes / 4;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(res, nullptr, &ud, h);
+    };
+    rawUAVAt(14, m_sampleBuffer_current.Get());
+    rawUAVAt(15, m_sampleBuffer_last.Get());
 }
 
 //====================================
@@ -1561,6 +1602,12 @@ void Renderer::PopulateCommandList() {
     m_frameStats.tlasWasRefit   = false;
     m_frameStats.tlasWasRebuilt = false;
     m_frameStats.tlasMs         = 0.0f;
+
+    // Per-frame sky LUT bake (sun transmittance + cloud ambient probes).
+    // Recorded BEFORE the main heap bind — it uses its own private heap and
+    // root signature, and every consumer pass below reads the results as
+    // SRVs at t49/t50.
+    RecordSkyLUTBake(cmdList);
 
     // Bind main descriptor heap
     ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };

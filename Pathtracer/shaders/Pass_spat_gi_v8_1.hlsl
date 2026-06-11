@@ -31,17 +31,21 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    //copy compact G-buffer for temporal reuse
-    copySampleData(g_sample_last, g_sample_current, pixelIdx);
+    //G-buffer copy for temporal reuse removed: the renderer ping-pongs the
+    //current/last sample-buffer bindings per frame (Renderer::SwapSampleBuffers)
 
-    Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
-
-    //emitter early terrain, no reuse
+    //emitter early out, no reuse. Next frame's temporal rejects emitter
+    //pixels via the sample-buffer flag before touching their reservoir, so
+    //the full canonical round trip the old path did is dead weight - only
+    //the V2 word needs to stay inert because the dup pass streams it
+    //unconditionally from the history buffer.
     if (load_isEmitter(g_sample_current, pixelIdx))
     {
-        storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
+        g_Reservoirs_last.Store(addr_v2(pixelIdx), PROBE_DI_NORMAL_ZERO_CODE);
         return;
     }
+
+    Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
     //disabled early terrain, canonical passthrough
     if (!(rs_flags & 8u))
@@ -103,15 +107,23 @@ void main(uint3 tid : SV_DispatchThreadID)
         const uint nID = g_pathStateBuffer.Load(sel_slot_addr(pixelIdx, i));
         if (nID == 0xFFFFFFFFu) continue;
 
-        //partner shift to me (F + Jn) at offset 4..19 of partner slot i,
-        //partner Jc at offset 20..23 of same slot, so both land in or near a
-        //single sector of partner's record instead of two distinct sectors
+        //partner slot record is [nID | F | Jn | Jc]; head fetch covers
+        //nID + F, tail fetch Jn + Jc - same sector locality as before.
+        //MUTUALITY CHECK on the partner's nID: the reuse textures are
+        //self-inverting so partner slot i should name me back, but select
+        //rejection can be asymmetric, in which case the partner never wrote
+        //F/Jn/Jc for this slot this frame and the words here are stale. A
+        //partner my select accepted always ran its own slot loop (it is
+        //non-emitter with M>0), so its nID word is fresh - if it is not me,
+        //drop the slot from M_sum and the RIS loop.
         const uint   partnerSlot = sel_slot_addr(nID, i);
-        const uint4  pShift  = g_pathStateBuffer.Load4(partnerSlot + 4u);
-        const float3 p_F     = asfloat(pShift.xyz);
+        const uint4  pHead   = g_pathStateBuffer.Load4(partnerSlot);
+        if (pHead.x != pixelIdx) continue;
+        const uint2  pTail   = g_pathStateBuffer.Load2(partnerSlot + 16u);
+        const float3 p_F     = asfloat(pHead.yzw);
         const float  p_F_mag = GetPHat(p_F);
-        const float  p_Jn    = asfloat(pShift.w);
-        const float  p_Jc    = asfloat(g_pathStateBuffer.Load(partnerSlot + 20u));
+        const float  p_Jn    = asfloat(pTail.x);
+        const float  p_Jc    = asfloat(pTail.y);
 
         //one field partner M
         const float Mn = min(SPAT_MCAP, load_M(g_Reservoirs_current, nID));
@@ -165,9 +177,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float p_hat_me_to_partner =
             my_F_mag * JacobianRatio(my_Jn, slot_partner_Jc[k]);
 
-        //two partner fields needed for MIS
-        const float partner_W     = load_W(g_Reservoirs_current, nID);
-        const float partner_F_mag = GetPHat(load_F(g_Reservoirs_current, nID));
+        //partner F + W ride one 16B group - single fetch for the MIS pair
+        const uint4 pFW           = g_Reservoirs_current.Load4(addr_fw(nID));
+        const float partner_W     = asfloat(pFW.w);
+        const float partner_F_mag = GetPHat(asfloat(pFW.xyz));
         const float Mn            = slot_partner_Mn[k];
 
         const float mis_n = PairwiseMIS_Neighbor_Spat(
@@ -183,21 +196,10 @@ void main(uint3 tid : SV_DispatchThreadID)
 
         if (RandomFloatSingle(seed.x) < (w_n / rdi.w_sum))
         {
-            //lazy load only on RIS acceptance
-            const uint   p_objID = load_objID(g_Reservoirs_current, nID);
-            const uint4  pack1   = g_Reservoirs_current.Load4(addr_pack1(nID));
-
-            rdi.x2    = ObjectToWorldPos(p_objID, asfloat(pack1.xyz));
-            rdi.n2_s  = ObjectToWorldNrm(p_objID, UnpackNormal(pack1.w));
-            rdi.objID = p_objID;
-            rdi.matID = load_matID_res(g_Reservoirs_current, nID);
-            rdi.eta   = load_eta  (g_Reservoirs_current, nID);
-
-            rdi.L2    = load_L2(g_Reservoirs_current, nID);
-            rdi.V2    = load_V2(g_Reservoirs_current, nID);
-            rdi.Kd    = load_kd_res(g_Reservoirs_current, nID);
-            load_prpm_res(g_Reservoirs_current, nID, rdi.Pr, rdi.Pm);
+            //lazy payload load only on RIS acceptance - 4 grouped fetches,
+            //leaves the accumulated F/W/M/w_sum untouched.
             //rdi.F overwritten below with shift to me contrib
+            loadReservoirPayload(g_Reservoirs_current, nID, rdi);
 
             contrib_final = my_F;
         }

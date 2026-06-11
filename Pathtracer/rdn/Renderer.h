@@ -36,6 +36,24 @@
 struct Reservoir_GI  { uint8_t pad[64]; };
 struct SampleData    { uint8_t pad[36]; };
 
+// Pixel count for the per-pixel SoA buffers (reservoirs, sample data, path
+// state). MapPixelID (Common_v8.hlsli) swizzles into 8-wide x 4-tall tiles,
+// so linear indices run to ceil(W/8)*ceil(H/4)*32 - MORE than W*H whenever
+// the resolution is not tile-divisible (e.g. 1707x960). Must stay identical
+// to numPx() / ps_numPx() in Reservoir_v8.hlsli / Path_State_v8.hlsli, which
+// use the same count as their SoA plane stride.
+inline UINT TileAlignedPx(UINT w, UINT h) {
+    return ((w + 7u) / 8u) * ((h + 3u) / 4u) * 32u;
+}
+
+// Backed bytes per pixel of the path-state buffer. The HLSL plane layout
+// (Path_State_v8.hlsli) spans 176 B/px, but only the raygen-live prefix
+// (PACK1..CLAS2, 72 B/px) plus the spatial-select scratch that aliases the
+// buffer from offset 0 (4 + SPAT_COUNT_MAX*24 = 76 B/px) need backing - the
+// wavefront-only planes past 88 B/px are dead code. Bump this if
+// SPAT_COUNT_MAX grows past 3 or a wavefront plane comes back to life.
+constexpr UINT kPathStateBytesPerPx = 88;
+
 class Renderer {
 public:
     Renderer(UINT width, UINT height);
@@ -325,6 +343,26 @@ private:
     ComPtr<ID3D12RootSignature>  m_cloudSTBNBakeSig;
     ComPtr<ID3D12PipelineState>  m_cloudSTBNBakePSO;
     void BakeCloudSTBNTexture();
+
+    //Per-frame sky LUTs (Pass_skylut_bake_v8.hlsl):
+    //  - sun transmittance over (r, mu), 256x64 RGBA16F → t49. Replaces the
+    //    per-call inner march in TransmittanceToSun.
+    //  - cloud ambient probe scatter over sun-zenith cosine, 128x2 RGBA16F
+    //    → t50. Replaces the two per-pixel IntegrateScattering probes in
+    //    EvaluateAtmosphereAndClouds.
+    //InitSkyLUTBake creates the textures + private root sig/heap/PSOs at
+    //startup; RecordSkyLUTBake records the two dispatches at the top of
+    //every PopulateCommandList, before any consumer pass. Rebaked per frame
+    //because the integrals depend on live cbuffer params (turbidity, cloud
+    //layer sliders); the whole bake is ~17K texels.
+    ComPtr<ID3D12Resource>       m_skyTransmittanceLUT;
+    ComPtr<ID3D12Resource>       m_cloudAmbientLUT;
+    ComPtr<ID3D12DescriptorHeap> m_skyLutBakeHeap;
+    ComPtr<ID3D12RootSignature>  m_skyLutBakeSig;
+    ComPtr<ID3D12PipelineState>  m_skyLutTransmittancePSO;
+    ComPtr<ID3D12PipelineState>  m_skyLutAmbientPSO;
+    void InitSkyLUTBake();
+    void RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd);
     //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —
     //the shader formula `saturate(base * map * 2)` collapses to `base`
     //when `map = 0.5`, so a grey fallback restores the pre-coverage-map
@@ -356,6 +394,8 @@ private:
     void RebuildResolutionDependentDescriptors();
     //rebinds NRC UAV descriptors 58-60 after reallocating InferenceIn/Out/PendingGI on resize
     void RebuildNrcDescriptors();
+    //per-frame current/last sample-buffer ping-pong (replaces copySampleData)
+    void SwapSampleBuffers();
 
     ComPtr<ID3D12Resource> m_readbackBuffer;
     void CreateReadbackBuffer();

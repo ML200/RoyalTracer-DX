@@ -407,6 +407,13 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 46, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 47, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 48, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    // Per-frame sky LUTs (RecordSkyLUTBake / Pass_skylut_bake_v8.hlsl):
+    //   t49 (g_skyTransmittanceLUT) at heap SKY_TRANSMITTANCE_LUT_HEAP_SLOT (73)
+    //   t50 (g_cloudAmbientLUT)     at heap CLOUD_AMBIENT_LUT_HEAP_SLOT (74)
+    // VOLATILE: the underlying texture contents change every frame (the
+    // bake's UAV writes), unlike the bake-once textures above.
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 49, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 50, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
@@ -635,7 +642,9 @@ void Renderer::CreateRaytracingPipeline() {
 
 void Renderer::CreateRaytracingOutputBuffer() {
     auto* dev = m_ctx.Device();
-    UINT w = GetWidth(), h = GetHeight(), px = w * h;
+    //px is the TILE-ALIGNED count (MapPixelID 8x4 swizzle), not w*h - the
+    //shader-side SoA indices exceed w*h at non-tile-divisible resolutions.
+    UINT w = GetWidth(), h = GetHeight(), px = TileAlignedPx(w, h);
 
     // Main output array (6 layers: 0=noisy, 1=denoised, 2=accumulated,
     // 3=NRC debug, 4=x1 sharp-reflection contribution, 5=DLSS albedo debug)
@@ -685,7 +694,8 @@ void Renderer::CreateRaytracingOutputBuffer() {
 void Renderer::CreatePathStateBuffer() {
     ResourceFactory rf(m_ctx.Device());
     //resolution-DEPENDENT: always recreate.
-    m_pathStateBuffer = rf.CreateUAVBuffer(GetWidth() * GetHeight() * 88, L"PathStateBuffer");
+    m_pathStateBuffer = rf.CreateUAVBuffer(
+        TileAlignedPx(GetWidth(), GetHeight()) * kPathStateBytesPerPx, L"PathStateBuffer");
 
     // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),
@@ -833,7 +843,7 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateUnorderedAccessView(res.Get(), nullptr, &ud, handle);
         next();
     };
-    UINT px = GetWidth() * GetHeight();
+    UINT px = TileAlignedPx(GetWidth(), GetHeight());
     // Slots 10/11 map to root-sig u2/u3 which no shader binds. Two null
     // raw UAVs keep the contiguous u2..u7 descriptor range valid without
     // backing memory. Inlined to avoid colliding with the nullRawUAV
@@ -917,7 +927,7 @@ void Renderer::CreateShaderResourceHeap() {
     } else { nullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY); }
 
     // Slot 32: path state UAV
-    rawUAV(m_pathStateBuffer, GetWidth() * GetHeight() * 88);
+    rawUAV(m_pathStateBuffer, px * kPathStateBytesPerPx);
 
     // Slot 33: global counters UAV
     { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
@@ -1181,6 +1191,20 @@ void Renderer::CreateShaderResourceHeap() {
         d.Texture2DArray.ArraySize    = 6;
         d.Texture2DArray.MipLevels    = 1;
         dev->CreateShaderResourceView(m_terrainCloudOffsetTexture.Get(), &d, handle); next();
+    }
+
+    // Slots 73/74 (SKY_TRANSMITTANCE_LUT_HEAP_SLOT / CLOUD_AMBIENT_LUT_HEAP_
+    // SLOT): per-frame sky LUTs (t49 g_skyTransmittanceLUT, t50
+    // g_cloudAmbientLUT). Created by InitSkyLUTBake (runs before this), so
+    // the resources always exist; null fallbacks only guard a failed init.
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format                  = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Texture2D.MipLevels     = 1;
+        dev->CreateShaderResourceView(m_skyTransmittanceLUT.Get(), &d, handle); next();
+        dev->CreateShaderResourceView(m_cloudAmbientLUT.Get(),     &d, handle); next();
     }
 
     // Bindless textures
@@ -1907,6 +1931,166 @@ void Renderer::BakeCloudSTBNTexture() {
                             t_end - t_start).count() / 1000.0;
     LOG(L"[CloudSTBN] Recorded bake dispatch in " << cpu_ms
         << L" ms CPU (GPU work completes at init cmd list flush)");
+}
+
+//====================================
+//PER-FRAME SKY LUTS (sun transmittance + cloud ambient probes)
+//====================================
+//Creates the two LUT textures plus the private root signature / heap / PSOs
+//for Pass_skylut_bake_v8.hlsl. Unlike the bake-once textures above, these
+//are re-dispatched EVERY frame by RecordSkyLUTBake — the integrals depend on
+//live cbuffer values (turbidity, multi-scatter, cloud layer sliders), and at
+//~17K texels a rebake is cheaper than any invalidation tracking.
+//
+//Private root signature (CBV b0 + UAV table u25/u26) because the bake
+//records before the main descriptor heap is bound and must not disturb the
+//global table layout. The shader includes the full Includes_v8.hlsli chain
+//but only touches cbuffer constants + its two UAVs, so nothing else needs a
+//binding.
+void Renderer::InitSkyLUTBake() {
+    SCOPE_TIMER("InitSkyLUTBake");
+    auto* dev = m_ctx.Device();
+
+    constexpr UINT kTransW = 256, kTransH = 64;   // SKY_TRANSMITTANCE_LUT_W/H
+    constexpr UINT kAmbW   = 128, kAmbH   = 2;    // CLOUD_AMBIENT_LUT_SIZE x 2 rows
+
+    //--- 1. The two LUT textures (UAV-capable, default heap).
+    auto makeLut = [&](UINT w, UINT h, ComPtr<ID3D12Resource>& out, LPCWSTR name) {
+        D3D12_RESOURCE_DESC td = {};
+        td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width            = w;
+        td.Height           = h;
+        td.DepthOrArraySize = 1;
+        td.MipLevels        = 1;
+        td.Format           = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        td.SampleDesc.Count = 1;
+        td.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        td.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        ThrowIfFailed(dev->CreateCommittedResource(
+            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
+            &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+            IID_PPV_ARGS(&out)));
+        out->SetName(name);
+    };
+    makeLut(kTransW, kTransH, m_skyTransmittanceLUT, L"SkyTransmittanceLUT");
+    makeLut(kAmbW,   kAmbH,   m_cloudAmbientLUT,     L"CloudAmbientLUT");
+
+    //--- 2. Private shader-visible heap: UAVs for u25 (slot 0) and u26 (slot 1).
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
+        hd.NumDescriptors = 2;
+        hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        ThrowIfFailed(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_skyLutBakeHeap)));
+
+        const UINT inc = dev->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(
+            m_skyLutBakeHeap->GetCPUDescriptorHandleForHeapStart());
+
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        ud.Format        = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        dev->CreateUnorderedAccessView(m_skyTransmittanceLUT.Get(), nullptr, &ud, h);
+        h.Offset(1, inc);
+        dev->CreateUnorderedAccessView(m_cloudAmbientLUT.Get(),     nullptr, &ud, h);
+    }
+
+    //--- 3. Root signature: table [u25, u26] + root CBV b0 (camera cbuffer —
+    //       carries all the atmosphere/cloud params the integrals read).
+    {
+        CD3DX12_DESCRIPTOR_RANGE1 range;
+        range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 25, 0,
+                   D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
+        CD3DX12_ROOT_PARAMETER1 params[2];
+        params[0].InitAsDescriptorTable(1, &range);
+        params[1].InitAsConstantBufferView(0);
+
+        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
+        desc.Init_1_1(2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+
+        ComPtr<ID3DBlob> sig, err;
+        HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &sig, &err);
+        if (FAILED(hr)) {
+            if (err) OutputDebugStringA((char*)err->GetBufferPointer());
+            ThrowIfFailed(hr);
+        }
+        ThrowIfFailed(dev->CreateRootSignature(0,
+            sig->GetBufferPointer(), sig->GetBufferSize(),
+            IID_PPV_ARGS(&m_skyLutBakeSig)));
+    }
+
+    //--- 4. One PSO per entry point.
+    {
+        ComPtr<IDxcBlob> csT = nv_helpers_dx12::CompileCS(
+            L"Pass_skylut_bake_v8.hlsl", L"mainTransmittance");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
+        pd.pRootSignature = m_skyLutBakeSig.Get();
+        pd.CS             = { csT->GetBufferPointer(), csT->GetBufferSize() };
+        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
+            IID_PPV_ARGS(&m_skyLutTransmittancePSO)));
+
+        ComPtr<IDxcBlob> csA = nv_helpers_dx12::CompileCS(
+            L"Pass_skylut_bake_v8.hlsl", L"mainAmbient");
+        pd.CS = { csA->GetBufferPointer(), csA->GetBufferSize() };
+        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
+            IID_PPV_ARGS(&m_skyLutAmbientPSO)));
+    }
+
+    //--- 5. Park both textures in SRV state on the init cmd list so the
+    //       per-frame record can uniformly do SRV -> UAV -> dispatch -> SRV.
+    //       First-frame contents are garbage but the first RecordSkyLUTBake
+    //       fills them before any consumer pass runs.
+    D3D12_RESOURCE_BARRIER bars[2] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
+    };
+    m_ctx.CmdList()->ResourceBarrier(2, bars);
+
+    LOG(L"[SkyLUT] Created " << kTransW << L"x" << kTransH
+        << L" transmittance + " << kAmbW << L"x" << kAmbH
+        << L" ambient LUTs (RGBA16F, rebaked per frame)");
+}
+
+//Records the per-frame LUT bake. Called at the top of PopulateCommandList,
+//before the main descriptor heap is bound and before any consumer pass.
+//Leaves both textures in kSRV for the rest of the frame.
+void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
+    if (!m_skyLutTransmittancePSO) return;
+
+    D3D12_RESOURCE_BARRIER toUav[2] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
+            kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
+            kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+    };
+    cmd->ResourceBarrier(2, toUav);
+
+    ID3D12DescriptorHeap* heaps[] = { m_skyLutBakeHeap.Get() };
+    cmd->SetDescriptorHeaps(1, heaps);
+    cmd->SetComputeRootSignature(m_skyLutBakeSig.Get());
+    cmd->SetComputeRootDescriptorTable(0,
+        m_skyLutBakeHeap->GetGPUDescriptorHandleForHeapStart());
+    cmd->SetComputeRootConstantBufferView(1,
+        m_camera.GPUBuffer()->GetGPUVirtualAddress());
+
+    // 256x64 over numthreads(8,8,1) and 128x2 over numthreads(64,1,1) —
+    // dims match the SKY_TRANSMITTANCE_LUT_* / CLOUD_AMBIENT_LUT_SIZE
+    // defines on the shader side.
+    cmd->SetPipelineState(m_skyLutTransmittancePSO.Get());
+    cmd->Dispatch(256 / 8, 64 / 8, 1);
+    cmd->SetPipelineState(m_skyLutAmbientPSO.Get());
+    cmd->Dispatch(128 / 64, 2, 1);
+
+    D3D12_RESOURCE_BARRIER toSrv[2] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
+        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
+    };
+    cmd->ResourceBarrier(2, toSrv);
 }
 
 //====================================

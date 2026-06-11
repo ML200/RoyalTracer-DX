@@ -77,12 +77,17 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
     return true;
 }
 
-//returns false for degenerate inputs, zero radiance safe default
+//returns false for degenerate inputs, zero radiance safe default.
+//P is an exact surface position (the reuse passes' reconnection shadow
+//rays), so nudge the origin off the surface along the side the ray leaves
+//- mirroring raygen's NEE shadow-origin pattern. The bare 1e-4 TMin alone
+//does not clear fp32 ulp error at world-scale coordinates, and grazing
+//connections self-intersected, silently killing valid reuse.
 inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
 {
-    if (!IsRayValid(P, direction, tMax)) return false;
+    float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
 
-    float3 origin = P;
+    if (!IsRayValid(origin, direction, tMax)) return false;
 
     RayDesc ray;
     ray.Origin    = origin;

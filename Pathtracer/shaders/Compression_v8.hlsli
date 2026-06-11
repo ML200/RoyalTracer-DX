@@ -78,7 +78,10 @@ static const uint PROBE_DI_NORMAL_ZERO_CODE = ~0u;
 
 uint PackNormal(float3 n)
 {
-    if (dot(n, n) < 1e-6f)
+    //negated comparison so NaN inputs (normalize of a zero vector upstream,
+    //e.g. a cleared reservoir normal through WorldToObjectNrm) also take the
+    //sentinel path instead of packing garbage bits
+    if (!(dot(n, n) > 1e-6f))
     {
         return PROBE_DI_NORMAL_ZERO_CODE;
     }

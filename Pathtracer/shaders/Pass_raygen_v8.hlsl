@@ -39,6 +39,16 @@ inline uint pk_set_cterm (uint s)         { return s | NRC_PK_CACHETERM_BIT; }
 
 
 //====================================
+//NRC AREA-SPREAD BOOKKEEPING GATE
+//====================================
+//NRC TEMPORARILY DISABLED (planet bring-up) - DO NOT REMOVE, mirrors the
+//pathClassInit / cacheElig overrides inside Pass_raygen_v8. While the cache
+//check is forced off, the nrcA/nrcA0 area-spread scratch round trips are
+//pure memory traffic with no consumer, so they are gated here too.
+//Re-enable together with those overrides.
+static const bool NRC_AREA_SPREAD_ACTIVE = false;
+
+//====================================
 //PER-VERTEX SURFACE STATE (loop-carried)
 //====================================
 //Bundles everything the bounce loop needs to process vertex v_depth: hit
@@ -48,7 +58,8 @@ struct HitContext {
     float3 hitPos;          //fp32, scene-coord position
     float  hitT;            //fp32, for NRC area-spread accumulation
     float3 hitNormal;       //fp32, used for offset_ray + dot products w/ float dirs
-    float2 uv;              //fp32, used in shadow-origin offsets
+    //uv removed: both consumers (RefetchMaterial / TerrainTintFromUV) read
+    //hinfo*.uv directly at extraction - the field was dead loop-carried state
     uint   matID;
     uint   instID;
     bool   backface;
@@ -237,8 +248,11 @@ inline bool TraceCameraRay(
 
     //----- NRC vertex-1 anchor (area-spread baseline read each bounce) -----
     nrcStateA = pk_set_hit(nrcStateA, 1u);
-    const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
-    store_rg_nrcA0(g_pathStateBuffer, pixelIdx, NrcComputeA0(hitT, cosPrimary));
+    if (NRC_AREA_SPREAD_ACTIVE)
+    {
+        const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
+        store_rg_nrcA0(g_pathStateBuffer, pixelIdx, NrcComputeA0(hitT, cosPrimary));
+    }
 
     //----- Hand v_1 surface state to the bounce loop's first iter -----
     //bounded-range fields narrow to half at the assignment so the struct
@@ -246,7 +260,6 @@ inline bool TraceCameraRay(
     ctx.hitPos         = hitPos;
     ctx.hitT           = hitT;
     ctx.hitNormal      = hinfo.hitNormal;
-    ctx.uv             = hinfo.uv;
     ctx.matID          = matID;
     ctx.instID         = instID;
     ctx.backface       = hinfo.backface;
@@ -340,8 +353,11 @@ void Pass_raygen_v8()
     //nrcA + nrcEmitMask spill to coherent scratch (HOT2 plane). nrcA is
     //RMW'd each bounce inside the cache check; nrcEmitMask is OR'd at each
     //training-vertex emit via InterlockedOr and read once at finalize.
-    store_rg_nrcA(g_pathStateBuffer, pixelIdx, 0.0f);
-    store_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx, 0u);
+    //Both gated while NRC is off - scratch traffic with no consumer.
+    if (NRC_AREA_SPREAD_ACTIVE)
+        store_rg_nrcA(g_pathStateBuffer, pixelIdx, 0.0f);
+    if (nrcPathId != NRC_INVALID_PATH)
+        store_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx, 0u);
 
     //slot 1 primary emitter/sky, slot 3 unused
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
@@ -354,8 +370,10 @@ void Pass_raygen_v8()
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
-    //safe defaults, otherwise pass-through continues leave stale state in the slot
-    init_ps(g_pathStateBuffer, pixelIdx);
+    //init_ps removed (40 B/px dead write): every load_ps consumer is now
+    //preceded by store_ps_depth1 (iteration-1 bottom) and store_ps_v2
+    //(iteration-2 bottom) on the paths that create ps-based candidates,
+    //and paths that terminate before those stores create no such candidates.
 
     float wsum = 0.0f;
 
@@ -446,7 +464,7 @@ void Pass_raygen_v8()
         //Accumulate nrcA from the v_{depth-1} -> v_depth trace (skip at
         //depth==1 because TraceCameraRay seeded nrcA0 for the camera ray).
         const bool prevSpec = pk_prev(nrcStateA);
-        if (depth >= 2 && !prevSpec)
+        if (NRC_AREA_SPREAD_ACTIVE && depth >= 2 && !prevSpec)
         {
             const float cosHit = max(abs(dot(-rayDir, ctx.hitNormal)), 1e-6f);
             float nrcA = load_rg_nrcA(g_pathStateBuffer, pixelIdx);
@@ -454,10 +472,8 @@ void Pass_raygen_v8()
             store_rg_nrcA(g_pathStateBuffer, pixelIdx, nrcA);
         }
 
-        //Store v_2's outgoing direction (-rayDir at depth==3 is v_3->v_2,
-        //which matches the legacy ps.v2 convention).
-        if (depth == 3)
-            store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
+        //ps.v2 (v_3 -> v_2 direction) is stored at the bottom of the depth==2
+        //iteration, right after the BSDF sample - see the state update below.
 
         //------------- Cache fire check -------------
         //NrcShouldCacheTerminate guards on hitIdx >= 3 internally, so this
@@ -469,8 +485,8 @@ void Pass_raygen_v8()
             //Original: cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
             //Forcing false stops the NRC cache short-circuiting the bounce loop.
             const bool  cacheElig = false;
-            const float nrcA0     = load_rg_nrcA0(g_pathStateBuffer, pixelIdx);
-            const float nrcA      = load_rg_nrcA (g_pathStateBuffer, pixelIdx);
+            const float nrcA0     = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA0(g_pathStateBuffer, pixelIdx) : 0.0f;
+            const float nrcA      = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA (g_pathStateBuffer, pixelIdx) : 0.0f;
             const bool  shouldFire = !prevSpec &&
                 (ctx.hitLocalPr >= NRC_CACHE_ROUGHNESS_MIN) &&
                 NrcShouldCacheTerminate((int)depth, nrcA0, nrcA, cacheElig, nrc_area_spread_c);
@@ -530,22 +546,26 @@ void Pass_raygen_v8()
                 const float cosSurf   = dot(ctx.hitNormal, L);
                 const float cosLightS = dot(light.normal, -L);
 
-                if (cosSurf > 1e-6f && cosLightS > 1e-6f)
+                if (cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f)
                 {
-                    const float3 throughput = UnpackRGB9E5(throughputPk);
-
-                    SamplingP sp_nee   = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
-                    BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
-
-                    const float lightPdf = light.pdfSolidAngle;
-                    const float bsdfPdf  = bdataNEE.pdf;
-
-                    if (lightPdf > 1e-20f && bsdfPdf > 0.0f)
+                    //visibility FIRST: the strategy + BSDF eval pair below is
+                    //the expensive half of NEE - run it only for unoccluded
+                    //samples and keep it out of the live set across the ray.
+                    //Costs one wasted ray when bsdfPdf turns out 0 for a
+                    //direction that passed the cosine gates (rare).
+                    //cosSurf > 0 already puts L on the +hitNormal side.
+                    const float3 shadowOrigin = offset_ray(ctx.hitPos, ctx.hitNormal);
+                    if (IsVisibleOffset(shadowOrigin, L, dist * 0.999f))
                     {
-                        const float3 shadowOrigin = offset_ray(
-                            ctx.hitPos,
-                            dot(L, ctx.hitNormal) >= 0.0f ? ctx.hitNormal : -ctx.hitNormal);
-                        if (IsVisibleOffset(shadowOrigin, L, dist * 0.999f))
+                        const float3 throughput = UnpackRGB9E5(throughputPk);
+
+                        SamplingP sp_nee   = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
+                        BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+
+                        const float lightPdf = light.pdfSolidAngle;
+                        const float bsdfPdf  = bdataNEE.pdf;
+
+                        if (bsdfPdf > 0.0f)
                         {
                             const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
                             const float3 localMeasurement = light.emission * bdataNEE.val * cosSurf;
@@ -600,8 +620,16 @@ void Pass_raygen_v8()
                 SunSampleResult sun = SampleSun(rSun);
                 const float  NdotL = dot(ctx.hitNormal, sun.direction);
 
-                if (NdotL > 1e-6f)
+                if (NdotL > 1e-6f && sun.pdf > 1e-20f)
                 {
+                    //geometry shadow ray FIRST - it is binary, and it gates
+                    //the cloud-shadow march and the BSDF eval below for every
+                    //occluded sample. sun.pdf == 0 (below horizon) now skips
+                    //even the ray. NdotL > 0 puts the sun on the +hitNormal
+                    //side, so the offset needs no sign select.
+                    const float3 shadowOrigin = offset_ray(ctx.hitPos, ctx.hitNormal);
+                    if (IsVisibleOffset(shadowOrigin, sun.direction, RAY_TMAX_PLANET))
+                    {
                     //====================================
                     //CLOUD SHADOW ON SURFACE NEE
                     //====================================
@@ -638,7 +666,7 @@ void Pass_raygen_v8()
                     const float lightPdf = sun.pdf;
                     const float bsdfPdf  = bdataNEE.pdf;
 
-                    if (lightPdf > 1e-20f && bsdfPdf > 0.0f)
+                    if (bsdfPdf > 0.0f)
                     {
                         const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
                         const float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL;
@@ -646,11 +674,6 @@ void Pass_raygen_v8()
                         const float  p_hat            = GetPHat(F_contrib);
                         const float  p_full           = pdf_product * lightPdf;
 
-                        const float3 shadowOrigin = offset_ray(
-                            ctx.hitPos,
-                            dot(sun.direction, ctx.hitNormal) >= 0.0f ? ctx.hitNormal : -ctx.hitNormal);
-                        if (IsVisibleOffset(shadowOrigin, sun.direction, RAY_TMAX_PLANET))
-                        {
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
                             if (nrcPathId != NRC_INVALID_PATH)
@@ -734,6 +757,16 @@ void Pass_raygen_v8()
         nrcStateA    = pk_set_prev(nrcStateA, ctx.hitLocalPr < SMOOTH_SPECULAR_THRESHOLD);
         rayDir       = s;
         rayDirPk     = PackNormal(s);  //carrier for next iter back-edge
+
+        //v_2's frozen reconnection direction, v_3 -> v_2 = -s. Stored HERE
+        //(iteration-2 bottom) and not at the old iteration-3 top so the
+        //depth==2 miss / emitter-hit candidates created after the trace
+        //below read the real direction - they used to pick up init_ps's
+        //(0,1,0) default, breaking Reconnect's F2/G2 for every
+        //second-bounce sky/emitter sample at reuse time.
+        if (depth == 2)
+            store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
+
         const float3 offsetN = (dot(s, ctx.hitNormal) >= 0.0f) ? ctx.hitNormal : -ctx.hitNormal;
         rayOrigin    = offset_ray(ctx.hitPos, offsetN);
 
@@ -928,7 +961,6 @@ void Pass_raygen_v8()
         ctx.hitPos         = hitPos_n;
         ctx.hitT           = hitT_n;
         ctx.hitNormal      = hinfo_n.hitNormal;
-        ctx.uv             = hinfo_n.uv;
         ctx.matID          = matID_n;
         ctx.instID         = instID_n;
         ctx.backface       = hinfo_n.backface;

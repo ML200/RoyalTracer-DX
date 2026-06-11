@@ -41,8 +41,9 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
         return int2(-1, -1);
     }
 
-    const uint tileWidth  = 4;
-    const uint tileHeight = 8;
+    //must mirror MapPixelID's tile shape (8 wide x 4 tall)
+    const uint tileWidth  = 8;
+    const uint tileHeight = 4;
     const uint tileSize   = tileWidth * tileHeight;
 
     uint tileIndex  = pixelID / tileSize;

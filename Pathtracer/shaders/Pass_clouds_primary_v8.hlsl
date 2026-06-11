@@ -100,12 +100,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //transmittance from observer to atmosphere exit, planet hit, or mesh.
     //Radiance only — the DLSS g-buffer (depth + normal) is produced
     //separately below by EvaluateCloudGBuffer so it stays frame-stable.
+    //maxCloudHull = max raw cloud hull the march saw; zero gates the
+    //g-buffer march below.
     float3 combinedTr;
     bool   hitPlanet;
+    float  maxCloudHull;
     float3 unifiedInscatter = EvaluateAtmosphereAndClouds(
         rayDir, S.dirWS, ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
         maxMarchKm,
-        combinedTr, hitPlanet);
+        combinedTr, hitPlanet, maxCloudHull);
 
     //Deterministic stable g-buffer (depth + normal) for DLSS RR. Runs for
     //both sky AND mesh pixels — a thick cloud sitting between the camera and
@@ -130,10 +133,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //decide cloud-vs-mesh DLSS dominance, since cloudL bundles atmospheric
     //in-scatter and would otherwise let bright sky haze register as "cloud"
     //on long mesh rays.
-    float  cloudHitDistKm;
-    float3 cloudNormalWS;
-    float  cloudAlpha;
-    EvaluateCloudGBuffer(rayDir, maxMarchKm, cloudHitDistKm, cloudNormalWS, cloudAlpha);
+    //Gated on the unified march having seen ANY nonzero cloud hull along
+    //this exact ray: the g-buffer march walks the same shell with the same
+    //direction-only hull terms, so an empty hull there is empty here too —
+    //skipping it saves the full 32-step CloudShapeDensity march on clear-sky
+    //and cloud-free mesh pixels. (The radiance march can stride over a small
+    //cloud the fixed-step g-buffer march would catch, but in that frame the
+    //radiance has no cloud in it either, so depth/alpha = "no cloud" is the
+    //CONSISTENT answer for DLSS.)
+    float  cloudHitDistKm = 0.0f;
+    float3 cloudNormalWS  = float3(0.0f, 0.0f, 0.0f);
+    float  cloudAlpha     = 0.0f;
+    if (maxCloudHull > 0.0f)
+        EvaluateCloudGBuffer(rayDir, maxMarchKm, cloudHitDistKm, cloudNormalWS, cloudAlpha);
 
     //Background behind the unified march — planet body / stars / airglow,
     //all attenuated by the combined transmittance. Sky pixels see them

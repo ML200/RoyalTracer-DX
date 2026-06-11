@@ -124,6 +124,13 @@ bool load_isEmitter(RWByteAddressBuffer buf, uint pixelIdx)
     return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & SD_FLAG_EMITTER) != 0u;
 }
 
+//raw flags word - lets a pass test SD_FLAG_EMITTER and SD_FLAG_BACKFACE
+//from one fetch instead of two separate loads of the same word
+uint load_flagsWord(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u);
+}
+
 bool load_backface(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return (buf.Load(pixelBaseAddr_SD(pixelIdx) + 4u) & SD_FLAG_BACKFACE) != 0u;
@@ -165,6 +172,9 @@ float3 load_x1(RWByteAddressBuffer buf, uint pixelIdx)
 //====================================
 //SAMPLE DATA COPY FOR TEMPORAL REUSE
 //====================================
+//No longer called per frame: the renderer ping-pongs the current/last
+//sample-buffer bindings instead (Renderer::SwapSampleBuffers), which
+//replaced the 72 B/px copy the merge pass used to do here.
 void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
 {
     uint base = pixelBaseAddr_SD(pixelIdx);

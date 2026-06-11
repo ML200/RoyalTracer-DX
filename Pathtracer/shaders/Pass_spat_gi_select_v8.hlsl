@@ -82,7 +82,10 @@ int2 SampleReuseDelta(uint2 launchIndex, uint slot)
 //====================================
 //symmetric material, normal, distance. distThresh is rs_rejDistance scaled by
 //camera-to-surface length so the slab grows with world-space pixel footprint;
-//fixed threshold rejects all far neighbors on large scenes
+//fixed threshold rejects all far neighbors on large scenes. The caller must
+//pass the SAME threshold for both pixels of a pair (min of the two camera
+//distances) - a per-pixel threshold makes rejection asymmetric, and the merge
+//pass then reads partner slots the partner never wrote this frame
 bool PairRejected(uint aMat, float3 aPos, float3 aN,
                   uint bMat, float3 bPos, float3 bN,
                   float distThresh)
@@ -129,8 +132,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myPos    = load_x1(g_sample_current, pixelIdx);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
-    //slab thickness scales with camera distance so pixel footprint at depth still passes
-    const float distThresh = rs_rejDistance * length(myPos - InitOrigin());
+    //slab thickness scales with camera distance so pixel footprint at depth
+    //still passes. Finished per candidate with min(myDist, partnerDist) so
+    //both sides of a pair compute the identical threshold (symmetric reject).
+    const float3 camPos    = InitOrigin();
+    const float  myCamDist = length(myPos - camPos);
 
     //nIds[s] is partner for slot s, 0xFFFFFFFFu means rejected
     uint  nIds[SPAT_COUNT_MAX];
@@ -158,6 +164,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         const float3 bPos    = load_x1(g_sample_current, bID);
         const float3 bN1s    = load_n1_s_with_instID(g_sample_current, bID, bInstID);
 
+        const float distThresh = rs_rejDistance * min(myCamDist, length(bPos - camPos));
         if (PairRejected(myMatID, myPos, myN1s, bMatID, bPos, bN1s, distThresh)) continue;
 
         const uint bM = load_M(g_Reservoirs_current, bID);

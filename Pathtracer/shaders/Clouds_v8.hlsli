@@ -18,20 +18,55 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_SHADOW_CONE_SAMPLES_MAX 5
 #define CLOUD_AMBIENT_STEPS_MAX       6
 
+//====================================
+//ADAPTIVE MARCH DISTANCE SCALING
+//====================================
+//Distance-proportional step floors for the cloud marches. At distance t the
+//world-space size of a pixel grows linearly, so the step can too without
+//visible undersampling: FRAC_FINE = 0.004 gives 1 km steps at 250 km
+//(~2 px at 1080p / 60 deg FOV) while leaving the near field at
+//CLOUD_TARGET_STEP_KM untouched. FRAC_EMPTY strides empty air at 2% of
+//distance. Combined with the half-budget reach floor in the march loops
+//(spend the second half of the iteration budget evenly over the remaining
+//segment), the march always reaches the shell exit — clouds no longer
+//hard-cut at the horizon when the step budget runs out, they just get
+//coarser with distance. Compile-time on purpose: these define the
+//resolution model, not an artistic look.
+#define CLOUD_STEP_DIST_FRAC_FINE  0.004f
+#define CLOUD_STEP_DIST_FRAC_EMPTY 0.02f
+
 inline float CloudLodT(float distKm)
 {
     return saturate((distKm - CLOUD_LOD_NEAR_KM)
                   / max(1e-4f, CLOUD_LOD_FAR_KM - CLOUD_LOD_NEAR_KM));
 }
 
+// Ambient-probe LUT (g_cloudAmbientLUT, t50): 128 x 2 RGBA16F baked per
+// frame by Pass_skylut_bake_v8.hlsl. Row 0 = zenith-probe sky scatter,
+// row 1 = horizon-probe sky scatter, both parameterized by the sun-zenith
+// cosine at the cloud-top probe radius. Width must match the bake dispatch.
+#define CLOUD_AMBIENT_LUT_SIZE 128.0f
+
+inline float CloudAmbientLutU(float sunCosZ)
+{
+    // Texel-center inset so cosZ = -1 / +1 land exactly on the edge texels.
+    float x = saturate(sunCosZ * 0.5f + 0.5f);
+    return (0.5f + x * (CLOUD_AMBIENT_LUT_SIZE - 1.0f)) / CLOUD_AMBIENT_LUT_SIZE;
+}
+
+// STBN dims are fixed at bake time (Renderer::BakeCloudSTBNTexture: 128 x 128
+// x 64). Compile-time constants instead of a per-call GetDimensions — this
+// runs per atmosphere step and per shadow cone tap, and the resinfo was pure
+// overhead. The pow2 masking below requires CLOUD_STBN_SIZE_PX stays pow2.
+#define CLOUD_STBN_SIZE_PX 128u
+#define CLOUD_STBN_SLICES  64u
+
 inline float4 CloudRand4(uint2 px, uint frame, uint tap)
 {
 #if CLOUD_STBN_AVAILABLE
-    uint w, h, slices, mips;
-    g_cloudSTBN.GetDimensions(0, w, h, slices, mips);
-    uint sliceIdx = (frame + tap * 17u) % max(slices, 1u);
-    uint2 puv = uint2((px.x + tap * 113u) & (w - 1u),
-                      (px.y + tap *  71u) & (h - 1u));
+    uint sliceIdx = (frame + tap * 17u) % CLOUD_STBN_SLICES;
+    uint2 puv = uint2((px.x + tap * 113u) & (CLOUD_STBN_SIZE_PX - 1u),
+                      (px.y + tap *  71u) & (CLOUD_STBN_SIZE_PX - 1u));
     return g_cloudSTBN.Load(int4(int(puv.x), int(puv.y), int(sliceIdx), 0));
 #else
     uint s = initRandomData(px, uint2(0, 0), frame, 71u + tap * 13u);
@@ -185,12 +220,20 @@ inline float coverageModulation(float coverage, float detail, float filterWidth)
 // (init once at every cloud entry point) so per-sample CloudGlobalCoverage
 // pays a 9-mul rotation instead of 4 trig + matrix build. Identity defaults
 // keep a pre-init read sane.
+//
+// Guarded init-once: CloudSunVisibility(Planet) calls this per invocation,
+// and the atmosphere segment loops invoke those per STEP — without the
+// guard each step re-paid the 4 sincos. The flag is a per-thread register;
+// the basis is uniform within a thread's lifetime so once is correct.
 static float3 g_cloudEnuEast  = float3(1, 0, 0);
 static float3 g_cloudEnuUp    = float3(0, 1, 0);
 static float3 g_cloudEnuNorth = float3(0, 0, 1);
+static bool   g_cloudEnuInitDone = false;
 
 inline void InitCloudEnuBasis()
 {
+    if (g_cloudEnuInitDone) return;
+    g_cloudEnuInitDone = true;
     float L   = SUN_LATITUDE_DEG  * DEG2RAD;
     float lon = SUN_LONGITUDE_DEG * DEG2RAD;
     float sL = sin(L), cL = cos(L);
@@ -224,31 +267,47 @@ inline float CloudGlobalCoverage(float3 P)
     return saturate(base * map * 2.0f);
 }
 
-// Cheap "is there cloud here?" upper-bound. Ex variant exposes the
-// components so a following CloudSampleMaterialFromHull doesn't recompute
-// them; the bare wrapper is for the ambient column probe.
-float CloudProbeHullEx(float3 P, float timeSec,
-                       out float coverage, out float profile, out float effTop)
+// Conservative altitude band of the whole cloud layer, pure ALU. The local
+// shift is clamped >= 0 (CloudLocalBaseShiftKm) so the true bottom is never
+// below CLOUD_LAYER_BOT_KM, and the true top never exceeds
+// TOP + VARIATION + SHIFT_BOUND. Checking this BEFORE any texture work lets
+// the density probes reject out-of-band samples without paying the effTop
+// noise tap + cloud-offset cubemap fetch the profile would need.
+inline bool CloudAltitudeInBand(float altKm)
 {
-    coverage = 0.0f;
-    profile  = 0.0f;
-    effTop   = CLOUD_LAYER_TOP_KM;
+    return altKm > CLOUD_LAYER_BOT_KM
+        && altKm < CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                   + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+}
+
+// Cheap "is there cloud here?" upper-bound. Exposes the components
+// (including baseShiftKm) so a following CloudSampleMaterialFromHull doesn't
+// recompute any of the direction-only terms.
+// Gate order is cheapest-and-most-selective first: ALU altitude band, then
+// coverage (1 fetch + equirect trig — zero exactly where the map is clear),
+// then the profile (effTop noise tap + cloud-offset cubemap fetch).
+float CloudProbeHullEx(float3 P, float timeSec,
+                       out float coverage, out float profile, out float effTop,
+                       out float baseShiftKm)
+{
+    coverage    = 0.0f;
+    profile     = 0.0f;
+    effTop      = CLOUD_LAYER_TOP_KM;
+    baseShiftKm = 0.0f;
 
     float r   = length(P);
     float alt = r - ATMOS_BOTTOM_RADIUS;
-
-    effTop  = CloudEffectiveTopKm(P);
-    profile = CloudAltitudeProfileFromTop(alt, effTop, CloudLocalBaseShiftKm(P));
-    if (profile <= 0.0f) return 0.0f;
+    if (!CloudAltitudeInBand(alt)) return 0.0f;
 
     coverage = CloudGlobalCoverage(P);
-    return coverage * profile;
-}
+    if (coverage <= 0.0f) return 0.0f;
 
-float CloudProbeHull(float3 P, float timeSec)
-{
-    float coverage, profile, effTop;
-    return CloudProbeHullEx(P, timeSec, coverage, profile, effTop);
+    effTop      = CloudEffectiveTopKm(P);
+    baseShiftKm = CloudLocalBaseShiftKm(P);
+    profile     = CloudAltitudeProfileFromTop(alt, effTop, baseShiftKm);
+    if (profile <= 0.0f) return 0.0f;
+
+    return coverage * profile;
 }
 
 struct CloudMaterial
@@ -258,11 +317,12 @@ struct CloudMaterial
     float heightFrac;  // position within the layer [0..1]
 };
 
-// FromHull: caller passes the hull's (coverage, profile, effTop) so this
-// skips the redundant equirect fetch + EffectiveTop tap. Requires hull > 0.
+// FromHull: caller passes the hull's (coverage, profile, effTop,
+// baseShiftKm) so this skips the redundant equirect fetch, EffectiveTop tap
+// AND the cloud-offset cubemap fetch. Requires hull > 0.
 CloudMaterial CloudSampleMaterialFromHull(
     float3 P, float timeSec, float lodT, uint quality,
-    float coverage, float profile, float effTop)
+    float coverage, float profile, float effTop, float baseShiftKm)
 {
     CloudMaterial m;
     m.density    = 0.0f;
@@ -274,7 +334,6 @@ CloudMaterial CloudSampleMaterialFromHull(
     // for tall vs short cumulus. PLANET v8: shift by the local cloud-base
     // offset so heightFrac stays correctly in [0,1] when the cloud layer
     // is riding above general terrain.
-    float baseShiftKm = CloudLocalBaseShiftKm(P);
     float botKm = CLOUD_LAYER_BOT_KM + baseShiftKm;
     float topKm = effTop              + baseShiftKm;
     float h     = (alt - botKm) / max(1e-4f, topKm - botKm);
@@ -351,15 +410,16 @@ CloudMaterial CloudSampleMaterialFromHull(
 // Wrapper for callers without a precomputed hull.
 CloudMaterial CloudSampleMaterial(float3 P, float timeSec, float lodT, uint quality)
 {
-    float coverage, profile, effTop;
-    float hull = CloudProbeHullEx(P, timeSec, coverage, profile, effTop);
+    float coverage, profile, effTop, baseShiftKm;
+    float hull = CloudProbeHullEx(P, timeSec, coverage, profile, effTop,
+                                  baseShiftKm);
     if (hull <= 0.0f)
     {
         CloudMaterial m = (CloudMaterial)0;
         return m;
     }
     return CloudSampleMaterialFromHull(P, timeSec, lodT, quality,
-                                       coverage, profile, effTop);
+                                       coverage, profile, effTop, baseShiftKm);
 }
 
 
@@ -423,20 +483,6 @@ inline float3 SampleConeAroundDir(float3 dir, float cosThetaMax, float2 u)
     return SafeNormalize(local.x * T + local.y * B + local.z * dir);
 }
 
-inline float CloudEarthShadowFactor(float3 P, float3 L)
-{
-    float3 oc = P;
-    float  b  = dot(oc, L);
-    if (b >= 0.0f) return 1.0f;
-
-    float Rb   = ATMOS_BOTTOM_RADIUS;
-    float c    = dot(oc, oc) - Rb * Rb;
-    float disc = b * b - c;
-
-    float penumbra = Rb * Rb * 2e-2f;
-    return saturate(0.5f - disc / penumbra);
-}
-
 inline float CloudTerrainCosHorizon(float3 P)
 {
     return -sqrt(max(0.0f, 1.0f - (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS) / dot(P, P)));
@@ -470,9 +516,12 @@ static float g_jdGHG   = 0.954f;
 static float g_jdGD    = 0.491f;
 static float g_jdAlpha = 23.8f;
 static float g_jdWD    = 0.392f;
+static bool  g_jdInitDone = false;
 
 inline void InitCloudJDPhase()
 {
+    if (g_jdInitDone) return;
+    g_jdInitDone = true;
     // Slider 0..1 maps to droplet diameter 5..30 um (typical cumulus 10..15).
     // Floor at 2 um — the rational fits assume d > ~1.7.
     float d = lerp(5.0f, 30.0f, saturate(CLOUD_SILVER_INTENSITY));
@@ -502,12 +551,16 @@ inline float CloudPhaseMS(float cosT)
 // invisible at shadow-march resolution).
 inline float CloudDensityForShadow(float3 P, float timeSec)
 {
-    float alt     = length(P) - ATMOS_BOTTOM_RADIUS;
-    float profile = CloudAltitudeProfile(alt, P);
-    if (profile <= 0.0f) return 0.0f;
+    // Gate order: ALU band first (no fetches), then coverage (1 fetch),
+    // then profile (2 fetches) — see CloudProbeHullEx.
+    float alt = length(P) - ATMOS_BOTTOM_RADIUS;
+    if (!CloudAltitudeInBand(alt)) return 0.0f;
 
     float coverage = CloudGlobalCoverage(P);
     if (coverage <= 0.0f) return 0.0f;
+
+    float profile = CloudAltitudeProfile(alt, P);
+    if (profile <= 0.0f) return 0.0f;
 
     float3 q    = CloudNoiseCoord(P, timeSec);
     float  base = CloudPerlinWorley(q * CLOUD_BASE_FREQ);
@@ -533,12 +586,15 @@ inline float CloudDensityForShadow(float3 P, float timeSec)
 // stable at the ~1km feature scale, not jittered by 100m detail noise.
 inline float CloudShapeDensity(float3 P, float timeSec)
 {
-    float alt     = length(P) - ATMOS_BOTTOM_RADIUS;
-    float profile = CloudAltitudeProfile(alt, P);
-    if (profile <= 0.0f) return 0.0f;
+    // Same cheapest-first gate order as CloudDensityForShadow.
+    float alt = length(P) - ATMOS_BOTTOM_RADIUS;
+    if (!CloudAltitudeInBand(alt)) return 0.0f;
 
     float coverage = CloudGlobalCoverage(P);
     if (coverage <= 0.0f) return 0.0f;
+
+    float profile = CloudAltitudeProfile(alt, P);
+    if (profile <= 0.0f) return 0.0f;
 
     float3 q    = CloudNoiseCoord(P, timeSec);
     float  base = CloudPerlinWorley(q * CLOUD_BASE_FREQ);
@@ -592,8 +648,9 @@ void EvaluateCloudGBuffer(float3 V,
 #else
     if (cloud_enabled < 0.5f) return;
 
+    // ENU basis only — this march never evaluates a phase function, so the
+    // JD droplet-phase init would be wasted exp() here.
     InitCloudEnuBasis();
-    InitCloudJDPhase();
 
     float3 O  = g_skyObserverPlanet;
     float3 Vn = SafeNormalize(V);
@@ -655,20 +712,44 @@ void EvaluateCloudGBuffer(float3 V,
 // re-enters the shell on the opposite side of the planet after dipping
 // below the cloud layer). Catches planet-scale blocking at sunrise/sunset
 // without extra density samples.
+// Tallest terrain that can occlude a sun ray, conservative. Raw peaks exceed
+// the smoothed CLOUD_TERRAIN_SHIFT_BOUND_KM map; 10 km clears any plausible
+// bake. Lets the shadow march skip the heightmap fetch for samples that are
+// geometrically above all terrain.
+#define CLOUD_TERRAIN_OCCLUDER_MAX_KM 10.0f
+
 float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 {
     const float SAMPLE_DIST_KM[12] = { 0.2f, 0.6f, 1.5f, 3.5f, 7.0f, 12.0f, 22.0f, 40.0f, 70.0f, 125.0f, 220.0f, 380.0f };
     const float SAMPLE_SEG_KM[12]  = { 0.2f, 0.4f, 1.1f, 2.0f, 3.5f,  5.0f, 10.0f, 18.0f, 30.0f,  50.0f,  90.0f, 150.0f };
     const float TAU_EARLYOUT = 64.0f;
 
+    // r(t) along the ray has derivative sign(dot(Q, L)) = sign(dotPL + t):
+    // once a sample is outside the max shell top AND moving radially
+    // outward, every later (farther) sample is higher still — the rest of
+    // the table is guaranteed zero. For mid/high sun this cuts the 12
+    // samples to the ~5 that can actually intersect the layer.
+    const float shellTopR = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM
+                          + CLOUD_TOP_VARIATION_KM + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+    const float terrainMaxR = ATMOS_BOTTOM_RADIUS + CLOUD_TERRAIN_OCCLUDER_MAX_KM;
+    const float dotPL = dot(P, L);
+
     float tau = 0.0f;
     [loop]
     for (int i = 0; i < 12; ++i)
     {
-        float3 Q  = P + L * SAMPLE_DIST_KM[i];
+        float  dist = SAMPLE_DIST_KM[i];
+        float3 Q  = P + L * dist;
         float  rQ = length(Q);
-        float  terrainR = ATMOS_BOTTOM_RADIUS + max(TerrainHeight(Q / rQ) * 0.001f, 0.0f);
-        if (rQ < terrainR) { tau = TAU_EARLYOUT; break; }
+        if (rQ >= shellTopR && dotPL + dist > 0.0f) break;
+
+        // Terrain block only where terrain can exist — the heightmap fetch
+        // (cubemap sample + equiangular projection) is pointless at 70+ km.
+        if (rQ < terrainMaxR)
+        {
+            float terrainR = ATMOS_BOTTOM_RADIUS + max(TerrainHeight(Q / rQ) * 0.001f, 0.0f);
+            if (rQ < terrainR) { tau = TAU_EARLYOUT; break; }
+        }
 
         float  d = CloudDensityForShadow(Q, timeSec);
         tau += d * CLOUD_EXTINCTION * SAMPLE_SEG_KM[i];
@@ -822,8 +903,15 @@ float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS)
 #endif
 }
 
-// Trapezoidal column density above P at exponentially-spaced altitudes.
-inline float CloudColumnDensityAbove(float3 P, float3 upDir, float startDensity)
+// Trapezoidal column density above the sample at exponentially-spaced
+// altitudes. The probe column is exactly radial (localUp = normalize(P), so
+// P + up*z = (r+z) * dir with the SAME direction) — coverage, effTop and
+// baseShiftKm are direction-only and therefore constant along it. The caller
+// passes them from the hull it already evaluated and the whole column
+// becomes pure ALU: the old version paid ~3 texture fetches + equirect trig
+// per probe (~18 fetches per lit cloud sample) for bitwise-identical values.
+inline float CloudColumnDensityAbove(float altKm, float coverage, float effTop,
+                                     float baseShiftKm, float startDensity)
 {
     const int Namb = clamp((int)CLOUD_AMBIENT_STEPS, 2, CLOUD_AMBIENT_STEPS_MAX);
     const float kZ[CLOUD_AMBIENT_STEPS_MAX] =
@@ -837,7 +925,8 @@ inline float CloudColumnDensityAbove(float3 P, float3 upDir, float startDensity)
     {
         if (ip >= Namb) break;
         float zCur = kZ[ip];
-        float dCur = CloudProbeHull(P + upDir * zCur, walltime);
+        float dCur = coverage * CloudAltitudeProfileFromTop(altKm + zCur,
+                                                            effTop, baseShiftKm);
         columnKm  += 0.5f * (dPrev + dCur) * (zCur - zPrev);
         zPrev      = zCur;
         dPrev      = dCur;
@@ -846,14 +935,20 @@ inline float CloudColumnDensityAbove(float3 P, float3 upDir, float startDensity)
 }
 
 // Per-sample in-scattered radiance. Caller folds it as sigma_t * L * segIn.
-float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
+// hullCoverage/hullEffTop/baseShiftKm come from the caller's CloudProbeHullEx
+// so the ambient column probe runs fetch-free. sunODOut returns the
+// cone-averaged cloud optical depth toward the sun so the caller can reuse
+// it for the atmosphere haze shadow at the same point instead of running a
+// second shadow march.
+float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
+                            float hullCoverage, float hullEffTop, float baseShiftKm,
                             float3 sunRad, float3 sunAtmos,
                             float3 skyAmbientTop, float3 skyAmbientHorizon,
                             float3 groundIrrad,
-                            float3 localUp,
                             float cosTheta,
                             float earthShadow,
-                            uint2 pixel, uint frame, uint tap)
+                            uint2 pixel, uint frame, uint tap,
+                            out float sunODOut)
 {
     // Cone-jittered shadow taps. Min 1.5° even at Kshadow=1: without jitter,
     // neighbouring view samples hit the same six SAMPLE_DIST_KM points and
@@ -873,6 +968,7 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
         sunOD += CloudOpticalDepthToSun(P, Lk, walltime);
     }
     sunOD /= (float)Kshadow;
+    sunODOut = sunOD;
 
     float h = m.heightFrac;
     float3 K = sunRad * sunAtmos * earthShadow * CLOUD_ALBEDO;
@@ -899,17 +995,23 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
     else
     {
         // Hillaire 2016 §5.8 octaves: extinction × a^n, weight × b^n,
-        // phase collapsed to isotropic 1/(4π).
-        const float a = 0.5f;
-        const float b = 0.5f;
+        // phase collapsed to isotropic 1/(4π). a = b = 0.5, so the per-
+        // octave factors are running products — no pow() needed.
+        // Up to 4 octaves: octave 4 sees exp(-sunOD/16), which lands at the
+        // similarity-theory diffusion scale (1-g)·tau for droplet transport
+        // asymmetry g≈0.94 — this is what carries light to the base of an
+        // optically thick cloud. With only 2 octaves the deepest term was
+        // exp(-sunOD/4) and thick undersides went exponentially black.
         const float kIso = 1.0f / (4.0f * PI);
-        const int extraOctaves = clamp(CLOUD_MS_MODE, 1, 2);
+        const int extraOctaves = clamp(CLOUD_MS_MODE, 1, 4);
+        float an = 1.0f;
+        float bn = 1.0f;
         [unroll]
-        for (int n = 1; n <= 2; ++n)
+        for (int n = 1; n <= 4; ++n)
         {
             if (n > extraOctaves) break;
-            float an = pow(a, (float)n);
-            float bn = pow(b, (float)n);
+            an *= 0.5f;
+            bn *= 0.5f;
             float Tn = exp(-sunOD * an);
             ms += K * bn * Tn * kIso;
         }
@@ -919,25 +1021,35 @@ float3 CloudComputeLighting(float3 P, float3 V, float3 L, CloudMaterial m,
     float3 inscatter = direct + ms;
 
     // Sky + ground bounce ambient, gated by column density above sample.
+    // The old (1-profile)^0.5 density gate is gone: it zeroed ambient
+    // exactly at dense bases, double-counting the occlusion that skyOcc
+    // (column OD above the sample, floored by CLOUD_AMBIENT_OD_MAX)
+    // already models — and dense undersides are precisely where the
+    // ambient terms carry the real-world look.
     float3 ambient = float3(0, 0, 0);
     if (CLOUD_SKY_AMBIENT > 0.5f || CLOUD_GROUND_BOUNCE > 0.5f)
     {
-        float columnKm = CloudColumnDensityAbove(P, localUp, m.profile);
+        float altKm    = length(P) - ATMOS_BOTTOM_RADIUS;
+        float columnKm = CloudColumnDensityAbove(altKm, hullCoverage, hullEffTop,
+                                                 baseShiftKm, m.profile);
         float ambOD    = min(columnKm * CLOUD_EXTINCTION * CLOUD_AMBIENT_AO_SCALE,
                              CLOUD_AMBIENT_OD_MAX);
         float skyOcc   = exp(-ambOD);
-        float ambExp   = pow(saturate(1.0f - m.profile), 0.5f);
 
         if (CLOUD_SKY_AMBIENT > 0.5f)
         {
             float3 skyColor = lerp(skyAmbientHorizon, skyAmbientTop, h);
-            ambient += skyColor * ambExp * skyOcc * CLOUD_AMBIENT_INTENSITY;
+            ambient += skyColor * skyOcc * CLOUD_AMBIENT_INTENSITY;
         }
         if (CLOUD_GROUND_BOUNCE > 0.5f)
         {
-            // Tdir gates bounce — ground beneath thick cloud isn't sun-lit
-            // either, so the bounce reaching this sample must die with it.
-            ambient += groundIrrad * ambExp * (1.0f - h) * Tdir;
+            // No local Tdir gate: bounce light arrives from BELOW, from a
+            // wide ground area whose average illumination is the global
+            // cover proxy already applied to groundIrrad. Gating by the sun
+            // transmittance through the cloud ABOVE this sample pointed the
+            // wrong way and switched off the dominant base illuminant under
+            // every thick cloud.
+            ambient += groundIrrad * (1.0f - h);
         }
     }
 
@@ -999,9 +1111,12 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     float3 L_acc   = float3(0, 0, 0);
     float3 trCloud = float3(1, 1, 1);
 
-    // 8 km empty cap × ~10 iters ≈ 80 km clear-sky coverage. Lerped against
+    // Base empty-step cap; the in-loop distance floor + half-budget reach
+    // floor (see CLOUD_STEP_DIST_FRAC_*) extend the march across the whole
+    // shell segment, so the old "8 km × ~10 iters ≈ 80 km" reach limit that
+    // cut reflected clouds off early no longer applies. Lerped against
     // fineStep by lodT so near-camera samples stay tight and don't skip over
-    // visible cumulus, while distant empty space gets stridden through fast.
+    // visible cumulus.
     const float kCheapEmptyStepCap = 8.0f;
 
     float t        = tNear;
@@ -1022,30 +1137,40 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
         float3 P       = O + V * tSample;
 
         float hCoverage = 0.0f, hProfile = 0.0f, hEffTop = CLOUD_LAYER_TOP_KM;
+        float hBaseShift = 0.0f;
         float hullRaw   = (distFade > 0.0f)
-                        ? CloudProbeHullEx(P, walltime, hCoverage, hProfile, hEffTop)
+                        ? CloudProbeHullEx(P, walltime, hCoverage, hProfile,
+                                           hEffTop, hBaseShift)
                         : 0.0f;
         float hull      = hullRaw * distFade;
         bool  hullEmpty = (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY);
 
+        // Same adaptive scheme as the primary phase-2 march: distance-
+        // proportional floors + half-budget reach floor. With ~10 steps the
+        // floor engages after step 5 and spreads the rest over the whole
+        // remaining shell — reflections keep their near clouds fine and get
+        // coarse-but-present distant clouds instead of an ~80 km cutoff.
         float thisStep;
         if (hullEmpty)
         {
             float maxStepAdaptive = min(
-                kCheapEmptyStepCap * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
+                max(kCheapEmptyStepCap, t * CLOUD_STEP_DIST_FRAC_EMPTY)
+                    * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
                 CLOUD_MAX_EMPTY_STEP_KM);
             thisStep = lerp(fineStep, maxStepAdaptive, saturate(lodT));
         }
         else
         {
-            thisStep = fineStep;
+            thisStep = max(fineStep, t * CLOUD_STEP_DIST_FRAC_FINE);
         }
+        if (i * 2 >= CLOUD_CHEAP_STEPS)
+            thisStep = max(thisStep, (tFar - t) / (float)(CLOUD_CHEAP_STEPS - i));
         thisStep = min(thisStep, tFar - t);
 
         if (!hullEmpty)
         {
             CloudMaterial m = CloudSampleMaterialFromHull(
-                P, walltime, lodT, 0u, hCoverage, hProfile, hEffTop);
+                P, walltime, lodT, 0u, hCoverage, hProfile, hEffTop, hBaseShift);
             float cloudDensity = m.density * distFade;
             if (cloudDensity > CLOUD_EFFECTIVE_ZERO_DENSITY)
             {
@@ -1085,15 +1210,17 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                 }
                 else
                 {
-                    const float a = 0.5f;
-                    const float b = 0.5f;
-                    int extraOctaves = clamp(msMode, 1, 2);
+                    // a = b = 0.5 octave factors as running products,
+                    // mirroring CloudComputeLighting (up to 4 octaves).
+                    int extraOctaves = clamp(msMode, 1, 4);
+                    float an = 1.0f;
+                    float bn = 1.0f;
                     [unroll]
-                    for (int n = 1; n <= 2; ++n)
+                    for (int n = 1; n <= 4; ++n)
                     {
                         if (n > extraOctaves) break;
-                        float an = pow(a, (float)n);
-                        float bn = pow(b, (float)n);
+                        an *= 0.5f;
+                        bn *= 0.5f;
                         float Tn = exp(-sunOD * an);
                         ms += K * bn * Tn * kIso;
                     }
@@ -1206,14 +1333,22 @@ inline void IntegrateAtmosphereSegment(
 // g-buffer comes from EvaluateCloudGBuffer separately (deterministic).
 // maxDistKm > 0 = ray terminates on a mesh at that distance (skips the
 // planet clip; hitPlanetOut stays false so caller doesn't add ground albedo).
+//
+// maxCloudHullOut = max raw hull (pre-distance-fade) seen by the phase-2
+// march. Zero means the hull was empty along the whole ray — the caller can
+// then skip the deterministic EvaluateCloudGBuffer march entirely, since the
+// same shell along the same ray can't produce cloud there either. Tracked
+// pre-fade because the g-buffer march has no distance fade of its own.
 float3 EvaluateAtmosphereAndClouds(
     float3 V, float3 sunDir, float3 sunIrradiance,
     float  maxDistKm,
     out float3 transmittanceOut,
-    out bool   hitPlanetOut)
+    out bool   hitPlanetOut,
+    out float  maxCloudHullOut)
 {
     transmittanceOut  = float3(1, 1, 1);
     hitPlanetOut      = false;
+    maxCloudHullOut   = 0.0f;
 #if ATM_DEBUG_RING == 3
     return float3(0, 0, 0);            //sky/atmosphere disabled — ATM_DEBUG_RING
 #endif
@@ -1312,47 +1447,51 @@ float3 EvaluateAtmosphereAndClouds(
     // Sky+ground probes anchored at cloud midpoint (not camera): a dayside
     // observer looking at nightside clouds otherwise lit them with dayside
     // sky/bounce. probeUp tracks the cloud's local geography.
+    //
+    // LUT: the probe sits at a FIXED radius and the atmosphere is
+    // spherically symmetric, so both probe integrals reduce to functions of
+    // one scalar — the sun-zenith cosine at the probe. They used to be two
+    // full IntegrateScattering marches PER PIXEL (each ATMOS_VIEW_STEPS ×
+    // an inner sun-transmittance march); Pass_skylut_bake_v8.hlsl now bakes
+    // them once per frame into g_cloudAmbientLUT (row 0 = zenith probe,
+    // row 1 = horizon probe) and this is two bilinear fetches. The baked
+    // values exclude cloud shadowing — the global-cover proxy below stands
+    // in for the old per-step CloudSunVisibilityPlanet term (same proxy the
+    // ground bounce already used).
     float3 cloudMid       = O + Vn * (0.5f * (tC0 + tC1));
     float3 probeUp        = SafeNormalize(cloudMid);
     float3 cloudProbePos  = probeUp * (ATMOS_BOTTOM_RADIUS
                                      + CLOUD_LAYER_TOP_KM
                                      + CLOUD_TOP_VARIATION_KM + 0.5f);
-    float3 savedObserver  = g_skyObserverPlanet;
-    g_skyObserverPlanet   = cloudProbePos;
+    float  probeSunCosZ   = dot(probeUp, L);
 
     float3 skyAmbientTop     = float3(0, 0, 0);
     float3 skyAmbientHorizon = float3(0, 0, 0);
     if (CLOUD_SKY_AMBIENT > 0.5f)
     {
-        float3 horizonDir;
-        {
-            float3 sunHoriz = L - probeUp * dot(L, probeUp);
-            float  shLen2   = dot(sunHoriz, sunHoriz);
-            float3 perp;
-            if (shLen2 > 1e-4f)
-                perp = SafeNormalize(cross(probeUp, sunHoriz));
-            else
-            {
-                float3 fwd = Vn - probeUp * dot(Vn, probeUp);
-                perp = (dot(fwd, fwd) > 1e-4f) ? SafeNormalize(fwd) : float3(1, 0, 0);
-            }
-            horizonDir = SafeNormalize(perp * 0.95f + probeUp * 0.05f);
-        }
-        float3 trZ; bool hitPZ;
-        float3 scatterTop     = IntegrateScattering(probeUp,    L, trZ, hitPZ);
-        float3 scatterHorizon = IntegrateScattering(horizonDir, L, trZ, hitPZ);
+        float u = CloudAmbientLutU(probeSunCosZ);
+        float3 scatterTop     = g_cloudAmbientLUT.SampleLevel(
+            g_sampler_LUT, float2(u, 0.25f), 0).rgb;
+        float3 scatterHorizon = g_cloudAmbientLUT.SampleLevel(
+            g_sampler_LUT, float2(u, 0.75f), 0).rgb;
         skyAmbientTop     = scatterTop     * SKY_INTENSITY * CLOUD_SKY_AMBIENT_SCALE;
         skyAmbientHorizon = scatterHorizon * SKY_INTENSITY * CLOUD_SKY_AMBIENT_SCALE;
 
         float topLum     = max(Luma(skyAmbientTop), 1e-4f);
         float horizonLum = Luma(skyAmbientHorizon);
         if (horizonLum > topLum) skyAmbientHorizon *= topLum / horizonLum;
+
+        // NO global-cover darkening here: the probe sits at cloud-top
+        // radius and integrates the air ABOVE the deck, which the deck
+        // does not shadow. Self-occlusion within the cloud is skyOcc's
+        // job (CloudComputeLighting). The old 1-0.85*coverage proxy
+        // multiplied overcast undersides by ~0.15 for no physical reason.
     }
 
     float3 groundIrrad = float3(0, 0, 0);
     if (CLOUD_GROUND_BOUNCE > 0.5f)
     {
-        float  sunCosUp   = saturate(dot(L, probeUp));
+        float  sunCosUp   = saturate(probeSunCosZ);
         float3 sunGroundT = TransmittanceToSun(cloudProbePos, L,
                                                ATMOS_BOTTOM_RADIUS,
                                                ATMOS_TOP_RADIUS);
@@ -1369,8 +1508,6 @@ float3 EvaluateAtmosphereAndClouds(
             groundIrrad   *= (1.0f - 0.85f * coverage);
         }
     }
-
-    g_skyObserverPlanet = savedObserver;
 
     // Phase 2 — combined atmosphere + cloud march through cloud shell.
     {
@@ -1405,29 +1542,29 @@ float3 EvaluateAtmosphereAndClouds(
             float alt           = max(0.0f, length(P) - ATMOS_BOTTOM_RADIUS);
             MediumSample atmosMed = SampleMedium(alt);
 
-            // Hull-Ex passes (coverage, profile, effTop) to the material call.
+            // Hull-Ex passes (coverage, profile, effTop, baseShift) to the
+            // material call. The old fallback heightFrac block that ran here
+            // for every step was dead work: hull-empty samples never feed
+            // CloudComputeLighting, and dense samples get heightFrac from
+            // CloudSampleMaterialFromHull anyway — yet it paid a cloud-offset
+            // cubemap fetch + equiangular projection per stride.
             float hCoverage = 0.0f, hProfile = 0.0f, hEffTop = CLOUD_LAYER_TOP_KM;
+            float hBaseShift = 0.0f;
             float hullRaw   = (distFade > 0.0f)
-                            ? CloudProbeHullEx(P, walltime, hCoverage, hProfile, hEffTop)
+                            ? CloudProbeHullEx(P, walltime, hCoverage, hProfile,
+                                               hEffTop, hBaseShift)
                             : 0.0f;
             float hull      = hullRaw * distFade;
             bool  hullEmpty = (hull <= CLOUD_EFFECTIVE_ZERO_DENSITY);
+            maxCloudHullOut = max(maxCloudHullOut, hullRaw);
 
             CloudMaterial m = (CloudMaterial)0;
-            {
-                // PLANET v8: shift heightFrac by the local cloud-base offset,
-                // matching CloudSampleMaterialFromHull above so the two paths
-                // agree on which slab is "cloud".
-                float baseShiftKm = CloudLocalBaseShiftKm(P);
-                float botKm = CLOUD_LAYER_BOT_KM + baseShiftKm;
-                float topKm = CLOUD_LAYER_TOP_KM + baseShiftKm;
-                m.heightFrac = saturate((alt - botKm) / max(1e-4f, topKm - botKm));
-            }
             float cloudDensity = 0.0f;
             if (!hullEmpty)
             {
                 m            = CloudSampleMaterialFromHull(P, walltime, lodT, 0u,
-                                                           hCoverage, hProfile, hEffTop);
+                                                           hCoverage, hProfile,
+                                                           hEffTop, hBaseShift);
                 cloudDensity = m.density * distFade;
             }
             float cloudSigmaT = cloudDensity * CLOUD_EXTINCTION;
@@ -1436,19 +1573,30 @@ float3 EvaluateAtmosphereAndClouds(
             float3 sigma_t_total = atmosMed.extinction
                                  + float3(cloudSigmaT, cloudSigmaT, cloudSigmaT);
 
-            // Fine step inside density, coarse when empty.
+            // Fine step inside density, coarse when empty. Both get a
+            // distance-proportional floor (sub-pixel where it engages, see
+            // CLOUD_STEP_DIST_FRAC_*), and the second half of the iteration
+            // budget enforces a reach floor that spreads the remaining steps
+            // evenly over the remaining segment — the march now ALWAYS
+            // reaches tC1, degrading to coarse distant sampling instead of
+            // hard-cutting clouds at the horizon when CLOUD_VIEW_STEPS_MAX
+            // runs out. The first half of the budget is unconstrained so
+            // near-field sampling stays at CLOUD_TARGET_STEP_KM quality.
             float thisStep;
             if (hullEmpty)
             {
                 float maxStepAdaptive = min(
-                    CLOUD_MAX_STEP_KM * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
+                    max(CLOUD_MAX_STEP_KM, t * CLOUD_STEP_DIST_FRAC_EMPTY)
+                        * (1.0f + t * CLOUD_EMPTY_STEP_GROWTH_PER_KM),
                     CLOUD_MAX_EMPTY_STEP_KM);
                 thisStep = lerp(stepSize, maxStepAdaptive, saturate(lodT));
             }
             else
             {
-                thisStep = stepSize;
+                thisStep = max(stepSize, t * CLOUD_STEP_DIST_FRAC_FINE);
             }
+            if (ts * 2 >= CLOUD_VIEW_STEPS_MAX)
+                thisStep = max(thisStep, (tC1 - t) / (float)(CLOUD_VIEW_STEPS_MAX - ts));
             thisStep = min(thisStep, tC1 - t);
 
             float3 segTr = exp(-sigma_t_total * thisStep);
@@ -1462,16 +1610,47 @@ float3 EvaluateAtmosphereAndClouds(
             float  cosHorizon = CloudTerrainCosHorizon(P);
             float  earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
+            // Cloud rate = radiance × cloud sigma_s (≈ sigma_t for albedo≈1).
+            // Evaluated before the haze shadow so dense samples can hand
+            // their cone-averaged sun OD to the atmosphere term below.
+            float3 cloudRate  = float3(0, 0, 0);
+            float  cloudSunOD = -1.0f;   // < 0 = no cloud lighting this step
+            if (cloudDensity > 0.0f)
+            {
+                float3 cloudRadiance = CloudComputeLighting(
+                    P, L, m,
+                    hCoverage, hEffTop, hBaseShift,
+                    sunIrradiance, sunAtmosT,
+                    skyAmbientTop, skyAmbientHorizon, groundIrrad,
+                    cosTheta, earthShadow,
+                    pixel, frame, 200u + (uint)acceptedI * 11u,
+                    cloudSunOD);
+                cloudRate = cloudRadiance * cloudSigmaT;
+                ++acceptedI;
+            }
+
             // Cloud shadow on the air column inside the shell — without
             // it the haze brightens visibly as the ray crosses from Phase
             // 1 into Phase 2. Salt 700u keeps this STBN tap independent.
+            //
+            // Dense samples reuse the cloud lighting's own sun OD (longer
+            // reach + far-side term, already cone-averaged) instead of
+            // paying a second CloudOpticalDepthAlongRay march for the same
+            // occlusion at the same point.
             float cloudVisAtmos = 1.0f;
             if (cloud_cloudShadowOnSurfaces > 0.5f)
             {
-                float4 rCone = CloudRand4(pixel, frame, (uint)ts + 700u);
-                float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
-                                                     float2(rCone.x, rCone.y));
-                cloudVisAtmos = CloudSunVisibilityPlanet(P, LjAtmos);
+                if (cloudSunOD >= 0.0f)
+                {
+                    cloudVisAtmos = exp(-cloudSunOD);
+                }
+                else
+                {
+                    float4 rCone = CloudRand4(pixel, frame, (uint)ts + 700u);
+                    float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
+                                                         float2(rCone.x, rCone.y));
+                    cloudVisAtmos = CloudSunVisibilityPlanet(P, LjAtmos);
+                }
                 cloudVisAtmos = pow(max(cloudVisAtmos, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
                 cloudVisAtmos = max(cloudVisAtmos, ATMOS_CLOUD_SHADOW_FLOOR);
             }
@@ -1480,20 +1659,6 @@ float3 EvaluateAtmosphereAndClouds(
             float3 atmosSunIllum     = sunIrradiance * earthShadow * sunAtmosT
                                      * cloudVisAtmos * ATMOS_MULTI_SCATTER_FACTOR;
             float3 atmosRate         = atmosScatterPhase * atmosSunIllum;
-
-            // Cloud rate = radiance × cloud sigma_s (≈ sigma_t for albedo≈1).
-            float3 cloudRate = float3(0, 0, 0);
-            if (cloudDensity > 0.0f)
-            {
-                float3 cloudRadiance = CloudComputeLighting(
-                    P, Vn, L, m,
-                    sunIrradiance, sunAtmosT,
-                    skyAmbientTop, skyAmbientHorizon, groundIrrad,
-                    Pnorm, cosTheta, earthShadow,
-                    pixel, frame, 200u + (uint)acceptedI * 11u);
-                cloudRate = cloudRadiance * cloudSigmaT;
-                ++acceptedI;
-            }
 
             float3 totalRate = atmosRate + cloudRate;
 

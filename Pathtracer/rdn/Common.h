@@ -78,7 +78,10 @@ static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //uploaded once from the bake at startup). Surface_color (Texture2DArray<RGBA8>,
 //t46) at heap 70, normal map (Texture2DArray<RGBA8>, t47) at heap 71, and
 //cloud_offset (Texture2DArray<R32F>, 256x256, t48) at heap 72 - all loaded
-//once from the bake. Bindless starts at 73.
+//once from the bake. Sky transmittance LUT (256x64 RGBA16F, t49) at heap 73
+//and cloud ambient probe LUT (128x2 RGBA16F, t50) at heap 74 - both rebaked
+//every frame by RecordSkyLUTBake (Pass_skylut_bake_v8.hlsl) via a private
+//UAV heap, read here as SRVs. Bindless starts at 75.
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT             = 63;
 static constexpr UINT  SKY_STARS_HEAP_SLOT              = 64;
 static constexpr UINT  CLOUD_NOISE_HEAP_SLOT            = 65;
@@ -89,7 +92,9 @@ static constexpr UINT  TERRAIN_HEIGHTMAP_HEAP_SLOT      = 69;
 static constexpr UINT  TERRAIN_SURFACE_COLOR_HEAP_SLOT  = 70;
 static constexpr UINT  TERRAIN_NORMAL_HEAP_SLOT         = 71;
 static constexpr UINT  TERRAIN_CLOUD_OFFSET_HEAP_SLOT   = 72;
-static constexpr UINT  BINDLESS_HEAP_START              = 73;
+static constexpr UINT  SKY_TRANSMITTANCE_LUT_HEAP_SLOT  = 73;
+static constexpr UINT  CLOUD_AMBIENT_LUT_HEAP_SLOT      = 74;
+static constexpr UINT  BINDLESS_HEAP_START              = 75;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -493,10 +498,14 @@ struct CloudSettings {
     //      cloud cores read as illuminated rather than dark. Combined with
     //      the JD direct phase gives the sharpest silver lining plus the
     //      most uniform frontlit body across modes.
+    //  3, 4 = 4 / 5 octave: deepest terms see exp(-tau/8), exp(-tau/16) —
+    //      the similarity-theory diffusion scale ((1-g)*tau for transport
+    //      asymmetry g~0.94). Lights the underside of optically thick
+    //      cloud the way real diffusion does; pick 3-4 for overcast decks.
     //Octaves 1+ are isotropic (the c^n -> 0 limit of the Wrenninge
     //prescription, see CloudPhaseDirectScaled rationale) and still scaled
     //by msHeightFloor and msStrength so the artist controls keep working
-    //across all three modes.
+    //across all modes.
     float msMode             = 2.0f;
 
     //====================================
