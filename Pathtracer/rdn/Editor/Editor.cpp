@@ -857,14 +857,20 @@ void Editor::DrawCloudPanel(Camera& camera) {
         ImGui::SliderFloat("HF Frequency",   &c.hfFrequency,   0.5f, 30.0f, "%.2f /km",
                            ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Erosion noise frequency — controls the wispy\n"
-                              "edge detail size. Higher = finer whisps.");
+            ImGui::SetTooltip("Fine cauliflower detail scale (feature ~ 1/freq km).\n"
+                              "Per frame it resolves only where the march step is\n"
+                              "finer than ~half a feature. WITH DLSS RR the march\n"
+                              "jitters temporally, so detail resolves OVER frames —\n"
+                              "push to 8..20+ for fine crinkle (some motion shimmer\n"
+                              "is the noise RR cleans). No RR: keep ~3..6 at 0.5km.");
 
         ImGui::SliderFloat("HF Amount",      &c.hfAmount,      0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How aggressively the HF noise eats edges. 0 =\n"
-                              "smooth Worley blobs, 1 = heavily eroded whispy\n"
-                              "stratocumulus. Cores stay intact regardless.");
+            ImGui::SetTooltip("Depth of the signed cauliflower displacement —\n"
+                              "bulges cell centers out, carves seams in, on the\n"
+                              "surface band (volume-neutral, not an eraser). 0 =\n"
+                              "smooth faces, 0.25 = subtle crinkle, 0.55 = chunky.\n"
+                              "Cores stay solid; reads in shading via the MS gate.");
 
         ImGui::SliderFloat("Coverage Edge Width", &c.covModFilterWidth, 0.01f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
@@ -882,23 +888,93 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "with distance via the LOD blend.");
     }
 
-    if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Droplet Size", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
+    if (ImGui::CollapsingHeader("Cauliflower Detail", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Lobe Amount", &c.lobeAmount, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Effective cloud droplet diameter (Jendersie & d'Eon\n"
-                              "2023 Mie approximation), remapped 0..1 -> 5..30 um.\n"
-                              "Small (haze, drizzle ~5 um) = broad forward halo.\n"
-                              "Mid (cumulus ~10..15 um) = concentrated silver lining\n"
-                              "with proper Mie shape.\n"
-                              "Large (large droplets ~30 um) = very sharp silver\n"
-                              "lining peak within ~0.5 deg of the sun.");
+            ImGui::SetTooltip("Signed mid-frequency octave (inverted-Worley FBM)\n"
+                              "folded into the base pre-coverage. Bulges cumulus\n"
+                              "lobes out and carves the seams in — the primary\n"
+                              "cauliflower silhouette + shading driver. 0 = none.");
 
-        ImGui::SliderFloat("Silver Spread (unused)", &c.silverSpread, 0.01f, 0.3f, "%.3f");
+        ImGui::SliderFloat("Lobe Frequency", &c.lobeFreqMult, 2.0f, 16.0f, "%.1f x base");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("LEGACY: the dual-lobe HG silver-spread slider.\n"
-                              "No longer wired into the direct phase since the\n"
-                              "switch to the Jendersie-d'Eon Mie approximation.\n"
-                              "Kept in the cbuffer for layout compatibility.");
+            ImGui::SetTooltip("Lobe frequency as a multiple of Base Frequency.\n"
+                              "Higher = smaller, more numerous lobes; lower =\n"
+                              "bigger lobes. 6.5x base ~ 0.7 km lobes at default.");
+
+        ImGui::SliderFloat("Billow Carve", &c.billowAmount, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Depth of the Worley-seam carve that separates the\n"
+                              "convex billow cells (the bubble look). Higher =\n"
+                              "deeper creases between cauliflower bubbles.");
+
+        ImGui::SliderFloat("Billow Bulge", &c.billowBulge, 0.0f, 0.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far the billow cell centres push out past the\n"
+                              "nominal silhouette. Higher = rounder, more\n"
+                              "pronounced bubbles.");
+
+        ImGui::SliderFloat("Billow Sharpness", &c.billowSharp, 0.5f, 4.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Falloff of the seam carve. Higher = thinner,\n"
+                              "sharper seams between bubbles; lower = broader,\n"
+                              "softer creases.");
+
+        ImGui::SliderFloat("Billow Frequency", &c.billowFreqMult, 1.0f, 8.0f, "%.1f x base");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Billow cell frequency as a multiple of Base\n"
+                              "Frequency. 3x base ~ 1 km cells at default.\n"
+                              "Higher = smaller bubbles.");
+    }
+
+    if (ImGui::CollapsingHeader("Wisps", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Wisp Amount", &c.wispAmount, 0.0f, 1.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Thin wind-sheared filaments reaching OUT past the\n"
+                              "dense body (tops, trailing edges, detached shreds).\n"
+                              "Pre-coverage additive octave — the only term that\n"
+                              "makes NEW translucent material beyond the silhouette\n"
+                              "(lobe/billow/HF only sculpt existing cloud). 0 =\n"
+                              "hard silhouette, no wisps.");
+
+        ImGui::SliderFloat("Wisp Frequency", &c.wispFreqMult, 4.0f, 60.0f, "%.1f x base",
+                           ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Filament fineness as a multiple of Base Frequency.\n"
+                              "30x base ~ 150 m cells (pre-stretch) at default.\n"
+                              "Higher = finer, more delicate wisps (resolves over\n"
+                              "frames under DLSS RR).");
+
+        ImGui::SliderFloat("Wisp Stretch", &c.wispStretch, 1.0f, 8.0f, "%.1f x");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Wind-shear elongation: compresses the noise along\n"
+                              "the wind so cells stretch INTO filaments. 1 = round\n"
+                              "puffy bits, 3 = 3x longer along wind, high = long\n"
+                              "streaky tendrils. Uses Wind X/Z direction (falls\n"
+                              "back to +X if wind is zero).");
+    }
+
+    if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat("Forward Phase G", &c.n3PhaseG, 0.0f, 0.95f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Henyey-Greenstein eccentricity of the primary\n"
+                              "forward lobe (Nubis3). Higher = sharper forward\n"
+                              "scattering and stronger sun-side brightening,\n"
+                              "lower = flatter. 0.6 = Nubis baseline.");
+
+        ImGui::SliderFloat("Silver Intensity", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Amplitude of the narrow 'silver lining' lobe\n"
+                              "max-blended into the primary phase (Nubis3 dual\n"
+                              "lobe). Drives the bright rim when looking toward\n"
+                              "the sun. 0 = no silver lining.");
+
+        ImGui::SliderFloat("Silver Spread", &c.silverSpread, 0.01f, 0.3f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Angular width of the silver lining lobe (its HG g\n"
+                              "is 0.99 - spread). Smaller = a tighter, brighter\n"
+                              "halo hugging the sun; larger = a broader, softer\n"
+                              "glow.");
 
         ImGui::SliderFloat("Shadow Cone (deg)", &c.shadowConeDeg,  0.0f, 15.0f, "%.2f");
         if (ImGui::IsItemHovered())
@@ -925,68 +1001,51 @@ void Editor::DrawCloudPanel(Camera& camera) {
                               "the integrator physically calibrated.");
     }
 
-    if (ImGui::CollapsingHeader("Multi-Scatter Fill")) {
-        //MS model selector. 0 = current Nubis sqrt(Tdir) shortcut (one
-        //isotropic-ish MS lobe, cheapest). 1..4 = Wrenninge multi octave
-        //(Hillaire 2016 §5.8) which adds N extra extinction evals per cloud
-        //sample with progressively attenuated extinction (a^n = 0.5^n) and
-        //isotropic phase. No extra shadow taps so perf cost is small.
-        //Octaves 3/4 reach exp(-tau/8) and exp(-tau/16) — the similarity-
-        //theory diffusion scale that keeps thick-cloud undersides from
-        //going exponentially black.
-        const char* msModeNames[] = {
-            "0: Nubis shortcut (1 lobe, cheapest)",
-            "1: Wrenninge 2 octave",
-            "2: Wrenninge 3 octave",
-            "3: Wrenninge 4 octave (deep)",
-            "4: Wrenninge 5 octave (deepest)",
-        };
-        int msModeIdx = (int)c.msMode;
-        if (ImGui::Combo("MS Model", &msModeIdx, msModeNames, IM_ARRAYSIZE(msModeNames)))
-            c.msMode = (float)msModeIdx;
+    if (ImGui::CollapsingHeader("Multi-Scatter (Nubis-3)")) {
+        ImGui::SliderFloat("MS Strength",   &c.msStrength,   0.0f, 20.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Multi-scatter model:\n"
-                              "0 = current Nubis Evolved single term following\n"
-                              "    sqrt(Tdir). Cheapest, one phase function eval\n"
-                              "    beyond direct. MS Strength + Floor sliders apply.\n"
-                              "1 = Wrenninge 2 octave (direct + one extra octave\n"
-                              "    with a^n / b^n / c^n per Hillaire 2016 §5.8).\n"
-                              "    Soft fill in deep cores the shortcut misses.\n"
-                              "2 = Wrenninge 3 octave (direct + two extra). Deep\n"
-                              "    cumulus cores read as illuminated rather than\n"
-                              "    just dark. Two extra phase evals per sample,\n"
-                              "    no extra shadow taps.\n\n"
-                              "MS Strength + Floor still scale octaves 1..N in\n"
-                              "modes 1 and 2 so the artist knobs keep working.\n"
-                              "Secondary Strength and Secondary G apply only in\n"
-                              "mode 0 (they parametrise the shortcut's MS lobe).");
+            ImGui::SetTooltip("Global multiplier on the Nubis3 multi-scatter\n"
+                              "(ms_volume) term. 4.0 = exact published scale.\n"
+                              "0 disables MS and cores / shadow sides go dark.");
 
-        ImGui::SliderFloat("Secondary Strength", &c.secondaryStrength, 0.0f, 1.5f, "%.2f");
+        ImGui::SliderFloat("MS Brightness", &c.n3MsBrightness, 0.0f, 6.0f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Amplitude of the secondary multi-scatter phase.\n"
-                              "Modulated by density × height × sun atten. Lifts\n"
-                              "the shadow side of cumulus without the cost of\n"
-                              "a full octave loop. 0 = no fill, 1.0 = bright.");
+            ImGui::SetTooltip("Engine calibration gain on the MS term only (the\n"
+                              "direct silver term is already calibrated). 2.5\n"
+                              "restores a white frontlit body; lower greys the\n"
+                              "bodies, higher blows them out.");
 
-        ImGui::SliderFloat("Secondary G",        &c.secondaryG,        0.0f, 0.6f, "%.2f");
+        ImGui::SliderFloat("Secondary G",   &c.secondaryG,   0.0f, 0.6f, "%.2f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("HG eccentricity of the secondary lobe. Smaller\n"
-                              "= more isotropic (more fill across the volume),\n"
-                              "larger = still forward biased like the primary.");
+            ImGui::SetTooltip("HG eccentricity of the secondary (MS) phase lobe.\n"
+                              "Smaller = more isotropic fill across the volume,\n"
+                              "larger = more forward biased like the primary.");
 
-        ImGui::SliderFloat("MS Strength",        &c.msStrength,        0.0f, 20.0f, "%.2f");
+        ImGui::SliderFloat("MS Extinction Scale", &c.n3MsBase, 0.0f, 1.0f, "%.3f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Global multiplier on the multi-scatter contribution.\n"
-                              "4.0 = Nubis Evolved baseline. 0 disables MS and\n"
-                              "clouds collapse to pure single scatter (very dark\n"
-                              "shadow sides and cores).");
+            ImGui::SetTooltip("Baseline multi-scatter extinction scale exp(-DL*s)\n"
+                              "for surface / frontlit samples. 0.25 = Nubis\n"
+                              "baseline. Lower = MS reaches deeper (brighter).");
 
-        ImGui::SliderFloat("MS Base Floor",      &c.msHeightFloor,     0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("MS Glow Scale", &c.n3MsGlow, 0.0f, 1.0f, "%.3f");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Minimum MS amplitude floor at cloud base (h=0).\n"
-                              "Without this real cumulus bases read as black;\n"
-                              "0.18 keeps them 'shaded white' the way real\n"
-                              "stratocumulus bases look from below.");
+            ImGui::SetTooltip("Multi-scatter extinction scale for deep backlit\n"
+                              "cores — the inner-glow floor the MS Extinction\n"
+                              "Scale->this remap reaches. 0.05 lets light flood\n"
+                              "thick cores around the sun. Keep <= MS Ext Scale.");
+
+        ImGui::SliderFloat("Glow Sun Dot",  &c.n3GlowSunDot, 0.1f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("dot(view, sun) at which the inner glow fully\n"
+                              "engages (1 = looking straight at the sun). 0.9 =\n"
+                              "Nubis baseline; lower spreads the glow to wider\n"
+                              "back-lit angles.");
+
+        ImGui::SliderFloat("Glow Depth",    &c.n3GlowDepthKm, 0.1f, 5.0f, "%.2f km");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("In-cloud view-path length at which the glow scale\n"
+                              "reaches MS Glow Scale. 1.0 km = Nubis baseline.\n"
+                              "Larger = only the deepest cores glow.");
     }
 
     if (ImGui::CollapsingHeader("Animation")) {
@@ -1085,11 +1144,12 @@ void Editor::DrawCloudPanel(Camera& camera) {
 
         ImGui::SliderFloat("Target Step Size", &c.targetStepKm, 0.1f, 3.0f, "%.2f km");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Base step size for the fine portion of the\n"
-                              "adaptive view march. Smaller = denser sampling\n"
-                              "= better quality, worse perf. 0.6 km tuned\n"
-                              "for stratocumulus; raise to 1.0..1.5 for ~half\n"
-                              "the sample count when HF noise hides banding.");
+            ImGui::SetTooltip("In-cloud fine step — and the MASTER lever for how\n"
+                              "fine the HF cauliflower can resolve: detail smaller\n"
+                              "than ~half this just aliases to a flat thinning.\n"
+                              "0.5 km resolves ~1 km cells; drop to ~0.15..0.2 for\n"
+                              "crisp sub-km crinkle (costs in-cloud samples, near\n"
+                              "field only). Raise to 1.0+ to halve the count.");
 
         int shadowSteps = (int)c.shadowSteps;
         if (ImGui::SliderInt("Surface Shadow Steps", &shadowSteps, 1, 6))

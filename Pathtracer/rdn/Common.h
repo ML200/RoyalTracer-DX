@@ -319,18 +319,29 @@ struct CloudSettings {
     //Higher values make clouds read as solid walls instead of letting
     //the multi-scatter terms show through — for "fluffy" cumulus stay
     //in 6..15.
-    float extinction         = 4.0f;
+    float extinction         = 10.0f;
     //base shape Worley FBM frequency (1/km). The base octave runs at this
     //frequency, a second detail octave at ~2.7x sits on top. Lower =
     //larger cumulus clusters; 0.18 gives ~5 km cluster spacing which
     //reads as natural skies rather than the tiled "blobs on a grid"
     //look the single octave default produced.
-    float baseFrequency      = 0.321f;
-    //high-frequency value-noise erosion (1/km) and its amount [0,1].
-    //Eats the edges of the base blobs, producing the wispy detail that
-    //distinguishes cumulus from raw spheres.
+    float baseFrequency      = 0.223f;
+    //high-frequency cauliflower detail (1/km) and its amount [0,1]. This is a
+    //SIGNED inverted-Worley (G channel) displacement folded into the density
+    //before the lighting profile: it bulges cell centers OUT and carves the
+    //seams IN on the surface band, so it SCULPTS fine cumulus crinkle (and
+    //self-shades it) rather than just eroding the rim. RESOLUTION-BOUND: a
+    //feature is ~1/hfFrequency km (7.27 -> ~140 m). PER FRAME it only resolves
+    //where the in-cloud step is finer than ~half of it (near camera / low
+    //targetStepKm); past that one frame aliases it to a flat thinning. BUT the
+    //phase-2 march jitters temporally-stratified, so under DLSS RR the per-frame
+    //undersampling is reconstructed OVER frames — you can push hfFrequency well
+    //past the per-frame Nyquist (8..20+) and the fine crinkle emerges as it
+    //accumulates (expect some shimmer on fast camera motion; that is the noise
+    //RR is cleaning). Without RR/temporal, keep ~3..6 at the 0.5 km step. Amount
+    //= displacement depth; 0.25 = subtle, 0.55 = chunky.
     float hfFrequency        = 7.27f;
-    float hfAmount           = 0.65f;
+    float hfAmount           = 0.40f;
     //====================================
     // Nubis-3 lighting model (Schneider, SIGGRAPH)
     //====================================
@@ -350,9 +361,12 @@ struct CloudSettings {
     // cloud depth + extinction-attenuated sun term. Captures the soft
     // fill on the shadow side without paying for a Wrenninge octave
     // loop.
-    // secondaryStrength: amplitude of the secondary term (0..1).
-    // secondaryG:        HG eccentricity of the secondary lobe (0..1).
-    //                    Smaller = more isotropic (more fill in core).
+    // secondaryStrength: INERT since Nubis3 (2026-06-13) — was the legacy
+    //                    mode-0 secondary amplitude; the Nubis3 MS term
+    //                    carries its own brightness (n3MsBrightness). Slider
+    //                    removed; field kept for cbuffer layout.
+    // secondaryG:        HG eccentricity of the secondary (MS) lobe (0..1).
+    //                    Smaller = more isotropic (more fill in core). USED.
     float secondaryStrength  = 0.45f;
     float secondaryG         = 0.18f;
     //wind drift in km/s (horizontal only). Animates noise via walltime.
@@ -497,26 +511,14 @@ struct CloudSettings {
     //4.0 is the Nubis Evolved baseline; 0 disables MS and clouds collapse
     //to pure single scatter (very dark cores).
     float msStrength         = 4.00f;
-    //Minimum MS amplitude floor at cloud base (h=0). Without this real
-    //cumulus bases read as black; 0.18 keeps them "shaded white".
+    //INERT since Nubis3 (2026-06-13): the Nubis3 ambient column owns the
+    //vertical shaping, so the MS term has no height-floor bias. Slider
+    //removed; field kept for cbuffer layout.
     float msHeightFloor      = 0.18f;
-    //Multi scatter model selector:
-    //  0 = Nubis single MS term following sqrt(Tdir) (cheapest — one phase
-    //      function eval per sample beyond direct)
-    //  1 = Wrenninge 2 octave (Hillaire 2016 §5.8): direct + one extra
-    //      octave with a^n attenuated extinction and isotropic fill
-    //  2 = Wrenninge 3 octave (default): direct + two extra octaves, deepest
-    //      cloud cores read as illuminated rather than dark. Combined with
-    //      the JD direct phase gives the sharpest silver lining plus the
-    //      most uniform frontlit body across modes.
-    //  3, 4 = 4 / 5 octave: deepest terms see exp(-tau/8), exp(-tau/16) —
-    //      the similarity-theory diffusion scale ((1-g)*tau for transport
-    //      asymmetry g~0.94). Lights the underside of optically thick
-    //      cloud the way real diffusion does; pick 3-4 for overcast decks.
-    //Octaves 1+ are isotropic (the c^n -> 0 limit of the Wrenninge
-    //prescription, see CloudPhaseDirectScaled rationale) and still scaled
-    //by msHeightFloor and msStrength so the artist controls keep working
-    //across all modes.
+    //INERT since Nubis3 (2026-06-13): the multi-scatter model is a single
+    //fixed light-energy formula now (see the Clouds_v8.hlsli knob block), not
+    //a selectable mode — the old Wrenninge octave ladder is gone. Slider
+    //removed; field kept for cbuffer layout.
     float msMode             = 2.0f;
 
     //====================================
@@ -566,6 +568,59 @@ struct CloudSettings {
     float maxEmptyStepKm            = 500.0f;
     float emptyStepGrowthPerKm      = 0.0f;
     float maxFineStepKm             = 10.0f;
+
+    //====================================
+    // Nubis-3 light-energy shape (exposed 2026-06-13)
+    //====================================
+    //Were hardcoded CLOUD_N3_* #defines in Clouds_v8.hlsli; defaults here
+    //reproduce the exact published Nubis3 model. n3PhaseG = forward HG
+    //eccentricity of the primary lobe. n3MsBase/n3MsGlow = the multi-scatter
+    //extinction scale at the surface vs deep backlit cores (the inner-glow
+    //remap drives MS_BASE->MS_GLOW with in-cloud depth). n3GlowSunDot = the
+    //dot(V,L) at which the glow fully engages; n3GlowDepthKm = in-cloud path
+    //length for full glow. n3MsBrightness = engine calibration gain on the MS
+    //term only (the direct silver term is already calibrated).
+    float n3PhaseG           = 0.6f;
+    float n3MsBase           = 0.25f;
+    float n3MsGlow           = 0.05f;
+    float n3MsBrightness     = 2.5f;
+    float n3GlowSunDot       = 0.9f;
+    float n3GlowDepthKm      = 1.0f;
+
+    //====================================
+    // cauliflower shape detail (exposed 2026-06-13)
+    //====================================
+    //Were hardcoded CLOUD_LOBE_*/CLOUD_BILLOW_* #defines. lobe = the signed
+    //mid-frequency octave (inverted-Worley FBM) folded into the base pre-
+    //coverage that bulges/carves cumulus lobes; freqMult is its frequency as
+    //a multiple of Base Frequency (~0.7 km lobes at 6.5x). billow = the convex
+    //bubble carve/bulge at the Worley cell seams (~1 km at 3x base): amount =
+    //seam carve depth, bulge = centre push-out, sharp = seam falloff (higher
+    //= thinner seams). All feed m.profile so the cauliflower self-shadows in
+    //the Nubis3 lighting. The vertical height ramps stay compile-time in
+    //Clouds_v8.hlsli (rarely tuned).
+    float lobeAmount         = 0.45f;
+    float lobeFreqMult       = 6.5f;
+    float billowAmount       = 0.40f;
+    float billowBulge        = 0.18f;
+    float billowSharp        = 1.5f;
+    float billowFreqMult     = 3.0f;
+    //====================================
+    // wisps (thin wind-sheared filaments)
+    //====================================
+    //The lobe/billow/HF detail are all DENSITY-MASKED — they sculpt cloud that
+    //already exists. Wisps are NEW low-density material reaching OUT past the
+    //silhouette (tops, trailing edges, detached shreds), so this is a separate
+    //PRE-coverage additive octave: it lifts the fringe over the coverage
+    //threshold into thin tendrils that the covmod ramp keeps translucent. The
+    //sample coord is compressed along the wind so cells elongate into sheared
+    //filaments. amount = how far they reach (pre-coverage push); freqMult =
+    //filament fineness (×Base Frequency); stretch = wind-shear elongation (1 =
+    //round, 3 = 3x longer along wind). Upper-layer weighted; resolves over
+    //frames under DLSS RR. 0 amount = no wisps (old hard silhouette).
+    float wispAmount         = 0.37f;
+    float wispFreqMult       = 30.0f;
+    float wispStretch        = 2.2f;
 };
 
 //====================================

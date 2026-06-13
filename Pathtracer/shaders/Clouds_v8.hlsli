@@ -35,6 +35,17 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_STEP_DIST_FRAC_FINE  0.004f
 #define CLOUD_STEP_DIST_FRAC_EMPTY 0.02f
 
+//In-cloud fine-step multiplier AT THE CAMERA. The in-cloud stride is
+//CLOUD_TARGET_STEP_KM * lerp(CLOUD_NEAR_STEP_MULT, 1, lodT), so this floors how
+//fine the near field samples regardless of targetStepKm — and the near field
+//is the only place the ~140 m HF cauliflower can resolve (past ~half the step
+//it aliases to a uniform thinning, the reason raising hfFrequency "did
+//nothing"). 0.35 => ~0.175 km near steps at the 0.5 km default. Costs in-cloud
+//samples near camera ONLY (empty air still strides coarse via the adaptive
+//empty step); raise toward 1.0, or lift targetStepKm, to reclaim that perf at
+//the price of near-field detail.
+#define CLOUD_NEAR_STEP_MULT 0.35f
+
 //====================================
 //NUBIS3 LIGHT ENERGY — exact model from A. Schneider (Guerrilla),
 //"Nubis3: Methods (and madness) to model and render immersive real-time
@@ -78,11 +89,13 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 //                   that killed the inner glow from outside. The DIRECT
 //                   Beer term keeps the multiplier (tuned shadow depth).
 //  dimensional_profile -> m.profile (post-covmod macro density INCLUDING
-//                   the lobe octave — base composition, like the shape
-//                   FBM inside their modeled NVDFs — but pre billow/HF;
-//                   their ValueErosion detail never feeds lighting
-//                   either. The lobe in the profile is what darkens the
-//                   inter-lobe creases through the MS gate).
+//                   the lobe AND billow octaves — base composition, like
+//                   the shape FBM inside their modeled NVDFs — but pre HF
+//                   erosion; their ValueErosion detail never feeds lighting.
+//                   The lobe+billow in the profile darken the inter-cell
+//                   cauliflower creases and brighten the bulges through the
+//                   MS gate — the 2026-06-13 fix for "cauliflower only in
+//                   silhouette, smooth in shading").
 //  cloud_distance (SDF voxels, -128 = deep inside) -> accumulated
 //                   in-cloud view-path length, remapped over
 //                   GLOW_DEPTH_KM. Path length overestimates SDF depth
@@ -119,25 +132,54 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 //white body while keeping every Nubis ratio (profile-gated dark edges,
 //glow remap, phase shape). Applies to ms_volume only — the direct term
 //carries the silver lining, which was already calibrated.
+// Editor-overridable (Includes_v8.hlsli redirects each CLOUD_N3_* to a CB
+// field; defaults live in Common.h CloudSettings). The #ifndef literals below
+// are compile-time fallbacks and the documented baseline (exact Nubis3).
+#ifndef CLOUD_N3_PHASE_G
 #define CLOUD_N3_PHASE_G        0.6f   // primary forward HG eccentricity
+#endif
+#ifndef CLOUD_N3_MS_BASE
 #define CLOUD_N3_MS_BASE        0.25f  // baseline MS extinction scale
+#endif
+#ifndef CLOUD_N3_MS_GLOW
 #define CLOUD_N3_MS_GLOW        0.05f  // deep backlit MS extinction scale
+#endif
+#ifndef CLOUD_N3_MS_BRIGHTNESS
 #define CLOUD_N3_MS_BRIGHTNESS  2.5f   // engine calibration gain on ms
+#endif
+#ifndef CLOUD_N3_GLOW_SUNDOT
 #define CLOUD_N3_GLOW_SUNDOT    0.9f   // sun_dot where glow fully engages
+#endif
 //-128 voxels of a 256^3 NVDF over a ~2-4 km formation is ~1 km, not the
 //2 km first guessed — at 2 km the glow scale barely left 0.25 before
 //view transmittance killed the samples, so the inner glow never showed.
+#ifndef CLOUD_N3_GLOW_DEPTH_KM
 #define CLOUD_N3_GLOW_DEPTH_KM  1.0f   // in-cloud depth for full glow
+#endif
 //
 //Billow: mid-frequency convex bubble structure (the 0.4-1.5 km band real
 //cumulus boils at). Bubbles are a union of convex cells: CARVE density at
 //Worley cell seams (raw A-channel Worley is 0 at cell centers, 1 at seams
 //— ready-made) and BULGE the centers. Height-shaped (flat shaded bases,
-//boiling tops) and LOD-tapered like the domain warp.
+//boiling tops) and LOD-tapered like the domain warp. NOW feeds m.profile
+//(captured after this stage) so the bubble creases self-shadow in the MS
+//lighting, not just the silhouette. Amounts bumped 2026-06-13: the crisper
+//A channel (period 32->16) carries sharper seams, so the carve/bulge read
+//as defined cauliflower cells instead of the old soft scallops.
+// FREQ/AMOUNT/BULGE/SHARP are editor-overridable (Includes_v8.hlsli → CB,
+// defaults in Common.h); the H_LO/H_HI vertical ramps stay compile-time.
+#ifndef CLOUD_BILLOW_FREQ
 #define CLOUD_BILLOW_FREQ       (CLOUD_BASE_FREQ * 3.0f)  // ~1 km cells
-#define CLOUD_BILLOW_AMOUNT     0.35f  // seam carve depth
-#define CLOUD_BILLOW_BULGE      0.12f  // center push-out
+#endif
+#ifndef CLOUD_BILLOW_AMOUNT
+#define CLOUD_BILLOW_AMOUNT     0.40f  // seam carve depth
+#endif
+#ifndef CLOUD_BILLOW_BULGE
+#define CLOUD_BILLOW_BULGE      0.18f  // center push-out
+#endif
+#ifndef CLOUD_BILLOW_SHARP
 #define CLOUD_BILLOW_SHARP      1.5f   // carve falloff (higher = thinner seams)
+#endif
 #define CLOUD_BILLOW_H_LO       0.08f  // height ramp start (heightFrac)
 #define CLOUD_BILLOW_H_HI       0.45f  // full strength above this
 //
@@ -166,10 +208,40 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 //silhouette, not in lighting.
 //LOD: zero by lodT 0.625 (~195 km at the default 20/300 band), where a
 //0.4 km lobe is ~2 px.
-#define CLOUD_LOBE_FREQ         (CLOUD_BASE_FREQ * 8.0f)  // ~0.4 km lobes
-#define CLOUD_LOBE_AMOUNT       0.35f  // signed base amplitude (~±half this)
-#define CLOUD_LOBE_H_LO         0.10f  // height ramp start (heightFrac)
-#define CLOUD_LOBE_H_HI         0.50f  // full strength above this
+// FREQ/AMOUNT are editor-overridable (Includes_v8.hlsli → CB, defaults in
+// Common.h); the H_LO/H_HI vertical ramps stay compile-time.
+#ifndef CLOUD_LOBE_FREQ
+#define CLOUD_LOBE_FREQ         (CLOUD_BASE_FREQ * 6.5f)  // ~0.7 km lobes
+#endif
+#ifndef CLOUD_LOBE_AMOUNT
+#define CLOUD_LOBE_AMOUNT       0.45f  // signed base amplitude (~±half this)
+#endif
+#define CLOUD_LOBE_H_LO         0.05f  // height ramp start (heightFrac)
+#define CLOUD_LOBE_H_HI         0.40f  // full strength above this
+//
+//HF detail bias: the signed-displacement midpoint of the inverted-Worley FBM
+//(G). hf > BIAS bulges a cauliflower cell center OUT, hf < BIAS carves the seam
+//IN. 0.5 pairs with the height flip (which averages to ~0.5 mid-layer) to keep
+//the detail roughly volume-NEUTRAL — it sculpts without net growing/shrinking
+//the deck (the old pure-subtract erosion could only shrink). Nudge DOWN to
+//fatten the bumps, UP to thin them.
+#ifndef CLOUD_HF_BIAS
+#define CLOUD_HF_BIAS           0.5f
+#endif
+//
+//WISPS: thin wind-sheared filaments beyond the dense body (tops, trailing
+//edges, detached shreds). FREQ/AMOUNT/STRETCH are editor sliders (Includes_v8
+//redirects to CB); these vertical-ramp + bias constants stay compile-time.
+//H_LO/H_HI = the upper-layer band the wisps live in (cloud dissipates into
+//wisps near the top; the lower body stays solid). BIAS = the additive midpoint
+//of the inverted-Worley wisp octave: cores (w>BIAS) push the fringe OVER the
+//coverage threshold into filaments, seams (w<BIAS) carve the gaps that fragment
+//them into shreds. Lower BIAS = more reach-out.
+#define CLOUD_WISP_H_LO         0.28f
+#define CLOUD_WISP_H_HI         0.70f
+#ifndef CLOUD_WISP_BIAS
+#define CLOUD_WISP_BIAS         0.30f
+#endif
 
 inline float CloudLodT(float distKm)
 {
@@ -214,11 +286,15 @@ inline float4 CloudRand4(uint2 px, uint frame, uint tap)
 }
 
 // g_cloudNoise: 256³ RGBA8 baked by Pass_cloudnoise_bake_v8.hlsl. Each
-// channel uses its own bake period so WRAP sampling tiles cleanly.
-#define CLOUD_NOISE_R_PERIOD   32.0f   // Perlin-Worley FBM
-#define CLOUD_NOISE_G_PERIOD   16.0f   // inverted-Worley FBM (3 octaves)
-#define CLOUD_NOISE_B_PERIOD   48.0f   // value noise (high-freq erosion)
-#define CLOUD_NOISE_A_PERIOD   32.0f   // single-octave Worley (raw)
+// channel uses its own bake period so WRAP sampling tiles cleanly. MUST
+// stay in lockstep with the R/G/B/A_PERIOD defines in the bake shader, or
+// the runtime samples a different number of cells than were baked and the
+// noise turns to garbage. (2026-06-13: G 16->8, A 32->16 for crisper
+// cauliflower/billow — see the bake header's PERIOD vs CRISPNESS note.)
+#define CLOUD_NOISE_R_PERIOD   32.0f   // Perlin-Worley FBM (base shape)
+#define CLOUD_NOISE_G_PERIOD   8.0f    // inverted-Worley FBM 3-oct (cauliflower)
+#define CLOUD_NOISE_B_PERIOD   48.0f   // value noise (smooth: warp + top)
+#define CLOUD_NOISE_A_PERIOD   16.0f   // single-octave Worley (billow seams, raw)
 
 inline float CloudValueNoise(float3 p)
 {
@@ -515,11 +591,47 @@ CloudMaterial CloudSampleMaterialFromHull(
         }
     }
 
+    // WISPS: thin wind-sheared filaments that reach OUT past the dense body —
+    // tops, trailing edges, detached shreds. The lobe/billow/HF terms are all
+    // density-masked and can only sculpt cloud that already exists; wisps are
+    // NEW material BEYOND the silhouette, so this is a PRE-coverage ADDITIVE
+    // octave: it lifts the FRINGE (base just under the coverage threshold) over
+    // it as thin tendrils, while the covmod ramp keeps that new material low-
+    // density / translucent. The profile taper near the top zeroes density past
+    // the layer, so this can't fatten the cap into a dome — it only fringes the
+    // upper band into wisps. The sample coord is COMPRESSED along the horizontal
+    // wind (XZ in noise space; wind has no Y) so inverted-Worley cells elongate
+    // ALONG the wind into sheared filaments instead of round blobs. Resolves
+    // over frames under DLSS RR like the HF detail. NOT mirrored in the shadow
+    // march: wisps are thin/translucent, so skipping their self-shadow is right
+    // (the body still shadows them — the body density IS in the shadow march).
+    if (quality == 0u && CLOUD_WISP_AMOUNT > 0.001f)
+    {
+        float wispShape = saturate(1.0f - lodT * 1.6f)
+                        * smoothstep(CLOUD_WISP_H_LO, CLOUD_WISP_H_HI,
+                                     m.heightFrac);
+        if (wispShape > 0.01f)
+        {
+            float2 wd   = float2(CLOUD_WIND_X, CLOUD_WIND_Z);
+            float  wlen = length(wd);
+            float2 wdir = (wlen > 1e-4f) ? wd * (1.0f / wlen) : float2(1.0f, 0.0f);
+            float  k    = 1.0f / max(CLOUD_WISP_STRETCH, 1.0f);   // <=1 elongates
+            float3 wq   = shapeQ;
+            float  al   =  wq.x * wdir.x + wq.z * wdir.y;          // along wind
+            float  cr   = -wq.x * wdir.y + wq.z * wdir.x;          // cross wind
+            al  *= k;
+            wq.x = al * wdir.x - cr * wdir.y;
+            wq.z = al * wdir.y + cr * wdir.x;
+
+            float w = CloudWorleyFBM(wq * CLOUD_WISP_FREQ
+                                     + float3(53.1f, 17.7f, 91.3f), 0u);
+            base += CLOUD_WISP_AMOUNT * wispShape * (w - CLOUD_WISP_BIAS);
+        }
+    }
+
     float coverageHull = coverage * profile;
     float d = coverageModulation(coverageHull, base, CLOUD_COVMOD_FILTER_WIDTH);
     if (d <= 0.001f) return m;
-
-    m.profile = saturate(d);
 
     // BILLOW: convex bubble structure in the 0.4-1.5 km band (see the
     // knob block up top). Carve at Worley cell seams — edge-weighted so
@@ -552,29 +664,55 @@ CloudMaterial CloudSampleMaterialFromHull(
         }
     }
 
-    // HF erosion: silhouette wisps. Edge-masked + LOD-tapered.
-    float hfAmount = CLOUD_HF_AMOUNT * lerp(1.0f, 0.6f, lodT);
+    // HF DETAIL — signed cauliflower displacement. This WAS a pure-subtract,
+    // edge-masked carve (d -= hf·(1-d)³) captured AFTER m.profile: it could
+    // only SHRINK the cloud, it lived in the silhouette only, and it never
+    // reached the lighting. That is exactly the "fine detail just shrinks the
+    // clouds, frequency does nothing" symptom — a SUB-STEP erosion aliases to
+    // its spatial MEAN (a uniform thinning), so raising its frequency only
+    // reshuffles which mean each sample reads.
+    //
+    // Now: (hfC - bias) BULGES inverted-Worley cell centers OUT and CARVES the
+    // seams IN — a signed cauliflower octave, not an eraser — folded into d
+    // BEFORE the m.profile capture so the bumps brighten and the creases darken
+    // through the Nubis3 MS gate (reads in SHADING, not just outline). The
+    // shell mask 4·d·(1-d) concentrates it on the visible surface band (peaks
+    // at d=0.5, ~0.64 at the rim, tapers into the solid core) so it sculpts the
+    // lit face + ragged silhouette without gutting the body or fabricating
+    // density in clear air (shell→0 as d→0). Height flip (hf→1-hf with
+    // altitude) keeps billowy bulges low and shredded wisps up top; hRamp
+    // crisps the bases.
+    //
+    // RESOLUTION-BOUND: features are ~1/CLOUD_HF_FREQ km (~140 m default) and
+    // only resolve where the in-cloud step is finer than ~half that — i.e. the
+    // near field (CLOUD_NEAR_STEP_MULT floor) and low cloud_targetStepKm (the
+    // master detail/perf lever). Past the step the term re-aliases to its mean,
+    // so pushing hfFrequency beyond what the step resolves stops adding visible
+    // structure — UNLESS DLSS RR is resolving the per-frame undersampling over
+    // frames (temporally-stratified jitter in the phase-2 march), which lifts
+    // the effective ceiling by the accumulation depth. Tapered out with
+    // distance where features fall sub-pixel (RR can only de-noise, not invent
+    // detail there); the rate is gentle since RR tolerates the residual.
+    float hfAmount = CLOUD_HF_AMOUNT * saturate(1.0f - lodT * 1.6f);
     if (hfAmount > 0.001f)
     {
-        float hf = CloudValueNoise(q * CLOUD_HF_FREQ);
-        float edgeMask = (1.0f - d);
-        edgeMask = edgeMask * edgeMask * edgeMask;
-        d = saturate(d - hfAmount * hf * edgeMask);
+        float hf      = CloudWorleyFBM(q * CLOUD_HF_FREQ, 0u);   // 1 at centers
+        float hfC     = lerp(hf, 1.0f - hf, saturate(m.heightFrac * 1.3f));
+        float signedD = hfC - CLOUD_HF_BIAS;                     // +bulge / -carve
+        float hRamp   = lerp(0.6f, 1.0f, saturate(m.heightFrac * 1.5f));
+        float shell   = saturate(4.0f * d * (1.0f - d));         // surface band
+        d = saturate(d + hfAmount * hRamp * signedD * shell);
     }
 
-    float hf2Amount = hfAmount * lerp(0.45f, 0.0f, lodT);
-    if (hf2Amount > 0.001f)
-    {
-        float hf2 = CloudValueNoise(q * CLOUD_HF_FREQ * 2.5f
-                                    + float3(13.1f, 5.7f, 19.3f));
-        float midMask = (1.0f - d);
-        midMask = midMask * midMask;
-        d = saturate(d - hf2Amount * hf2 * midMask);
-    }
-
-    // (Old near-field cauliflower term removed — subsumed by the BILLOW
-    // stage above, which carves convex cells instead of wobbling the
-    // isosurface symmetrically.)
+    // m.profile = the Nubis3 dimensional_profile (input to the MS dark-edge
+    // gate). Captured AFTER base+lobe+billow+HF so the FULL cauliflower — macro
+    // lobes, mid billow cells AND the signed HF bumps — drives the MS bright-
+    // bulge / dark-crease shading. (Nubis3 keeps its ValueErosion out of
+    // lighting because it samples the real high-res NVDF along the sun ray; our
+    // profile gate is a cheap stand-in for that, so the detail must feed it to
+    // be lit at all. The HF only reaches here once the step resolves it — at
+    // coarse steps it averages out and profile is unchanged, as before.)
+    m.profile = saturate(d);
 
     // Soft density curve lifts mid-densities so the body fills terrain.
     d = pow(saturate(d), lerp(0.85f, 1.0f, d));
@@ -762,14 +900,21 @@ float CloudDensityForShadow(float3 P, float timeSec, bool withBillow)
         }
     }
 
-    // HF erosion at the view march's lodT=1 strength.
+    // HF detail — mirror the view march's SIGNED cauliflower displacement (G
+    // channel, height-flipped via hApx) so self-shadow OD tracks the lit
+    // surface. The shadow table samples are coarse (>=0.2 km) and can't resolve
+    // the ~140 m HF, so this contributes mainly its (near-zero-mean) bias —
+    // keeping the self-shadow anchored to the resolvable macro+billow shape
+    // rather than fabricating crease/bulge OD the view march can't see.
     float hfAmount = CLOUD_HF_AMOUNT * 0.6f;
     if (hfAmount > 0.001f)
     {
-        float hf       = CloudValueNoise(q * CLOUD_HF_FREQ);
-        float edgeMask = 1.0f - d;
-        edgeMask       = edgeMask * edgeMask * edgeMask;
-        d              = saturate(d - hfAmount * hf * edgeMask);
+        float hf      = CloudWorleyFBM(q * CLOUD_HF_FREQ, 0u);
+        float hfC     = lerp(hf, 1.0f - hf, saturate(hApx * 1.3f));
+        float signedD = hfC - CLOUD_HF_BIAS;
+        float hRamp   = lerp(0.6f, 1.0f, saturate(hApx * 1.5f));
+        float shell   = saturate(4.0f * d * (1.0f - d));
+        d = saturate(d + hfAmount * hRamp * signedD * shell);
     }
 
     return d;
@@ -1421,7 +1566,7 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
 
     float t          = tNear;
     float fineStep   = CLOUD_TARGET_STEP_KM
-                     * lerp(0.55f, 1.0f, CloudLodT(tNear));
+                     * lerp(CLOUD_NEAR_STEP_MULT, 1.0f, CloudLodT(tNear));
     // In-cloud view-path length — Nubis3 cloud_distance proxy for the
     // inner glow (see knob block). Resets across empty strides.
     float inCloudKm  = 0.0f;
@@ -1846,10 +1991,20 @@ float3 EvaluateAtmosphereAndClouds(
     {
         uint2 pixel    = DispatchRaysIndex().xy;
         uint  frame    = (uint)time;
-        // seed = cloud body step jitter + RR coin. STAYS ON WHITE NOISE —
-        // routing through STBN disrupts the body integration; only the
-        // atmospheric cone tap below uses STBN safely.
+        // seed = RR coin (white per frame — independent coins are correct).
+        // STAYS ON WHITE NOISE — routing through STBN disrupts the body
+        // integration; only the atmospheric cone tap below uses STBN safely.
         uint  seed     = initRandomData(pixel, uint2(0, 0), frame, 71u);
+        // Body step jitter = TEMPORALLY STRATIFIED for DLSS RR. jitSeed has NO
+        // frame term, so each step draws a per-(pixel,step) phase that is STABLE
+        // across frames; the loop adds a golden-ratio × frame advance and wraps.
+        // Spatially WHITE (honours the no-STBN body rule), but a low-discrepancy
+        // sequence ACROSS frames — so RR reconstructs the sub-step HF
+        // cauliflower over a few frames (≈1/N) instead of slowly de-noising an
+        // independent white reseed (≈1/√N) and smearing the detail flat. This is
+        // what makes the ~140 m detail resolve without finer per-frame steps.
+        uint  jitSeed  = initRandomData(pixel, uint2(0, 0), 0u, 19u);
+        const float kJitGolden = 0.61803399f * (float)frame;
 
         const float kAtmosShadowConeCosP2 = cos(ATMOS_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
 
@@ -1857,7 +2012,7 @@ float3 EvaluateAtmosphereAndClouds(
 
         float t        = tC0;
         float stepSize = CLOUD_TARGET_STEP_KM
-                       * lerp(0.55f, 1.0f, CloudLodT(tC0));
+                       * lerp(CLOUD_NEAR_STEP_MULT, 1.0f, CloudLodT(tC0));
         // In-cloud view-path length — Nubis3 cloud_distance proxy for
         // the inner glow (see knob block). Resets across empty strides.
         float inCloudKm = 0.0f;
@@ -1871,7 +2026,10 @@ float3 EvaluateAtmosphereAndClouds(
             float distFade = 1.0f - smoothstep(CLOUD_FADE_DISTANCE_KM,
                                                 CLOUD_RENDER_DISTANCE_KM, t);
             float lodT     = CloudLodT(t);
-            float rJit     = RandomFloatSingle(seed);
+            // Temporally-stratified (see jitSeed): stable per-step white phase
+            // + golden×frame advance. RR resolves the sub-step detail over
+            // frames from this sequence.
+            float rJit     = frac(RandomFloatSingle(jitSeed) + kJitGolden);
 
             // Jitter window = the smallest stride this step can take: the
             // in-cloud stride incl. its distance floor and, in the second

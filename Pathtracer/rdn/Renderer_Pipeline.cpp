@@ -1717,7 +1717,7 @@ void Renderer::BakeCloudNoiseTexture() {
     const auto t_start = std::chrono::high_resolution_clock::now();
     const size_t bytes = (size_t)kRes * kRes * kRes * 4;
     LOG(L"[CloudNoise] Baking " << kRes << L"³ RGBA8 noise texture ("
-        << (bytes / (1024 * 1024)) << L" MB, periods R/G/B/A = 32/16/48/32)...");
+        << (bytes / (1024 * 1024)) << L" MB, periods R/G/B/A = 32/8/48/16)...");
 
     //--- 1. Create the destination 3D texture (UAV-capable, default heap).
     D3D12_RESOURCE_DESC td = {};

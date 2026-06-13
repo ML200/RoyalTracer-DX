@@ -10,10 +10,24 @@
 //  the cloud march per NSight (compute-bound, not bandwidth-bound).
 //
 //  Channel layout (all bake-side periods are integer for clean tiling):
-//    R: Perlin-Worley FBM      (Schneider HZD style, 32 cells / tile)
-//    G: Worley FBM (2-octave)  (low-freq shape, 16 cells / tile)
-//    B: Value noise            (high-freq erosion, 48 cells / tile)
-//    A: Worley single octave   (mid-freq cauliflower, 32 cells / tile)
+//    R: Perlin-Worley FBM      (Schneider HZD base shape, 32 cells / tile)
+//    G: inv-Worley FBM 3-oct   (cauliflower lobe + HF erosion,  8 cells / tile)
+//    B: Value noise            (smooth fields: domain warp + top, 48 / tile)
+//    A: Worley single octave   (billow seam carve,             16 cells / tile)
+//
+//  PERIOD vs CRISPNESS (2026-06-13 shape overhaul): a channel's finest
+//  resolvable detail is BAKE_RES/period texels per noise cell. The detail
+//  channels (G cauliflower, A billow) were the blocky bottleneck — their
+//  top FBM octaves landed at only ~4 texels/cell and got low-pass-filtered
+//  into "potato" blobs. Halving G's period (16->8) and A's (32->16) doubles
+//  texels/cell on every octave (G-oct2 4->8 tx, A 8->16 tx) so the cells
+//  keep crisp cauliflower edges. The cost is faster WRAP tiling, but only
+//  on HIGH-frequency channels (G tiles ~3 km, A ~17 km in world space) where
+//  the domain warp + the 100 km-tiling R base + wind drift hide it. The
+//  base R and smooth B keep their periods — tiling a 3 km macro blob or a
+//  240 km top-variation field at higher frequency WOULD be visible.
+//  Cell size is set by the runtime SAMPLE frequency, NOT the period, so
+//  these changes are crispness-only — feature scales are unchanged.
 //
 //  The bake-side noise functions are tiled by wrapping the hash input
 //  modulo the channel's `period`, so sampling the texture with WRAP
@@ -30,10 +44,10 @@
 RWTexture3D<float4> g_noise : register(u0);
 
 #define BAKE_RES        256
-#define R_PERIOD        32      // Perlin-Worley grid
-#define G_PERIOD        16      // Worley FBM grid
-#define B_PERIOD        48      // Value-noise grid
-#define A_PERIOD        32      // Single-octave Worley grid
+#define R_PERIOD        32      // Perlin-Worley grid (base shape)
+#define G_PERIOD        8       // inv-Worley FBM grid (cauliflower + erosion)
+#define B_PERIOD        48      // Value-noise grid (warp + top, smooth)
+#define A_PERIOD        16      // Single-octave Worley grid (billow seams)
 
 //----------------------------------------------------------------------
 //  TILEABLE HASH PRIMITIVES

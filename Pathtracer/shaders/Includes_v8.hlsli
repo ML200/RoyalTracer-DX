@@ -327,6 +327,30 @@ cbuffer CameraParams : register(b0)
     float cloud_maxEmptyStepKm;
     float cloud_emptyStepGrowthPerKm;
     float cloud_maxFineStepKm;
+    //Nubis-3 light-energy shape (exposed 2026-06-13; were CLOUD_N3_* defines).
+    //Forward phase eccentricity, MS extinction scale (surface/glow), engine
+    //MS brightness gain, and the inner-glow sun-dot + in-cloud-depth drivers.
+    float cloud_n3PhaseG;
+    float cloud_n3MsBase;
+    float cloud_n3MsGlow;
+    float cloud_n3MsBrightness;
+    float cloud_n3GlowSunDot;
+    float cloud_n3GlowDepthKm;
+    //Cauliflower shape detail (exposed 2026-06-13; were CLOUD_LOBE_*/BILLOW_*).
+    //Lobe signed amplitude + freq (×base), billow seam carve / centre bulge /
+    //seam sharpness + freq (×base). Vertical height ramps stay compile-time.
+    float cloud_lobeAmount;
+    float cloud_lobeFreqMult;
+    float cloud_billowAmount;
+    float cloud_billowBulge;
+    float cloud_billowSharp;
+    float cloud_billowFreqMult;
+    //Wisps: thin wind-sheared filaments beyond the body (pre-coverage additive
+    //octave). amount = reach, freqMult = filament fineness (×base), stretch =
+    //wind-shear elongation. Vertical band + additive bias stay compile-time.
+    float cloud_wispAmount;
+    float cloud_wispFreqMult;
+    float cloud_wispStretch;
     //====================================
     //PLANET TERRAIN (Phase 5)
     //====================================
@@ -479,6 +503,26 @@ cbuffer CameraParams : register(b0)
 #define CLOUD_MAX_EMPTY_STEP_KM      cloud_maxEmptyStepKm
 #define CLOUD_EMPTY_STEP_GROWTH_PER_KM cloud_emptyStepGrowthPerKm
 #define CLOUD_MAX_FINE_STEP_KM       cloud_maxFineStepKm
+//Nubis-3 light-energy shape (exposed 2026-06-13). Override the Clouds_v8.hlsli
+//#ifndef fallbacks with the editor-driven CB fields.
+#define CLOUD_N3_PHASE_G             cloud_n3PhaseG
+#define CLOUD_N3_MS_BASE             cloud_n3MsBase
+#define CLOUD_N3_MS_GLOW             cloud_n3MsGlow
+#define CLOUD_N3_MS_BRIGHTNESS       cloud_n3MsBrightness
+#define CLOUD_N3_GLOW_SUNDOT         cloud_n3GlowSunDot
+#define CLOUD_N3_GLOW_DEPTH_KM       cloud_n3GlowDepthKm
+//Cauliflower shape detail. The two FREQ macros are multiples of the base
+//frequency, matching the Clouds_v8.hlsli fallback form.
+#define CLOUD_LOBE_AMOUNT            cloud_lobeAmount
+#define CLOUD_LOBE_FREQ              (CLOUD_BASE_FREQ * cloud_lobeFreqMult)
+#define CLOUD_BILLOW_AMOUNT          cloud_billowAmount
+#define CLOUD_BILLOW_BULGE           cloud_billowBulge
+#define CLOUD_BILLOW_SHARP           cloud_billowSharp
+#define CLOUD_BILLOW_FREQ            (CLOUD_BASE_FREQ * cloud_billowFreqMult)
+//Wisps: thin wind-sheared filaments beyond the body (pre-coverage additive).
+#define CLOUD_WISP_AMOUNT            cloud_wispAmount
+#define CLOUD_WISP_FREQ              (CLOUD_BASE_FREQ * cloud_wispFreqMult)
+#define CLOUD_WISP_STRETCH           cloud_wispStretch
 
 //PLANET: equiangular cubed-sphere lookup. Used by every per-direction
 //terrain sample (heightmap, surface_color, normal, cloud_offset). Mirror
