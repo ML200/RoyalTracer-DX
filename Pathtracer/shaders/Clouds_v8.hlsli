@@ -35,6 +35,142 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_STEP_DIST_FRAC_FINE  0.004f
 #define CLOUD_STEP_DIST_FRAC_EMPTY 0.02f
 
+//====================================
+//NUBIS3 LIGHT ENERGY — exact model from A. Schneider (Guerrilla),
+//"Nubis3: Methods (and madness) to model and render immersive real-time
+//voxel-based clouds", SIGGRAPH 2023 Advances in Real-Time Rendering;
+//direct-scattering structure from "Nubis, Evolved", SIGGRAPH 2022.
+//====================================
+//  Light Energy = Direct Scattering + Ambient Scattering
+//                 (+ Secondary Scattering = in-cloud light sources,
+//                    i.e. lightning — no such lights here, omitted)
+//
+//  Direct  = Transmittance * PrimaryPhase + ms_volume * SecondaryPhase
+//  T       = exp(-DL)                            [Beer-Lambert, slide 46]
+//  ms_volume (slide "Nubis3/Lighting", verbatim):
+//      ms_volume  = dimensional_profile;
+//      ms_volume *= exp(-DL * Remap(sun_dot, 0.0, 0.9, 0.25,
+//                       ValueRemap(cloud_distance, -128.0, 0.0,
+//                                  0.05, 0.25)));
+//  Ambient (verbatim):
+//      ambient_scattering = pow(1.0 - dimensional_profile, 0.5)
+//                         * exp(-summed_ambient_density);
+//
+//Where the cumulus look comes from in this model:
+//  DARK EDGES: the dimensional_profile GATE on ms_volume. Thin samples
+//  (wisps, eroded rims, crease walls) get no multi-scatter — only the
+//  forward-peaked single-scatter phase, which is tiny frontlit — while
+//  dense faces keep full MS. Local-density keyed, so the sunlit face
+//  never dims below the shadow side (the failure of every sun-OD-keyed
+//  powder variant tried 2026-06-11).
+//  INNER GLOW: deep backlit samples drop the MS extinction scale from
+//  0.25 (the classic Wrenninge/Nubis multi-scatter octave) toward 0.05,
+//  letting light flood through thick cores around the sun.
+//
+//Mapping onto this renderer:
+//  DL            -> sunOD (cone-averaged optical depth toward sun; their
+//                   summed density samples read radiometrically).
+//                   ms_volume gets the PHYSICAL OD (CLOUD_SUN_TAU_MULT
+//                   divided back out): the published exp(-DL·scale)
+//                   assumes physical depth, and the x2 artistic shadow
+//                   deepener squared the attenuation exactly in the
+//                   DL 2-8 band where the backlit body glow lives —
+//                   that killed the inner glow from outside. The DIRECT
+//                   Beer term keeps the multiplier (tuned shadow depth).
+//  dimensional_profile -> m.profile (post-covmod macro density INCLUDING
+//                   the lobe octave — base composition, like the shape
+//                   FBM inside their modeled NVDFs — but pre billow/HF;
+//                   their ValueErosion detail never feeds lighting
+//                   either. The lobe in the profile is what darkens the
+//                   inter-lobe creases through the MS gate).
+//  cloud_distance (SDF voxels, -128 = deep inside) -> accumulated
+//                   in-cloud view-path length, remapped over
+//                   GLOW_DEPTH_KM. Path length overestimates SDF depth
+//                   near the far boundary; acceptable without an SDF.
+//  sun_dot       -> cosTheta = dot(V, L) (+1 = looking at the sun).
+//                   Remaps CLAMPED on both axes (Decima ValueRemap is
+//                   clamped; unclamped extrapolation below sun_dot 0
+//                   would re-darken frontlit MS — the exact artifact
+//                   this model replaces).
+//  PrimaryPhase  -> max(HG(g = 0.6), silver_i * HG(0.99 - silver_s)):
+//                   the Nubis dual-lobe; rides the existing
+//                   silverIntensity/silverSpread sliders (Common.h added
+//                   them for this exact formula). SecondaryPhase ->
+//                   HG(CLOUD_SECONDARY_G slider, default 0.18).
+//  ms_volume     -> additionally scaled by msStrength/4 so the existing
+//                   slider keeps working; its default 4.0 = exact Nubis
+//                   (scale 1.0).
+//
+//Sliders made INERT by this model (kept in the cbuffer mirror):
+//  msMode (single fixed model now), msHeightFloor (no height bias in
+//  Nubis3 — the ambient column owns vertical shaping), secondaryStrength
+//  (was the legacy mode-0 amplitude).
+//
+//Replaces (all REJECTED in 2026-06-11 A/B testing): Beer-powder in every
+//scope/ramp/gain variant, Wrenninge 4-octave ladder + phase-eccentricity
+//ladder, Nubis-2017 in-scatter depth probability. Nubis3 has NO powder
+//term at all — these knobs are gone, not tunable back.
+//MS_BRIGHTNESS: Decima's absolute light calibration is NOT in the
+//slides (the published equations are structure; their engine runs them
+//through a brightness/exposure rig — the 2015/2017 talks carried
+//explicit brightness constants). Unity-scaled, the frontlit body sun
+//term lands ~2.5-2.9x below this renderer's previously calibrated
+//level and bodies read GREY (2026-06-12). 2.5 restores the calibrated
+//white body while keeping every Nubis ratio (profile-gated dark edges,
+//glow remap, phase shape). Applies to ms_volume only — the direct term
+//carries the silver lining, which was already calibrated.
+#define CLOUD_N3_PHASE_G        0.6f   // primary forward HG eccentricity
+#define CLOUD_N3_MS_BASE        0.25f  // baseline MS extinction scale
+#define CLOUD_N3_MS_GLOW        0.05f  // deep backlit MS extinction scale
+#define CLOUD_N3_MS_BRIGHTNESS  2.5f   // engine calibration gain on ms
+#define CLOUD_N3_GLOW_SUNDOT    0.9f   // sun_dot where glow fully engages
+//-128 voxels of a 256^3 NVDF over a ~2-4 km formation is ~1 km, not the
+//2 km first guessed — at 2 km the glow scale barely left 0.25 before
+//view transmittance killed the samples, so the inner glow never showed.
+#define CLOUD_N3_GLOW_DEPTH_KM  1.0f   // in-cloud depth for full glow
+//
+//Billow: mid-frequency convex bubble structure (the 0.4-1.5 km band real
+//cumulus boils at). Bubbles are a union of convex cells: CARVE density at
+//Worley cell seams (raw A-channel Worley is 0 at cell centers, 1 at seams
+//— ready-made) and BULGE the centers. Height-shaped (flat shaded bases,
+//boiling tops) and LOD-tapered like the domain warp.
+#define CLOUD_BILLOW_FREQ       (CLOUD_BASE_FREQ * 3.0f)  // ~1 km cells
+#define CLOUD_BILLOW_AMOUNT     0.35f  // seam carve depth
+#define CLOUD_BILLOW_BULGE      0.12f  // center push-out
+#define CLOUD_BILLOW_SHARP      1.5f   // carve falloff (higher = thinner seams)
+#define CLOUD_BILLOW_H_LO       0.08f  // height ramp start (heightFrac)
+#define CLOUD_BILLOW_H_HI       0.45f  // full strength above this
+//
+//Lobe: the missing middle octave between the billow cells (~1 km) and the
+//HF wisps (~140 m) — without it the billow bubbles read as smooth ovals
+//with fuzz on top. Uses the baked G-channel 3-octave inverted-Worley FBM
+//(1 at cell centers, 0 at seams — the classic "billowy" cauliflower
+//noise, previously only read by the quality!=0 base path), folded into
+//the BASE noise BEFORE the coverage modulation as a signed term — the
+//HZD/Nubis base composition (their shape FBM's Worley octaves live in
+//base_cloud, pre-coverage). (fbm - 0.5) bulges lobe centers OUT past the
+//nominal silhouette and carves the seams in; the covmod slope
+//(1/filterWidth, ~3.3x at default) amplifies it, so the default amount
+//displaces the isosurface by roughly ±200 m at the ~0.4 km lobe scale.
+//WHY pre-coverage: the first cut ran post-covmod as an edge-masked carve
+//(the billow/HF pattern). That operator is bounded by its own mask —
+//d -= A·n·(1-d)² removes at most ~A/4 at the mid-edge — and post-covmod
+//the density-to-distance slope is steep enough that 0.05 of d is tens of
+//meters of silhouette: invisible. Only a pre-coverage term moves the
+//covmod THRESHOLD itself, and it is the only formulation that can bulge
+//OUTWARD at all.
+//The lobe deliberately FEEDS m.profile (it is base shape, not erosion
+//detail — matches the Nubis3 mapping note above): the MS gate then
+//darkens the thin inter-lobe creases while bulge cores keep full MS.
+//Without that the creases stay bright and the lobes read only in
+//silhouette, not in lighting.
+//LOD: zero by lodT 0.625 (~195 km at the default 20/300 band), where a
+//0.4 km lobe is ~2 px.
+#define CLOUD_LOBE_FREQ         (CLOUD_BASE_FREQ * 8.0f)  // ~0.4 km lobes
+#define CLOUD_LOBE_AMOUNT       0.35f  // signed base amplitude (~±half this)
+#define CLOUD_LOBE_H_LO         0.10f  // height ramp start (heightFrac)
+#define CLOUD_LOBE_H_HI         0.50f  // full strength above this
+
 inline float CloudLodT(float distKm)
 {
     return saturate((distKm - CLOUD_LOD_NEAR_KM)
@@ -80,7 +216,7 @@ inline float4 CloudRand4(uint2 px, uint frame, uint tap)
 // g_cloudNoise: 256³ RGBA8 baked by Pass_cloudnoise_bake_v8.hlsl. Each
 // channel uses its own bake period so WRAP sampling tiles cleanly.
 #define CLOUD_NOISE_R_PERIOD   32.0f   // Perlin-Worley FBM
-#define CLOUD_NOISE_G_PERIOD   16.0f   // Worley FBM (2 octaves)
+#define CLOUD_NOISE_G_PERIOD   16.0f   // inverted-Worley FBM (3 octaves)
 #define CLOUD_NOISE_B_PERIOD   48.0f   // value noise (high-freq erosion)
 #define CLOUD_NOISE_A_PERIOD   32.0f   // single-octave Worley (raw)
 
@@ -97,7 +233,8 @@ inline float CloudWorley(float3 p)
 }
 
 // quality kept on the signature for call-site symmetry but ignored —
-// the bake stores a single 2-octave FBM.
+// the bake stores a single 3-octave inverted-Worley FBM (1 at cell
+// centers, 0 at seams).
 inline float CloudWorleyFBM(float3 p, uint quality)
 {
     return g_cloudNoise.SampleLevel(g_sampler,
@@ -360,11 +497,60 @@ CloudMaterial CloudSampleMaterialFromHull(
                ? CloudPerlinWorley(shapeQ * CLOUD_BASE_FREQ)
                : CloudWorleyFBM   (shapeQ * CLOUD_BASE_FREQ, quality);
 
+    // LOBE: mid-frequency octave folded into the base, PRE-coverage (see
+    // the knob block for why the post-covmod carve variant was invisible).
+    // Signed: bulges lobe centers out past the nominal silhouette, carves
+    // the FBM seams in. Feeds covmod and therefore m.profile by design —
+    // the MS gate darkens the creases, the bulge cores stay white.
+    if (quality == 0u && CLOUD_LOBE_AMOUNT > 0.001f)
+    {
+        float lobeShape = saturate(1.0f - lodT * 1.6f)
+                        * smoothstep(CLOUD_LOBE_H_LO, CLOUD_LOBE_H_HI,
+                                     m.heightFrac);
+        if (lobeShape > 0.01f)
+        {
+            float fbm = CloudWorleyFBM(shapeQ * CLOUD_LOBE_FREQ
+                                       + float3(19.3f, 7.7f, 41.9f), 0u);
+            base += CLOUD_LOBE_AMOUNT * lobeShape * (fbm - 0.5f);
+        }
+    }
+
     float coverageHull = coverage * profile;
     float d = coverageModulation(coverageHull, base, CLOUD_COVMOD_FILTER_WIDTH);
     if (d <= 0.001f) return m;
 
     m.profile = saturate(d);
+
+    // BILLOW: convex bubble structure in the 0.4-1.5 km band (see the
+    // knob block up top). Carve at Worley cell seams — edge-weighted so
+    // cores survive and the silhouette scallops into arcs of spheres —
+    // and bulge the cell centers, mid-masked. Runs BEFORE the HF erosion
+    // so the wisps ride on the scalloped edges (coarse-to-fine order).
+    // Replaces the old +/-0.15 symmetric "cauliflower" term, which only
+    // undulated the isosurface — a union of convex cells needs the
+    // asymmetric carve.
+    if (quality == 0u && CLOUD_BILLOW_AMOUNT > 0.001f)
+    {
+        float bilShape = lerp(1.0f, 0.25f, lodT)
+                       * smoothstep(CLOUD_BILLOW_H_LO, CLOUD_BILLOW_H_HI,
+                                    m.heightFrac);
+        if (bilShape > 0.01f)
+        {
+            float bil  = CloudWorley(shapeQ * CLOUD_BILLOW_FREQ
+                                     + float3(31.7f, 11.9f, 23.1f));
+            float bil2 = CloudWorley(shapeQ * CLOUD_BILLOW_FREQ * 2.13f
+                                     + float3(7.3f, 27.1f, 13.9f));
+            float carve = saturate(0.65f * bil + 0.35f * bil2); // 1 at seams
+
+            float edgeMask = (1.0f - d) * (1.0f - d);
+            float midMask  = 1.0f - abs(2.0f * d - 1.0f);
+            d = saturate(d
+                - CLOUD_BILLOW_AMOUNT * bilShape
+                    * pow(carve, CLOUD_BILLOW_SHARP) * edgeMask
+                + CLOUD_BILLOW_BULGE * bilShape
+                    * (1.0f - carve) * (1.0f - carve) * midMask);
+        }
+    }
 
     // HF erosion: silhouette wisps. Edge-masked + LOD-tapered.
     float hfAmount = CLOUD_HF_AMOUNT * lerp(1.0f, 0.6f, lodT);
@@ -386,19 +572,9 @@ CloudMaterial CloudSampleMaterialFromHull(
         d = saturate(d - hf2Amount * hf2 * midMask);
     }
 
-    // Near-field cauliflower bumps. Mid-mask keeps it off silhouettes.
-    if (quality == 0u)
-    {
-        float midModAmount = 0.15f * lerp(1.0f, 0.3f, lodT);
-        if (midModAmount > 0.001f)
-        {
-            float midW = CloudWorley(shapeQ * CLOUD_BASE_FREQ * 5.0f
-                                      + float3(31.7f, 11.9f, 23.1f));
-            float modulation = 2.0f * ((1.0f - midW) - 0.5f);
-            float midMask    = 1.0f - abs(2.0f * d - 1.0f);
-            d = saturate(d + modulation * midModAmount * midMask);
-        }
-    }
+    // (Old near-field cauliflower term removed — subsumed by the BILLOW
+    // stage above, which carves convex cells instead of wobbling the
+    // isosurface symmetrically.)
 
     // Soft density curve lifts mid-densities so the body fills terrain.
     d = pow(saturate(d), lerp(0.85f, 1.0f, d));
@@ -496,60 +672,40 @@ inline float CloudHG(float cosT, float g)
          / max(1e-4f, denom * sqrt(max(1e-4f, denom)));
 }
 
-// Jendersie & d'Eon 2023 Mie approximation: HG + Draine lobe, parameters
-// fit to droplet diameter. Sharper silver lining than HG; lifted backward
-// shoulder. CLOUD_SILVER_INTENSITY drives diameter (5..30 um).
-inline float JDDraineLobe(float cosT, float g, float alpha)
+// NUBIS dual-lobe primary phase (Schneider 2017, carried through Nubis3):
+// forward HG lobe max'd against a narrow "silver" lobe around the sun.
+// The CloudHG above matches the HenyeyGreenstein on Nubis Evolved slide
+// 48 verbatim (incl. the 1/4pi). silverIntensity/silverSpread sliders
+// were added to CloudSettings for exactly this formula.
+// (Replaces the Jendersie-d'Eon droplet fit — Nubis3 uses plain HG.)
+inline float CloudPhaseNubisPrimary(float cosT)
 {
-    float g2 = g * g;
-    float t  = 1.0f + g2 - 2.0f * g * cosT;
-    float hgPart = (1.0f - g2) / (4.0f * PI * t * sqrt(max(1e-6f, t)));
-    float boost  = (1.0f + alpha * cosT * cosT)
-                 / (1.0f + alpha * (1.0f + 2.0f * g2) / 3.0f);
-    return hgPart * boost;
+    float fwd = CloudHG(cosT, CLOUD_N3_PHASE_G);
+    float slv = CLOUD_SILVER_INTENSITY
+              * CloudHG(cosT, 0.99f - CLOUD_SILVER_SPREAD);
+    return max(fwd, slv);
 }
 
-// JD parameters depend only on droplet diameter (uniform); cache per-thread
-// so CloudPhaseDirect skips the 4 exp/divides per sample. Defaults match
-// d ~ 17.5 um so a pre-init read stays sane.
-static float g_jdGHG   = 0.954f;
-static float g_jdGD    = 0.491f;
-static float g_jdAlpha = 23.8f;
-static float g_jdWD    = 0.392f;
-static bool  g_jdInitDone = false;
-
-inline void InitCloudJDPhase()
+// Secondary (multi-scattering) phase: broad HG on the secondaryG slider.
+inline float CloudPhaseNubisSecondary(float cosT)
 {
-    if (g_jdInitDone) return;
-    g_jdInitDone = true;
-    // Slider 0..1 maps to droplet diameter 5..30 um (typical cumulus 10..15).
-    // Floor at 2 um — the rational fits assume d > ~1.7.
-    float d = lerp(5.0f, 30.0f, saturate(CLOUD_SILVER_INTENSITY));
-    d        = max(d, 2.0f);
-    g_jdGHG  = exp(-0.0990567f / (d - 1.67154f));
-    g_jdGD   = exp(-2.20679f  / (d + 3.91029f)) - 0.428934f;
-    g_jdAlpha= exp( 3.62489f  - 8.29288f / (d + 5.52825f));
-    g_jdWD   = saturate(exp(-0.599085f / (d - 0.641583f)) - 0.665888f);
-}
-
-inline float CloudPhaseDirect(float cosT)
-{
-    return (1.0f - g_jdWD) * CloudHG(cosT, g_jdGHG)
-         + g_jdWD          * JDDraineLobe(cosT, g_jdGD, g_jdAlpha);
-}
-
-// Multi-scatter phase: mostly isotropic with a soft forward bias.
-inline float CloudPhaseMS(float cosT)
-{
-    const float kIso = 0.07957747f;  // 1 / (4 * pi)
-    return lerp(kIso, CloudHG(cosT, CLOUD_SECONDARY_G), 0.4f);
+    return CloudHG(cosT, CLOUD_SECONDARY_G);
 }
 
 // Shadow-density variant. MUST use the same Perlin-Worley base + coverage
 // source as the view march or shadows desync from the visible cloud
-// silhouette. Skips the cauliflower and density curve (sub-100m detail,
-// invisible at shadow-march resolution).
-inline float CloudDensityForShadow(float3 P, float timeSec)
+// silhouette. Skips the density curve (sub-100m detail, invisible at
+// shadow-march resolution).
+//
+// withBillow: include the mid-frequency shape terms — the lobe base
+// perturbation and the billow seam carve. The SELF-shadow march
+// (CloudOpticalDepthToSun — what lights the cloud body) needs them so
+// the lobe bulges cast OD and the inter-bubble creases self-shadow —
+// Beer crease darkening complements the Nubis3 profile-gated MS dark
+// edges.
+// The haze / surface visibility taps (CloudSunVisibility*) skip it:
+// they are the per-step hot path and 800 m fidelity is irrelevant there.
+float CloudDensityForShadow(float3 P, float timeSec, bool withBillow)
 {
     // Gate order: ALU band first (no fetches), then coverage (1 fetch),
     // then profile (2 fetches) — see CloudProbeHullEx.
@@ -565,9 +721,46 @@ inline float CloudDensityForShadow(float3 P, float timeSec)
     float3 q    = CloudNoiseCoord(P, timeSec);
     float  base = CloudPerlinWorley(q * CLOUD_BASE_FREQ);
 
+    // Plain-layer height ramp (no effTop/baseShift taps) shared by the
+    // lobe perturbation and the billow carve below.
+    float hApx = saturate((alt - CLOUD_LAYER_BOT_KM)
+               / max(1e-3f, CLOUD_LAYER_TOP_KM - CLOUD_LAYER_BOT_KM));
+
+    // Lobe base perturbation — MUST mirror the view march's pre-coverage
+    // composition: it moves the cloud surface by ~±200 m, so a shadow
+    // march without it would cast no OD from the bulges (over-lit) and
+    // keep phantom OD in the creases (over-dark). Unwarped q, like the
+    // shadow base.
+    if (withBillow && CLOUD_LOBE_AMOUNT > 0.001f)
+    {
+        float lobeShape = smoothstep(CLOUD_LOBE_H_LO, CLOUD_LOBE_H_HI, hApx);
+        if (lobeShape > 0.01f)
+        {
+            float fbm = CloudWorleyFBM(q * CLOUD_LOBE_FREQ
+                                       + float3(19.3f, 7.7f, 41.9f), 0u);
+            base += CLOUD_LOBE_AMOUNT * lobeShape * (fbm - 0.5f);
+        }
+    }
+
     float coverageHull = coverage * profile;
     float d = coverageModulation(coverageHull, base, CLOUD_COVMOD_FILTER_WIDTH);
     if (d <= 0.001f) return 0.0f;
+
+    if (withBillow && CLOUD_BILLOW_AMOUNT > 0.001f)
+    {
+        // Mirrors the view-march carve at shadow resolution: unwarped q
+        // (precedent: the shadow base is unwarped too), seams only — the
+        // bulge doesn't move shadows at this resolution.
+        float amt  = CLOUD_BILLOW_AMOUNT
+                   * smoothstep(CLOUD_BILLOW_H_LO, CLOUD_BILLOW_H_HI, hApx);
+        if (amt > 0.01f)
+        {
+            float bil      = CloudWorley(q * CLOUD_BILLOW_FREQ
+                                         + float3(31.7f, 11.9f, 23.1f));
+            float edgeMask = (1.0f - d) * (1.0f - d);
+            d = saturate(d - amt * pow(bil, CLOUD_BILLOW_SHARP) * edgeMask);
+        }
+    }
 
     // HF erosion at the view march's lodT=1 strength.
     float hfAmount = CLOUD_HF_AMOUNT * 0.6f;
@@ -580,6 +773,12 @@ inline float CloudDensityForShadow(float3 P, float timeSec)
     }
 
     return d;
+}
+
+// Billow-free overload for the haze / surface visibility taps.
+float CloudDensityForShadow(float3 P, float timeSec)
+{
+    return CloudDensityForShadow(P, timeSec, false);
 }
 
 // Macro-shape only (no HF / cauliflower) — DLSS RR normal needs to be
@@ -648,8 +847,7 @@ void EvaluateCloudGBuffer(float3 V,
 #else
     if (cloud_enabled < 0.5f) return;
 
-    // ENU basis only — this march never evaluates a phase function, so the
-    // JD droplet-phase init would be wasted exp() here.
+    // ENU basis only — this march never evaluates a phase function.
     InitCloudEnuBasis();
 
     float3 O  = g_skyObserverPlanet;
@@ -751,7 +949,9 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
             if (rQ < terrainR) { tau = TAU_EARLYOUT; break; }
         }
 
-        float  d = CloudDensityForShadow(Q, timeSec);
+        // withBillow: this march lights the cloud body itself — the
+        // inter-bubble creases must self-shadow (see CloudDensityForShadow).
+        float  d = CloudDensityForShadow(Q, timeSec, true);
         tau += d * CLOUD_EXTINCTION * SAMPLE_SEG_KM[i];
         if (tau >= TAU_EARLYOUT) break;
     }
@@ -1038,14 +1238,19 @@ inline float CloudColumnDensityAbove(float altKm, float coverage, float effTop,
     return columnKm;
 }
 
-// Per-sample in-scattered radiance. Caller folds it as sigma_t * L * segIn.
+// Per-sample in-scattered radiance — NUBIS3 light energy (see knob
+// block for the exact published formulas and the mapping).
+// Caller folds it as sigma_t * L * segIn.
 // hullCoverage/hullEffTop/baseShiftKm come from the caller's CloudProbeHullEx
-// so the ambient column probe runs fetch-free. sunODOut returns the
+// so the ambient column probe runs fetch-free. depthInCloudKm is the
+// caller-tracked in-cloud view-path length standing in for Nubis3's SDF
+// cloud_distance (inner glow driver). sunODOut returns the
 // cone-averaged cloud optical depth toward the sun so the caller can reuse
 // it for the atmosphere haze shadow at the same point instead of running a
 // second shadow march.
 float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
                             float hullCoverage, float hullEffTop, float baseShiftKm,
+                            float depthInCloudKm,
                             float3 sunRad, float3 sunAtmos,
                             float3 skyAmbientTop, float3 skyAmbientHorizon,
                             float3 groundIrrad,
@@ -1077,59 +1282,38 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
     float h = m.heightFrac;
     float3 K = sunRad * sunAtmos * earthShadow * CLOUD_ALBEDO;
 
-    // Direct = Wrenninge octave 0.
-    float  Tdir   = exp(-sunOD);
-    float3 direct = K * Tdir * CloudPhaseDirect(cosTheta);
+    // ===== NUBIS3 DIRECT SCATTERING (see knob block) =====
+    //   Direct = T * PrimaryPhase + ms_volume * SecondaryPhase
+    // ms_volume verbatim: dimensional_profile gate (-> the dark edges:
+    // thin samples get no multi-scatter) times exp(-DL * scale) with the
+    // scale remapped 0.25 -> 0.05 by sun_dot and in-cloud depth (-> the
+    // inner glow through deep backlit cores). Both remaps clamped.
+    // ms_volume rides the PHYSICAL OD; only the direct Beer term keeps
+    // the sunTauMult artistic shadow deepener (see knob block).
+    float Tdir = exp(-sunOD);
 
-    // Floor at FLOOR so bases stay grey-lit, not black.
-    float heightBias  = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
-                             pow(saturate(h), 0.5f));
+    float sunODphys = sunOD / max(CLOUD_SUN_TAU_MULT, 1e-2f);
+    float glowScale = lerp(CLOUD_N3_MS_BASE, CLOUD_N3_MS_GLOW,
+                           saturate(depthInCloudKm
+                                    * (1.0f / CLOUD_N3_GLOW_DEPTH_KM)));
+    float msScale   = lerp(CLOUD_N3_MS_BASE, glowScale,
+                           saturate(cosTheta
+                                    * (1.0f / CLOUD_N3_GLOW_SUNDOT)));
+    // msStrength/4: slider default 4.0 == published scale 1; the
+    // MS_BRIGHTNESS calibration gain sits on top (see knob block).
+    float msVolume  = m.profile * exp(-sunODphys * msScale)
+                    * (CLOUD_MS_STRENGTH * 0.25f * CLOUD_N3_MS_BRIGHTNESS);
 
-    // MS_MODE 0 = Nubis sqrt(Tdir) shortcut (cheap, default).
-    // MS_MODE 1,2 = N extra Wrenninge octaves (isotropic, more fill).
-    float3 ms = float3(0, 0, 0);
-    if (CLOUD_MS_MODE == 0)
-    {
-        float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
-        float msAmount    = depthFactor * heightBias
-                          * (0.5f + CLOUD_SECONDARY_STRENGTH)
-                          * CLOUD_MS_STRENGTH;
-        ms = K * msAmount * CloudPhaseMS(cosTheta);
-    }
-    else
-    {
-        // Hillaire 2016 §5.8 octaves: extinction × a^n, weight × b^n,
-        // phase collapsed to isotropic 1/(4π). a = b = 0.5, so the per-
-        // octave factors are running products — no pow() needed.
-        // Up to 4 octaves: octave 4 sees exp(-sunOD/16), which lands at the
-        // similarity-theory diffusion scale (1-g)·tau for droplet transport
-        // asymmetry g≈0.94 — this is what carries light to the base of an
-        // optically thick cloud. With only 2 octaves the deepest term was
-        // exp(-sunOD/4) and thick undersides went exponentially black.
-        const float kIso = 1.0f / (4.0f * PI);
-        const int extraOctaves = clamp(CLOUD_MS_MODE, 1, 4);
-        float an = 1.0f;
-        float bn = 1.0f;
-        [unroll]
-        for (int n = 1; n <= 4; ++n)
-        {
-            if (n > extraOctaves) break;
-            an *= 0.5f;
-            bn *= 0.5f;
-            float Tn = exp(-sunOD * an);
-            ms += K * bn * Tn * kIso;
-        }
-        ms *= heightBias * CLOUD_MS_STRENGTH;
-    }
+    float3 inscatter = K * (Tdir     * CloudPhaseNubisPrimary(cosTheta)
+                          + msVolume * CloudPhaseNubisSecondary(cosTheta));
 
-    float3 inscatter = direct + ms;
-
-    // Sky + ground bounce ambient, gated by column density above sample.
-    // The old (1-profile)^0.5 density gate is gone: it zeroed ambient
-    // exactly at dense bases, double-counting the occlusion that skyOcc
-    // (column OD above the sample, floored by CLOUD_AMBIENT_OD_MAX)
-    // already models — and dense undersides are precisely where the
-    // ambient terms carry the real-world look.
+    // ===== NUBIS3 AMBIENT SCATTERING (see knob block) =====
+    // ambient_scattering = pow(1 - dimensional_profile, 0.5)
+    //                    * exp(-summed_ambient_density)
+    // The (1-profile)^0.5 gate is the published model: ambient enters
+    // where material is thin (edges, boiling tops via the profile
+    // taper); dense cores are lit by the MS term instead. The column
+    // probe above the sample is our summed_ambient_density.
     float3 ambient = float3(0, 0, 0);
     if (CLOUD_SKY_AMBIENT > 0.5f || CLOUD_GROUND_BOUNCE > 0.5f)
     {
@@ -1142,8 +1326,9 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
 
         if (CLOUD_SKY_AMBIENT > 0.5f)
         {
-            float3 skyColor = lerp(skyAmbientHorizon, skyAmbientTop, h);
-            ambient += skyColor * skyOcc * CLOUD_AMBIENT_INTENSITY;
+            float ambScatter = sqrt(saturate(1.0f - m.profile));
+            float3 skyColor  = lerp(skyAmbientHorizon, skyAmbientTop, h);
+            ambient += skyColor * ambScatter * skyOcc * CLOUD_AMBIENT_INTENSITY;
         }
         if (CLOUD_GROUND_BOUNCE > 0.5f)
         {
@@ -1170,7 +1355,7 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
 }
 
 // Bounce-ray cheap variant. Mirrors the primary's lighting model
-// (CloudComputeLighting equivalent — distFade, MS mode dispatch,
+// (CloudComputeLighting equivalent — Nubis3 direct scattering, distFade,
 // disk-fraction earth shadow) but trims the expensive parts: single
 // shadow tap (no cone), midpoint sunAtmos (one TransmittanceToSun),
 // no sky ambient / no ground bounce probe, no atmosphere coupling.
@@ -1194,7 +1379,6 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     if (cloud_enabled < 0.5f) return float3(0, 0, 0);
 
     InitCloudEnuBasis();
-    InitCloudJDPhase();
 
     float3 O = g_skyObserverPlanet;
     float3 L = SafeNormalize(sunDir);
@@ -1205,10 +1389,13 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     tFar = min(tFar, tNear + CLOUD_CHEAP_MAX_LEN_KM);
     if (tFar <= tNear) return float3(0, 0, 0);
 
+    // NUBIS3 per-ray constants (phases and the glow sun_dot weight are
+    // view-constant for the whole bounce ray) — mirror of
+    // CloudComputeLighting.
     const float cosTheta = dot(V, L);
-    const float phaseDir = CloudPhaseDirect(cosTheta);
-    const float kIso     = 1.0f / (4.0f * PI);
-    const int   msMode   = CLOUD_MS_MODE;
+    const float ph1      = CloudPhaseNubisPrimary(cosTheta);
+    const float ph2      = CloudPhaseNubisSecondary(cosTheta);
+    const float sunDotW  = saturate(cosTheta * (1.0f / CLOUD_N3_GLOW_SUNDOT));
 
     // One sunAtmos tap at the shell midpoint — per-sample TransmittanceToSun
     // is the most expensive thing in the primary path and the largest perf
@@ -1232,9 +1419,12 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
     // visible cumulus.
     const float kCheapEmptyStepCap = 8.0f;
 
-    float t        = tNear;
-    float fineStep = CLOUD_TARGET_STEP_KM
-                   * lerp(0.55f, 1.0f, CloudLodT(tNear));
+    float t          = tNear;
+    float fineStep   = CLOUD_TARGET_STEP_KM
+                     * lerp(0.55f, 1.0f, CloudLodT(tNear));
+    // In-cloud view-path length — Nubis3 cloud_distance proxy for the
+    // inner glow (see knob block). Resets across empty strides.
+    float inCloudKm  = 0.0f;
 
     [loop]
     for (int i = 0; i < CLOUD_CHEAP_STEPS; ++i)
@@ -1311,50 +1501,31 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
 
                 float3 K = sunIrradiance * sunAtmos * earthShadow * CLOUD_ALBEDO;
 
-                float h          = m.heightFrac;
-                float heightBias = lerp(CLOUD_MS_HEIGHT_FLOOR, 1.0f,
-                                        pow(saturate(h), 0.5f));
+                // NUBIS3 direct scattering — mirror of CloudComputeLighting
+                // (see knob block): T * ph1 + ms_volume * ph2, with the
+                // profile-gated MS (dark edges) and the depth/sun_dot
+                // extinction-scale remap (inner glow). ms_volume rides
+                // the PHYSICAL OD; Tdir keeps sunTauMult.
+                float sunODphys = sunOD / max(CLOUD_SUN_TAU_MULT, 1e-2f);
+                float glowScale = lerp(CLOUD_N3_MS_BASE, CLOUD_N3_MS_GLOW,
+                                       saturate(inCloudKm
+                                                * (1.0f / CLOUD_N3_GLOW_DEPTH_KM)));
+                float msScale   = lerp(CLOUD_N3_MS_BASE, glowScale, sunDotW);
+                float msVolume  = m.profile * exp(-sunODphys * msScale)
+                                * (CLOUD_MS_STRENGTH * 0.25f
+                                   * CLOUD_N3_MS_BRIGHTNESS);
 
-                // Same MS dispatch as CloudComputeLighting — without this
-                // the cheap path was locked to Mode 0 (Nubis sqrt(Tdir)),
-                // so reflections of MS Mode 2 scenes (the default) showed
-                // much darker cloud cores than the primary view.
-                float3 direct = K * Tdir * phaseDir;
-                float3 ms     = float3(0, 0, 0);
-                if (msMode == 0)
-                {
-                    float depthFactor = pow(max(Tdir, 1e-6f), 0.5f);
-                    float msAmount    = depthFactor * heightBias
-                                      * (0.5f + CLOUD_SECONDARY_STRENGTH)
-                                      * CLOUD_MS_STRENGTH;
-                    ms = K * msAmount * CloudPhaseMS(cosTheta);
-                }
-                else
-                {
-                    // a = b = 0.5 octave factors as running products,
-                    // mirroring CloudComputeLighting (up to 4 octaves).
-                    int extraOctaves = clamp(msMode, 1, 4);
-                    float an = 1.0f;
-                    float bn = 1.0f;
-                    [unroll]
-                    for (int n = 1; n <= 4; ++n)
-                    {
-                        if (n > extraOctaves) break;
-                        an *= 0.5f;
-                        bn *= 0.5f;
-                        float Tn = exp(-sunOD * an);
-                        ms += K * bn * Tn * kIso;
-                    }
-                    ms *= heightBias * CLOUD_MS_STRENGTH;
-                }
-
-                float3 inscatter = direct + ms;
+                float3 inscatter = K * (Tdir * ph1 + msVolume * ph2);
 
                 float segTr = exp(-sigma_t * thisStep);
                 L_acc   += trCloud * inscatter * (1.0f - segTr);
                 trCloud *= segTr;
             }
         }
+
+        // Nubis3 cloud_distance proxy: grow inside cloud hull, reset in
+        // clear air (an SDF would go positive there).
+        inCloudKm = hullEmpty ? 0.0f : (inCloudKm + thisStep);
 
         if (!hullEmpty)
             fineStep = min(fineStep * CLOUD_STEP_GROWTH, CLOUD_MAX_FINE_STEP_KM);
@@ -1498,7 +1669,6 @@ float3 EvaluateAtmosphereAndClouds(
 #endif
 
     InitCloudEnuBasis();
-    InitCloudJDPhase();
 
     float3 O  = g_skyObserverPlanet;
     float3 Vn = SafeNormalize(V);
@@ -1688,6 +1858,9 @@ float3 EvaluateAtmosphereAndClouds(
         float t        = tC0;
         float stepSize = CLOUD_TARGET_STEP_KM
                        * lerp(0.55f, 1.0f, CloudLodT(tC0));
+        // In-cloud view-path length — Nubis3 cloud_distance proxy for
+        // the inner glow (see knob block). Resets across empty strides.
+        float inCloudKm = 0.0f;
 
         [loop]
         for (int ts = 0; ts < CLOUD_VIEW_STEPS_MAX; ++ts)
@@ -1805,6 +1978,7 @@ float3 EvaluateAtmosphereAndClouds(
                 float3 cloudRadiance = CloudComputeLighting(
                     P, L, m,
                     hCoverage, hEffTop, hBaseShift,
+                    inCloudKm,
                     sunIrradiance, sunAtmosT,
                     skyAmbientTop, skyAmbientHorizon, groundIrrad,
                     cosTheta, earthShadow,
@@ -1908,6 +2082,10 @@ float3 EvaluateAtmosphereAndClouds(
                     transmittance *= 1.0f / max(pRR, 1e-4f);
                 }
             }
+
+            // Nubis3 cloud_distance proxy: grow inside cloud hull, reset
+            // in clear air (an SDF would go positive there).
+            inCloudKm = hullEmpty ? 0.0f : (inCloudKm + thisStep);
 
             // Grow fine-step stride only when in density.
             if (!hullEmpty)
