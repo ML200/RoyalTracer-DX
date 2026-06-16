@@ -81,8 +81,11 @@ static constexpr int   NUM_SAMPLES_LUT      = 32000;
 //once from the bake. Sky transmittance LUT (256x64 RGBA16F, t49) at heap 73,
 //cloud ambient probe LUT (128x2 RGBA16F, t50) at heap 74 and atmospheric
 //multiple-scattering LUT (32x32 RGBA16F, t51, Hillaire 2020 Psi_ms) at heap
-//75 - all rebaked every frame by RecordSkyLUTBake (Pass_skylut_bake_v8.hlsl)
-//via a private UAV heap, read here as SRVs. Bindless starts at 76.
+//75 and the cloud->sun optical-depth shell map (384x384x6 R16F Texture2DArray,
+//t52, g_cloudSunOD) at heap 76 - all rebaked every frame by RecordSkyLUTBake
+//(Pass_skylut_bake_v8.hlsl) via a private UAV heap, read here as SRVs. The
+//cloud sun-OD bake additionally reads the cloud noise (t42) + coverage (t43)
+//SRVs, bound into its private heap/root sig. Bindless starts at 77.
 static constexpr UINT  AUTOEXPOSE_HEAP_SLOT             = 63;
 static constexpr UINT  SKY_STARS_HEAP_SLOT              = 64;
 static constexpr UINT  CLOUD_NOISE_HEAP_SLOT            = 65;
@@ -96,7 +99,8 @@ static constexpr UINT  TERRAIN_CLOUD_OFFSET_HEAP_SLOT   = 72;
 static constexpr UINT  SKY_TRANSMITTANCE_LUT_HEAP_SLOT  = 73;
 static constexpr UINT  CLOUD_AMBIENT_LUT_HEAP_SLOT      = 74;
 static constexpr UINT  SKY_MULTISCATTER_LUT_HEAP_SLOT   = 75;
-static constexpr UINT  BINDLESS_HEAP_START              = 76;
+static constexpr UINT  CLOUD_SUNOD_LUT_HEAP_SLOT        = 76;
+static constexpr UINT  BINDLESS_HEAP_START              = 77;
 
 static constexpr D3D12_RESOURCE_STATES kSRV =
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -619,7 +623,7 @@ struct CloudSettings {
     //round, 3 = 3x longer along wind). Upper-layer weighted; resolves over
     //frames under DLSS RR. 0 amount = no wisps (old hard silhouette).
     float wispAmount         = 0.37f;
-    float wispFreqMult       = 30.0f;
+    float wispFreqMult       = 12.0f;
     float wispStretch        = 2.2f;
 };
 

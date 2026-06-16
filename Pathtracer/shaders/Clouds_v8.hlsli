@@ -19,6 +19,57 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_AMBIENT_STEPS_MAX       6
 
 //====================================
+// PLANET TERRAIN COUPLING (compile-time gate)
+//====================================
+// The planet is DISABLED (terrain SRVs t45-t48 bind null), so every cloud
+// terrain probe (CloudLocalBaseShiftKm cubemap fetch, the shadow-loop terrain
+// block) reads a null texture and returns 0 — pure wasted fetches in the
+// hottest loops. Gate them out at 0; flip to 1 to restore the terrain-shifted
+// cloud layer + terrain sun-block when the planet comes back. Gating also
+// makes the cloud density field exactly terrain-free, which the per-frame
+// sun-OD bake (below) depends on to match the runtime march bit-for-bit.
+#ifndef CLOUD_TERRAIN_ENABLED
+#define CLOUD_TERRAIN_ENABLED 0
+#endif
+
+//====================================
+// BAKED CLOUD -> SUN OPTICAL DEPTH (per-frame shell map)
+//====================================
+// The cloud self-shadow march (CloudOpticalDepthToSun) is the cloud pass's
+// dominant cost, and it blows up at low sun: its 380 km table never early-outs
+// when the sun ray skims horizontally through the thin shell, so all 12 taps
+// run every in-cloud step (vs ~3 at high sun). Pass_skylut_bake_v8.hlsl bakes
+// the cloud->sun optical depth ONCE per frame into a camera-centered,
+// altitude-sliced shell map (g_cloudSunOD, t52); the body-lighting path then
+// reads it as a couple of texture fetches regardless of sun angle, so low sun
+// costs the same as high sun. Flip CLOUD_SUNOD_BAKED to 0 to fall back to the
+// per-sample march (A/B + safety).
+//
+// Footprint: a tangent square centered under the camera, sized to the ground
+// horizon (~200 km half) so its edge sits where clouds drop below the horizon
+// and the baked/march seam is hidden. Altitude is resolved by MAP_SLICES
+// planes spanning the cloud band [BOT, TOP+VARIATION]; a sample reads the OD
+// from its OWN altitude toward the sun (top samples see less cloud above).
+// Samples outside the footprint fall back to the analytic march.
+#ifndef CLOUD_SUNOD_BAKED
+#define CLOUD_SUNOD_BAKED 1
+#endif
+#define CLOUD_SUNOD_MAP_W             384.0f
+#define CLOUD_SUNOD_MAP_H             384.0f
+#define CLOUD_SUNOD_MAP_SLICES        6
+#define CLOUD_SUNOD_FOOTPRINT_HALF_KM 200.0f
+#define CLOUD_SUNOD_BAKE_STEP_KM      0.7f
+#define CLOUD_SUNOD_BAKE_STEPS        96
+// Outer fraction of the footprint where the baked OD cross-fades into the
+// analytic march, so a camera high enough to see past the footprint edge
+// doesn't show a hard shadow ring.
+#define CLOUD_SUNOD_EDGE_FADE         0.08f
+
+#if CLOUD_SUNOD_BAKED
+Texture2DArray<float> g_cloudSunOD : register(t52);
+#endif
+
+//====================================
 //ADAPTIVE MARCH DISTANCE SCALING
 //====================================
 //Distance-proportional step floors for the cloud marches. At distance t the
@@ -377,9 +428,13 @@ inline float CloudEffectiveTopKm(float3 P)
 // shadow probe (Clouds_v8.hlsli, SunSampler_v8.hlsli).
 inline float CloudLocalBaseShiftKm(float3 P)
 {
+#if CLOUD_TERRAIN_ENABLED
     float r = length(P);
     if (r <= 1e-6f) return 0.0f;
     return max(TerrainCloudBaseHeight(P / r) * 0.001f, 0.0f);
+#else
+    return 0.0f;   // planet disabled — skip the null-SRV cubemap fetch
+#endif
 }
 
 // PLANET v8: expected magnitude of the cloud-base shift. The ray-cloud-shell
@@ -463,13 +518,51 @@ inline float3 EnuToPlanetDir(float3 dirEnu)
          + dirEnu.z * g_cloudEnuNorth;
 }
 
+// Fast atan2/acos for the equirect coverage lookup — the hottest transcendental
+// pair in the cloud march (one per coverage sample, and coverage is sampled in
+// the view march, every shadow tap and the bake). The polynomial error is far
+// below the 8192-wide map's texel size (~7.7e-4 rad), so the coverage UV shift
+// is sub-texel and the silhouette is unchanged. Flip CLOUD_FAST_COVERAGE_TRIG
+// to 0 for the exact path if a regression ever appears.
+#ifndef CLOUD_FAST_COVERAGE_TRIG
+#define CLOUD_FAST_COVERAGE_TRIG 1
+#endif
+
+inline float CloudAcosFast(float x)
+{
+    // Eberly degree-2 minimax over [0,1] mirrored to [-1,0]; |err| < 7e-5 rad.
+    float ax = abs(x);
+    float r  = sqrt(saturate(1.0f - ax));
+    float a  = ((-0.0187293f * ax + 0.0742610f) * ax - 0.2121144f) * ax + 1.5707288f;
+    a *= r;
+    return (x >= 0.0f) ? a : (PI - a);
+}
+
+inline float CloudAtan2Fast(float y, float x)
+{
+    // Octant-folded rational atan (|err| < 1.1e-3 rad), matched range to atan2.
+    float ax = abs(x), ay = abs(y);
+    float a  = min(ax, ay) / (max(ax, ay) + 1e-20f);
+    float s  = a * a;
+    float r  = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
+    if (ay > ax) r = 1.57079637f - r;
+    if (x < 0.0f) r = PI - r;
+    if (y < 0.0f) r = -r;
+    return r;
+}
+
 // Plain bilinear+wrap sampler avoids the aniso seam across the ±180° meridian
 // (atan2 jumps ~1.0 between adjacent pixels, aniso reads that as huge mag).
 inline float CloudSampleCoverageMap(float3 P)
 {
     float3 dirPlanet = EnuToPlanetDir(SafeNormalize(P));
+#if CLOUD_FAST_COVERAGE_TRIG
+    float u = CloudAtan2Fast(dirPlanet.z, dirPlanet.x) * (0.5f / PI) + 0.5f;
+    float v = CloudAcosFast(clamp(dirPlanet.y, -1.0f, 1.0f)) * (1.0f / PI);
+#else
     float u = atan2(dirPlanet.z, dirPlanet.x) * (0.5f / PI) + 0.5f;
     float v = acos(clamp(dirPlanet.y, -1.0f, 1.0f)) * (1.0f / PI);
+#endif
     return g_cloudCoverage.SampleLevel(g_samplerLinearWrap, float2(u, v), 0);
 }
 
@@ -1061,6 +1154,38 @@ void EvaluateCloudGBuffer(float3 V,
 // geometrically above all terrain.
 #define CLOUD_TERRAIN_OCCLUDER_MAX_KM 10.0f
 
+// Planet-scale far-side cloud-shell occlusion: a low sun ray dips below the
+// cloud layer and re-enters on the opposite limb (the sunrise/sunset planet-
+// scale blocking). Returns the PRE-MULT tau addition (0 when not applicable).
+// Extracted from CloudOpticalDepthToSun so the baked-OD body path reuses the
+// exact same analytic term instead of duplicating it.
+inline float CloudSunFarSideTau(float3 P, float3 L)
+{
+    const float TAU_EARLYOUT = 64.0f;
+    float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
+                                   + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+    float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM
+                                   - CLOUD_TERRAIN_SHIFT_BOUND_KM;
+
+    float tT0, tT1, tM0, tM1;
+    bool hitOuter = RaySphereIntersect(P, L, Rt, tT0, tT1);
+    bool hitInner = RaySphereIntersect(P, L, Rm, tM0, tM1);
+
+    if (hitOuter && tT1 > 0.0f && hitInner && tM0 > 0.0f)
+    {
+        float tG0, tG1;
+        bool hitGround = RaySphereIntersect(P, L, ATMOS_BOTTOM_RADIUS, tG0, tG1);
+        if (!hitGround || tG0 <= 0.0f)
+        {
+            float3 Pmid = P + L * (0.5f * (tM1 + tT1));
+            float  cov  = CloudGlobalCoverage(Pmid);
+            if (cov > CLOUD_COVERAGE_BASE)
+                return cov * TAU_EARLYOUT;
+        }
+    }
+    return 0.0f;
+}
+
 float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
 {
     const float SAMPLE_DIST_KM[12] = { 0.2f, 0.6f, 1.5f, 3.5f, 7.0f, 12.0f, 22.0f, 40.0f, 70.0f, 125.0f, 220.0f, 380.0f };
@@ -1074,7 +1199,9 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
     // samples to the ~5 that can actually intersect the layer.
     const float shellTopR = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM
                           + CLOUD_TOP_VARIATION_KM + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+#if CLOUD_TERRAIN_ENABLED
     const float terrainMaxR = ATMOS_BOTTOM_RADIUS + CLOUD_TERRAIN_OCCLUDER_MAX_KM;
+#endif
     const float dotPL = dot(P, L);
 
     float tau = 0.0f;
@@ -1086,6 +1213,7 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
         float  rQ = length(Q);
         if (rQ >= shellTopR && dotPL + dist > 0.0f) break;
 
+#if CLOUD_TERRAIN_ENABLED
         // Terrain block only where terrain can exist — the heightmap fetch
         // (cubemap sample + equiangular projection) is pointless at 70+ km.
         if (rQ < terrainMaxR)
@@ -1093,6 +1221,7 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
             float terrainR = ATMOS_BOTTOM_RADIUS + max(TerrainHeight(Q / rQ) * 0.001f, 0.0f);
             if (rQ < terrainR) { tau = TAU_EARLYOUT; break; }
         }
+#endif
 
         // withBillow: this march lights the cloud body itself — the
         // inter-bubble creases must self-shadow (see CloudDensityForShadow).
@@ -1102,34 +1231,129 @@ float CloudOpticalDepthToSun(float3 P, float3 L, float timeSec)
     }
 
     if (tau < TAU_EARLYOUT)
-    {
-        // PLANET v8: +/-CLOUD_TERRAIN_SHIFT_BOUND_KM so the long-distance
-        // shadow probe stays inside the shifted cloud shell at any terrain.
-        float Rt = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM
-                                       + CLOUD_TERRAIN_SHIFT_BOUND_KM;
-        float Rm = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_BOT_KM
-                                       - CLOUD_TERRAIN_SHIFT_BOUND_KM;
-
-        float tT0, tT1, tM0, tM1;
-        bool hitOuter = RaySphereIntersect(P, L, Rt, tT0, tT1);
-        bool hitInner = RaySphereIntersect(P, L, Rm, tM0, tM1);
-
-        if (hitOuter && tT1 > 0.0f && hitInner && tM0 > 0.0f)
-        {
-            float tG0, tG1;
-            bool hitGround = RaySphereIntersect(P, L, ATMOS_BOTTOM_RADIUS, tG0, tG1);
-
-            if (!hitGround || tG0 <= 0.0f)
-            {
-                float3 Pmid = P + L * (0.5f * (tM1 + tT1));
-                float  cov  = CloudGlobalCoverage(Pmid);
-                if (cov > CLOUD_COVERAGE_BASE)
-                    tau += cov * TAU_EARLYOUT;
-            }
-        }
-    }
+        tau += CloudSunFarSideTau(P, L);
 
     return tau * CLOUD_SUN_TAU_MULT;
+}
+
+//====================================
+// BAKED SUN-OD MAP — frame, lookup, bake column, unified body OD
+//====================================
+// The footprint frame: a tangent square centered at the sub-camera point on
+// the cloud shell. Derived from the STABLE camera cbuffer position (viewI
+// translation + sceneOriginWorld), NOT the per-pixel jittered g_skyObserver
+// Planet, so the bake and every runtime lookup agree on the same square.
+// GetOrthoBasis is deterministic in upC, so bake and runtime build the same
+// east/north for a given camera.
+struct CloudSunODFrame { float3 C; float3 east; float3 north; };
+
+inline CloudSunODFrame CloudSunODGetFrame()
+{
+    float3 camWorld = mul(viewI, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz + sceneOriginWorld;
+    float3 obsP     = WorldToPlanet(camWorld);
+    float3 upC      = SafeNormalize(obsP);
+    float3 e, nn;
+    GetOrthoBasis(upC, e, nn);
+    CloudSunODFrame f;
+    f.C     = upC * ATMOS_BOTTOM_RADIUS;   // sub-camera point on the surface
+    f.east  = e;
+    f.north = nn;
+    return f;
+}
+
+// Physical local cloud->sun optical depth from the per-frame baked map.
+// edgeFade in [0,1]: 1 deep inside the footprint, ramping to 0 at the border
+// so the caller can cross-fade into the analytic march at the edge.
+float CloudSunODSampleLocalPhys(float3 P, out float edgeFade)
+{
+    edgeFade = 0.0f;
+#if CLOUD_SUNOD_BAKED
+    CloudSunODFrame f = CloudSunODGetFrame();
+    float3 rel = P - f.C;
+    float  inv = 0.5f / CLOUD_SUNOD_FOOTPRINT_HALF_KM;
+    float  u   = dot(rel, f.east)  * inv + 0.5f;
+    float  v   = dot(rel, f.north) * inv + 0.5f;
+
+    // Distance from the nearest footprint border, in [0,0.5]; outside -> <0.
+    float border = min(min(u, 1.0f - u), min(v, 1.0f - v));
+    if (border <= 0.0f) return 0.0f;
+    edgeFade = saturate(border / max(CLOUD_SUNOD_EDGE_FADE, 1e-4f));
+
+    float alt    = length(P) - ATMOS_BOTTOM_RADIUS;
+    float topMax = CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
+    float hN     = saturate((alt - CLOUD_LAYER_BOT_KM)
+                          / max(1e-4f, topMax - CLOUD_LAYER_BOT_KM));
+
+    // Slice z baked at hNorm = (z+0.5)/SLICES -> continuous coord hN*SLICES-0.5.
+    // Texture2DArray does NOT filter across slices, so sample the two bracketing
+    // slices at exact integer indices and lerp on OD (Jensen-safe).
+    float c   = hN * (float)CLOUD_SUNOD_MAP_SLICES - 0.5f;
+    float c0  = floor(c);
+    float ff  = saturate(c - c0);
+    float s0  = clamp(c0,        0.0f, (float)(CLOUD_SUNOD_MAP_SLICES - 1));
+    float s1  = clamp(c0 + 1.0f, 0.0f, (float)(CLOUD_SUNOD_MAP_SLICES - 1));
+    float od0 = g_cloudSunOD.SampleLevel(g_sampler_LUT, float3(u, v, s0), 0).r;
+    float od1 = g_cloudSunOD.SampleLevel(g_sampler_LUT, float3(u, v, s1), 0).r;
+    return lerp(od0, od1, ff);
+#else
+    return 0.0f;
+#endif
+}
+
+// Uniform-step physical cloud->sun OD column for the bake (terrain-free via the
+// CLOUD_TERRAIN_ENABLED gate). Mirrors CloudOpticalDepthToSun's accumulation +
+// early-out (minus the far-side term and the artistic mult, both reapplied at
+// runtime). Used only by Pass_skylut_bake_v8.hlsl::mainCloudSunOD.
+float CloudSunODBakeColumn(float3 Q, float3 L)
+{
+    const float shellTopR = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM
+                          + CLOUD_TOP_VARIATION_KM + CLOUD_TERRAIN_SHIFT_BOUND_KM;
+    const float TAU_EARLYOUT = 64.0f;
+    const float stepKm = CLOUD_SUNOD_BAKE_STEP_KM;
+
+    float tau = 0.0f;
+    float t   = 0.5f * stepKm;
+    [loop]
+    for (int i = 0; i < CLOUD_SUNOD_BAKE_STEPS; ++i)
+    {
+        float3 Qi = Q + L * t;
+        float  rQ = length(Qi);
+        // Same early-out as the runtime march (line ~1087): once above the
+        // shell and moving radially outward, the rest is guaranteed empty.
+        if (rQ >= shellTopR && dot(Qi, L) > 0.0f) break;
+        tau += CloudDensityForShadow(Qi, walltime, true) * CLOUD_EXTINCTION * stepKm;
+        if (tau >= TAU_EARLYOUT) { tau = TAU_EARLYOUT; break; }
+        t += stepKm;
+    }
+    return tau;   // physical OD, pre-mult, no far-side
+}
+
+// Body-lighting cloud->sun optical depth (returns tau * CLOUD_SUN_TAU_MULT,
+// matching CloudOpticalDepthToSun's convention). Reads the baked shell map
+// inside the footprint (a couple of fetches, sun-angle independent), adds the
+// analytic far-side limb term, and cross-fades to the per-sample march at the
+// footprint border / falls back to it entirely outside. The cone average the
+// old path did for de-banding is unnecessary: the baked field is already
+// trilinear-smooth.
+float CloudBodySunOD(float3 P, float3 L)
+{
+#if CLOUD_SUNOD_BAKED
+    float edgeFade;
+    float localPhys = CloudSunODSampleLocalPhys(P, edgeFade);
+    if (edgeFade > 0.0f)
+    {
+        const float TAU_EARLYOUT = 64.0f;
+        float tau = localPhys;
+        if (tau < TAU_EARLYOUT)
+            tau += CloudSunFarSideTau(P, L);
+        float bakedOD = tau * CLOUD_SUN_TAU_MULT;
+        if (edgeFade >= 1.0f) return bakedOD;
+        // Border ring: blend with the march so a camera that sees past the
+        // footprint edge gets no hard shadow discontinuity.
+        return lerp(CloudOpticalDepthToSun(P, L, walltime), bakedOD, edgeFade);
+    }
+#endif
+    return CloudOpticalDepthToSun(P, L, walltime);
 }
 
 // Distance along a sun ray to the outer cloud-shell exit, capped to the
@@ -1404,6 +1628,13 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
                             uint2 pixel, uint frame, uint tap,
                             out float sunODOut)
 {
+#if CLOUD_SUNOD_BAKED
+    // Baked shell map: one lookup, sun-angle independent (no low-sun blowup),
+    // already trilinear-smooth so the de-banding cone is unnecessary. The
+    // jitter inputs (pixel/frame/tap) go unused on this path.
+    float sunOD = CloudBodySunOD(P, L);
+    sunODOut = sunOD;
+#else
     // Cone-jittered shadow taps. Min 1.5° even at Kshadow=1: without jitter,
     // neighbouring view samples hit the same six SAMPLE_DIST_KM points and
     // the heart-profile bands wallpaper into horizontal stripes.
@@ -1423,6 +1654,7 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
     }
     sunOD /= (float)Kshadow;
     sunODOut = sunOD;
+#endif
 
     float h = m.heightFrac;
     float3 K = sunRad * sunAtmos * earthShadow * CLOUD_ALBEDO;
@@ -1631,7 +1863,7 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
             if (cloudDensity > CLOUD_EFFECTIVE_ZERO_DENSITY)
             {
                 float sigma_t = cloudDensity * CLOUD_EXTINCTION;
-                float sunOD   = CloudOpticalDepthToSun(P, L, walltime);
+                float sunOD   = CloudBodySunOD(P, L);
                 float Tdir    = exp(-sunOD);
 
                 // Match primary: physical disk-fraction earth shadow
@@ -2173,15 +2405,42 @@ float3 EvaluateAtmosphereAndClouds(
                 }
                 else
                 {
-                    // rCone.xy = cone jitter, rCone.z = altitude-slice
-                    // jitter — both needed or the fast path's single tap
-                    // paints a ghost mid-shell sphere onto the fog (see
-                    // CloudOpticalDepthAlongRay).
-                    float4 rCone = CloudRand4(pixel, frame, (uint)ts + 700u);
-                    float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
-                                                         float2(rCone.x, rCone.y));
-                    visRaw = CloudSunVisibilityPlanet(P, LjAtmos, rCone.z);
-                    tauAmb = -log(max(visRaw, 1e-20f));
+                    bool usedMap = false;
+#if CLOUD_SUNOD_BAKED
+                    // In-shell clear-air steps are the dawn bottleneck: a
+                    // grazing miss ray spends most of its (up to 256) phase-2
+                    // steps in clear air between cloud banks, and each was
+                    // paying a full CloudSunVisibilityPlanet march + far-side.
+                    // The baked shell map already holds the cloud->sun OD at
+                    // this exact point and altitude, so read it (physical OD,
+                    // no mult) instead — and it's MORE accurate than the fast
+                    // single-slice march it replaces (no ghost mid-shell
+                    // sphere; reads the sample's true altitude). Only inside
+                    // the footprint interior; the edge ring + outside fall
+                    // back to the march.
+                    float edgeFade;
+                    float localPhys = CloudSunODSampleLocalPhys(P, edgeFade);
+                    if (edgeFade >= 1.0f)
+                    {
+                        float tau = localPhys;
+                        if (tau < 64.0f) tau += CloudSunFarSideTau(P, L);
+                        tauAmb = tau;
+                        visRaw = exp(-tau);
+                        usedMap = true;
+                    }
+#endif
+                    if (!usedMap)
+                    {
+                        // rCone.xy = cone jitter, rCone.z = altitude-slice
+                        // jitter — both needed or the fast path's single tap
+                        // paints a ghost mid-shell sphere onto the fog (see
+                        // CloudOpticalDepthAlongRay).
+                        float4 rCone = CloudRand4(pixel, frame, (uint)ts + 700u);
+                        float3 LjAtmos = SampleConeAroundDir(L, kAtmosShadowConeCosP2,
+                                                             float2(rCone.x, rCone.y));
+                        visRaw = CloudSunVisibilityPlanet(P, LjAtmos, rCone.z);
+                        tauAmb = -log(max(visRaw, 1e-20f));
+                    }
                 }
                 // Ambient terms only where actually shadowed. In-band
                 // samples reuse the hull's coverage fetch; sub-deck strides

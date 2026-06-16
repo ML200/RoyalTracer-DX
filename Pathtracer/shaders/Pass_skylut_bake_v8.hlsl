@@ -43,6 +43,14 @@ RWTexture2D<float4> gTransmittanceLUTOut : register(u25);
 RWTexture2D<float4> gAmbientLUTOut       : register(u26);
 RWTexture2D<float4> gMultiScatterLUTOut  : register(u27);
 
+// Per-frame cloud->sun optical-depth shell map (g_cloudSunOD, t52 at runtime).
+// Camera-centered, altitude-sliced; collapses the per-sample cloud self-shadow
+// march (CloudOpticalDepthToSun) to a couple of texture fetches. Reads scene
+// SRVs (cloud noise t42, coverage t43) — the bake root sig binds those + their
+// samplers, unlike the pure-ALU sky LUTs above. See the CLOUD_SUNOD_* block in
+// Clouds_v8.hlsli for the parameterization shared with the runtime lookup.
+RWTexture2DArray<float> gCloudSunODOut   : register(u28);
+
 //====================================
 //TRANSMITTANCE LUT
 //====================================
@@ -353,4 +361,56 @@ void mainAmbient(uint3 DTid : SV_DispatchThreadID)
     // double-boosted by the artistic slider.
 
     gAmbientLUTOut[DTid.xy] = float4(totalInScatter, 1.0f);
+}
+
+//====================================
+//CLOUD -> SUN OPTICAL-DEPTH SHELL MAP
+//====================================
+//One texel per (footprint-x, footprint-y, altitude-slice). Each thread places
+//a point on the cloud shell at the texel's tangent position + slice altitude
+//and integrates the PHYSICAL cloud optical depth toward the sun (terrain-free,
+//pre-mult, no far-side term — both reapplied at runtime). The runtime body-
+//lighting path (CloudBodySunOD in Clouds_v8.hlsli) reads this with a couple of
+//bilinear fetches instead of the 12-tap CloudOpticalDepthToSun march, so low
+//sun (where that march never early-outs) costs the same as high sun.
+//
+//Reads scene SRVs (cloud noise t42 via g_sampler s0, coverage t43 via
+//g_samplerLinearWrap s2) — the bake root signature (InitSkyLUTBake) binds
+//those + static samplers, unlike the pure-ALU sibling kernels. Independent of
+//the sky-LUT UAVs, so it needs no UAV barrier ordering against them.
+//
+//Footprint frame + slice mapping are shared with the runtime via
+//CloudSunODGetFrame / the CLOUD_SUNOD_* defines, so bake and lookup agree.
+[numthreads(8, 8, 1)]
+void mainCloudSunOD(uint3 DTid : SV_DispatchThreadID)
+{
+    if (DTid.x >= (uint)CLOUD_SUNOD_MAP_W ||
+        DTid.y >= (uint)CLOUD_SUNOD_MAP_H ||
+        DTid.z >= (uint)CLOUD_SUNOD_MAP_SLICES) return;
+
+    InitCloudEnuBasis();
+
+    // Sun direction (observer-independent), same vector the marches use as L.
+    float3 L; float elev;
+    GetSunDirAndElev(L, elev);
+    L = SafeNormalize(L);
+
+    CloudSunODFrame f = CloudSunODGetFrame();
+
+    float u = ((float)DTid.x + 0.5f) / CLOUD_SUNOD_MAP_W;
+    float v = ((float)DTid.y + 0.5f) / CLOUD_SUNOD_MAP_H;
+    float e = (u - 0.5f) * 2.0f * CLOUD_SUNOD_FOOTPRINT_HALF_KM;
+    float n = (v - 0.5f) * 2.0f * CLOUD_SUNOD_FOOTPRINT_HALF_KM;
+
+    float topMax = CLOUD_LAYER_TOP_KM + CLOUD_TOP_VARIATION_KM;
+    float aS = lerp(CLOUD_LAYER_BOT_KM, topMax,
+                    ((float)DTid.z + 0.5f) / (float)CLOUD_SUNOD_MAP_SLICES);
+
+    // Curvature-correct shell point: bend the tangent offset back onto the
+    // sphere, then lift to the slice altitude (matches the runtime lookup's
+    // dot-projection to sub-texel error over the footprint).
+    float3 posDir = SafeNormalize(f.C + f.east * e + f.north * n);
+    float3 Q      = posDir * (ATMOS_BOTTOM_RADIUS + aS);
+
+    gCloudSunODOut[DTid] = CloudSunODBakeColumn(Q, L);
 }

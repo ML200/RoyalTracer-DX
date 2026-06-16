@@ -52,6 +52,21 @@ cbuffer Push : register(b1)
 };
 
 //====================================
+//PIPELINE FLAGS (packed into rs_flags)
+//====================================
+//High bit of rs_flags, clear of the ReSTIR bits (0x2 tempGI, 0x8 spatGI,
+//0x10 native-spatial) and the NRC/reuse fields. Set by the Renderer from the
+//editor toggle, NOT by ReSTIRSettings::Flags(). The ReSTIR passes only test the
+//low bits, so it is inert for them.
+//
+//RS_FLAG_CLAMP_EMITTERS — Pass_shading luminance-clamps emitter radiance before
+//the reversible DlssReinhard pre-tonemap, pulling big bright emitters off the
+//[0,1] rail so DLSS RR (and the postprocess inverse) don't amplify denoiser
+//error into artefacts. Mirrors DLSSManager::clampEmitterSpikes.
+#define RS_FLAG_CLAMP_EMITTERS  0x100u
+#define CLAMP_EMITTERS_MODE  ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)
+
+//====================================
 //IMAGE SIZE MACROS
 //====================================
 #define IMG_W (gImageSize.x)

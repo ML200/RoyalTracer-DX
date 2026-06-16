@@ -1404,6 +1404,12 @@ public:
             if (transExt) {
                 float tf = (float)tg3_obj_get_double(transExt, "transmissionFactor", 0.0);
                 t_mat.Tf = { tf, tf, tf };
+                // The path tracer encodes opacity in Kd.w and derives the specular
+                // transmission weight as (1 - Kd.w); a surface counts as glass when
+                // Ni>1 and Kd.w<1. glTF keeps coverage (baseColor.a) and refractive
+                // transmission (transmissionFactor) as independent layers, so collapse
+                // the transmission into the engine's opacity channel.
+                t_mat.Kd.w *= (1.0f - tf);
             }
 
             // Albedo

@@ -277,14 +277,17 @@ void Renderer::InitDevice() {
         //runs, so the heap can pick up the resulting SRV at heap slot
         //CLOUD_NOISE_HEAP_SLOT. One-time GPU work on the init cmd list.
         BakeCloudNoiseTexture();
-        //Create the per-frame sky LUT textures (sun transmittance t49 +
-        //cloud ambient probes t50) before CreateShaderResourceHeap so their
-        //SRVs land at heap slots 73/74. The actual bake dispatches run every
-        //frame from PopulateCommandList (RecordSkyLUTBake).
-        InitSkyLUTBake();
         //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
         //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
+        //MUST precede InitSkyLUTBake: the cloud sun-OD bake heap binds SRVs to
+        //the cloud noise + coverage textures, so both resources must exist.
         InitCloudCoverageTexture();
+        //Create the per-frame sky LUT textures (sun transmittance t49 +
+        //cloud ambient probes t50 + cloud sun-OD shell map t52) before
+        //CreateShaderResourceHeap so their SRVs land at heap slots 73/74/76.
+        //The actual bake dispatches run every frame from PopulateCommandList
+        //(RecordSkyLUTBake).
+        InitSkyLUTBake();
         //Upload the baked planet heightmap cubemap (downsample to 4k per
         //face). SRV at TERRAIN_HEIGHTMAP_HEAP_SLOT (register t45). Requires
         //m_planet.init to have run already so its HeightmapCubemap is loaded.
@@ -542,6 +545,14 @@ void Renderer::UpdateRenderer(float dt) {
             LOG(L"[DLSS] Mode changed → render res: "
                 << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
         }
+    }
+
+    // Toggling emitter-spike clamping changes the DLSS input for emitter pixels;
+    // drop temporal history so the two encodings don't blend/ghost during the swap.
+    if (m_dlss.clampEmitterSpikes != m_dlssClampEmitterSpikesPrev) {
+        m_dlssClampEmitterSpikesPrev = m_dlss.clampEmitterSpikes;
+        m_dlss.ForceReset();
+        LOG(L"[DLSS] Emitter-spike clamp " << (m_dlss.clampEmitterSpikes ? L"ON" : L"OFF"));
     }
 
     // Kick async light tree TLAS refit when dirty and no refit in flight
@@ -1688,7 +1699,12 @@ void Renderer::PopulateCommandList() {
     // reuse for 2 frames so those buffers are never read with stale layout.
     // Flags() returns bit1=tempGI (0x2) and bit3=spatGI (0x8); mask off both
     // lower bits on DLSS res change to drop the temporal pass.
-    rsConsts[9]  = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    // RS_FLAG_CLAMP_EMITTERS (0x100, must match Includes_v8.hlsli) is a high bit
+    // clear of the ReSTIR bits; Pass_shading reads it to clamp emitter spikes.
+    constexpr uint32_t RS_FLAG_CLAMP_EMITTERS = 0x100u;
+    uint32_t baseFlags = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    if (m_dlss.clampEmitterSpikes) baseFlags |= RS_FLAG_CLAMP_EMITTERS;
+    rsConsts[9]  = baseFlags;
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;

@@ -68,6 +68,15 @@ public:
     //editor-exposed
     sl::DLSSMode mode = sl::DLSSMode::eDLAA;
 
+    //When true, Pass_shading luminance-clamps emitter radiance (DLSS_EMITTER_CAP)
+    //before the reversible DlssReinhard pre-tonemap. This pulls a large bright
+    //emitter (e.g. a lamp filling much of a dark scene) off the [0,1] rail so
+    //DLSS RR — and the postprocess inverse — stop amplifying denoiser residual
+    //error into artefacts. Only the emitter's DLSS colour input changes; the rest
+    //of the pipeline (guides, decode, post-process) is untouched, so it is immune
+    //to DLSS sub-pixel jitter. Off = unclamped (classic) DLSS input.
+    bool clampEmitterSpikes = false;
+
 private:
     void CreateInputTextures(ID3D12Device* device);
     void ComputeRenderResolution();

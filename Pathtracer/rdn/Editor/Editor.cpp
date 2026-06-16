@@ -303,6 +303,15 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
         dlss.RenderWidth(), dlss.RenderHeight(),
         dlss.DisplayWidth(), dlss.DisplayHeight());
 
+    // Clamp emitter radiance fed to DLSS RR so big bright emitters don't sit on
+    // the Reinhard rail (where the denoiser/inverse amplify error into artefacts).
+    ImGui::Checkbox("Clamp emitter spikes (DLSS RR)", &dlss.clampEmitterSpikes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Luminance-clamps emitter radiance before the DLSS pre-tonemap.\n"
+            "Fixes DLSS RR artefacts around a large bright emitter (e.g. a lamp)\n"
+            "in an otherwise dark scene. Cap = DLSS_EMITTER_CAP in Pass_shading.");
+
     // ── DLSS-G (Frame Generation) ───────────────────────────────
     ImGui::SeparatorText("Frame Generation");
 

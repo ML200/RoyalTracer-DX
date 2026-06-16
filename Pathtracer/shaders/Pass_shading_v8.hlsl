@@ -18,6 +18,30 @@ inline float3 DlssReinhard(float3 c) {
 }
 
 //====================================
+//EMITTER SPIKE CLAMP (DLSS RR INPUT)
+//====================================
+//DLSS RR mishandles a large bright emitter (e.g. a lamp filling a big screen
+//region) in an otherwise dark scene: DlssReinhard pushes it right against the
+//[0,1] rail, where the postprocess inverse amplifies the denoiser's residual
+//error into visible artefacts. When RS_FLAG_CLAMP_EMITTERS is on we luminance-
+//clamp emitter radiance to DLSS_EMITTER_CAP BEFORE Reinhard, pulling it off the
+//rail (Reinhard(16)=0.94 vs ~0.999) so the inverse stays well-behaved.
+//
+//This is a per-EMITTER-pixel change at render resolution, baked into a normal
+//Reinhard value, so the post-DLSS decode stays uniform (default inverse) and is
+//immune to DLSS's sub-pixel jitter / temporal reconstruction. Hue is preserved
+//(scale the whole colour by cap/luma). AgX is so compressive at the top that a
+//clamped emitter and a true one display almost identically, so visible emitter
+//brightness is barely affected — only the rail-adjacent error blows up is gone.
+//Tunable: raise the cap for brighter emitters (closer to the rail / more risk),
+//lower it for safer denoising.
+#define DLSS_EMITTER_CAP 16.0f
+inline float3 ClampEmitterLum(float3 c) {
+    const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+    return (lum > DLSS_EMITTER_CAP) ? c * (DLSS_EMITTER_CAP / lum) : c;
+}
+
+//====================================
 //SHADING PASS
 //====================================
 [numthreads(16, 16, 1)]
@@ -292,8 +316,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
         g_dlssRoughness[DTid.xy] = 1.0f;
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
-        //Reinhard pre-tonemap (reversed in postprocess) so emitters survive AgX
-        g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+        //Reinhard pre-tonemap (reversed in postprocess) so emitters survive AgX.
+        //Optionally clamp the emitter spike first so DLSS RR / the inverse don't
+        //amplify denoiser error off the [0,1] rail (RS_FLAG_CLAMP_EMITTERS). Gate
+        //on hasPosition so only emitter SURFACES (lamps) are clamped, not sky/sun
+        //(this branch also handles sky). Drop `&& hasPosition` to include sky.
+        float3 emitterRadiance = (CLAMP_EMITTERS_MODE && hasPosition)
+                                    ? ClampEmitterLum(accumulation)
+                                    : accumulation;
+        g_dlssInput[DTid.xy] = float4(DlssReinhard(emitterRadiance), 1.0f);
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
     }
     else{

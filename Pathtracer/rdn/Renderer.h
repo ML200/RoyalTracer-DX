@@ -362,11 +362,17 @@ private:
     ComPtr<ID3D12Resource>       m_skyTransmittanceLUT;
     ComPtr<ID3D12Resource>       m_cloudAmbientLUT;
     ComPtr<ID3D12Resource>       m_skyMultiScatterLUT;
+    //Cloud->sun optical-depth shell map (Texture2DArray<R16F>, 384x384x6).
+    //Baked by the mainCloudSunOD kernel; read at t52 (g_cloudSunOD) to collapse
+    //the per-sample cloud self-shadow march. Unlike the sky LUTs the bake also
+    //samples the cloud noise/coverage SRVs (see InitSkyLUTBake).
+    ComPtr<ID3D12Resource>       m_cloudSunODLUT;
     ComPtr<ID3D12DescriptorHeap> m_skyLutBakeHeap;
     ComPtr<ID3D12RootSignature>  m_skyLutBakeSig;
     ComPtr<ID3D12PipelineState>  m_skyLutTransmittancePSO;
     ComPtr<ID3D12PipelineState>  m_skyLutAmbientPSO;
     ComPtr<ID3D12PipelineState>  m_skyLutMultiScatterPSO;
+    ComPtr<ID3D12PipelineState>  m_skyLutCloudSunODPSO;
     void InitSkyLUTBake();
     void RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd);
     //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —
@@ -382,6 +388,9 @@ private:
     static constexpr UINT DLSS_UAV_HEAP_START  = 39;
     float m_fps = 0.0f;
     int m_dlssModeChangedFrames = 0;
+    //tracks DLSSManager::clampEmitterSpikes so toggling it can drop DLSS temporal
+    //history (the emitter input encoding changes, which would otherwise ghost).
+    bool m_dlssClampEmitterSpikesPrev = false;
     bool m_reflexAvailable = false;
     DLSSGSettings m_dlssG;
     FrameStats m_frameStats;

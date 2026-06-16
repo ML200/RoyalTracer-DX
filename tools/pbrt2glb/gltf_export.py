@@ -689,18 +689,33 @@ class GLTFExporter:
             mr.roughnessFactor = self._roughness(params)
             self._apply_roughness_texture(mr, params, metallic_b=255)
         elif kind in ("dielectric", "thindielectric"):
-            # Fully transmissive surface (glass). Alpha=0 so plain blending
-            # also shows transparency in renderers that ignore
-            # KHR_materials_transmission.
-            mr.baseColorFactor = [1.0, 1.0, 1.0, 0.0]
+            # Transmissive surface (glass). In glTF, baseColor.a + alphaMode
+            # control *coverage* while KHR_materials_transmission controls
+            # *see-through*; they are independent layers. Keep coverage fully
+            # opaque (alpha=1, OPAQUE) and let the transmission factor do the
+            # work. Emitting alpha=0 + BLEND told compliant renderers the
+            # surface had zero coverage, so they culled it and dropped the
+            # glass entirely.
+            mr.baseColorFactor = [1.0, 1.0, 1.0, 1.0]
             mr.metallicFactor = 0.0
             mr.roughnessFactor = self._roughness(params)
             self._apply_roughness_texture(mr, params, metallic_b=0)
-            mat.alphaMode = "BLEND"
             mat.extensions = mat.extensions or {}
             mat.extensions["KHR_materials_transmission"] = {"transmissionFactor": 1.0}
             if "KHR_materials_transmission" not in self.g.extensionsUsed:
                 self.g.extensionsUsed.append("KHR_materials_transmission")
+            # Solid `dielectric` is a volume boundary -> emit a non-zero
+            # thickness so the renderer applies refraction + Beer-Lambert
+            # absorption. (When KHR_materials_volume is absent, thicknessFactor
+            # defaults to 0 = thin-walled, which suppresses both.) The actual
+            # path length comes from the renderer's ray traversal; the value
+            # here just flags the surface as a volume. PBRT's plain dielectric
+            # is clear/non-absorbing, so attenuation is left at its defaults.
+            # `thindielectric` is genuinely thin-walled, so it gets no volume.
+            if kind == "dielectric":
+                mat.extensions["KHR_materials_volume"] = {"thicknessFactor": 1.0}
+                if "KHR_materials_volume" not in self.g.extensionsUsed:
+                    self.g.extensionsUsed.append("KHR_materials_volume")
             ior_p = params.get("eta") or params.get("ior")
             if ior_p is not None and ior_p.values:
                 ior = float(ior_p.values[0]) if not isinstance(ior_p.values[0], str) else 1.5
