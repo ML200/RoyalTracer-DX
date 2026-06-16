@@ -420,10 +420,12 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 52, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
-    // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] = 32.
+    // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] +
+    // 4 cell-spatial constants [32..35] = 36.
     // (Last 5 of the NRC block are scene-bounds normalization for the
-    // position input, see Includes_v8.hlsli.)
-    rootParameters[1].InitAsConstants(32, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // position input; the cell block is the Hedstrom 2026 stochastic
+    // pairwise-MIS reuse params, see Includes_v8.hlsli.)
+    rootParameters[1].InitAsConstants(36, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[3];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,

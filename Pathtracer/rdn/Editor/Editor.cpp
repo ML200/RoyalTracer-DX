@@ -549,6 +549,25 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SliderInt("Radius Min##Spat", &rs.spatRadMinGI, 4, 128);
         ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
     }
+    if (ImGui::CollapsingHeader("Cell Reuse (Stochastic Pairwise MIS)")) {
+        ImGui::Checkbox("Use cell reuse##Cell", &rs.useCellSpatGI);
+        ImGui::SetItemTooltip("Hedstrom et al. 2026. Replaces the texture-paired "
+                              "spatial path with tile-local (8x8) stochastic "
+                              "pairwise-MIS reuse. Needs Spatial enabled.");
+        ImGui::BeginDisabled(!rs.useCellSpatGI);
+        ImGui::SliderInt("N candidates##Cell",  &rs.cellN,  1, 16);
+        ImGui::SetItemTooltip("Ntilde: non-canonical samples shifted per pixel (paper: 3).");
+        ImGui::SliderInt("Search iters##Cell",  &rs.cellSearchIters, 1, 32);
+        ImGui::SetItemTooltip("§5.1 cell-search WRS iterations (paper: 12). More = "
+                              "better chance of finding a good cell in disocclusions.");
+        ImGui::SliderInt("Search radius##Cell", &rs.cellRadius, 2, 256);
+        ImGui::SetItemTooltip("§5.1 initial search radius in px (paper: 30); grows "
+                              "x1.25 per iter to reach past disocclusions.");
+        ImGui::SliderInt("M-cap##Cell",         &rs.cellMcap, 1, 100);
+        ImGui::SetItemTooltip("Confidence cap for cell-mode reservoirs (paper: 20). "
+                              "Lower curbs boiling from a dominant sample.");
+        ImGui::EndDisabled();
+    }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Normal dot min", &rs.rejNormalDot, 0.0f, 1.0f);
         ImGui::SetItemTooltip("Reject neighbor if dot(nA, nB) falls below this.");

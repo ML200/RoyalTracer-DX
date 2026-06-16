@@ -49,6 +49,13 @@ cbuffer Push : register(b1)
     //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5/halfExtent
     float3 nrc_scene_center;
     float  nrc_scene_scale_inv;
+    //stochastic pairwise-MIS cell spatial reuse (Hedstrom et al. 2026). Fresh
+    //16B register (slots 32-35) past the NRC block - the root signature uploads
+    //36 constants. Read by Pass_spat_gi_cell_v8 when RS_FLAG_CELL_SPATIAL is set.
+    uint  rs_cellN;           // Ntilde: non-canonical stochastic candidates (paper: 3)
+    uint  rs_cellSearchIters; // §5.1 cell-search WRS iterations (paper: 12)
+    uint  rs_cellMcap;        // confidence cap for cell-mode reservoirs (paper: 20)
+    uint  rs_cellRadius;      // §5.1 cell-search initial radius in pixels (paper: 30)
 };
 
 //====================================
@@ -65,6 +72,13 @@ cbuffer Push : register(b1)
 //error into artefacts. Mirrors DLSSManager::clampEmitterSpikes.
 #define RS_FLAG_CLAMP_EMITTERS  0x100u
 #define CLAMP_EMITTERS_MODE  ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)
+
+//RS_FLAG_CELL_SPATIAL — selects the stochastic pairwise-MIS cell spatial-reuse
+//path (Pass_spat_gi_cell_v8) instead of the texture-paired select/shift/_v8_1
+//passes. Sub-mode of spatial GI (0x8): when set, the texture passes no-op and
+//the cell pass owns spatial reuse. Set by ReSTIRSettings::Flags().
+#define RS_FLAG_CELL_SPATIAL  0x10u
+#define CELL_SPATIAL_MODE  ((rs_flags & RS_FLAG_CELL_SPATIAL) != 0u)
 
 //====================================
 //IMAGE SIZE MACROS

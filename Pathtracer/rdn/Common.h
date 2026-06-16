@@ -162,9 +162,19 @@ struct ReSTIRSettings {
     float rejNormalDot     = 0.36f;
     float rejDistance      = 0.10f;
 
+    //Stochastic pairwise-MIS cell spatial reuse (Hedstrom et al. 2026), an A/B
+    //alternative to the texture-paired path. When on, the select/shift/_v8_1
+    //passes no-op and Pass_spat_gi_cell_v8 owns spatial reuse (flag bit 0x10).
+    bool  useCellSpatGI    = false;
+    int   cellN            = 3;   // Ntilde: non-canonical stochastic candidates
+    int   cellSearchIters  = 12;  // §5.1 cell-search WRS iterations
+    int   cellMcap         = 20;  // confidence cap for cell-mode reservoirs
+    int   cellRadius       = 30;  // §5.1 cell-search initial radius (px)
+
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
-        return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u);
+        return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
+             | ((enableSpatGI && useCellSpatGI) ? 0x10u : 0u);
     }
 };
 

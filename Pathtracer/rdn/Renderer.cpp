@@ -37,6 +37,8 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
+        L"Pass_spat_gi_cellbuild_v8.hlsl|cs:8x8",       L"barrier",
+        L"Pass_spat_gi_cell_v8.hlsl|cs:8x8",            L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
         L"dlss",                                        L"barrier",
@@ -1687,7 +1689,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[32] = {};
+    UINT rsConsts[36] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1725,6 +1727,14 @@ void Renderer::PopulateCommandList() {
     // Neighbor rejection thresholds (slots 22-23)
     memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
     memcpy(&rsConsts[23], &rs.rejDistance,  4);
+
+    // Cell spatial-reuse params (slots 32-35; read by the Pass_spat_gi_cell* passes).
+    // Clamp to safe ranges so editor extremes can't blow up the WRS / search math.
+    // cellSearchIters is capped at 32 (the shader's §5.1 search loop bound).
+    rsConsts[32] = (UINT)std::clamp(rs.cellN,           1, 16);
+    rsConsts[33] = (UINT)std::clamp(rs.cellSearchIters, 1, 32);
+    rsConsts[34] = (UINT)std::clamp(rs.cellMcap,        1, 100);
+    rsConsts[35] = (UINT)std::clamp(rs.cellRadius,      2, 512);
 
     // NRC control constants (slots 24-27). NRC is only driving the
     // pipeline when the interop + tcnn stack initialised successfully —
@@ -1919,7 +1929,7 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 32, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 36, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

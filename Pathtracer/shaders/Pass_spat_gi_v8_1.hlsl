@@ -31,6 +31,10 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
+    //cell-mode active: Pass_spat_gi_cell_v8 owns 100% of spatial reuse (incl.
+    //emitter / passthrough cases), so this pass does nothing and writes nothing.
+    if (CELL_SPATIAL_MODE) return;
+
     //G-buffer copy for temporal reuse removed: the renderer ping-pongs the
     //current/last sample-buffer bindings per frame (Renderer::SwapSampleBuffers)
 
