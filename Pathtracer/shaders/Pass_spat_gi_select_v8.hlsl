@@ -130,7 +130,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myMatID  = load_matID(g_sample_current, pixelIdx);
-    const float3 myPos    = load_x1(g_sample_current, pixelIdx);
+    const float3 myPos    = load_x1_with_instID(g_sample_current, pixelIdx, myInstID);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
 
     //slab thickness scales with camera distance so pixel footprint at depth

@@ -542,6 +542,28 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     if (ImGui::CollapsingHeader("Temporal", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Temp", &rs.enableTempGI);
         ImGui::SliderInt("M-cap##Temp", &rs.tempMcapGI, 0, 128);
+        ImGui::Checkbox("Disable correlation reduction (A/B)##Temp", &rs.disableCorrReduction);
+        ImGui::SetItemTooltip("Turns off the duplication-map decorrelation. Normally the temporal "
+                              "confidence cap collapses toward 1 as a sample is shared across "
+                              "neighbours (lerp(M-cap,1,pow(D,0.1)) - very aggressive: D=0.1 -> cap~5). "
+                              "Cell reuse spreads good samples, raising D, so this caps them back down "
+                              "and fights the reuse. Disable to let well-reused samples keep "
+                              "accumulating confidence (suspected cause of weak cell-reuse quality).");
+        ImGui::Checkbox("Disable x1 direct / slot 3 (diagnostic)##Temp", &rs.disableX1Direct);
+        ImGui::SetItemTooltip("Zeroes directAtX1 (depth==1 NEE-sun + BSDF-miss env) - the ONLY radiance "
+                              "that bypasses the reservoir. If the high-variance layer over the clean "
+                              "ReSTIR result DISAPPEARS, the noise is this un-reused env/sun direct "
+                              "(single-sample 1/pdf, immune to M-cap). If it PERSISTS, the noise is inside "
+                              "the reservoir (pixels failing temporal/spatial reuse). Removes that light "
+                              "while on - it's a diagnostic, not a final setting.");
+        ImGui::Checkbox("Surface reproj only (no specular MV)##Temp", &rs.noSpecReproj);
+        ImGui::SetItemTooltip("Forces temporal reuse to self-reproject the DI reservoir instead of the "
+                              "stochastic specular reprojection. The default flips per-pixel-per-frame "
+                              "between self and the reflection's virtual position (rSpec < specularity); "
+                              "that coin flip gives a random subset of pixels inconsistent history lineage "
+                              "so their confidence M never accumulates - the flat high-variance band layered "
+                              "over the clean (self-reprojected) pixels, worst at grazing angles / near lights. "
+                              "Enable to give every pixel a stable history so M accumulates uniformly.");
     }
     if (ImGui::CollapsingHeader("Spatial", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
@@ -555,8 +577,10 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
                               "spatial path with tile-local (8x8) stochastic "
                               "pairwise-MIS reuse. Needs Spatial enabled.");
         ImGui::BeginDisabled(!rs.useCellSpatGI);
-        ImGui::SliderInt("N candidates##Cell",  &rs.cellN,  1, 16);
-        ImGui::SetItemTooltip("Ntilde: non-canonical samples shifted per pixel (paper: 3).");
+        ImGui::SliderInt("N candidates##Cell",  &rs.cellN,  1, 8);
+        ImGui::SetItemTooltip("Ntilde: non-canonical samples shifted per pixel (paper: 3). "
+                              "Capped at 8 (NT_MAX in Pass_spat_gi_cell_v8) so the per-draw "
+                              "reservoir state stays in registers; >3 gives diminishing returns.");
         ImGui::SliderInt("Search iters##Cell",  &rs.cellSearchIters, 1, 32);
         ImGui::SetItemTooltip("§5.1 cell-search WRS iterations (paper: 12). More = "
                               "better chance of finding a good cell in disocclusions.");
@@ -566,6 +590,10 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SliderInt("M-cap##Cell",         &rs.cellMcap, 1, 100);
         ImGui::SetItemTooltip("Confidence cap for cell-mode reservoirs (paper: 20). "
                               "Lower curbs boiling from a dominant sample.");
+        ImGui::Checkbox("Ignore normals (perf A/B)##Cell", &rs.cellIgnoreNormals);
+        ImGui::SetItemTooltip("Skip the per-tap normal-cone coherence test (key cells on "
+                              "instID only), removing ~76 UnpackNormal taps/px. May reintroduce "
+                              "boiling / an edge grid on curved or glossy surfaces - A/B under DLSS RR.");
         ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {

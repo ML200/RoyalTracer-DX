@@ -20,9 +20,12 @@
 //Per-pixel record, 20 B at g_pathStateBuffer[px*20]:
 //  +0  instID (uint)       same-surface key ; 0xFFFFFFFF = invalid (emitter/empty)
 //  +4  normalPk (uint)     PackNormal(n) ; cone-tested at search/gather
-//  +8  confSum (float)     sum of c_i over same-instID pixels in this 8x8 tile
-//  +12 c_i (float)         this pixel's confidence min(cap, M)
-//  +16 w_i (float)         selection weight c_i*pHat(F)*W (Eq.17) ; 0 if no sample
+//  +8  c_i (float)         this pixel's confidence min(cap, M)
+//  +12 w_i (float)         selection weight c_i*pHat(F)*W (Eq.17) ; 0 if no sample
+//  +16 confSum (float)     sum of c_i over same-instID pixels in this 8x8 tile
+//
+//c_i + w_i (read by the 64-wide gather) share the first 16 B so the gather is a
+//single Load4; confSum (read only by the ≤12-iter §5.1 search) sits at +16.
 static const uint CELL_REC = 20u;
 uint cell_addr(uint px) { return px * CELL_REC; }
 
@@ -80,6 +83,6 @@ void main(uint3 tid : SV_DispatchThreadID, uint gi : SV_GroupIndex)
             if (gsInst[q] == inst) confSum += gsC[q];
     }
 
-    g_pathStateBuffer.Store4(cell_addr(px), uint4(inst, nrmPk, asuint(confSum), asuint(c_i)));
-    g_pathStateBuffer.Store (cell_addr(px) + 16u, asuint(w_i));
+    g_pathStateBuffer.Store4(cell_addr(px), uint4(inst, nrmPk, asuint(c_i), asuint(w_i)));
+    g_pathStateBuffer.Store (cell_addr(px) + 16u, asuint(confSum));
 }

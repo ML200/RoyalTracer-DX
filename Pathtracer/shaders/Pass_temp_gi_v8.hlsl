@@ -15,16 +15,6 @@
 [shader("raygeneration")]
 void Pass_temp_gi_v8()
 {
-    /*uint sortKey;
-    {
-        const uint2 li  = DispatchRaysIndex().xy;
-        const uint  px  = MapPixelID(float2(IMG_W, IMG_H), li);
-        const bool  emi = load_isEmitter(g_sample_current, px);
-
-        sortKey = emi ? 0u : (!(rs_flags & 2u) ? 1u : 2u);
-    }
-    dx::MaybeReorderThread(sortKey, 2);*/
-
     const uint2  launchIndex = DispatchRaysIndex().xy;
     const float2 dims_f      = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims_f, launchIndex);
@@ -48,7 +38,7 @@ void Pass_temp_gi_v8()
     //lightweight loads only - all baked, no per-triangle / texture access
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const uint   myMatID  = load_matID(g_sample_current, pixelIdx);
-    const float3 myPos    = load_x1(g_sample_current, pixelIdx);
+    const float3 myPos    = load_x1_with_instID(g_sample_current, pixelIdx, myInstID);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
     float3 myKd = load_kd(g_sample_current, pixelIdx);
     float  myPr, myPm;
@@ -65,7 +55,7 @@ void Pass_temp_gi_v8()
     //valid unless the reflection probe missed (0xFFFFFFFF sentinel).
     bool   reflValid = (reflInstID != 0xFFFFFFFFu);
     float  rSpec = RandomFloatSingle(seed.x);
-    bool   useSpecReproj = (rSpec < specularity) && reflValid;
+    bool   useSpecReproj = (rSpec < specularity) && reflValid && !NO_SPEC_REPROJ;
 
     int2 baseCoord;
     if (useSpecReproj)
@@ -99,8 +89,6 @@ void Pass_temp_gi_v8()
     uint tempPixelIdx = 0xFFFFFFFFu;
     if (!TestTemporalCandidate(permCoord, dims_f, g_sample_last, tempPixelIdx))
         return;
-    //PLANET: no terrain staleness check needed - the surface is rebuilt from
-    //the stored world hitT, which LOD re-tessellation cannot invalidate.
 
     Reservoir rdi_r = loadReservoir(g_Reservoirs_last, tempPixelIdx);
     if (!IsValidReservoir(rdi_r))
@@ -109,9 +97,7 @@ void Pass_temp_gi_v8()
     //canonical reservoir - loaded only now that a merge will actually run
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //neighbour primary hit + instID - no per-triangle data, identical for
-    //terrain and meshes. rInstID feeds IsVisibleEnvMiss' offset_ray.
-    const uint   rInstID = load_instID(g_sample_last, tempPixelIdx);
+    //neighbour primary hit - no per-triangle data, identical for terrain and meshes.
     const float3 rPos = load_x1(g_sample_last, tempPixelIdx);
     float Jnc = 0.0f, Jn = 0.0f;
 
@@ -147,12 +133,13 @@ void Pass_temp_gi_v8()
         {
             if (rdi.matID == MATID_ENV_MISS)
             {
-                vis = IsVisibleEnvMiss(sv_r.x, sv_r.n_s, normalize(rdi.x2), RAY_TMAX_PLANET, rInstID) ? 1.0f : 0.0f;
+                //miss: synthesize a far endpoint along the stored sky direction
+                const float3 md = normalize(rdi.x2);
+                vis = IsVisible(sv_r.x, sv_r.n_s, sv_r.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
             }
             else
             {
-                float3 _conn = rdi.x2 - sv_r.x; float _cd = length(_conn);
-                vis = (_cd > EPSILON && IsVisible(sv_r.x, sv_r.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                vis = IsVisible(sv_r.x, sv_r.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
             }
         }
         p_n = ph * vis;
@@ -185,12 +172,13 @@ void Pass_temp_gi_v8()
         {
             if (rdi_r.matID == MATID_ENV_MISS)
             {
-                vis_n = IsVisibleEnvMiss(sv_c.x, sv_c.n_s, normalize(rdi_r.x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
+                //miss: synthesize a far endpoint along the stored sky direction
+                const float3 md = normalize(rdi_r.x2);
+                vis_n = IsVisible(sv_c.x, sv_c.n_s, sv_c.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
             }
             else
             {
-                float3 _conn = rdi_r.x2 - sv_c.x; float _cd = length(_conn);
-                vis_n = (_cd > EPSILON && IsVisible(sv_c.x, sv_c.n_s, _conn / _cd, _cd * 0.999f)) ? 1.0f : 0.0f;
+                vis_n = IsVisible(sv_c.x, sv_c.n_s, rdi_r.x2, rdi_r.n2_s) ? 1.0f : 0.0f;
             }
         }
         n_c = ph * vis_n;
@@ -200,9 +188,13 @@ void Pass_temp_gi_v8()
     const float visReuse_n = (rdi_r.W > 0.0f) ? 1.0f : 0.0f;
     const float n_n = GetPHat(rdi_r.F) * visReuse_n;
 
-    //correlation reduction cCap, dup count D refreshes the chain (2026 paper)
+    //correlation reduction cCap, dup count D refreshes the chain (2026 paper).
+    //CORR_REDUCTION_OFF (editor A/B) ignores D so the cap stays at rs_tempMcap and
+    //widely-shared (well-reused) samples keep accumulating confidence.
     const float D       = saturate(gScratchPing[uint3(uint2(permCoord), 6)].x);
-    const float effMcap = (rdi_r.matID == MATID_ENV_MISS) ? (float)rs_tempMcap : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
+    const float effMcap = (CORR_REDUCTION_OFF || rdi_r.matID == MATID_ENV_MISS)
+                          ? (float)rs_tempMcap
+                          : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
     //M caps, roughness dependent
     //gate ONLY on myPr, the current pixel's primary roughness, which is

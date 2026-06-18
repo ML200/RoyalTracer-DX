@@ -1731,7 +1731,7 @@ void Renderer::PopulateCommandList() {
     // Cell spatial-reuse params (slots 32-35; read by the Pass_spat_gi_cell* passes).
     // Clamp to safe ranges so editor extremes can't blow up the WRS / search math.
     // cellSearchIters is capped at 32 (the shader's §5.1 search loop bound).
-    rsConsts[32] = (UINT)std::clamp(rs.cellN,           1, 16);
+    rsConsts[32] = (UINT)std::clamp(rs.cellN,           1, 8);   // == NT_MAX in Pass_spat_gi_cell_v8
     rsConsts[33] = (UINT)std::clamp(rs.cellSearchIters, 1, 32);
     rsConsts[34] = (UINT)std::clamp(rs.cellMcap,        1, 100);
     rsConsts[35] = (UINT)std::clamp(rs.cellRadius,      2, 512);

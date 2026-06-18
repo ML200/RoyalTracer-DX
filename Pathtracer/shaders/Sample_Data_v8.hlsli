@@ -98,9 +98,17 @@ void store_n1_s_world(RWByteAddressBuffer buf, uint pixelIdx, float3 n1s_world, 
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 20u, PackNormal(n1s_obj));
 }
 
-void store_x1(RWByteAddressBuffer buf, uint pixelIdx, float3 x1)
+//x1 is stored in OBJECT space (like x2/n2), NOT raw shifted-world, so it
+//survives a floating-origin snap: the world position is reconstructed from the
+//CURRENT objectToWorld at load time. Storing shifted-world here froze the point
+//in the origin it was written in, so cross-frame (temporal) reuse connected a
+//current-origin shading point to a last-origin x1 - a full snap-quantum apart -
+//and every reconnection/visibility ray missed once the camera left its spawn
+//cell. The env-miss sentinel (instID 0xFFFFFFFF) passes through unchanged.
+void store_x1(RWByteAddressBuffer buf, uint pixelIdx, float3 x1, uint instID)
 {
-    buf.Store3(pixelBaseAddr_SD(pixelIdx) + 24u, asuint(x1));
+    float3 x1_obj = WorldToObjectPos(instID, x1);   // sentinel handled inside
+    buf.Store3(pixelBaseAddr_SD(pixelIdx) + 24u, asuint(x1_obj));
 }
 
 void store_sky(RWByteAddressBuffer buf, uint pixelIdx)
@@ -164,9 +172,19 @@ float3 load_n1_s_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID
     return ObjectToWorldNrm(instID, raw);   // sentinel handled inside
 }
 
+//reconstruct world x1 from the stored object-space point via the CURRENT
+//instance transform (see store_x1). The _with_instID variant skips the extra
+//instID load when the caller already holds it, mirroring load_n1_s /
+//load_n1_s_with_instID.
+float3 load_x1_with_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
+{
+    float3 x1_obj = asfloat(buf.Load3(pixelBaseAddr_SD(pixelIdx) + 24u));
+    return ObjectToWorldPos(instID, x1_obj);   // sentinel handled inside
+}
+
 float3 load_x1(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load3(pixelBaseAddr_SD(pixelIdx) + 24u));
+    return load_x1_with_instID(buf, pixelIdx, load_instID(buf, pixelIdx));
 }
 
 //====================================

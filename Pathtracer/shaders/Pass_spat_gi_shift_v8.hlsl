@@ -42,7 +42,6 @@ void Pass_spat_gi_shift_v8()
     if (validCount == 0u) return;
 
     //my vertex, persists across slots - rebuilt from the baked G-buffer
-    const uint   myInstID = load_instID(g_sample_current, pixelIdx);
     const float3 myPos    = load_x1(g_sample_current, pixelIdx);
     const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, myPos, InitOrigin());
 
@@ -101,15 +100,13 @@ void Pass_spat_gi_shift_v8()
             float vis;
             if (pr.matID == MATID_ENV_MISS)
             {
-                vis = IsVisibleEnvMiss(sv.x, sv.n_s, normalize(pr.x2), RAY_TMAX_PLANET, myInstID) ? 1.0f : 0.0f;
+                //miss: synthesize a far endpoint along the stored sky direction
+                const float3 md = normalize(pr.x2);
+                vis = IsVisible(sv.x, sv.n_s, sv.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
             }
             else
             {
-                const float3 conn = pr.x2 - sv.x;
-                const float  cd   = length(conn);
-                vis = (cd > EPSILON &&
-                       IsVisible(sv.x, sv.n_s, conn / cd, cd * 0.999f))
-                      ? 1.0f : 0.0f;
+                vis = IsVisible(sv.x, sv.n_s, pr.x2, pr.n2_s) ? 1.0f : 0.0f;
             }
             c *= vis;
         }

@@ -43,94 +43,102 @@ inline float3 offset_ray(float3 p, float3 n)
         abs(p.z) < RTG_ORIGIN ? p.z + RTG_FLOAT_SCALE * n.z : p_i.z);
 }
 
-//====================================
-//RAY VALIDITY AND VISIBILITY
-//====================================
-//degenerate rays can hang BVH traversal, gate every TraceRay on this.
-//The previous form only caught NaN/Inf and a 1e-12 magnitude floor, which
-//let through finite but pathological rays that the BVH then crawled for
-//seconds and tripped the Windows TDR. The current bounds are calibrated
-//to the per call TMin (1e-5 / 1e-4) and the scene's bounded extent.
 inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 {
     if (any(isnan(direction)) || any(isinf(direction))) return false;
     if (any(isnan(origin))    || any(isinf(origin)))    return false;
-
-    //direction must be (approximately) unit. The old bound dot >= 1e-12
-    //accepted |dir|=1e-6 which makes 1/dir blow up inside BVH slab tests
-    //and pushes traversal into pathological numerical territory. Keep a
-    //wide band so a slightly drifted normalize still passes, reject only
-    //rays that are not order unity.
     const float d2 = dot(direction, direction);
     if (d2 < 0.25f || d2 > 4.0f) return false;
-
-    //tMax must clear the actual TMin used downstream (1e-5 in the main
-    //path tracer, 1e-4 in IsVisible). Coincident NEE lights have been
-    //seen to feed in tMax = 0 here.
     if (tMax <= 1e-4f) return false;
-
-    //origins well past the planet diameter (~1.3e7 m) lose FP32 precision
-    //in BVH traversal. With the floating origin the camera is near zero,
-    //but bounce rays from far-side terrain can reach ~2-3x planet radius.
     if (any(abs(origin) > 5.0e7f)) return false;
-
     return true;
 }
 
-//returns false for degenerate inputs, zero radiance safe default.
-//P is an exact surface position (the reuse passes' reconnection shadow
-//rays), so nudge the origin off the surface along the side the ray leaves
-//- mirroring raygen's NEE shadow-origin pattern. The bare 1e-4 TMin alone
-//does not clear fp32 ulp error at world-scale coordinates, and grazing
-//connections self-intersected, silently killing valid reuse.
-inline bool IsVisible(float3 P, float3 N_geo, float3 direction, float tMax)
+//inline alpha test for shadow/visibility traversal - mirrors AnyHit.hlsl's
+//AlphaTestAnyHit. Returns true when the candidate triangle is OPAQUE at the
+//hit UV (so it must occlude the ray). Hardware OMMs normally resolve this in
+//traversal, but they are inactive in the current test scene, so the
+//visibility ray walks the regular alpha-tested geometry and runs this per
+//non-opaque candidate.
+inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
 {
-    float3 origin = offset_ray(P, dot(direction, N_geo) >= 0.0f ? N_geo : -N_geo);
+    const uint matID = materialIDs[instanceProps[instID].materialBase + primID];
+    const int  texID = LoadAlbedoTexID(matID);
 
-    if (!IsRayValid(origin, direction, tMax)) return false;
+    //no albedo texture -> fully opaque
+    if (texID < 0) return true;
 
-    RayDesc ray;
-    ray.Origin    = origin;
-    ray.Direction = direction;
-    ray.TMin      = 0.0001f;
-    ray.TMax      = tMax;
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint i0 = indices[baseI + 3u * primID + 0u];
+    const uint i1 = indices[baseI + 3u * primID + 1u];
+    const uint i2 = indices[baseI + 3u * primID + 2u];
 
-    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-       | RAY_FLAG_FORCE_OPAQUE> q;
-    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-    q.Proceed();
-    return q.CommittedStatus() == COMMITTED_NOTHING;
+    const float2 uv0 = (float2)BTriVertex[i0].texCoord;
+    const float2 uv1 = (float2)BTriVertex[i1].texCoord;
+    const float2 uv2 = (float2)BTriVertex[i2].texCoord;
+
+    const float  b0 = 1.0f - bary.x - bary.y;
+    const float2 uv = uv0 * b0 + uv1 * bary.x + uv2 * bary.y;
+
+    Texture2D<float4> tex = ResourceDescriptorHeap[texID];
+    float alpha = tex.SampleLevel(g_sampler, uv * LoadAlbedoUVScale(matID), 0).a;
+
+    //flip when the sampled channel is transparency (1=transparent) instead of
+    //opacity - set by the loader heuristics or the editor override.
+    if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
+
+    return alpha >= LoadAlphaThreshold(matID);
 }
 
-//pre-offset origin variant, skips per-surface normal lookup
-inline bool IsVisibleOffset(float3 origin, float3 direction, float tMax)
+
+inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
 {
-    if (!IsRayValid(origin, direction, tMax)) return false;
+    const float3 link = B - A;
+    const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
+    const float3 oB = offset_ray(B, dot(-link, nB) >= 0.0f ? nB : -nB);
+
+    const float3 conn = oB - oA;
+
+    //offsets pushed inward, if they met or crossed the link sign flips
+    //surfaces are within an offset epsilon, treat them as mutually visible
+    if (dot(conn, link) <= 0.0f) return true;
+
+    const float dist = length(conn);
+
+    //sign held but the points still merged, nothing left between to occlude
+    if (dist <= EPSILON) return true;
+
+    const float3 direction = conn / dist;
+
+    if (!IsRayValid(oA, direction, dist)) return false;
 
     RayDesc ray;
-    ray.Origin    = origin;
+    ray.Origin    = oA;
     ray.Direction = direction;
     ray.TMin      = 0.0001f;
-    ray.TMax      = tMax;
+    ray.TMax      = dist;
 
+    //FORCE_OPAQUE dropped: alpha-tested geometry now resolves per-texel below
+    //so foliage/fences/etc. don't cast solid shadows. Opaque geometry still
+    //auto-commits and ends the search (ACCEPT_FIRST_HIT); only non-opaque
+    //triangles surface as candidates for the inline alpha test.
     RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
-       | RAY_FLAG_FORCE_OPAQUE> q;
+       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
     q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-    q.Proceed();
-    return q.CommittedStatus() == COMMITTED_NOTHING;
-}
 
-//env-miss visibility: a shadow ray from a surface point toward a far (sky)
-//direction. The origin is nudged off the surface along N (offset_ray) so it
-//does not self-intersect; tMax is the sky distance (RAY_TMAX_PLANET). The
-//ReSTIR GI passes (Pass_temp_gi / Pass_spat_gi_shift) call this for
-//MATID_ENV_MISS reservoir samples. 'instID' fed the planet-era 3-arg
-//offset_ray and is now unused - kept so those call sites compile unchanged.
-inline bool IsVisibleEnvMiss(float3 P, float3 N, float3 direction, float tMax, uint instID)
-{
-    return IsVisibleOffset(offset_ray(P, N), direction, tMax);
+    //bounded walk guards against pathological alpha stacks tripping the TDR
+    [loop]
+    for (uint i = 0u; q.Proceed() && i < 128u; ++i)
+    {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            const uint cInstID = q.CandidateInstanceID();   // == instanceProps index
+            const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+            if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
+                q.CommitNonOpaqueTriangleHit();
+        }
+    }
+    return q.CommittedStatus() == COMMITTED_NOTHING;
 }
 
 //====================================

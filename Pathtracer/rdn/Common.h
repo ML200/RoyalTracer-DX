@@ -155,6 +155,9 @@ struct ReSTIRSettings {
     int   spatTriesGI      = 8;
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
+    bool  disableCorrReduction = false; // A/B: ignore dup-map D in the temporal confidence cap (flag 0x40)
+    bool  disableX1Direct      = false; // diagnostic: zero slot-3 directAtX1 (un-reused env/sun direct) (flag 0x80)
+    bool  noSpecReproj         = false; // force surface (self) reprojection for the DI reservoir, off the stochastic specular MV (flag 0x200)
     float reuseRoughnessMin = 0.1f;
     float reuseRoughnessMax = 0.3f;
 
@@ -170,11 +173,16 @@ struct ReSTIRSettings {
     int   cellSearchIters  = 12;  // §5.1 cell-search WRS iterations
     int   cellMcap         = 20;  // confidence cap for cell-mode reservoirs
     int   cellRadius       = 30;  // §5.1 cell-search initial radius (px)
+    bool  cellIgnoreNormals= false; // perf A/B: skip the normal-cone coherence test (instID-only cells)
 
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
-             | ((enableSpatGI && useCellSpatGI) ? 0x10u : 0u);
+             | ((enableSpatGI && useCellSpatGI) ? 0x10u : 0u)
+             | ((enableSpatGI && useCellSpatGI && cellIgnoreNormals) ? 0x20u : 0u)
+             | (disableCorrReduction ? 0x40u : 0u)
+             | (disableX1Direct ? 0x80u : 0u)
+             | (noSpecReproj ? 0x200u : 0u);
     }
 };
 

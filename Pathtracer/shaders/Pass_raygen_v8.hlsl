@@ -185,7 +185,7 @@ inline bool TraceCameraRay(
     store_kd        (g_sample_current, pixelIdx, hitLocalKd);
     store_prpm      (g_sample_current, pixelIdx, hitLocalPr, hitLocalPm);
     store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
-    store_x1        (g_sample_current, pixelIdx, hitPos);
+    store_x1        (g_sample_current, pixelIdx, hitPos, instID);
     if (isEmitter)
     {
         gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
@@ -554,8 +554,9 @@ void Pass_raygen_v8()
                     //Costs one wasted ray when bsdfPdf turns out 0 for a
                     //direction that passed the cosine gates (rare).
                     //cosSurf > 0 already puts L on the +hitNormal side.
-                    const float3 shadowOrigin = offset_ray(ctx.hitPos, ctx.hitNormal);
-                    if (IsVisibleOffset(shadowOrigin, L, dist * 0.999f))
+                    //IsVisible offsets both ends off their surfaces, so the
+                    //light point itself is excluded without a tMax shorten.
+                    if (IsVisible(ctx.hitPos, ctx.hitNormal, light.position, light.normal))
                     {
                         const float3 throughput = UnpackRGB9E5(throughputPk);
 
@@ -622,40 +623,10 @@ void Pass_raygen_v8()
 
                 if (NdotL > 1e-6f && sun.pdf > 1e-20f)
                 {
-                    //geometry shadow ray FIRST - it is binary, and it gates
-                    //the cloud-shadow march and the BSDF eval below for every
-                    //occluded sample. sun.pdf == 0 (below horizon) now skips
-                    //even the ray. NdotL > 0 puts the sun on the +hitNormal
-                    //side, so the offset needs no sign select.
-                    const float3 shadowOrigin = offset_ray(ctx.hitPos, ctx.hitNormal);
-                    if (IsVisibleOffset(shadowOrigin, sun.direction, RAY_TMAX_PLANET))
+                    if (IsVisible(ctx.hitPos, ctx.hitNormal, ctx.hitPos + sun.direction * RAY_TMAX_PLANET, -sun.direction))
                     {
-                    //====================================
-                    //CLOUD SHADOW ON SURFACE NEE
-                    //====================================
-                    //Attenuate sun radiance by the cloud transmittance along
-                    //the sun ray. Without this, NEE samples direct sun even
-                    //through overcast cloud cover, while the BSDF MIS
-                    //partner DOES see clouds (via EvaluateSky's cloudTr) —
-                    //the techniques drift apart and surfaces stay sun-lit
-                    //in scenes the user expects to be fully diffuse.
-                    //
-                    //CloudSunVisibility is a ~4-sample march along the sun
-                    //ray; cost is bounded but not free, so the feature is
-                    //gated by cloud_cloudShadowOnSurfaces (cbuffer toggle).
-                    //
-                    //Input must be in absolute world coords (WorldToPlanet
-                    //inside the function reads .y as altitude above sea
-                    //level). ctx.hitPos is in floating origin shifted space,
-                    //so we add sceneOriginWorld to recover the planet
-                    //relative altitude before calling.
                     if (cloud_cloudShadowOnSurfaces > 0.5f)
                     {
-                        //Cone jitter (direction) + altitude-slice jitter
-                        //(which layer slice the fast-path tap samples) —
-                        //together they estimate the true column OD; the
-                        //fixed mid-slice under-read thick clouds and let
-                        //surfaces stay sunlit beneath them.
                         float2 rCone = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
                         float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
                         float3 Lj = SampleConeAroundDir(sun.direction, cosCone, rCone);
@@ -986,7 +957,7 @@ void Pass_raygen_v8()
     //every loop-exit path in a register, so one write here covers all of
     //them. The camera-terminal early return above never reaches this and
     //correctly leaves slot 3 at the 0 raygen cleared it to.
-    gScratchPing[uint3(pixel, 3)] = float4(directAtX1, 0);
+    gScratchPing[uint3(pixel, 3)] = float4(X1_DIRECT_OFF ? float3(0, 0, 0) : directAtX1, 0);
 
     const uint nrcTrainVIdxFinal     = pk_vidx(nrcStateA);
     const bool nrcCacheTerminatedFin = pk_cterm(nrcStateA);

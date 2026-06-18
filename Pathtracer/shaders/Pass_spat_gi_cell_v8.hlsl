@@ -10,22 +10,47 @@
 //of spatial reuse; when clear, both cell passes return immediately.
 //
 //This is the FULL paper, including §5.1's cell search:
-//  1. Pass_spat_gi_cellbuild_v8 builds tile-local cells -> per-pixel records
-//     (cellKey, confSum, c_i, w_i) in the path-state scratch buffer.
+//  1. Pass_spat_gi_cellbuild_v8 builds tile-local cells -> a per-pixel record in
+//     the path-state scratch buffer (Load4 = [inst, normalPk, c_i, w_i]; confSum@+16).
 //  2. (here) §5.1 CELL SEARCH: a single growing-radius WRS pass selects a
 //     neighbour CELL weighted by its confidence sum (skips cells whose key
 //     differs from ours), reaching outside disocclusions as the radius grows.
 //  3. Gather the chosen cell (the 8x8 screen block around the picked pixel,
-//     filtered to our cellKey) -> the pool of M<=64 similar candidates.
+//     filtered to our cellKey) AND select our reused samples in the SAME pass by
+//     streaming reservoir sampling (no per-slot candidate array).
 //  4. Stochastic pairwise MIS over the pool: §4.3 confidence scaling, canonical
 //     weight Eq.18 (Nc=1), Ntilde non-canonical draws prop. to Eq.17 weight with
 //     the (1/Ntilde)(1/P_s) correction, reusing PairwiseMIS_Neighbor_Spat.
 //Output contract mirrors Pass_spat_gi_v8_1: gScratchPing[.,2]=F*W +
 //storeReservoir(g_Reservoirs_last,...), neighbours read from g_Reservoirs_current.
+//
+//PERF: the gather no longer fills a float candW[64] local array (a dynamically
+//indexed array spills to scratch memory and was re-walked once per draw). Instead
+//the single gather scan runs the canonical uniform reservoir + Ntilde non-canonical
+//WRS reservoirs inline, keeping all selection state in registers. The per-pixel
+//record is laid out so the gather needs ONE Load4 (c_i + w_i live in the first
+//16 B); confSum, which only the §5.1 search reads, moved to +16.
 
 static const uint  CELL_REC      = 20u;            // per-pixel record stride (cellbuild)
 static const float SEARCH_GROWTH = 1.25f;          // §5.1 radius growth per iteration
-static const uint  MAXCELL       = 64u;            // 8x8 tile == max cell size
+//Gather window = CELL_GATHER_DIM x CELL_GATHER_DIM screen pixels centered on the
+//cell the §5.1 search picked (paper: 8 -> M<=64). This is the per-pixel GATHER
+//LOAD count. LOWER it (6 -> 36, or 4 -> 16) to cut gather record loads + cone taps
+//~quadratically, at the cost of a smaller candidate pool (slightly higher variance,
+//still unbiased - §4.3 uses M=poolsize). Keep it a power of two. Default 8 = paper.
+static const uint  CELL_GATHER_DIM = 8u;
+static const uint  MAXCELL         = CELL_GATHER_DIM * CELL_GATHER_DIM;
+//§5.1 search: samples per growing-radius iteration. The search budget is
+//rs_cellSearchIters x CELL_SEARCH_K samples; spreading K angularly-stratified
+//samples per radius raises the found-rate (esp. thin/edge/disocclusion geometry)
+//~Kx. It costs record loads, NOT rays, and the pass is ray-bound, so it is nearly
+//free. K=1 == the original one-sample-per-iter behaviour. Raise for harder scenes.
+static const uint  CELL_SEARCH_K   = 4u;
+//Compile-time cap on Ntilde so the per-draw reservoir state (ncPx/ncWi/ncCi/ncWsum)
+//is fixed-size and stays in registers instead of spilling to scratch. Ntilde is
+//clamped to this in-shader; the editor slider / Renderer clamp match it. The paper
+//uses Ntilde=3 and Fig.7 shows >3 gives diminishing returns, so 8 is generous.
+static const uint  NT_MAX        = 8u;
 //SOFT normal cone for cell membership (query-relative, no hard quantization
 //boundary -> no edge grid where normals vary fast). ~25 deg.
 static const float CELL_COHERENCE_COS = 0.9f;
@@ -64,7 +89,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 myN    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInst);
 
     const float cap    = (float)rs_cellMcap;
-    const uint  Ntilde = max(rs_cellN, 1u);
+    const uint  Ntilde = clamp(rs_cellN, 1u, NT_MAX);
 
     const float M_c        = min(cap, (float)rdi.M);
     rdi.M = (uint)M_c;
@@ -87,24 +112,32 @@ void main(uint3 tid : SV_DispatchThreadID)
         float wsum  = 0.0f;
         float r     = max((float)rs_cellRadius, 1.0f);
         const uint iters = clamp(rs_cellSearchIters, 1u, 32u);
+        const float dA   = 6.2831853f / (float)CELL_SEARCH_K;   // angular stratification step
         for (uint i = 0u; i < iters; ++i)
         {
-            const float u1 = RandomFloatSingle(seed.x);
-            const float u2 = RandomFloatSingle(seed.x);
-            const float rr = r * sqrt(u1);
-            const float a  = 6.2831853f * u2;
-            const int2  q  = int2(tid.xy) + int2(round(float2(rr * cos(a), rr * sin(a))));
+            //K angularly-stratified samples at this radius: a random base angle plus
+            //even K-way splits covers all orientations, so a THIN sliver is hit no
+            //matter how it lies, and the per-pixel found-probability rises ~Kx. The
+            //random base angle keeps 'chosen' varying per pixel (no grid).
+            const float baseA = 6.2831853f * RandomFloatSingle(seed.x);
+            [unroll]
+            for (uint k = 0u; k < CELL_SEARCH_K; ++k)
+            {
+                const float rr = r * sqrt(RandomFloatSingle(seed.x));
+                const float a  = baseA + dA * (float)k;
+                const int2  q  = int2(tid.xy) + int2(round(float2(rr * cos(a), rr * sin(a))));
+                if (q.x < 0 || q.y < 0 || q.x >= (int)IMG_W || q.y >= (int)IMG_H) continue;
+                const uint  qpx  = MapPixelID(dims, (uint2)q);
+                const uint4 qrec = g_pathStateBuffer.Load4(cell_addr(qpx));   // inst, normalPk, c_i, w_i
+                if (qrec.x != myInst) continue;                              // same surface
+                if (!CELL_IGNORE_NORMALS)                                    // soft cone (skippable A/B)
+                { if (dot(myN, UnpackNormal(qrec.y)) < CELL_COHERENCE_COS) continue; }
+                const float cw = asfloat(g_pathStateBuffer.Load(cell_addr(qpx) + 16u));  // confSum (at +16)
+                if (cw <= 0.0f) continue;
+                wsum += cw;
+                if (RandomFloatSingle(seed.x) < cw / wsum) { chosen = q; found = true; }
+            }
             r *= SEARCH_GROWTH;
-
-            if (q.x < 0 || q.y < 0 || q.x >= (int)IMG_W || q.y >= (int)IMG_H) continue;
-            const uint  qpx  = MapPixelID(dims, (uint2)q);
-            const uint4 qrec = g_pathStateBuffer.Load4(cell_addr(qpx));   // inst, normalPk, confSum, c_i
-            if (qrec.x != myInst) continue;                              // same surface
-            if (dot(myN, UnpackNormal(qrec.y)) < CELL_COHERENCE_COS) continue;  // soft cone
-            const float cw = asfloat(qrec.z);
-            if (cw <= 0.0f) continue;
-            wsum += cw;
-            if (RandomFloatSingle(seed.x) < cw / wsum) { chosen = q; found = true; }
         }
     }
 
@@ -120,36 +153,77 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
 
     //====================================
-    //GATHER THE CHOSEN CELL  (8x8 window CENTERED on 'chosen', filtered to surface + cone)
+    //GATHER THE CHOSEN CELL + STREAMING SELECTION  (one pass over the 8x8 window)
     //====================================
-    //Center the window on 'chosen' (translation invariant) instead of snapping to a
-    //fixed 8-aligned screen block: a fixed block quantizes the pool to a screen grid
-    //(the 8x8 grid); a centered window slides continuously so adjacent pixels' pools
-    //overlap and there is no boundary for a grid to align to. All three consumers
-    //(gather / canonical pick / non-canonical draw) read this one tileOrigin, so the
-    //candW[] slot->pixel mapping stays consistent (no bias).
-    const int2 tileOrigin = chosen - int2(4, 4);   // 8x8 window centered on chosen
-    float candW[MAXCELL];                     // selection weight per tile-local slot; <0 = not in cell
-    float cSigmaRaw = 0.0f;
-    float Wsel_nz   = 0.0f;
-    uint  M_nc      = 0u;
+    //8x8 window CENTERED on 'chosen' (translation invariant) instead of snapping
+    //to a fixed 8-aligned screen block: a fixed block quantizes the pool to a
+    //screen grid (the 8x8 grid); a centered window slides continuously so adjacent
+    //pixels' pools overlap and there is no boundary for a grid to align to.
+    //
+    //We scan the window ONCE and, in the same pass, (a) accumulate cSigma / Wsel_nz
+    /// M_nc and (b) draw our reused samples by streaming reservoir sampling. This
+    //replaces the old float candW[64] (a dynamically indexed local array that spills
+    //to scratch memory and was re-walked for the canonical pick + each non-canonical
+    //draw). All selection state below is scalar/fixed-size -> stays in registers.
+    const int  hw         = (int)(CELL_GATHER_DIM >> 1u);
+    const int2 tileOrigin = chosen - int2(hw, hw);
+
+    float cSigmaRaw = 0.0f;          // Σ c_i over gathered non-canonical (pre §4.3 scale)
+    float Wsel_nz   = 0.0f;          // Σ w_i over gathered w_i>0 (the cellReservoirs set)
+    uint  M_nc      = 0u;            // count of gathered in-cell non-canonical pixels
+
+    //canonical reverse-shift target: ONE pixel drawn uniformly over the in-cell
+    //non-canonical pixels (Eq.18, P_c = 1/M_nc; includes w_i==0 members, i.e. the
+    //full cellPixelIndices set minus self). Streaming count-based reservoir.
+    int   canPx   = -1;
+    float canCi   = 0.0f;
+    uint  canSeen = 0u;
+
+    //Ntilde independent 1-sample WRS reservoirs == Ntilde with-replacement draws
+    //∝ w_i over the cellReservoirs set (Eq.17). If draw d picks slot z, ncWi[d]/
+    //ncCi[d] cache its weight/confidence so no record re-read is needed afterwards.
+    int   ncPx  [NT_MAX];
+    float ncWi  [NT_MAX];
+    float ncCi  [NT_MAX];
+    float ncWsum[NT_MAX];
+    [unroll] for (uint dInit = 0u; dInit < NT_MAX; ++dInit)
+    { ncPx[dInit] = -1; ncWi[dInit] = 0.0f; ncCi[dInit] = 0.0f; ncWsum[dInit] = 0.0f; }
 
     [loop]
     for (uint li = 0u; li < MAXCELL; ++li)
     {
-        candW[li] = -1.0f;
-        const int2 sc = tileOrigin + int2(li & 7u, li >> 3u);
+        const int2 sc = tileOrigin + int2(li % CELL_GATHER_DIM, li / CELL_GATHER_DIM);
         if (sc.x < 0 || sc.y < 0 || sc.x >= (int)IMG_W || sc.y >= (int)IMG_H) continue;
         const uint spx = MapPixelID(dims, (uint2)sc);
         if (spx == pixelIdx) continue;        // self is the canonical, handled separately
-        const uint4 rec = g_pathStateBuffer.Load4(cell_addr(spx));   // inst, normalPk, confSum, c_i
+        const uint4 rec = g_pathStateBuffer.Load4(cell_addr(spx));   // inst, normalPk, c_i, w_i
         if (rec.x != myInst) continue;                               // same surface
-        if (dot(myN, UnpackNormal(rec.y)) < CELL_COHERENCE_COS) continue;   // soft cone
-        const float w_i = asfloat(g_pathStateBuffer.Load(cell_addr(spx) + 16u));
-        candW[li] = w_i;                      // 0 allowed (in cell, no sample)
-        cSigmaRaw += asfloat(rec.w);          // c_i
-        if (w_i > 0.0f) Wsel_nz += w_i;
+        if (!CELL_IGNORE_NORMALS)                                    // soft cone (skippable A/B)
+        { if (dot(myN, UnpackNormal(rec.y)) < CELL_COHERENCE_COS) continue; }
+
+        const float ci = asfloat(rec.z);
+        const float wi = asfloat(rec.w);      // 0 allowed (in cell, no contributing sample)
+
+        cSigmaRaw += ci;
         ++M_nc;
+
+        //canonical uniform reservoir (count-based) over every in-cell member
+        ++canSeen;
+        if (RandomFloatSingle(seed.x) * (float)canSeen < 1.0f) { canPx = (int)spx; canCi = ci; }
+
+        //non-canonical WRS reservoirs over contributing members only (w_i > 0)
+        if (wi > 0.0f)
+        {
+            Wsel_nz += wi;
+            [unroll]
+            for (uint d = 0u; d < NT_MAX; ++d)
+            {
+                if (d >= Ntilde) break;
+                ncWsum[d] += wi;
+                if (RandomFloatSingle(seed.x) * ncWsum[d] < wi)
+                { ncPx[d] = (int)spx; ncWi[d] = wi; ncCi[d] = ci; }
+            }
+        }
     }
 
     const uint  M_cell = M_nc + 1u;           // incl. self == paper's M
@@ -159,7 +233,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     //my canonical surface vertex + geometric Jacobian, shared by both shifts
     const float3        camPos = InitOrigin();
-    const float3        myPos  = load_x1(g_sample_current, pixelIdx);
+    const float3        myPos  = load_x1_with_instID(g_sample_current, pixelIdx, myInst);
     const SurfaceVertex sv_me  = BuildVertex(g_sample_current, pixelIdx, myPos, camPos);
     const float my_Jc = (rdi.matID == MATID_ENV_MISS) ? 1.0f
                                                        : ComputeJc(myPos, rdi.x2, rdi.n2_s);
@@ -168,52 +242,37 @@ void main(uint3 tid : SV_DispatchThreadID)
     //CANONICAL MIS WEIGHT  (Eq.18, Nc=1 uniform over the cell)
     //====================================
     float mis_c = M_c / max(M_sum, 1.0f);
-    if (p_c > 0.0f && M_nc > 0u)
+    if (p_c > 0.0f && M_nc > 0u && canPx >= 0)
     {
-        uint pick = (uint)(RandomFloatSingle(seed.x) * (float)M_nc);
-        pick = min(pick, M_nc - 1u);
+        const uint  zpPx = (uint)canPx;
+        const float c_zp = s * canCi;                       // §4.3 scaled c_i
 
-        uint seen = 0u, zli = 0xFFFFFFFFu;
-        [loop]
-        for (uint li = 0u; li < MAXCELL; ++li)
+        const float3 zpPos  = load_x1(g_sample_current, zpPx);
+        const SurfaceVertex sv_zp = BuildVertex(g_sample_current, zpPx, zpPos, camPos);
+
+        float Jn_rev = 0.0f;
+        float3 cr = Reconnect(
+            sv_zp.x, sv_zp.n_s, sv_zp.o, sv_zp.matID,
+            sv_zp.Kd, sv_zp.Pr, sv_zp.Pm, sv_zp.etai, sv_zp.etat,
+            rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
+            rdi.Kd, rdi.Pr, rdi.Pm, rdi.eta, Jn_rev);
+
+        float ph = GetPHat(cr), vis = 0.0f;
+        if (ph > 0.0f)
         {
-            if (candW[li] < 0.0f) continue;
-            if (seen == pick) { zli = li; break; }
-            ++seen;
+            if (rdi.matID == MATID_ENV_MISS)
+            { const float3 md = normalize(rdi.x2);                                 // miss: far endpoint along sky dir
+              vis = IsVisible(sv_zp.x, sv_zp.n_s, sv_zp.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+            else
+              vis = IsVisible(sv_zp.x, sv_zp.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
         }
-        if (zli != 0xFFFFFFFFu)
+        const float pHatBackZ = ph * JacobianRatio(Jn_rev, my_Jc) * vis;   // p_hat<-z'(Yc)
+
+        const float beta_den = cSigma * pHatBackZ + M_c * p_c;
+        if (beta_den > EPSILON)
         {
-            const int2  sc   = tileOrigin + int2(zli & 7u, zli >> 3u);
-            const uint  zpPx = MapPixelID(dims, (uint2)sc);
-            const float c_zp = s * asfloat(g_pathStateBuffer.Load(cell_addr(zpPx) + 12u));  // §4.3 scaled c_i
-
-            const uint   zpInst = load_instID(g_sample_current, zpPx);
-            const float3 zpPos  = load_x1(g_sample_current, zpPx);
-            const SurfaceVertex sv_zp = BuildVertex(g_sample_current, zpPx, zpPos, camPos);
-
-            float Jn_rev = 0.0f;
-            float3 cr = Reconnect(
-                sv_zp.x, sv_zp.n_s, sv_zp.o, sv_zp.matID,
-                sv_zp.Kd, sv_zp.Pr, sv_zp.Pm, sv_zp.etai, sv_zp.etat,
-                rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
-                rdi.Kd, rdi.Pr, rdi.Pm, rdi.eta, Jn_rev);
-
-            float ph = GetPHat(cr), vis = 0.0f;
-            if (ph > 0.0f)
-            {
-                if (rdi.matID == MATID_ENV_MISS)
-                    vis = IsVisibleEnvMiss(sv_zp.x, sv_zp.n_s, normalize(rdi.x2), RAY_TMAX_PLANET, zpInst) ? 1.0f : 0.0f;
-                else { const float3 cn = rdi.x2 - sv_zp.x; const float cd = length(cn);
-                       vis = (cd > EPSILON && IsVisible(sv_zp.x, sv_zp.n_s, cn / cd, cd * 0.999f)) ? 1.0f : 0.0f; }
-            }
-            const float pHatBackZ = ph * JacobianRatio(Jn_rev, my_Jc) * vis;   // p_hat<-z'(Yc)
-
-            const float beta_den = cSigma * pHatBackZ + M_c * p_c;
-            if (beta_den > EPSILON)
-            {
-                const float beta = (c_zp / max(M_sum, 1.0f)) * (M_c * p_c) / beta_den;
-                mis_c += (float)M_nc * beta;       // (M_nc / Nc) with Nc=1
-            }
+            const float beta = (c_zp / max(M_sum, 1.0f)) * (M_c * p_c) / beta_den;
+            mis_c += (float)M_nc * beta;       // (M_nc / Nc) with Nc=1
         }
     }
 
@@ -224,29 +283,18 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     if (Wsel_nz > 0.0f)
     {
-        for (uint d = 0u; d < Ntilde; ++d)
+        [unroll]
+        for (uint d = 0u; d < NT_MAX; ++d)
         {
-            //pick z ~ P_s(z) = w_z / Wsel_nz by CDF walk over the cell's nonzero slots
-            const float targetW = RandomFloatSingle(seed.x) * Wsel_nz;
-            uint  zli = 0xFFFFFFFFu;
-            float acc = 0.0f;
-            [loop]
-            for (uint li = 0u; li < MAXCELL; ++li)
-            {
-                if (candW[li] <= 0.0f) continue;
-                acc += candW[li];
-                if (targetW <= acc) { zli = li; break; }
-            }
-            if (zli == 0xFFFFFFFFu) continue;
-            const float w_z_sel = candW[zli];
+            if (d >= Ntilde) break;
+            if (ncPx[d] < 0) continue;              // this reservoir picked nothing
+            const float w_z_sel = ncWi[d];
             if (w_z_sel <= 0.0f) continue;
+            const float ci_z = ncCi[d];             // unscaled capped confidence
+            const float c_z  = s * ci_z;            // §4.3 scaled
+            const uint  zPx  = (uint)ncPx[d];
 
-            const int2   sc   = tileOrigin + int2(zli & 7u, zli >> 3u);
-            const uint   zPx  = MapPixelID(dims, (uint2)sc);
             const float3 zPos = load_x1(g_sample_current, zPx);
-            const float  ci_z = asfloat(g_pathStateBuffer.Load(cell_addr(zPx) + 12u));  // unscaled confidence
-            const float  c_z  = s * ci_z;                                               // §4.3 scaled
-
             Reservoir pr = loadReservoir(g_Reservoirs_current, zPx);
 
             //forward shift: neighbor z's sample reconnected at MY primary hit
@@ -261,9 +309,10 @@ void main(uint3 tid : SV_DispatchThreadID)
             if (ph > 0.0f)
             {
                 if (pr.matID == MATID_ENV_MISS)
-                    vis = IsVisibleEnvMiss(sv_me.x, sv_me.n_s, normalize(pr.x2), RAY_TMAX_PLANET, myInst) ? 1.0f : 0.0f;
-                else { const float3 cn = pr.x2 - sv_me.x; const float cd = length(cn);
-                       vis = (cd > EPSILON && IsVisible(sv_me.x, sv_me.n_s, cn / cd, cd * 0.999f)) ? 1.0f : 0.0f; }
+                { const float3 md = normalize(pr.x2);                                 // miss: far endpoint along sky dir
+                  vis = IsVisible(sv_me.x, sv_me.n_s, sv_me.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+                else
+                  vis = IsVisible(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s) ? 1.0f : 0.0f;
             }
             c *= vis;
 

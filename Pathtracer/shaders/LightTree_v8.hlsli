@@ -184,6 +184,17 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
 
+    //BLAS nodes live in this instance's OBJECT space (one instance per BLAS), so
+    //map the query point/normal in via worldToLocal (inverse of the shifted
+    //objectToWorld, refreshed each light-tree refit). This keeps the BLAS
+    //descent invariant to the instance transform AND the floating-origin snap -
+    //world-space BLAS bounds went stale on every 1 km origin shift, breaking
+    //importance + pdf once the camera left spawn. For uniform scale this is the
+    //same distribution as the old world-space build (the per-BLAS scale cancels
+    //in the PickAndRescale normalization).
+    const float3 xL = mul(R.worldToLocal, float4(x, 1.0)).xyz;
+    const float3 nL = normalize(mul((float3x3)R.worldToLocal, n));
+
     uint node = 0;
 
     //depth cap, zero pdf on overflow, zero-count leaf is safe since LeafTriangle clamps
@@ -199,7 +210,7 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
         [unroll] for (uint i=0;i<4;i++){
             if (i < N.childCount) {
                 LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS(C, x, n), 0.0);
+                w[i] = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
             } else {
                 w[i] = 0.0;
             }
@@ -328,8 +339,11 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         tdepth++;
     }
 
-    //BLAS path probability
+    //BLAS path probability - same object-space mapping as the descent above,
+    //so the pdf stays consistent with selection (unbiased) post origin-snap.
     BlasRangeGpu Rng = gLT_Range[blas];
+    const float3 xL  = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
+    const float3 nL  = normalize(mul((float3x3)Rng.worldToLocal, n));
     float pdfBLAS    = 1.0f;
     uint  bnode      = 0;
     uint  bdepth     = 0;
@@ -366,7 +380,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         [unroll] for (uint i=0;i<4;i++){
             if (i < N.childCount) {
                 LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS(C, x, n), 0.0);
+                w[i] = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
                 sum += w[i];
             } else {
                 w[i] = 0.0;

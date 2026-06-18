@@ -80,6 +80,48 @@ cbuffer Push : register(b1)
 #define RS_FLAG_CELL_SPATIAL  0x10u
 #define CELL_SPATIAL_MODE  ((rs_flags & RS_FLAG_CELL_SPATIAL) != 0u)
 
+//RS_FLAG_CELL_IGNORE_NORMALS — A/B perf experiment for the cell path: skip the
+//soft normal-cone coherence test in the §5.1 search + gather, keying cells on
+//instID alone. Removes up to ~76 UnpackNormal (octahedral decode + normalize)
+//taps/px. Quality risk: looser pools can boil / show an edge grid on curved or
+//glossy surfaces (the cone was added to fix exactly that) - measure under DLSS RR.
+#define RS_FLAG_CELL_IGNORE_NORMALS  0x20u
+#define CELL_IGNORE_NORMALS  ((rs_flags & RS_FLAG_CELL_IGNORE_NORMALS) != 0u)
+
+//RS_FLAG_DISABLE_CORR_REDUCTION — A/B: turn OFF the duplication-map correlation
+//reduction. Pass_dup_gi counts how many of the 17x17 neighbours share this pixel's
+//reconnection vertex (V2) and writes that fraction D to scratch slot 6; the temporal
+//pass normally COLLAPSES the confidence cap toward 1 as D rises
+//(effMcap = lerp(rs_tempMcap, 1, pow(D,0.1)) — very aggressive: D=0.1 -> cap~5).
+//Because cell reuse deliberately SPREADS a good sample across a coherent cell, D goes
+//up and this decorrelation then caps confidence back down, fighting the reuse. When
+//this flag is set the temporal cap ignores D (effMcap = rs_tempMcap), letting us test
+//whether the decorrelation is what starves cell-reuse effectiveness.
+#define RS_FLAG_DISABLE_CORR_REDUCTION  0x40u
+#define CORR_REDUCTION_OFF  ((rs_flags & RS_FLAG_DISABLE_CORR_REDUCTION) != 0u)
+
+//RS_FLAG_DISABLE_X1_DIRECT — diagnostic A/B: zero scratch slot 3 (directAtX1 =
+//the depth==1 NEE-sun + depth==1 BSDF-ray-miss ENV, the ONLY radiance that bypasses
+//the ReSTIR reservoir). It is a single-sample 1/pdf estimate with NO spatio-temporal
+//reuse, so even a dim env floor (nightBase/stars) shows up as fireflies immune to
+//the temporal M-cap. If the "high-variance layer over clean ReSTIR" DISAPPEARS with
+//this set, the culprit is this un-reused env/sun direct; if it PERSISTS, the noise is
+//inside the reservoir (a fraction of pixels failing temporal/spatial reuse).
+#define RS_FLAG_DISABLE_X1_DIRECT  0x80u
+#define X1_DIRECT_OFF  ((rs_flags & RS_FLAG_DISABLE_X1_DIRECT) != 0u)
+
+//RS_FLAG_NO_SPEC_REPROJ — force the temporal pass to use SURFACE (self) reprojection
+//for the DI reservoir instead of the stochastic specular reprojection. The temporal
+//pass otherwise flips, per pixel per frame, between self-reproject and the reflection's
+//virtual-position reproject (useSpecReproj = rSpec < specularity). That coin flip pulls
+//history from a DIFFERENT pixel (the reflection) with inconsistent frame-to-frame
+//lineage, so those pixels' confidence M never accumulates -> a flat high-variance band
+//layered over the cleanly-accumulating self-reproject pixels (concentrated at grazing
+//angles / near lights where specularity is high). Forcing self-reprojection gives every
+//pixel a stable history lineage so M accumulates uniformly.
+#define RS_FLAG_NO_SPEC_REPROJ  0x200u
+#define NO_SPEC_REPROJ  ((rs_flags & RS_FLAG_NO_SPEC_REPROJ) != 0u)
+
 //====================================
 //IMAGE SIZE MACROS
 //====================================

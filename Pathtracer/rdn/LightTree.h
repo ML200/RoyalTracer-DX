@@ -713,30 +713,32 @@ private:
             for (uint32_t j=0;j<idxs.size();++j){
                 const auto& t = (*m_tris)[idxs[j]];
                 const UINT inst = t.instanceID;
-                const XMFLOAT4X4& W  = worldXformFor(inst);
-                const XMFLOAT3X3& N3 = normalXformFor(inst);
 
-                // World-space vertices
-                const XMFLOAT3 Xw = transformPointW(t.x, W);
-                const XMFLOAT3 Yw = transformPointW(t.y, W);
-                const XMFLOAT3 Zw = transformPointW(t.z, W);
+                // OBJECT-SPACE build: one instance per BLAS, so the shader maps
+                // the query point into this instance's object space via
+                // gLT_Range.worldToLocal at descent. Keeps the BLAS invariant to
+                // the instance transform AND the floating-origin snap - the old
+                // world-space bounds went stale on every 1 km origin shift (only
+                // the TLAS was re-shifted on snap), breaking NEE importance + pdf
+                // once the camera left spawn. Matches the object-space localRoots
+                // the async TLAS rebuild already consumes.
+                const XMFLOAT3 Xo = t.x, Yo = t.y, Zo = t.z;
 
-                // Centroid & AABB in world space
-                const XMFLOAT3 c{ (Xw.x+Yw.x+Zw.x)/3.f, (Xw.y+Yw.y+Zw.y)/3.f, (Xw.z+Yw.z+Zw.z)/3.f };
-                const Aabb a = { min3(Xw, min3(Yw, Zw)), max3(Xw, max3(Yw, Zw)) };
+                // Centroid & AABB in object space
+                const XMFLOAT3 c{ (Xo.x+Yo.x+Zo.x)/3.f, (Xo.y+Yo.y+Zo.y)/3.f, (Xo.z+Yo.z+Zo.z)/3.f };
+                const Aabb a = { min3(Xo, min3(Yo, Zo)), max3(Xo, max3(Yo, Zo)) };
 
-                // Normal cone axis from world-space normal (inverse-transpose)
+                // Object-space normal cone axis
                 const XMFLOAT3 e1L = sub3(t.y, t.x);
                 const XMFLOAT3 e2L = sub3(t.z, t.x);
                 const XMFLOAT3 nL  = cross3(e1L, e2L);
-                XMFLOAT3 nW = transformNormalW(nL, N3);
-                float nlen = length3(nW);
+                float nlen = length3(nL);
 
                 Cone lc;
                 if (nlen < 1e-12f){ // degenerate -> isotropic emitter
                     lc.axis = {0,0,1}; lc.theta_o = LT_PI; lc.theta_e = LT_HALF_PI;
                 } else {
-                    lc.axis = normalize3(nW); lc.theta_o = 0.f; lc.theta_e = LT_HALF_PI;
+                    lc.axis = normalize3(nL); lc.theta_o = 0.f; lc.theta_e = LT_HALF_PI;
                 }
 
                 tmp.push_back({ idxs[j], c, a, t.weight, inst, lc });
