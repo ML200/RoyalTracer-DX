@@ -171,15 +171,22 @@ struct ReSTIRSettings {
     bool  useCellSpatGI    = false;
     int   cellN            = 3;   // Ntilde: non-canonical stochastic candidates
     int   cellSearchIters  = 12;  // §5.1 cell-search WRS iterations
-    int   cellMcap         = 20;  // confidence cap for cell-mode reservoirs
+    int   cellMcap         = 1000;  // confidence cap for cell-mode reservoirs
     int   cellRadius       = 30;  // §5.1 cell-search initial radius (px)
     bool  cellIgnoreNormals= false; // perf A/B: skip the normal-cone coherence test (instID-only cells)
+    //Junkins 2026 compatibility-guided neighbor selection (sub-mode of useCellSpatGI,
+    //flag 0x400). Loosens the hard 0.9 cone to compatFloor and weights selection by
+    //h_n = dot(n,n')^beta. Pure-G-buffer proposal reshape -> unbiased.
+    bool  useCompatNeighbors = false;
+    float cellBeta         = 4.0f;  // h_n exponent (Junkins: 8; gentler 2-4 for this small tile-local pool)
+    float cellCompatFloor  = 0.5f;  // membership cone floor (cos) when compat on; 0.5 ~= Bitterli, wider than 0.9
 
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
              | ((enableSpatGI && useCellSpatGI) ? 0x10u : 0u)
              | ((enableSpatGI && useCellSpatGI && cellIgnoreNormals) ? 0x20u : 0u)
+             | ((enableSpatGI && useCellSpatGI && useCompatNeighbors) ? 0x400u : 0u)
              | (disableCorrReduction ? 0x40u : 0u)
              | (disableX1Direct ? 0x80u : 0u)
              | (noSpecReproj ? 0x200u : 0u);

@@ -56,6 +56,10 @@ cbuffer Push : register(b1)
     uint  rs_cellSearchIters; // §5.1 cell-search WRS iterations (paper: 12)
     uint  rs_cellMcap;        // confidence cap for cell-mode reservoirs (paper: 20)
     uint  rs_cellRadius;      // §5.1 cell-search initial radius in pixels (paper: 30)
+    //Junkins 2026 compatibility-guided neighbor selection (COMPAT_MODE, slots
+    //36-37, fresh 16B register). Read by Pass_spat_gi_cell_v8 when RS_FLAG_CELL_COMPAT.
+    float rs_cellBeta;        // h_n = dot(n,n')^beta normal-compatibility exponent (Junkins: 8; gentle: 2-4)
+    float rs_cellCompatFloor; // membership cone floor (cos) in COMPAT_MODE - looser than 0.9 widens the pool
 };
 
 //====================================
@@ -121,6 +125,21 @@ cbuffer Push : register(b1)
 //pixel a stable history lineage so M accumulates uniformly.
 #define RS_FLAG_NO_SPEC_REPROJ  0x200u
 #define NO_SPEC_REPROJ  ((rs_flags & RS_FLAG_NO_SPEC_REPROJ) != 0u)
+
+//RS_FLAG_CELL_COMPAT — Junkins et al. 2026 "Compatibility-Guided Neighbor
+//Selection". Sub-mode of the cell spatial path (0x10): replaces the binary 0.9
+//normal cone in the §5.1 search + within-cell gather with (a) a LOOSER membership
+//floor rs_cellCompatFloor (a wider, reachable candidate pool, so more pixels get
+//reuse instead of canonical-only passthrough) and (b) a CONTINUOUS compatibility
+//weight h_n = dot(n,n')^rs_cellBeta that ranks the search cell and the Eq.17
+//non-canonical draw proposal. h_n is pure G-buffer, so it enters ONLY the
+//selection proposals (search WRS weight + the three coupled non-canonical spots
+//Wsel_nz/ncWsum/ncWi) where the stochastic-MIS (Wsel/w_z) correction divides it
+//back out -> unbiased; it never touches the confidences, §4.3 scaling, the
+//deterministic MIS heuristic, or the uniform canonical pick. At 8x8-tile scale
+//Junkins' position term h_p ~= 1 (candidates are ~10px apart), so only h_n is used.
+#define RS_FLAG_CELL_COMPAT  0x400u
+#define COMPAT_MODE  ((rs_flags & RS_FLAG_CELL_COMPAT) != 0u)
 
 //====================================
 //IMAGE SIZE MACROS

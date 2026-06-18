@@ -1689,7 +1689,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[36] = {};
+    UINT rsConsts[38] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1735,6 +1735,15 @@ void Renderer::PopulateCommandList() {
     rsConsts[33] = (UINT)std::clamp(rs.cellSearchIters, 1, 32);
     rsConsts[34] = (UINT)std::clamp(rs.cellMcap,        1, 100);
     rsConsts[35] = (UINT)std::clamp(rs.cellRadius,      2, 512);
+
+    // Junkins compat-guided selection (slots 36-37; read by Pass_spat_gi_cell
+    // when RS_FLAG_CELL_COMPAT). Floats: h_n exponent + membership cone floor (cos).
+    {
+        const float beta      = std::clamp(rs.cellBeta,        0.5f, 32.0f);
+        const float floorCos  = std::clamp(rs.cellCompatFloor, 0.0f, 1.0f);
+        memcpy(&rsConsts[36], &beta,     4);
+        memcpy(&rsConsts[37], &floorCos, 4);
+    }
 
     // NRC control constants (slots 24-27). NRC is only driving the
     // pipeline when the interop + tcnn stack initialised successfully —
@@ -1929,7 +1938,7 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 36, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 38, rsConsts, 0);
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

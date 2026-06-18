@@ -750,8 +750,15 @@ void Pass_raygen_v8()
         float3 throughput        = UnpackRGB9E5(throughputPk) * updateWeight;
         const float3 tpostWeight = bdata.val * ctx.absorptionTint * cosTheta;
 
-        //Russian roulette (depth >= 3 only). Fail terminates the path; pass
-        //boosts throughput and patches the stored training beta.
+        //Russian roulette — an INDEPENDENT variance/perf knob (currently off via
+        //the depth>=30 threshold; set to e.g. depth>=3 to enable). Fail terminates
+        //the path; pass boosts throughput (the 1/p boost cancels in the RR-clean
+        //target F via the pdf_product reduction below, but survives in the RIS
+        //weight wi — correct) and patches the NRC training beta.
+        //NOTE: RR must NOT carry the tpost update (a correctness quantity) — that
+        //is done unconditionally below. Aggressive RR (survivalProb floored at 0.1
+        //on a sub-unity GI throughput) terminates most deep paths, which starves
+        //ReSTIR's initial samples; prefer a gentle/late policy if enabling.
         if (depth >= 3)
         {
             const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
@@ -767,8 +774,20 @@ void Pass_raygen_v8()
                     nrcPathId, vIdxAfter - 1u,
                     PackRGB9E5(NrcCleanRadiance(updateWeight * rrBoost)));
             }
+        }
 
-            //tpost is multiplicative across post-v_2 vertices.
+        //tpost = post-reconnection-vertex (post-v_2) suffix throughput, multiplicative
+        //across v_3..v_{D-1}. EVERY depth>=4 GI reconnection candidate reads it
+        //(L2 = emission * tpost * BSDF_NEE*cos; Reconnect applies the BSDF at x2=v_2
+        //and the NEE BSDF, so the INTERMEDIATE-bounce f*cos products must live in
+        //tpost). It is a CORRECTNESS quantity and MUST run for depth>=3 regardless of
+        //RR. It was previously nested in the RR block, so with RR disabled (depth>=30)
+        //tpost stayed (1,1,1) and every depth>=4 reuse sample stored an inflated L2
+        //(missing all intermediate f*cos < 1), corrupting spatial/temporal reuse of
+        //deep GI. tpostWeight is the RR-UNBOOSTED f*cos so tpost stays RR-clean,
+        //consistent with the RR-clean target F (the boost lives only in wi).
+        if (depth >= 3)
+        {
             const float3 tpost = load_rg_tpost(g_pathStateBuffer, pixelIdx) * tpostWeight;
             store_rg_tpost(g_pathStateBuffer, pixelIdx, tpost);
         }

@@ -52,8 +52,15 @@ static const uint  CELL_SEARCH_K   = 4u;
 //uses Ntilde=3 and Fig.7 shows >3 gives diminishing returns, so 8 is generous.
 static const uint  NT_MAX        = 8u;
 //SOFT normal cone for cell membership (query-relative, no hard quantization
-//boundary -> no edge grid where normals vary fast). ~25 deg.
+//boundary -> no edge grid where normals vary fast). ~25 deg. Used as the
+//membership floor when COMPAT_MODE is OFF; COMPAT_MODE uses rs_cellCompatFloor.
 static const float CELL_COHERENCE_COS = 0.9f;
+//Strict-positive floor for the Junkins compatibility proposal weight (COMPAT_MODE)
+//so every membership-passing member keeps P(i) > 0 (Eq.15 positivity) - the
+//stochastic-MIS correction is only unbiased if no contributing member is
+//unreachable. The real lower bound is pow(rs_cellCompatFloor, rs_cellBeta); this
+//only bites if the floor is set near 0.
+static const float COMPAT_EPS = 1e-4f;
 
 uint cell_addr(uint px) { return px * CELL_REC; }
 
@@ -130,10 +137,21 @@ void main(uint3 tid : SV_DispatchThreadID)
                 const uint  qpx  = MapPixelID(dims, (uint2)q);
                 const uint4 qrec = g_pathStateBuffer.Load4(cell_addr(qpx));   // inst, normalPk, c_i, w_i
                 if (qrec.x != myInst) continue;                              // same surface
-                if (!CELL_IGNORE_NORMALS)                                    // soft cone (skippable A/B)
-                { if (dot(myN, UnpackNormal(qrec.y)) < CELL_COHERENCE_COS) continue; }
-                const float cw = asfloat(g_pathStateBuffer.Load(cell_addr(qpx) + 16u));  // confSum (at +16)
-                if (cw <= 0.0f) continue;
+                float hN = 1.0f;                                             // Junkins compatibility (COMPAT_MODE)
+                if (!CELL_IGNORE_NORMALS)
+                {
+                    const float nd       = dot(myN, UnpackNormal(qrec.y));
+                    //COMPAT_MODE = Junkins compatibility-guided selection: loosen the
+                    //hard 0.9 cone to rs_cellCompatFloor (a WIDER, reachable pool) and
+                    //rank cells by the continuous h_n = nd^beta instead of a 1/0 step.
+                    //Pure G-buffer -> the search distribution may use it freely.
+                    const float floorCos = COMPAT_MODE ? rs_cellCompatFloor : CELL_COHERENCE_COS;
+                    if (nd < floorCos) continue;
+                    if (COMPAT_MODE) hN = max(pow(saturate(nd), rs_cellBeta), COMPAT_EPS);
+                }
+                const float cw0 = asfloat(g_pathStateBuffer.Load(cell_addr(qpx) + 16u));  // confSum (at +16)
+                if (cw0 <= 0.0f) continue;
+                const float cw = cw0 * hN;   // cell confidence sum x compatibility
                 wsum += cw;
                 if (RandomFloatSingle(seed.x) < cw / wsum) { chosen = q; found = true; }
             }
@@ -198,16 +216,30 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (spx == pixelIdx) continue;        // self is the canonical, handled separately
         const uint4 rec = g_pathStateBuffer.Load4(cell_addr(spx));   // inst, normalPk, c_i, w_i
         if (rec.x != myInst) continue;                               // same surface
-        if (!CELL_IGNORE_NORMALS)                                    // soft cone (skippable A/B)
-        { if (dot(myN, UnpackNormal(rec.y)) < CELL_COHERENCE_COS) continue; }
+        float hN = 1.0f;                                             // Junkins compatibility (COMPAT_MODE)
+        if (!CELL_IGNORE_NORMALS)
+        {
+            const float nd       = dot(myN, UnpackNormal(rec.y));
+            const float floorCos = COMPAT_MODE ? rs_cellCompatFloor : CELL_COHERENCE_COS;
+            if (nd < floorCos) continue;
+            if (COMPAT_MODE) hN = max(pow(saturate(nd), rs_cellBeta), COMPAT_EPS);
+        }
 
         const float ci = asfloat(rec.z);
-        const float wi = asfloat(rec.w);      // 0 allowed (in cell, no contributing sample)
+        //Eq.17 weight x Junkins compatibility h_n. h enters ONLY the non-canonical
+        //PROPOSAL (Wsel_nz + ncWsum accumulator + cached ncWi below) so the
+        //(Wsel_nz/w_z_sel) stochastic-MIS correction in the reuse loop divides it
+        //right back out -> unbiased (h is pure G-buffer). It must stay OUT of the
+        //contribution term + m_pw (it does: those load the reservoir fresh). The
+        //confidence c_i is left UNSCALED (the deterministic MIS heuristic + §4.3
+        //must see the true confidence, not the reshaped proposal).
+        const float wi = asfloat(rec.w) * hN;   // 0 allowed (in cell, no contributing sample)
 
         cSigmaRaw += ci;
         ++M_nc;
 
-        //canonical uniform reservoir (count-based) over every in-cell member
+        //canonical uniform reservoir (count-based) over every in-cell member.
+        //NOT h-weighted: Eq.18's P_c stays 1/M_nc (the audited 1/P_c = M_nc factor).
         ++canSeen;
         if (RandomFloatSingle(seed.x) * (float)canSeen < 1.0f) { canPx = (int)spx; canCi = ci; }
 

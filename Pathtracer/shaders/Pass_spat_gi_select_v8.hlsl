@@ -90,7 +90,7 @@ bool PairRejected(uint aMat, float3 aPos, float3 aN,
                   uint bMat, float3 bPos, float3 bN,
                   float distThresh)
 {
-    if (aMat != bMat) return true;
+    //if (aMat != bMat) return true;
     if (RejectNormal(aN, bN, rs_rejNormalDot)) return true;
     if (RejectDistance(aPos, bPos, aN, distThresh)) return true;
     if (RejectDistance(bPos, aPos, bN, distThresh)) return true;

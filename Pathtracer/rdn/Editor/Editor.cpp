@@ -594,6 +594,23 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SetItemTooltip("Skip the per-tap normal-cone coherence test (key cells on "
                               "instID only), removing ~76 UnpackNormal taps/px. May reintroduce "
                               "boiling / an edge grid on curved or glossy surfaces - A/B under DLSS RR.");
+        ImGui::Checkbox("Compatibility-guided (Junkins)##Cell", &rs.useCompatNeighbors);
+        ImGui::SetItemTooltip("Junkins et al. 2026. Replaces the binary 0.9 normal cone with a LOOSER "
+                              "membership floor (wider pool -> more pixels get reuse instead of canonical-only "
+                              "passthrough) + a continuous compatibility weight h_n = dot(n,n')^beta ranking the "
+                              "search cell and the Ntilde non-canonical draws. Pure G-buffer -> unbiased (the "
+                              "stochastic-MIS correction divides h_n back out). Effect is concentrated where good "
+                              "neighbours are scarce (grazing / curved / disocclusion); tune beta + floor. A/B under DLSS RR.");
+        ImGui::BeginDisabled(!rs.useCompatNeighbors);
+        ImGui::SliderFloat("Compat beta##Cell",  &rs.cellBeta, 0.5f, 16.0f, "%.1f");
+        ImGui::SetItemTooltip("h_n = dot(n,n')^beta normal-compatibility exponent (Junkins: 8). Higher = "
+                              "sharper preference for aligned neighbours (lower variance) but more spatial "
+                              "correlation; start gentle (2-4) on this small tile-local pool.");
+        ImGui::SliderFloat("Compat floor##Cell", &rs.cellCompatFloor, 0.0f, 0.95f, "%.2f");
+        ImGui::SetItemTooltip("Membership cone floor (cos) when compat is on. Lower = wider pool (more reuse, "
+                              "h_n downweights the mismatched additions). 0.9 reproduces the binary cone; "
+                              "0.5 ~= Bitterli; 0.0 = any front-facing same-surface neighbour.");
+        ImGui::EndDisabled();
         ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
