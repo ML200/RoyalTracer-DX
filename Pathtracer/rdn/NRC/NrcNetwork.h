@@ -26,7 +26,7 @@ uint32_t ReadU32(void* stream, const void* devPtr);
 //====================================
 //NETWORK
 //====================================
-//17-input raw feature vector, composite encoding, 5 hidden x 128 ReLU, 3 terrain
+//17-input raw feature vector, composite encoding, 4 hidden x 64 LeakyReLU, 3-output
 //(topology lives in NrcLayout.h kRawInputDim/kHiddenWidth/kHiddenLayers/kOutputDim)
 class Network {
 public:

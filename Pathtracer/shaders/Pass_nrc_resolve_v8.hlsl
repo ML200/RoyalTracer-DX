@@ -16,34 +16,7 @@ void main(uint3 dtid : SV_DispatchThreadID)
     const uint  pixelIdx = MapPixelID(gImageSize, pixel);
     if (pixelIdx == 0xFFFFFFFFu) return;
 
-    //====================================
-    //X1 SHARP REFLECTION RESOLVE
-    //====================================
-    //collapses Fresnel, NRC slot, env miss radiance into one RGB contribution at slot 8
-    {
-        const float4 reflPack = gScratchPing[uint3(pixel, 7)];
-        const float3 fresnelP = reflPack.rgb;
-        const uint   reflSlot = asuint(reflPack.w);
-        float3 reflRGB = float3(0, 0, 0);
-        float  reflW   = 0.0f;
-        if (any(fresnelP > 0.0f))
-        {
-            float3 reflRad;
-            if (reflSlot != NRC_INVALID_SLOT)
-            {
-                reflRad = NrcLoadInferenceOutput(reflSlot);
-            }
-            else
-            {
-                //raygen stored env miss radiance in slot 8.rgb, .w=1 marker
-                const float4 envPack = gScratchPing[uint3(pixel, 8)];
-                reflRad = (envPack.w > 0.0f) ? envPack.rgb : float3(0, 0, 0);
-            }
-            reflRGB = NrcCleanRadiance(fresnelP * reflRad);
-            reflW   = 1.0f;
-        }
-        gScratchPing[uint3(pixel, 8)] = float4(reflRGB, reflW);
-    }
+    //(x1 sharp-reflection resolve removed — dead feature; slots 7/8 retired.)
 
     uint  slot;
     uint  throughputPk;

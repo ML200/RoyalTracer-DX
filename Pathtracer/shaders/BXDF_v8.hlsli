@@ -269,35 +269,5 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
     return sp;
 }
 
-//combined Fresnel for the dropped delta lobes, coat on top, GGX gets what passes through
-inline float3 ComputeSharpReflectionFresnel(
-    uint   matID,
-    float3 V,
-    float3 N,
-    float  etai,
-    float  etat,
-    float  Pm,
-    bool   dropGGX,
-    bool   dropCoat)
-{
-    float3 F              = float3(0, 0, 0);
-    float3 transAfterCoat = float3(1, 1, 1);
-
-    if (dropCoat)
-    {
-        const float  pc    = saturate(LoadPc(matID));
-        const float3 F_c   = FresnelDielectricTIR(V, N, etai, etat);
-        const float3 lobeC = pc * F_c;
-        F             += lobeC;
-        transAfterCoat = max(float3(0, 0, 0), float3(1, 1, 1) - lobeC);
-    }
-
-    if (dropGGX)
-    {
-        //delta limit collapses H to N, Fresnel evaluates at the view angle
-        const float3 F_d = FresnelDielectricTIR(V, N, etai, etat);
-        F += transAfterCoat * (1.0f - Pm) * F_d;
-    }
-
-    return max(float3(0, 0, 0), F);
-}
+//(ComputeSharpReflectionFresnel removed — sole consumer was the dead x1
+// sharp-reflection feature.)

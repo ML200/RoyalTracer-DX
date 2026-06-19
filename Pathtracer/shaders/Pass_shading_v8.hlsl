@@ -59,27 +59,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)].rgb;
     float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    //====================================
-    //X1 SHARP REFLECTION CONTRIBUTION
-    //====================================
-    //slot 8 is the durable handoff, debug passes scribble g_NrcInferenceOut later.
-    //Read here (above the cloud composite) so the mesh path can attenuate it
-    //before postprocess sees it.
-    float3 reflContrib = float3(0, 0, 0);
-    float  reflAlpha   = 0.0f;
-    {
-        const float4 reflPack = gScratchPing[uint3(DTid.xy, 8)];
-        reflAlpha = reflPack.w;
-        if (reflPack.w > 0.0f)
-            reflContrib = max(float3(0, 0, 0), reflPack.rgb);
-    }
+    //(x1 sharp-reflection contribution removed — dead feature, slot 8 retired.)
 
     //TEMP DEBUG (ATM_DEBUG_RING in Constants_v8): raw path-traced components,
     //captured before the cloud composite so mode 2 can false-colour them.
     const float3 dbgRawPrimary  = output_primary;
     const float3 dbgRawIndirect = output_indirect;
     const float3 dbgRawSun      = sunDirect;
-    const float3 dbgRawRefl     = reflContrib;
 
     //====================================
     //CLOUD + ATMOSPHERE COMPOSITE
@@ -113,17 +99,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
         output_primary  = output_primary  * cloudTr + cloudL;
         output_indirect = output_indirect * cloudTr + cloudL;
         sunDirect      *= cloudTr;
-        reflContrib    *= cloudTr;
 
         gScratchPing[uint3(DTid.xy, 1)] = float4(output_primary,  0);
         gScratchPing[uint3(DTid.xy, 2)] = float4(output_indirect, 0);
         gScratchPing[uint3(DTid.xy, 3)] = float4(sunDirect,       0);
-        //Preserve reflPack.w (validity flag) so the postprocess gate
-        //(reflPack.w > 0.0f ? rgb : 0) still reads the right state.
-        gScratchPing[uint3(DTid.xy, 8)] = float4(reflContrib, reflAlpha);
     }
 
-    float3 accumulation = output_primary + output_indirect + sunDirect + reflContrib;
+    float3 accumulation = output_primary + output_indirect + sunDirect;
 
     //==================== TEMP DEBUG: nadir-ring localisation, mode 2 ===========
     //False-colours the path-traced mesh radiance so we can see which term the
@@ -132,7 +114,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     #if ATM_DEBUG_RING == 2
     {
         float dr = 1.0f - exp(-max(Luma(dbgRawIndirect), 0.0f) * 3.0f);
-        float dg = 1.0f - exp(-max(Luma(dbgRawRefl),     0.0f) * 3.0f);
+        float dg = 0.0f; // sharp-reflection term removed
         float db = 1.0f - exp(-max(Luma(dbgRawPrimary) + Luma(dbgRawSun), 0.0f) * 3.0f);
         accumulation = float3(dr, dg, db);
     }
@@ -502,17 +484,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
 
-        //reflection dominated pixels lean toward the input so edges stay crisp
-        float reflectionBias = 0.0f;
-        {
-            const float reflLuma  = Luma(reflContrib);
-            const float totalLuma = Luma(accumulation);
-            if (totalLuma > 1e-5f && reflLuma > 1e-5f) {
-                reflectionBias = saturate(reflLuma / totalLuma);
-            }
-        }
-
-        float bias = max(disoccBias, max(emitterBias, reflectionBias));
+        float bias = max(disoccBias, emitterBias);
         g_dlssBiasHint[DTid.xy] = bias;
         if (disoccBias > 0.5f && !isEmissiveOrSky) {
             g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
@@ -523,5 +495,5 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //DLSS TRANSPARENCY OVERLAY HOOK
     //====================================
     //placeholder side write, host can wire as a post denoise overlay later
-    g_dlssTransparency[DTid.xy] = float4(reflContrib, 0.0f);
+    g_dlssTransparency[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
 }

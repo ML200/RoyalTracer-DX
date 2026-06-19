@@ -25,10 +25,12 @@ static const uint NRC_TRAINING_TILE_MAX     = 32u;
 //value, Müller et al. 2021 §3.2). With biased paths the cache's own
 //prediction feeds back into training targets -- a self-reinforcement loop
 //that an earlier session saw cause brightness creep on the old config.
-//Re-enabled because the current config (5x128 MLP, log2=19, 1.5x training
-//data, roughness emit-gate) should keep the cache accurate enough for the
-//loop to stay stable, and 15/16 paths short-circuiting is a big raygen
-//cost saving. kTargetMax=10 is the backstop; watch GI for slow drift.
+//Re-enabled because the current config (4x64 FullyFusedMLP + lookup-free
+//TriangleWave(14) position encoder, NO hash grid; 1.5x training data;
+//roughness emit-gate) should keep the cache accurate enough for the loop to
+//stay stable, and 15/16 paths short-circuiting is a big raygen cost saving.
+//The 1/16 unbiased pixels keep a cache-free path-traced x1 row (anchor).
+//kTargetMax=10 is the backstop; watch GI for slow drift.
 //Mirror: kUnbiasedDenom in rdn/NRC/NrcLayout.h must match.
 static const uint NRC_UNBIASED_DENOM        = 16u;
 
@@ -82,14 +84,13 @@ static const uint NRC_CLASS_TRAIN_UNBIASED  = 2u;
 static const uint NRC_FLAG_ENABLED          = 1u;
 static const uint NRC_FLAG_TRAIN            = 2u;
 static const uint NRC_FLAG_DEBUG_VIEW       = 4u;
-static const uint NRC_FLAG_SHARP_REFL       = 8u;
+//bit 3 (was NRC_FLAG_SHARP_REFL) free after the sharp-reflection feature removal
 static const uint NRC_FLAG_TILE_SHIFT       = 8u;
 static const uint NRC_FLAG_TILE_MASK        = 0xFFu;
 
 inline bool NrcIsEnabled()           { return (nrc_flags & NRC_FLAG_ENABLED)          != 0u; }
 inline bool NrcIsTrainOn()           { return (nrc_flags & NRC_FLAG_TRAIN)            != 0u; }
 inline bool NrcIsDebugView()         { return (nrc_flags & NRC_FLAG_DEBUG_VIEW)       != 0u; }
-inline bool NrcIsSharpReflectionsOn(){ return (nrc_flags & NRC_FLAG_SHARP_REFL)       != 0u; }
 
 //effective tile side, falls back to static default when flags unpacked
 inline uint NrcTrainingTileSide()

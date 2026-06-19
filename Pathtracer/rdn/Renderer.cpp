@@ -30,9 +30,6 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         L"cuda:nrc_inference",                          L"barrier",
         L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
-        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
-        L"cuda:nrc_debug_inference",                    L"barrier",
-        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
@@ -40,6 +37,17 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_spat_gi_cellbuild_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_spat_gi_cell_v8.hlsl|cs:8x8",            L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
+        // NRC x1 training now feeds off the CONVERGED reservoir: gather the
+        // post-reuse x1 GI into training rows, THEN run TrainFrame. cuda:nrc_train
+        // (was a no-op that rode inside cuda:nrc_inference) is the late training
+        // submit. The debug query/inference/present trio moves AFTER train so the
+        // debug inference's inferenceOut overwrite still lands after the fill
+        // kernel's cache-tail reads (debug inference waits on trainDoneEvent).
+        L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
+        L"cuda:nrc_train",                              L"barrier",
+        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        L"cuda:nrc_debug_inference",                    L"barrier",
+        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
         L"dlss",                                        L"barrier",
         L"Pass_autoexpose_reduce_v8.hlsl|cs:8x8",       L"barrier",
@@ -112,13 +120,13 @@ void Renderer::InitDevice() {
             });
 
             // ── NRC setup ─────────────────────────────────────────
-            // Cap inference capacity at 2 × pixels so each pixel can fit a
-            // cache-termination record AND a depth-0 sharp-reflection record
-            // (raygen splits the BSDF on smooth dielectric x1 hits and queries
-            // NRC at the perfect-mirror reflection's hit point). Round up to
-            // tcnn's batch granularity. The debug view's inference reuses
-            // these buffers — it runs after the main chain has already
-            // consumed them.
+            // Cap inference capacity at 1 × pixels: each pixel fits at most one
+            // cache-termination record, and the debug view's inference (slot =
+            // MapPixelID, max TileAlignedPx) reuses the same buffer after the
+            // main chain has consumed it. Round up to tcnn's batch granularity.
+            // (Was 2× to also reserve a depth-0 sharp-reflection record per
+            // pixel; that feature was dead and has been removed, so the second
+            // half was never written — halving this reclaims the VRAM.)
             //
             // Use the TILE-ALIGNED pixel count, not W*H. PendingGI is indexed
             // by MapPixelID (the 8×4 tile swizzle), whose max index is
@@ -131,7 +139,7 @@ void Renderer::InitDevice() {
             // buffer (path-state, reservoirs, sample data) already uses
             // TileAlignedPx; NRC was the one that didn't.
             const uint32_t pixelCount = TileAlignedPx(GetWidth(), GetHeight());
-            m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
+            m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount);
             m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
 
             m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
@@ -212,35 +220,17 @@ void Renderer::InitDevice() {
                     static_cast<const float*>(m_nrcInferenceOut.cudaPtr),
                     padded);
 
-                //Submit training inside the same cuda:* op so we do not
-                //pay a second close+execute+fence+reopen cycle on the
-                //D3D12 cmd list. TrainFrame ignores `s` and queues onto
-                //auxStream, gated on inferenceDoneEvent that Inference
-                //records on the main stream above. This lets training
-                //run concurrently with the rest of the frame (resolve,
-                //debug passes, GI, shading) instead of forcing the
-                //pipeline to round-trip through a second cuda:* pass.
-                //Removing the dedicated cuda:nrc_train pass entry from
-                //Renderer's pass list saves the WDDM scheduling +
-                //driver bookkeeping overhead of one full cmd list
-                //close/reopen per frame, which Nsight measured at
-                //multiple ms in large scenes.
-                //Live LR override: the editor's learningRateScale was inert
-                //(only pushed to a shader constant, never applied to the Adam
-                //optimizer). Now it scales the base 1e-2 so the rate is tunable
-                //at runtime; default scale 1.0 leaves the tuned rate unchanged.
-                m_nrcNetwork.SetLearningRate(nrc::kBaseLearningRate * m_nrcSettings.learningRateScale);
-
-                m_nrcNetwork.TrainFrame(
-                    s,
-                    m_nrcTrainRecords.cudaPtr,
-                    m_nrcInferenceOut.cudaPtr,
-                    m_nrcInferenceCapacity,
-                    m_nrcTrainRecordsTarget);
+                //Training NO LONGER rides inside this op. It was moved to the
+                //late cuda:nrc_train op (after the ReSTIR reuse chain) so the
+                //x1 training rows can be gathered from the CONVERGED reservoir
+                //(Pass_nrc_train_gather_v8). Inference must still run HERE --
+                //the cache short-circuit candidates that Pass_nrc_resolve_v8
+                //injects into the reservoir depend on this frame's inferenceOut,
+                //and that has to be ready before the temporal/spatial passes.
             },
             //gated on the editor master switch: when the cache is disabled,
-            //skip inference and the training that rides inside this op so the
-            //whole NRC stack goes dark, matching nrc_frame_begin.
+            //skip the whole inference round trip so the NRC stack goes dark,
+            //matching nrc_frame_begin.
             [this]{ return m_nrcReady && m_nrcSettings.enabled; });
 
             // Additional inference for the debug view only. Runs AFTER
@@ -272,15 +262,38 @@ void Renderer::InitDevice() {
                 //one full close/execute/fence/wait/reopen cycle per frame
                 [this]{ return m_nrcReady && m_nrcSettings.enabled && m_nrcSettings.debugView; });
 
-            // Backward-fill + 4 SGD steps were previously dispatched
-            // here from a dedicated cuda:nrc_train pass. They now ride
-            // along inside cuda:nrc_inference (TrainFrame submits to
-            // auxStream and is gated on inferenceDoneEvent), saving one
-            // full D3D12 cmd list close/execute/fence/reopen cycle per
-            // frame. Keep the registration as a no-op so any surviving
-            // L"cuda:nrc_train" pass list entry stays harmless instead
-            // of asserting in the dispatcher's lookup.
-            RegisterCudaOp(L"nrc_train", []{});
+            // Backward-fill + 4 SGD steps. This op runs LATE in the frame,
+            // right after Pass_nrc_train_gather_v8 has written the x1 training
+            // rows from the converged ReSTIR reservoir (and after raygen wrote
+            // the v2+ rows). Training was previously folded into
+            // cuda:nrc_inference (early), but the x1-from-reservoir scheme needs
+            // the reuse chain to finish first, so it gets its own late op again.
+            //
+            // SYNC: TrainFrame's fill kernel runs on auxStream and reads
+            // m_nrcTrainRecords, which the gather pass (D3D12) just wrote. The
+            // dispatcher's CudaWait(preVal) before this lambda makes the MAIN
+            // stream `s` wait on the D3D12 fence (so the gather's UAV writes are
+            // visible to anything ordered after `s`); TrainFrame records an
+            // event on `s` and makes auxStream wait on it, ordering the fill
+            // kernel after the gather. It also still waits on inferenceDoneEvent
+            // (recorded back in cuda:nrc_inference) for the cache-tail
+            // inferenceOut reads.
+            RegisterCudaOp(L"nrc_train", [this]{
+                if (!m_nrcReady || !m_nrcSettings.enabled || !m_nrcSettings.trainingEnabled) return;
+                void* s = m_cudaInterop.Stream();
+                //Live LR override: editor's learningRateScale scales the base
+                //1e-2 so the Adam rate is tunable at runtime (default 1.0 = no
+                //change).
+                m_nrcNetwork.SetLearningRate(nrc::kBaseLearningRate * m_nrcSettings.learningRateScale);
+                m_nrcNetwork.TrainFrame(
+                    s,
+                    m_nrcTrainRecords.cudaPtr,
+                    m_nrcInferenceOut.cudaPtr,
+                    m_nrcInferenceCapacity,
+                    m_nrcTrainRecordsTarget);
+            },
+            //skip the interop round trip entirely when training is off
+            [this]{ return m_nrcReady && m_nrcSettings.enabled && m_nrcSettings.trainingEnabled; });
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
         }
@@ -1045,16 +1058,17 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateStreamingCompactionBuffers();
 
     // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
-    // sized to 2·px (worst case: every pixel issues a cache-termination
-    // record AND a depth-0 sharp-reflection record), and PendingGI is one
-    // slot per pixel — both grow if the user enlarges the window and raygen
-    // would otherwise scribble past the end of the old buffer. TrainRecords
-    // and Counters are fixed-size and don't need recreation.
-    // px is the TILE-ALIGNED pixel count (MapPixelID's index space), not
-    // W·H — see the init-time NRC setup for why this matters.
+    // sized to 1·px (each pixel issues at most one cache-termination record;
+    // the debug-view inference reuses the same buffer at slot = MapPixelID),
+    // and PendingGI is one slot per pixel — both grow if the user enlarges the
+    // window and raygen would otherwise scribble past the end of the old
+    // buffer. TrainRecords and Counters are fixed-size and don't need
+    // recreation. px is the TILE-ALIGNED pixel count (MapPixelID's index
+    // space), not W·H — see the init-time NRC setup for why this matters.
+    // (Was 2·px for a dead sharp-reflection record; that feature is removed.)
     if (m_nrcReady) {
         const uint32_t pixelCount = TileAlignedPx(newWidth, newHeight);
-        m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
+        m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount);
         //full cap for first post resize frame, shrinks again once a new count lands
         m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
 
@@ -1856,10 +1870,13 @@ void Renderer::PopulateCommandList() {
         }
 
         // Auto-reinit on weight collapse. When training on long stretches of
-        // near-zero targets (ultra-dark scenes, all-shadow areas) the L2 loss
-        // can drive the network into a dead-ReLU state where every prediction
-        // is literally zero and gradients vanish so the network can't recover
-        // on its own. The previous frame's inference output magnitude (sampled
+        // near-zero targets (ultra-dark scenes, all-shadow areas) a plain-ReLU
+        // net could fall into a dead-ReLU state where every prediction is
+        // literally zero and gradients vanish so it can't recover on its own.
+        // The hidden activation is now LeakyReLU (see BuildNetworkConfig), whose
+        // 0.01 negative-slope keeps dead units learning, so this should be rare
+        // -- but the detector stays as a backstop for any residual collapse.
+        // The previous frame's inference output magnitude (sampled
         // by ScheduleInferenceOutSumReadback) is the canary: if it stays below
         // kCollapseMean for kCollapseFrames consecutive frames AND training is
         // on, queue a reinit. Cooldown gates the detector after a reinit so
@@ -1955,7 +1972,6 @@ void Renderer::PopulateCommandList() {
         if (nrcActive)                                   nrcFlags |= nrc::flags::kEnabled;
         if (nrcActive && m_nrcSettings.trainingEnabled)  nrcFlags |= nrc::flags::kTrain;
         if (nrcActive && m_nrcSettings.debugView)        nrcFlags |= nrc::flags::kDebugView;
-        if (nrcActive && m_nrcSettings.sharpReflections) nrcFlags |= nrc::flags::kSharpReflections;
         nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
         rsConsts[24] = nrcFlags;
         memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);

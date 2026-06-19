@@ -27,9 +27,10 @@ static tcnn::json BuildNetworkConfig() {
         //session rejected plain per-channel RelativeL2 for asymmetric-gradient
         //dark-scene overshoot. RelativeL2Luminance is the shared-luminance-
         //denominator variant (one scalar denom, no per-channel collapse) and
-        //is being re-evaluated on the current config (4x128, log2=19, 1.5x
-        //data, roughness-gated emit) -- WATCH dark/indirect regions for slow
-        //upward brightness drift, that is the failure signature.
+        //is being re-evaluated on the current config (4x64 FullyFusedMLP +
+        //TriangleWave(14) encoder, 1.5x data, roughness-gated emit) -- WATCH
+        //dark/indirect regions for slow upward brightness drift, the failure
+        //signature.
         {"loss", {{"otype", "RelativeL2Luminance"}}},
         {"optimizer", {
             {"otype",         "Adam"},
@@ -57,16 +58,24 @@ static tcnn::json BuildNetworkConfig() {
                 //occupancy. TriangleWave is a fixed (non-learned) basis: pure
                 //ALU, no lookups, no encoder backward, no encoder params in
                 //the optimizer, tiny register footprint. Trade is lower
-                //spatial resolution in the cache -- acceptable here because
-                //the cache only fires at x3+ (deep bounces) where the radiance
-                //it represents is low-frequency indirect GI. n_frequencies=12
-                //matches tcnn's documented NRC-replication config. To revert,
-                //restore the Grid/Hash block (log2_hashmap_size 19,
-                //base_resolution 16, per_level_scale 1.38, 16 levels x 2).
+                //spatial resolution in the cache. n_frequencies bumped 12->14
+                //(2026-06-19): the network is now ALSO trained on x1 / visible
+                //primary surfaces (the ReSTIR x1 gather, Pass_nrc_train_gather_v8),
+                //not only deep low-frequency bounces, so the encoder benefits from
+                //a finer spatial basis. TriangleWave is lookup-free (pure ALU, no
+                //learned params, no encoder backward), so raising the frequency
+                //count is cheap and contract-safe (raw input dim unchanged at 17;
+                //tcnn n_params + the EMA buffer auto-resize in Init/ReinitWeights).
+                //NOTE the DISPLAYED cache still only FIRES at x3+ (deep, area-spread
+                //gated, low-frequency) vertices -- so treat this as an A/B knob and
+                //measure deep-GI sharpening; revert to 12 if it adds flicker. To
+                //drop the encoder entirely, restore the Grid/Hash block
+                //(log2_hashmap_size 19, base_resolution 16, per_level_scale 1.38,
+                //16 levels x 2) -- but that path was tried and reverted (L2-bound).
                 tcnn::json{
                     {"n_dims_to_encode", 3u},
                     {"otype",            "TriangleWave"},
-                    {"n_frequencies",    12u},
+                    {"n_frequencies",    14u},
                 },
                 tcnn::json{
                     {"n_dims_to_encode", 3u},
@@ -92,7 +101,26 @@ static tcnn::json BuildNetworkConfig() {
 
         {"network", {
             {"otype",             "FullyFusedMLP"},
-            {"activation",        "ReLU"},
+            //LeakyReLU (slope 0.01), NOT plain ReLU: dark scenes drive long
+            //stretches of near-zero training targets, and the RelativeL2Luminance
+            //gradient 2*(pred-tgt)/(lum^2+0.01) vanishes when both pred and tgt
+            //are ~0 -- so plain-ReLU units that drift to a negative pre-activation
+            //get ZERO gradient, die permanently, and cascade the whole net to an
+            //all-zero output (the "dark-scene collapse" the Renderer.cpp collapse
+            //detector reinits as a band-aid -- which just re-collapses while the
+            //scene stays dark). LeakyReLU's 0.01 negative-slope keeps a gradient
+            //alive through negative units so they recover on their own. It is a
+            //first-class FullyFusedMLP activation (fully_fused_mlp.cu dispatch),
+            //so SAME fused tensor-core perf as ReLU, no CutlassMLP fallback. For
+            //positive activations it is identical to ReLU, so the learned function
+            //and prior tuning are essentially preserved. The ReSTIR x1 training
+            //target (Pass_nrc_train_gather_v8) is low-variance, so dark regions
+            //feed CONSISTENTLY near-zero targets (fewer bright path-traced kicks),
+            //which made the plain-ReLU collapse easier to trigger -- LeakyReLU
+            //removes the failure mode rather than relying on those kicks.
+            //Escalation if collapse ever persists: Squareplus (smooth, no dead
+            //zone at all, but shifts activations positive -> more tuning drift).
+            {"activation",        "LeakyReLU"},
             {"output_activation", "None"},
             {"n_neurons",         kHiddenWidth},
             {"n_hidden_layers",   kHiddenLayers},
@@ -115,12 +143,14 @@ __device__ __forceinline__ float3 unpack_rgb9e5(uint32_t p) {
 
 //NaN/Inf -> 0, negatives -> 0, caps magnitude to prevent Adam moment spikes.
 //Under L2 the gradient is 2(pred-target), so worst-case per-sample gradient
-//magnitude is exactly 2 * kTargetMax = 20. Aggressive cap chosen alongside
-//log2_hashmap_size=21 (more spatial entries, fewer samples per cell) -- the
-//tighter cap compensates for the lower per-cell density by guaranteeing no
-//single rare bright NEE sample can drift the cell prediction far. Will dim
-//physically bright surfaces (strong direct sun, specular peaks); accept
-//that trade for full stability in dark scenes.
+//magnitude is exactly 2 * kTargetMax = 20. The cap guarantees no single rare
+//bright NEE sample can drift the prediction far. Will dim physically bright
+//surfaces (strong direct sun, specular peaks) -- but the demodulated targets
+//sit well under 10 at default exposure (e.g. direct sun ~ sunIntensity/PI),
+//so clipping is rare in practice; accept the trade for full stability in dark
+//scenes. (Historical note: the cap was first tuned against a hash-grid encoder
+//for low per-cell density; the encoder is now lookup-free TriangleWave, but the
+//moment-spike rationale stands independent of the encoder.)
 constexpr float kTargetMax = 1.0e1f;
 __device__ __forceinline__ float safe_target(float v) {
     if (!isfinite(v)) return 0.0f;
@@ -545,10 +575,15 @@ struct Network::Impl {
 
     //EMA weights, inference reads emaParams, training mutates raw params.
     //emaAlpha is a fixed smoothing factor. An adaptive brightness-keyed
-    //emaAlpha was tried and reverted -- a constant 0.97 was preferred.
+    //emaAlpha was tried and reverted -- a constant is preferred. History
+    //(2026-06-19): tried LOWERING 0.97->0.95 (faster EMA, betting the
+    //pre-denoised ReSTIR x1 target tolerated less smoothing) -- that was BAD
+    //(user-reported), the cache wants MORE temporal smoothing, not less. Set
+    //to 0.98 (slower than the original 0.97) for stronger stability. Higher =
+    //more smoothing / more lag; do NOT lower it.
     tcnn::network_precision_t* emaParams = nullptr;
     size_t                     nParams   = 0;
-    float                      emaAlpha  = 0.97f;
+    float                      emaAlpha  = 0.98f;
     uint64_t                   emaStep   = 0;
 
     //last frame's valid vertex count, drives adaptive-tile feedback
@@ -607,9 +642,17 @@ struct Network::Impl {
     //private stream, training overlaps next frame's raygen
     //inferenceDoneEvent, main stream -> auxStream before reading inferenceOut
     //trainDoneEvent, auxStream -> main stream before next inference reads emaParams
+    //graphicsDoneEvent, main stream -> auxStream so the fill kernel's read of
+    //  trainRecords is ordered after the D3D12 graphics writes (the x1 gather
+    //  pass). Recorded on the caller's main stream inside TrainFrame, which by
+    //  then has already waited on the D3D12 interop fence (CudaWait in the
+    //  dispatcher), so the event completing implies the gather's UAV writes are
+    //  visible. Needed because TrainFrame now runs in a LATE cuda op, after the
+    //  gather pass, so inferenceDoneEvent (recorded earlier) no longer covers it.
     cudaStream_t               auxStream             = nullptr;
     cudaEvent_t                inferenceDoneEvent    = nullptr;
     cudaEvent_t                trainDoneEvent        = nullptr;
+    cudaEvent_t                graphicsDoneEvent     = nullptr;
 
     bool ready = false;
 };
@@ -665,6 +708,8 @@ bool Network::Init() {
         if (cudaEventCreateWithFlags(&m_impl->inferenceDoneEvent,
                                      cudaEventDisableTiming) != cudaSuccess) return false;
         if (cudaEventCreateWithFlags(&m_impl->trainDoneEvent,
+                                     cudaEventDisableTiming) != cudaSuccess) return false;
+        if (cudaEventCreateWithFlags(&m_impl->graphicsDoneEvent,
                                      cudaEventDisableTiming) != cudaSuccess) return false;
 
         //EMA starts at zero, bias correction formula requires it
@@ -752,6 +797,10 @@ void Network::Shutdown() {
     if (m_impl->trainDoneEvent) {
         cudaEventDestroy(m_impl->trainDoneEvent);
         m_impl->trainDoneEvent = nullptr;
+    }
+    if (m_impl->graphicsDoneEvent) {
+        cudaEventDestroy(m_impl->graphicsDoneEvent);
+        m_impl->graphicsDoneEvent = nullptr;
     }
     m_impl->nParams = 0;
     m_impl->emaStep = 0;
@@ -1081,12 +1130,29 @@ void Network::TrainFrame(
 {
     if (!m_impl->ready) return;
     if (!trainRecordsDevPtr) return;
-    //ignore caller's main stream, run on auxStream to overlap next frame's work
-    (void)streamPtr;
-    cudaStream_t stream = m_impl->auxStream;
+    //run the fill + SGD on auxStream so it overlaps the rest of this frame's
+    //graphics (shading/dlss/post) and next frame's raygen -- the dispatcher's
+    //CudaSignal(postVal) is on the MAIN stream, so auxStream work is NOT gated
+    //before the D3D12 list reopens.
+    cudaStream_t stream     = m_impl->auxStream;
+    cudaStream_t mainStream = static_cast<cudaStream_t>(streamPtr);
+
+    //Order auxStream after the caller's main stream. TrainFrame now runs in a
+    //LATE cuda op (after Pass_nrc_train_gather_v8 writes the x1 rows into
+    //trainRecords); by the time this lambda runs the dispatcher has already
+    //issued CudaWait(D3D12 fence) on `mainStream`, so an event recorded on
+    //mainStream here completes only after the gather's UAV writes are visible.
+    //Without this, the fill kernel below would read trainRecords on auxStream
+    //concurrently with the still-in-flight D3D12 gather pass -> torn meta /
+    //missing x1 rows. (inferenceDoneEvent, recorded back in the early
+    //cuda:nrc_inference op, does NOT cover the gather.)
+    if (mainStream && m_impl->graphicsDoneEvent) {
+        cudaEventRecord(m_impl->graphicsDoneEvent, mainStream);
+        cudaStreamWaitEvent(stream, m_impl->graphicsDoneEvent, 0);
+    }
 
     //wait for this frame's inference to finish writing inferenceOut
-    //class-1 backward fill reads those outputs, would race without this barrier
+    //class-1 backward fill reads those outputs (kTailCache), would race without this
     cudaStreamWaitEvent(stream, m_impl->inferenceDoneEvent, 0);
 
     //Only the counter needs a reset, the fill kernel atomicAdds into it.

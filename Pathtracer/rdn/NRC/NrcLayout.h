@@ -18,9 +18,6 @@ struct Settings {
     bool  enabled            = true;
     bool  trainingEnabled    = true;
     bool  debugView          = false;
-    //x1 sharp-reflection split: NRC tap on the perfect-mirror reflection ray
-    //plus BSDF specialisation at the primary hit. Off = legacy DLSS-RR-only path.
-    bool  sharpReflections   = true;
     float areaSpreadC        = 0.01f;
     float learningRateScale  = 1.0f;
     //scene AABB normalization, x_norm = (x-center)/extent + 0.5
@@ -35,7 +32,7 @@ namespace flags {
     constexpr uint32_t kEnabled         = 1u << 0;
     constexpr uint32_t kTrain           = 1u << 1;
     constexpr uint32_t kDebugView       = 1u << 2;
-    constexpr uint32_t kSharpReflections = 1u << 3;
+    //bit 3 free (was kSharpReflections, removed with the dead sharp-reflection feature)
     constexpr uint32_t kTileShift       = 8u;
     constexpr uint32_t kTileMask        = 0xFFu;
 }
@@ -43,8 +40,8 @@ namespace flags {
 //====================================
 //NETWORK DIMENSIONS
 //====================================
-//raw feature vector, tcnn composite expands to 75 dims internally
-//0..2 position (HashGrid)
+//raw feature vector (17 floats); tcnn composite encoding expands it internally
+//0..2 position (TriangleWave, 14 frequencies)
 //3..5 scattered dir, unit 3-vec *0.5+0.5 (SH deg 4)
 //6..8 normal, unit 3-vec *0.5+0.5 (SH deg 4)
 //9    roughness 1-exp(-r) (OneBlob 4 bins)
@@ -58,14 +55,15 @@ constexpr uint32_t kOutputDim    = 3;
 //per-path bucket cap, deeper paths drop tail vertices
 constexpr uint32_t kMaxVerticesPerPath = 8u;
 
-//4 hidden x 64 ReLU, FullyFusedMLP tensor-core path. Width is from the fused
-//path's supported set {16,32,64,128}; wider forces the ~2x slower CutlassMLP.
-//Was briefly 128 (widened when inference looked encoder-bound, so the extra
-//MLP FLOPs were ~free at query time) -- narrowed back to 64 (the Müller 2021
-//width) because TRAINING backprops through the MLP and does pay for width,
-//and training wall-time was the concern. Depth kept at 4 to limit dying-ReLU
-//compounding in dark scenes; the collapse detector in Renderer.cpp is the
-//backstop if a unit cascade still fires. EMA buffer + tcnn params auto-resize
+//4 hidden x 64 LeakyReLU, FullyFusedMLP tensor-core path. Width is from the
+//fused path's supported set {16,32,64,128}; wider forces the ~2x slower
+//CutlassMLP. Was briefly 128 (widened when inference looked encoder-bound, so
+//the extra MLP FLOPs were ~free at query time) -- narrowed back to 64 (the
+//Müller 2021 width) because TRAINING backprops through the MLP and does pay
+//for width, and training wall-time was the concern. Depth kept at 4. Dark-scene
+//dying-unit collapse is now handled at the ACTIVATION (LeakyReLU, see
+//BuildNetworkConfig) rather than by limiting depth; the Renderer.cpp collapse
+//detector stays as a backstop. EMA buffer + tcnn params auto-resize
 //from network->n_params() in Network::Init / ReinitWeights, no other code
 //keys off these two constants.
 constexpr uint32_t kHiddenWidth  = 64;
@@ -130,14 +128,17 @@ constexpr uint32_t kMaxTrainingTileSide     = 32u;
 //Set to 16 (paper's value). An earlier session found denom>1 caused
 //brightness creep in indirect regions -- biased paths seed their training
 //target with the cache's own prediction, a self-reinforcement loop. That
-//finding was on the old config (4x64 MLP, log2=21, 1x training data, no
-//roughness emit-gate). Re-enabled at 16 because the current config (4x128
-//MLP, log2=19 denser cells, 1.5x training data, training-eligibility
+//finding was on an older config (hash-grid encoder, 1x training data, no
+//roughness emit-gate). Re-enabled at 16 because the CURRENT config (4x64
+//FullyFusedMLP + lookup-free TriangleWave(14) position encoder -- NO hash
+//grid, see BuildNetworkConfig; 1.5x training data; training-eligibility
 //roughness gate) should make the cache accurate enough that the loop
 //stays stable -- AND because 15/16 paths short-circuiting into the cache
 //is a large raygen cost saving vs tracing 8 full bounces. kTargetMax=10
-//is the backstop. WATCH: slow overbrightening of GI/indirect regions over
-//tens of seconds; if it returns, drop back toward 1.
+//is the backstop. NOTE the x1-from-ReSTIR change keeps a cache-FREE
+//path-traced x1 row on exactly these 1/16 unbiased pixels (raygen), which
+//is the anchor that holds this loop. WATCH: slow overbrightening of
+//GI/indirect regions over tens of seconds; if it returns, drop toward 1.
 //Mirror: NRC_UNBIASED_DENOM in shaders/Nrc_v8.hlsli must match.
 constexpr uint32_t kUnbiasedDenom = 16u;
 

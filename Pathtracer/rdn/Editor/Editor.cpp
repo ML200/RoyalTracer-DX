@@ -638,13 +638,6 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
         ImGui::Checkbox("Train", &n.trainingEnabled);
         ImGui::SetItemTooltip("Off = weights frozen, inference still runs against whatever state was last trained.");
 
-        ImGui::Checkbox("Sharp reflections (x1 inline RayQuery)", &n.sharpReflections);
-        ImGui::SetItemTooltip(
-            "Off = no x1 mirror-reflection NRC tap. This is the ONLY cache path\n"
-            "that fires a second inline RayQuery inside the SER/HitObject raygen;\n"
-            "toggle it to test whether the ray-miss/black-tile artifact is the\n"
-            "inline-RayQuery-vs-SER interaction.");
-
         if (ImGui::Button("Reinitialize weights")) {
             n.requestReinit = true;
         }

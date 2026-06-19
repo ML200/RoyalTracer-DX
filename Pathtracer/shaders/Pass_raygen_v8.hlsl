@@ -351,9 +351,8 @@ void Pass_raygen_v8()
     //slot 1 primary emitter/sky, slot 3 unused
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
-    //slot 7 sharp refl control rgb=Fresnel w=NRC slot, slot 8 raw env radiance
-    gScratchPing[uint3(pixel, 7)] = float4(0, 0, 0, asfloat(NRC_INVALID_SLOT));
-    gScratchPing[uint3(pixel, 8)] = float4(0, 0, 0, 0);
+    //slots 7/8 (x1 sharp-reflection control + raw env radiance) removed with the
+    //dead sharpReflections feature; they were never written with real data.
     //slot 9 NRC debug L_s, postprocess reads even when NRC debug pass skips this pixel
     gScratchPing[uint3(pixel, 9)] = float4(0, 0, 0, 0);
 
@@ -703,7 +702,23 @@ void Pass_raygen_v8()
                 PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
                 PackRGB9E5(NrcCleanRadiance(updateWeight)));
 
-            if (ctx.hitLocalPr >= (half)NRC_TRAIN_ROUGHNESS_MIN)
+            //x1 (vIdx 0) normally trains from the converged ReSTIR reservoir in
+            //Pass_nrc_train_gather_v8 (AFTER the reuse passes), NOT from this
+            //single path sample -- so its emit bit stays clear and the fill
+            //kernel emits no path-traced x1 row. The vertex is still STORED and
+            //walked, so v2's backward-fill target is unchanged (v2 reads its own
+            //L_nee + beta*tail; x1's L_s[0] is the chain's last step, unconsumed).
+            //
+            //EXCEPTION -- NRC_CLASS_TRAIN_UNBIASED pixels (1/kUnbiasedDenom of
+            //training pixels) NEVER fire the cache (cacheElig is false for them),
+            //so their fully-traced path yields a genuinely CACHE-FREE x1 target.
+            //Keep that anchor: emit x1 here for them. The gather skips these same
+            //pixels (NrcClassifyPixel agrees frame-to-frame) so x1 is never double-
+            //emitted. This re-establishes the kUnbiasedDenom anti-feedback contract
+            //at the visible surface at zero extra variance (the path is traced
+            //fully regardless). v2+ (vIdx>=1) always train from the path here.
+            const bool x1AnchorPix = (pk_pclass(nrcStateA) == NRC_CLASS_TRAIN_UNBIASED);
+            if ((vIdx != 0u || x1AnchorPix) && ctx.hitLocalPr >= (half)NRC_TRAIN_ROUGHNESS_MIN)
                 atomic_or_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx, 1u << vIdx);
 
             nrcStateA = pk_set_vidx(nrcStateA, vIdx + 1u);
