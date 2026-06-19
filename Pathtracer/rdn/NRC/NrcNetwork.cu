@@ -33,12 +33,11 @@ static tcnn::json BuildNetworkConfig() {
         {"loss", {{"otype", "RelativeL2Luminance"}}},
         {"optimizer", {
             {"otype",         "Adam"},
-            //Müller-matched Adam: lr 1e-2 + standard betas + standard tcnn
-            //epsilon/l2_reg. Replaces the prior hand-tuned set (lr 2e-3,
-            //beta2 0.995, epsilon 1e-4, l2_reg 1e-5) which was tuned around
-            //the plain-L2 loss; this set tracks the paper's recipe and pairs
-            //with the scale-invariant RelativeL2Luminance loss above.
-            {"learning_rate", 1.0e-2f},
+            //Müller-matched Adam: lr (kBaseLearningRate = 1e-2) + standard betas +
+            //standard tcnn epsilon/l2_reg, paired with the scale-invariant
+            //RelativeL2Luminance loss above. Runtime-scalable via the editor's
+            //learningRateScale (Network::SetLearningRate); default scale is 1.0.
+            {"learning_rate", kBaseLearningRate},
             {"beta1",         0.9f},
             {"beta2",         0.999f},
             {"epsilon",       1e-8f},
@@ -823,6 +822,15 @@ bool Network::ReinitWeights() {
         m_impl->ready = false;
         return false;
     }
+}
+
+void Network::SetLearningRate(float lr) {
+    if (!m_impl->ready || !m_impl->model.optimizer) return;
+    //clamp to a sane band so a mis-set slider can't freeze or destabilise
+    //training. Upper bound is the base 1e-2 (kBaseLearningRate); scale>1 saturates.
+    if (lr < 0.0f) lr = 0.0f;
+    if (lr > 1.0e-2f) lr = 1.0e-2f;
+    m_impl->model.optimizer->set_learning_rate(lr);
 }
 
 //Lazy allocate the spatial sort scratch when the first inference call lands

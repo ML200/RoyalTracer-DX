@@ -43,6 +43,12 @@ public:
     //caller must ensure no in-flight NRC ops on the main stream
     bool ReinitWeights();
 
+    //live Adam learning-rate override (no rebuild). Caller passes
+    //kBaseLearningRate * Settings.learningRateScale each frame so the editor
+    //slider can throttle training to stop fp16 divergence on HDR scenes.
+    //No-op if not ready.
+    void SetLearningRate(float lr);
+
     //count must be multiple of kBatchGranularity, caller pads
     void Inference(
         void*        stream,

@@ -58,12 +58,27 @@ void main(uint3 dtid : SV_DispatchThreadID)
 
     //L2 and F match raygen's emitter hit convention
     const float3 L2        = L_s * tpost;
-    const float3 F_contrib = throughput * L_s * pdfProduct;
 
-    //no MIS, cache covers all radiance at xk
-    const float p_full = pdfProduct;
-    const float p_hat  = GetPHat(F_contrib);
-    const float wi     = (p_full > 1e-20f) ? (p_hat / p_full) : 0.0f;
+    //no MIS, cache covers all radiance at xk. This is the SOLE reservoir
+    //candidate for a cache-terminated pixel: raygen breaks the bounce loop at
+    //the cache fire and DEFERS W/M/F finalization here, so for a shadowed pixel
+    //wsum enters as 0 and the cache is the only thing that can populate the
+    //reservoir. F_contrib is pdf-scaled to match raygen's emitter convention,
+    //but a tiny deep-path pdfProduct drives GetPHat(F_contrib) below
+    //AddInitialCandidate's 1e-20 reject gate -> the SOLE candidate is dropped ->
+    //wsum stays 0 -> W=0 -> InvalidateReservoir -> the pixel loses its only GI
+    //source and renders as a BLACK screen tile. Because the cache fires at the
+    //stochastic depth>=3 vertex (and clusters on coherent geometry) the black
+    //set is screen-tile-aligned and varies per frame, over an otherwise-clean
+    //image. FLOOR pdfProduct so it can't underflow the gate: the floor cancels
+    //exactly in F*W (= throughput*L_s) so it is unbiased, it keeps the pdf-scaled
+    //convention consistent with raygen's DI candidates (reuse-safe), and it caps
+    //the reuse UCW (W=1/p_full) against fireflies. The gate now only drops
+    //genuinely-zero radiance, not a valid-but-deep cache sample.
+    const float  p_full    = max(pdfProduct, 1e-6f);
+    const float3 F_contrib = throughput * L_s * p_full;
+    const float  p_hat     = GetPHat(F_contrib);
+    const float  wi        = p_hat / p_full;
 
     float wsum = load_wsum(g_Reservoirs_current, pixelIdx);
     uint  seed = initRandomData(pixel, uint2(11, 17), time, 5u);

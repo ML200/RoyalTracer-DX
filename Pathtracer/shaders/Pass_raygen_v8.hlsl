@@ -41,12 +41,12 @@ inline uint pk_set_cterm (uint s)         { return s | NRC_PK_CACHETERM_BIT; }
 //====================================
 //NRC AREA-SPREAD BOOKKEEPING GATE
 //====================================
-//NRC TEMPORARILY DISABLED (planet bring-up) - DO NOT REMOVE, mirrors the
-//pathClassInit / cacheElig overrides inside Pass_raygen_v8. While the cache
-//check is forced off, the nrcA/nrcA0 area-spread scratch round trips are
-//pure memory traffic with no consumer, so they are gated here too.
-//Re-enable together with those overrides.
-static const bool NRC_AREA_SPREAD_ACTIVE = false;
+//Master gate for the nrcA/nrcA0 area-spread scratch round trips that feed
+//NrcShouldCacheTerminate's spread heuristic ((a*a) > kGate*a0). Must stay in
+//lockstep with the cacheElig path inside Pass_raygen_v8: with this false the
+//heuristic degenerates to 0 > 0 and the cache never fires, so it is true
+//whenever NRC is live.
+static const bool NRC_AREA_SPREAD_ACTIVE = true;
 
 //====================================
 //PER-VERTEX SURFACE STATE (loop-carried)
@@ -316,17 +316,6 @@ void Pass_raygen_v8()
                                           clsTraining, clsUnbiased);
     if (!(clsTraining && NrcIsTrainOn())) pathClassInit = NRC_CLASS_RENDER;
 
-    //==================== NRC TEMPORARILY DISABLED ======================
-    //NRC is off during planet bring-up: the cuda:nrc_* / Pass_nrc_* passes
-    //are commented terrain in Renderer.cpp and the NRC editor panel is disabled.
-    //Forcing RENDER class keeps nrcPathId == NRC_INVALID_PATH, so every NRC
-    //training / path-record write below self-gates to a no-op. The NRC code
-    //that follows is intentionally left in place - DO NOT REMOVE IT. Re-enable
-    //NRC by deleting this override (and the cacheElig override further down)
-    //and un-commenting the NRC passes + editor panel.
-    pathClassInit = NRC_CLASS_RENDER;
-    //====================================================================
-
     NrcClearPendingGI(pixelIdx);
 
     //packed mutable NRC state: hitIdx, trainVIdx, pathClass, prevSpec,
@@ -481,10 +470,7 @@ void Pass_raygen_v8()
         //pathClass (bits 10..11) so no extra live register survives.
         {
             const uint  nrcPClass = pk_pclass(nrcStateA);
-            //NRC TEMPORARILY DISABLED (planet bring-up) - DO NOT REMOVE.
-            //Original: cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
-            //Forcing false stops the NRC cache short-circuiting the bounce loop.
-            const bool  cacheElig = false;
+            const bool  cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
             const float nrcA0     = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA0(g_pathStateBuffer, pixelIdx) : 0.0f;
             const float nrcA      = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA (g_pathStateBuffer, pixelIdx) : 0.0f;
             const bool  shouldFire = !prevSpec &&

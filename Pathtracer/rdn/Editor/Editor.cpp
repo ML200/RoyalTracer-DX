@@ -59,7 +59,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
-            //ImGui::MenuItem("NRC",             nullptr, &m_showNRC);   // NRC disabled (planet bring-up)
+            ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
@@ -93,7 +93,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
-    //if (m_showNRC)       DrawNRCPanel(nrc);   // NRC disabled (planet bring-up)
+    if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showClouds)    DrawCloudPanel(camera);
     if (m_showMaterials) DrawMaterialInspector(scene, camera);
@@ -637,6 +637,13 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
 
         ImGui::Checkbox("Train", &n.trainingEnabled);
         ImGui::SetItemTooltip("Off = weights frozen, inference still runs against whatever state was last trained.");
+
+        ImGui::Checkbox("Sharp reflections (x1 inline RayQuery)", &n.sharpReflections);
+        ImGui::SetItemTooltip(
+            "Off = no x1 mirror-reflection NRC tap. This is the ONLY cache path\n"
+            "that fires a second inline RayQuery inside the SER/HitObject raygen;\n"
+            "toggle it to test whether the ray-miss/black-tile artifact is the\n"
+            "inline-RayQuery-vs-SER interaction.");
 
         if (ImGui::Button("Reinitialize weights")) {
             n.requestReinit = true;

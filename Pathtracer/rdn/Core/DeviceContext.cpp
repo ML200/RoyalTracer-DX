@@ -163,6 +163,20 @@ void DeviceContext::FlushAndReset() {
 //allocator NOT reset, in-flight work still reads from it, reuse until next BeginFrame
 void DeviceContext::CloseExecuteAndSignal(ID3D12Fence* extFence, UINT64 value) {
     ThrowIfFailed(cmdList->Close());
+
+    // PLANET_INTEGRATION / NRC: gate this split segment on the planet-compute
+    // TLAS build, exactly as ExecuteAndPresent does for the final segment. The
+    // unified SceneBVH that raygen traverses is rebuilt IN PLACE on the compute
+    // queue each frame; the graphics queue MUST wait on it before any segment
+    // that runs raygen. When the NRC cuda ops split the command list mid-frame,
+    // raygen lands in one of these early segments — without this Wait it executes
+    // concurrently with the half-written TLAS rebuild and whole warps/SM-tiles
+    // miss all geometry. Requires submit_work() to be sequenced BEFORE
+    // PopulateCommandList() so planetComputeAtSlot[frameIndex] holds THIS frame's
+    // build value (see Renderer::RenderFrame). Re-waiting an already-passed
+    // timeline value on later splits / ExecuteAndPresent is a harmless no-op.
+    cmdQueue->Wait(planetComputeFence.fence(), planetComputeAtSlot[frameIndex]);
+
     ID3D12CommandList* lists[] = { cmdList.Get() };
     cmdQueue->ExecuteCommandLists(1, lists);
     ThrowIfFailed(cmdQueue->Signal(extFence, value));

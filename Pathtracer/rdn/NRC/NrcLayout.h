@@ -74,6 +74,13 @@ constexpr uint32_t kHiddenLayers = 4;
 //tcnn batch granularity
 constexpr uint32_t kBatchGranularity = 256;
 
+//Base Adam learning rate (the tuned "Müller-matched" 1e-2; the network trains
+//fine at this rate). Effective rate = kBaseLearningRate * Settings.learningRateScale,
+//applied live each frame via Network::SetLearningRate. Previously the slider was
+//inert — only pushed to a shader constant, never reaching the CUDA optimizer —
+//so this just makes it a working runtime knob (default scale 1.0 = unchanged).
+constexpr float kBaseLearningRate = 1.0e-2f;
+
 //per-frame training schedule. kTrainingBatchSize is the legacy floor for
 //the original fixed-target design; the actual SGD per-batch row count is
 //computed at runtime from validVertices/kTrainingBatchesPerFrame so the

@@ -25,14 +25,14 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_debug_v8.hlsl|rg",                       L"barrier",
     });*/
     m_passes.Build({
-        //L"cuda:nrc_frame_begin",                      L"barrier",   // NRC disabled (planet bring-up)
+        L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
-        //L"cuda:nrc_inference",                        L"barrier",   // NRC disabled
-        //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",           L"barrier",   // NRC disabled
-        //L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",       L"barrier",   // NRC disabled
-        //L"cuda:nrc_debug_inference",                  L"barrier",   // NRC disabled
-        //L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",     L"barrier",   // NRC disabled
+        L"cuda:nrc_inference",                          L"barrier",
+        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
+        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        L"cuda:nrc_debug_inference",                    L"barrier",
+        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
@@ -112,14 +112,25 @@ void Renderer::InitDevice() {
             });
 
             // ── NRC setup ─────────────────────────────────────────
-            // Cap inference capacity at 2 × W*H so each pixel can fit a
+            // Cap inference capacity at 2 × pixels so each pixel can fit a
             // cache-termination record AND a depth-0 sharp-reflection record
             // (raygen splits the BSDF on smooth dielectric x1 hits and queries
             // NRC at the perfect-mirror reflection's hit point). Round up to
             // tcnn's batch granularity. The debug view's inference reuses
             // these buffers — it runs after the main chain has already
             // consumed them.
-            const uint32_t pixelCount = GetWidth() * GetHeight();
+            //
+            // Use the TILE-ALIGNED pixel count, not W*H. PendingGI is indexed
+            // by MapPixelID (the 8×4 tile swizzle), whose max index is
+            // TileAlignedPx(W,H) == ps_numPx() — strictly greater than W*H at
+            // any render resolution that isn't a multiple of (8,4), which is
+            // common at DLSS render scales. Sizing at W*H let raygen's
+            // NrcWriteTerminationRecord / NrcClearPendingGI scribble past the
+            // buffer end and let resolve read uninitialised slots → garbage
+            // NRC output → corrupted reservoirs. Every other MapPixelID-indexed
+            // buffer (path-state, reservoirs, sample data) already uses
+            // TileAlignedPx; NRC was the one that didn't.
+            const uint32_t pixelCount = TileAlignedPx(GetWidth(), GetHeight());
             m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
             m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
 
@@ -214,6 +225,12 @@ void Renderer::InitDevice() {
                 //driver bookkeeping overhead of one full cmd list
                 //close/reopen per frame, which Nsight measured at
                 //multiple ms in large scenes.
+                //Live LR override: the editor's learningRateScale was inert
+                //(only pushed to a shader constant, never applied to the Adam
+                //optimizer). Now it scales the base 1e-2 so the rate is tunable
+                //at runtime; default scale 1.0 leaves the tuned rate unchanged.
+                m_nrcNetwork.SetLearningRate(nrc::kBaseLearningRate * m_nrcSettings.learningRateScale);
+
                 m_nrcNetwork.TrainFrame(
                     s,
                     m_nrcTrainRecords.cudaPtr,
@@ -236,7 +253,12 @@ void Renderer::InitDevice() {
                 [this]{
                     if (!m_nrcReady || !m_nrcSettings.enabled || !m_nrcSettings.debugView) return;
                     void* s = m_cudaInterop.Stream();
-                    const uint32_t count   = GetWidth() * GetHeight();
+                    // Debug query writes one record per pixel at slot = MapPixelID
+                    // (the 8x4 tile swizzle), whose max index is TileAlignedPx, NOT
+                    // W*H — at non-tile-divisible render resolutions the high tiles
+                    // would be left un-inferred (stale -> black tiles in the debug
+                    // view). Must match the buffer sizing.
+                    const uint32_t count   = TileAlignedPx(GetWidth(), GetHeight());
                     const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
                     const uint32_t padded  = nrc::AlignBatch(clamped);
                     m_nrcNetwork.Inference(
@@ -1023,13 +1045,15 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateStreamingCompactionBuffers();
 
     // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
-    // sized to 2·W·H (worst case: every pixel issues a cache-termination
+    // sized to 2·px (worst case: every pixel issues a cache-termination
     // record AND a depth-0 sharp-reflection record), and PendingGI is one
     // slot per pixel — both grow if the user enlarges the window and raygen
     // would otherwise scribble past the end of the old buffer. TrainRecords
     // and Counters are fixed-size and don't need recreation.
+    // px is the TILE-ALIGNED pixel count (MapPixelID's index space), not
+    // W·H — see the init-time NRC setup for why this matters.
     if (m_nrcReady) {
-        const uint32_t pixelCount = newWidth * newHeight;
+        const uint32_t pixelCount = TileAlignedPx(newWidth, newHeight);
         m_nrcInferenceCapacity   = nrc::AlignBatch(pixelCount * 2u);
         //full cap for first post resize frame, shrinks again once a new count lands
         m_nrcDynamicInferenceCap = m_nrcInferenceCapacity;
@@ -1326,18 +1350,27 @@ void Renderer::RenderFrame() {
     // PCL: render submit start
     slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
 
-    auto t_popStart = hrc::now();
     try {
-        PopulateCommandList();
-        auto t_popEnd = hrc::now();
-        m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
-
-        // PCL: render submit end
-        slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
-
         // PLANET_INTEGRATION: rebuild the scene TLAS instance list, convert it
         // for the planet module, then submit the planet copy/BLAS work plus the
         // per-frame unified TLAS rebuild (scene meshes + terrain + fallback).
+        //
+        // ORDERING IS LOAD-BEARING: this MUST run BEFORE PopulateCommandList().
+        // The unified SceneBVH raygen traverses is rebuilt IN PLACE on the planet
+        // COMPUTE queue here, and the graphics queue gates on it via
+        // planetComputeFence (DeviceContext::ExecuteAndPresent AND, now,
+        // CloseExecuteAndSignal). When NRC is enabled, the cuda:* ops split the
+        // graphics command list mid-frame, so raygen's segment is submitted from
+        // inside PopulateCommandList — before this build used to run. With the old
+        // ordering, planetComputeAtSlot[frameIndex] still held the PREVIOUS frame's
+        // value during those splits, so the raygen segment executed with no wait
+        // on this frame's in-place TLAS rebuild -> raygen traversed a half-written
+        // TLAS -> warp/SM-aligned tiles missed ALL geometry (blocky dark tiles,
+        // only with the cache on; invisible with the cache off because then the
+        // whole frame is one list gated solely by ExecuteAndPresent). Submitting
+        // the build first makes planetComputeAtSlot[frameIndex] current for the
+        // splits. submit_work targets the compute queue + CPU-side instance data
+        // only, so it has no dependency on PopulateCommandList's graphics recording.
         m_scene.RebuildTLASInstanceList();
         BuildPlanetSceneInstances();
         //PLANET ROCKS: refresh the camera-following live set (hysteresis-gated
@@ -1359,6 +1392,14 @@ void Renderer::RenderFrame() {
         m_planet.submit_work(m_planetSceneInstances.data(),
                              (uint32_t)m_planetSceneInstances.size(),
                              terrainHitGroup);
+
+        auto t_popStart = hrc::now();
+        PopulateCommandList();
+        auto t_popEnd = hrc::now();
+        m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+
+        // PCL: render submit end
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
 
         // PCL: present start
         slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
@@ -1792,7 +1833,23 @@ void Renderer::PopulateCommandList() {
                 XMVectorGetZ(halfExt)
             });
             XMFLOAT3 c3; XMStoreFloat3(&c3, center);
-            m_nrcSettings.sceneCenter = { c3.x, c3.y, c3.z };
+            // FLOATING-ORIGIN FIX: inst.worldTransform is ABSOLUTE world (see
+            // BuildXformsFromScene, which subtracts sceneOriginWorld to produce
+            // the SHIFTED frame the GPU/TLAS actually use). raygen feeds
+            // NrcNormalizePosition the SHIFTED hitPos (absolute -
+            // sceneOriginWorld), so nrc_scene_center MUST live in that same
+            // shifted frame. Without this subtraction the center is off by
+            // sceneOriginWorld — the camera's 1 km origin snap — so every
+            // position feature lands far outside [0,1], saturate()s to a single
+            // HashGrid corner, the position encoding collapses, and the cache
+            // emits spatially-constant / blocky L_s. Extent is translation-
+            // invariant, so only the center needs shifting. (Floating origin was
+            // added while NRC was disabled, so this site never got migrated.)
+            m_nrcSettings.sceneCenter = {
+                c3.x - m_scene.sceneOriginWorld.x,
+                c3.y - m_scene.sceneOriginWorld.y,
+                c3.z - m_scene.sceneOriginWorld.z,
+            };
             // Floor at 1.0 so empty / single-point scenes don't divide
             // by zero in the shader normalization.
             m_nrcSettings.sceneExtent = std::max(ext, 1.0f);

@@ -30,7 +30,19 @@ void main(uint3 dtid : SV_DispatchThreadID)
         const float3 betaC   = lerp(float3(0.04f, 0.04f, 0.04f), kd, pm);
         const float3 reflSum = alpha + betaC;
 
-        L_s = NrcLoadInferenceOutput(pixelIdx) * reflSum;
+        //DIAGNOSTIC: read the RAW inference output (NrcLoadInferenceOutput hides
+        //NaN/Inf -> 0 via NrcCleanRadiance, which is indistinguishable from a
+        //genuinely-zero or stale/uninitialised slot). Surface non-finite output
+        //as a BRIGHT MAGENTA sentinel so we can tell apart:
+        //  magenta tile = the network EMITTED NaN/Inf  -> fp16 overflow in the
+        //                 FullyFusedMLP for that input (network numerics)
+        //  black tile   = genuine zero / stale slot     -> a memory/coverage issue
+        const uint   rawBase = pixelIdx * NRC_INFERENCE_OUT_STRIDE;
+        const float3 rawOut  = asfloat(g_NrcInferenceOut.Load3(rawBase));
+        if (any(isnan(rawOut)) || any(isinf(rawOut)))
+            L_s = float3(10.0f, 0.0f, 10.0f);   // NaN/Inf sentinel
+        else
+            L_s = max(rawOut, float3(0, 0, 0)) * reflSum;
     }
 
     gScratchPing[uint3(pixel, 9)] = float4(L_s, 1.0f);
