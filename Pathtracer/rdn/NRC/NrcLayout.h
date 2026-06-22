@@ -15,7 +15,7 @@ struct Float3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 //====================================
 //mirrored into push constants every frame
 struct Settings {
-    bool  enabled            = true;
+    bool  enabled            = false;  // off by default for now (toggle in the NRC panel)
     bool  trainingEnabled    = true;
     bool  debugView          = false;
     float areaSpreadC        = 0.01f;

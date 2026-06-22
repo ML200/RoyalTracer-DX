@@ -59,6 +59,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
+            ImGui::MenuItem("Initial Sampling", nullptr, &m_showInitialSampling);
             ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
@@ -93,6 +94,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
+    if (m_showInitialSampling) DrawInitialSamplingPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showClouds)    DrawCloudPanel(camera);
@@ -564,6 +566,26 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
                               "so their confidence M never accumulates - the flat high-variance band layered "
                               "over the clean (self-reprojected) pixels, worst at grazing angles / near lights. "
                               "Enable to give every pixel a stable history so M accumulates uniformly.");
+        ImGui::Checkbox("Disable reuse visibility (defer to resolve)##Temp", &rs.disableReuseVis);
+        ImGui::SetItemTooltip("Takes the reconnection shadow ray OUT of temporal AND spatial reuse and "
+                              "applies it ONCE where the spatial pass resolves F*W. Small/far lights behind "
+                              "thin high-frequency occluders (fences, poles) make x1->x2 visibility a near-"
+                              "binary function of the shading point; sub-pixel jitter slides that point across "
+                              "the occluder so vis flips 1->0, p_n=ph*vis collapses and the reservoir resets - "
+                              "reuse dies (clean top vs noisy side of a container). With this on the reuse "
+                              "target is UNSHADOWED so light selection keeps accumulating M under jitter, and "
+                              "the true visibility multiplies the final contribution once (unbiased). Residual "
+                              "single-ray shadow noise is left for DLSS RR. Raygen's NEE/sun visibility is "
+                              "untouched.");
+        ImGui::BeginDisabled(!rs.disableReuseVis);
+        ImGui::Checkbox("    + disable final resolve vis (unshadowed GI)##Temp", &rs.disableFinalVis);
+        ImGui::SetItemTooltip("Diagnostic. Also skips the ONE deferred reconnection shadow ray at the "
+                              "spatial resolve, so the reservoir GI is shown fully UNSHADOWED (the upper-bound "
+                              "brightness / what the unshadowed selection picks). Only meaningful with the "
+                              "toggle above on. The NRC gather follows it, training on the same unshadowed GI "
+                              "it displays. Expect light to leak through thin occluders - it's for isolating "
+                              "how much of the side-face variance is reuse-reset vs intrinsic shadow-ray noise.");
+        ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Spatial", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
@@ -571,46 +593,40 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SliderInt("Radius Min##Spat", &rs.spatRadMinGI, 4, 128);
         ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
     }
-    if (ImGui::CollapsingHeader("Cell Reuse (Stochastic Pairwise MIS)")) {
-        ImGui::Checkbox("Use cell reuse##Cell", &rs.useCellSpatGI);
-        ImGui::SetItemTooltip("Hedstrom et al. 2026. Replaces the texture-paired "
-                              "spatial path with tile-local (8x8) stochastic "
-                              "pairwise-MIS reuse. Needs Spatial enabled.");
-        ImGui::BeginDisabled(!rs.useCellSpatGI);
-        ImGui::SliderInt("N candidates##Cell",  &rs.cellN,  1, 8);
-        ImGui::SetItemTooltip("Ntilde: non-canonical samples shifted per pixel (paper: 3). "
-                              "Capped at 8 (NT_MAX in Pass_spat_gi_cell_v8) so the per-draw "
-                              "reservoir state stays in registers; >3 gives diminishing returns.");
-        ImGui::SliderInt("Search iters##Cell",  &rs.cellSearchIters, 1, 32);
-        ImGui::SetItemTooltip("§5.1 cell-search WRS iterations (paper: 12). More = "
-                              "better chance of finding a good cell in disocclusions.");
-        ImGui::SliderInt("Search radius##Cell", &rs.cellRadius, 2, 256);
-        ImGui::SetItemTooltip("§5.1 initial search radius in px (paper: 30); grows "
-                              "x1.25 per iter to reach past disocclusions.");
-        ImGui::SliderInt("M-cap##Cell",         &rs.cellMcap, 1, 100);
-        ImGui::SetItemTooltip("Confidence cap for cell-mode reservoirs (paper: 20). "
-                              "Lower curbs boiling from a dominant sample.");
-        ImGui::Checkbox("Ignore normals (perf A/B)##Cell", &rs.cellIgnoreNormals);
-        ImGui::SetItemTooltip("Skip the per-tap normal-cone coherence test (key cells on "
-                              "instID only), removing ~76 UnpackNormal taps/px. May reintroduce "
-                              "boiling / an edge grid on curved or glossy surfaces - A/B under DLSS RR.");
-        ImGui::Checkbox("Compatibility-guided (Junkins)##Cell", &rs.useCompatNeighbors);
-        ImGui::SetItemTooltip("Junkins et al. 2026. Replaces the binary 0.9 normal cone with a LOOSER "
-                              "membership floor (wider pool -> more pixels get reuse instead of canonical-only "
-                              "passthrough) + a continuous compatibility weight h_n = dot(n,n')^beta ranking the "
-                              "search cell and the Ntilde non-canonical draws. Pure G-buffer -> unbiased (the "
-                              "stochastic-MIS correction divides h_n back out). Effect is concentrated where good "
-                              "neighbours are scarce (grazing / curved / disocclusion); tune beta + floor. A/B under DLSS RR.");
-        ImGui::BeginDisabled(!rs.useCompatNeighbors);
-        ImGui::SliderFloat("Compat beta##Cell",  &rs.cellBeta, 0.5f, 16.0f, "%.1f");
-        ImGui::SetItemTooltip("h_n = dot(n,n')^beta normal-compatibility exponent (Junkins: 8). Higher = "
-                              "sharper preference for aligned neighbours (lower variance) but more spatial "
-                              "correlation; start gentle (2-4) on this small tile-local pool.");
-        ImGui::SliderFloat("Compat floor##Cell", &rs.cellCompatFloor, 0.0f, 0.95f, "%.2f");
-        ImGui::SetItemTooltip("Membership cone floor (cos) when compat is on. Lower = wider pool (more reuse, "
-                              "h_n downweights the mismatched additions). 0.9 reproduces the binary cone; "
-                              "0.5 ~= Bitterli; 0.0 = any front-facing same-surface neighbour.");
-        ImGui::EndDisabled();
+    if (ImGui::CollapsingHeader("SPMIS Spatial Reuse")) {
+        ImGui::Checkbox("Use SPMIS##SPMIS", &rs.useSPMIS);
+        ImGui::SetItemTooltip("Global screen-space hash grid (raygen inserts each pixel's cell) + "
+                              "materialized per-cell lists + non-defensive stochastic pairwise-MIS reuse. "
+                              "Replaces the texture-paired spatial path (select/shift/_v8_1 no-op). Needs "
+                              "Spatial enabled.");
+        ImGui::BeginDisabled(!rs.useSPMIS);
+        ImGui::SliderInt("Reuse N (Ntilde)##SPMIS", &rs.spmisReuseN, 1, 32);
+        ImGui::SetItemTooltip("Non-canonical reuse draws per pixel (NOT the inner-RIS count below). Higher "
+                              "dilutes the canonical weight (collapse factor 1/(N+1) where reuse fails).");
+        ImGui::SliderInt("RIS steps##SPMIS", &rs.spmisRisN, 1, 32);
+        ImGui::SetItemTooltip("Inner-RIS candidate count per draw: each reuse draw RIS-picks one non-zero "
+                              "cell member from this many uniform samples.");
+        ImGui::SliderInt("Tile size (px)##SPMIS", &rs.spmisTileSize, 1, 64);
+        ImGui::SetItemTooltip("Screen-space cell tile size: cell = (pixel/tile, jittered-quantized normal). "
+                              "Larger = bigger, coarser cells (more reuse, less locality).");
+        ImGui::SliderInt("M-cap##SPMIS", &rs.spmisMcap, 0, 200);
+        ImGui::SetItemTooltip("Output confidence cap applied to the spatial result. 0 disables.");
+        ImGui::SliderFloat("Jacobian reject##SPMIS", &rs.spmisJacThreshold, 1.0f, 100.0f, "%.1f");
+        ImGui::SetItemTooltip("Reconnection-shift jacobian reject band: a shift whose jacobian falls outside "
+                              "[1/T, T] is dropped (anti-firefly).");
+        ImGui::SliderFloat("Normal cone (cos)##SPMIS", &rs.spmisNormalSimCos, -1.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Neighbor-similarity normal cone for the cell search: a different cell is only "
+                              "hopped to if dot(n, n_neighbor) > this. Higher = stricter / more local; "
+                              "-1 = accept all normals.");
+        ImGui::SliderFloat("Plane dist (xCamDist)##SPMIS", &rs.spmisPlaneDist, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Cell-search plane-distance rejection as a FRACTION of the distance to camera "
+                              "(reject bad cells by geometry, same as regular ReSTIR). Rejects neighbour cells "
+                              "whose primary hit is off the query's tangent plane (a depth discontinuity - "
+                              "container edge vs background). Lower = stricter; ~1.0 = off.");
+        ImGui::Checkbox("Confidence scaling (§4.3)##SPMIS", &rs.spmisConfidenceAdjust);
+        ImGui::SetItemTooltip("§4.3 non-canonical confidence scaling (Ntilde/cell_size). OFF gives the "
+                              "canonical ~no weight -> maximal neighbour reuse / equalization. ON boosts the "
+                              "canonical (~1/(N+1)) -> weaker reuse but less dark-pepper.");
         ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -627,6 +643,28 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+void Editor::DrawInitialSamplingPanel(ReSTIRSettings& rs) {
+    ImGui::SetNextWindowSize(ImVec2(340, 170), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Initial Sampling", &m_showInitialSampling)) { ImGui::End(); return; }
+
+    ImGui::SliderInt("Initial samples", &rs.initialSamples, 1, 8);
+    ImGui::SetItemTooltip("Independent initial path samples per pixel, combined via 1-pass RIS-over-N "
+                          "into the ReSTIR reservoir (M=N). 1 = legacy single sample (byte-identical). "
+                          "Higher = less initial-sample variance at ~linear raygen cost. Capped at 8.");
+
+    ImGui::SliderInt("Max bounces", &rs.maxBounces, 2, 32);
+    ImGui::SetItemTooltip("Raygen path loop bound: the loop runs depths [1, N). 2 = primary direct only; "
+                          "higher = deeper GI (more cost + variance). Default 10. Capped at 32.");
+
+    ImGui::SliderInt("RR start depth", &rs.rrStartDepth, 1, 32);
+    ImGui::SetItemTooltip("Russian roulette begins at depth >= this. Lower = more aggressive termination "
+                          "(cheaper, but starves ReSTIR's deep-GI initial samples); set to 32 (>= max "
+                          "bounces) to effectively DISABLE RR. Default 3.");
+
+
+    ImGui::End();
+}
+
 void Editor::DrawNRCPanel(nrc::Settings& n) {
     ImGui::SetNextWindowSize(ImVec2(340, 300), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("NRC")) { ImGui::End(); return; }

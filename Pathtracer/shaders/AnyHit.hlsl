@@ -7,6 +7,10 @@
 void AlphaTestAnyHit(inout TracePayload payload,
                      in BuiltInTriangleIntersectionAttributes attr)
 {
+#if DISABLE_ALPHA_TEST
+    //TEMP: alpha testing off - accept every hit as opaque (never IgnoreHit).
+    return;
+#else
     uint instID = InstanceID();
     uint primID = FlatPrimID(instID, GeometryIndex(), PrimitiveIndex());
 
@@ -39,4 +43,5 @@ void AlphaTestAnyHit(inout TracePayload payload,
 
     if (alpha < LoadAlphaThreshold(matID))
         IgnoreHit();
+#endif
 }

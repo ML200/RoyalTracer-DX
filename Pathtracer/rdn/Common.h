@@ -153,11 +153,18 @@ struct ReSTIRSettings {
     int   spatRadMaxGI     = 56;
     int   spatRadMinGI     = 8;
     int   spatTriesGI      = 8;
+    //path-trace termination (uploaded as cbuffer slots 38-39, read by raygen). Not
+    //ReSTIR per se, but they ride the same rs-consts block. Editor caps both at 32.
+    int   maxBounces       = 32;  // raygen path loop bound: depth runs [1, maxBounces)
+    int   rrStartDepth     = 2;   // Russian roulette starts at depth >= this; set to 32 to disable
+    int   initialSamples   = 1;   // RIS-over-N initial samples per pixel (host-clamped [1,8])
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
     bool  disableCorrReduction = false; // A/B: ignore dup-map D in the temporal confidence cap (flag 0x40)
     bool  disableX1Direct      = false; // diagnostic: zero slot-3 directAtX1 (un-reused env/sun direct) (flag 0x80)
     bool  noSpecReproj         = false; // force surface (self) reprojection for the DI reservoir, off the stochastic specular MV (flag 0x200)
+    bool  disableReuseVis      = false; // take the reconnection shadow ray OUT of temporal+spatial reuse and apply it once at the spatial resolve (flag 0x800)
+    bool  disableFinalVis      = false; // sub-toggle of disableReuseVis: also skip the deferred resolve shadow ray -> fully unshadowed GI (diagnostic) (flag 0x1000)
     float reuseRoughnessMin = 0.1f;
     float reuseRoughnessMax = 0.3f;
 
@@ -165,31 +172,34 @@ struct ReSTIRSettings {
     float rejNormalDot     = 0.36f;
     float rejDistance      = 0.10f;
 
-    //Stochastic pairwise-MIS cell spatial reuse (Hedstrom et al. 2026), an A/B
-    //alternative to the texture-paired path. When on, the select/shift/_v8_1
-    //passes no-op and Pass_spat_gi_cell_v8 owns spatial reuse (flag bit 0x10).
-    bool  useCellSpatGI    = false;
-    int   cellN            = 3;   // Ntilde: non-canonical stochastic candidates
-    int   cellSearchIters  = 12;  // §5.1 cell-search WRS iterations
-    int   cellMcap         = 1000;  // confidence cap for cell-mode reservoirs
-    int   cellRadius       = 30;  // §5.1 cell-search initial radius (px)
-    bool  cellIgnoreNormals= false; // perf A/B: skip the normal-cone coherence test (instID-only cells)
-    //Junkins 2026 compatibility-guided neighbor selection (sub-mode of useCellSpatGI,
-    //flag 0x400). Loosens the hard 0.9 cone to compatFloor and weights selection by
-    //h_n = dot(n,n')^beta. Pure-G-buffer proposal reshape -> unbiased.
-    bool  useCompatNeighbors = false;
-    float cellBeta         = 4.0f;  // h_n exponent (Junkins: 8; gentler 2-4 for this small tile-local pool)
-    float cellCompatFloor  = 0.5f;  // membership cone floor (cos) when compat on; 0.5 ~= Bitterli, wider than 0.9
+    //SPMIS spatial reuse. A/B alternative to the texture-paired path: when on, the
+    //select/shift/_v8_1 passes no-op and the Pass_spmis_* pipeline (reset/count/
+    //offsets/sort/reuse) owns spatial reuse (flag bit 0x10), with raygen inserting
+    //each pixel's hash.
+    bool  useSPMIS          = true;
+    int   spmisReuseN       = 3;     // Ntilde: non-canonical reuse draws
+    int   spmisRisN         = 8;     // inner-RIS candidate count per draw
+    int   spmisMcap         = 20;    // output confidence M cap (0 disables)
+    int   spmisTileSize     = 32;    // screen-space cell tile size in pixels
+    float spmisJacThreshold = 15.0f; // reconnection-shift jacobian reject band [1/T, T]
+    float spmisNormalSimCos = -1.0f; // neighbor-similarity normal cone (cos); -1 = accept all normals
+    float spmisPlaneDist    = 0.111f;// neighbor-similarity plane-distance reject, as a FRACTION of
+                                     // the distance to camera (regular-ReSTIR geometry rejection)
+    //§4.3 non-canonical confidence scaling. OFF (scaling=1, canonical weight ~0, max
+    //neighbour reuse). ON boosts the canonical (less reuse, less dark-pepper).
+    //Flag 0x2000.
+    bool  spmisConfidenceAdjust = true;
 
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
-             | ((enableSpatGI && useCellSpatGI) ? 0x10u : 0u)
-             | ((enableSpatGI && useCellSpatGI && cellIgnoreNormals) ? 0x20u : 0u)
-             | ((enableSpatGI && useCellSpatGI && useCompatNeighbors) ? 0x400u : 0u)
+             | ((enableSpatGI && useSPMIS) ? 0x10u : 0u)
+             | ((enableSpatGI && useSPMIS && spmisConfidenceAdjust) ? 0x2000u : 0u)
              | (disableCorrReduction ? 0x40u : 0u)
              | (disableX1Direct ? 0x80u : 0u)
-             | (noSpecReproj ? 0x200u : 0u);
+             | (noSpecReproj ? 0x200u : 0u)
+             | (disableReuseVis ? 0x800u : 0u)
+             | (disableFinalVis ? 0x1000u : 0u);
     }
 };
 

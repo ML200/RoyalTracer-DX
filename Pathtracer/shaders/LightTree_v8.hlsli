@@ -49,7 +49,7 @@ struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 //====================================
 //TRIG-FREE NODE IMPORTANCE
 //====================================
-//importance bound from HIPRT-Path-Tracer ATS reference (LightTreeATSSampling.h)
+//importance bound from the ATS light-tree reference
 //deliberately matches the reference quirks: theta_u=PI inside the bbox (not just the sphere),
 //cos_theta clamped to [0,1] so back-facing clusters get the horizon-grazing factor instead of zero,
 //distance² clamped to max(d², 2R) (units are mismatched in the reference but we copy as-is for parity),

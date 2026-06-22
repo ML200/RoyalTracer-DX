@@ -324,7 +324,7 @@ void Renderer::CreateAccelerationStructures() {
 //====================================
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-    CD3DX12_ROOT_PARAMETER1 rootParameters[2];
+    CD3DX12_ROOT_PARAMETER1 rootParameters[3];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
@@ -421,12 +421,18 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] +
-    // 4 Hedstrom cell-spatial constants [32..35] + 2 Junkins compat constants
-    // [36..37] (rs_cellBeta, rs_cellCompatFloor) = 38.
-    // (Last 5 of the NRC block are scene-bounds normalization for the
-    // position input; the cell block is the Hedstrom 2026 stochastic
-    // pairwise-MIS reuse params, see Includes_v8.hlsli.)
-    rootParameters[1].InitAsConstants(38, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // 6 SPMIS spatial-reuse constants [32..37] (spmis_reuseN/risN/mcap/tileSize +
+    // jacThreshold/normalSimCos) + 3 path-trace constants [38..40]
+    // (pt_maxBounces, pt_rrStartDepth, pt_initialSamples) + 1 SPMIS plane-distance
+    // constant [41] (spmis_planeDist) = 42.
+    // (Last 5 of the NRC block are scene-bounds normalization for the position
+    // input; the SPMIS block is the hash-grid reuse params, see
+    // Includes_v8.hlsli / the Pass_spmis_* kernels.)
+    rootParameters[1].InitAsConstants(42, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // SPMIS global hash-grid buffer as a root UAV at u25 (g_spmisBuffer). Bound as a
+    // root descriptor rather than a heap entry to avoid descriptor-table surgery; set
+    // per-pass via SetComputeRootUnorderedAccessView (Renderer.cpp setConsts).
+    rootParameters[2].InitAsUnorderedAccessView(25, 0);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[3];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -703,6 +709,12 @@ void Renderer::CreatePathStateBuffer() {
     //resolution-DEPENDENT: always recreate.
     m_pathStateBuffer = rf.CreateUAVBuffer(
         TileAlignedPx(GetWidth(), GetHeight()) * kPathStateBytesPerPx, L"PathStateBuffer");
+
+    // SPMIS global hash grid (root UAV u25, g_spmisBuffer): 9 arrays each
+    // TileAlignedPx uints wide (must match SP_STR() in HashGridHash_v8.hlsli) plus a
+    // single global offset counter. Resolution-dependent -> recreated here on resize.
+    m_spmisBuffer = rf.CreateUAVBuffer(
+        (9u * TileAlignedPx(GetWidth(), GetHeight()) + 1u) * 4u, L"SPMISBuffer");
 
     // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),

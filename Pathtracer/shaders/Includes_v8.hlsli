@@ -7,6 +7,16 @@
 #define INCLUDES_V8_HLSLI
 
 //====================================
+//TEMP: ALPHA TEST KILL SWITCH
+//====================================
+//Set to 1 to TEMPORARILY disable per-texel alpha testing for both shadow/
+//visibility rays (AlphaCandidateOccludes in Inline_RT_v8.hlsli) and regular
+//path-tracing rays (AlphaTestAnyHit in AnyHit.hlsl). Alpha-tested geometry then
+//behaves as fully opaque - foliage/fences/etc. stop punching holes. Restore by
+//setting back to 0 (or deleting this block and the two #if guards).
+#define DISABLE_ALPHA_TEST 0
+
+//====================================
 //PUSH CONSTANTS
 //====================================
 cbuffer Push : register(b1)
@@ -49,17 +59,25 @@ cbuffer Push : register(b1)
     //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5/halfExtent
     float3 nrc_scene_center;
     float  nrc_scene_scale_inv;
-    //stochastic pairwise-MIS cell spatial reuse (Hedstrom et al. 2026). Fresh
-    //16B register (slots 32-35) past the NRC block - the root signature uploads
-    //36 constants. Read by Pass_spat_gi_cell_v8 when RS_FLAG_CELL_SPATIAL is set.
-    uint  rs_cellN;           // Ntilde: non-canonical stochastic candidates (paper: 3)
-    uint  rs_cellSearchIters; // §5.1 cell-search WRS iterations (paper: 12)
-    uint  rs_cellMcap;        // confidence cap for cell-mode reservoirs (paper: 20)
-    uint  rs_cellRadius;      // §5.1 cell-search initial radius in pixels (paper: 30)
-    //Junkins 2026 compatibility-guided neighbor selection (COMPAT_MODE, slots
-    //36-37, fresh 16B register). Read by Pass_spat_gi_cell_v8 when RS_FLAG_CELL_COMPAT.
-    float rs_cellBeta;        // h_n = dot(n,n')^beta normal-compatibility exponent (Junkins: 8; gentle: 2-4)
-    float rs_cellCompatFloor; // membership cone floor (cos) in COMPAT_MODE - looser than 0.9 widens the pool
+    //SPMIS spatial reuse. Slots 32-37, read by the Pass_spmis_* kernels. Selected by
+    //RS_FLAG_SPMIS_SPATIAL (0x10).
+    uint  spmis_reuseN;       // Ntilde: non-canonical reuse draws
+    uint  spmis_risN;         // inner-RIS candidate count per draw
+    uint  spmis_mcap;         // confidence M cap applied on the spatial pass
+    uint  spmis_tileSize;     // screen-space cell tile size in pixels
+    float spmis_jacThreshold; // reconnection-shift jacobian reject band [1/T, T]
+    float spmis_normalSimCos; // neighbor-similarity normal cone (cos) used in the cell search
+    //path-trace termination (slots 38-39, fills out register 9). Runtime editor
+    //sliders, both capped at 32 host-side. Read by Pass_raygen_v8.
+    uint  pt_maxBounces;      // raygen path loop bound: depth runs [1, pt_maxBounces)
+    uint  pt_rrStartDepth;    // Russian roulette begins at depth >= this (set high to disable RR)
+    //slot 40 (opens register 10). RIS-over-N initial samples per pixel, host-
+    //clamped [1,8]. Read by Pass_raygen_v8 as the initial-sample loop count.
+    uint  pt_initialSamples;
+    //slot 41 (register 10.y). SPMIS cell-search plane-distance rejection, as a FRACTION
+    //of the distance to camera (regular-ReSTIR geometry rejection). Read by
+    //Pass_spmis_reuse_v8.
+    float spmis_planeDist;
 };
 
 //====================================
@@ -77,20 +95,23 @@ cbuffer Push : register(b1)
 #define RS_FLAG_CLAMP_EMITTERS  0x100u
 #define CLAMP_EMITTERS_MODE  ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)
 
-//RS_FLAG_CELL_SPATIAL — selects the stochastic pairwise-MIS cell spatial-reuse
-//path (Pass_spat_gi_cell_v8) instead of the texture-paired select/shift/_v8_1
-//passes. Sub-mode of spatial GI (0x8): when set, the texture passes no-op and
-//the cell pass owns spatial reuse. Set by ReSTIRSettings::Flags().
-#define RS_FLAG_CELL_SPATIAL  0x10u
-#define CELL_SPATIAL_MODE  ((rs_flags & RS_FLAG_CELL_SPATIAL) != 0u)
+//RS_FLAG_SPMIS_SPATIAL — selects the SPMIS global-hash-grid spatial-reuse path
+//(Pass_spmis_* : reset/count/offsets/sort/reuse)
+//instead of the texture-paired select/shift/_v8_1 passes. Sub-mode of spatial GI
+//(0x8): when set, the texture passes no-op, raygen inserts each pixel's hash, and
+//the SPMIS pipeline owns spatial reuse. Set by ReSTIRSettings::Flags().
+#define RS_FLAG_SPMIS_SPATIAL  0x10u
+#define SPMIS_SPATIAL_MODE  ((rs_flags & RS_FLAG_SPMIS_SPATIAL) != 0u)
 
-//RS_FLAG_CELL_IGNORE_NORMALS — A/B perf experiment for the cell path: skip the
-//soft normal-cone coherence test in the §5.1 search + gather, keying cells on
-//instID alone. Removes up to ~76 UnpackNormal (octahedral decode + normalize)
-//taps/px. Quality risk: looser pools can boil / show an edge grid on curved or
-//glossy surfaces (the cone was added to fix exactly that) - measure under DLSS RR.
-#define RS_FLAG_CELL_IGNORE_NORMALS  0x20u
-#define CELL_IGNORE_NORMALS  ((rs_flags & RS_FLAG_CELL_IGNORE_NORMALS) != 0u)
+
+//RS_FLAG_SPMIS_CONF_ADJUST — §4.3 non-canonical confidence scaling. Scales neighbour
+//confidences by Ntilde/cell_pixel_count, which BOOSTS the canonical MIS weight
+//(~1/(Ntilde+1)) and suppresses dark-pepper at the cost of WEAKER neighbour reuse /
+//equalization. OFF (scaling = 1) gives the canonical ~no weight and maximal neighbour
+//reuse; on = the scaled variant.
+#define RS_FLAG_SPMIS_CONF_ADJUST  0x2000u
+#define SPMIS_CONF_ADJUST  ((rs_flags & RS_FLAG_SPMIS_CONF_ADJUST) != 0u)
+
 
 //RS_FLAG_DISABLE_CORR_REDUCTION — A/B: turn OFF the duplication-map correlation
 //reduction. Pass_dup_gi counts how many of the 17x17 neighbours share this pixel's
@@ -126,20 +147,30 @@ cbuffer Push : register(b1)
 #define RS_FLAG_NO_SPEC_REPROJ  0x200u
 #define NO_SPEC_REPROJ  ((rs_flags & RS_FLAG_NO_SPEC_REPROJ) != 0u)
 
-//RS_FLAG_CELL_COMPAT — Junkins et al. 2026 "Compatibility-Guided Neighbor
-//Selection". Sub-mode of the cell spatial path (0x10): replaces the binary 0.9
-//normal cone in the §5.1 search + within-cell gather with (a) a LOOSER membership
-//floor rs_cellCompatFloor (a wider, reachable candidate pool, so more pixels get
-//reuse instead of canonical-only passthrough) and (b) a CONTINUOUS compatibility
-//weight h_n = dot(n,n')^rs_cellBeta that ranks the search cell and the Eq.17
-//non-canonical draw proposal. h_n is pure G-buffer, so it enters ONLY the
-//selection proposals (search WRS weight + the three coupled non-canonical spots
-//Wsel_nz/ncWsum/ncWi) where the stochastic-MIS (Wsel/w_z) correction divides it
-//back out -> unbiased; it never touches the confidences, §4.3 scaling, the
-//deterministic MIS heuristic, or the uniform canonical pick. At 8x8-tile scale
-//Junkins' position term h_p ~= 1 (candidates are ~10px apart), so only h_n is used.
-#define RS_FLAG_CELL_COMPAT  0x400u
-#define COMPAT_MODE  ((rs_flags & RS_FLAG_CELL_COMPAT) != 0u)
+//RS_FLAG_NO_REUSE_VIS — A/B: take the reconnection shadow ray OUT of the temporal
+//AND spatial reuse passes and apply it exactly once, at the spatial resolve write.
+//Motivation: small/far lights behind high-frequency thin occluders (fences, poles)
+//make the x1->x2 reconnection visibility a near-binary, high-frequency function of
+//the SHADING POINT. Sub-pixel jitter (for DLSS RR) slides that point across the
+//occluder, so vis flips 1->0 frame-to-frame, p_n=ph*vis collapses to 0 and the
+//reservoir effectively resets - reuse stops working (the well-converged top vs the
+//noisy side of the container). With this set the reuse passes treat vis==1 (so the
+//target is UNSHADOWED and light SELECTION keeps accumulating M under jitter); the
+//stored F is then unshadowed, so the winning sample's reconnection visibility is
+//applied ONCE to F*W where the spatial pass writes scratch slot 2. The intrinsic
+//NEE/sun visibility in raygen is untouched. Unbiased: W is taken w.r.t. the
+//unshadowed target and the true visibility multiplies the final contribution.
+#define RS_FLAG_NO_REUSE_VIS  0x800u
+#define REUSE_VIS_OFF  ((rs_flags & RS_FLAG_NO_REUSE_VIS) != 0u)
+
+//RS_FLAG_NO_FINAL_VIS — sub-toggle of RS_FLAG_NO_REUSE_VIS: also skip the ONE
+//deferred reconnection shadow ray at the spatial resolve, so the GI output is fully
+//UNSHADOWED. Diagnostic only (shows the unshadowed upper bound / what the unshadowed
+//reservoir selection looks like). Only meaningful when REUSE_VIS_OFF is set - with
+//the reuse rays already gone, this removes the last visibility too. The NRC gather
+//follows it (trains on the same unshadowed GI it displays).
+#define RS_FLAG_NO_FINAL_VIS  0x1000u
+#define FINAL_VIS_OFF  ((rs_flags & RS_FLAG_NO_FINAL_VIS) != 0u)
 
 //====================================
 //IMAGE SIZE MACROS
@@ -719,6 +750,11 @@ RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 //defeating the spill entirely. Spat GI pass takes a small cache hit on
 //its cross-pixel reads; revert if that shows up in profiling.
 globallycoherent RWByteAddressBuffer g_pathStateBuffer        : register(u10);
+//SPMIS global hash grid — single raw buffer (root UAV at u25) holding every per-pixel
+//and per-cell SPMIS array (see HashGridHash_v8.hlsli for the sub-allocation layout).
+//globallycoherent so the raygen hash-insertion CAS probes observe other threadgroups'
+//writes within the same dispatch (the table is shared across all pixels).
+globallycoherent RWByteAddressBuffer g_spmisBuffer            : register(u25);
 
 //====================================
 //AUTO EXPOSURE STATE (20 B persistent)
@@ -791,6 +827,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "Inline_RT_v8.hlsli"
 #include "Reservoir_v8.hlsli"
 #include "Path_State_v8.hlsli"
+#include "HashGridHash_v8.hlsli"
 
 #include "Camera_ray_v8.hlsli"
 #include "MIS_v8.hlsli"
@@ -812,6 +849,24 @@ RWTexture2D<float4> g_dlssTransparency   : register(u20);
 RWTexture2D<float4> g_dlssColorPreTrans  : register(u21);
 RWTexture2D<float4> g_dlssInput          : register(u22);
 RWTexture2D<float>  g_dlssBiasHint       : register(u23);
+#endif
+
+//====================================
+//DEFERRED REUSE VISIBILITY  (RS_FLAG_NO_REUSE_VIS)
+//====================================
+//One reconnection shadow ray for the resolved reservoir at this pixel, called by
+//the spatial passes where they write F*W to scratch slot 2. Returns 1.0 when the
+//flag is off or the contribution carries no energy, so the default path (visibility
+//baked inside the reuse passes) stays byte-identical. See RS_FLAG_NO_REUSE_VIS.
+#ifdef COMPUTE_PASS
+inline float ResolveReuseVis(uint pixelIdx, Reservoir r, float3 contrib)
+{
+    if (!REUSE_VIS_OFF || FINAL_VIS_OFF || GetPHat(contrib) <= 0.0f) return 1.0f;
+    const float3        x1 = load_x1(g_sample_current, pixelIdx);
+    const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, x1, InitOrigin());
+    return ReconnectVis(sv.x, sv.n_s, r.matID, r.x2, r.n2_s);
+}
+
 #endif
 
 #endif

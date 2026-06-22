@@ -98,7 +98,14 @@ void Pass_spat_gi_shift_v8()
         if (GetPHat(c) > 0.0f)
         {
             float vis;
-            if (pr.matID == MATID_ENV_MISS)
+            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve);
+            //the shift contribution is stored UNSHADOWED and the merge pass applies
+            //the winning sample's visibility once when it writes F*W.
+            if (REUSE_VIS_OFF)
+            {
+                vis = 1.0f;
+            }
+            else if (pr.matID == MATID_ENV_MISS)
             {
                 //miss: synthesize a far endpoint along the stored sky direction
                 const float3 md = normalize(pr.x2);

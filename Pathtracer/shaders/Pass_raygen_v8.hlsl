@@ -1,7 +1,9 @@
 #include "Includes_v8.hlsli"
 #include "Nrc_v8.hlsli"
 
-//safety net, real termination is RR at depth>2 plus NRC cache short circuit
+//path loop bound is now the runtime uniform pt_maxBounces (editor slider, capped
+//at 32); this #define is an unreferenced compile-time fallback. Real termination is
+//RR (pt_rrStartDepth) plus the NRC cache short circuit.
 #ifndef MAX_BOUNCES
 #define MAX_BOUNCES 10
 #endif
@@ -415,6 +417,33 @@ void Pass_raygen_v8()
         return;
     }
 
+    //====================================
+    //SPMIS HASH INSERTION
+    //====================================
+    //With a valid primary hit, insert this pixel into the SPMIS global hash grid so the
+    //spatial reuse pass can build coherent cells. Cell key = (pixel/tile_size, jittered-
+    //quantized normal), open-addressed CAS into the checksum table (cleared by
+    //Pass_spmis_reset before raygen). No-op when SPMIS is off (texture path active).
+    if (SPMIS_SPATIAL_MODE)
+    {
+        //Per-frame global jitter of the screen-tile origin: shift (px,py) by the same
+        //offset for every pixel this frame so the hard tileSize-px cell boundaries MOVE
+        //each frame and average out under temporal accumulation, instead of baking a
+        //static tile grid into surfaces where the cell search can't find an external
+        //match. One offset per frame (from time) keeps SP_HASH self-consistent across
+        //the build/count/sort/reuse passes. mod tileSize is all that matters (it shifts
+        //the grid phase); the +offset stays >= 0 so SP_screen_hash's (uint)px is safe.
+        const uint ts   = max(spmis_tileSize, 1u);
+        const uint jh   = SP_h2_xxhash32(asuint(time));
+        const int2 tjit = int2((int)(jh % ts), (int)(SP_h2_xxhash32(jh) % ts));
+
+        uint sp_checksum;
+        const uint sp_hash = SP_screen_hash((int)pixel.x + tjit.x, (int)pixel.y + tjit.y, ts,
+                                            ctx.hitPos, ctx.hitNormal, sp_checksum);
+        g_spmisBuffer.Store(SP_A(SP_HASH, pixelIdx),
+                            SP_insert(sp_hash % SP_NUMCELLS(), sp_checksum, SP_NUMCELLS()));
+    }
+
     //Octahedral-pack rayDir as the loop's carrier. The trace at iter bottom
     //needs float3 (so live-state-at-reorder is unchanged), but the loop
     //back-edge phi shrinks from 3 dwords to 1.
@@ -424,6 +453,44 @@ void Pass_raygen_v8()
     //summed here and written to scratch slot 3 at finalize, kept OUT of the
     //RIS reservoir. Emissive-triangle DI still goes into the reservoir.
     float3 directAtX1 = float3(0, 0, 0);
+
+    //=====================================================================
+    //INITIAL-SAMPLE LOOP (pt_initialSamples): re-run the candidate-generating
+    //bounce loop N times into ONE reservoir. The 1-pass streaming RIS in
+    //AddInitialCandidate already accumulates ALL N samples' candidates into wsum
+    //(never reset), and directAtX1 sums across samples (averaged by 1/N at
+    //finalize). The camera ray / primary hit (ctxPrimary) is shared by all N;
+    //only the per-path carriers are reset each sample. s==0 keeps the exact
+    //legacy seed+state so N==1 is byte-identical. NRC training emits ONLY on
+    //s==0: forcing nrcPathId = NRC_INVALID_PATH for s>0 auto-gates every
+    //nrcPathId-guarded emit, keeping the single per-pixel training path coherent
+    //(cache QUERIES still run per-sample, so s>0 radiance stays cache-consistent).
+    //tpost / ps_v2 / ps_depth1 are raygen-LOCAL transient scratch consumed within
+    //each path's own bounce loop (no other pass reads them), so resetting them
+    //per sample is correct - the winning candidate's L2/x2 are already baked into
+    //the reservoir payload at AddInitialCandidate time.
+    //=====================================================================
+    const HitContext ctxPrimary   = ctx;
+    const uint       rayDirPk0     = rayDirPk;
+    const uint       nrcStateA_cam = nrcStateA;
+    const uint       nrcPathIdReal = nrcPathId;
+    uint             nrcStateA_s0  = nrcStateA;
+
+    [loop]
+    for (uint s = 0u; s < pt_initialSamples; ++s)
+    {
+        //per-sample reset (identity for s==0 -> N==1 byte-identical)
+        ctx          = ctxPrimary;
+        if (s > 0u)
+            seed = initRandomData(pixel, uint2(8, 4), time, s + 1u);
+        throughputPk = PackRGB9E5(float3(1, 1, 1));
+        prevNormalPk = PackNormal(float3(0, 1, 0));
+        prev_pdf     = 1.0f;
+        pdf_product  = 1.0f;
+        store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
+        rayDirPk     = rayDirPk0;
+        nrcStateA    = nrcStateA_cam;
+        nrcPathId    = (s == 0u) ? nrcPathIdReal : NRC_INVALID_PATH;
 
     //=====================================================================
     //BOUNCE LOOP: each iter processes vertex v_depth (already in ctx),
@@ -441,7 +508,7 @@ void Pass_raygen_v8()
     //the last iter. Termination cuts: bad BSDF / RR fail / IsRayValid.
     //=====================================================================
     [loop]
-    for (int16_t depth = 1; depth < MAX_BOUNCES; ++depth)
+    for (int16_t depth = 1; depth < (int)pt_maxBounces; ++depth)
     {
         //Unpack the carried direction once per iter; reassigned to the BSDF
         //sample at state update and re-packed for the back-edge.
@@ -751,16 +818,16 @@ void Pass_raygen_v8()
         float3 throughput        = UnpackRGB9E5(throughputPk) * updateWeight;
         const float3 tpostWeight = bdata.val * ctx.absorptionTint * cosTheta;
 
-        //Russian roulette — an INDEPENDENT variance/perf knob (currently off via
-        //the depth>=30 threshold; set to e.g. depth>=3 to enable). Fail terminates
-        //the path; pass boosts throughput (the 1/p boost cancels in the RR-clean
-        //target F via the pdf_product reduction below, but survives in the RIS
+        //Russian roulette — an INDEPENDENT variance/perf knob, gated by the runtime
+        //pt_rrStartDepth (editor slider; default depth>=3, set to 32 to disable). Fail
+        //terminates the path; pass boosts throughput (the 1/p boost cancels in the
+        //RR-clean target F via the pdf_product reduction below, but survives in the RIS
         //weight wi — correct) and patches the NRC training beta.
         //NOTE: RR must NOT carry the tpost update (a correctness quantity) — that
         //is done unconditionally below. Aggressive RR (survivalProb floored at 0.1
         //on a sub-unity GI throughput) terminates most deep paths, which starves
         //ReSTIR's initial samples; prefer a gentle/late policy if enabling.
-        if (depth >= 3)
+        if (depth >= (int)pt_rrStartDepth)
         {
             const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
             if (RandomFloatSingle(seed) >= survivalProb) break;
@@ -969,6 +1036,16 @@ void Pass_raygen_v8()
         ctx.absorptionTint = (half3)absorptionTint_n;
     }
 
+        //capture s==0's NRC bookkeeping (vidx / cterm / emit mask) for finalize;
+        //s>0 ran with nrcPathId forced INVALID so they emitted no training rows.
+        if (s == 0u) nrcStateA_s0 = nrcStateA;
+    }   // end initial-sample loop (s)
+
+    //restore the real training-path id + s==0 NRC state for the path-head
+    //publish and the W/M finalize below.
+    nrcPathId = nrcPathIdReal;
+    nrcStateA = nrcStateA_s0;
+
     //=====================================================================
     //FINALIZE
     //=====================================================================
@@ -977,7 +1054,9 @@ void Pass_raygen_v8()
     //every loop-exit path in a register, so one write here covers all of
     //them. The camera-terminal early return above never reaches this and
     //correctly leaves slot 3 at the 0 raygen cleared it to.
-    gScratchPing[uint3(pixel, 3)] = float4(X1_DIRECT_OFF ? float3(0, 0, 0) : directAtX1, 0);
+    //directAtX1 is the SUM of N samples' single-sample direct estimates -> mean.
+    const float3 directAtX1Avg = directAtX1 / max(1.0f, (float)pt_initialSamples);
+    gScratchPing[uint3(pixel, 3)] = float4(X1_DIRECT_OFF ? float3(0, 0, 0) : directAtX1Avg, 0);
 
     const uint nrcTrainVIdxFinal     = pk_vidx(nrcStateA);
     const bool nrcCacheTerminatedFin = pk_cterm(nrcStateA);
@@ -993,6 +1072,14 @@ void Pass_raygen_v8()
         NrcStorePathHead(nrcPathId, nrcTrainVIdxFinal, nrcEmitMaskFinal);
     }
 
+    //RIS-over-N normalization: each initial sample is one effective candidate set
+    //whose internal technique-MIS weights already sum to ~1, so streaming all N into
+    //ONE reservoir makes wsum sum to ~N. Divide by N (the per-sample MIS factor, as
+    //if each AddInitialCandidate wi carried a 1/N weight) to keep the estimator
+    //unbiased - without it, more initial samples just scale brightness. RIS selection
+    //is scale-invariant so this corrects only W's magnitude, not the winner. N==1 -> /1.
+    wsum /= max(1.0f, (float)pt_initialSamples);
+
     //cache terminated pixels defer W/M/invalidation to Pass_nrc_resolve_v8
     store_wsum(g_Reservoirs_current, pixelIdx, wsum);
     if (!nrcCacheTerminatedFin)
@@ -1006,6 +1093,11 @@ void Pass_raygen_v8()
         }
 
         store_W(g_Reservoirs_current, pixelIdx, W);
+        //M is ALWAYS 1: the N initial samples only improve the single reservoir
+        //sample's QUALITY (better RIS selection + the 1/N-normalized W); the reservoir
+        //still counts as ONE fresh sample for temporal/spatial confidence. The N
+        //normalization lives in wsum (above), not M, so the invariant w_sum=W*M*p_hat
+        //holds at M=1.
         store_M(g_Reservoirs_current, pixelIdx, 1u);
 
         if (W == 0.0f)

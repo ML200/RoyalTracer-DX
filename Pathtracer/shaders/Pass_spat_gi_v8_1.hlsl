@@ -31,9 +31,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims        = float2(IMG_W, IMG_H);
     const uint   pixelIdx    = MapPixelID(dims, launchIndex);
 
-    //cell-mode active: Pass_spat_gi_cell_v8 owns 100% of spatial reuse (incl.
+    //SPMIS-mode active: the Pass_spmis_* pipeline owns 100% of spatial reuse (incl.
     //emitter / passthrough cases), so this pass does nothing and writes nothing.
-    if (CELL_SPATIAL_MODE) return;
+    if (SPMIS_SPATIAL_MODE) return;
 
     //G-buffer copy for temporal reuse removed: the renderer ping-pongs the
     //current/last sample-buffer bindings per frame (Renderer::SwapSampleBuffers)
@@ -51,11 +51,12 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //disabled early terrain, canonical passthrough
+    //canonical passthrough
     if (!(rs_flags & 8u))
     {
         const float  W = (rdi.W > 0.0f) ? rdi.W : 0.0f;
-        gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * W, 0);
+        const float3 outC = rdi.F * W;
+        gScratchPing[uint3(launchIndex, 2)] = float4(outC * ResolveReuseVis(pixelIdx, rdi, outC), 0);
         storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
@@ -80,7 +81,8 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     if (validCount == 0u)
     {
-        gScratchPing[uint3(launchIndex, 2)] = float4(contrib_final * rdi.W, 0);
+        const float3 outC = contrib_final * rdi.W;
+        gScratchPing[uint3(launchIndex, 2)] = float4(outC * ResolveReuseVis(pixelIdx, rdi, outC), 0);
         storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
         return;
     }
@@ -227,6 +229,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         rdi.W = 0.0f;
     }
 
-    gScratchPing[uint3(launchIndex, 2)] = float4(rdi.F * rdi.W, 0);
+    const float3 outC = rdi.F * rdi.W;
+    gScratchPing[uint3(launchIndex, 2)] = float4(outC * ResolveReuseVis(pixelIdx, rdi, outC), 0);
     storeReservoir(g_Reservoirs_last, pixelIdx, rdi);
 }

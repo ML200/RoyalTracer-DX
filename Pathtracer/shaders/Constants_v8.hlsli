@@ -1,7 +1,7 @@
 //====================================
 //NUMERIC CONSTANTS
 //====================================
-#define EPSILON 0.00003
+#define EPSILON 0.000003
 #define ONE_MINUS_EPSILON 0x1.fffffep-1f
 #define SBIAS 0.0008
 #define PI 3.1415926535

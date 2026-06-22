@@ -26,6 +26,7 @@ Renderer::Renderer(UINT width, UINT height)
     });*/
     m_passes.Build({
         L"cuda:nrc_frame_begin",                        L"barrier",
+        L"Pass_spmis_reset_v8.hlsl|cs:8x4",             L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         L"cuda:nrc_inference",                          L"barrier",
@@ -34,15 +35,11 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
         L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
         L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
-        L"Pass_spat_gi_cellbuild_v8.hlsl|cs:8x8",       L"barrier",
-        L"Pass_spat_gi_cell_v8.hlsl|cs:8x8",            L"barrier",
+        L"Pass_spmis_count_v8.hlsl|cs:8x4",             L"barrier",
+        L"Pass_spmis_offsets_v8.hlsl|cs:8x4",           L"barrier",
+        L"Pass_spmis_sort_v8.hlsl|cs:8x4",              L"barrier",
+        L"Pass_spmis_reuse_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
-        // NRC x1 training now feeds off the CONVERGED reservoir: gather the
-        // post-reuse x1 GI into training rows, THEN run TrainFrame. cuda:nrc_train
-        // (was a no-op that rode inside cuda:nrc_inference) is the late training
-        // submit. The debug query/inference/present trio moves AFTER train so the
-        // debug inference's inferenceOut overwrite still lands after the fill
-        // kernel's cache-tail reads (debug inference waits on trainDoneEvent).
         L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
         L"cuda:nrc_train",                              L"barrier",
         L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
@@ -1051,6 +1048,7 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     m_sampleBuffer_current.Reset();
     m_sampleBuffer_last.Reset();
     m_pathStateBuffer.Reset();
+    m_spmisBuffer.Reset();        // recreated by CreateRaytracingOutputBuffer -> CreatePathStateBuffer
     for (int i = 0; i < MAX_STACKS; ++i)
         m_stackBuffers[i].Reset();
 
@@ -1744,7 +1742,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[38] = {};
+    UINT rsConsts[42] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1783,21 +1781,29 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
     memcpy(&rsConsts[23], &rs.rejDistance,  4);
 
-    // Cell spatial-reuse params (slots 32-35; read by the Pass_spat_gi_cell* passes).
-    // Clamp to safe ranges so editor extremes can't blow up the WRS / search math.
-    // cellSearchIters is capped at 32 (the shader's §5.1 search loop bound).
-    rsConsts[32] = (UINT)std::clamp(rs.cellN,           1, 8);   // == NT_MAX in Pass_spat_gi_cell_v8
-    rsConsts[33] = (UINT)std::clamp(rs.cellSearchIters, 1, 32);
-    rsConsts[34] = (UINT)std::clamp(rs.cellMcap,        1, 100);
-    rsConsts[35] = (UINT)std::clamp(rs.cellRadius,      2, 512);
-
-    // Junkins compat-guided selection (slots 36-37; read by Pass_spat_gi_cell
-    // when RS_FLAG_CELL_COMPAT). Floats: h_n exponent + membership cone floor (cos).
+    // SPMIS spatial-reuse params (slots 32-37; read by the Pass_spmis_* kernels).
+    // Selected by RS_FLAG_SPMIS_SPATIAL (0x10). Clamp to safe ranges.
+    rsConsts[32] = (UINT)std::clamp(rs.spmisReuseN,   1, 32);      // Ntilde (reuse_neighbor_count)
+    rsConsts[33] = (UINT)std::clamp(rs.spmisRisN,     1, 32);      // inner-RIS candidate count
+    rsConsts[34] = (UINT)std::clamp(rs.spmisMcap,     0, 100000);  // output M-cap (0 disables)
+    rsConsts[35] = (UINT)std::clamp(rs.spmisTileSize, 1, 256);     // screen-space cell tile size (px)
     {
-        const float beta      = std::clamp(rs.cellBeta,        0.5f, 32.0f);
-        const float floorCos  = std::clamp(rs.cellCompatFloor, 0.0f, 1.0f);
-        memcpy(&rsConsts[36], &beta,     4);
-        memcpy(&rsConsts[37], &floorCos, 4);
+        const float jac = std::clamp(rs.spmisJacThreshold, 1.0f, 1000.0f);
+        const float ns  = std::clamp(rs.spmisNormalSimCos, -1.0f, 1.0f);
+        memcpy(&rsConsts[36], &jac, 4);   // reconnection-shift jacobian reject band
+        memcpy(&rsConsts[37], &ns,  4);   // neighbor-similarity normal cone (cos)
+    }
+
+    // Path-trace termination knobs (slots 38-39; read by Pass_raygen_v8). Editor
+    // caps both at 32. maxBounces floored at 2 so the primary (depth==1) always runs.
+    rsConsts[38] = (UINT)std::clamp(rs.maxBounces,    2, 32);
+    rsConsts[39] = (UINT)std::clamp(rs.rrStartDepth,  1, 32);
+    rsConsts[40] = (UINT)std::clamp(rs.initialSamples, 1, 8);
+
+    // SPMIS cell-search plane-distance rejection (slot 41; fraction of camera distance).
+    {
+        const float pd = std::max(rs.spmisPlaneDist, 0.0f);
+        memcpy(&rsConsts[41], &pd, 4);
     }
 
     // NRC control constants (slots 24-27). NRC is only driving the
@@ -2011,7 +2017,11 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 38, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 42, rsConsts, 0);
+        // SPMIS hash-grid buffer as a root UAV (u25) — see Includes_v8.hlsli / the
+        // Pass_spmis_* kernels + raygen hash insertion. Bound for every main-root-sig
+        // pass; shaders that don't reference it strip the binding (DXC).
+        cmdList->SetComputeRootUnorderedAccessView(2, m_spmisBuffer->GetGPUVirtualAddress());
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {

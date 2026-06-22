@@ -140,6 +140,19 @@ inline float3 InverseDlssReinhard(float3 r) {
 }
 
 //====================================
+//NON-FINITE SCRUB (safety backstop)
+//====================================
+//A poisoned reservoir sample (a divide that slipped an upstream guard) must not
+//reach the display. AgX clamps +inf (log2(max(.,1e-10)) -> clamped to maxEv) but
+//PROPAGATES NaN through the sigmoid, so a single NaN pixel renders as garbage.
+//This drops non-finite pixels to black. It deliberately does NOT clamp finite
+//fireflies -- those are root-caused in the reuse passes (bounded Jacobian), not
+//masked here.
+inline float3 ScrubNonFinite(float3 c) {
+    return (any(isnan(c)) || any(isinf(c))) ? float3(0, 0, 0) : c;
+}
+
+//====================================
 //EXPOSURE FROM AUTO-EXPOSE STATE
 //====================================
 //exposure = key / 2^smoothed_log2_lum. AE finalize clamps the log2-lum range,
@@ -210,14 +223,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float3 refl   = float3(0, 0, 0); // sharp-reflection slice retired (kept black)
     float3 albedo = gOutput[uint3(DTid.xy, 5)].xyz;
 
-    //auto-exposure + AgX tonemap on the radiance-bearing slices.
-    //AgX outputs sRGB display-encoded values, no extra gamma needed.
-    //albedo is linear surface reflectance, gamma-encode it for display.
+    //Scrub non-finite HDR before tonemap so a NaN/inf can't reach the display.
+    noisy = ScrubNonFinite(noisy);
+    clean = ScrubNonFinite(clean);
+    gt    = ScrubNonFinite(gt);
+    nrc   = ScrubNonFinite(nrc);
+
+    //AgX filmic tonemap (Troy Sobotka), operating on real HDR (post-exposure).
+    //Its sigmoid + output matrix already bake in the sRGB display EOTF, so the
+    //result goes straight to the UNORM target with NO sRGBGammaCorrection after.
+    //(Temporarily swapped for a plain sRGB encode 2026-06-20 for the SPMIS noise
+    //comparison; re-enabled here.)
     noisy = AgX(noisy * exposure);
     clean = AgX(clean * exposure);
     gt    = AgX(gt    * exposure);
     nrc   = AgX(nrc   * exposure);
     refl  = AgX(refl  * exposure);
+    //albedo is reflectance in [0,1] - no HDR, no exposure, no tonemap; sRGB only
     albedo = sRGBGammaCorrection(albedo);
 
     //triangular dither in display space hides 8-bit banding. Animated per

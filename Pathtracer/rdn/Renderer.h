@@ -221,6 +221,7 @@ private:
     ComPtr<ID3D12Resource>       m_permanentDataTexture;
     ComPtr<ID3D12Resource>       m_scratchPing;
     ComPtr<ID3D12Resource>       m_pathStateBuffer;
+    ComPtr<ID3D12Resource>       m_spmisBuffer;       // SPMIS global hash grid (root UAV u25)
     ComPtr<ID3D12Resource>       m_autoExposeBuffer;  // 32B persistent: sumLog2LumFixed, smoothedLog2Lum, isInitialized, tileCount, prevTime, _pad
     // Heap slots 10/11 (root-sig u2/u3) had two extra reservoir buffers from
     // the old DI/GI split. The unified pipeline only touches the GI pair, so

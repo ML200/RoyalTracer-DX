@@ -41,6 +41,7 @@ private:
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
     void DrawMaterialInspector(Scene& scene, Camera& camera);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
+    void DrawInitialSamplingPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
     void DrawCloudPanel(Camera& camera);
@@ -54,6 +55,7 @@ private:
     bool m_showDLSS       = false;
     bool m_showReSTIR     = false;
     bool m_showNRC        = false;
+    bool m_showInitialSampling = false;
     bool m_showSun        = false;
     bool m_showClouds     = false;
     bool m_showMaterials  = false;

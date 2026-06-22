@@ -324,9 +324,41 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
+//Clamp band for the reconnection-shift Jacobian used by temporal + texture-space
+//spatial reuse. ~20 matches the SPMIS jacobian reject band; tunable (lower =
+//stronger firefly suppression, more bias).
+#define JACOBIAN_CLAMP_T 20.0f
+
 inline float JacobianRatio(float Jn, float Jc)
 {
-    return (Jc > EPSILON) ? (Jn / Jc) : 0.0f;
+    //Jc comes from ComputeJc, which FLOORS |cos|/dist^2 to EPSILON, and Jn is
+    //floored too -- so at the floor the correct ratio is EPSILON/EPSILON = 1, NOT
+    //0. We must NOT reject there (that silently killed long-range temporal reuse).
+    //But this function is shared with NON-IDENTITY spatial reuse, where Jn/Jc
+    //genuinely diverges and, left unbounded, spikes the resampling weight into
+    //FIREFLIES. So: guard div-by-zero / non-finite, then CLAMP (not reject) to
+    //[1/T, T]. SPMIS uses JacobianRatioRej (rejects) instead because it draws from
+    //a large pool and can afford to drop outliers; the small temporal/spatial
+    //candidate sets prefer a bounded sample over a dropped one.
+    if (Jc <= 0.0f) return 0.0f;
+    const float j = Jn / Jc;
+    if (isnan(j) || isinf(j)) return 0.0f;
+    return clamp(j, 1.0f / JACOBIAN_CLAMP_T, JACOBIAN_CLAMP_T);
+}
+
+//Reconnection-shift Jacobian WITH outlier rejection (reject band ~[1/T, T], T~15):
+//returns 0 - i.e. REJECTS the shifted sample - when Jn/Jc is extreme (> T or < 1/T)
+//or non-finite. An unbounded Jn/Jc spikes the resampling weight into FIREFLIES; the
+//cell path hits this constantly because it reuses from a large pool where some
+//reconnection vertices are grazing (cos->0) or at a large distance ratio. Applied
+//per non-canonical neighbour in the SPMIS pass; the plain JacobianRatio above does
+//not reject. Slight bias for a large variance win (standard ReSTIR-PT practice).
+inline float JacobianRatioRej(float Jn, float Jc, float T)
+{
+    if (Jc <= EPSILON) return 0.0f;
+    float j = Jn / Jc;
+    if (isnan(j) || isinf(j) || j > T || j < (1.0f / T)) return 0.0f;
+    return j;
 }
 
 //====================================

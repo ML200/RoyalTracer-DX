@@ -62,6 +62,10 @@ inline bool IsRayValid(float3 origin, float3 direction, float tMax)
 //non-opaque candidate.
 inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
 {
+#if DISABLE_ALPHA_TEST
+    //TEMP: alpha testing off - every candidate occludes (geometry is opaque).
+    return true;
+#else
     const uint matID = materialIDs[instanceProps[instID].materialBase + primID];
     const int  texID = LoadAlbedoTexID(matID);
 
@@ -88,6 +92,7 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
 
     return alpha >= LoadAlphaThreshold(matID);
+#endif
 }
 
 
@@ -115,8 +120,8 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
     RayDesc ray;
     ray.Origin    = oA;
     ray.Direction = direction;
-    ray.TMin      = 0.0001f;
-    ray.TMax      = dist;
+    ray.TMin      = 0.001f;
+    ray.TMax      = dist*0.998f;
 
     //FORCE_OPAQUE dropped: alpha-tested geometry now resolves per-texel below
     //so foliage/fences/etc. don't cast solid shadows. Opaque geometry still
@@ -139,6 +144,24 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
         }
     }
     return q.CommittedStatus() == COMMITTED_NOTHING;
+}
+
+//====================================
+//DEFERRED RECONNECTION VISIBILITY
+//====================================
+//One reconnection shadow ray for a resolved reservoir sample: x1 -> x2 (or, for an
+//env miss, a far ray along the stored sky direction). Used by the spatial resolve
+//when RS_FLAG_NO_REUSE_VIS has moved the shadow ray out of the reuse passes, so the
+//stored F is unshadowed and needs its visibility applied exactly once. Mirrors the
+//env-miss / surface split the temporal & spatial passes use inline.
+inline float ReconnectVis(float3 x1, float3 n1_s, uint matID, float3 x2, float3 n2_s)
+{
+    if (matID == MATID_ENV_MISS)
+    {
+        const float3 md = normalize(x2);
+        return IsVisible(x1, n1_s, x1 + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
+    }
+    return IsVisible(x1, n1_s, x2, n2_s) ? 1.0f : 0.0f;
 }
 
 //====================================

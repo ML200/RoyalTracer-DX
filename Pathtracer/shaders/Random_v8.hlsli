@@ -39,6 +39,22 @@ inline float RandomFloatSingle(inout uint s)
     return asfloat(r) - 1.0f;
 }
 
+//PCG (RXS-M-XS 32-bit) — same LCG step as above but with a proper OUTPUT PERMUTATION.
+//The bare LCG above has no output hash, so consecutive draws are linearly correlated
+//(LCG hyperplane structure) and a weakly-mixed seed leaves spatial structure. In the
+//cell gather that collapses the Ntilde WRS reservoirs (which take CONSECUTIVE draws
+//against identical thresholds) toward the same pick -> raising Ntilde stops helping -
+//and the spatial correlation reads as blotchy (not white) noise. The permutation
+//decorrelates consecutive and nearby-seed draws. Drop-in replacement; range [0,1).
+inline float RandomFloatPCG(inout uint s)
+{
+    s = s * 747796405u + 2891336453u;
+    uint word = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    word = (word >> 22u) ^ word;
+    uint r = 0x3F800000u | (word >> 9u);
+    return asfloat(r) - 1.0f;
+}
+
 uint initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
     return GetSeed(idx, t, c).x;
 }

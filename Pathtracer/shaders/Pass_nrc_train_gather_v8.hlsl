@@ -113,8 +113,17 @@ void main(uint3 dtid : SV_DispatchThreadID)
     //the temporal bits 0x1/0x2 are masked, not spatGI 0x8), so it is always the
     //current-frame, current-layout value; read-only here, so the history
     //ping-pong is undisturbed.
-    const float3 giRadiance   = load_F(g_Reservoirs_last, pixelIdx)
+    float3 giRadiance         = load_F(g_Reservoirs_last, pixelIdx)
                               * load_W(g_Reservoirs_last, pixelIdx);
+    //RS_FLAG_NO_REUSE_VIS defers the reconnection shadow ray to the spatial resolve,
+    //so the stored reservoir F is UNSHADOWED while the displayed slot-2 GI is F*W*V.
+    //Re-apply that one visibility here so the cache trains on the SAME shadowed GI it
+    //displays; otherwise x1 targets drift brighter than the image -> indirect feedback.
+    if (REUSE_VIS_OFF)
+    {
+        const Reservoir rRes = loadReservoir(g_Reservoirs_last, pixelIdx);
+        giRadiance *= ResolveReuseVis(pixelIdx, rRes, giRadiance);
+    }
     const float3 sunSkyDirect = gScratchPing[uint3(pixel, 3)].rgb;
     const float3 outgoing     = NrcCleanRadiance(giRadiance + sunSkyDirect);
 

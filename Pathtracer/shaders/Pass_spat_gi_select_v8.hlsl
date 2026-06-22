@@ -112,9 +112,9 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     const uint baseAddr = sel_addr(pixelIdx);
 
-    //emitter, spatial off, or cell-mode active (Pass_spat_gi_cell_v8 owns reuse
+    //emitter, spatial off, or SPMIS-mode active (the Pass_spmis_* pipeline owns reuse
     //instead) - write a zero header so the shift pass casts no rays for us.
-    if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u) || CELL_SPATIAL_MODE)
+    if (load_isEmitter(g_sample_current, pixelIdx) || !(rs_flags & 8u) || SPMIS_SPATIAL_MODE)
     {
         g_pathStateBuffer.Store(baseAddr, 0u);
         return;
