@@ -743,6 +743,16 @@ RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
+//SPMIS_GRID_NONCOHERENT: the SPMIS reuse passes (select/shift/merge) only READ a
+//finished, barrier-fenced grid + scratch, so they drop globallycoherent to get
+//L1-cached reads. The coherent path bypasses L1 and saturates L2 on the scattered
+//cell-search / inner-RIS gathers (the Pass_spmis_select L2 bottleneck). Every WRITER
+//and same-dispatch cross-group READER (raygen CAS hash insert, count/offsets atomics)
+//keeps coherence by simply never defining the macro.
+#ifdef SPMIS_GRID_NONCOHERENT
+RWByteAddressBuffer g_pathStateBuffer        : register(u10);
+RWByteAddressBuffer g_spmisBuffer            : register(u25);
+#else
 //globallycoherent so the raygen scratch+reload pattern (tpost, nrcA0)
 //actually drops those values from live state across the bounce-loop
 //TraceRay reorder boundary. Without it, DXC store-to-load forwards the
@@ -755,6 +765,7 @@ globallycoherent RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 //globallycoherent so the raygen hash-insertion CAS probes observe other threadgroups'
 //writes within the same dispatch (the table is shared across all pixels).
 globallycoherent RWByteAddressBuffer g_spmisBuffer            : register(u25);
+#endif
 
 //====================================
 //AUTO EXPOSURE STATE (20 B persistent)

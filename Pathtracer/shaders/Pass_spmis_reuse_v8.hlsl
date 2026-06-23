@@ -34,8 +34,15 @@ inline bool sp_similar(uint npx, float3 myPos, float3 myN, float planeThresh)
 {
     const uint ninst = load_instID(g_sample_current, npx);
     if (ninst == 0xFFFFFFFFu) return false;
-    const float3 nN = load_n1_s_with_instID(g_sample_current, npx, ninst);
-    if (dot(myN, nN) <= spmis_normalSimCos) return false;
+    //normal cone. spmis_normalSimCos is a uniform, so this is a scalar branch: at the
+    //default -1 (accept all normals) the test can only fire on an exactly-antiparallel
+    //neighbour, so skip the scattered normal fetch entirely - the hash cell already
+    //buckets by normal bucket. Only pay the load when the cone is actually enabled.
+    if (spmis_normalSimCos > -1.0f)
+    {
+        const float3 nN = load_n1_s_with_instID(g_sample_current, npx, ninst);
+        if (dot(myN, nN) <= spmis_normalSimCos) return false;
+    }
     //plane-distance rejection (regular-ReSTIR geometry test rejecting bad cells based
     //on geometry): drop neighbours whose primary hit lies off the query's tangent plane
     //(a depth discontinuity - container edge vs background, etc.).
@@ -43,7 +50,7 @@ inline bool sp_similar(uint npx, float3 myPos, float3 myN, float planeThresh)
     return abs(dot(nPos - myPos, myN)) <= planeThresh;
 }
 
-[numthreads(8, 8, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (!SPMIS_SPATIAL_MODE) return;
@@ -95,7 +102,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //CELL SEARCH - WRS, center pre-seeded
     //====================================
-    float weight_sum    = (float)g_spmisBuffer.Load(SP_A(SP_CONF, cellCenter));
+    float weight_sum    = (float)g_spmisBuffer.Load(SP_CONF_A(cellCenter));
     uint  selectedCell  = cellCenter;
     float radius        = SP_SEARCH_R0;
     //plane-distance reject threshold scaled by distance to camera (scene-scale-free).
@@ -116,20 +123,21 @@ void main(uint3 tid : SV_DispatchThreadID)
         if (ncell == SP_UNDEF || ncell == cellCenter) continue;   // center already seeded
         if (!sp_similar(npx, myPos, myN, planeThresh)) continue;
 
-        const float w = (float)g_spmisBuffer.Load(SP_A(SP_CONF, ncell));
+        const float w = (float)g_spmisBuffer.Load(SP_CONF_A(ncell));
         weight_sum += w;
         if (RandomFloatPCG(seed.x) < w / weight_sum) selectedCell = ncell;
     }
 
     const uint  reuseCell = selectedCell;
-    const uint  cellBase  = g_spmisBuffer.Load(SP_A(SP_OFF,    reuseCell));
-    const float pixCount  = (float)g_spmisBuffer.Load(SP_A(SP_PIXCNT, reuseCell));
-    const uint  nzCount   =        g_spmisBuffer.Load(SP_A(SP_NZ,     reuseCell));
+    const uint4 agg       = g_spmisBuffer.Load4(SP_AGG(reuseCell));   // PIXCNT|NZ|CONF|OFF
+    const uint  cellBase  = agg.w;          // OFF
+    const float pixCount  = (float)agg.x;   // PIXCNT
+    const uint  nzCount   = agg.y;          // NZ
     //SS4.3 non-canonical confidence scaling.
     //OFF by default -> scaling = 1 -> canonical weight ~0, full neighbour reuse.
     //ON -> Ntilde/pixCount -> boosts canonical, weaker reuse.
     const float scaling   = (SPMIS_CONF_ADJUST && pixCount > 0.0f) ? min(1.0f, (float)Ntilde / pixCount) : 1.0f;
-    const float neighbors_conf_sum = (float)g_spmisBuffer.Load(SP_A(SP_CONF, reuseCell)) * scaling;
+    const float neighbors_conf_sum = (float)agg.z * scaling;   // CONF (from the Load4 above)
 
     //====================================
     //CANONICAL MIS WEIGHT (non-defensive Eq.18, Nc=1 uniform pick over the whole cell)
@@ -192,24 +200,25 @@ void main(uint3 tid : SV_DispatchThreadID)
         {
             //--- inner RIS: pick one non-zero reservoir prop. UCW*target*M, P=1/UCW ---
             float ris_wsum = 0.0f, ris_selTF = 0.0f;
-            uint  ris_sel  = SP_UNDEF;
+            uint  ris_selK = SP_UNDEF;
             [loop]
             for (uint ri = 0u; ri < spmis_risN; ++ri)
             {
                 uint k = (uint)((float)nzCount * RandomFloatPCG(seed.x));
                 if (k >= nzCount) k = nzCount - 1u;
-                const uint cand = g_spmisBuffer.Load(SP_A(SP_SORTED, cellBase + k));
-                if (cand == SP_UNDEF) continue;
-                const float tf = load_W(g_Reservoirs_current, cand)
-                               * GetPHat(load_F(g_Reservoirs_current, cand))
-                               * (float)load_M(g_Reservoirs_current, cand);     // UCW * target * M
+                //target (UCW*target*M) precomputed at sort time: ONE float load per
+                //candidate instead of load_W + load_F + load_M across two SoA planes.
+                const float tf = asfloat(g_spmisBuffer.Load(SP_A(SP_SORTEDW, cellBase + k)));
                 const float w  = tf * (float)nzCount / (float)spmis_risN;       // (1/ris)*tf/(1/nz)
                 ris_wsum += w;
-                if (ris_wsum > 0.0f && RandomFloatPCG(seed.x) < w / ris_wsum) { ris_sel = cand; ris_selTF = tf; }
+                if (ris_wsum > 0.0f && RandomFloatPCG(seed.x) < w / ris_wsum) { ris_selK = k; ris_selTF = tf; }
             }
-            if (ris_sel == SP_UNDEF || ris_selTF <= 0.0f) continue;
+            if (ris_selK == SP_UNDEF || ris_selTF <= 0.0f) continue;
+            //resolve the winner's pixel index (single load, winner only) now that the
+            //inner RIS no longer touches the reservoir SoA per candidate.
+            const uint zPx = g_spmisBuffer.Load(SP_A(SP_SORTED, cellBase + ris_selK));
+            if (zPx == SP_UNDEF) continue;
             const float selProb = ris_selTF / ris_wsum;                          // 1/UCW
-            const uint  zPx     = ris_sel;
 
             Reservoir pr = loadReservoir(g_Reservoirs_current, zPx);
             if (pr.W <= 0.0f) continue;

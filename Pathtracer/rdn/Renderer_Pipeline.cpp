@@ -710,11 +710,12 @@ void Renderer::CreatePathStateBuffer() {
     m_pathStateBuffer = rf.CreateUAVBuffer(
         TileAlignedPx(GetWidth(), GetHeight()) * kPathStateBytesPerPx, L"PathStateBuffer");
 
-    // SPMIS global hash grid (root UAV u25, g_spmisBuffer): 9 arrays each
-    // TileAlignedPx uints wide (must match SP_STR() in HashGridHash_v8.hlsli) plus a
-    // single global offset counter. Resolution-dependent -> recreated here on resize.
+    // SPMIS global hash grid (root UAV u25, g_spmisBuffer): 10 SoA arrays each
+    // TileAlignedPx uints wide (must match SP_STR()/SP_ARRAYS in HashGridHash_v8.hlsli) +
+    // a global offset counter + a 16B/px AoS search-record region (SP_SRCH = cellConf +
+    // worldPos) => 14*TileAlignedPx + 4 uints. Resolution-dependent -> recreated on resize.
     m_spmisBuffer = rf.CreateUAVBuffer(
-        (9u * TileAlignedPx(GetWidth(), GetHeight()) + 1u) * 4u, L"SPMISBuffer");
+        (14u * TileAlignedPx(GetWidth(), GetHeight()) + 4u) * 4u, L"SPMISBuffer");
 
     // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),

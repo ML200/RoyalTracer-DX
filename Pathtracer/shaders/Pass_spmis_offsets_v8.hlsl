@@ -9,16 +9,16 @@
 //(tid.y*W+tid.x), so every possible hash cell index is visited exactly once. The
 //ordering of cells in the packed array is nondeterministic (atomic race) but that is
 //irrelevant - it only packs each cell's members contiguously.
-[numthreads(8, 4, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (!SPMIS_SPATIAL_MODE) return;
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
 
     const uint cell = tid.y * IMG_W + tid.x;              // [0, SP_NUMCELLS)
-    const uint cnt  = g_spmisBuffer.Load(SP_A(SP_PIXCNT, cell));
+    const uint cnt  = g_spmisBuffer.Load(SP_PIXCNT_A(cell));
 
     uint offset;
     g_spmisBuffer.InterlockedAdd(SP_CTR(), cnt, offset);
-    g_spmisBuffer.Store(SP_A(SP_OFF, cell), offset);
+    g_spmisBuffer.Store(SP_OFF_A(cell), offset);
 }

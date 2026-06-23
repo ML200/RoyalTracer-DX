@@ -21,12 +21,11 @@ static const uint SP_HASH    = 0u;   // per-pixel : resolved cell index (or SP_U
 static const uint SP_CHK     = 1u;   // per-cell  : open-addressed checksum table
 static const uint SP_IDX     = 2u;   // per-pixel : index of this pixel within its class in its cell
 static const uint SP_SORTED  = 3u;   // dense     : pixel (reservoir) index, packed per cell, non-zero first
-static const uint SP_PIXCNT  = 4u;   // per-cell  : total pixels in cell
-static const uint SP_NZ      = 5u;   // per-cell  : non-zero (UCW>0) reservoir count
-static const uint SP_CONF    = 6u;   // per-cell  : sum of M (confidence sum)
-static const uint SP_OFF     = 7u;   // per-cell  : start offset into SP_SORTED
+//slots 4..7 repurposed as the per-cell AGGREGATE struct (AoS, 16B = PIXCNT|NZ|CONF|OFF);
+//addressed by SP_AGG / SP_*_A below instead of SP_A.
 static const uint SP_OTHER   = 8u;   // per-cell  : non-important index allocator (scratch for the sort split)
-static const uint SP_ARRAYS  = 9u;   // total arrays; the global offset counter sits right after them
+static const uint SP_SORTEDW = 9u;   // dense     : inner-RIS target (UCW*target*M) precomputed at sort, parallel to SP_SORTED
+static const uint SP_ARRAYS  = 10u;  // total arrays; the global offset counter sits right after them
 
 //SP_STR == TileAlignedPx(IMG_W, IMG_H): tile-swizzled pixel count (8x4 tiles, see
 //MapPixelID). Must equal the host's TileAlignedPx so the buffer is sized to match.
@@ -34,6 +33,51 @@ inline uint SP_STR()      { return ((IMG_W + 7u) / 8u) * ((IMG_H + 3u) / 4u) * 3
 inline uint SP_NUMCELLS() { return IMG_W * IMG_H; }                 // dense modulo base (pixel hash count)
 inline uint SP_A(uint slot, uint i) { return (slot * SP_STR() + i) * 4u; }
 inline uint SP_CTR()      { return (SP_ARRAYS * SP_STR()) * 4u; }   // global offset counter (1 uint)
+//Per-cell AGGREGATE struct (AoS, 16B = PIXCNT|NZ|CONF|OFF) in the byte space of the former
+//SoA slots 4..7 (cell*16 fits since SP_NUMCELLS <= SP_STR). One Load4(SP_AGG(cell)) fetches
+//all four for the hot reuseCell read (was 4 scattered loads to 4 SP_STR-strided regions) and
+//count's 3 InterlockedAdds then land in one cache line. Load4 lanes: .x=PIXCNT .y=NZ .z=CONF .w=OFF.
+inline uint SP_AGG(uint cell)      { return (4u * SP_STR() + cell * 4u) * 4u; }
+inline uint SP_PIXCNT_A(uint cell) { return SP_AGG(cell) +  0u; }
+inline uint SP_NZ_A(uint cell)     { return SP_AGG(cell) +  4u; }
+inline uint SP_CONF_A(uint cell)   { return SP_AGG(cell) +  8u; }
+inline uint SP_OFF_A(uint cell)    { return SP_AGG(cell) + 12u; }
+//Per-pixel SEARCH RECORD (AoS, 16B = cellConf + worldPos) for the Pass_spmis_select
+//cell-search fast path: bundled so each probe is ONE Load4 (npx-indexed, framebuffer-
+//local) instead of a scattered SP_CONF[ncell] + neighbour-G-buffer fan-out. Lives after
+//the SoA arrays + counter, 16B-aligned (the 1-uint counter occupies the first 16B slot).
+//Written by Pass_spmis_sort, read by Pass_spmis_select; host buffer sized for it in
+//Renderer_Pipeline.cpp ((14*TileAlignedPx + 4) uints).
+inline uint SP_SRCH(uint px) { return (SP_ARRAYS * SP_STR()) * 4u + 16u + px * 16u; }
+
+//====================================
+//SPMIS SPLIT-PASS SCRATCH  (aliases g_pathStateBuffer in SPMIS mode)
+//====================================
+//The reuse pass is split select -> shift -> merge to lift per-pass occupancy (the rays
+//land in shift with minimal live state). Per-pixel record packs a header + up to
+//SPMIS_SPLIT_MAXDRAWS non-canonical draw slots into the path-state scratch (texture
+//spatial reuse is idle in SPMIS mode, so the buffer is free). Sized to the existing
+//kPathStateBytesPerPx (88 B): 8 B header + 4*20 B = 88 B, so no host allocation change.
+//  header w0 = (status<<28) | reuseCell[27:0]    select -> shift(reuseCell)/merge(status)
+//         w1 = partnerPx (select) -> mis_c | passVis (shift) -> merge
+//  draw d  +0 = zPx       select; shift clears to SP_UNDEF on gate-reject; merge reads
+//          +4 = selProb (select) -> w_draw (shift) -> merge
+//          +8 = c.xyz 12B (shift) -> merge   (shadowed reconnection contribution)
+//status: 0 = emitter/skip, 1 = passthrough, 2 = normal.
+//To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to >= 8 + N*20.
+#define SPMIS_SPLIT_MAXDRAWS 4u
+static const uint SPM_STATUS_SKIP = 0u;
+static const uint SPM_STATUS_PASS = 1u;
+static const uint SPM_STATUS_NORM = 2u;
+static const uint SPM_HDR_BYTES   = 8u;
+static const uint SPM_SLOT_BYTES  = 20u;
+inline uint SPM_STRIDE()              { return SPM_HDR_BYTES + SPMIS_SPLIT_MAXDRAWS * SPM_SLOT_BYTES; }
+inline uint SPM_w0(uint px)           { return px * SPM_STRIDE(); }
+inline uint SPM_w1(uint px)           { return px * SPM_STRIDE() + 4u; }
+inline uint SPM_slot(uint px, uint d) { return px * SPM_STRIDE() + SPM_HDR_BYTES + d * SPM_SLOT_BYTES; }
+inline uint SPM_packHdr(uint reuseCell, uint status) { return (reuseCell & 0x0FFFFFFFu) | (status << 28u); }
+inline uint SPM_hdrStatus(uint w0)    { return w0 >> 28u; }
+inline uint SPM_hdrCell(uint w0)      { return w0 & 0x0FFFFFFFu; }
 
 //------------------------------------------------------------------
 //Hash functions (PCG for the cell index, xxHash32 for the checksum)

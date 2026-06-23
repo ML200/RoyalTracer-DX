@@ -9,7 +9,7 @@
 //aggregates), so one reset covers both the hash table and the per-cell arrays.
 //Per-cell arrays + the open-addressed checksum table are indexed by the DENSE hash
 //cell index (tid.y*W+tid.x, covering [0, SP_NUMCELLS)); per-pixel arrays by MapPixelID.
-[numthreads(8, 4, 1)]
+[numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
     if (!SPMIS_SPATIAL_MODE) return;
@@ -20,10 +20,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint   pixelIdx  = MapPixelID(dims, tid.xy);     // per-pixel slot
 
     g_spmisBuffer.Store(SP_A(SP_CHK,    denseCell), SP_UNDEF);
-    g_spmisBuffer.Store(SP_A(SP_PIXCNT, denseCell), 0u);
-    g_spmisBuffer.Store(SP_A(SP_NZ,     denseCell), 0u);
-    g_spmisBuffer.Store(SP_A(SP_CONF,   denseCell), 0u);
-    g_spmisBuffer.Store(SP_A(SP_OFF,    denseCell), 0u);
+    g_spmisBuffer.Store4(SP_AGG(denseCell), uint4(0u, 0u, 0u, 0u));   // PIXCNT|NZ|CONF|OFF
     g_spmisBuffer.Store(SP_A(SP_OTHER,  denseCell), 0u);
     g_spmisBuffer.Store(SP_A(SP_SORTED, denseCell), SP_UNDEF);
 
