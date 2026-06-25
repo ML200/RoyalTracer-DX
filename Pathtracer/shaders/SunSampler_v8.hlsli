@@ -704,16 +704,6 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
     if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
         return float3(0, 0, 0);
 
-    // Terrain block at closest approach — catches peaks between sparse samples.
-    float tClose = -dot(P, L);
-    if (tClose > 0.0f && tClose < tMax)
-    {
-        float3 Qc = P + L * tClose;
-        float  rC = length(Qc);
-        float  terrR = Rb + max(TerrainHeight(Qc / rC) * 0.001f, 0.0f);
-        if (rC < terrR) return float3(0, 0, 0);
-    }
-
     // From-space rays: advance to the atmosphere entry so (r, mu) lands in
     // the LUT domain. The mesh-bias band slightly below Rb clamps to ground.
     float r = length(P);

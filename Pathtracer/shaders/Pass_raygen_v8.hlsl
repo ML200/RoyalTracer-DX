@@ -1,100 +1,33 @@
 #include "Includes_v8.hlsli"
-#include "Nrc_v8.hlsli"
-
-//path loop bound is now the runtime uniform pt_maxBounces (editor slider, capped
-//at 32); this #define is an unreferenced compile-time fallback. Real termination is
-//RR (pt_rrStartDepth) plus the NRC cache short circuit.
-#ifndef MAX_BOUNCES
-#define MAX_BOUNCES 10
-#endif
-
-//====================================
-//PACKED NRC MUTABLE STATE
-//====================================
-//bits 0..5   hitIdx          (0..63)
-//bits 6..9   trainVIdx       (0..15, NRC_MAX_VERTICES_PER_PATH=8)
-//bits 10..11 pathClass       (0..2: RENDER / TRAIN_BIASED / TRAIN_UNBIASED)
-//bit  13     prevSpecular
-//bit  14     cacheTerminated
-//tailKind used to live at bit 12 but is now written directly to the
-//path-meta buffer at each termination point; bit 12 is unused.
-#define NRC_PK_HITIDX_MASK     0x3Fu
-#define NRC_PK_TRAINVIDX_SHIFT 6u
-#define NRC_PK_TRAINVIDX_MASK  0xFu
-#define NRC_PK_PATHCLASS_SHIFT 10u
-#define NRC_PK_PATHCLASS_MASK  0x3u
-#define NRC_PK_PREVSPEC_BIT    (1u << 13)
-#define NRC_PK_CACHETERM_BIT   (1u << 14)
-
-inline uint pk_hit   (uint s)        { return s & NRC_PK_HITIDX_MASK; }
-inline uint pk_vidx  (uint s)        { return (s >> NRC_PK_TRAINVIDX_SHIFT) & NRC_PK_TRAINVIDX_MASK; }
-inline uint pk_pclass(uint s)        { return (s >> NRC_PK_PATHCLASS_SHIFT) & NRC_PK_PATHCLASS_MASK; }
-inline bool pk_prev  (uint s)        { return (s & NRC_PK_PREVSPEC_BIT)   != 0u; }
-inline bool pk_cterm (uint s)        { return (s & NRC_PK_CACHETERM_BIT)  != 0u; }
-inline uint pk_set_hit   (uint s, uint v) { return (s & ~NRC_PK_HITIDX_MASK) | (v & NRC_PK_HITIDX_MASK); }
-inline uint pk_set_vidx  (uint s, uint v) { return (s & ~(NRC_PK_TRAINVIDX_MASK << NRC_PK_TRAINVIDX_SHIFT))
-                                                   | ((v & NRC_PK_TRAINVIDX_MASK) << NRC_PK_TRAINVIDX_SHIFT); }
-inline uint pk_set_pclass(uint s, uint v) { return (s & ~(NRC_PK_PATHCLASS_MASK << NRC_PK_PATHCLASS_SHIFT))
-                                                   | ((v & NRC_PK_PATHCLASS_MASK) << NRC_PK_PATHCLASS_SHIFT); }
-inline uint pk_set_prev  (uint s, bool b) { return b ? (s | NRC_PK_PREVSPEC_BIT)  : (s & ~NRC_PK_PREVSPEC_BIT); }
-inline uint pk_set_cterm (uint s)         { return s | NRC_PK_CACHETERM_BIT; }
 
 
-//====================================
-//NRC AREA-SPREAD BOOKKEEPING GATE
-//====================================
-//Master gate for the nrcA/nrcA0 area-spread scratch round trips that feed
-//NrcShouldCacheTerminate's spread heuristic ((a*a) > kGate*a0). Must stay in
-//lockstep with the cacheElig path inside Pass_raygen_v8: with this false the
-//heuristic degenerates to 0 > 0 and the cache never fires, so it is true
-//whenever NRC is live.
-static const bool NRC_AREA_SPREAD_ACTIVE = true;
-
-//====================================
-//PER-VERTEX SURFACE STATE (loop-carried)
-//====================================
-//Bundles everything the bounce loop needs to process vertex v_depth: hit
-//geometry, material, IOR / medium context. Populated once by TraceCameraRay
-//for v_1, then overwritten at the bottom of each bounce iter with v_{depth+1}.
+//Per-vertex surface state carried across the bounce loop (loop phi). Bounded
+//fields are half to shrink the carried state.
 struct HitContext {
-    float3 hitPos;          //fp32, scene-coord position
-    float  hitT;            //fp32, for NRC area-spread accumulation
-    float3 hitNormal;       //fp32, used for offset_ray + dot products w/ float dirs
-    //uv removed: both consumers (RefetchMaterial / TerrainTintFromUV) read
-    //hinfo*.uv directly at extraction - the field was dead loop-carried state
+    float3 hitPos;
+    float3 hitNormal;
     uint   matID;
     uint   instID;
     bool   backface;
-    //----- bounded-range params live in half -----
-    half3  hitLocalKd;      //albedo, [0,1] per channel
-    half   hitLocalPr;      //roughness, [0,1]
-    half   hitLocalPm;      //metalness, [0,1]
-    half2  iors;            //IORs, ~1..2.5
+    half3  hitLocalKd;      //albedo
+    half   hitLocalPr;      //roughness
+    half   hitLocalPm;      //metalness
+    half2  iors;
     uint   mediumMatID;
-    half3  absorptionTint;  //transmittance, [0,1] per channel
+    half3  absorptionTint;
 };
 
 
 //====================================
 //CAMERA RAY (primary-hit extraction)
 //====================================
-//Trace the camera ray and write everything that is primary-specific:
-//  - sky/emitter scratch slots that feed the post-process composite
-//  - DLSS sample buffer (instID, primID, normal, uv, hitT, ...)
-//  - specular MV reflection probe -> scratch slot 4
-//  - NRC vertex-1 anchor (hitIdx=1, nrcA0)
-//
-//Returns true and populates `ctx` with v_1 hit data if the path should
-//continue. The bounce loop then processes v_1 (NEE + BSDF + training) at
-//iter depth==1 and traces from there.
-//
-//Returns false on degenerate ray / miss / primary emitter — those cases
-//are terminal at the camera vertex and need no further processing.
+//Trace v_1 and write the primary outputs: sky/emitter scratch, the resolved
+//G-buffer downstream passes read, and the specular-MV probe. Returns false
+//(terminal) on degenerate/miss/direct-emitter; else fills ctx with v_1.
 inline bool TraceCameraRay(
     uint2  pixel,
     uint   pixelIdx,
     inout  uint   seed,
-    inout  uint   nrcStateA,
     inout  float3 rayOrigin,
     inout  float3 rayDir,
     out    HitContext ctx)
@@ -104,7 +37,7 @@ inline bool TraceCameraRay(
     if (!IsRayValid(rayOrigin, rayDir, 10000.0f))
         return false;
 
-    //primary uses 4-state OMM (full alpha test); bounces force 2-state
+    //primary: 4-state OMM (full alpha test); bounces force 2-state
     RayDesc ray;
     ray.Origin    = rayOrigin;
     ray.Direction = rayDir;
@@ -112,25 +45,12 @@ inline bool TraceCameraRay(
     ray.TMax      = RAY_TMAX_PLANET;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-    //----- MISS: only the sun disc written here -----
+    //MISS: sun disc only. Pass_clouds_primary writes the full sky (slot 10) +
+    //combined transmittance (slot 11); the shading composite does sun*combinedTr.
+    //EvaluateSunUnattenuated (NOT EvaluateSun): the latter bakes transmittance
+    //the composite already applies, double-attenuating.
     if (!hitObj.IsHit())
     {
-        //Unified atmosphere+cloud march runs in Pass_clouds_primary_v8 and
-        //writes the full sky pixel value (atmospheric scatter + cloud
-        //in-scatter + planet body + stars + nightBase, all attenuated by
-        //the combined transmittance) into scratch slot 10, along with the
-        //combined transmittance in slot 11. Raygen only contributes the
-        //sun disc here; the shading composite
-        //   output_primary = output_primary * cloudTr + cloudL
-        //then resolves to (sun * combinedTr) + (everything else), giving
-        //the sun the correct combined atmosphere+cloud attenuation
-        //automatically. EvaluateSunUnattenuated (NOT EvaluateSun) is
-        //mandatory here: the standard EvaluateSun bakes
-        //AtmosphericTransmittance(sunDir) into S.tint, and combinedTr along
-        //a sun-disc view ray already integrates that same path, so the
-        //composite would double-attenuate. At sunset that crushes the disc
-        //below the cloud silver-lining inscatter (which only attenuates
-        //once, via per-sample sunAtmosT at cloud altitude).
         const float3 sun = EvaluateSunUnattenuated(rayDir);
         float3 skyL1     = (length(sun) > 0.0f) ? sun : float3(0, 0, 0);
 
@@ -140,11 +60,7 @@ inline bool TraceCameraRay(
         return false;
     }
 
-    // Surface shading is resolved HERE from instID + primID (Hit_v8.hlsl's
-    // closest-hit is an unused stub). Scene meshes AND planet terrain cells
-    // shade through the one EvalSurfaceState path - terrain has real
-    // instanceProps + vertex/index data in the unified buffers.
-    //----- HIT: extract surface state -----
+    //HIT: resolve the surface from instID + primID (closest-hit is a stub).
     const float  hitT   = hitObj.GetRayTCurrent();
     const float3 hitPos = rayOrigin + rayDir * hitT;
     const uint   instID = hitObj.GetInstanceID();   // user InstanceID == instanceProps index
@@ -152,7 +68,6 @@ inline bool TraceCameraRay(
     const uint    matID    = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
-    const float2  hitBary  = attr.barycentrics;
     HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
     const float3  emission = GetEmissionFast(instID, primID);
 
@@ -165,22 +80,14 @@ inline bool TraceCameraRay(
     float3 hitLocalKd; float hitLocalPr, hitLocalPm;
     RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, 0u);
 
-    //PLANET: override the flat terrain albedo with the baked surface_color tint
-    //sampled through the vertex face-UVs. No-op for scene meshes (_pad[0] == 0).
-    {
-        float3 terrainKd;
-        if (TerrainTintFromUV(hinfo.uv, instanceProps[instID]._pad[0], terrainKd))
-            hitLocalKd = terrainKd;
-    }
-
     const float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
         ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
         : float3(1, 1, 1);
 
     const bool   isEmitter = any(emission > 0.0f);
 
-    //----- DLSS sample-buffer writes: bake the resolved surface so no pass
-    //      after raygen touches per-triangle data or a material texture -----
+    //Bake the resolved surface to the G-buffer (no later pass re-reads
+    //per-triangle data or a material texture).
     store_instID    (g_sample_current, pixelIdx, instID);
     store_flags     (g_sample_current, pixelIdx, isEmitter, hinfo.backface);
     store_matID     (g_sample_current, pixelIdx, matID);
@@ -194,8 +101,7 @@ inline bool TraceCameraRay(
         gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
     }
 
-    //----- Specular MV probe: virtualPos -> scratch slot 4 -----
-    //Heavy RayQuery state is scoped to this block only and dies at the brace.
+    //Specular-MV probe: virtualPos -> scratch slot 4 (RayQuery scoped here).
     {
         const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
         const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
@@ -244,23 +150,12 @@ inline bool TraceCameraRay(
         }
     }
 
-    //----- Emitter direct hit terminates the path here -----
+    //direct emitter hit terminates at the camera vertex
     if (isEmitter && hinfo.lightID != 0xFFFFFFFFu)
         return false;
 
-    //----- NRC vertex-1 anchor (area-spread baseline read each bounce) -----
-    nrcStateA = pk_set_hit(nrcStateA, 1u);
-    if (NRC_AREA_SPREAD_ACTIVE)
-    {
-        const float cosPrimary = max(abs(dot(rayDir, hinfo.hitNormal)), 1e-6f);
-        store_rg_nrcA0(g_pathStateBuffer, pixelIdx, NrcComputeA0(hitT, cosPrimary));
-    }
-
-    //----- Hand v_1 surface state to the bounce loop's first iter -----
-    //bounded-range fields narrow to half at the assignment so the struct
-    //phi the loop carries is smaller.
+    //hand v_1 to the bounce loop (bounded fields -> half)
     ctx.hitPos         = hitPos;
-    ctx.hitT           = hitT;
     ctx.hitNormal      = hinfo.hitNormal;
     ctx.matID          = matID;
     ctx.instID         = instID;
@@ -276,16 +171,8 @@ inline bool TraceCameraRay(
 }
 
 
-//====================================
-//DIRECT-AT-X1 CONTRIBUTION
-//====================================
-//x1 (primary-hit) direct SKY + SUN is pulled OUT of the RIS reservoir and
-//summed here, then written to scratch slot 3. Only the sky/sun techniques
-//leave - NEE sun, and the BSDF ray-miss atmosphere (which also carries the
-//BSDF-sampled sun disc). Emissive-triangle DI (point-light NEE + BSDF
-//emitter hits) stays in the reservoir. Collapses a lone depth==1 RIS
-//candidate to the radiance it would resolve to: F * W with W = wi/GetPHat(F)
-//- the MIS-weighted single-sample estimate. Guards mirror AddInitialCandidate.
+//x1 direct sky+sun, pulled OUT of the reservoir to scratch slot 3. Collapses a
+//lone depth==1 candidate to F*W (W = wi/GetPHat(F)). Guards mirror AddInitialCandidate.
 inline float3 DirectContribution(float wi, float3 F_contrib)
 {
     if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib)))
@@ -297,9 +184,24 @@ inline float3 DirectContribution(float wi, float3 F_contrib)
 }
 
 
-//one reservoir: emissive-tri DI (d==1) + first-bounce DI (d==2) + GI (d>=3)
-//share it. d==1 direct sky + sun are split terrain to scratch slot 3. cold state
-//stashed in g_pathStateBuffer
+//Finalize the pixel reservoir: W = wsum / GetPHat(F) (0 on degenerate/NaN), M=1
+//(the N samples improve sample quality, not confidence — the 1/N is in wsum, so
+//w_sum = W*M*p_hat holds at M=1). Invalidate on W==0.
+inline void FinalizeReservoir(uint pixelIdx, float wsum)
+{
+    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
+    const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
+    float W = (F_mag > 1e-6f && wsum > 0.0f) ? (wsum / F_mag) : 0.0f;
+    if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
+    store_W(g_Reservoirs_current, pixelIdx, W);
+    store_M(g_Reservoirs_current, pixelIdx, 1u);
+    if (W == 0.0f)
+        InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
+}
+
+
+//One reservoir: emissive-tri DI (d==1), first-bounce DI (d==2), GI (d>=3).
+//d==1 direct sky+sun -> scratch slot 3; cold state in g_pathStateBuffer.
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
@@ -307,63 +209,11 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //adaptive tile side from renderer feedback
-    const uint  nrcTileSide   = NrcTrainingTileSide();
-    const uint2 nrcTileOffset = uint2(asuint(time) % nrcTileSide,
-                                      (asuint(time) / nrcTileSide) % nrcTileSide);
-    //ClassifyPixel returns initial (training/unbiased) but we only need the
-    //class enum -- the bool outs are tossed and DCE'd.
-    bool clsTraining, clsUnbiased;
-    uint pathClassInit = NrcClassifyPixel(pixel, asuint(time), nrcTileSide, nrcTileOffset,
-                                          clsTraining, clsUnbiased);
-    if (!(clsTraining && NrcIsTrainOn())) pathClassInit = NRC_CLASS_RENDER;
-
-    NrcClearPendingGI(pixelIdx);
-
-    //packed mutable NRC state: hitIdx, trainVIdx, pathClass, prevSpec,
-    //cacheTerm. pathClass lives in bits 10..11 so the bounce loop does not
-    //carry it as a separate live register.
-    uint nrcStateA = 0u;
-    uint nrcPathId = NRC_INVALID_PATH;
-
-    //Allocation may fail under the per-frame quota; demote to render in that
-    //case. On success seed the RR-default tail so termination points need only
-    //write when their kind differs (and stale data from a previous frame at
-    //this slot is wiped).
-    if (pathClassInit != NRC_CLASS_RENDER)
-    {
-        nrcPathId = NrcAllocateTrainingPath();
-        if (nrcPathId == NRC_INVALID_PATH)
-            pathClassInit = NRC_CLASS_RENDER;
-        else
-            NrcInitPathTail(nrcPathId);
-    }
-    nrcStateA = pk_set_pclass(nrcStateA, pathClassInit);
-    //pathClassInit dies here; downstream reads go via pk_pclass(nrcStateA)
-
-    //nrcA + nrcEmitMask spill to coherent scratch (HOT2 plane). nrcA is
-    //RMW'd each bounce inside the cache check; nrcEmitMask is OR'd at each
-    //training-vertex emit via InterlockedOr and read once at finalize.
-    //Both gated while NRC is off - scratch traffic with no consumer.
-    if (NRC_AREA_SPREAD_ACTIVE)
-        store_rg_nrcA(g_pathStateBuffer, pixelIdx, 0.0f);
-    if (nrcPathId != NRC_INVALID_PATH)
-        store_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx, 0u);
-
-    //slot 1 primary emitter/sky, slot 3 unused
+    //slot 1 primary emitter/sky, slot 3 x1 direct
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
     gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
-    //slots 7/8 (x1 sharp-reflection control + raw env radiance) removed with the
-    //dead sharpReflections feature; they were never written with real data.
-    //slot 9 NRC debug L_s, postprocess reads even when NRC debug pass skips this pixel
-    gScratchPing[uint3(pixel, 9)] = float4(0, 0, 0, 0);
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
-
-    //init_ps removed (40 B/px dead write): every load_ps consumer is now
-    //preceded by store_ps_depth1 (iteration-1 bottom) and store_ps_v2
-    //(iteration-2 bottom) on the paths that create ps-based candidates,
-    //and paths that terminate before those stores create no such candidates.
 
     float wsum = 0.0f;
 
@@ -372,67 +222,33 @@ void Pass_raygen_v8()
     float3 rayDir;
     InitCameraRayDoF(pixel, imgSize, seed, rayOrigin, rayDir);
 
-    //sky/sun sampler reads camera altitude through this static, must be set
-    //before any EvaluateSky/EvaluateSun/SampleSun call below
-    //Atmosphere needs absolute (planet centered) camera position. The view
-    //matrix is built in floating origin shifted space so InitOrigin() is
-    //the *shifted* camera; add sceneOriginWorld back to recover absolute.
+    //sky/sun sampler reads camera altitude here; view space is floating-origin
+    //shifted, so add sceneOriginWorld back for absolute.
     SetSkyObserver(InitOrigin() + sceneOriginWorld);
     uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
     uint   prevNormalPk = PackNormal(float3(0, 1, 0));
     float  prev_pdf     = 1.0f;
     float  pdf_product  = 1.0f;
 
-    //tpost lives in scratch (PS plane, aliases HOT1) so the multiplicative
-    //throughput chain does not carry its 12B as live state across the bounce
-    //loop's TraceRay reorder boundary. Initialise to (1,1,1).
+    //tpost in scratch so its 12B don't cross the bounce-loop reorder.
     store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
 
-    //=====================================================================
-    //CAMERA RAY: trace v_1, extract surface, populate ctx. Returns false if
-    //the camera ray is terminal (degenerate / miss / direct emitter hit).
-    //=====================================================================
+    //CAMERA RAY: trace v_1; terminal (miss/degenerate/direct emitter) -> exit.
     HitContext ctx;
-    if (!TraceCameraRay(pixel, pixelIdx, seed, nrcStateA, rayOrigin, rayDir, ctx))
+    if (!TraceCameraRay(pixel, pixelIdx, seed, rayOrigin, rayDir, ctx))
     {
-        //Camera ray was terminal -- finalize and exit.
-        const bool nrcCacheTerminatedFin = pk_cterm(nrcStateA);
-        if (nrcPathId != NRC_INVALID_PATH)
-        {
-            const uint nrcTrainVIdxFinal = pk_vidx(nrcStateA);
-            const uint nrcEmitMaskFinal  = load_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx);
-            NrcStorePathHead(nrcPathId, nrcTrainVIdxFinal, nrcEmitMaskFinal);
-        }
-        store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-        if (!nrcCacheTerminatedFin)
-        {
-            const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
-            float W = (F_mag > 1e-6f && wsum > 0.0f) ? (wsum / F_mag) : 0.0f;
-            if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
-            store_W(g_Reservoirs_current, pixelIdx, W);
-            store_M(g_Reservoirs_current, pixelIdx, 1u);
-            if (W == 0.0f)
-                InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
-        }
+        FinalizeReservoir(pixelIdx, wsum);   // wsum==0: W=0, reservoir invalidated
         return;
     }
 
     //====================================
     //SPMIS HASH INSERTION
     //====================================
-    //With a valid primary hit, insert this pixel into the SPMIS global hash grid so the
-    //spatial reuse pass can build coherent cells. Cell key = (pixel/tile_size, jittered-
-    //quantized normal), open-addressed CAS into the checksum table (cleared by
-    //Pass_spmis_reset before raygen). No-op when SPMIS is off (texture path active).
+    //Insert this pixel into the SPMIS hash grid for the spatial-reuse pass. The
+    //screen-tile origin is jittered per frame (from `time`) so cell boundaries
+    //average out under accumulation. No-op when SPMIS is off.
     if (SPMIS_SPATIAL_MODE)
     {
-        //Per-frame global jitter of the screen-tile origin: shift (px,py) by the same
-        //offset for every pixel this frame so the hard tileSize-px cell boundaries MOVE
-        //each frame and average out under temporal accumulation, instead of baking a
-        //static tile grid into surfaces where the cell search can't find an external
-        //match. One offset per frame (from time) keeps SP_HASH self-consistent across
-        //the build/count/sort/reuse passes. mod tileSize is all that matters (it shifts
-        //the grid phase); the +offset stays >= 0 so SP_screen_hash's (uint)px is safe.
         const uint ts   = max(spmis_tileSize, 1u);
         const uint jh   = SP_h2_xxhash32(asuint(time));
         const int2 tjit = int2((int)(jh % ts), (int)(SP_h2_xxhash32(jh) % ts));
@@ -444,43 +260,46 @@ void Pass_raygen_v8()
                             SP_insert(sp_hash % SP_NUMCELLS(), sp_checksum, SP_NUMCELLS()));
     }
 
-    //Octahedral-pack rayDir as the loop's carrier. The trace at iter bottom
-    //needs float3 (so live-state-at-reorder is unchanged), but the loop
-    //back-edge phi shrinks from 3 dwords to 1.
-    uint rayDirPk = PackNormal(rayDir);
+    uint   rayDirPk   = PackNormal(rayDir);
+    //directAtX1 in scratch (HOT1[12..15], RGB9E5) so it doesn't cross the
+    //reorder; init once here, read back at finalize.
+    store_rg_directX1(g_pathStateBuffer, pixelIdx, float3(0, 0, 0));
 
-    //x1 direct sky + sun (depth==1 NEE-sun + the BSDF ray-miss atmosphere) is
-    //summed here and written to scratch slot 3 at finalize, kept OUT of the
-    //RIS reservoir. Emissive-triangle DI still goes into the reservoir.
-    float3 directAtX1 = float3(0, 0, 0);
-
-    //=====================================================================
-    //INITIAL-SAMPLE LOOP (pt_initialSamples): re-run the candidate-generating
-    //bounce loop N times into ONE reservoir. The 1-pass streaming RIS in
-    //AddInitialCandidate already accumulates ALL N samples' candidates into wsum
-    //(never reset), and directAtX1 sums across samples (averaged by 1/N at
-    //finalize). The camera ray / primary hit (ctxPrimary) is shared by all N;
-    //only the per-path carriers are reset each sample. s==0 keeps the exact
-    //legacy seed+state so N==1 is byte-identical. NRC training emits ONLY on
-    //s==0: forcing nrcPathId = NRC_INVALID_PATH for s>0 auto-gates every
-    //nrcPathId-guarded emit, keeping the single per-pixel training path coherent
-    //(cache QUERIES still run per-sample, so s>0 radiance stays cache-consistent).
-    //tpost / ps_v2 / ps_depth1 are raygen-LOCAL transient scratch consumed within
-    //each path's own bounce loop (no other pass reads them), so resetting them
-    //per sample is correct - the winning candidate's L2/x2 are already baked into
-    //the reservoir payload at AddInitialCandidate time.
-    //=====================================================================
-    const HitContext ctxPrimary   = ctx;
-    const uint       rayDirPk0     = rayDirPk;
-    const uint       nrcStateA_cam = nrcStateA;
-    const uint       nrcPathIdReal = nrcPathId;
-    uint             nrcStateA_s0  = nrcStateA;
+    //====================================
+    //INITIAL-SAMPLE LOOP (pt_initialSamples)
+    //====================================
+    //Re-run the candidate bounce loop N times into ONE reservoir (wsum streams
+    //all N; directAtX1 sums, /N at finalize). The shared primary hit is rebuilt
+    //per-sample from the G-buffer + HOT2 extras rather than kept live across the
+    //inner traces (that halves the continuation live-state). Only per-path
+    //carriers reset per sample.
+    store_rg_primaryExtra(g_pathStateBuffer, pixelIdx,
+                          (float2)ctx.iors, ctx.mediumMatID, (float3)ctx.absorptionTint);
+    const uint rayDirPk0 = rayDirPk;
 
     [loop]
     for (uint s = 0u; s < pt_initialSamples; ++s)
     {
-        //per-sample reset (identity for s==0 -> N==1 byte-identical)
-        ctx          = ctxPrimary;
+        //rebuild the shared primary ctx from the G-buffer + HOT2 extras (same
+        //quantized surface as the reuse passes, so N==1 differs imperceptibly
+        //from the pre-spill build).
+        const uint primInst = load_instID(g_sample_current, pixelIdx);
+        ctx.instID          = primInst;
+        ctx.hitPos          = load_x1_with_instID  (g_sample_current, pixelIdx, primInst);
+        ctx.hitNormal       = load_n1_s_with_instID(g_sample_current, pixelIdx, primInst);
+        ctx.matID           = load_matID  (g_sample_current, pixelIdx);
+        ctx.backface        = load_backface(g_sample_current, pixelIdx);
+        ctx.hitLocalKd      = (half3)load_kd(g_sample_current, pixelIdx);
+        float pr_, pm_; load_prpm(g_sample_current, pixelIdx, pr_, pm_);
+        ctx.hitLocalPr      = (half)pr_;
+        ctx.hitLocalPm      = (half)pm_;
+        float2 iors_; uint medium_; float3 absorb_;
+        load_rg_primaryExtra(g_pathStateBuffer, pixelIdx, iors_, medium_, absorb_);
+        ctx.iors            = (half2)iors_;
+        ctx.mediumMatID     = medium_;
+        ctx.absorptionTint  = (half3)absorb_;
+
+        //per-sample carrier reset (s==0 keeps the legacy seed/state)
         if (s > 0u)
             seed = initRandomData(pixel, uint2(8, 4), time, s + 1u);
         throughputPk = PackRGB9E5(float3(1, 1, 1));
@@ -489,105 +308,24 @@ void Pass_raygen_v8()
         pdf_product  = 1.0f;
         store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
         rayDirPk     = rayDirPk0;
-        nrcStateA    = nrcStateA_cam;
-        nrcPathId    = (s == 0u) ? nrcPathIdReal : NRC_INVALID_PATH;
 
-    //=====================================================================
-    //BOUNCE LOOP: each iter processes vertex v_depth (already in ctx),
-    //then traces v_depth -> v_{depth+1} and extracts the new ctx for the
-    //next iter. Depth conventions:
-    //  depth==1 : process v_1 (primary). Emissive-tri DI is a reservoir
-    //             candidate (x2 = light position); direct sky + sun go to
-    //             directAtX1 (scratch slot 3) instead of the reservoir.
-    //  depth==2 : process v_2 (first bounce). DI's x2 = ctx.hitPos. Stores
-    //             ps_depth1(v_2) at iter bottom after extracting v_2.
-    //  depth>=3 : later GI. x2 from PathVertexState. RR + tpost update active.
-    //NEE on v_depth at iter top, BSDF sample after NEE, training emit after
-    //both, then trace at iter bottom. The trace is the BSDF MIS partner for
-    //NEE -- it always fires (no validity gate) so MIS stays balanced even at
-    //the last iter. Termination cuts: bad BSDF / RR fail / IsRayValid.
-    //=====================================================================
+    //====================================
+    //BOUNCE LOOP
+    //====================================
+    //Process v_depth (ctx), then trace to v_{depth+1}. NEE then BSDF at the top;
+    //the bottom trace is the BSDF MIS partner and fires every iter. depth==1
+    //primary (sky+sun -> directAtX1, emissive DI -> reservoir); ==2 first bounce
+    //(stores ps); >=3 GI from PathVertexState, RR + tpost active.
     [loop]
     for (int16_t depth = 1; depth < (int)pt_maxBounces; ++depth)
     {
-        //Unpack the carried direction once per iter; reassigned to the BSDF
-        //sample at state update and re-packed for the back-edge.
         float3 rayDir = UnpackNormal(rayDirPk);
-        //------------- NRC vertex bookkeeping -------------
-        nrcStateA = pk_set_hit(nrcStateA, (uint)depth);
 
-        //Accumulate nrcA from the v_{depth-1} -> v_depth trace (skip at
-        //depth==1 because TraceCameraRay seeded nrcA0 for the camera ray).
-        const bool prevSpec = pk_prev(nrcStateA);
-        if (NRC_AREA_SPREAD_ACTIVE && depth >= 2 && !prevSpec)
-        {
-            const float cosHit = max(abs(dot(-rayDir, ctx.hitNormal)), 1e-6f);
-            float nrcA = load_rg_nrcA(g_pathStateBuffer, pixelIdx);
-            NrcAccumulateA(nrcA, ctx.hitT, prev_pdf, cosHit);
-            store_rg_nrcA(g_pathStateBuffer, pixelIdx, nrcA);
-        }
-
-        //ps.v2 (v_3 -> v_2 direction) is stored at the bottom of the depth==2
-        //iteration, right after the BSDF sample - see the state update below.
-
-        //------------- Cache fire check -------------
-        //NrcShouldCacheTerminate guards on hitIdx >= 3 internally, so this
-        //is a no-op at depth 1/2 regardless. Eligibility derives from packed
-        //pathClass (bits 10..11) so no extra live register survives.
-        {
-            const uint  nrcPClass = pk_pclass(nrcStateA);
-            const bool  cacheElig = NrcIsEnabled() && (nrcPClass != NRC_CLASS_TRAIN_UNBIASED);
-            const float nrcA0     = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA0(g_pathStateBuffer, pixelIdx) : 0.0f;
-            const float nrcA      = NRC_AREA_SPREAD_ACTIVE ? load_rg_nrcA (g_pathStateBuffer, pixelIdx) : 0.0f;
-            const bool  shouldFire = !prevSpec &&
-                (ctx.hitLocalPr >= NRC_CACHE_ROUGHNESS_MIN) &&
-                NrcShouldCacheTerminate((int)depth, nrcA0, nrcA, cacheElig, nrc_area_spread_c);
-
-            if (shouldFire)
-            {
-                const float3 throughput = UnpackRGB9E5(throughputPk);
-                const float3 tpost      = load_rg_tpost(g_pathStateBuffer, pixelIdx);
-                const uint   nrcSlot = NrcWriteTerminationRecord(
-                    pixelIdx, nrc_inference_capacity,
-                    ctx.hitPos, -rayDir, ctx.hitNormal,
-                    ctx.hitLocalPr, ctx.hitLocalKd, ctx.hitLocalPm,
-                    ctx.backface,
-                    throughput, tpost, pdf_product);
-                if (nrcSlot != NRC_INVALID_SLOT)
-                {
-                    nrcStateA = pk_set_cterm(nrcStateA);
-                    if (nrcPClass == NRC_CLASS_TRAIN_BIASED)
-                    {
-                        //half-precision ops: half3 * half = half3
-                        const half3 alphaCT = ctx.hitLocalKd * ((half)1.0 - ctx.hitLocalPm);
-                        const half3 betaCT  = lerp((half3)0.04, ctx.hitLocalKd, ctx.hitLocalPm);
-                        NrcStorePathTail(nrcPathId, NRC_TAIL_CACHE, nrcSlot,
-                                         PackRGB9E5(NrcCleanRadiance((float3)(alphaCT + betaCT))));
-                    }
-                    break;
-                }
-            }
-        }
-
-        //------------- NEE: point light + sun -------------
-        //Done before the BSDF sample so its working set (light data, bdataNEE
-        //temporaries) doesn't overlap with the BSDF sample's intermediates
-        //(s, bdata, updateWeight, cosTheta) in registers. NEE is paired with
-        //the BSDF technique by MIS; what matters for unbiasedness is that the
-        //BSDF SAMPLE call below also runs at every vertex (even if it returns
-        //a degenerate direction). The trace at the iter bottom is the actual
-        //BSDF evaluator and fires every iter including the last.
-        float3 nrcLNeeAccum = float3(0, 0, 0);
+        //------------- NEE: point light + sun (MIS partner of the bottom trace) -------------
         const bool performNEE = !(ctx.mediumMatID != MEDIUM_INVALID || LoadKd_w(ctx.matID) < EPSILON);
         if (performNEE)
         {
-            //NEE used to pack/unpack Kd, Pr, Pm into matKdPk/matPrPmPk for
-            //"precision-trim" parity with the BSDF eval. With ctx.hitLocal*
-            //already half (same bits the pack roundtripped to), NEE and BSDF
-            //already see identical precision -- the roundtrip is dead weight.
-            //hitNormalPk is also gone: BSDF uses ctx.hitNormal directly so
-            //NEE should too.
-            //point-light technique, visibility inline per candidate
+            //point-light technique, visibility inline
             {
                 LT_LightSampleResult light = LT_SamplePointOnLight(ctx.hitPos, ctx.hitNormal, seed);
 
@@ -600,14 +338,8 @@ void Pass_raygen_v8()
 
                 if (cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f)
                 {
-                    //visibility FIRST: the strategy + BSDF eval pair below is
-                    //the expensive half of NEE - run it only for unoccluded
-                    //samples and keep it out of the live set across the ray.
-                    //Costs one wasted ray when bsdfPdf turns out 0 for a
-                    //direction that passed the cosine gates (rare).
-                    //cosSurf > 0 already puts L on the +hitNormal side.
-                    //IsVisible offsets both ends off their surfaces, so the
-                    //light point itself is excluded without a tMax shorten.
+                    //visibility first: keep the strategy+BSDF eval out of the
+                    //cross-ray live set; run it only if unoccluded.
                     if (IsVisible(ctx.hitPos, ctx.hitNormal, light.position, light.normal))
                     {
                         const float3 throughput = UnpackRGB9E5(throughputPk);
@@ -626,9 +358,6 @@ void Pass_raygen_v8()
                             const float  p_hat            = GetPHat(F_contrib);
                             const float  p_full           = pdf_product * lightPdf;
                             const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-
-                            if (nrcPathId != NRC_INVALID_PATH)
-                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
 
                             if (depth == 1)
                             {
@@ -705,14 +434,10 @@ void Pass_raygen_v8()
 
                             const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
 
-                            if (nrcPathId != NRC_INVALID_PATH)
-                                nrcLNeeAccum += localMeasurement * misWeight / lightPdf;
-
                             if (depth == 1)
                             {
-                                //primary direct sun - summed to directAtX1
-                                //(scratch slot 3), kept terrain of the reservoir
-                                directAtX1 += DirectContribution(wi, F_contrib);
+                                //primary direct sun -> directAtX1, out of the reservoir
+                                add_rg_directX1(g_pathStateBuffer, pixelIdx, DirectContribution(wi, F_contrib));
                             }
                             else if (depth == 2)
                             {
@@ -741,9 +466,7 @@ void Pass_raygen_v8()
             }
         }
 
-        //------------- BSDF sample (always runs as MIS partner for NEE above) -------------
-        //Even a degenerate sample (s=0, pdf~0) is a valid "sampled BSDF" for
-        //MIS purposes -- the trace below is the actual BSDF evaluator.
+        //------------- BSDF sample (MIS partner for NEE; bottom trace evaluates it) -------------
         SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
         const float3 s       = SampleBRDF        (sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, seed, ctx.iors.x, ctx.iors.y, false);
         const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, s, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false);
@@ -753,80 +476,33 @@ void Pass_raygen_v8()
             ? (bdata.val * ctx.absorptionTint * cosTheta) / bdata.pdf
             : float3(0, 0, 0);
 
-        //------------- NRC training vertex (nrcLNeeAccum from NEE, updateWeight from BSDF) -------------
-        if (nrcPathId != NRC_INVALID_PATH && pk_vidx(nrcStateA) < NRC_MAX_VERTICES_PER_PATH)
-        {
-            const uint  vIdx  = pk_vidx(nrcStateA);
-            //half-precision ops on bounded material params; NrcStoreTrainingVertex
-            //takes float so we widen at the call boundary.
-            const half3 alpha = ctx.hitLocalKd * ((half)1.0 - ctx.hitLocalPm);
-            const half3 betaC = lerp((half3)0.04, ctx.hitLocalKd, ctx.hitLocalPm);
-
-            NrcStoreTrainingVertex(
-                nrcPathId, vIdx,
-                ctx.hitPos, -rayDir, ctx.hitNormal,
-                (float)ctx.hitLocalPr, (float3)alpha, (float3)betaC, ctx.backface,
-                PackRGB9E5(NrcCleanRadiance(nrcLNeeAccum)),
-                PackRGB9E5(NrcCleanRadiance(updateWeight)));
-
-            //x1 (vIdx 0) normally trains from the converged ReSTIR reservoir in
-            //Pass_nrc_train_gather_v8 (AFTER the reuse passes), NOT from this
-            //single path sample -- so its emit bit stays clear and the fill
-            //kernel emits no path-traced x1 row. The vertex is still STORED and
-            //walked, so v2's backward-fill target is unchanged (v2 reads its own
-            //L_nee + beta*tail; x1's L_s[0] is the chain's last step, unconsumed).
-            //
-            //EXCEPTION -- NRC_CLASS_TRAIN_UNBIASED pixels (1/kUnbiasedDenom of
-            //training pixels) NEVER fire the cache (cacheElig is false for them),
-            //so their fully-traced path yields a genuinely CACHE-FREE x1 target.
-            //Keep that anchor: emit x1 here for them. The gather skips these same
-            //pixels (NrcClassifyPixel agrees frame-to-frame) so x1 is never double-
-            //emitted. This re-establishes the kUnbiasedDenom anti-feedback contract
-            //at the visible surface at zero extra variance (the path is traced
-            //fully regardless). v2+ (vIdx>=1) always train from the path here.
-            const bool x1AnchorPix = (pk_pclass(nrcStateA) == NRC_CLASS_TRAIN_UNBIASED);
-            if ((vIdx != 0u || x1AnchorPix) && ctx.hitLocalPr >= (half)NRC_TRAIN_ROUGHNESS_MIN)
-                atomic_or_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx, 1u << vIdx);
-
-            nrcStateA = pk_set_vidx(nrcStateA, vIdx + 1u);
-        }
-
-        //------------- State update + termination checks -------------
-        //Bad BSDF sample terminates: no valid next direction to trace.
+        //state update + termination. bad BSDF sample -> no valid next direction
         if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f ||
             any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
         prev_pdf     = bdata.pdf;
         pdf_product  = min(pdf_product * bdata.pdf, 1e30f);
-        nrcStateA    = pk_set_prev(nrcStateA, ctx.hitLocalPr < SMOOTH_SPECULAR_THRESHOLD);
         rayDir       = s;
         rayDirPk     = PackNormal(s);  //carrier for next iter back-edge
 
-        //v_2's frozen reconnection direction, v_3 -> v_2 = -s. Stored HERE
-        //(iteration-2 bottom) and not at the old iteration-3 top so the
-        //depth==2 miss / emitter-hit candidates created after the trace
-        //below read the real direction - they used to pick up init_ps's
-        //(0,1,0) default, breaking Reconnect's F2/G2 for every
-        //second-bounce sky/emitter sample at reuse time.
+        //v_2 reconnection dir (v_3 -> v_2 = -s), stored at the depth==2 bottom so
+        //the depth==2 miss/emitter candidates read the real direction.
         if (depth == 2)
             store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
 
         const float3 offsetN = (dot(s, ctx.hitNormal) >= 0.0f) ? ctx.hitNormal : -ctx.hitNormal;
         rayOrigin    = offset_ray(ctx.hitPos, offsetN);
+        //park rayOrigin in scratch (RAY_O, free under raygen) so it doesn't cross
+        //the reorder; reloaded post-trace.
+        store_ray_origin(g_pathStateBuffer, pixelIdx, rayOrigin);
 
         float3 throughput        = UnpackRGB9E5(throughputPk) * updateWeight;
         const float3 tpostWeight = bdata.val * ctx.absorptionTint * cosTheta;
 
-        //Russian roulette — an INDEPENDENT variance/perf knob, gated by the runtime
-        //pt_rrStartDepth (editor slider; default depth>=3, set to 32 to disable). Fail
-        //terminates the path; pass boosts throughput (the 1/p boost cancels in the
-        //RR-clean target F via the pdf_product reduction below, but survives in the RIS
-        //weight wi — correct) and patches the NRC training beta.
-        //NOTE: RR must NOT carry the tpost update (a correctness quantity) — that
-        //is done unconditionally below. Aggressive RR (survivalProb floored at 0.1
-        //on a sub-unity GI throughput) terminates most deep paths, which starves
-        //ReSTIR's initial samples; prefer a gentle/late policy if enabling.
+        //Russian roulette (off when pt_rrStartDepth high). The 1/p boost cancels
+        //in the RR-clean target F (via pdf_product) but survives in wi; must NOT
+        //touch the tpost update.
         if (depth >= (int)pt_rrStartDepth)
         {
             const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
@@ -834,26 +510,11 @@ void Pass_raygen_v8()
             const float rrBoost = 1.0f / survivalProb;
             throughput  *= rrBoost;
             pdf_product  = min(pdf_product * survivalProb, 1e30f);
-
-            const uint vIdxAfter = pk_vidx(nrcStateA);
-            if (nrcPathId != NRC_INVALID_PATH && vIdxAfter > 0u)
-            {
-                NrcUpdateTrainingVertexBeta(
-                    nrcPathId, vIdxAfter - 1u,
-                    PackRGB9E5(NrcCleanRadiance(updateWeight * rrBoost)));
-            }
         }
 
-        //tpost = post-reconnection-vertex (post-v_2) suffix throughput, multiplicative
-        //across v_3..v_{D-1}. EVERY depth>=4 GI reconnection candidate reads it
-        //(L2 = emission * tpost * BSDF_NEE*cos; Reconnect applies the BSDF at x2=v_2
-        //and the NEE BSDF, so the INTERMEDIATE-bounce f*cos products must live in
-        //tpost). It is a CORRECTNESS quantity and MUST run for depth>=3 regardless of
-        //RR. It was previously nested in the RR block, so with RR disabled (depth>=30)
-        //tpost stayed (1,1,1) and every depth>=4 reuse sample stored an inflated L2
-        //(missing all intermediate f*cos < 1), corrupting spatial/temporal reuse of
-        //deep GI. tpostWeight is the RR-UNBOOSTED f*cos so tpost stays RR-clean,
-        //consistent with the RR-clean target F (the boost lives only in wi).
+        //tpost: post-v_2 suffix throughput across v_3..v_{D-1}. Every depth>=4 GI
+        //reconnection candidate reads it (correctness), so it runs for depth>=3
+        //regardless of RR; tpostWeight is the RR-unboosted f*cos.
         if (depth >= 3)
         {
             const float3 tpost = load_rg_tpost(g_pathStateBuffer, pixelIdx) * tpostWeight;
@@ -863,10 +524,7 @@ void Pass_raygen_v8()
         throughputPk = PackRGB9E5(throughput);
         prevNormalPk = PackNormal(ctx.hitNormal);
 
-        //=================================================================
-        //TRACE v_depth -> v_{depth+1}, then extract / handle terminations.
-        //This trace IS the BSDF technique paired with the NEE just done.
-        //=================================================================
+        //----- TRACE v_depth -> v_{depth+1} (BSDF technique, NEE's MIS partner) -----
         if (!IsRayValid(rayOrigin, rayDir, 10000.0f))
             break;
 
@@ -878,48 +536,35 @@ void Pass_raygen_v8()
         //secondaries force 2-state to skip alpha any-hit
         dx::HitObject hitObjB = TraceRay_Custom(SceneBVH, rayB, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF);
 
-        //----- MISS: GI miss tail (sky + MIS sun disk) -----
+        //reload rayOrigin post-trace (globallycoherent forces the real read,
+        //keeping it off the reorder — same trick as tpost).
+        const float3 rayOriginR = load_ray_origin(g_pathStateBuffer, pixelIdx);
+
+        //----- MISS: GI miss tail (sky + MIS sun disc) -----
         if (!hitObjB.IsHit())
         {
             const float3 throughputCur = UnpackRGB9E5(throughputPk);
 
-            //GI bounce environment: evaluate the sky/sun from the bounce ray
-            //ORIGIN, not the camera. EvaluateSky's IntegrateScattering and its
-            //hitPlanet / EvaluatePlanetBody test are near field and depend on
-            //the observer position. Raygen left g_skyObserverPlanet at the
-            //camera (set for the primary pass), so every GI bounce sampled the
-            //sky as if from the camera: bounce directions that hit the planet
-            //from the camera's viewpoint picked up a spurious planet body and
-            //wrong atmosphere, baking a nadir centred ring into the indirect
-            //lighting. The bounce ray left rayOrigin, so that is the observer.
-            SetSkyObserver(rayOrigin + sceneOriginWorld);
+            //evaluate sky/sun from the BOUNCE origin (observer-dependent; the
+            //camera observer baked a nadir ring into indirect light).
+            SetSkyObserver(rayOriginR + sceneOriginWorld);
 
             const float  sunSAPdf   = GetSunPdf(rayDir);
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
                 ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
-            //Cloud attenuation applies to the MIS-paired sun term too —
-            //the BSDF technique sees the cloud-occluded sun, matching
-            //what NEE would estimate via sun sampling.
             float3 cloudTr;
             const float3 sky        = EvaluateSky(rayDir, cloudTr);
             const float3 envL       = sky + sunRad * sunMisBsdf * cloudTr;
-
-            if (nrcPathId != NRC_INVALID_PATH)
-                NrcStorePathTail(nrcPathId, NRC_TAIL_MISS, NRC_INVALID_SLOT,
-                                 PackRGB9E5(NrcCleanRadiance(envL)));
 
             const float3 F_contrib = throughputCur * envL * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
             const float  wi        = (pdf_product > 1e-20f) ? (p_hat / pdf_product) : 0.0f;
 
-            //depth==1: this BSDF ray left x1, so the miss is x1's direct sky
-            //- summed to directAtX1 (scratch slot 3), kept terrain of the
-            //reservoir. depth>=2 uses the stored v_2 vertex (ps.x2 / ps.v2)
-            //as the reservoir candidate.
+            //depth==1 miss = x1 direct sky -> directAtX1; depth>=2 uses stored v_2.
             if (depth == 1)
             {
-                directAtX1 += DirectContribution(wi, F_contrib);
+                add_rg_directX1(g_pathStateBuffer, pixelIdx, DirectContribution(wi, F_contrib));
             }
             else
             {
@@ -935,17 +580,15 @@ void Pass_raygen_v8()
             break;
         }
 
-        //----- HIT: extract v_{depth+1} surface -----
+        //----- HIT: extract v_{depth+1} -----
         const float  hitT_n   = hitObjB.GetRayTCurrent();
-        const float3 hitPos_n = rayOrigin + rayDir * hitT_n;
-        // PLANET_INTEGRATION: GetInstanceID() so terrain bounce hits are keyed
-        // on the terrain InstanceID range (see the primary hit above).
+        const float3 hitPos_n = rayOriginR + rayDir * hitT_n;
         const uint   instID_n = hitObjB.GetInstanceID();
         const uint    primID_n = FlatPrimID(instID_n, hitObjB.GetGeometryIndex(), hitObjB.GetPrimitiveIndex());
         const uint    matID_n  = GetMatIDFast(instID_n, primID_n);
         BuiltInTriangleIntersectionAttributes attrB;
         hitObjB.GetAttributes(attrB);
-        HitInfo hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOrigin, (uint)depth);
+        HitInfo hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOriginR, (uint)depth);
 
         const float  matNi_n        = LoadNi(matID_n);
         const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
@@ -955,13 +598,6 @@ void Pass_raygen_v8()
 
         float3 hitLocalKd_n; float hitLocalPr_n, hitLocalPm_n;
         RefetchMaterial(matID_n, hinfo_n.uv, hitLocalKd_n, hitLocalPr_n, hitLocalPm_n, (uint)depth);
-
-        //PLANET: terrain tint on bounce hits (matches the primary-hit override).
-        {
-            float3 terrainKd;
-            if (TerrainTintFromUV(hinfo_n.uv, instanceProps[instID_n]._pad[0], terrainKd))
-                hitLocalKd_n = terrainKd;
-        }
 
         const float3 absorptionTint_n = (mediumMatID_n != MEDIUM_INVALID)
             ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)
@@ -974,15 +610,11 @@ void Pass_raygen_v8()
         {
             const float3 throughputCur = UnpackRGB9E5(throughputPk);
             const float3 prevNormalCur = UnpackNormal(prevNormalPk);
-            const float  lightPdfArea  = LT_Pdf_LightTree_Area(rayOrigin, prevNormalCur, hinfo_n.lightID, instID_n);
+            const float  lightPdfArea  = LT_Pdf_LightTree_Area(rayOriginR, prevNormalCur, hinfo_n.lightID, instID_n);
             const float  cosLight      = max(dot(hinfo_n.hitNormal, -rayDir), 0.0f);
             const float  dist2         = max(hitT_n * hitT_n, EPSILON);
             const float  lightPdfSA    = (cosLight > EPSILON) ? (lightPdfArea * dist2 / cosLight) : 0.0f;
             const float  misWeight     = prev_pdf / max(prev_pdf + lightPdfSA, EPSILON);
-
-            if (nrcPathId != NRC_INVALID_PATH)
-                NrcStorePathTail(nrcPathId, NRC_TAIL_EMITTER, NRC_INVALID_SLOT,
-                                 PackRGB9E5(NrcCleanRadiance(emission_n * misWeight)));
 
             const float3 F_contrib = throughputCur * emission_n * pdf_product;
             const float  p_hat     = GetPHat(F_contrib);
@@ -1011,7 +643,7 @@ void Pass_raygen_v8()
             break;
         }
 
-        //----- Non-emitter hit: stash v_2 PathVertexState at first bounce -----
+        //----- Non-emitter hit: stash v_2 PathVertexState at the first bounce -----
         if (depth == 1)
         {
             store_ps_depth1(g_pathStateBuffer, pixelIdx,
@@ -1020,10 +652,8 @@ void Pass_raygen_v8()
                             hitLocalKd_n, hitLocalPr_n, hitLocalPm_n);
         }
 
-        //----- Carry v_{depth+1} into ctx for the next iter -----
-        //Bounded-range fields narrow to half on assignment (smaller phi).
+        //----- Carry v_{depth+1} into ctx (bounded fields -> half) -----
         ctx.hitPos         = hitPos_n;
-        ctx.hitT           = hitT_n;
         ctx.hitNormal      = hinfo_n.hitNormal;
         ctx.matID          = matID_n;
         ctx.instID         = instID_n;
@@ -1036,71 +666,18 @@ void Pass_raygen_v8()
         ctx.absorptionTint = (half3)absorptionTint_n;
     }
 
-        //capture s==0's NRC bookkeeping (vidx / cterm / emit mask) for finalize;
-        //s>0 ran with nrcPathId forced INVALID so they emitted no training rows.
-        if (s == 0u) nrcStateA_s0 = nrcStateA;
     }   // end initial-sample loop (s)
 
-    //restore the real training-path id + s==0 NRC state for the path-head
-    //publish and the W/M finalize below.
-    nrcPathId = nrcPathIdReal;
-    nrcStateA = nrcStateA_s0;
-
-    //=====================================================================
+    //====================================
     //FINALIZE
-    //=====================================================================
-    //x1 direct sky + sun -> scratch slot 3 (composited downstream as
-    //sunDirect). directAtX1 froze after the depth==1 iteration and survives
-    //every loop-exit path in a register, so one write here covers all of
-    //them. The camera-terminal early return above never reaches this and
-    //correctly leaves slot 3 at the 0 raygen cleared it to.
-    //directAtX1 is the SUM of N samples' single-sample direct estimates -> mean.
+    //====================================
+    //x1 direct sky+sun -> scratch slot 3 (mean of the N single-sample estimates).
+    //Camera-terminal early return skips this, leaving slot 3 = 0.
+    const float3 directAtX1    = load_rg_directX1(g_pathStateBuffer, pixelIdx);
     const float3 directAtX1Avg = directAtX1 / max(1.0f, (float)pt_initialSamples);
     gScratchPing[uint3(pixel, 3)] = float4(X1_DIRECT_OFF ? float3(0, 0, 0) : directAtX1Avg, 0);
 
-    const uint nrcTrainVIdxFinal     = pk_vidx(nrcStateA);
-    const bool nrcCacheTerminatedFin = pk_cterm(nrcStateA);
-
-    //tail (kind/slot/rad) was written directly at the termination point. RR
-    //fallback was seeded at allocation. Head publish is last so torn reads
-    //are impossible -- the fill kernel gates on numVertices != 0.
-    //nrcEmitMask was atomically OR'd in coherent scratch as each vertex
-    //emitted, loaded here at finalize.
-    if (nrcPathId != NRC_INVALID_PATH)
-    {
-        const uint nrcEmitMaskFinal = load_rg_nrcEmitMask(g_pathStateBuffer, pixelIdx);
-        NrcStorePathHead(nrcPathId, nrcTrainVIdxFinal, nrcEmitMaskFinal);
-    }
-
-    //RIS-over-N normalization: each initial sample is one effective candidate set
-    //whose internal technique-MIS weights already sum to ~1, so streaming all N into
-    //ONE reservoir makes wsum sum to ~N. Divide by N (the per-sample MIS factor, as
-    //if each AddInitialCandidate wi carried a 1/N weight) to keep the estimator
-    //unbiased - without it, more initial samples just scale brightness. RIS selection
-    //is scale-invariant so this corrects only W's magnitude, not the winner. N==1 -> /1.
+    //RIS-over-N: wsum sums to ~N, so /N for unbiased W (selection is scale-invariant).
     wsum /= max(1.0f, (float)pt_initialSamples);
-
-    //cache terminated pixels defer W/M/invalidation to Pass_nrc_resolve_v8
-    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-    if (!nrcCacheTerminatedFin)
-    {
-        const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
-        float W = 0.0f;
-        if (F_mag > 1e-6f && wsum > 0.0f)
-        {
-            W = wsum / F_mag;
-            if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
-        }
-
-        store_W(g_Reservoirs_current, pixelIdx, W);
-        //M is ALWAYS 1: the N initial samples only improve the single reservoir
-        //sample's QUALITY (better RIS selection + the 1/N-normalized W); the reservoir
-        //still counts as ONE fresh sample for temporal/spatial confidence. The N
-        //normalization lives in wsum (above), not M, so the invariant w_sum=W*M*p_hat
-        //holds at M=1.
-        store_M(g_Reservoirs_current, pixelIdx, 1u);
-
-        if (W == 0.0f)
-            InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
-    }
+    FinalizeReservoir(pixelIdx, wsum);
 }

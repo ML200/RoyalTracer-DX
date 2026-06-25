@@ -371,20 +371,9 @@ HitInfo EvalSurfaceState(
     const float3 flatN_obj =
         (faceLen2 > 1e-20f) ? (faceN_un * rsqrt(faceLen2)) : float3(0.0f, 0.0f, 1.0f);
 
-    //shading normal. PLANET (terrain + rocks: _pad[1] != 0) uses the FLAT
-    //per-triangle geometric normal - the baked vertex normals are ignored, so
-    //the surface reads as faceted triangles (the heightmap-gradient vertex
-    //normals looked poor on the low-relief terrain). Everything else uses the
-    //usual octahedral vertex normals with degenerate/flip guards, interpolated.
-    //(For terrain, the runtime detail-normal below still rides on top of this
-    //flat base; set PTD_STRENGTH = 0 in procedural_terrain_v8.hlsli for pure flat.)
+    //shading normal: octahedral vertex normals with degenerate/flip guards,
+    //barycentric-interpolated.
     float3 n_local;
-    [branch]
-    if (instanceProps[instID]._pad[1] != 0u)
-    {
-        n_local = flatN_obj;
-    }
-    else
     {
         float3 n0 = UnpackNormal_INT(pn0);
         float3 n1 = UnpackNormal_INT(pn1);
@@ -479,27 +468,6 @@ HitInfo EvalSurfaceState(
         //apply TBN without materializing float3x3
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;
         normW *= rsqrt(max(dot(normW, normW), 1e-20f));
-    }
-
-    //PLANET: runtime micro-detail normal (pebbles + sand) for terrain hits.
-    //Normal-only bump finer than the baked mesh; world-stable + cm-precise via
-    //the integer/fractional origin split. No-op for scene meshes (_pad[0]==0).
-    //Done before the view clamp below so the clamp keeps the perturbed normal
-    //valid for the ray to proceed.
-    [branch]
-    if (instanceProps[instID]._pad[0] != 0u)
-    {
-        const float hitDist = length(posW - origin);
-        if (hitDist < PTD_MAX_DIST)
-        {
-            //absolute world = posW (floating-origin-shifted) + sceneOriginWorld,
-            //carried as (integer, fractional) so the planet-scale magnitude
-            //never forms a lossy fp32 sum.
-            const int3   detOrigin = int3(round(sceneOriginWorld));
-            const float3 detLocal  = posW + (sceneOriginWorld - float3(detOrigin));
-            const float  detFoot   = max(hitDist * PTD_PIXEL_ANGLE, 1e-4f);
-            normW = TerrainDetailNormal(detOrigin, detLocal, detFoot, normW, PTD_STRENGTH);
-        }
     }
 
     //finalize

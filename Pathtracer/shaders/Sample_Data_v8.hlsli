@@ -68,8 +68,8 @@ void store_instID(RWByteAddressBuffer buf, uint pixelIdx, uint instID)
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 0u, instID);
 }
 
-//bit0 isEmitter, bit1 backface. backface lets the NRC debug query pass the
-//correct side bit at the primary hit, matching what raygen feeds NRC.
+//bit0 isEmitter, bit1 backface. backface records the primary-hit side bit
+//(front/back) resolved by raygen for downstream consumers.
 void store_flags(RWByteAddressBuffer buf, uint pixelIdx, bool isEmitter, bool backface)
 {
     uint f = (isEmitter ? SD_FLAG_EMITTER  : 0u)

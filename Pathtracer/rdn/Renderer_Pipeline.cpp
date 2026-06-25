@@ -6,7 +6,6 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
-#include "ReuseTextureGen.h"
 #include "Scene/OmmBuilder.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -1014,19 +1013,11 @@ void Renderer::CreateShaderResourceHeap() {
     { auto [c,g] = sortUAV(m_sortOffsetBuffer, SORT_BUCKETS); m_sortOffsetCpuHandle = c; m_sortOffsetGpuHandle = g; }
     { auto [c,g] = sortUAV(m_sortBoundsBuffer, 8);            m_sortBoundsCpuHandle = c; m_sortBoundsGpuHandle = g; }
 
-    // Slots 55-57: paired reuse textures (t19, t20, t21) — R16G16_SINT
-    for (int i = 0; i < 3; ++i) {
-        if (m_reuseTexture[i]) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-            d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            d.Format                  = DXGI_FORMAT_R16G16_SINT;
-            d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-            d.Texture2D.MipLevels     = 1;
-            dev->CreateShaderResourceView(m_reuseTexture[i].Get(), &d, handle); next();
-        } else {
-            nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
-        }
-    }
+    // Slots 55-57: retired texture-spatial paired reuse textures (t19-t21). SPMIS
+    // owns spatial reuse now; bind null SRVs to keep the heap layout stable for the
+    // slots that follow.
+    for (int i = 0; i < 3; ++i)
+        nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
 
     // Slots 58-62: NRC shared D3D12/CUDA UAVs (u40..u44). CudaInterop has
     // already allocated the backing buffers; here we just create views.
@@ -1537,67 +1528,6 @@ void Renderer::CreateAndUploadLutArray(
 
 //====================================
 //PAIRED SPATIAL REUSE TEXTURES
-//====================================
-//Lin et al. 2026
-
-void Renderer::InitReuseTextures() {
-    const int   kSizes[3] = { 254, 230, 210 };
-    const float kSigma    = 20.0f;
-    auto*       dev       = m_ctx.Device();
-
-    for (int i = 0; i < 3; ++i) {
-        std::vector<int16_t> rg;
-        GenerateReuseTexture(kSizes[i], kSigma,
-                             static_cast<uint32_t>(i + 1), rg);
-
-        int bad = -1;
-        if (!ValidateReuseTexture(kSizes[i], rg, &bad)) {
-            LOG(L"[ReuseTex] " << kSizes[i] << L"x" << kSizes[i]
-                << L" self-inversion FAILED at texel " << bad);
-            continue;
-        }
-        LOG(L"[ReuseTex] " << kSizes[i] << L"x" << kSizes[i]
-            << L" self-inversion OK ("
-            << (rg.size() * sizeof(int16_t)) << L" bytes)");
-
-        // Default-heap Texture2D, R16G16_SINT
-        D3D12_RESOURCE_DESC td = {};
-        td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        td.Width            = static_cast<UINT64>(kSizes[i]);
-        td.Height           = static_cast<UINT>(kSizes[i]);
-        td.DepthOrArraySize = 1;
-        td.MipLevels        = 1;
-        td.Format           = DXGI_FORMAT_R16G16_SINT;
-        td.SampleDesc.Count = 1;
-        ThrowIfFailed(dev->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-            &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-            IID_PPV_ARGS(&m_reuseTexture[i])));
-        std::wstring name = L"ReuseTexture_" + std::to_wstring(i);
-        m_reuseTexture[i]->SetName(name.c_str());
-
-        // Upload heap + staged copy
-        UINT64 uploadSize = GetRequiredIntermediateSize(m_reuseTexture[i].Get(), 0, 1);
-        m_reuseTextureUploadHeaps.emplace_back();
-        auto& uh = m_reuseTextureUploadHeaps.back();
-        auto  ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-        ThrowIfFailed(dev->CreateCommittedResource(
-            &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-            &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-            IID_PPV_ARGS(&uh)));
-
-        D3D12_SUBRESOURCE_DATA sr = {};
-        sr.pData      = rg.data();
-        sr.RowPitch   = static_cast<LONG_PTR>(kSizes[i]) * sizeof(int16_t) * 2;
-        sr.SlicePitch = sr.RowPitch * kSizes[i];
-        UpdateSubresources(m_ctx.CmdList(), m_reuseTexture[i].Get(),
-                           uh.Get(), 0, 0, 1, &sr);
-
-        auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_reuseTexture[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
-        m_ctx.CmdList()->ResourceBarrier(1, &bar);
-    }
-}
 
 //====================================
 //STAR / MILKY WAY SKYBOX (NASA SVS EXR)
@@ -2223,9 +2153,9 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     // multi-scatter and ambient kernels) READS the transmittance UAV
     // (u25), and mainAmbient additionally READS the multi-scatter UAV
     // (u27) — hence a UAV barrier after each producer. Reading the LUT
-    // instead of re-integrating transmittance inline is what keeps the
-    // multi-scatter bake at tens of µs instead of ~1-2 ms (1024-thread
-    // dispatch, nothing hides a 64-step inner march at that occupancy).
+    // instead of re-integrating transmittance inline (plus the multi-scatter
+    // bake's group-per-texel layout, see its Dispatch below) keeps it at tens
+    // of µs.
     cmd->SetPipelineState(m_skyLutTransmittancePSO.Get());
     cmd->Dispatch(256 / 8, 64 / 8, 1);
     {
@@ -2234,7 +2164,10 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
         cmd->ResourceBarrier(1, &transDone);
     }
     cmd->SetPipelineState(m_skyLutMultiScatterPSO.Get());
-    cmd->Dispatch(32 / 8, 32 / 8, 1);
+    // One thread group per LUT texel (numthreads = SKY_MS_DIRS, threads integrate
+    // directions in parallel + groupshared reduce). 1024 groups → full occupancy,
+    // vs the old 16-group (1024-thread) layout that left the GPU idle.
+    cmd->Dispatch(32, 32, 1);
     {
         D3D12_RESOURCE_BARRIER msDone =
             CD3DX12_RESOURCE_BARRIER::UAV(m_skyMultiScatterLUT.Get());

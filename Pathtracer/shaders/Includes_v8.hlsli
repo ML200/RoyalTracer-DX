@@ -33,32 +33,31 @@ cbuffer Push : register(b1)
     float rs_reuseRoughnessMin;
     float rs_reuseRoughnessMax;
     uint  rs_spatTries;
-    //paired reuse textures, flag bits 1=flipX 2=flipY 4=transpose
-    uint  rs_reuseOffset0_x;
-    uint  rs_reuseOffset0_y;
-    uint  rs_reuseFlags0;
-    uint  rs_reuseOffset1_x;
-    uint  rs_reuseOffset1_y;
-    uint  rs_reuseFlags1;
-    uint  rs_reuseOffset2_x;
-    uint  rs_reuseOffset2_y;
-    uint  rs_reuseFlags2;
-    //neighbor rejection thresholds for spatial select
+    //Temporal-reuse geometry rejection + Jacobian clamp (slots 13-15; reuse the
+    //retired texture-spatial slots). Read by Pass_temp_gi_v8.
+    float temp_normalSimCos;   // reprojected-pixel normal cone (cos); -1 = accept all
+    float temp_planeDist;      // reprojected-pixel plane-distance reject, FRACTION of camera distance
+    float temp_jacClamp;       // reconnection-Jacobian clamp band T -> ratio bounded to [1/T, T]
+    //UCW (reservoir W) clamp for temporal + SPMIS reuse outputs (slot 16). Bounds
+    //W = w_sum/p_hat so a tiny p_hat near a grazing/occluded surface can't spike +
+    //feed back into a diverging firefly. <= 0 disables. Read by Pass_temp_gi /
+    //Pass_spmis_{merge,reuse}.
+    float ucw_clampMax;
+    //remaining retired texture-spatial slots (17-21), scalar padding so the SPMIS
+    //(32-37) and path-trace (38-41) constants keep their register slots.
+    uint  _ts_retired4; uint _ts_retired5;
+    uint  _ts_retired6; uint _ts_retired7; uint _ts_retired8;
+    //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rs_rejNormalDot;
     float rs_rejDistance;
-    //NRC runtime, flag bits in Nrc_v8.hlsli
-    uint  nrc_flags;
-    float nrc_area_spread_c;
-    float nrc_lr_scale;
-    //dynamic per-frame cap on inference slots, sized from prior frame's actual
-    //counter via async readback. Both raygen (NrcAppendInference cap) and the
-    //CUDA inference dispatch (count) read this so the work matches demand
-    //instead of paying for the buffer's static 2*W*H capacity every frame.
-    //Slot 27 also doubles as the 16B alignment pad for nrc_scene_center below.
-    uint  nrc_inference_capacity;
-    //scene to [0,1]^3 for tcnn HashGrid, scale_inv = 0.5/halfExtent
-    float3 nrc_scene_center;
-    float  nrc_scene_scale_inv;
+    //Slots 24-31 (two 16B cbuffer rows) reserved. Formerly the NRC control +
+    //scene-bounds constants (nrc_flags / area_spread_c / lr_scale /
+    //inference_capacity / scene_center.xyz / scene_scale_inv). NRC was removed
+    //from the shaders on this branch; the slots are kept as padding so the SPMIS
+    //(32..37) and path-trace (38..41) constants keep their register positions and
+    //the cpp root-constant writes need no renumbering. Free for the NIRC rewrite.
+    uint4 _nrc_reserved0;   // slots 24..27
+    uint4 _nrc_reserved1;   // slots 28..31
     //SPMIS spatial reuse. Slots 32-37, read by the Pass_spmis_* kernels. Selected by
     //RS_FLAG_SPMIS_SPATIAL (0x10).
     uint  spmis_reuseN;       // Ntilde: non-canonical reuse draws
@@ -84,7 +83,7 @@ cbuffer Push : register(b1)
 //PIPELINE FLAGS (packed into rs_flags)
 //====================================
 //High bit of rs_flags, clear of the ReSTIR bits (0x2 tempGI, 0x8 spatGI,
-//0x10 native-spatial) and the NRC/reuse fields. Set by the Renderer from the
+//0x10 native-spatial) and the reuse fields. Set by the Renderer from the
 //editor toggle, NOT by ReSTIRSettings::Flags(). The ReSTIR passes only test the
 //low bits, so it is inert for them.
 //
@@ -167,8 +166,7 @@ cbuffer Push : register(b1)
 //deferred reconnection shadow ray at the spatial resolve, so the GI output is fully
 //UNSHADOWED. Diagnostic only (shows the unshadowed upper bound / what the unshadowed
 //reservoir selection looks like). Only meaningful when REUSE_VIS_OFF is set - with
-//the reuse rays already gone, this removes the last visibility too. The NRC gather
-//follows it (trains on the same unshadowed GI it displays).
+//the reuse rays already gone, this removes the last visibility too.
 #define RS_FLAG_NO_FINAL_VIS  0x1000u
 #define FINAL_VIS_OFF  ((rs_flags & RS_FLAG_NO_FINAL_VIS) != 0u)
 
@@ -703,26 +701,6 @@ inline float TerrainCloudBaseHeight(float3 dir)
     return km * 1000.0f;
 }
 
-//PLANET: per-vertex-UV terrain tint. `faceMarker` is InstanceProperties._pad[0]
-//(0 = scene mesh, 1..6 = terrain on cube face 0..5). `uv` is the equiangular
-//face UV baked into the terrain vertices by the tessellator, already
-//barycentric-interpolated by EvalSurfaceState - so this is just an array
-//sample, no atan. Returns false (leaving Kd untouched) for scene meshes and
-//when the surface_color layer is absent: a null SRV samples 0, and the baker
-//forces alpha = 1 on real texels, so alpha <= 0 is the "fall back to the flat
-//TERRAIN_ALBEDO material" sentinel.
-inline bool TerrainTintFromUV(float2 uv, uint faceMarker, out float3 kd)
-{
-    kd = float3(0.0f, 0.0f, 0.0f);
-    if (faceMarker == 0u) return false;
-    const float face = (float)(faceMarker - 1u);
-    const float4 c = g_terrainSurfaceColor.SampleLevel(g_sampler_LUT,
-                                                       float3(uv, face), 0.0f);
-    if (c.a <= 0.0f) return false;
-    kd = c.rgb;
-    return true;
-}
-
 //====================================
 //CORE UTILITY HEADERS
 //====================================
@@ -753,7 +731,7 @@ RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 RWByteAddressBuffer g_spmisBuffer            : register(u25);
 #else
-//globallycoherent so the raygen scratch+reload pattern (tpost, nrcA0)
+//globallycoherent so the raygen scratch+reload pattern (tpost)
 //actually drops those values from live state across the bounce-loop
 //TraceRay reorder boundary. Without it, DXC store-to-load forwards the
 //scratch values and keeps them register-resident across the trace,
@@ -834,7 +812,6 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 //====================================
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
-#include "procedural_terrain_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
 #include "Reservoir_v8.hlsli"
 #include "Path_State_v8.hlsli"

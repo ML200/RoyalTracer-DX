@@ -91,20 +91,15 @@ uint ps_addr_cand_ln (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_L
 //boundary. g_pathStateBuffer is declared globallycoherent so the spill+reload
 //pattern is not defeated by store-to-load forwarding.
 //
-//HOT1 layout (16B):
-//  bytes  0..11  tpost   (float3, full fp32 precision -- multiplicative
-//                          throughput chain that must not lose bits)
-//  bytes 12..15  nrcA0   (float, set once at primary hit, read each bounce
-//                          inside the cache-termination check)
-//HOT2 layout (16B):
-//  bytes  0..3   nrcA          (accumulated area spread, RMW each bounce)
-//  bytes  4..7   nrcEmitMask   (per-vertex emit-eligibility bits, OR'd in
-//                                training-vertex emit, read at finalize)
-//  bytes  8..15  free
-static const uint PS_RG_OFF_TPOST       = 0u;
-static const uint PS_RG_OFF_NRCA0       = 12u;
-static const uint PS_RG2_OFF_NRCA       = 0u;
-static const uint PS_RG2_OFF_EMITMASK   = 4u;
+//HOT1 layout (16B): bytes 0..11 tpost (float3 throughput suffix, fp32);
+//                   12..15 directAtX1 (RGB9E5) — see below.
+//HOT2 layout (16B): primary-hit extras the G-buffer (Sample_Data) doesn't carry.
+//  Stashed once after the camera ray so the initial-sample loop rebuilds the
+//  primary ctx from g_sample_current + these, instead of keeping a full
+//  HitContext copy live across every bounce TraceRay continuation.
+//  0..3 iors(half2)  4..7 mediumMatID  8..11 absorption.xy(half2)  12..13 absorption.z(half)
+static const uint PS_RG_OFF_TPOST    =  0u;
+static const uint PS_RG_OFF_DIRECTX1 = 12u;
 
 void store_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx, float3 tpost)
 {
@@ -116,42 +111,50 @@ float3 load_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx)
     return asfloat(buf.Load3(ps_addr_hot1(pixelIdx) + PS_RG_OFF_TPOST));
 }
 
-void store_rg_nrcA0(RWByteAddressBuffer buf, uint pixelIdx, float a0)
+//x1 direct sky+sun accumulator (the depth==1 NEE-sun + BSDF-ray-miss ENV that
+//bypasses the reservoir). Lives in scratch so its 12B don't ride the bounce-
+//loop TraceRay reorder boundary across every deeper bounce. RGB9E5 (4B) is
+//plenty: it is a noisy single-sample 1/pdf estimate, summed over N initial
+//samples and handed to scratch slot 3 downstream. Only touched at depth==1.
+void store_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx, float3 v)
 {
-    buf.Store(ps_addr_hot1(pixelIdx) + PS_RG_OFF_NRCA0, asuint(a0));
+    buf.Store(ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1, PackRGB9E5(v));
 }
 
-float load_rg_nrcA0(RWByteAddressBuffer buf, uint pixelIdx)
+float3 load_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    return asfloat(buf.Load(ps_addr_hot1(pixelIdx) + PS_RG_OFF_NRCA0));
+    return UnpackRGB9E5(buf.Load(ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1));
 }
 
-void store_rg_nrcA(RWByteAddressBuffer buf, uint pixelIdx, float a)
+//read-modify-write accumulate. Skips the globallycoherent round-trip entirely
+//when there is nothing to add (the common case under the depth==1 guards).
+void add_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx, float3 add)
 {
-    buf.Store(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_NRCA, asuint(a));
+    if (!any(add > 0.0f)) return;
+    const uint a = ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1;
+    buf.Store(a, PackRGB9E5(UnpackRGB9E5(buf.Load(a)) + add));
 }
 
-float load_rg_nrcA(RWByteAddressBuffer buf, uint pixelIdx)
+void store_rg_primaryExtra(RWByteAddressBuffer buf, uint pixelIdx,
+                           float2 iors, uint mediumMatID, float3 absorptionTint)
 {
-    return asfloat(buf.Load(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_NRCA));
+    const uint base = ps_addr_hot2(pixelIdx);
+    buf.Store(base +  0u, f32tof16(iors.x) | (f32tof16(iors.y) << 16));
+    buf.Store(base +  4u, mediumMatID);
+    buf.Store(base +  8u, f32tof16(absorptionTint.x) | (f32tof16(absorptionTint.y) << 16));
+    buf.Store(base + 12u, f32tof16(absorptionTint.z));
 }
 
-void store_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx, uint mask)
+void load_rg_primaryExtra(RWByteAddressBuffer buf, uint pixelIdx,
+                          out float2 iors, out uint mediumMatID, out float3 absorptionTint)
 {
-    buf.Store(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK, mask);
-}
-
-uint load_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return buf.Load(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK);
-}
-
-//atomic OR forces a memory op the compiler cannot fold into a register-held
-//copy. Used by the training-vertex emit-eligibility update so nrcEmitMask
-//never enters the live set.
-void atomic_or_rg_nrcEmitMask(RWByteAddressBuffer buf, uint pixelIdx, uint bit)
-{
-    buf.InterlockedOr(ps_addr_hot2(pixelIdx) + PS_RG2_OFF_EMITMASK, bit);
+    const uint base = ps_addr_hot2(pixelIdx);
+    const uint pk0  = buf.Load(base + 0u);
+    iors            = float2(f16tof32(pk0 & 0xFFFFu), f16tof32(pk0 >> 16));
+    mediumMatID     = buf.Load(base + 4u);
+    const uint pk1  = buf.Load(base + 8u);
+    absorptionTint  = float3(f16tof32(pk1 & 0xFFFFu), f16tof32(pk1 >> 16),
+                             f16tof32(buf.Load(base + 12u) & 0xFFFFu));
 }
 
 

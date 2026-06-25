@@ -60,7 +60,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("Initial Sampling", nullptr, &m_showInitialSampling);
-            ImGui::MenuItem("NRC",             nullptr, &m_showNRC);
+            //ImGui::MenuItem("NRC",             nullptr, &m_showNRC); // NRC removed — UI panel disabled; restore for NIRC
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
             ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
@@ -586,20 +586,32 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
                               "it displays. Expect light to leak through thin occluders - it's for isolating "
                               "how much of the side-face variance is reuse-reset vs intrinsic shadow-ray noise.");
         ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::SliderFloat("Reproj normal cone (cos)##Temp", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Reject the reprojected temporal candidate when dot(normal, reprojNormal) <= this "
+                              "- stops reuse across a corner / different face. -1 = accept all normals.");
+        ImGui::SliderFloat("Reproj plane dist (xCamDist)##Temp", &rs.tempPlaneDist, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("Reject the reprojected candidate when its hit is off this pixel's tangent plane by "
+                              "more than this FRACTION of the distance to camera (depth-discontinuity reject, same "
+                              "form as the SPMIS pass). Lower = stricter; ~1.0 = off.");
+        ImGui::SliderFloat("Jacobian clamp T##Temp", &rs.tempJacClamp, 1.0f, 100.0f, "%.1f");
+        ImGui::SetItemTooltip("Reconnection-shift Jacobian ratio is clamped to [1/T, T]. A grazing reconnection "
+                              "(cos -> 0 near a corner) blows the ratio up; this bounds it so the resampling "
+                              "weight can't spike into fireflies. Lower = stronger suppression, more bias.");
+        ImGui::SliderFloat("UCW clamp (W)##Temp", &rs.ucwClampMax, 0.0f, 100000.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Clamps the reservoir weight W = w_sum / p_hat for temporal AND SPMIS reuse outputs. "
+                              "W is unbounded; a tiny target luminance near a grazing/occluded surface spikes it and "
+                              "the spike feeds back every frame into a diverging firefly ('exploding W'). Lower = "
+                              "stronger firefly suppression / more bias on valid low-pdf samples. 0 = off. "
+                              "(Raygen's single-frame W is left unclamped so small/far lights aren't darkened.)");
     }
-    if (ImGui::CollapsingHeader("Spatial", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Spatial (SPMIS)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
-        ImGui::SliderInt("Radius Max##Spat", &rs.spatRadMaxGI, 4, 128);
-        ImGui::SliderInt("Radius Min##Spat", &rs.spatRadMinGI, 4, 128);
-        ImGui::SliderInt("Tries##Spat",      &rs.spatTriesGI, 2, 16);
-    }
-    if (ImGui::CollapsingHeader("SPMIS Spatial Reuse")) {
-        ImGui::Checkbox("Use SPMIS##SPMIS", &rs.useSPMIS);
-        ImGui::SetItemTooltip("Global screen-space hash grid (raygen inserts each pixel's cell) + "
-                              "materialized per-cell lists + non-defensive stochastic pairwise-MIS reuse. "
-                              "Replaces the texture-paired spatial path (select/shift/_v8_1 no-op). Needs "
-                              "Spatial enabled.");
-        ImGui::BeginDisabled(!rs.useSPMIS);
+        ImGui::SetItemTooltip("Spatial reuse via the SPMIS global hash grid (raygen inserts each pixel's "
+                              "cell) + materialized per-cell lists + non-defensive stochastic pairwise-MIS "
+                              "reuse. Pass_spmis_* pipeline.");
         ImGui::SliderInt("Reuse N (Ntilde)##SPMIS", &rs.spmisReuseN, 1, 32);
         ImGui::SetItemTooltip("Non-canonical reuse draws per pixel (NOT the inner-RIS count below). Higher "
                               "dilutes the canonical weight (collapse factor 1/(N+1) where reuse fails).");
@@ -627,7 +639,6 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SetItemTooltip("§4.3 non-canonical confidence scaling (Ntilde/cell_size). OFF gives the "
                               "canonical ~no weight -> maximal neighbour reuse / equalization. ON boosts the "
                               "canonical (~1/(N+1)) -> weaker reuse but less dark-pepper.");
-        ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Normal dot min", &rs.rejNormalDot, 0.0f, 1.0f);

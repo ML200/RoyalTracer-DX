@@ -96,6 +96,21 @@ void Pass_temp_gi_v8()
 
     //neighbour primary hit - no per-triangle data, identical for terrain and meshes.
     const float3 rPos = load_x1(g_sample_last, tempPixelIdx);
+
+    //Reject the reprojected candidate when its surface geometry doesn't match the
+    //current pixel — a different face at a corner or a depth discontinuity. That
+    //mismatch is exactly what drives the reconnection cos to ~0 and blows up the
+    //Jacobian, so rejecting it here is the real fix (the clamp below is the backstop).
+    //Normal cone + plane-distance reject, mirroring the SPMIS spatial pass.
+    {
+        const float3 rN = load_n1_s(g_sample_last, tempPixelIdx);
+        if (temp_normalSimCos > -1.0f && dot(myN1s, rN) <= temp_normalSimCos)
+            return;
+        const float planeThresh = temp_planeDist * length(myPos - cameraPos);
+        if (abs(dot(rPos - myPos, myN1s)) > planeThresh)
+            return;
+    }
+
     float Jnc = 0.0f, Jn = 0.0f;
 
     const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
@@ -162,7 +177,7 @@ void Pass_temp_gi_v8()
             rdi_r.Kd, rdi_r.Pr, rdi_r.Pm, rdi_r.eta,
             Jn);
 
-        J2 = JacobianRatio(Jn, Jc_neighbor);
+        J2 = JacobianRatio(Jn, Jc_neighbor, temp_jacClamp);
         float ph = GetPHat(c);
         float vis_n = 0.0f;
         if (ph > 0.0f)
@@ -203,7 +218,7 @@ void Pass_temp_gi_v8()
     const uint M_c = clamp(min(effMcap,     rdi.M),   1u, mcapU);
     const uint M_n = clamp(min(dynTempMcap, rdi_r.M), 1u, mcapU);
 
-    const float p_nJ1  = p_n * JacobianRatio(Jnc, Jc_canonical);
+    const float p_nJ1  = p_n * JacobianRatio(Jnc, Jc_canonical, temp_jacClamp);
     const float n_cJ2  = n_c * J2;
 
     //  canonical: m_c = M_c p_c / (M_c p_c + M_n p_nJ1)   [canonical at center vs at neighbour]
@@ -235,16 +250,9 @@ void Pass_temp_gi_v8()
         accepted    = true;
     }
 
-    if (p_hat_final > EPSILON && rdi.w_sum > 0.0f)
-    {
-        float W = rdi.w_sum / p_hat_final;
-        if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
-        rdi.W = W;
-    }
-    else
-    {
-        rdi.W = 0.0f;
-    }
+    //bounded UCW: an unclamped w_sum/p_hat spikes + feeds back every frame near
+    //grazing/occluded surfaces (see FinalizeUCW). ucw_clampMax breaks it.
+    rdi.W = FinalizeUCW(rdi.w_sum, p_hat_final, ucw_clampMax);
 
     if (accepted)
     {

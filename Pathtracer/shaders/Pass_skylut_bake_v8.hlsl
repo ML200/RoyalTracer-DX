@@ -146,16 +146,22 @@ inline float3 MsFibonacciDir(uint i, uint n)
     return float3(cos(phi) * s, z, sin(phi) * s);
 }
 
-[numthreads(8, 8, 1)]
-void mainMultiScatter(uint3 DTid : SV_DispatchThreadID)
-{
-    if (DTid.x >= SKY_MS_LUT_DIM || DTid.y >= SKY_MS_LUT_DIM) return;
+// One thread GROUP per LUT texel; the SKY_MS_DIRS threads each integrate one
+// Fibonacci direction, then a groupshared reduction sums them. This turns the
+// bake from 1024 threads (16 warps — idle GPU, ~0.4ms) into 1024 groups ×
+// SKY_MS_DIRS threads (full occupancy). numthreads X MUST equal SKY_MS_DIRS.
+// Dispatched as (SKY_MS_LUT_DIM, SKY_MS_LUT_DIM, 1) groups — texel = SV_GroupID.
+groupshared float3 gs_L2 [SKY_MS_DIRS];
+groupshared float3 gs_fms[SKY_MS_DIRS];
 
+[numthreads(64, 1, 1)]
+void mainMultiScatter(uint3 Gid : SV_GroupID, uint Gi : SV_GroupIndex)
+{
     const float Rb = ATMOS_BOTTOM_RADIUS;
     const float Rt = ATMOS_TOP_RADIUS;
 
     // Texel -> (sunCosZ, r), inverse of MultiScatterPsi's mapping.
-    float2 uv      = (float2(DTid.xy) + 0.5f) / (float)SKY_MS_LUT_DIM;
+    float2 uv      = (float2(Gid.xy) + 0.5f) / (float)SKY_MS_LUT_DIM;
     float  sunCosZ = LutUnitRangeFromCoord(uv.x, (float)SKY_MS_LUT_DIM) * 2.0f - 1.0f;
     float  r       = Rb + LutUnitRangeFromCoord(uv.y, (float)SKY_MS_LUT_DIM) * (Rt - Rb);
     r = clamp(r, Rb + 1e-3f, Rt - 1e-3f);
@@ -166,67 +172,87 @@ void mainMultiScatter(uint3 DTid : SV_DispatchThreadID)
 
     const float kUniformPhase = 1.0f / (4.0f * PI);
 
+    // This thread's single direction. Invalid directions contribute 0 (the old
+    // serial loop's `continue`). Every thread must reach the barrier below, so
+    // the march is guarded, not skipped with an early-out.
+    const uint d = Gi;
     float3 L2  = float3(0, 0, 0);   // 2nd-order in-scatter, uniform phase
     float3 fms = float3(0, 0, 0);   // scattering transfer
 
-    [loop]
-    for (uint d = 0; d < SKY_MS_DIRS; ++d)
+    float3 V = MsFibonacciDir(d, SKY_MS_DIRS);
+    float tA0, tA1;
+    if (RaySphereIntersect(O, V, Rt, tA0, tA1) && tA1 > 0.0f)
     {
-        float3 V = MsFibonacciDir(d, SKY_MS_DIRS);
-
-        float tA0, tA1;
-        if (!RaySphereIntersect(O, V, Rt, tA0, tA1) || tA1 <= 0.0f) continue;
         float tMax = tA1;
         float tG0, tG1;
         if (RaySphereIntersect(O, V, Rb, tG0, tG1) && tG0 > 0.0f)
             tMax = min(tMax, tG0);
-        if (tMax <= 0.0f) continue;
 
-        float  ds         = tMax / (float)SKY_MS_STEPS;
-        float3 throughput = float3(1, 1, 1);
-
-        [loop]
-        for (int s = 0; s < SKY_MS_STEPS; ++s)
+        if (tMax > 0.0f)
         {
-            float  t   = ((float)s + 0.5f) * ds;
-            float3 P   = O + V * t;
-            float  alt = max(0.0f, length(P) - Rb);
+            float  ds         = tMax / (float)SKY_MS_STEPS;
+            float3 throughput = float3(1, 1, 1);
 
-            MediumSample med  = SampleMedium(alt);
-            float3 segTr      = exp(-med.extinction * ds);
-            float3 sunTr      = BakeSunTransmittance(P, L);
+            [loop]
+            for (int s = 0; s < SKY_MS_STEPS; ++s)
+            {
+                float  t   = ((float)s + 0.5f) * ds;
+                float3 P   = O + V * t;
+                float  alt = max(0.0f, length(P) - Rb);
 
-            float3 Pnorm       = SafeNormalize(P);
-            float  cosHorizon  = -sqrt(max(0.0f,
-                1.0f - (Rb * Rb) / dot(P, P)));
-            float  earthShadow = SunDiskFractionAboveHorizon(dot(Pnorm, L),
-                                                             cosHorizon);
+                MediumSample med  = SampleMedium(alt);
+                float3 segTr      = exp(-med.extinction * ds);
+                float3 sunTr      = BakeSunTransmittance(P, L);
 
-            // Analytic per-segment integration, same trick as the view
-            // marches: integ = (1 - segTr) / extinction.
-            float3 integ;
-            integ.x = (med.extinction.x > 1e-10f)
-                ? (1.0f - segTr.x) / med.extinction.x : ds;
-            integ.y = (med.extinction.y > 1e-10f)
-                ? (1.0f - segTr.y) / med.extinction.y : ds;
-            integ.z = (med.extinction.z > 1e-10f)
-                ? (1.0f - segTr.z) / med.extinction.z : ds;
+                float3 Pnorm       = SafeNormalize(P);
+                float  cosHorizon  = -sqrt(max(0.0f,
+                    1.0f - (Rb * Rb) / dot(P, P)));
+                float  earthShadow = SunDiskFractionAboveHorizon(dot(Pnorm, L),
+                                                                 cosHorizon);
 
-            float3 scatterIso = med.scatterR + med.scatterM;
+                // Analytic per-segment integration, same trick as the view
+                // marches: integ = (1 - segTr) / extinction.
+                float3 integ;
+                integ.x = (med.extinction.x > 1e-10f)
+                    ? (1.0f - segTr.x) / med.extinction.x : ds;
+                integ.y = (med.extinction.y > 1e-10f)
+                    ? (1.0f - segTr.y) / med.extinction.y : ds;
+                integ.z = (med.extinction.z > 1e-10f)
+                    ? (1.0f - segTr.z) / med.extinction.z : ds;
 
-            L2  += throughput * scatterIso * kUniformPhase
-                 * (ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr) * integ;
-            fms += throughput * scatterIso * integ;
+                float3 scatterIso = med.scatterR + med.scatterM;
 
-            throughput *= segTr;
+                L2  += throughput * scatterIso * kUniformPhase
+                     * (ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr) * integ;
+                fms += throughput * scatterIso * integ;
+
+                throughput *= segTr;
+            }
         }
     }
 
-    L2  /= (float)SKY_MS_DIRS;
-    fms /= (float)SKY_MS_DIRS;
+    gs_L2 [d] = L2;
+    gs_fms[d] = fms;
+    GroupMemoryBarrierWithGroupSync();
 
-    float3 psi = L2 / max(1.0f - fms, 1e-3f);
-    gMultiScatterLUTOut[DTid.xy] = float4(psi, 1.0f);
+    // Thread 0 reduces (summed in direction order 0..N-1, matching the old
+    // serial accumulation → bit-identical result) and writes the texel.
+    if (d == 0u)
+    {
+        float3 sumL2  = float3(0, 0, 0);
+        float3 sumFms = float3(0, 0, 0);
+        [loop]
+        for (uint i = 0u; i < SKY_MS_DIRS; ++i)
+        {
+            sumL2  += gs_L2 [i];
+            sumFms += gs_fms[i];
+        }
+        sumL2  /= (float)SKY_MS_DIRS;
+        sumFms /= (float)SKY_MS_DIRS;
+
+        float3 psi = sumL2 / max(1.0f - sumFms, 1e-3f);
+        gMultiScatterLUTOut[Gid.xy] = float4(psi, 1.0f);
+    }
 }
 
 // Psi_ms lookup for the ambient probe march below — manual bilinear over

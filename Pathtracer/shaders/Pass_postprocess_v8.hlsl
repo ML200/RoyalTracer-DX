@@ -210,24 +210,31 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     //HDR debug slices read from FP32 scratchPing / gPermanentData. Writing raw HDR
     //into the R8G8B8A8 UNORM gOutput would clip to 1.0 and quantize to 8 bits linear
-    //before tonemap could ever see it, which is why noisy/gt/nrc/refl used to look
+    //before tonemap could ever see it, which is why noisy/gt/refl used to look
     //unexposed and banded relative to the DLSS clean slice
-    float3 noisy  = gScratchPing[uint3(DTid.xy, 1)].rgb +
-                    gScratchPing[uint3(DTid.xy, 2)].rgb +
-                    gScratchPing[uint3(DTid.xy, 3)].rgb;
+    //Pass_shading now writes the full composited radiance into slot 1 alone
+    //(was slots 1/2/3 summed here) — one FP32 scratch read instead of three.
     //clean came through DLSS RR which received Reinhard-tonemapped input —
     //undo that here so AgX sees the original HDR
     float3 clean  = InverseDlssReinhard(g_dlssOutput[DTid.xy].xyz);
-    float3 gt     = gPermanentData[DTid.xy].rgb;
-    float3 nrc    = gScratchPing[uint3(DTid.xy, 9)].rgb;
+    float3 nrc    = float3(0, 0, 0); // NRC debug slice retired (kept black)
     float3 refl   = float3(0, 0, 0); // sharp-reflection slice retired (kept black)
+#if SHADING_DEBUG_SLICES
+    float3 noisy  = gScratchPing[uint3(DTid.xy, 1)].rgb;
+    float3 gt     = gPermanentData[DTid.xy].rgb;
     float3 albedo = gOutput[uint3(DTid.xy, 5)].xyz;
+#else
+    //debug comparison slices gated off (SHADING_DEBUG_SLICES): Pass_shading no
+    //longer writes them — show black instead of reading stale data.
+    float3 noisy  = float3(0, 0, 0);
+    float3 gt     = float3(0, 0, 0);
+    float3 albedo = float3(0, 0, 0);
+#endif
 
     //Scrub non-finite HDR before tonemap so a NaN/inf can't reach the display.
     noisy = ScrubNonFinite(noisy);
     clean = ScrubNonFinite(clean);
     gt    = ScrubNonFinite(gt);
-    nrc   = ScrubNonFinite(nrc);
 
     //AgX filmic tonemap (Troy Sobotka), operating on real HDR (post-exposure).
     //Its sigmoid + output matrix already bake in the sRGB display EOTF, so the

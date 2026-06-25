@@ -7,7 +7,6 @@
 #include "Renderer.h"
 #include "Diagnostics.h"
 #include "Windowsx.h"
-#include "ReuseTextureGen.h"
 #include "NRC/NrcNetwork.h"
 #include <random>
 
@@ -24,17 +23,19 @@ Renderer::Renderer(UINT width, UINT height)
     /*m_passes.Build({
         L"Pass_debug_v8.hlsl|rg",                       L"barrier",
     });*/
+    // NRC passes removed on this branch: the cuda:nrc_* ops are disabled in
+    // InitDevice (#if 0) and the Pass_nrc_*.hlsl shader files were deleted, so
+    // their pass-list entries are commented out here. Restore alongside the
+    // NIRC rewrite. (Each commented entry drops a pass + its trailing barrier;
+    // the alternation for the remaining real passes is preserved.)
     m_passes.Build({
-        L"cuda:nrc_frame_begin",                        L"barrier",
+        //L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_spmis_reset_v8.hlsl|cs:8x4",             L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
-        L"cuda:nrc_inference",                          L"barrier",
-        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
+        //L"cuda:nrc_inference",                          L"barrier",
+        //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
-        L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
-        L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
         L"Pass_spmis_count_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_spmis_offsets_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_spmis_sort_v8.hlsl|cs:16x16",              L"barrier",
@@ -42,11 +43,11 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_spmis_shift_v8.hlsl|rg",                 L"barrier",
         L"Pass_spmis_merge_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
-        L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
-        L"cuda:nrc_train",                              L"barrier",
-        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
-        L"cuda:nrc_debug_inference",                    L"barrier",
-        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
+        //L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
+        //L"cuda:nrc_train",                              L"barrier",
+        //L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
+        //L"cuda:nrc_debug_inference",                    L"barrier",
+        //L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
         L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
         L"dlss",                                        L"barrier",
         L"Pass_autoexpose_reduce_v8.hlsl|cs:8x8",       L"barrier",
@@ -107,6 +108,7 @@ void Renderer::InitDevice() {
             m_cudaFence = m_cudaInterop.CreateFence(L"Cuda_Interop_Fence");
             LOG(L"[CUDA] Interop ready");
 
+#if 0 // ── NRC removed on this branch — preserved for the NIRC rewrite ──
             // Smoke test callback: exercises the fence split + tcnn once on first
             // frame, then no-ops but still round-trips the fence every frame so
             // the D3D12<->CUDA sync path stays live and exercised.
@@ -293,6 +295,7 @@ void Renderer::InitDevice() {
             },
             //skip the interop round trip entirely when training is off
             [this]{ return m_nrcReady && m_nrcSettings.enabled && m_nrcSettings.trainingEnabled; });
+#endif // NRC removed
         } else {
             LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
         }
@@ -307,7 +310,6 @@ void Renderer::InitDevice() {
                 std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
         }
         GenerateLutTextures();
-        InitReuseTextures();
         InitSkyStarsTexture();
         //Bake the 256³ cloud noise texture before CreateShaderResourceHeap
         //runs, so the heap can pick up the resulting SRV at heap slot
@@ -1028,11 +1030,13 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     m_ctx.WaitForGPU();
+#if 0 // NRC removed — preserved for the NIRC rewrite
     // The CUDA aux stream runs training in parallel with raygen and is
     // not covered by WaitForGPU. We must drain it before reallocating
     // any NRC buffers below — otherwise an in-flight training kernel
     // could be reading inferenceOut / trainRecords while we free them.
     if (m_nrcReady) m_nrcNetwork.WaitIdle();
+#endif
 
     m_width       = newWidth;
     m_height      = newHeight;
@@ -1057,6 +1061,7 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     CreateRaytracingOutputBuffer();
     CreateStreamingCompactionBuffers();
 
+#if 0 // NRC removed — preserved for the NIRC rewrite
     // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
     // sized to 1·px (each pixel issues at most one cache-termination record;
     // the debug-view inference reuses the same buffer at slot = MapPixelID),
@@ -1088,6 +1093,7 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
             m_nrcReady = false;
         }
     }
+#endif // NRC removed
 
     // Recreate DLSS resources at new display resolution
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
@@ -1766,17 +1772,17 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
 
-    // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
-    // Sizes must match shaders' hardcoded values and InitReuseTextures.
+    // Temporal-reuse geometry rejection + Jacobian clamp (slots 13-15; read by
+    // Pass_temp_gi_v8). Reuses the retired texture-spatial slots; 16-21 stay 0.
     {
-        const UINT kSizes[3] = { 254u, 230u, 210u };
-        std::mt19937 rng(static_cast<uint32_t>(m_time) * 0x9E3779B9u + 1u);
-        std::uniform_int_distribution<uint32_t> dist;
-        for (int i = 0; i < 3; ++i) {
-            rsConsts[13 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
-            rsConsts[13 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
-            rsConsts[13 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
-        }
+        const float tnc = std::clamp(rs.tempNormalSimCos, -1.0f, 1.0f);
+        const float tpd = std::max(rs.tempPlaneDist, 0.0f);
+        const float tjc = std::max(rs.tempJacClamp,   1.0f);
+        const float ucw = std::max(rs.ucwClampMax,    0.0f);   // slot 16: reuse UCW clamp (<=0 disables)
+        memcpy(&rsConsts[13], &tnc, 4);
+        memcpy(&rsConsts[14], &tpd, 4);
+        memcpy(&rsConsts[15], &tjc, 4);
+        memcpy(&rsConsts[16], &ucw, 4);
     }
 
     // Neighbor rejection thresholds (slots 22-23)
@@ -1808,6 +1814,7 @@ void Renderer::PopulateCommandList() {
         memcpy(&rsConsts[41], &pd, 4);
     }
 
+#if 0 // ── NRC constants (slots 24-31) removed — left 0 (rsConsts is zero-init); reserved as padding in Includes_v8.hlsli; restore for NIRC ──
     // NRC control constants (slots 24-27). NRC is only driving the
     // pipeline when the interop + tcnn stack initialised successfully —
     // we mask terrain enabled/training when m_nrcReady is false so the
@@ -2016,6 +2023,7 @@ void Renderer::PopulateCommandList() {
         memcpy(&rsConsts[30], &m_nrcSettings.sceneCenter.z, 4);
         memcpy(&rsConsts[31], &sceneScaleInv, 4);
     }
+#endif // NRC constants removed
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;

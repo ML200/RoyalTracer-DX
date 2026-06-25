@@ -26,6 +26,29 @@ extern "C" {
 } while(0)
 #endif
 
+//Set to 1 to surface Streamline's own verbose plugin logging and its separate
+//debug console. Off in regular use: at eVerbose the SL/DLSS/Reflex plugins spam
+//the console every frame and bury our own [DX]/[Engine]/[SL] output. Real SL
+//failures are still reported through the SL_CHECK macro and the explicit Result
+//checks in DLSSManager, so turning this off does not hide errors.
+#ifndef SL_VERBOSE_LOGGING
+#define SL_VERBOSE_LOGGING 0
+#endif
+
+//Set to 1 to print non-critical [DX] informational logs (swap-chain buffer
+//count, tearing support, etc.). Off in regular use: only critical [DX] output
+//(e.g. Present failures, which stay raw std::wcout below) prints. Independent of
+//SL_VERBOSE_LOGGING so swap-chain/present debugging doesn't drag in SL spam.
+#ifndef DX_VERBOSE_LOGGING
+#define DX_VERBOSE_LOGGING 0
+#endif
+
+#if DX_VERBOSE_LOGGING
+  #define DXLOG(expr) do { std::wcout << L"[DX] " << expr << std::endl; } while(0)
+#else
+  #define DXLOG(expr) do {} while(0)
+#endif
+
 //====================================
 //INIT
 //====================================
@@ -39,7 +62,7 @@ void DeviceContext::Init(HWND hwnd, UINT w, UINT h, bool useWarp) {
     DXGI_SWAP_CHAIN_DESC scDesc{};
     swapChain->GetDesc(&scDesc);
     bufferCount = scDesc.BufferCount;
-    std::wcout << L"[DX] Actual swap chain buffer count: " << bufferCount << std::endl;
+    DXLOG(L"Actual swap chain buffer count: " << bufferCount);
 
     CreateRTVsAndDepth();
 
@@ -254,8 +277,8 @@ void DeviceContext::InitStreamline() {
     pref.renderAPI       = sl::RenderAPI::eD3D12;
     pref.engine          = sl::EngineType::eCustom;
     pref.applicationId   = 231313132;
-    pref.showConsole     = true;
-    pref.logLevel        = sl::LogLevel::eVerbose;
+    pref.showConsole     = SL_VERBOSE_LOGGING;
+    pref.logLevel        = SL_VERBOSE_LOGGING ? sl::LogLevel::eVerbose : sl::LogLevel::eOff;
     pref.flags           = sl::PreferenceFlags::eLoadDownloadedPlugins
                          | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
@@ -292,7 +315,7 @@ void DeviceContext::CreateDeviceAndSwapChain(HWND hwnd, bool useWarp) {
                 &allowTearing, sizeof(allowTearing));
             tearingSupported = (allowTearing == TRUE);
         }
-        std::wcout << L"[DX] Tearing support: " << (tearingSupported ? L"yes" : L"no") << std::endl;
+        DXLOG(L"Tearing support: " << (tearingSupported ? L"yes" : L"no"));
     }
 
 #if ENABLE_D3D12_DIAGNOSTICS

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <chrono>
 
 #include <d3d12.h>
 #include <dxcapi.h>
@@ -142,6 +143,7 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
 
     // 4. Compile
     ComPtr<IDxcResult> pResult;
+    auto compileT0 = std::chrono::high_resolution_clock::now();
     hr = pCompiler3->Compile(
         &sourceBuffer,
         args.data(), (uint32_t)args.size(),
@@ -154,22 +156,35 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
     {
         pResult->GetStatus(&hr);
     }
+    auto compileMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::high_resolution_clock::now() - compileT0).count();
 
+    std::wstring shaderName(fileName);
+    shaderName = shaderName.substr(shaderName.find_last_of(L"/\\") + 1);
+
+    // 6. On failure, surface the compiler diagnostics (critical) and abort. DXC
+    // routes warnings + errors through DXC_OUT_ERRORS; we only pull and show that
+    // text when the compile actually failed — successful compiles print timing
+    // only, no log spam.
     if (FAILED(hr))
     {
         ComPtr<IDxcBlobUtf8> pErrors;
         pResult->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&pErrors), nullptr);
+        std::string errMsg = "Shader compilation failed.";
         if (pErrors && pErrors->GetStringLength() > 0)
         {
-            OutputDebugStringA((char*)pErrors->GetStringPointer());
-            std::string errMsg = "Shader Compiler Error:\n";
-            errMsg += (char*)pErrors->GetStringPointer();
-            MessageBoxA(nullptr, errMsg.c_str(), "Shader Compilation Failed", MB_OK | MB_ICONERROR);
+            OutputDebugStringA(pErrors->GetStringPointer());
+            errMsg.assign(pErrors->GetStringPointer(), pErrors->GetStringLength());
         }
+        MessageBoxA(nullptr, errMsg.c_str(), "Shader Compilation Failed", MB_OK | MB_ICONERROR);
         throw std::logic_error("Shader compilation failed.");
     }
 
-    // 6. Retrieve the Compiled Shader Object
+    // Per-shader compile time (success path).
+    std::wcout << L"[Shader] " << shaderName << L" compiled in "
+               << compileMs << L" ms" << std::endl;
+
+    // 7. Retrieve the Compiled Shader Object
     // Using IDxcCompiler3 ensures the blob is properly signed by dxil.dll
     IDxcBlob* pBlob = nullptr;
     ThrowIfFailed(pResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&pBlob), nullptr));

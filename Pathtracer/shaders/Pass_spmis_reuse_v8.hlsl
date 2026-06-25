@@ -279,16 +279,9 @@ void main(uint3 tid : SV_DispatchThreadID)
     rdi.M = (uint)centerConf + effDraws;
     const float F_mag = GetPHat(rdi.F);
 
-    if (F_mag > EPSILON && rdi.w_sum > 0.0f && rdi.w_sum < 1e10f)
-    {
-        float W = rdi.w_sum / F_mag;
-        if (isnan(W) || isinf(W) || (W < 0.0f)) W = 0.0f;
-        rdi.W = W;
-    }
-    else
-    {
-        rdi.W = 0.0f;
-    }
+    //bounded UCW (ucw_clampMax): unclamped w_sum/p_hat spikes near grazing/occluded
+    //surfaces and feeds back through reuse into a diverging firefly. See FinalizeUCW.
+    rdi.W = FinalizeUCW(rdi.w_sum, F_mag, ucw_clampMax);
 
     if (spmis_mcap > 0u) rdi.M = min(rdi.M, spmis_mcap);
 

@@ -260,11 +260,6 @@ private:
     void CreateAndUploadLutArray(const std::vector<std::vector<float>>& data,
                                 ComPtr<ID3D12Resource>& target, const std::wstring& name);
 
-    //paired spatial reuse textures (Lin et al. 2026)
-    ComPtr<ID3D12Resource> m_reuseTexture[3];
-    std::vector<ComPtr<ID3D12Resource>> m_reuseTextureUploadHeaps;
-    void InitReuseTextures();
-
     //star / Milky Way skybox (NASA SVS 4851 Deep Star Maps EXR), sampled in
     //EvaluateStars via the celestial-frame ray direction. Loaded from
     //SKY_STARS_EXR_PATH at startup. Upload heap is retained until the post

@@ -168,15 +168,26 @@ struct ReSTIRSettings {
     float reuseRoughnessMin = 0.1f;
     float reuseRoughnessMax = 0.3f;
 
-    //neighbor rejection thresholds for Pass_spat_gi_select_v8
+    //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rejNormalDot     = 0.36f;
     float rejDistance      = 0.10f;
 
-    //SPMIS spatial reuse. A/B alternative to the texture-paired path: when on, the
-    //select/shift/_v8_1 passes no-op and the Pass_spmis_* pipeline (reset/count/
-    //offsets/sort/reuse) owns spatial reuse (flag bit 0x10), with raygen inserting
-    //each pixel's hash.
-    bool  useSPMIS          = true;
+    //Temporal-reuse reprojected-pixel geometry rejection + Jacobian clamp (cbuffer
+    //slots 13-15, read by Pass_temp_gi_v8). Rejecting a reprojection onto a
+    //different surface (a corner face / depth discontinuity) is what prevents the
+    //grazing-cos reconnection Jacobian blow-up; the clamp bounds whatever remains.
+    float tempNormalSimCos = 0.5f;   // reprojected normal cone (cos); -1 = accept all
+    float tempPlaneDist    = 0.10f;  // reprojected plane-distance reject, FRACTION of camera distance
+    float tempJacClamp     = 1.0f;   // reconnection-Jacobian clamp band T -> ratio bounded to [1/T, T]
+    //Reuse-output UCW (reservoir W) clamp (temporal + SPMIS). W = w_sum/p_hat is
+    //unbounded; a tiny p_hat near a grazing/occluded surface spikes it and the spike
+    //feeds back through reuse into a diverging firefly. Clamp bounds it. <=0 disables.
+    float ucwClampMax      = 10000.0f;
+
+    //SPMIS spatial reuse — the spatial-reuse implementation (the old texture-paired
+    //select/shift/_v8_1 path was removed). Enabled by enableSpatGI via flag bit 0x10;
+    //the Pass_spmis_* pipeline (reset/count/offsets/sort/select/shift/merge) owns
+    //spatial reuse, with raygen inserting each pixel's hash.
     int   spmisReuseN       = 3;     // Ntilde: non-canonical reuse draws
     int   spmisRisN         = 8;     // inner-RIS candidate count per draw
     int   spmisMcap         = 20;    // output confidence M cap (0 disables)
@@ -193,8 +204,8 @@ struct ReSTIRSettings {
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
-             | ((enableSpatGI && useSPMIS) ? 0x10u : 0u)
-             | ((enableSpatGI && useSPMIS && spmisConfidenceAdjust) ? 0x2000u : 0u)
+             | (enableSpatGI ? 0x10u : 0u)
+             | ((enableSpatGI && spmisConfidenceAdjust) ? 0x2000u : 0u)
              | (disableCorrReduction ? 0x40u : 0u)
              | (disableX1Direct ? 0x80u : 0u)
              | (noSpecReproj ? 0x200u : 0u)

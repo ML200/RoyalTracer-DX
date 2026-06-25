@@ -79,6 +79,22 @@ inline float GetPHat(float3 v) {
     return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z;
 }
 
+//Finalize the unbiased contribution weight W = w_sum / p_hat(selected), BOUNDED.
+//W is ~1/path-pdf so it can be legitimately large, but when the selected sample's
+//target luminance p_hat is small at this pixel (grazing / occluded / dim — i.e.
+//close to a surface) while w_sum is not, W spikes. In temporal/spatial reuse that
+//spike feeds back every frame (w_n ~ neighbour.W), growing W without bound into a
+//diverging firefly. Clamp to wMax to break the feedback (wMax editor-tunable;
+//<= 0 disables). Raygen's single-frame UCW stays unclamped so small/far direct
+//lights aren't darkened.
+inline float FinalizeUCW(float w_sum, float p_hat, float wMax)
+{
+    if (!(p_hat > EPSILON) || !(w_sum > 0.0f)) return 0.0f;
+    const float W = w_sum / p_hat;
+    if (isnan(W) || isinf(W) || W < 0.0f) return 0.0f;
+    return (wMax > 0.0f) ? min(W, wMax) : W;
+}
+
 //====================================
 //ETA + PR + PM PACK (one 32-bit word)
 //====================================
@@ -324,26 +340,23 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
-//Clamp band for the reconnection-shift Jacobian used by temporal + texture-space
-//spatial reuse. ~20 matches the SPMIS jacobian reject band; tunable (lower =
-//stronger firefly suppression, more bias).
-#define JACOBIAN_CLAMP_T 20.0f
-
-inline float JacobianRatio(float Jn, float Jc)
+//Reconnection-shift Jacobian ratio for temporal reuse, CLAMPED (not rejected) to
+//[1/T, T]. Near a grazing corner the reconnection cos -> 0 makes ComputeJc tiny
+//and Jn/Jc blows up; the clamp bounds it so the resampling weight can't spike into
+//fireflies. T is editor-tunable (ReSTIRSettings::tempJacClamp): lower = stronger
+//suppression / more bias. (SPMIS uses JacobianRatioRej, which rejects outliers
+//instead, because it draws from a large pool; the small temporal candidate set
+//prefers a bounded sample over a dropped one.)
+inline float JacobianRatio(float Jn, float Jc, float T)
 {
-    //Jc comes from ComputeJc, which FLOORS |cos|/dist^2 to EPSILON, and Jn is
-    //floored too -- so at the floor the correct ratio is EPSILON/EPSILON = 1, NOT
-    //0. We must NOT reject there (that silently killed long-range temporal reuse).
-    //But this function is shared with NON-IDENTITY spatial reuse, where Jn/Jc
-    //genuinely diverges and, left unbounded, spikes the resampling weight into
-    //FIREFLIES. So: guard div-by-zero / non-finite, then CLAMP (not reject) to
-    //[1/T, T]. SPMIS uses JacobianRatioRej (rejects) instead because it draws from
-    //a large pool and can afford to drop outliers; the small temporal/spatial
-    //candidate sets prefer a bounded sample over a dropped one.
+    //Jc/Jn are both floored to EPSILON in ComputeJc, so at the floor the correct
+    //ratio is EPSILON/EPSILON = 1, NOT 0 — we must NOT reject there (that silently
+    //killed long-range temporal reuse). Guard div-by-zero / non-finite, then clamp.
     if (Jc <= 0.0f) return 0.0f;
     const float j = Jn / Jc;
     if (isnan(j) || isinf(j)) return 0.0f;
-    return clamp(j, 1.0f / JACOBIAN_CLAMP_T, JACOBIAN_CLAMP_T);
+    const float t = max(T, 1.0f);
+    return clamp(j, 1.0f / t, t);
 }
 
 //Reconnection-shift Jacobian WITH outlier rejection (reject band ~[1/T, T], T~15):

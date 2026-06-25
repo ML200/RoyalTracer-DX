@@ -99,13 +99,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
         output_primary  = output_primary  * cloudTr + cloudL;
         output_indirect = output_indirect * cloudTr + cloudL;
         sunDirect      *= cloudTr;
-
-        gScratchPing[uint3(DTid.xy, 1)] = float4(output_primary,  0);
-        gScratchPing[uint3(DTid.xy, 2)] = float4(output_indirect, 0);
-        gScratchPing[uint3(DTid.xy, 3)] = float4(sunDirect,       0);
     }
 
     float3 accumulation = output_primary + output_indirect + sunDirect;
+
+    //Composited radiance -> the postprocess "noisy" debug slice (slot 1), written
+    //pre-debug-override so it stays the true radiance. Debug-only view (gated).
+#if SHADING_DEBUG_SLICES
+    gScratchPing[uint3(DTid.xy, 1)] = float4(accumulation, 0);
+#endif
 
     //==================== TEMP DEBUG: nadir-ring localisation, mode 2 ===========
     //False-colours the path-traced mesh radiance so we can see which term the
@@ -121,6 +123,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     #endif
     //============================================================================
 
+    //"gt" running-average reference (gPermanentData -> postprocess gOutput 2).
+    //Debug-only comparison view; gated to drop its full-res FP32 read+write.
+#if SHADING_DEBUG_SLICES
     bool cameraChanged = false;
     [unroll]
     for (uint i = 0; i < 4; ++i) {
@@ -148,6 +153,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     }
 
     gPermanentData[DTid.xy] = float4(newAvg, newSamples);
+#endif
 
     float2 dims = float2(IMG_W, IMG_H);
     uint   pixelIdx  = MapPixelID(dims, DTid.xy);
@@ -307,7 +313,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                                     ? ClampEmitterLum(accumulation)
                                     : accumulation;
         g_dlssInput[DTid.xy] = float4(DlssReinhard(emitterRadiance), 1.0f);
+#if SHADING_DEBUG_SLICES
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
+#endif
     }
     else{
         //====================================
@@ -375,7 +383,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssRoughness[DTid.xy]      = 1.0f;
             g_dlssSpecHitDist[DTid.xy]    = 0.0f;
             g_dlssSpecMVec[DTid.xy]       = float2(0.0f, 0.0f);
+#if SHADING_DEBUG_SLICES
             gOutput[uint3(DTid.xy, 5)]    = float4(1.0f, 1.0f, 1.0f, 1.0f);
+#endif
 
             //Use the mesh's instID for the disocclusion check, NOT the sky
             //sentinel. g_sample_last still stores raygen's mesh instID
@@ -403,7 +413,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
             g_dlssRoughness[DTid.xy] = sv.Pr;
             //debug mirror of diffuse albedo passed to DLSS RR
+#if SHADING_DEBUG_SLICES
             gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
+#endif
 
             float2 curPix = DTid.xy;
             //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
@@ -427,8 +439,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
             g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
-            Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
-            g_dlssSpecHitDist[DTid.xy] = length(rdi.x2 - sv.x);
+            //specHitDist needs only the reservoir's reconnection vertex x2 — read
+            //that one plane (+ objID) instead of the whole reservoir struct (~56B -> 20B).
+            const uint   rsvObjID = g_Reservoirs_current.Load(addr_objid(pixelIdx));
+            const float3 rsvX2    = load_x2(g_Reservoirs_current, pixelIdx, rsvObjID);
+            g_dlssSpecHitDist[DTid.xy] = length(rsvX2 - sv.x);
 
             //specular MV from raygen's perfect reflection probe in scratch slice 4
             float specularity = Luma(specularAlbedo);

@@ -10,16 +10,17 @@
 #define MIN_NORMAL_INT 0.33f
 //BSDF delta lobe gate, low so VNDF sampling stays unbiased
 #define SMOOTH_SPECULAR_THRESHOLD 0.06f
-//NRC cache gate, well above SH deg-4 representable lobe width
-#define NRC_CACHE_ROUGHNESS_MIN 0.25f
-//Training-emission gate, deliberately stricter than the inference gate so the
-//cache is taught only on safely diffuse-dominated samples. Low-roughness
-//dielectrics produce L_s/(alpha+beta) targets amplified ~25x by the small
-//Fresnel reflSum, which clamp to kTargetMax and burn in as phantom
-//reflections that never fade. Inference still queries down to 0.25 so the
-//cache covers slightly glossier surfaces with the cleanly-trained predictor.
-#define NRC_TRAIN_ROUGHNESS_MIN 0.4f
 #define kInvalidPixel -1u
+
+//Postprocess debug comparison slices: "noisy" (gOutput 0, scratch slot 1),
+//"gt" running-average reference (gOutput 2, gPermanentData), "albedo" (gOutput 5).
+//The shipped image is the DLSS "clean" slice (gOutput 1); these are dev-only.
+//1 (default) = write them. Set to 0 (e.g. -D SHADING_DEBUG_SLICES=0 in a shipping
+//build) to drop their full-res FP32 scratch + gPermanentData traffic in
+//Pass_shading / Pass_postprocess — a large share of shading's VRAM throughput.
+#ifndef SHADING_DEBUG_SLICES
+#define SHADING_DEBUG_SLICES 1
+#endif
 
 //====================================
 //RAY TMAX
