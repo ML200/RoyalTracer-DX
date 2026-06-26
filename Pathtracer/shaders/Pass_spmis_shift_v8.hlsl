@@ -17,7 +17,7 @@
 //latency hiding for no real occupancy gain. Math mirrors the monolithic Pass_spmis_reuse.
 //Layout: see HashGridHash_v8.hlsli. Export name MUST equal the filename base.
 
-static const float SAMPLE_PT_ROUGHNESS_MIN = 0.1f;   // min roughness of a reconnection sample point
+#define SAMPLE_PT_ROUGHNESS_MIN rs_reconnectRoughnessMin   // editor-settable reconnection-vertex (x2) roughness reject (default 0.15)
 
 [shader("raygeneration")]
 void Pass_spmis_shift_v8()

@@ -43,9 +43,14 @@ cbuffer Push : register(b1)
     //feed back into a diverging firefly. <= 0 disables. Read by Pass_temp_gi /
     //Pass_spmis_{merge,reuse}.
     float ucw_clampMax;
-    //remaining retired texture-spatial slots (17-21), scalar padding so the SPMIS
-    //(32-37) and path-trace (38-41) constants keep their register slots.
-    uint  _ts_retired4; uint _ts_retired5;
+    //slot 17: reconnection-vertex (x2) roughness reject threshold. A temporal or
+    //spatial neighbour whose GI reconnection vertex roughness is below this is
+    //dropped from reuse (near-delta BSDF at x2 -> reconnection shift invalid).
+    //Read by Pass_temp_gi + Pass_spmis_{reuse,shift}. Repurposed from retired
+    //tex-spatial slot 17; slots 18-21 stay padding so SPMIS (32-37) and path-trace
+    //(38-41) constants keep their register slots.
+    float rs_reconnectRoughnessMin;
+    uint  _ts_retired5;
     uint  _ts_retired6; uint _ts_retired7; uint _ts_retired8;
     //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rs_rejNormalDot;

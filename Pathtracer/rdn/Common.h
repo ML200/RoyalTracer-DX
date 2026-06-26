@@ -167,6 +167,11 @@ struct ReSTIRSettings {
     bool  disableFinalVis      = false; // sub-toggle of disableReuseVis: also skip the deferred resolve shadow ray -> fully unshadowed GI (diagnostic) (flag 0x1000)
     float reuseRoughnessMin = 0.1f;
     float reuseRoughnessMax = 0.3f;
+    //Reconnection-vertex (x2) specularity reject. A temporal or spatial neighbour
+    //whose GI reconnection vertex roughness is below this is dropped from reuse
+    //outright (a near-delta BSDF at x2 makes the reconnection shift invalid; down-
+    //weighting it would bias the estimator — only rejection stays unbiased).
+    float reconnectRoughnessMin = 0.15f;
 
     //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rejNormalDot     = 0.36f;

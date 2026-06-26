@@ -59,7 +59,17 @@ Texture2DArray<float4> g_cloudSTBN : register(t41);
 #define CLOUD_SUNOD_MAP_SLICES        6
 #define CLOUD_SUNOD_FOOTPRINT_HALF_KM 200.0f
 #define CLOUD_SUNOD_BAKE_STEP_KM      0.7f
-#define CLOUD_SUNOD_BAKE_STEPS        96
+#define CLOUD_SUNOD_BAKE_STEPS        64
+// Distance-adaptive bake stride (2026-06-26, kills the low-sun step-count
+// blow-up). The column holds the fine BAKE_STEP_KM for the near band — where
+// high-sun columns live and exit via the shell-top early-out, so their baked OD
+// is bit-for-bit unchanged — then grows the stride with distance once
+// t*STEP_DIST_FRAC exceeds the fine step (beyond ~BAKE_STEP_KM/STEP_DIST_FRAC ≈
+// 12 km), capped at MAX_STEP_KM. A grazing dusk/dawn column then reaches ~180 km
+// in 64 steps (vs only 67 km in the old 96 uniform steps) while sampling the
+// cloud field far fewer times along the long limb.
+#define CLOUD_SUNOD_BAKE_STEP_DIST_FRAC 0.06f
+#define CLOUD_SUNOD_BAKE_MAX_STEP_KM    8.0f
 // Outer fraction of the footprint where the baked OD cross-fades into the
 // analytic march, so a camera high enough to see past the footprint edge
 // doesn't show a hard shadow ring.
@@ -952,8 +962,8 @@ float CloudDensityForShadow(float3 P, float timeSec, bool withBillow)
     float3 q    = CloudNoiseCoord(P, timeSec);
     float  base = CloudPerlinWorley(q * CLOUD_BASE_FREQ);
 
-    // Plain-layer height ramp (no effTop/baseShift taps) shared by the
-    // lobe perturbation and the billow carve below.
+    // Plain-layer height ramp (no effTop/baseShift taps) used by the lobe
+    // perturbation below.
     float hApx = saturate((alt - CLOUD_LAYER_BOT_KM)
                / max(1e-3f, CLOUD_LAYER_TOP_KM - CLOUD_LAYER_BOT_KM));
 
@@ -977,39 +987,19 @@ float CloudDensityForShadow(float3 P, float timeSec, bool withBillow)
     float d = coverageModulation(coverageHull, base, CLOUD_COVMOD_FILTER_WIDTH);
     if (d <= 0.001f) return 0.0f;
 
-    if (withBillow && CLOUD_BILLOW_AMOUNT > 0.001f)
-    {
-        // Mirrors the view-march carve at shadow resolution: unwarped q
-        // (precedent: the shadow base is unwarped too), seams only — the
-        // bulge doesn't move shadows at this resolution.
-        float amt  = CLOUD_BILLOW_AMOUNT
-                   * smoothstep(CLOUD_BILLOW_H_LO, CLOUD_BILLOW_H_HI, hApx);
-        if (amt > 0.01f)
-        {
-            float bil      = CloudWorley(q * CLOUD_BILLOW_FREQ
-                                         + float3(31.7f, 11.9f, 23.1f));
-            float edgeMask = (1.0f - d) * (1.0f - d);
-            d = saturate(d - amt * pow(bil, CLOUD_BILLOW_SHARP) * edgeMask);
-        }
-    }
-
-    // HF detail — mirror the view march's SIGNED cauliflower displacement (G
-    // channel, height-flipped via hApx) so self-shadow OD tracks the lit
-    // surface. The shadow table samples are coarse (>=0.2 km) and can't resolve
-    // the ~140 m HF, so this contributes mainly its (near-zero-mean) bias —
-    // keeping the self-shadow anchored to the resolvable macro+billow shape
-    // rather than fabricating crease/bulge OD the view march can't see.
-    float hfAmount = CLOUD_HF_AMOUNT * 0.6f;
-    if (hfAmount > 0.001f)
-    {
-        float hf      = CloudWorleyFBM(q * CLOUD_HF_FREQ, 0u);
-        float hfC     = lerp(hf, 1.0f - hf, saturate(hApx * 1.3f));
-        float signedD = hfC - CLOUD_HF_BIAS;
-        float hRamp   = lerp(0.6f, 1.0f, saturate(hApx * 1.5f));
-        float shell   = saturate(4.0f * d * (1.0f - d));
-        d = saturate(d + hfAmount * hRamp * signedD * shell);
-    }
-
+    // Billow (~1.5 km seam carve) and HF (~140 m cauliflower) octaves dropped
+    // from the self-shadow density 2026-06-26 (perf). Both sit at/below the
+    // sample rate of every consumer of this function — 0.7 km in the per-frame
+    // cloud->sun OD bake (CloudSunODBakeColumn), >=0.2 km in the analytic
+    // CloudOpticalDepthToSun fallback — so each contributed mainly its
+    // near-zero-mean bias while costing an extra HIGH-FREQUENCY g_cloudNoise tap
+    // with no inter-thread/inter-step cache locality. Those two taps were the
+    // dominant L1/L2 bandwidth cost stalling mainCloudSunOD (and the per-step
+    // haze visibility taps). The macro shape + lobe (kept above) carry all the
+    // self-shadow structure these resolutions can actually represent; both the
+    // bake and the analytic fallback call this same function, so they stay
+    // consistent across the footprint-edge cross-fade. Re-add as a downsampled
+    // (mip) variant if a shadow regression ever appears.
     return d;
 }
 
@@ -1309,21 +1299,30 @@ float CloudSunODBakeColumn(float3 Q, float3 L)
     const float shellTopR = ATMOS_BOTTOM_RADIUS + CLOUD_LAYER_TOP_KM
                           + CLOUD_TOP_VARIATION_KM + CLOUD_TERRAIN_SHIFT_BOUND_KM;
     const float TAU_EARLYOUT = 64.0f;
-    const float stepKm = CLOUD_SUNOD_BAKE_STEP_KM;
+    const float fineKm = CLOUD_SUNOD_BAKE_STEP_KM;
 
     float tau = 0.0f;
-    float t   = 0.5f * stepKm;
+    float t   = 0.0f;   // near edge of the current segment
     [loop]
     for (int i = 0; i < CLOUD_SUNOD_BAKE_STEPS; ++i)
     {
-        float3 Qi = Q + L * t;
+        // Distance-adaptive segment: fine near the sample (so high-sun columns,
+        // which exit within the near band, bake bit-for-bit as before), growing
+        // with distance so the low-sun grazing limb is integrated in far fewer
+        // steps. Sample the segment midpoint; weight tau by the segment length.
+        float step = min(max(fineKm, t * CLOUD_SUNOD_BAKE_STEP_DIST_FRAC),
+                         CLOUD_SUNOD_BAKE_MAX_STEP_KM);
+        float tMid = t + 0.5f * step;
+
+        float3 Qi = Q + L * tMid;
         float  rQ = length(Qi);
-        // Same early-out as the runtime march (line ~1087): once above the
-        // shell and moving radially outward, the rest is guaranteed empty.
+        // Same early-out as the runtime march: once above the shell and moving
+        // radially outward, the rest of the column is guaranteed empty.
         if (rQ >= shellTopR && dot(Qi, L) > 0.0f) break;
-        tau += CloudDensityForShadow(Qi, walltime, true) * CLOUD_EXTINCTION * stepKm;
+
+        tau += CloudDensityForShadow(Qi, walltime, true) * CLOUD_EXTINCTION * step;
         if (tau >= TAU_EARLYOUT) { tau = TAU_EARLYOUT; break; }
-        t += stepKm;
+        t += step;
     }
     return tau;   // physical OD, pre-mult, no far-side
 }

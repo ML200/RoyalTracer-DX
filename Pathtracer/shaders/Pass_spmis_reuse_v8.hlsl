@@ -25,7 +25,7 @@
 static const float SP_SEARCH_R0      = 20.0f;
 static const float SP_SEARCH_GROW    = 1.25f;
 static const uint  SP_SEARCH_ITERS   = 12u;
-static const float SAMPLE_PT_ROUGHNESS_MIN = 0.1f;   // min roughness of a reconnection sample point
+#define SAMPLE_PT_ROUGHNESS_MIN rs_reconnectRoughnessMin   // editor-settable reconnection-vertex (x2) roughness reject (default 0.15)
 
 //neighbor-similarity heuristic used in the cell search. Normal cone only here
 //(plane-distance needs a scene-scale threshold; the hash cell already groups by screen

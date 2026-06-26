@@ -649,6 +649,10 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     if (ImGui::CollapsingHeader("Roughness Reuse")) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
+        ImGui::SliderFloat("Reconnect x2 min##Rough", &rs.reconnectRoughnessMin, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("Reject any temporal/spatial neighbour whose GI reconnection "
+                              "vertex (x2) roughness is below this — a near-specular x2 can't be "
+                              "reconnection-shifted without bias. Sky / light (NEE) samples are exempt.");
     }
     ImGui::End();
 }

@@ -91,6 +91,17 @@ void Pass_temp_gi_v8()
         return;
     }
 
+    //Reconnection-vertex specularity reject (UNBIASED fix, mirrors the SPMIS
+    //spatial gate). A near-specular reconnection vertex (x2) has a ~delta BSDF,
+    //so connecting a different x1 through it is invalid — drop the neighbour
+    //outright rather than down-weighting it (scaling its mcap would bias the
+    //estimator; only rejection stays unbiased). Sentinel x2 (NEE light / env-miss
+    //sky) carries no surface BSDF and is always reconnectable.
+    if (!IsSentinelMatID(rdi_r.matID) && rdi_r.Pr < rs_reconnectRoughnessMin)
+    {
+        return;
+    }
+
     //canonical reservoir - loaded only now that a merge will actually run
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
@@ -211,9 +222,21 @@ void Pass_temp_gi_v8()
                            ? (float)rs_tempMcap
                            : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
 
-    const uint mcapU       = max(1u, rs_tempMcap);
-    const uint effMcap     = (uint)clamp(round(effMcapF), 1.0f, (float)mcapU);
-    const uint dynTempMcap = effMcap;   // roughness scaling removed for the minimal rig
+    const uint mcapU   = max(1u, rs_tempMcap);
+    const uint effMcap = (uint)clamp(round(effMcapF), 1.0f, (float)mcapU);
+
+    //Roughness-dependent neighbour mcap. The reduction targets the TEMPORAL LAG a
+    //tight specular lobe shows on a glossy CONDUCTOR — it has no diffuse term to
+    //anchor the history, so a high mcap smears the moving reflection. A DIELECTRIC
+    //keeps a diffuse GI response at any roughness, so its reuse must NOT be
+    //throttled: scale the reduction by metalness (Pm=0 → no reduction at all).
+    //Keyed on the PRIMARY surface roughness only — the reconnection vertex (x2) is
+    //handled by the specularity REJECT above, not by mcap scaling. Floor stays at 1:
+    //a perfect mirror needs no gating (any non-matching candidate already has
+    //p_hat=0 and contributes zero weight), so there's nothing to suppress.
+    const float roughScale    = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, myPr);
+    const float tempMcapScale = lerp(1.0f, roughScale, myPm);   // dielectrics exempt
+    const uint  dynTempMcap   = (uint)clamp(round(effMcap * tempMcapScale), 1.0f, (float)mcapU);
 
     const uint M_c = clamp(min(effMcap,     rdi.M),   1u, mcapU);
     const uint M_n = clamp(min(dynTempMcap, rdi_r.M), 1u, mcapU);

@@ -1771,6 +1771,12 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
+    // Reconnection-vertex (x2) roughness reject threshold (slot 17; read by
+    // Pass_temp_gi + Pass_spmis_{reuse,shift}). Clamp to [0,1].
+    {
+        const float rrm = std::clamp(rs.reconnectRoughnessMin, 0.0f, 1.0f);
+        memcpy(&rsConsts[17], &rrm, 4);
+    }
 
     // Temporal-reuse geometry rejection + Jacobian clamp (slots 13-15; read by
     // Pass_temp_gi_v8). Reuses the retired texture-spatial slots; 16-21 stay 0.
