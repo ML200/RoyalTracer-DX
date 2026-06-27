@@ -24,6 +24,11 @@ static const uint BYTES_SD = 36u;
 //flag bits in the offset-4 word
 static const uint SD_FLAG_EMITTER  = 1u;
 static const uint SD_FLAG_BACKFACE = 2u;
+//set by Pass_camera on a terminal primary (miss / degenerate / direct emitter
+//with a valid lightID) so Pass_raygen skips the bounce loop for that pixel. This
+//is DISTINCT from SD_FLAG_EMITTER: an emissive surface with NO lightID keeps the
+//emitter flag yet still bounces, so the emitter flag can't gate the bounce pass.
+static const uint SD_FLAG_NOBOUNCE = 4u;
 
 uint pixelBaseAddr_SD(uint pixelIdx)
 {
@@ -75,6 +80,13 @@ void store_flags(RWByteAddressBuffer buf, uint pixelIdx, bool isEmitter, bool ba
     uint f = (isEmitter ? SD_FLAG_EMITTER  : 0u)
            | (backface  ? SD_FLAG_BACKFACE : 0u);
     buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, f);
+}
+
+//raw flags-word store (read-modify-write the bool fields elsewhere). Lets
+//Pass_camera OR in SD_FLAG_NOBOUNCE without re-deriving emitter/backface.
+void store_flagsWord(RWByteAddressBuffer buf, uint pixelIdx, uint flags)
+{
+    buf.Store(pixelBaseAddr_SD(pixelIdx) + 4u, flags);
 }
 
 void store_matID(RWByteAddressBuffer buf, uint pixelIdx, uint matID)

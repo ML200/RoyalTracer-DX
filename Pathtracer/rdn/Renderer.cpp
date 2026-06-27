@@ -31,6 +31,7 @@ Renderer::Renderer(UINT width, UINT height)
     m_passes.Build({
         //L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_spmis_reset_v8.hlsl|cs:8x4",             L"barrier",
+        L"Pass_camera_v8.hlsl|rg",                      L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         //L"cuda:nrc_inference",                          L"barrier",

@@ -1,207 +1,15 @@
 #include "Includes_v8.hlsli"
-
-
-//Per-vertex surface state carried across the bounce loop (loop phi). Bounded
-//fields are half to shrink the carried state.
-struct HitContext {
-    float3 hitPos;
-    float3 hitNormal;
-    uint   matID;
-    uint   instID;
-    bool   backface;
-    half3  hitLocalKd;      //albedo
-    half   hitLocalPr;      //roughness
-    half   hitLocalPm;      //metalness
-    half2  iors;
-    uint   mediumMatID;
-    half3  absorptionTint;
-};
-
-
-//====================================
-//CAMERA RAY (primary-hit extraction)
-//====================================
-//Trace v_1 and write the primary outputs: sky/emitter scratch, the resolved
-//G-buffer downstream passes read, and the specular-MV probe. Returns false
-//(terminal) on degenerate/miss/direct-emitter; else fills ctx with v_1.
-inline bool TraceCameraRay(
-    uint2  pixel,
-    uint   pixelIdx,
-    inout  uint   seed,
-    inout  float3 rayOrigin,
-    inout  float3 rayDir,
-    out    HitContext ctx)
-{
-    ctx = (HitContext)0;
-
-    if (!IsRayValid(rayOrigin, rayDir, 10000.0f))
-        return false;
-
-    //primary: 4-state OMM (full alpha test); bounces force 2-state
-    RayDesc ray;
-    ray.Origin    = rayOrigin;
-    ray.Direction = rayDir;
-    ray.TMin      = 0.00001f;
-    ray.TMax      = RAY_TMAX_PLANET;
-    dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
-
-    //MISS: sun disc only. Pass_clouds_primary writes the full sky (slot 10) +
-    //combined transmittance (slot 11); the shading composite does sun*combinedTr.
-    //EvaluateSunUnattenuated (NOT EvaluateSun): the latter bakes transmittance
-    //the composite already applies, double-attenuating.
-    if (!hitObj.IsHit())
-    {
-        const float3 sun = EvaluateSunUnattenuated(rayDir);
-        float3 skyL1     = (length(sun) > 0.0f) ? sun : float3(0, 0, 0);
-
-        gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
-        gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
-        store_sky(g_sample_current, pixelIdx);
-        return false;
-    }
-
-    //HIT: resolve the surface from instID + primID (closest-hit is a stub).
-    const float  hitT   = hitObj.GetRayTCurrent();
-    const float3 hitPos = rayOrigin + rayDir * hitT;
-    const uint   instID = hitObj.GetInstanceID();   // user InstanceID == instanceProps index
-    const uint    primID   = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
-    const uint    matID    = GetMatIDFast(instID, primID);
-    BuiltInTriangleIntersectionAttributes attr;
-    hitObj.GetAttributes(attr);
-    HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
-    const float3  emission = GetEmissionFast(instID, primID);
-
-    const float  matNi        = LoadNi(matID);
-    const bool   transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
-    const bool   flipIOR      = hinfo.backface && transmissive;
-    const float2 iors         = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
-    const uint   mediumMatID  = flipIOR ? matID : MEDIUM_INVALID;
-
-    float3 hitLocalKd; float hitLocalPr, hitLocalPm;
-    RefetchMaterial(matID, hinfo.uv, hitLocalKd, hitLocalPr, hitLocalPm, 0u);
-
-    const float3 absorptionTint = (mediumMatID != MEDIUM_INVALID)
-        ? CalculateAbsorptionThroughput(LoadTf(mediumMatID), hitT)
-        : float3(1, 1, 1);
-
-    const bool   isEmitter = any(emission > 0.0f);
-
-    //Bake the resolved surface to the G-buffer (no later pass re-reads
-    //per-triangle data or a material texture).
-    store_instID    (g_sample_current, pixelIdx, instID);
-    store_flags     (g_sample_current, pixelIdx, isEmitter, hinfo.backface);
-    store_matID     (g_sample_current, pixelIdx, matID);
-    store_kd        (g_sample_current, pixelIdx, hitLocalKd);
-    store_prpm      (g_sample_current, pixelIdx, hitLocalPr, hitLocalPm);
-    store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
-    store_x1        (g_sample_current, pixelIdx, hitPos, instID);
-    if (isEmitter)
-    {
-        gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
-        gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
-    }
-
-    //Specular-MV probe: virtualPos -> scratch slot 4 (RayQuery scoped here).
-    {
-        const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
-        const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
-
-        bool  committed = false;
-        float reflT     = 0.0f;
-        if (IsRayValid(reflOrigin, reflDir, 10000.0f))
-        {
-            RayDesc reflRay;
-            reflRay.Origin    = reflOrigin;
-            reflRay.Direction = reflDir;
-            reflRay.TMin      = 0.00001f;
-            reflRay.TMax      = RAY_TMAX_PLANET;
-
-            RayQuery<RAY_FLAG_NONE> q;
-            q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, reflRay);
-            uint16_t alphaIter = 0;
-            while (q.Proceed() && alphaIter < uint16_t(128))
-            {
-                ++alphaIter;
-                if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                {
-                    const uint cInstID = q.CandidateInstanceIndex();
-                    const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
-                    const uint cMatID  = GetMatIDFast(cInstID, cPrimID);
-                    if (LoadAlphaThreshold(cMatID) < 1.0f)
-                        q.CommitNonOpaqueTriangleHit();
-                }
-            }
-            if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
-            {
-                committed = true;
-                reflT     = q.CommittedRayT();
-            }
-        }
-
-        if (committed)
-        {
-            const float3 reflPos    = reflOrigin + reflDir * reflT;
-            const float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
-            gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
-        }
-        else
-        {
-            gScratchPing[uint3(pixel, 4)] = float4(0, 0, 0, asfloat(0xFFFFFFFFu));
-        }
-    }
-
-    //direct emitter hit terminates at the camera vertex
-    if (isEmitter && hinfo.lightID != 0xFFFFFFFFu)
-        return false;
-
-    //hand v_1 to the bounce loop (bounded fields -> half)
-    ctx.hitPos         = hitPos;
-    ctx.hitNormal      = hinfo.hitNormal;
-    ctx.matID          = matID;
-    ctx.instID         = instID;
-    ctx.backface       = hinfo.backface;
-    ctx.hitLocalKd     = (half3)hitLocalKd;
-    ctx.hitLocalPr     = (half) hitLocalPr;
-    ctx.hitLocalPm     = (half) hitLocalPm;
-    ctx.iors           = (half2)iors;
-    ctx.mediumMatID    = mediumMatID;
-    ctx.absorptionTint = (half3)absorptionTint;
-
-    return true;
-}
-
-
-//x1 direct sky+sun, pulled OUT of the reservoir to scratch slot 3. Collapses a
-//lone depth==1 candidate to F*W (W = wi/GetPHat(F)). Guards mirror AddInitialCandidate.
-inline float3 DirectContribution(float wi, float3 F_contrib)
-{
-    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib)))
-        return float3(0, 0, 0);
-    const float ph = GetPHat(F_contrib);
-    if (ph <= 1e-20f)
-        return float3(0, 0, 0);
-    return F_contrib * (wi / ph);
-}
-
-
-//Finalize the pixel reservoir: W = wsum / GetPHat(F) (0 on degenerate/NaN), M=1
-//(the N samples improve sample quality, not confidence — the 1/N is in wsum, so
-//w_sum = W*M*p_hat holds at M=1). Invalidate on W==0.
-inline void FinalizeReservoir(uint pixelIdx, float wsum)
-{
-    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
-    const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
-    float W = (F_mag > 1e-6f && wsum > 0.0f) ? (wsum / F_mag) : 0.0f;
-    if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;
-    store_W(g_Reservoirs_current, pixelIdx, W);
-    store_M(g_Reservoirs_current, pixelIdx, 1u);
-    if (W == 0.0f)
-        InvalidateReservoir_ShadingNormal(g_Reservoirs_current, pixelIdx);
-}
+#include "Raygen_Common_v8.hlsli"
 
 
 //One reservoir: emissive-tri DI (d==1), first-bounce DI (d==2), GI (d>=3).
 //d==1 direct sky+sun -> scratch slot 3; cold state in g_pathStateBuffer.
+//
+//The camera ray now lives in Pass_camera_v8: it wrote the primary G-buffer +
+//scratch (slots 1/2/4), the SPMIS hash cell, the primaryExtra (iors/medium/
+//absorption) HOT2 record, and finalized terminal pixels (miss / degenerate /
+//direct emitter, all flagged SD_FLAG_NOBOUNCE). This pass rebuilds the primary
+//ctx from that G-buffer per sample and runs the initial-sample + bounce loops.
 [shader("raygeneration")]
 void Pass_raygen_v8()
 {
@@ -209,61 +17,37 @@ void Pass_raygen_v8()
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //slot 1 primary emitter/sky, slot 3 x1 direct
-    gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
-    gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
+    //terminal pixels (miss / degenerate / direct emitter) were finalized by
+    //Pass_camera and flagged NOBOUNCE — skip them, reservoir already invalid.
+    if (load_flagsWord(g_sample_current, pixelIdx) & SD_FLAG_NOBOUNCE)
+        return;
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
     float wsum = 0.0f;
 
-    uint   seed = initRandomData(pixel, uint2(8, 4), time, 1u);
-    float3 rayOrigin;
-    float3 rayDir;
-    InitCameraRayDoF(pixel, imgSize, seed, rayOrigin, rayDir);
-
-    //sky/sun sampler reads camera altitude here; view space is floating-origin
-    //shifted, so add sceneOriginWorld back for absolute.
+    //sky/sun observer at the camera altitude (absolute = view + sceneOrigin).
     SetSkyObserver(InitOrigin() + sceneOriginWorld);
-    uint   throughputPk = PackRGB9E5(float3(1, 1, 1));
-    uint   prevNormalPk = PackNormal(float3(0, 1, 0));
-    float  prev_pdf     = 1.0f;
-    float  pdf_product  = 1.0f;
 
-    //tpost in scratch so its 12B don't cross the bounce-loop reorder.
-    store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
-
-    //CAMERA RAY: trace v_1; terminal (miss/degenerate/direct emitter) -> exit.
-    HitContext ctx;
-    if (!TraceCameraRay(pixel, pixelIdx, seed, rayOrigin, rayDir, ctx))
-    {
-        FinalizeReservoir(pixelIdx, wsum);   // wsum==0: W=0, reservoir invalidated
-        return;
-    }
-
-    //====================================
-    //SPMIS HASH INSERTION
-    //====================================
-    //Insert this pixel into the SPMIS hash grid for the spatial-reuse pass. The
-    //screen-tile origin is jittered per frame (from `time`) so cell boundaries
-    //average out under accumulation. No-op when SPMIS is off.
-    if (SPMIS_SPATIAL_MODE)
-    {
-        const uint ts   = max(spmis_tileSize, 1u);
-        const uint jh   = SP_h2_xxhash32(asuint(time));
-        const int2 tjit = int2((int)(jh % ts), (int)(SP_h2_xxhash32(jh) % ts));
-
-        uint sp_checksum;
-        const uint sp_hash = SP_screen_hash((int)pixel.x + tjit.x, (int)pixel.y + tjit.y, ts,
-                                            ctx.hitPos, ctx.hitNormal, sp_checksum);
-        g_spmisBuffer.Store(SP_A(SP_HASH, pixelIdx),
-                            SP_insert(sp_hash % SP_NUMCELLS(), sp_checksum, SP_NUMCELLS()));
-    }
-
-    uint   rayDirPk   = PackNormal(rayDir);
-    //directAtX1 in scratch (HOT1[12..15], RGB9E5) so it doesn't cross the
-    //reorder; init once here, read back at finalize.
+    //directAtX1 in scratch (HOT1[12..15], RGB9E5); summed across the N samples,
+    // /N at finalize.
     store_rg_directX1(g_pathStateBuffer, pixelIdx, float3(0, 0, 0));
+
+    //Primary incoming (view) direction recovered from the camera origin + primary
+    //hit. DoF lens jitter is sub-pixel and dropped here, matching the temporal
+    //pass's NoV convention. Seeds the depth==1 back-edge carrier (rayDirPk0).
+    const uint   primInst0 = load_instID(g_sample_current, pixelIdx);
+    const float3 primPos0  = load_x1_with_instID(g_sample_current, pixelIdx, primInst0);
+    const uint   rayDirPk0 = PackNormal(normalize(primPos0 - InitOrigin()));
+
+    HitContext ctx;
+    uint   seed;
+    uint   throughputPk;
+    uint   prevNormalPk;
+    float  prev_pdf;
+    float  pdf_product;
+    uint   rayDirPk;
+    float3 rayOrigin;
 
     //====================================
     //INITIAL-SAMPLE LOOP (pt_initialSamples)
@@ -273,10 +57,6 @@ void Pass_raygen_v8()
     //per-sample from the G-buffer + HOT2 extras rather than kept live across the
     //inner traces (that halves the continuation live-state). Only per-path
     //carriers reset per sample.
-    store_rg_primaryExtra(g_pathStateBuffer, pixelIdx,
-                          (float2)ctx.iors, ctx.mediumMatID, (float3)ctx.absorptionTint);
-    const uint rayDirPk0 = rayDirPk;
-
     [loop]
     for (uint s = 0u; s < pt_initialSamples; ++s)
     {
@@ -299,9 +79,10 @@ void Pass_raygen_v8()
         ctx.mediumMatID     = medium_;
         ctx.absorptionTint  = (half3)absorb_;
 
-        //per-sample carrier reset (s==0 keeps the legacy seed/state)
-        if (s > 0u)
-            seed = initRandomData(pixel, uint2(8, 4), time, s + 1u);
+        //per-sample carrier reset. seed is re-init every sample now that the
+        //camera ray lives in Pass_camera (s==0 no longer inherits a post-camera
+        //seed); the depth==1 back-edge starts from the recovered view dir.
+        seed = initRandomData(pixel, uint2(8, 4), time, s + 1u);
         throughputPk = PackRGB9E5(float3(1, 1, 1));
         prevNormalPk = PackNormal(float3(0, 1, 0));
         prev_pdf     = 1.0f;
@@ -505,7 +286,7 @@ void Pass_raygen_v8()
         //touch the tpost update.
         if (depth >= (int)pt_rrStartDepth)
         {
-            const float survivalProb = max(min(1.0f, Luma(throughput)), 0.1f);
+            const float survivalProb = max(min(1.0f, Luma(throughput)), 0.05f);
             if (RandomFloatSingle(seed) >= survivalProb) break;
             const float rrBoost = 1.0f / survivalProb;
             throughput  *= rrBoost;
@@ -672,7 +453,6 @@ void Pass_raygen_v8()
     //FINALIZE
     //====================================
     //x1 direct sky+sun -> scratch slot 3 (mean of the N single-sample estimates).
-    //Camera-terminal early return skips this, leaving slot 3 = 0.
     const float3 directAtX1    = load_rg_directX1(g_pathStateBuffer, pixelIdx);
     const float3 directAtX1Avg = directAtX1 / max(1.0f, (float)pt_initialSamples);
     gScratchPing[uint3(pixel, 3)] = float4(X1_DIRECT_OFF ? float3(0, 0, 0) : directAtX1Avg, 0);

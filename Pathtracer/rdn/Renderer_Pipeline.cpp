@@ -501,9 +501,10 @@ void Renderer::CreateRaytracingPipeline() {
     m_csPSOs.clear();
     m_callableShaderNames.clear();
     uint32_t nextCs = 0, rgSlot = 0;
-    //export name of the first raygen pass — drives the stack-size query below
-    //so the pass list can be swapped (e.g. to a debug pass) without a hardcode.
-    std::wstring firstRayGenName;
+    //export names of every raygen pass — the stack-size query below takes the MAX
+    //over all of them (the camera/bounce split means the first pass is no longer
+    //the deepest), so the pass list can be reordered/extended without a hardcode.
+    std::vector<std::wstring> rayGenNames;
 
     for (auto& p : m_passes.Passes()) {
         if (p.stage == Stage::Barrier || p.stage == Stage::LoopStart ||
@@ -593,7 +594,7 @@ void Renderer::CreateRaytracingPipeline() {
         // RayGen
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
-        if (firstRayGenName.empty()) firstRayGenName = base;
+        rayGenNames.push_back(base);
         ComPtr<IDxcBlob> lib = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str());
         pipeline.AddLibrary(lib.Get(), { base.c_str() });
         m_passes.RegisterPassIndex(p.file, rgSlot);
@@ -632,12 +633,14 @@ void Renderer::CreateRaytracingPipeline() {
     m_rtStateObject = pipeline.Generate();
     ThrowIfFailed(m_rtStateObject->QueryInterface(IID_PPV_ARGS(&m_rtStateObjectProps)));
 
-    // Compute pipeline stack size. The raygen export name is taken from the
-    // first raygen pass (not hardcoded) so swapping the pass list — e.g. to the
-    // debug pass — does not break this query.
-    UINT64 rgStack = firstRayGenName.empty()
-        ? 0
-        : m_rtStateObjectProps->GetShaderStackSize(firstRayGenName.c_str());
+    // Compute pipeline stack size. Take the MAX stack over every raygen pass (not
+    // just the first) so the camera/bounce split — where the bounce pass is deeper
+    // than the leading camera pass — can't undersize the shared pipeline stack.
+    UINT64 rgStack = 0;
+    for (const auto& name : rayGenNames) {
+        UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
+        if (sz > rgStack) rgStack = sz;
+    }
     UINT64 maxCallable = 0;
     for (const auto& name : m_callableShaderNames) {
         UINT64 sz = m_rtStateObjectProps->GetShaderStackSize(name.c_str());
