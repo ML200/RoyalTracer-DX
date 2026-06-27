@@ -65,9 +65,13 @@ void main(
     uint count = 0u;
     if (interior)
     {
-        [loop] for (int dy = -(int)WIN_R; dy <= (int)WIN_R; ++dy)
+        //Partial unroll the interior 17x17 LDS scan: lets the compiler fold the constant
+        //2D LDS offsets and pipeline several reads in flight. [unroll(4)] (not full 289x)
+        //keeps code size in check to avoid an occupancy regression. Border path stays
+        //[loop] — its per-tap dynamic bounds tests can't unroll cheaply.
+        [unroll(4)] for (int dy = -(int)WIN_R; dy <= (int)WIN_R; ++dy)
         {
-            [loop] for (int dx = -(int)WIN_R; dx <= (int)WIN_R; ++dx)
+            [unroll(4)] for (int dx = -(int)WIN_R; dx <= (int)WIN_R; ++dx)
             {
                 if (dx == 0 && dy == 0) continue;
                 const uint nV2 = s_V2[cy + dy][cx + dx];

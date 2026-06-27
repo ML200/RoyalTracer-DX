@@ -115,8 +115,14 @@ struct Scene {
     //no barrier). vertexGlobalMapped/indexGlobalMapped point at the buffer base.
     ComPtr<ID3D12Resource> vertexGlobal;
     ComPtr<ID3D12Resource> indexGlobal;
-    uint8_t* vertexGlobalMapped = nullptr;   // persistent map (UPLOAD)
+    uint8_t* vertexGlobalMapped = nullptr;   // persistent map (UPLOAD, terrain path only)
     uint8_t* indexGlobalMapped  = nullptr;
+    //Init-time UPLOAD staging for the no-terrain DEFAULT-heap path: the scene
+    //geometry is built into these then copied to the DEFAULT vertexGlobal/
+    //indexGlobal. Held only until the caller's FlushAndReset runs the copy, then
+    //Reset() to free the system-RAM staging. Null in the terrain (UPLOAD) path.
+    ComPtr<ID3D12Resource> vertexGlobalUpload;
+    ComPtr<ID3D12Resource> indexGlobalUpload;
     UINT totalVertexCount = 0;                // scene vertices (terrain region starts here)
     UINT totalIndexCount  = 0;                // scene indices
 

@@ -80,8 +80,12 @@ void Pass_spmis_shift_v8()
         float ph = GetPHat(cr);
         if (rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS && rdi.Pr < SAMPLE_PT_ROUGHNESS_MIN)
             ph = 0.0f;
+        //A rejected Jacobian zeroes tf regardless of visibility, so fold it in BEFORE the
+        //shadow ray and skip the IsVisible trace when jr_c==0 (mirrors the non-canonical
+        //loop's shift_jac<=0 early-out below). Identical result, one fewer ray on reject.
+        const float jr_c = JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
         //shadowed resample: visibility of the centre's sample from the partner pixel.
-        if (ph > 0.0f)
+        if (ph > 0.0f && jr_c > 0.0f)
         {
             if (rdi.matID == MATID_ENV_MISS)
             { const float3 md = normalize(rdi.x2);
@@ -89,7 +93,7 @@ void Pass_spmis_shift_v8()
             else
               ph *= IsVisible(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
         }
-        const float tf_center_at_neighbor = ph * JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
+        const float tf_center_at_neighbor = ph * jr_c;
         const float denom_mc = tf_center_at_neighbor * neighbors_conf_sum + p_c * centerConf;
         mis_c = (denom_mc > EPSILON)
               ? (pixCount) * (partnerConf / neighbors_conf_sum) * (p_c * centerConf) / denom_mc

@@ -30,7 +30,7 @@ Renderer::Renderer(UINT width, UINT height)
     // the alternation for the remaining real passes is preserved.)
     m_passes.Build({
         //L"cuda:nrc_frame_begin",                        L"barrier",
-        L"Pass_spmis_reset_v8.hlsl|cs:8x4",             L"barrier",
+        L"Pass_spmis_reset_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_camera_v8.hlsl|rg",                      L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
@@ -461,6 +461,11 @@ void Renderer::InitSceneGPU() {
         if (m_planet.enabled()) m_scene.ReserveRocks(planet::MAX_ROCK_INSTANCES);
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
         m_ctx.FlushAndReset();
+        //free the one-time global-mesh upload staging now that FlushAndReset has
+        //executed the staging->VRAM copy (no-op in the terrain path, which has no
+        //staging — its buffers are persistently-mapped UPLOAD).
+        m_scene.vertexGlobalUpload.Reset();
+        m_scene.indexGlobalUpload.Reset();
         //PLANET ROCKS: variant geometry now lives in the combined buffers - read
         //back each variant's base offsets + BLAS, hand them to the orchestrator,
         //then configure the camera-following scatter.

@@ -84,7 +84,7 @@ void Scene::ReserveRocks(UINT instanceSlots) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* /*cmdList*/) {
+void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
     SCOPE_TIMER("BuildGlobalMeshBuffers");
 
     geoOffsets.resize(meshes.size());
@@ -104,30 +104,68 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
     terrainVertexBase = totalVertexCount;
     terrainIndexBase  = totalIndexCount;
 
-    //UPLOAD-heap + persistently mapped: the planet tessellator writes terrain
-    //chunk meshes straight into their reserved slots (write-once before a cell
-    //is live), so no GPU copy / barrier is needed. The scene region is written
-    //here once. (Perf follow-up: move the SCENE region back to a DEFAULT heap +
-    //copy if scene-vertex fetch from system memory shows up in profiles.)
     const uint64_t vbBytes = (uint64_t)combinedVertexCount() * sizeof(BTriVertex);
     const uint64_t ibBytes = (uint64_t)combinedIndexCount()  * sizeof(uint32_t);
 
-    vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes,
-        D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
-        nv_helpers_dx12::kUploadHeapProps);
-    vertexGlobal->SetName(L"GlobalVertexBuffer");
-    indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes,
-        D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
-        nv_helpers_dx12::kUploadHeapProps);
-    indexGlobal->SetName(L"GlobalIndexBuffer");
+    //A reserved terrain region means the planet tessellator writes chunk meshes
+    //IN PLACE at runtime, which needs a persistently-mapped UPLOAD buffer. With
+    //NO terrain (planet off) the geometry is static — so put it in a DEFAULT
+    //(VRAM) heap: EvalSurfaceState fetches ~9 vertex attributes PER HIT, and from
+    //an UPLOAD (system-RAM) buffer those stream over PCIe and dominate throughput
+    //(camera AND bounce). One-time staging copy, mirroring CreateTriToLightIdBuffer.
+    const bool hasTerrain = combinedVertexCount() > totalVertexCount;
 
-    //persistent map (never unmapped; the planet writes into the terrain region).
-    CD3DX12_RANGE noRead(0, 0);
-    vertexGlobal->Map(0, &noRead, (void**)&vertexGlobalMapped);
-    indexGlobal->Map (0, &noRead, (void**)&indexGlobalMapped);
+    uint8_t* dstVertsRaw;
+    uint8_t* dstIdxRaw;
+    if (hasTerrain)
+    {
+        //UPLOAD + persistent map: tessellator writes the terrain region in place.
+        vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nv_helpers_dx12::kUploadHeapProps);
+        vertexGlobal->SetName(L"GlobalVertexBuffer");
+        indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nv_helpers_dx12::kUploadHeapProps);
+        indexGlobal->SetName(L"GlobalIndexBuffer");
 
-    auto* dstVerts = reinterpret_cast<BTriVertex*>(vertexGlobalMapped);
-    auto* dstIdx   = reinterpret_cast<uint32_t*>(indexGlobalMapped);
+        //persistent map (never unmapped; the planet writes into the terrain region).
+        CD3DX12_RANGE noRead(0, 0);
+        vertexGlobal->Map(0, &noRead, (void**)&vertexGlobalMapped);
+        indexGlobal->Map (0, &noRead, (void**)&indexGlobalMapped);
+        dstVertsRaw = vertexGlobalMapped;
+        dstIdxRaw   = indexGlobalMapped;
+    }
+    else
+    {
+        //DEFAULT (VRAM): static scene geometry, shader-read every hit — keep it
+        //off the PCIe bus. Build into UPLOAD staging (held as members until the
+        //caller's FlushAndReset runs the copy), copy to DEFAULT, barrier to read.
+        vertexGlobal = nv_helpers_dx12::CreateBuffer(device, vbBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+            nv_helpers_dx12::kDefaultHeapProps);
+        vertexGlobal->SetName(L"GlobalVertexBuffer");
+        indexGlobal = nv_helpers_dx12::CreateBuffer(device, ibBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+            nv_helpers_dx12::kDefaultHeapProps);
+        indexGlobal->SetName(L"GlobalIndexBuffer");
+
+        vertexGlobalUpload = nv_helpers_dx12::CreateBuffer(device, vbBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nv_helpers_dx12::kUploadHeapProps);
+        indexGlobalUpload = nv_helpers_dx12::CreateBuffer(device, ibBytes,
+            D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
+            nv_helpers_dx12::kUploadHeapProps);
+
+        CD3DX12_RANGE noRead(0, 0);
+        vertexGlobalUpload->Map(0, &noRead, (void**)&dstVertsRaw);
+        indexGlobalUpload->Map (0, &noRead, (void**)&dstIdxRaw);
+        vertexGlobalMapped = nullptr;   // DEFAULT buffer has no CPU mapping
+        indexGlobalMapped  = nullptr;
+    }
+
+    auto* dstVerts = reinterpret_cast<BTriVertex*>(dstVertsRaw);
+    auto* dstIdx   = reinterpret_cast<uint32_t*>(dstIdxRaw);
 
     for (size_t m = 0; m < meshes.size(); ++m) {
         const auto& mesh = meshes[m];
@@ -148,6 +186,25 @@ void Scene::BuildGlobalMeshBuffers(ID3D12Device* device, ID3D12GraphicsCommandLi
         for (UINT i = 0; i < mesh.indexCount; ++i)
             outI[i] = mesh.cpuIndices[i] + vBase;
     }
+
+    if (!hasTerrain)
+    {
+        //finish the DEFAULT-heap upload: staging -> VRAM, then barrier to read.
+        //The caller (InitSceneGPU) runs FlushAndReset right after and then frees
+        //the staging via vertexGlobalUpload / indexGlobalUpload .Reset().
+        vertexGlobalUpload->Unmap(0, nullptr);
+        indexGlobalUpload->Unmap(0, nullptr);
+        cmdList->CopyBufferRegion(vertexGlobal.Get(), 0, vertexGlobalUpload.Get(), 0, vbBytes);
+        cmdList->CopyBufferRegion(indexGlobal.Get(),  0, indexGlobalUpload.Get(),  0, ibBytes);
+        const D3D12_RESOURCE_BARRIER toRead[2] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(vertexGlobal.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
+            CD3DX12_RESOURCE_BARRIER::Transition(indexGlobal.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ),
+        };
+        cmdList->ResourceBarrier(2, toRead);
+    }
+
     //terrain region left uninitialized: only LIVE cells (with a built BLAS and
     //valid instanceProps) are referenced by the TLAS, and those slots are
     //always written by the tessellator before the cell goes live.

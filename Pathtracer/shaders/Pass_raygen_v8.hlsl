@@ -102,6 +102,12 @@ void Pass_raygen_v8()
     {
         float3 rayDir = UnpackNormal(rayDirPk);
 
+        //Strategy probabilities are fixed for this bounce (matID, -rayDir, normal, iors,
+        //Kd, Pm don't change within the iteration). Compute once and reuse for both NEE
+        //techniques and the BSDF sample instead of three identical evals — the two NEE
+        //sites sit behind separate IsVisible branches so DXC can't CSE them itself.
+        const SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
+
         //------------- NEE: point light + sun (MIS partner of the bottom trace) -------------
         const bool performNEE = !(ctx.mediumMatID != MEDIUM_INVALID || LoadKd_w(ctx.matID) < EPSILON);
         if (performNEE)
@@ -125,8 +131,7 @@ void Pass_raygen_v8()
                     {
                         const float3 throughput = UnpackRGB9E5(throughputPk);
 
-                        SamplingP sp_nee   = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
-                        BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                        BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
 
                         const float lightPdf = light.pdfSolidAngle;
                         const float bsdfPdf  = bdataNEE.pdf;
@@ -199,8 +204,7 @@ void Pass_raygen_v8()
 
                     const float3 throughput = UnpackRGB9E5(throughputPk);
 
-                    SamplingP sp_nee   = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
-                    BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp_nee, ctx.matID, ctx.hitNormal, ctx.hitNormal, sun.direction, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+                    BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, sun.direction, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
 
                     const float lightPdf = sun.pdf;
                     const float bsdfPdf  = bdataNEE.pdf;
@@ -248,7 +252,7 @@ void Pass_raygen_v8()
         }
 
         //------------- BSDF sample (MIS partner for NEE; bottom trace evaluates it) -------------
-        SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
+        //sp hoisted to the top of the bounce (reused by both NEE techniques above).
         const float3 s       = SampleBRDF        (sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, seed, ctx.iors.x, ctx.iors.y, false);
         const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, s, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false);
 
