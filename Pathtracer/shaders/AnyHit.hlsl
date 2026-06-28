@@ -35,7 +35,7 @@ void AlphaTestAnyHit(inout TracePayload payload,
     float2 uv = uv0 * b0 + uv1 * attr.barycentrics.x + uv2 * attr.barycentrics.y;
 
     Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-    float alpha = tex.SampleLevel(g_sampler, uv * LoadAlbedoUVScale(matID), 0).a;
+    float alpha = SampleMaterialTex(tex, uv * LoadAlbedoUVScale(matID), 0).a;
 
     //flip when the sample channel is transparency (1=transparent) instead of opacity.
     //Set by the loader heuristics or the editor override.

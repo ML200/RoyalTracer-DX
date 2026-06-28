@@ -158,6 +158,10 @@ struct ReSTIRSettings {
     int   maxBounces       = 32;  // raygen path loop bound: depth runs [1, maxBounces)
     int   rrStartDepth     = 2;   // Russian roulette starts at depth >= this; set to 32 to disable
     int   initialSamples   = 1;   // RIS-over-N initial samples per pixel (host-clamped [1,8])
+    //Material-texture filtering (cbuffer slot 42, read by SampleMaterialTex). 0 =
+    //hardware bilinear/aniso, 1 = nearest-texel point sampling for crisp pixel-art /
+    //Minecraft assets. Global (all textures); editor toggle under Materials.
+    int   texturePointFilter = 0;
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
     bool  disableCorrReduction = false; // A/B: ignore dup-map D in the temporal confidence cap (flag 0x40)

@@ -1756,7 +1756,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[42] = {};
+    UINT rsConsts[43] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1825,6 +1825,10 @@ void Renderer::PopulateCommandList() {
         const float pd = std::max(rs.spmisPlaneDist, 0.0f);
         memcpy(&rsConsts[41], &pd, 4);
     }
+
+    // Material-texture filtering mode (slot 42; read by SampleMaterialTex). 0 =
+    // bilinear/aniso, 1 = nearest-texel point sampling (pixel-art / Minecraft).
+    rsConsts[42] = rs.texturePointFilter ? 1u : 0u;
 
 #if 0 // ── NRC constants (slots 24-31) removed — left 0 (rsConsts is zero-init); reserved as padding in Includes_v8.hlsli; restore for NIRC ──
     // NRC control constants (slots 24-27). NRC is only driving the
@@ -2039,7 +2043,7 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 42, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 43, rsConsts, 0);
         // SPMIS hash-grid buffer as a root UAV (u25) — see Includes_v8.hlsli / the
         // Pass_spmis_* kernels + raygen hash insertion. Bound for every main-root-sig
         // pass; shaders that don't reference it strip the binding (DXC).

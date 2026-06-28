@@ -46,6 +46,20 @@ public:
     // BLAS scratch+result stays under ~3 GB combined.
     static constexpr UINT MAX_TRIS_PER_MESH = 25'000'000;
 
+    // Sub-object merge thresholds. To cut BLAS count + per-frame TLAS rebuild
+    // cost, sub-objects are baked into a shared per-model BLAS rather than each
+    // getting its own BLAS + TLAS instance. A mesh stays a *real* instanced BLAS
+    // only when instancing actually pays off: referenced by many nodes
+    // (>= MERGE_MAX_INSTANCES) or individually large (>= MERGE_MAX_TRIS). Single-
+    // use meshes (any size) and small few-instanced meshes are merged instead.
+    // Baking copies the deduped vertex array and keeps the index buffer, so a
+    // single-use mesh costs the same memory as before; only small few-instanced
+    // meshes duplicate geometry (bounded by these thresholds). The merged blob is
+    // still capped at MAX_TRIS_PER_MESH per BLAS (driver VRAM budget), splitting
+    // across a few merged BLASes if it ever overflows.
+    static constexpr UINT MERGE_MAX_TRIS      = 10'000;  // instanced-mesh tri cap to still merge
+    static constexpr UINT MERGE_MAX_INSTANCES = 50;      // instanced-mesh count cap to still merge
+
 private:
     static MeshSplitResult SplitOpaqueAlpha(
         const std::vector<UINT>& indices,

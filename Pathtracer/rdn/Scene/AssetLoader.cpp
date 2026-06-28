@@ -258,24 +258,24 @@ void AssetLoader::LoadModels(
         scene.materialNames.insert(scene.materialNames.end(),
             loaded.materialNames.begin(), loaded.materialNames.end());
 
-        const UINT meshBaseIdx = (UINT)scene.meshes.size();
-
-        // ── Process sub-meshes ───────────────────────────────────
-        for (size_t mi = 0; mi < loaded.meshes.size(); ++mi) {
-            auto& srcMesh = loaded.meshes[mi];
+        // ── Finalize one MeshGPU from opaque-first geometry ──────────
+        // Shared by both the kept-instanced path and the merged-blob path:
+        // takes vertices + opaque-first index/material arrays, builds the
+        // upload buffers, records the global materialID base, and pushes the
+        // mesh. Returns the new scene.meshes index.
+        auto finalizeMesh = [&](std::vector<Vertex> verts,
+                                std::vector<UINT>   idxOpaqueFirst,
+                                std::vector<UINT>   matOpaqueFirst,
+                                UINT opaqueTris, UINT alphaTris) -> UINT
+        {
             MeshGPU gpu{};
-
-            std::vector<UINT> globalMatIDs = srcMesh.perTriMaterialIDs;
-            for (auto& mid : globalMatIDs) mid += globalMatBase;
-
-            auto split = SplitOpaqueAlpha(srcMesh.indices, globalMatIDs, scene.materials);
-            gpu.cpuVertices    = srcMesh.vertices;
-            gpu.cpuIndices     = std::move(split.reorderedIndices);
-            gpu.cpuMaterialIDs = std::move(split.reorderedMaterialIDs);
+            gpu.cpuVertices    = std::move(verts);
+            gpu.cpuIndices     = std::move(idxOpaqueFirst);
+            gpu.cpuMaterialIDs = std::move(matOpaqueFirst);
             gpu.vertexCount    = (UINT)gpu.cpuVertices.size();
             gpu.indexCount     = (UINT)gpu.cpuIndices.size();
-            gpu.opaqueTriCount = split.opaqueTriCount;
-            gpu.alphaTriCount  = split.alphaTriCount;
+            gpu.opaqueTriCount = opaqueTris;
+            gpu.alphaTriCount  = alphaTris;
             gpu.materialIDBase = (UINT)scene.materialIDs.size();
 
             // Object-space AABB — one pass over vertices, caches the
@@ -312,21 +312,139 @@ void AssetLoader::LoadModels(
               memcpy(p, gpu.cpuIndices.data(), ibSize);
               gpu.indexBuffer->Unmap(0, nullptr); }
 
+            const UINT idx = (UINT)scene.meshes.size();
             scene.meshes.push_back(std::move(gpu));
-        }
+            return idx;
+        };
 
-        // ── Create instances (localTransform from GLB scene graph) ──
+        // ── Classify sub-objects: instance count per loaded mesh ─────
+        // Keep a mesh as a real instanced BLAS only when instancing pays off
+        // (referenced by many nodes, or individually large). Single-use meshes
+        // (any size) and small few-instanced meshes are merged into a shared
+        // per-model BLAS — see AssetLoader::MERGE_MAX_* for the rationale.
+        std::vector<UINT> instCount(loaded.meshes.size(), 0);
+        for (const auto& [meshIdx, xform] : loaded.instances) instCount[meshIdx]++;
+
+        auto isMergeCandidate = [&](size_t mi) -> bool {
+            const UINT tris = (UINT)loaded.meshes[mi].indices.size() / 3;
+            const UINT c    = instCount[mi];
+            if (c <= 1) return true;                                  // single-use, any size
+            return (tris < MERGE_MAX_TRIS && c < MERGE_MAX_INSTANCES); // small & few-instanced
+        };
+
         int subIdx = 0;
+
+        // ── Kept-instanced meshes: own BLAS + one instance per node ──
+        std::vector<int> keptSceneMesh(loaded.meshes.size(), -1);
+        for (size_t mi = 0; mi < loaded.meshes.size(); ++mi) {
+            if (isMergeCandidate(mi)) continue;
+            auto& srcMesh = loaded.meshes[mi];
+
+            std::vector<UINT> globalMatIDs = srcMesh.perTriMaterialIDs;
+            for (auto& mid : globalMatIDs) mid += globalMatBase;
+
+            auto split = SplitOpaqueAlpha(srcMesh.indices, globalMatIDs, scene.materials);
+            keptSceneMesh[mi] = (int)finalizeMesh(
+                srcMesh.vertices,
+                std::move(split.reorderedIndices),
+                std::move(split.reorderedMaterialIDs),
+                split.opaqueTriCount, split.alphaTriCount);
+        }
         for (const auto& [meshIdx, xform] : loaded.instances) {
+            if (isMergeCandidate(meshIdx)) continue;
             SceneInstance si{};
-            si.meshIndex       = meshBaseIdx + meshIdx;
-            si.modelIndex      = (UINT)scene.models.size();
-            si.localTransform  = xform;
-            si.worldTransform  = xform * modelXform;
+            si.meshIndex          = (UINT)keptSceneMesh[meshIdx];
+            si.modelIndex         = (UINT)scene.models.size();
+            si.localTransform     = xform;
+            si.worldTransform     = xform * modelXform;
             si.prevWorldTransform = si.worldTransform;
-            si.name            = model.name + "_sub" + std::to_string(subIdx++);
+            si.name               = model.name + "_sub" + std::to_string(subIdx++);
             scene.instances.push_back(si);
         }
+
+        // ── Merged blob: bake every merge-candidate instance's local
+        //    transform into model-local space, opaque tris first. Flushed to
+        //    a mesh + identity-local instance whenever it would exceed the
+        //    per-BLAS tri budget, and once more at the end. The instance keeps
+        //    localTransform = identity / worldTransform = modelXform, so the
+        //    blob still moves with the model and shades through the unchanged
+        //    single-mesh path.
+        std::vector<Vertex> mVerts;
+        std::vector<UINT>   mOpaqueIdx, mAlphaIdx, mOpaqueMat, mAlphaMat;
+        int mergedCount = 0;
+
+        auto flushMerged = [&]() {
+            if (mVerts.empty()) return;
+            const UINT opaqueTris = (UINT)mOpaqueIdx.size() / 3;
+            const UINT alphaTris  = (UINT)mAlphaIdx.size()  / 3;
+            std::vector<UINT> idx = std::move(mOpaqueIdx);
+            idx.insert(idx.end(), mAlphaIdx.begin(), mAlphaIdx.end());
+            std::vector<UINT> mat = std::move(mOpaqueMat);
+            mat.insert(mat.end(), mAlphaMat.begin(), mAlphaMat.end());
+
+            const UINT sceneMesh = finalizeMesh(std::move(mVerts), std::move(idx),
+                                                std::move(mat), opaqueTris, alphaTris);
+            SceneInstance si{};
+            si.meshIndex          = sceneMesh;
+            si.modelIndex         = (UINT)scene.models.size();
+            si.localTransform     = XMMatrixIdentity();
+            si.worldTransform     = modelXform;
+            si.prevWorldTransform = si.worldTransform;
+            si.name               = model.name + "_merged" + std::to_string(mergedCount++);
+            scene.instances.push_back(si);
+
+            // Reset accumulators (the moved-from vectors are left empty-but-valid).
+            mVerts.clear();
+            mOpaqueIdx.clear(); mAlphaIdx.clear();
+            mOpaqueMat.clear(); mAlphaMat.clear();
+        };
+
+        for (const auto& [meshIdx, localXform] : loaded.instances) {
+            if (!isMergeCandidate(meshIdx)) continue;
+            const auto& srcMesh = loaded.meshes[meshIdx];
+            const UINT  thisTris = (UINT)srcMesh.indices.size() / 3;
+            const UINT  curTris  = (UINT)(mOpaqueIdx.size() + mAlphaIdx.size()) / 3;
+
+            // Respect the per-BLAS driver VRAM budget (each split piece is
+            // already <= MAX_TRIS_PER_MESH, so a single instance never overflows).
+            if (curTris > 0 && curTris + thisTris > MAX_TRIS_PER_MESH) flushMerged();
+
+            // Bake the node transform into a copy of the deduped vertices.
+            // Position rides the full affine; the normal rides the inverse-
+            // transpose, so combined with the merged instance's modelXform
+            // normal matrix it reproduces invTranspose(worldTransform) exactly.
+            const UINT vbase = (UINT)mVerts.size();
+            XMVECTOR det;
+            const XMMATRIX nrmMat = XMMatrixTranspose(XMMatrixInverse(&det, localXform));
+            mVerts.reserve(mVerts.size() + srcMesh.vertices.size());
+            for (const auto& sv : srcMesh.vertices) {
+                Vertex v = sv;
+                XMVECTOR p = XMVector3TransformCoord(XMLoadFloat3(&sv.position), localXform);
+                XMStoreFloat3(&v.position, p);
+                XMVECTOR n = XMVector3TransformNormal(
+                    XMVectorSet(sv.normal_material.x, sv.normal_material.y,
+                                sv.normal_material.z, 0.0f), nrmMat);
+                n = XMVector3Normalize(n);
+                v.normal_material.x = XMVectorGetX(n);
+                v.normal_material.y = XMVectorGetY(n);
+                v.normal_material.z = XMVectorGetZ(n);
+                mVerts.push_back(v);
+            }
+
+            // Classify each triangle opaque/alpha (mirrors SplitOpaqueAlpha)
+            // and append with vbase-offset indices into the merged vertex array.
+            for (UINT t = 0; t < thisTris; ++t) {
+                const UINT gMat    = srcMesh.perTriMaterialIDs[t] + globalMatBase;
+                const bool isAlpha = scene.materials.alphaThreshold[gMat] < 1.0f;
+                auto& dstIdx = isAlpha ? mAlphaIdx : mOpaqueIdx;
+                auto& dstMat = isAlpha ? mAlphaMat : mOpaqueMat;
+                dstIdx.push_back(srcMesh.indices[3*t+0] + vbase);
+                dstIdx.push_back(srcMesh.indices[3*t+1] + vbase);
+                dstIdx.push_back(srcMesh.indices[3*t+2] + vbase);
+                dstMat.push_back(gMat);
+            }
+        }
+        flushMerged();
 
         model.meshCount     = (UINT)scene.meshes.size() - model.meshStart;
         model.instanceCount = (UINT)scene.instances.size() - model.instanceStart;
@@ -337,7 +455,9 @@ void AssetLoader::LoadModels(
 
         std::wcout << L"[AssetLoader] Model '" << std::wstring(model.name.begin(), model.name.end())
                    << L"' registered: meshes=" << model.meshCount
-                   << L" instances=" << model.instanceCount << std::endl;
+                   << L" instances=" << model.instanceCount
+                   << L" (merged " << loaded.instances.size() << L" sub-objects -> "
+                   << mergedCount << L" blas)" << std::endl;
 
         scene.models.push_back(std::move(model));
     }

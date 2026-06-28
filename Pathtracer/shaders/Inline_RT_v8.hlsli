@@ -85,7 +85,7 @@ inline bool AlphaCandidateOccludes(uint instID, uint primID, float2 bary)
     const float2 uv = uv0 * b0 + uv1 * bary.x + uv2 * bary.y;
 
     Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-    float alpha = tex.SampleLevel(g_sampler, uv * LoadAlbedoUVScale(matID), 0).a;
+    float alpha = SampleMaterialTex(tex, uv * LoadAlbedoUVScale(matID), 0).a;
 
     //flip when the sampled channel is transparency (1=transparent) instead of
     //opacity - set by the loader heuristics or the editor override.
@@ -262,7 +262,7 @@ float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
     {
         float2 albedoUV = uv * LoadAlbedoUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-        albedo = tex.SampleLevel(g_sampler, albedoUV, level).rgb;
+        albedo = SampleMaterialTex(tex, albedoUV, level).rgb;
     }
     return albedo;
 }
@@ -277,7 +277,7 @@ float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
     {
         float2 rmaUV = uv * LoadRmaUVScale(matID);
         Texture2D<float4> tex = ResourceDescriptorHeap[rmaID];
-        float4 rmaSample = tex.SampleLevel(g_sampler, rmaUV, level);
+        float4 rmaSample = SampleMaterialTex(tex, rmaUV, level);
 
         pbrProps.x = rmaSample.g;
         pbrProps.y = rmaSample.b;
@@ -463,7 +463,7 @@ HitInfo EvalSurfaceState(
 
         Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
         const float3 n_tan =
-            nTex.SampleLevel(g_sampler, normalUV, level).xyz * 2.0f - 1.0f;
+            SampleMaterialTex(nTex, normalUV, level).xyz * 2.0f - 1.0f;
 
         //apply TBN without materializing float3x3
         normW = n_tan.x * tangentW + n_tan.y * bitangentW + n_tan.z * normW;

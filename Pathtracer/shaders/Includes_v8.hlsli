@@ -82,6 +82,11 @@ cbuffer Push : register(b1)
     //of the distance to camera (regular-ReSTIR geometry rejection). Read by
     //Pass_spmis_reuse_v8.
     float spmis_planeDist;
+    //slot 42 (register 10.z). Material-texture filtering mode: 0 = hardware
+    //bilinear/aniso (g_sampler s0), 1 = nearest-texel point sampling
+    //(g_samplerPoint s3) for crisp pixel-art / Minecraft-style assets. Editor
+    //toggle under Materials. Read by SampleMaterialTex below.
+    uint  pt_pointFilter;
 };
 
 //====================================
@@ -206,7 +211,24 @@ SamplerState   g_sampler_LUT       : register(s1);
 //the longitude=180° meridian, and any anisotropic sampler shows a
 //banded artifact there. This sampler avoids that entirely.
 SamplerState   g_samplerLinearWrap : register(s2);
+//Nearest-texel point sampler (WRAP). Used for material textures when
+//pt_pointFilter is set so pixel-art / Minecraft assets keep crisp texel
+//edges instead of bilinear blur. MIP filter stays LINEAR so distant
+//surfaces don't alias/flicker; only the in-plane interpolation is dropped.
+SamplerState   g_samplerPoint      : register(s3);
 Texture2DArray g_LUT         : register(t33);
+
+//Material-texture fetch. Routes through the point sampler when the editor's
+//"disable texture interpolation" toggle (pt_pointFilter) is on, else the
+//default bilinear/aniso g_sampler. A SamplerState can't be picked with ?: in
+//HLSL, so branch. All material textures are Texture2D<float4> (albedo / RMA /
+//normal / alpha-cutout), sampled with an explicit mip level.
+float4 SampleMaterialTex(Texture2D<float4> tex, float2 uv, float level)
+{
+    if (pt_pointFilter != 0u)
+        return tex.SampleLevel(g_samplerPoint, uv, level);
+    return tex.SampleLevel(g_sampler, uv, level);
+}
 
 //====================================
 //STAR / MILKY WAY SKYBOX

@@ -423,17 +423,18 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // 6 SPMIS spatial-reuse constants [32..37] (spmis_reuseN/risN/mcap/tileSize +
     // jacThreshold/normalSimCos) + 3 path-trace constants [38..40]
     // (pt_maxBounces, pt_rrStartDepth, pt_initialSamples) + 1 SPMIS plane-distance
-    // constant [41] (spmis_planeDist) = 42.
+    // constant [41] (spmis_planeDist) + 1 material-texture filter mode [42]
+    // (pt_pointFilter) = 43.
     // (Last 5 of the NRC block are scene-bounds normalization for the position
     // input; the SPMIS block is the hash-grid reuse params, see
     // Includes_v8.hlsli / the Pass_spmis_* kernels.)
-    rootParameters[1].InitAsConstants(42, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    rootParameters[1].InitAsConstants(43, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     // SPMIS global hash-grid buffer as a root UAV at u25 (g_spmisBuffer). Bound as a
     // root descriptor rather than a heap entry to avoid descriptor-table surgery; set
     // per-pass via SetComputeRootUnorderedAccessView (Renderer.cpp setConsts).
     rootParameters[2].InitAsUnorderedAccessView(25, 0);
 
-    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[3];
+    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[4];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP);
@@ -451,6 +452,14 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // average, so the seam disappears (WRAP addressing handles the
     // texel-level wrap correctly without aniso confusion).
     staticSamplers[2].Init(2, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+    // s3: nearest-texel point sampler (WRAP) for material textures when the
+    // editor's "disable texture interpolation" toggle is on (g_samplerPoint,
+    // Includes_v8.hlsli → SampleMaterialTex). MIN_MAG point drops the bilinear
+    // blur that softens pixel-art / Minecraft assets; MIP linear keeps distant
+    // surfaces from aliasing/flickering.
+    staticSamplers[3].Init(3, D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP);
 

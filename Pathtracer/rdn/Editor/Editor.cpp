@@ -98,7 +98,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
     if (m_showClouds)    DrawCloudPanel(camera);
-    if (m_showMaterials) DrawMaterialInspector(scene, camera);
+    if (m_showMaterials) DrawMaterialInspector(scene, camera, restir);
     if (m_showPlanetPerf) DrawPlanetPerfPanel(planetStats, stats, fps);
 
     // Material re-upload happens via dirty flag checked in Renderer
@@ -338,11 +338,22 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
 //====================================
 //MATERIAL INSPECTOR
 //====================================
-void Editor::DrawMaterialInspector(Scene& scene, Camera& camera) {
+void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings& restir) {
     ImGui::SetNextWindowPos(ImVec2(740, 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 700), ImGuiCond_FirstUseEver);
 
     if (!ImGui::Begin("Materials", &m_showMaterials)) { ImGui::End(); return; }
+
+    // Global texture filtering. Off = nearest-texel point sampling for ALL material
+    // textures (crisp pixel-art / Minecraft); on = hardware bilinear/aniso. Rides
+    // the rs-consts block (slot 42 -> pt_pointFilter) consumed by SampleMaterialTex.
+    bool texInterp = (restir.texturePointFilter == 0);
+    if (ImGui::Checkbox("Texture interpolation", &texInterp))
+        restir.texturePointFilter = texInterp ? 0 : 1;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off = nearest-texel point sampling for every texture\n"
+                          "(crisp pixel-art / Minecraft look). On = bilinear/aniso.");
+    ImGui::Separator();
 
     // Lives on SunSettings only because that struct is the tail of the camera CB.
     // Applied at GPU emission read sites, leaves authored Ke untouched.
