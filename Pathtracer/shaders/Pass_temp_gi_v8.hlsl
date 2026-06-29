@@ -97,7 +97,7 @@ void Pass_temp_gi_v8()
     //outright rather than down-weighting it (scaling its mcap would bias the
     //estimator; only rejection stays unbiased). Sentinel x2 (NEE light / env-miss
     //sky) carries no surface BSDF and is always reconnectable.
-    if (!IsSentinelMatID(rdi_r.matID) && rdi_r.Pr < rs_reconnectRoughnessMin)
+    if (!IsSentinelMatID(rdi_r.matID) && !IsVolumeVertex(rdi_r.matID) && rdi_r.Pr < rs_reconnectRoughnessMin)
     {
         return;
     }
@@ -127,10 +127,10 @@ void Pass_temp_gi_v8()
     const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
     const float p_c = GetPHat(rdi.F) * visReuse_c;
 
-    //canonical Jc, env/miss preserves direction so Jc=1
-    const float Jc_canonical = IsSentinelMatID(rdi.matID)
-        ? ((rdi.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2, rdi.n2_s))
-        : ComputeJc(myPos, rdi.x2, rdi.n2_s);
+    //canonical Jc, env/miss preserves direction so Jc=1; volume vertex drops the cos
+    const float Jc_canonical = (rdi.matID == MATID_ENV_MISS) ? 1.0f
+        : (IsVolumeVertex(rdi.matID) ? ComputeJcVol(myPos, rdi.x2)
+                                     : ComputeJc(myPos, rdi.x2, rdi.n2_s));
 
     float p_n = 0.0f;
     float n_c = 0.0f;
@@ -151,8 +151,9 @@ void Pass_temp_gi_v8()
         float vis = 0.0f;
         if (ph > 0.0f)
         {
-            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve)
-            if (REUSE_VIS_OFF)
+            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve).
+            //Volume vertices are in-medium (entry surface self-occludes) -> treat visible.
+            if (REUSE_VIS_OFF || IsVolumeVertex(rdi.matID))
             {
                 vis = 1.0f;
             }
@@ -177,9 +178,9 @@ void Pass_temp_gi_v8()
                                               myKd, myPr, myPm,
                                               (myFlags & SD_FLAG_BACKFACE) != 0u);
 
-        const float Jc_neighbor = (rdi_r.matID == MATID_ENV_MISS)
-            ? 1.0f
-            : ComputeJc(rPos, rdi_r.x2, rdi_r.n2_s);
+        const float Jc_neighbor = (rdi_r.matID == MATID_ENV_MISS) ? 1.0f
+            : (IsVolumeVertex(rdi_r.matID) ? ComputeJcVol(rPos, rdi_r.x2)
+                                           : ComputeJc(rPos, rdi_r.x2, rdi_r.n2_s));
 
         float3 c = Reconnect(
             sv_c.x, sv_c.n_s, sv_c.o, sv_c.matID,
@@ -193,8 +194,9 @@ void Pass_temp_gi_v8()
         float vis_n = 0.0f;
         if (ph > 0.0f)
         {
-            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve)
-            if (REUSE_VIS_OFF)
+            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve).
+            //Volume vertices are in-medium (entry surface self-occludes) -> treat visible.
+            if (REUSE_VIS_OFF || IsVolumeVertex(rdi_r.matID))
             {
                 vis_n = 1.0f;
             }

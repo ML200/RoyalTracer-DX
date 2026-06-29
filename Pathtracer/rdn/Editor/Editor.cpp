@@ -511,6 +511,34 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings&
                 ImGui::SetTooltip("Volume absorption color\nWhite = no absorption");
         }
 
+        // ── Subsurface scattering ────────────────────────────────
+        if (ImGui::CollapsingHeader("Subsurface")) {
+            //ensure the SoA slots exist (older materials predate these fields)
+            if (i >= mats.sssEnable.size()) mats.sssEnable.resize(i + 1, 0u);
+            if (i >= mats.sssAlbedo.size()) mats.sssAlbedo.resize(i + 1, DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f));
+            if (i >= mats.sssRadius.size()) mats.sssRadius.resize(i + 1, 0.0f);
+            if (i >= mats.sssPhaseG.size()) mats.sssPhaseG.resize(i + 1, 0.0f);
+            if (i >= mats.sssWeight.size()) mats.sssWeight.resize(i + 1, 1.0f);
+
+            bool en = mats.sssEnable[i] != 0u;
+            if (ImGui::Checkbox("Enable SSS", &en)) {
+                mats.sssEnable[i] = en ? 1u : 0u;
+                changed = true;
+            }
+            changed |= ImGui::ColorEdit3("SSS Color", &mats.sssAlbedo[i].x, ImGuiColorEditFlags_Float);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Single-scattering albedo (the inside colour).\nCarried by the random walk's albedo product.");
+            changed |= ImGui::SliderFloat("Radius", &mats.sssRadius[i], 0.0005f, 50.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Scatter distance / mean free path (world units), log scale.\nsigma_t = 1/radius. Small = dense/opaque, large = translucent.\nUseful range is relative to the object's thickness.");
+            changed |= ImGui::SliderFloat("Phase g", &mats.sssPhaseG[i], -0.95f, 0.95f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Henyey-Greenstein anisotropy.\n0 = isotropic, >0 forward, <0 backward scattering.");
+            changed |= ImGui::SliderFloat("Entry weight", &mats.sssWeight[i], 0.0f, 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Probability scale for entering the medium vs reflecting.\np_enter = weight * Fresnel-transmittance. 0 = pure reflection, 1 = mostly subsurface.");
+        }
+
         // ── Alpha ────────────────────────────────────────────────
         if (ImGui::CollapsingHeader("Alpha Test")) {
             changed |= ImGui::SliderFloat("Threshold", &mats.alphaThreshold[i], 0.0f, 1.0f);

@@ -841,15 +841,16 @@ void Renderer::CreateShaderResourceHeap() {
       sd.Buffer.NumElements = std::max((UINT)m_scene.materialIDs.size(), 1u);  //see Slot 3
       dev->CreateShaderResourceView(m_scene.materialIndexBuffer.Get(), &sd, handle); next(); }
 
-    // Slot 8: SRV t5 — Materials (compressed AoS, 40 B / material).
+    // Slot 8: SRV t5 — Materials (compressed AoS, 48 B / material).
     // Fields: Kd.rgb RGB9E5, Kd.w+Ni half2, Pr/Pm/Ps/Pc u8, Tf RGB9E5,
-    // Pcr/aniso/anisoRot/alphaThreshold u8, 3× texID i16, 3× UV scale half2.
+    // Pcr/aniso/anisoRot/alphaThreshold u8, 3× texID i16, 3× UV scale half2,
+    // SSS albedo RGB9E5, SSS radius+phaseG half2. Stride tracks MaterialPack::kMatPackedU32.
     { D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
       sd.Buffer.NumElements = (UINT)m_scene.materials.size();
-      sd.Buffer.StructureByteStride = 40;
+      sd.Buffer.StructureByteStride = (UINT)(MaterialPack::kMatPackedU32 * sizeof(uint32_t));
       dev->CreateShaderResourceView(m_scene.materialBuffer.Get(), &sd, handle); next(); }
 
     // Slot 9: SRV t6 — Emissive triangles

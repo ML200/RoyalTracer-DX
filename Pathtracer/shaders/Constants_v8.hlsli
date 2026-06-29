@@ -74,6 +74,19 @@
 #define MATID_LIGHT_TRI   0xFFFFFFFEu
 #define IsSentinelMatID(mid) ((mid) >= MATID_LIGHT_TRI)
 
+//SSS reconnection-vertex provenance bits, OR-ed into the (real) SSS material id of a
+//reservoir's reconnection vertex. Real ids are < 2^29, so these stay below the sentinels
+//and still route through the GI/surface branch. Mask off with MatIDBase before any
+//g_mat[]/Load*() indexing.
+//  VOLUME: x2 is the first in-medium scatter (Reconnect volume branch: phase + 1/dist^2).
+//  EXIT:   x2 is a no-scatter pass-through exit surface; x1's coupling is the 1/pi diffuse
+//          entry term (Reconnect surface branch overrides F1) — it is NOT a volume vertex.
+#define MATID_SSS_VOLUME_BIT 0x40000000u
+#define MATID_SSS_EXIT_BIT   0x20000000u
+#define IsVolumeVertex(mid)  (((mid) & MATID_SSS_VOLUME_BIT) != 0u && !IsSentinelMatID(mid))
+#define IsSSSExitVertex(mid) (((mid) & MATID_SSS_EXIT_BIT)   != 0u && !IsSentinelMatID(mid))
+#define MatIDBase(mid)       ((mid) & ~(MATID_SSS_VOLUME_BIT | MATID_SSS_EXIT_BIT))
+
 //====================================
 //ROUGHNESS REUSE GATE
 //====================================

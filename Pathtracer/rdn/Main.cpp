@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-        { "./harbor2.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
+        { "./testScene_2/testScene_2.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         };
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {

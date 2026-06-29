@@ -840,6 +840,7 @@ Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 #include "Path_Sampler_v8.hlsli"
 #include "SunSampler_v8.hlsli"
 #include "Inline_RT_v8.hlsli"
+#include "Material_SSS_v8.hlsli"
 #include "Reservoir_v8.hlsli"
 #include "Path_State_v8.hlsli"
 #include "HashGridHash_v8.hlsli"

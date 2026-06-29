@@ -49,7 +49,9 @@ struct LightTriangle {
 //====================================
 //PACKED MATERIAL
 //====================================
-//40B AoS, one material per cache line, layout in src/Components/Vertex.h
+//48B AoS, one material per cache line, layout in src/Components/Vertex.h.
+//Field count MUST equal MaterialPack::kMatPackedU32 (Vertex.h) and the SRV
+//StructureByteStride in Renderer_Pipeline.cpp.
 struct MatPacked {
     uint Kd_rgb;
     uint w_Ni;
@@ -61,6 +63,8 @@ struct MatPacked {
     uint uv_albedo;
     uint uv_normal;
     uint uv_rma;
+    uint sss_albedo;    //RGB9E5 single-scattering albedo (inside colour)
+    uint sss_radius_g;  //half scatter distance | half phase g << 16
 };
 
 //====================================

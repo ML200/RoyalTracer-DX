@@ -523,6 +523,27 @@ private:
         return fallback;
     }
 
+    // Read a vec3 (e.g. attenuationColor) from an extension object key. tg3_obj_get_double
+    // only handles scalars; KHR_* colour factors are TG3_VALUE_ARRAY of reals.
+    static void tg3_obj_get_vec3(const tg3_value* obj, const char* key, float out[3], float fallback) {
+        out[0] = out[1] = out[2] = fallback;
+        if (!obj || obj->type != TG3_VALUE_OBJECT) return;
+        for (uint32_t i = 0; i < obj->object_count; ++i) {
+            if (tg3_str_eq(obj->object_data[i].key, key)) {
+                const tg3_value& v = obj->object_data[i].value;
+                if (v.type != TG3_VALUE_ARRAY) return;
+                const uint32_t n = (v.array_count < 3u) ? v.array_count : 3u;
+                for (uint32_t c = 0; c < n; ++c) {
+                    const tg3_value& e = v.array_data[c];
+                    out[c] = (e.type == TG3_VALUE_REAL) ? (float)e.real_val
+                           : (e.type == TG3_VALUE_INT)  ? (float)e.int_val
+                           : fallback;
+                }
+                return;
+            }
+        }
+    }
+
     template <typename T>
     static std::vector<T> ReadGltfAccessorV3(const tg3_model& model, int accessorIdx)
     {
@@ -1410,6 +1431,45 @@ public:
                 // transmission (transmissionFactor) as independent layers, so collapse
                 // the transmission into the engine's opacity channel.
                 t_mat.Kd.w *= (1.0f - tf);
+            }
+
+            // Subsurface scattering (random walk). KHR_materials_volume is the primary
+            // driver: attenuationColor -> single-scattering albedo (tint), attenuationDistance
+            // -> scalar mean free path, thicknessFactor>0 enables. (We treat the volume as
+            // scattering rather than the spec's pure absorption, so colour survives the walk
+            // - documented approximation.)
+            const tg3_value* volExt = tg3_find_extension(gmat.ext, "KHR_materials_volume");
+            if (volExt) {
+                const float thickness = (float)tg3_obj_get_double(volExt, "thicknessFactor", 0.0);
+                if (thickness > 0.0f) {
+                    float attenCol[3] = { 1.0f, 1.0f, 1.0f };
+                    tg3_obj_get_vec3(volExt, "attenuationColor", attenCol, 1.0f);
+                    // spec default is +Infinity (non-absorbing); 0/unset -> unit MFP.
+                    const float attenDist = (float)tg3_obj_get_double(volExt, "attenuationDistance", 0.0);
+                    t_mat.sssEnable = 1;
+                    t_mat.sssAlbedo = { attenCol[0], attenCol[1], attenCol[2] };
+                    t_mat.sssRadius = (attenDist > 0.0f && attenDist < 1e16f) ? attenDist : 1.0f;
+                    t_mat.sssPhaseG = 0.0f;
+                    // KHR_materials_volume requires KHR_materials_transmission, so the block
+                    // above already folded transmission into Kd.w (glass). SSS owns this
+                    // surface instead, so restore the opaque baseColor coverage - otherwise
+                    // toggling SSS off in the editor would reveal a glass surface.
+                    t_mat.Kd.w = (float)pbr.base_color_factor[3];
+                }
+            }
+            // KHR_materials_diffuse_transmission: thin translucency, no volumetric distance.
+            // Use it only to enable SSS when no volume is present, with a default unit MFP.
+            const tg3_value* dtExt = tg3_find_extension(gmat.ext, "KHR_materials_diffuse_transmission");
+            if (dtExt && !t_mat.sssEnable) {
+                const float dtf = (float)tg3_obj_get_double(dtExt, "diffuseTransmissionFactor", 0.0);
+                if (dtf > 0.0f) {
+                    float dtCol[3] = { 1.0f, 1.0f, 1.0f };
+                    tg3_obj_get_vec3(dtExt, "diffuseTransmissionColorFactor", dtCol, 1.0f);
+                    t_mat.sssEnable = 1;
+                    t_mat.sssAlbedo = { dtCol[0] * dtf, dtCol[1] * dtf, dtCol[2] * dtf };
+                    t_mat.sssRadius = 1.0f;
+                    t_mat.sssPhaseG = 0.0f;
+                }
             }
 
             // Albedo

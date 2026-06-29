@@ -340,6 +340,16 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
+//volume reconnection vertex (first in-medium SSS scatter): no surface normal, so the
+//geometry term drops the cosine and is a pure inverse-square. Callers select this when
+//IsVolumeVertex(reservoir.matID).
+inline float ComputeJcVol(float3 x1, float3 x2)
+{
+    float3 d = x1 - x2;
+    float  dist2 = dot(d, d);
+    return max(1.0f / max(dist2, EPSILON), EPSILON);
+}
+
 //Reconnection-shift Jacobian ratio for temporal reuse, CLAMPED (not rejected) to
 //[1/T, T]. Near a grazing corner the reconnection cos -> 0 makes ComputeJc tiny
 //and Jn/Jc blows up; the clamp bounds it so the resampling weight can't spike into
@@ -409,6 +419,11 @@ inline float3 Reconnect(
     if (length(L2) < EPSILON)
         return 0.0f;
 
+    //x1 is an SSS surface: it reflects via its regular BRDF; only when the path ENTERED
+    //the medium (the volume reconnection vertex in the GI branch) is x1's coupling the
+    //diffuse entry term 1/pi.
+    const bool sss1 = LoadIsSSS(mID1);
+
     //====================================
     //DI ENV SKY
     //====================================
@@ -463,10 +478,45 @@ inline float3 Reconnect(
 
     float3 dir   = x2 - x1;
     float  dist  = length(dir);
-    float3 ndirN = normalize(-dir);
+    float3 ndirN = normalize(-dir);          //from x2 toward x1
 
-    //recover x2 IOR pair from stored etat and material Ni, disambiguate on midpoint
-    const float matNi2 = LoadNi(mID2);
+    const uint  baseID2 = MatIDBase(mID2);
+    const bool  volume2 = IsVolumeVertex(mID2);
+    const float G1      = G_term(n1_s, -ndirN);
+
+    //====================================
+    //VOLUME RECONNECTION VERTEX (first in-medium SSS scatter)
+    //====================================
+    //F2 = scattering coefficient * Henyey-Greenstein phase; the connecting segment
+    //carries Beer-Lambert transmittance; the geometry term drops the x2-side cosine
+    //(no surface there). The shift never re-enters the walk.
+    if (volume2)
+    {
+        const float3 F1v = sss1
+            ? (localKd1 * SSS_INV_PI)                             //SSS entry coupling tinted by surface albedo
+            : BSDF_term(mID1, n1_s, n1_s, -ndirN, o, localKd1, localPr1, localPm1, etai1, etat1);
+
+        const float  radius  = max(LoadSSSRadius(baseID2), SSS_MIN_RADIUS);
+        const float  sigma_t = 1.0f / radius;
+        const float3 albedo  = saturate(LoadSSSAlbedo(baseID2));
+        const float  gg      = LoadPhaseG(baseID2);
+        const float  cosP    = dot(-ndirN, V2);                  //arriving (x1->S1) vs outgoing V2
+        const float3 F2v     = sigma_t * albedo * EvaluatePhaseHG(gg, cosP);
+        const float3 Tv      = (float3)exp(-sigma_t * dist);     //x1->S1 transmittance
+
+        Jn = max(1.0f / (dist * dist), EPSILON);                 //volume: no cos at x2
+        float3 rv = F1v * F2v * L2 * G1 * Tv;                    //G2 == 1
+        if (any(isnan(rv)) || any(isinf(rv)) || all(rv < EPSILON))
+            rv = (float3)0.0f;
+        return max(rv, 0.0f);
+    }
+
+    //====================================
+    //SURFACE GI VERTEX (incl. white-baked SSS entry surfaces)
+    //====================================
+    //recover x2 IOR pair from stored etat and material Ni, disambiguate on midpoint.
+    //baseID2 strips any SSS provenance bit so g_mat[] indexing is in range.
+    const float matNi2 = LoadNi(baseID2);
     float etai2;
     float etat2 = eta2;
     if (matNi2 <= 1.0f + EPSILON) {
@@ -484,7 +534,7 @@ inline float3 Reconnect(
     const float iorBeforeX2 = (rayDotN2 >= 0.0f) ? etai2 : etat2;
 
     const float m1_Kd_w = LoadKd_w(mID1);
-    const float m2_Kd_w = LoadKd_w(mID2);
+    const float m2_Kd_w = LoadKd_w(baseID2);
     const bool m1_transmissive = m1_Kd_w < 1.0f - EPSILON;
     const bool m2_transmissive = m2_Kd_w < 1.0f - EPSILON;
 
@@ -495,10 +545,15 @@ inline float3 Reconnect(
     if      (x1_inMedium) etai2 = iorAfterX1;
     else if (x2_inMedium) etai2 = iorBeforeX2;
 
-    float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
-    float3 F2 = BSDF_term(mID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
+    //A no-scatter SSS pass-through stores its exit B here with MATID_SSS_EXIT_BIT: the
+    //light ENTERED at x1, so x1's coupling is the diffuse entry term 1/pi, not its
+    //reflective BRDF (this is what the forward path folded into pdf_product). Without
+    //this the reuse target would disagree with the stored F -> ReSTIR bias in thin areas.
+    float3 F1 = IsSSSExitVertex(mID2)
+        ? (localKd1 * SSS_INV_PI)                                 //entry coupling tinted by x1 surface albedo
+        : BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
+    float3 F2 = BSDF_term(baseID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
 
-    float  G1  = G_term(n1_s, -ndirN);
     float  G2  = G_term(n2_s, -V2);
 
     //Beer-Lambert applied at most once, same medium bounds both sides
@@ -506,7 +561,7 @@ inline float3 Reconnect(
     if (x1_inMedium) {
         transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), dist);
     } else if (x2_inMedium) {
-        transmittance = CalculateAbsorptionThroughput(LoadTf(mID2), dist);
+        transmittance = CalculateAbsorptionThroughput(LoadTf(baseID2), dist);
     }
 
     Jn = max(abs(dot(ndirN, n2_s)) / (dist * dist), EPSILON);

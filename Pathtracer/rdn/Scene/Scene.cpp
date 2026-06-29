@@ -460,7 +460,7 @@ float Scene::ComputeTriangleWeight(
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Upload the compressed material buffer (40 B / material) and the
+// Upload the compressed material buffer (48 B / material) and the
 // per-primitive materialID buffer. See MaterialSoA::BuildGpuPacked
 // and shaders/Material_Decoder_v8.hlsli for the layout.
 void Scene::UploadMaterials(ID3D12Device* device) {

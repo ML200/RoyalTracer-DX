@@ -35,6 +35,16 @@ struct alignas(16) Material {
     float alphaThreshold;
     bool invertAlpha = false;  // true = sample is transparency (1=transparent), AnyHit will flip the test
 
+    // Random-walk subsurface scattering. sssEnable gates the layered reflect-or-enter
+    // surface; sssAlbedo is the RGB single-scattering albedo (inside colour), sssRadius
+    // the scalar scatter distance (mean free path), sssPhaseG the Henyey-Greenstein
+    // anisotropy, sssWeight the entry-probability scale (p_enter = sssWeight * Fresnel-T).
+    DirectX::XMFLOAT3 sssAlbedo = { 1.0f, 1.0f, 1.0f };
+    float sssRadius   = 0.0f;
+    float sssPhaseG   = 0.0f;
+    float sssWeight   = 1.0f;
+    uint8_t sssEnable = 0;
+
     Material() :
         Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
         Pr_Pm_Ps_Pc(0.5f, 0.0f, 0.0f, 0.0f), Pcr_aniso_anisor(0.0f, 0.0f, 0.0f), Tf(1.0f,1.0f,1.0f),
@@ -114,9 +124,14 @@ inline uint8_t PackSnorm8(float v)
     return uint8_t(q & 0xFF);
 }
 
-// Pack one material into 10 consecutive uint32s (40 B, matches
+// Number of uint32 per packed material. MUST equal the field count of the HLSL
+// `MatPacked` struct (Data_v8.hlsli) and the SRV StructureByteStride/4 in
+// Renderer_Pipeline.cpp. Single source of truth so the stride never drifts.
+static constexpr size_t kMatPackedU32 = 12;
+
+// Pack one material into kMatPackedU32 consecutive uint32s (48 B, matches
 // MatPacked in Data_v8.hlsli exactly).
-inline void PackOne(const Material& m, uint32_t dst[10])
+inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
 {
     dst[0] = PackRGB9E5(m.Kd.x, m.Kd.y, m.Kd.z);
     dst[1] = uint32_t(PackHalf(m.Kd.w))
@@ -139,15 +154,24 @@ inline void PackOne(const Material& m, uint32_t dst[10])
     };
     dst[5] = uint32_t(clip16(m.albedoTexID))
            | (uint32_t(clip16(m.normalTexID)) << 16);
-    // texIDs_2: bits 0..15 = rmaTexID, bit 16 = invertAlpha flag (high 15 still spare)
+    // texIDs_2: bits 0..15 = rmaTexID, bit 16 = invertAlpha flag,
+    //           bit 17 = SSS-enable, bits 24..31 = SSS entry weight (unorm8)
     dst[6] = uint32_t(clip16(m.rmaTexID))
-           | (m.invertAlpha ? (1u << 16) : 0u);
+           | (m.invertAlpha ? (1u << 16) : 0u)
+           | (m.sssEnable   ? (1u << 17) : 0u)
+           | (uint32_t(PackUnorm8(m.sssWeight)) << 24);
     dst[7] = uint32_t(PackHalf(m.albedoUVScale.x))
            | (uint32_t(PackHalf(m.albedoUVScale.y)) << 16);
     dst[8] = uint32_t(PackHalf(m.normalUVScale.x))
            | (uint32_t(PackHalf(m.normalUVScale.y)) << 16);
     dst[9] = uint32_t(PackHalf(m.rmaUVScale.x))
            | (uint32_t(PackHalf(m.rmaUVScale.y)) << 16);
+
+    // SSS: u32[10] = RGB9E5 single-scattering albedo (colour);
+    //      u32[11] = half(scatter distance) | half(phase g) << 16.
+    dst[10] = PackRGB9E5(m.sssAlbedo.x, m.sssAlbedo.y, m.sssAlbedo.z);
+    dst[11] = uint32_t(PackHalf(m.sssRadius))
+            | (uint32_t(PackHalf(m.sssPhaseG)) << 16);
 }
 
 } // namespace MaterialPack
@@ -174,6 +198,11 @@ struct MaterialSoA {
     std::vector<int32_t>           rmaTexID;
     std::vector<float>             alphaThreshold;
     std::vector<uint8_t>           invertAlpha;     // 0/1, AnyHit flips the cutout test when 1
+    std::vector<DirectX::XMFLOAT3> sssAlbedo;       // RGB single-scattering albedo (inside colour)
+    std::vector<float>             sssRadius;       // scalar scatter distance (mean free path)
+    std::vector<float>             sssPhaseG;       // Henyey-Greenstein anisotropy
+    std::vector<float>             sssWeight;       // entry-probability scale (x Fresnel)
+    std::vector<uint8_t>           sssEnable;       // 0/1, gates the subsurface entry
 
     size_t size()  const { return Ni.size(); }
     bool   empty() const { return Ni.empty(); }
@@ -185,6 +214,7 @@ struct MaterialSoA {
         albedoUVScale.reserve(n); normalUVScale.reserve(n); rmaUVScale.reserve(n);
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
         alphaThreshold.reserve(n); invertAlpha.reserve(n);
+        sssAlbedo.reserve(n); sssRadius.reserve(n); sssPhaseG.reserve(n); sssWeight.reserve(n); sssEnable.reserve(n);
     }
 
     void push_back(const Material& m)
@@ -203,6 +233,11 @@ struct MaterialSoA {
         rmaTexID.push_back(m.rmaTexID);
         alphaThreshold.push_back(m.alphaThreshold);
         invertAlpha.push_back(m.invertAlpha ? 1u : 0u);
+        sssAlbedo.push_back(m.sssAlbedo);
+        sssRadius.push_back(m.sssRadius);
+        sssPhaseG.push_back(m.sssPhaseG);
+        sssWeight.push_back(m.sssWeight);
+        sssEnable.push_back(m.sssEnable ? 1u : 0u);
     }
 
     void append(const std::vector<Material>& src)
@@ -227,18 +262,23 @@ struct MaterialSoA {
         m.rmaTexID = rmaTexID[i];
         m.alphaThreshold = alphaThreshold[i];
         m.invertAlpha = (i < invertAlpha.size()) ? (invertAlpha[i] != 0u) : false;
+        m.sssAlbedo = (i < sssAlbedo.size()) ? sssAlbedo[i] : DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f);
+        m.sssRadius = (i < sssRadius.size()) ? sssRadius[i] : 0.0f;
+        m.sssPhaseG = (i < sssPhaseG.size()) ? sssPhaseG[i] : 0.0f;
+        m.sssWeight = (i < sssWeight.size()) ? sssWeight[i] : 1.0f;
+        m.sssEnable = (i < sssEnable.size()) ? sssEnable[i] : 0u;
         return m;
     }
 
-    // Pack into one flat uint32 array (10 uint32 per material = 40 B)
+    // Pack into one flat uint32 array (kMatPackedU32 uint32 per material = 48 B)
     // for direct GPU upload. Matches the HLSL `MatPacked` struct.
     void BuildGpuPacked(std::vector<uint32_t>& out) const
     {
         const size_t n = size();
-        out.resize(n * 10);
+        out.resize(n * MaterialPack::kMatPackedU32);
         for (size_t i = 0; i < n; ++i) {
             Material m = Get(i);
-            MaterialPack::PackOne(m, &out[i * 10]);
+            MaterialPack::PackOne(m, &out[i * MaterialPack::kMatPackedU32]);
         }
     }
 
@@ -248,7 +288,7 @@ struct MaterialSoA {
     void PackInto(size_t i, uint32_t* buf) const
     {
         Material m = Get(i);
-        MaterialPack::PackOne(m, buf + i * 10);
+        MaterialPack::PackOne(m, buf + i * MaterialPack::kMatPackedU32);
     }
 };
 

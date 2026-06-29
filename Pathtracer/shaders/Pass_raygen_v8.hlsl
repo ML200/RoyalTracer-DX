@@ -90,6 +90,13 @@ void Pass_raygen_v8()
         store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
         rayDirPk     = rayDirPk0;
 
+        //SSS path state (per sample). sssEntered blocks re-entry after one walk;
+        //sssActive marks that the walk relocated ctx to a suffix boundary-exit B (so
+        //the depth==2 reconnection bookkeeping is rerouted). They differ for the
+        //no-scatter primary case, where the exit B is itself the v2 reconnection vertex.
+        bool sssActive  = false;
+        bool sssEntered = false;
+
     //====================================
     //BOUNCE LOOP
     //====================================
@@ -155,14 +162,17 @@ void Pass_raygen_v8()
                                     MATID_LIGHT_TRI, light.objID, 1.0f,
                                     F_contrib, seed);
                             }
-                            else if (depth == 2)
+                            else if (depth == 2 && !sssActive)
                             {
-                                //first-bounce DI, x2 is the surface
+                                //first-bounce DI, x2 is the surface. sssEntered here means a
+                                //no-scatter SSS pass-through: x2 is the white-diffuse exit B,
+                                //tag it MATID_SSS_EXIT_BIT so Reconnect uses the 1/pi entry
+                                //coupling for x1 (matching the forward pdf_product fold).
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ctx.hitPos, ctx.hitNormal,
                                     light.emission, -L,
                                     (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
-                                    ctx.matID, ctx.instID, ctx.iors.y,
+                                    ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
                                     F_contrib, seed);
                             }
                             else
@@ -224,13 +234,14 @@ void Pass_raygen_v8()
                                 //primary direct sun -> directAtX1, out of the reservoir
                                 add_rg_directX1(g_pathStateBuffer, pixelIdx, DirectContribution(wi, F_contrib));
                             }
-                            else if (depth == 2)
+                            else if (depth == 2 && !sssActive)
                             {
+                                //x2 = surface; tag a no-scatter SSS exit B (see point-light branch)
                                 AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                                     ctx.hitPos, ctx.hitNormal,
                                     sun.radiance, -sun.direction,
                                     (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
-                                    ctx.matID, ctx.instID, ctx.iors.y,
+                                    ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
                                     F_contrib, seed);
                             }
                             else
@@ -248,6 +259,105 @@ void Pass_raygen_v8()
                         }
                     }
                 }
+            }
+        }
+
+        //------------- SSS: chance to enter the medium instead of reflecting -------------
+        //The surface still reflects via the regular BRDF (NEE above + the BSDF sample
+        //below). With probability pEnter = sssWeight * Fresnel-transmittance the
+        //CONTINUATION instead enters the object: a random walk relocates to the boundary
+        //exit B (suffix). The first in-medium scatter S1 is the reconnection vertex
+        //(reconnected like a transmission segment); a no-scatter pass-through (thin area)
+        //transmits diffusely with W=1 and uses B itself as the reconnection vertex. The
+        //stochastic reflect/enter split energy-weights the indirect bounce, so the chosen
+        //branch needs no 1/p factor.
+        if (!sssEntered && LoadIsSSS(ctx.matID))
+        {
+            const float fT     = 1.0f - FresnelDielectric(-rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y).x;
+            const float pEnter = saturate(LoadSSSWeight(ctx.matID) * fT);
+            if (RandomFloatSingle(seed) < pEnter)
+            {
+                SSSWalkResult w = SubsurfaceWalk(ctx.hitPos, ctx.hitNormal, ctx.matID, seed);
+                if (!w.valid) break;   //escaped / absorbed / step-cap -> dead path
+
+                const float  sigma_t = 1.0f / max(LoadSSSRadius(ctx.matID), SSS_MIN_RADIUS);
+                const float3 albedo  = saturate(LoadSSSAlbedo(ctx.matID));
+                const float  gPhase  = LoadPhaseG(ctx.matID);
+                const float  cosA    = abs(dot(ctx.hitNormal, w.entryDir));   //entry coupling cosine (G1)
+                //the ENTRY boundary is tinted by the SURFACE albedo (regular Kd), not the
+                //inside SSS albedo; captured before ctx is relocated to the white exit B.
+                const float3 surfKd  = (float3)ctx.hitLocalKd;
+
+                if (depth == 1 && w.nScatters >= 1u)
+                {
+                    //primary scattered: first scatter S1 is the volume reconnection vertex.
+                    const float distA  = length(w.firstScatterPos - ctx.hitPos);
+                    const float phaseF = EvaluatePhaseHG(gPhase, dot(w.entryDir, w.firstScatterDir));
+                    const float pdfFac = SSS_INV_PI * cosA * exp(-sigma_t * distA) * sigma_t * phaseF;
+
+                    store_ps_depth1(g_pathStateBuffer, pixelIdx,
+                                    w.firstScatterPos, w.firstScatterDir,
+                                    ctx.matID | MATID_SSS_VOLUME_BIT, ctx.instID, 1.0f,
+                                    albedo, 1.0f, 0.0f);
+                    store_ps_v2(g_pathStateBuffer, pixelIdx, w.firstScatterDir);
+                    store_rg_tpost(g_pathStateBuffer, pixelIdx, w.wRest);   //first-scatter albedo lives in F2
+                    pdf_product = min(pdf_product * max(pdfFac, 1e-20f), 1e30f);
+                    sssActive   = true;
+                }
+                else if (depth == 1)
+                {
+                    //primary no-scatter (thin area): the boundary exit B is itself the v2
+                    //reconnection vertex (white diffuse re-emergence). MATID_SSS_EXIT_BIT
+                    //records that x1's coupling is the 1/pi diffuse entry (not its reflective
+                    //BRDF) so Reconnect's target matches this forward F. The path continues
+                    //from B normally at depth==2 (sssActive stays false). W=1.
+                    store_ps_depth1(g_pathStateBuffer, pixelIdx,
+                                    w.exitPos, w.exitNormal,
+                                    ctx.matID | MATID_SSS_EXIT_BIT, ctx.instID, 1.0f,
+                                    float3(1, 1, 1), 1.0f, 0.0f);
+                    pdf_product = min(pdf_product * max(SSS_INV_PI * cosA, 1e-20f), 1e30f);
+                    sssActive   = false;
+                }
+                else if (depth == 2)
+                {
+                    //indirect: re-bake the SSS ENTRY SURFACE (the v2 reconnection vertex) with
+                    //Kd = the surface albedo so Reconnect's regular surface branch yields the
+                    //surfKd/pi entry coupling; the whole walk is suffix. V2 = into-medium dir.
+                    store_ps_depth1(g_pathStateBuffer, pixelIdx,
+                                    ctx.hitPos, ctx.hitNormal,
+                                    ctx.matID, ctx.instID, (float)ctx.iors.y,
+                                    surfKd, 1.0f, 0.0f);
+                    store_ps_v2(g_pathStateBuffer, pixelIdx, w.entryDir);
+                    store_rg_tpost(g_pathStateBuffer, pixelIdx, w.wTotal);
+                    pdf_product = min(pdf_product * max(SSS_INV_PI * cosA, 1e-20f), 1e30f);
+                    sssActive   = true;
+                }
+                else
+                {
+                    //deep: the reconnection vertex is a shallower surface; the entry + walk are
+                    //pure suffix, so fold the entry coupling (surfKd/pi*cosA) into tpost (-> L2).
+                    const float3 tp = load_rg_tpost(g_pathStateBuffer, pixelIdx) * w.wTotal * (SSS_INV_PI * cosA) * surfKd;
+                    store_rg_tpost(g_pathStateBuffer, pixelIdx, tp);
+                    pdf_product = min(pdf_product * max(SSS_INV_PI * cosA, 1e-20f), 1e30f);
+                    sssActive   = true;
+                }
+
+                //analog subsurface throughput -> prefix target (W=1 for a pass-through).
+                //surfKd is the surface-albedo entry tint (matched by Reconnect's F1/F2).
+                throughputPk = PackRGB9E5(UnpackRGB9E5(throughputPk) * w.wTotal * surfKd);
+                sssEntered   = true;
+
+                //re-emerge at the boundary exit B as a white diffuse surface seen from outside
+                ctx.hitPos         = w.exitPos;
+                ctx.hitNormal      = w.exitNormal;
+                ctx.hitLocalKd     = (half3)float3(1, 1, 1);
+                ctx.hitLocalPr     = (half)1.0f;
+                ctx.hitLocalPm     = (half)0.0f;
+                ctx.iors           = (half2)float2(1.0f, 1.0f);
+                ctx.mediumMatID    = MEDIUM_INVALID;
+                ctx.absorptionTint = (half3)float3(1, 1, 1);
+                rayDirPk           = PackNormal(-w.exitNormal);   //outgoing -rayDir = exitNormal (outward)
+                continue;
             }
         }
 
@@ -272,8 +382,9 @@ void Pass_raygen_v8()
         rayDirPk     = PackNormal(s);  //carrier for next iter back-edge
 
         //v_2 reconnection dir (v_3 -> v_2 = -s), stored at the depth==2 bottom so
-        //the depth==2 miss/emitter candidates read the real direction.
-        if (depth == 2)
+        //the depth==2 miss/emitter candidates read the real direction. Skipped when
+        //sssActive: the SSS walk already wrote V2 (first-scatter / into-medium dir).
+        if (depth == 2 && !sssActive)
             store_ps_v2(g_pathStateBuffer, pixelIdx, -rayDir);
 
         const float3 offsetN = (dot(s, ctx.hitNormal) >= 0.0f) ? ctx.hitNormal : -ctx.hitNormal;
@@ -299,8 +410,10 @@ void Pass_raygen_v8()
 
         //tpost: post-v_2 suffix throughput across v_3..v_{D-1}. Every depth>=4 GI
         //reconnection candidate reads it (correctness), so it runs for depth>=3
-        //regardless of RR; tpostWeight is the RR-unboosted f*cos.
-        if (depth >= 3)
+        //regardless of RR; tpostWeight is the RR-unboosted f*cos. For a scattered primary
+        //SSS path the boundary-exit vertex sits at depth==2 (already in the suffix past
+        //the volume reconnection vertex), so accumulation opens one bounce earlier.
+        if (depth >= 3 || (sssActive && depth >= 2))
         {
             const float3 tpost = load_rg_tpost(g_pathStateBuffer, pixelIdx) * tpostWeight;
             store_rg_tpost(g_pathStateBuffer, pixelIdx, tpost);

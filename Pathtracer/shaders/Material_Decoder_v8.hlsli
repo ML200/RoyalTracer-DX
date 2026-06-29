@@ -125,6 +125,7 @@ inline int LoadRmaTexID(uint matID)
 
 //bit 16 of texIDs_2: 1 = opacity-channel sample is transparency (1=transparent, 0=opaque),
 //AnyHit flips the cutout test so map_Tr-style and inverted-PNG opacity textures render correctly.
+//(bit 17 = SSS-enable, bits 24..31 = SSS entry weight — see the SSS decoders below.)
 inline bool LoadInvertAlpha(uint matID)
 {
     return (g_mat[matID].texIDs_2 & (1u << 16)) != 0u;
@@ -146,6 +147,39 @@ inline float2 LoadRmaUVScale(uint matID)
 {
     const uint p = g_mat[matID].uv_rma;
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
+}
+
+//====================================
+//SUBSURFACE SCATTERING
+//====================================
+//bit 17 of texIDs_2: 1 = random-walk SSS enabled.
+inline bool LoadIsSSS(uint matID)
+{
+    return (g_mat[matID].texIDs_2 & (1u << 17)) != 0u;
+}
+
+//RGB single-scattering albedo (the inside colour); per-scatter throughput.
+inline float3 LoadSSSAlbedo(uint matID)
+{
+    return UnpackRGB9E5(g_mat[matID].sss_albedo);
+}
+
+//Scalar scattering distance / mean free path. sigma_t = 1/radius.
+inline float LoadSSSRadius(uint matID)
+{
+    return f16tof32(g_mat[matID].sss_radius_g & 0xFFFFu);
+}
+
+//Henyey-Greenstein anisotropy g in [-1,1].
+inline float LoadPhaseG(uint matID)
+{
+    return f16tof32(g_mat[matID].sss_radius_g >> 16);
+}
+
+//Entry-probability scale (texIDs_2 bits 24..31, unorm8). p_enter = weight * Fresnel-T.
+inline float LoadSSSWeight(uint matID)
+{
+    return float((g_mat[matID].texIDs_2 >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
 #endif

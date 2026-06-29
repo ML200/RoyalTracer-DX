@@ -43,7 +43,7 @@ void Pass_spmis_shift_v8()
         const float  W    = (rdi.W > 0.0f) ? rdi.W : 0.0f;
         const float3 outC = rdi.F * W;
         float passVis = 1.0f;
-        if (GetPHat(outC) > 0.0f)
+        if (GetPHat(outC) > 0.0f && !IsVolumeVertex(rdi.matID))   //volume vertex is in-medium
             passVis = ReconnectVis(sv_me.x, sv_me.n_s, rdi.matID, rdi.x2, rdi.n2_s);
         g_pathStateBuffer.Store(SPM_w1(pixelIdx), asuint(passVis));
         return;
@@ -53,7 +53,9 @@ void Pass_spmis_shift_v8()
     const uint  reuseCell  = SPM_hdrCell(w0);
     const uint  Ntn        = min(max(spmis_reuseN, 1u), SPMIS_SPLIT_MAXDRAWS);
     const float centerConf = (float)rdi.M;                 // UNCAPPED
-    const float my_Jc      = (rdi.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(myPos, rdi.x2, rdi.n2_s);
+    const float my_Jc      = (rdi.matID == MATID_ENV_MISS) ? 1.0f
+                           : (IsVolumeVertex(rdi.matID) ? ComputeJcVol(myPos, rdi.x2)
+                                                        : ComputeJc(myPos, rdi.x2, rdi.n2_s));
     const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
     const float p_c        = GetPHat(rdi.F) * visReuse_c;
 
@@ -78,14 +80,16 @@ void Pass_spmis_shift_v8()
                               rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
                               rdi.Kd, rdi.Pr, rdi.Pm, rdi.eta, Jn_rev);
         float ph = GetPHat(cr);
-        if (rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS && rdi.Pr < SAMPLE_PT_ROUGHNESS_MIN)
+        if (rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS &&
+            !IsVolumeVertex(rdi.matID) && rdi.Pr < SAMPLE_PT_ROUGHNESS_MIN)
             ph = 0.0f;
         //A rejected Jacobian zeroes tf regardless of visibility, so fold it in BEFORE the
         //shadow ray and skip the IsVisible trace when jr_c==0 (mirrors the non-canonical
         //loop's shift_jac<=0 early-out below). Identical result, one fewer ray on reject.
         const float jr_c = JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
         //shadowed resample: visibility of the centre's sample from the partner pixel.
-        if (ph > 0.0f && jr_c > 0.0f)
+        //A volume vertex is in-medium (the entry surface self-occludes x1->S1) -> skip.
+        if (ph > 0.0f && jr_c > 0.0f && !IsVolumeVertex(rdi.matID))
         {
             if (rdi.matID == MATID_ENV_MISS)
             { const float3 md = normalize(rdi.x2);
@@ -112,8 +116,10 @@ void Pass_spmis_shift_v8()
 
         Reservoir pr = loadReservoir(g_Reservoirs_current, zPx);
         //roughness gate + dead-reservoir gate -> mark the slot dead so merge skips it.
+        //Volume vertices are exempt (the phase function is always "rough").
         if (pr.W <= 0.0f ||
-            (pr.matID != MATID_LIGHT_TRI && pr.matID != MATID_ENV_MISS && pr.Pr < SAMPLE_PT_ROUGHNESS_MIN))
+            (pr.matID != MATID_LIGHT_TRI && pr.matID != MATID_ENV_MISS &&
+             !IsVolumeVertex(pr.matID) && pr.Pr < SAMPLE_PT_ROUGHNESS_MIN))
         {
             g_pathStateBuffer.Store(sa, SP_UNDEF);
             continue;
@@ -125,7 +131,9 @@ void Pass_spmis_shift_v8()
                              sv_me.Kd, sv_me.Pr, sv_me.Pm, sv_me.etai, sv_me.etat,
                              pr.matID, pr.x2, pr.n2_s, pr.L2, pr.V2,
                              pr.Kd, pr.Pr, pr.Pm, pr.eta, Jn);
-        const float Jc_z      = (pr.matID == MATID_ENV_MISS) ? 1.0f : ComputeJc(zPos, pr.x2, pr.n2_s);
+        const float Jc_z      = (pr.matID == MATID_ENV_MISS) ? 1.0f
+                              : (IsVolumeVertex(pr.matID) ? ComputeJcVol(zPos, pr.x2)
+                                                          : ComputeJc(zPos, pr.x2, pr.n2_s));
         const float shift_jac = JacobianRatioRej(Jn, Jc_z, spmis_jacThreshold);
         if (shift_jac <= 0.0f)
         {
@@ -136,7 +144,7 @@ void Pass_spmis_shift_v8()
         //Shadowed resample: trace the reconnection shadow ray (inline RayQuery) so the
         //target + contribution carry visibility (occluded neighbours get target 0).
         float vis = 1.0f;
-        if (GetPHat(c) > 0.0f)
+        if (GetPHat(c) > 0.0f && !IsVolumeVertex(pr.matID))   //volume vertex: in-medium, skip
         {
             if (pr.matID == MATID_ENV_MISS)
             { const float3 md = normalize(pr.x2);
