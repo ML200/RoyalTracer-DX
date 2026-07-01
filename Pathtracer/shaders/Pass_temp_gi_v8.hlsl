@@ -148,27 +148,28 @@ void Pass_temp_gi_v8()
             Jnc);
 
         float ph = GetPHat(c);
-        float vis = 0.0f;
+        float3 vis = 0.0.xxx;
         if (ph > 0.0f)
         {
             //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve).
             //Volume vertices are in-medium (entry surface self-occludes) -> treat visible.
             if (REUSE_VIS_OFF || IsVolumeVertex(rdi.matID))
             {
-                vis = 1.0f;
+                vis = 1.0.xxx;
             }
             else if (rdi.matID == MATID_ENV_MISS)
             {
                 //miss: synthesize a far endpoint along the stored sky direction
                 const float3 md = normalize(rdi.x2);
-                vis = IsVisible(sv_r.x, sv_r.n_s, sv_r.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
+                vis = VisibilityTransmittance(sv_r.x, sv_r.n_s, sv_r.x + md * RAY_TMAX_PLANET, -md);
             }
             else
             {
-                vis = IsVisible(sv_r.x, sv_r.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
+                vis = VisibilityTransmittance(sv_r.x, sv_r.n_s, rdi.x2, rdi.n2_s);
             }
         }
-        p_n = ph * vis;
+        //thin glass attenuates (1-F)*Tf: fold the RGB transmittance into the target.
+        p_n = GetPHat(c * vis);
     }
 
     //n_c, reconnect from current to neighbor GI sample
@@ -191,27 +192,27 @@ void Pass_temp_gi_v8()
 
         J2 = JacobianRatio(Jn, Jc_neighbor, temp_jacClamp);
         float ph = GetPHat(c);
-        float vis_n = 0.0f;
+        float3 vis_n = 0.0.xxx;
         if (ph > 0.0f)
         {
             //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve).
             //Volume vertices are in-medium (entry surface self-occludes) -> treat visible.
             if (REUSE_VIS_OFF || IsVolumeVertex(rdi_r.matID))
             {
-                vis_n = 1.0f;
+                vis_n = 1.0.xxx;
             }
             else if (rdi_r.matID == MATID_ENV_MISS)
             {
                 //miss: synthesize a far endpoint along the stored sky direction
                 const float3 md = normalize(rdi_r.x2);
-                vis_n = IsVisible(sv_c.x, sv_c.n_s, sv_c.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
+                vis_n = VisibilityTransmittance(sv_c.x, sv_c.n_s, sv_c.x + md * RAY_TMAX_PLANET, -md);
             }
             else
             {
-                vis_n = IsVisible(sv_c.x, sv_c.n_s, rdi_r.x2, rdi_r.n2_s) ? 1.0f : 0.0f;
+                vis_n = VisibilityTransmittance(sv_c.x, sv_c.n_s, rdi_r.x2, rdi_r.n2_s);
             }
         }
-        n_c = ph * vis_n;
+        n_c = GetPHat(c * vis_n);
         contrib_n_from_me = c * vis_n;
     }
 

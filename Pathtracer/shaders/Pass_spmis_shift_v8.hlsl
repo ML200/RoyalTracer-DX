@@ -44,7 +44,9 @@ void Pass_spmis_shift_v8()
         const float3 outC = rdi.F * W;
         float passVis = 1.0f;
         if (GetPHat(outC) > 0.0f && !IsVolumeVertex(rdi.matID))   //volume vertex is in-medium
-            passVis = ReconnectVis(sv_me.x, sv_me.n_s, rdi.matID, rdi.x2, rdi.n2_s);
+            //deferred passthrough stores a single float -> achromatic transmittance here (the
+            //per-channel thin-glass tint is carried by the inline RIS-target visibility).
+            passVis = Luma(ReconnectVis(sv_me.x, sv_me.n_s, rdi.matID, rdi.x2, rdi.n2_s));
         g_pathStateBuffer.Store(SPM_w1(pixelIdx), asuint(passVis));
         return;
     }
@@ -89,13 +91,16 @@ void Pass_spmis_shift_v8()
         const float jr_c = JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
         //shadowed resample: visibility of the centre's sample from the partner pixel.
         //A volume vertex is in-medium (the entry surface self-occludes x1->S1) -> skip.
+        //thin glass attenuates (1-F)*Tf -> fold the RGB transmittance into the target.
         if (ph > 0.0f && jr_c > 0.0f && !IsVolumeVertex(rdi.matID))
         {
+            float3 visT;
             if (rdi.matID == MATID_ENV_MISS)
             { const float3 md = normalize(rdi.x2);
-              ph *= IsVisible(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+              visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md); }
             else
-              ph *= IsVisible(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
+              visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s);
+            ph = GetPHat(cr * visT);
         }
         const float tf_center_at_neighbor = ph * jr_c;
         const float denom_mc = tf_center_at_neighbor * neighbors_conf_sum + p_c * centerConf;
@@ -143,14 +148,14 @@ void Pass_spmis_shift_v8()
 
         //Shadowed resample: trace the reconnection shadow ray (inline RayQuery) so the
         //target + contribution carry visibility (occluded neighbours get target 0).
-        float vis = 1.0f;
+        float3 vis = 1.0.xxx;
         if (GetPHat(c) > 0.0f && !IsVolumeVertex(pr.matID))   //volume vertex: in-medium, skip
         {
             if (pr.matID == MATID_ENV_MISS)
             { const float3 md = normalize(pr.x2);
-              vis = IsVisible(sv_me.x, sv_me.n_s, sv_me.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+              vis = VisibilityTransmittance(sv_me.x, sv_me.n_s, sv_me.x + md * RAY_TMAX_PLANET, -md); }
             else
-              vis = IsVisible(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s) ? 1.0f : 0.0f;
+              vis = VisibilityTransmittance(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s);
         }
         c *= vis;
         const float tf_center   = GetPHat(c);                  // shadowed (visibility folded in)

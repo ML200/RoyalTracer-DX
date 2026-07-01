@@ -46,11 +46,13 @@ inline SurfaceVertex MakeVertex(float3 x1, float3 n_s, float3 viewOrigin,
     v.Pm    = Pm;
     v.uv    = float2(0.0f, 0.0f);   // uv no longer stored - unused downstream
 
-    //only flip IOR for transmissive backfaces, opaque backface has no interior
+    //only flip IOR for transmissive backfaces, opaque backface has no interior.
+    //thin glass is a single interface -> Fresnel is air->glass (1,Ni) from either side, never
+    //flip (a flipped (Ni,1) would trip TIR in Reconnect's thin-transmit Fresnel).
     const float matNi = LoadNi(matID);
     const float Kd_w  = LoadKd_w(matID);
     const bool transmissive = (matNi > 1.0f + EPSILON) && (Kd_w < 1.0f - EPSILON);
-    const bool flipIOR = backface && transmissive;
+    const bool flipIOR = backface && transmissive && !LoadIsThinGlass(matID);
     v.etai = flipIOR ? matNi : 1.0f;
     v.etat = flipIOR ? 1.0f  : matNi;
     return v;

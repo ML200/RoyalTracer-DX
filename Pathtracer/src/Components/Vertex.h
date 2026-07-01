@@ -35,6 +35,12 @@ struct alignas(16) Material {
     float alphaThreshold;
     bool invertAlpha = false;  // true = sample is transparency (1=transparent), AnyHit will flip the test
 
+    // Thin-walled glass: single Fresnel interface. Reflects a roughness-aware Fresnel lobe and
+    // transmits the rest straight through (no Snell bend, no medium/absorption tracking). Tinted
+    // by Tf. Shadow rays attenuate by (1-F)*Tf instead of blocking — so thin-glass triangles are
+    // classified non-opaque at load (AssetLoader) and the visibility walk lets them pass.
+    uint8_t thinGlass = 0;
+
     // Random-walk subsurface scattering. sssEnable gates the layered reflect-or-enter
     // surface; sssAlbedo is the RGB single-scattering albedo (inside colour), sssRadius
     // the scalar scatter distance (mean free path), sssPhaseG the Henyey-Greenstein
@@ -159,6 +165,7 @@ inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
     dst[6] = uint32_t(clip16(m.rmaTexID))
            | (m.invertAlpha ? (1u << 16) : 0u)
            | (m.sssEnable   ? (1u << 17) : 0u)
+           | (m.thinGlass   ? (1u << 18) : 0u)
            | (uint32_t(PackUnorm8(m.sssWeight)) << 24);
     dst[7] = uint32_t(PackHalf(m.albedoUVScale.x))
            | (uint32_t(PackHalf(m.albedoUVScale.y)) << 16);
@@ -198,6 +205,7 @@ struct MaterialSoA {
     std::vector<int32_t>           rmaTexID;
     std::vector<float>             alphaThreshold;
     std::vector<uint8_t>           invertAlpha;     // 0/1, AnyHit flips the cutout test when 1
+    std::vector<uint8_t>           thinGlass;       // 0/1, single Fresnel interface (no medium, shadow-attenuating)
     std::vector<DirectX::XMFLOAT3> sssAlbedo;       // RGB single-scattering albedo (inside colour)
     std::vector<float>             sssRadius;       // scalar scatter distance (mean free path)
     std::vector<float>             sssPhaseG;       // Henyey-Greenstein anisotropy
@@ -213,7 +221,7 @@ struct MaterialSoA {
         Pr_Pm_Ps_Pc.reserve(n); Pcr_aniso_anisor.reserve(n); Tf.reserve(n);
         albedoUVScale.reserve(n); normalUVScale.reserve(n); rmaUVScale.reserve(n);
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
-        alphaThreshold.reserve(n); invertAlpha.reserve(n);
+        alphaThreshold.reserve(n); invertAlpha.reserve(n); thinGlass.reserve(n);
         sssAlbedo.reserve(n); sssRadius.reserve(n); sssPhaseG.reserve(n); sssWeight.reserve(n); sssEnable.reserve(n);
     }
 
@@ -233,6 +241,7 @@ struct MaterialSoA {
         rmaTexID.push_back(m.rmaTexID);
         alphaThreshold.push_back(m.alphaThreshold);
         invertAlpha.push_back(m.invertAlpha ? 1u : 0u);
+        thinGlass.push_back(m.thinGlass ? 1u : 0u);
         sssAlbedo.push_back(m.sssAlbedo);
         sssRadius.push_back(m.sssRadius);
         sssPhaseG.push_back(m.sssPhaseG);
@@ -262,6 +271,7 @@ struct MaterialSoA {
         m.rmaTexID = rmaTexID[i];
         m.alphaThreshold = alphaThreshold[i];
         m.invertAlpha = (i < invertAlpha.size()) ? (invertAlpha[i] != 0u) : false;
+        m.thinGlass = (i < thinGlass.size()) ? thinGlass[i] : uint8_t(0u);
         m.sssAlbedo = (i < sssAlbedo.size()) ? sssAlbedo[i] : DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f);
         m.sssRadius = (i < sssRadius.size()) ? sssRadius[i] : 0.0f;
         m.sssPhaseG = (i < sssPhaseG.size()) ? sssPhaseG[i] : 0.0f;

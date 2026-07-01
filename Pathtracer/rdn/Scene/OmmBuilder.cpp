@@ -73,6 +73,22 @@ void OmmBuilder::BakeAll(
             uint32_t triIdx = alphaStart + t;
             uint32_t matID  = mesh.cpuMaterialIDs[triIdx];
 
+            // Glass (transmissive Kd.w<1, plus the thin-glass flag) lives in the alpha bucket but
+            // has no cutout texture — it must run the visibility candidate test so the walk can
+            // decide (thin glass attenuates; solid glass occludes) per the RUNTIME material flag.
+            // Mark it FULLY_UNKNOWN_OPAQUE: forced-2-state main rays still treat it as opaque
+            // (camera/GI hit and shade it), while the no-force visibility walk surfaces it as a
+            // non-opaque candidate. Keying on Kd.w (load-time) instead of the thin-glass flag lets
+            // the editor toggle work without an OMM rebuild. Default FULLY_OPAQUE would occlude.
+            const bool isThinGlass    = matID < materials.thinGlass.size()
+                                        && materials.thinGlass[matID] != 0u;
+            const bool isTransmissive = materials.Kd[matID].w < 1.0f;
+            if (isThinGlass || isTransmissive) {
+                mesh.ommBake.triOmmIndices[t] =
+                    D3D12_RAYTRACING_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_UNKNOWN_OPAQUE;
+                continue;
+            }
+
             int texID = materials.albedoTexID[matID];
             if (texID < 0 || (uint32_t)texID >= albedoImages.size() || !albedoImages[texID])
                 continue; // stays FULLY_OPAQUE

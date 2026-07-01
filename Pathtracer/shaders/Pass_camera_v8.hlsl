@@ -57,7 +57,9 @@ inline bool TraceCameraRay(
 
     const float  matNi        = LoadNi(matID);
     const bool   transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
-    const bool   flipIOR      = hinfo.backface && transmissive;
+    //thin glass is a single interface: never enter a medium, Fresnel always air->glass (1,Ni)
+    //regardless of facing, and no path-length absorption (absorptionTint stays 1).
+    const bool   flipIOR      = hinfo.backface && transmissive && !LoadIsThinGlass(matID);
     const float2 iors         = flipIOR ? float2(matNi, 1.0f) : float2(1.0f, matNi);
     const uint   mediumMatID  = flipIOR ? matID : MEDIUM_INVALID;
 
@@ -90,8 +92,9 @@ inline bool TraceCameraRay(
         const float3 reflDir    = reflect(rayDir, hinfo.hitNormal);
         const float3 reflOrigin = offset_ray(hitPos, hinfo.hitNormal);
 
-        bool  committed = false;
-        float reflT     = 0.0f;
+        bool  committed   = false;
+        float reflT       = 0.0f;
+        uint  reflInstID  = 0xFFFFFFFFu;
         if (IsRayValid(reflOrigin, reflDir, 10000.0f))
         {
             RayDesc reflRay;
@@ -117,16 +120,23 @@ inline bool TraceCameraRay(
             }
             if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
             {
-                committed = true;
-                reflT     = q.CommittedRayT();
+                committed  = true;
+                reflT      = q.CommittedRayT();
+                reflInstID = q.CommittedInstanceID();
             }
         }
 
         if (committed)
         {
+            //virtualPos is rigidly attached to the REFLECTED instance (reflInstID), not the
+            //mirror itself -> the downstream spec-MV reprojection (Pass_shading_v8/Pass_temp_gi_v8,
+            //which read this .w as "reflInstID") must key off the reflected object's own transform
+            //so a moving reflection is captured; keying off the mirror's instID instead degenerates
+            //to camera-motion-only whenever the mirror is static, silently dropping the reflected
+            //object's motion.
             const float3 reflPos    = reflOrigin + reflDir * reflT;
             const float3 virtualPos = reflPos - 2.0f * dot(reflPos - hitPos, hinfo.hitNormal) * hinfo.hitNormal;
-            gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(instID));
+            gScratchPing[uint3(pixel, 4)] = float4(virtualPos, asfloat(reflInstID));
         }
         else
         {

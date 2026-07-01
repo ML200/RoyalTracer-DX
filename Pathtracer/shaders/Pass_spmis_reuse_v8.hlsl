@@ -77,9 +77,13 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     const uint cellCenter = g_spmisBuffer.Load(SP_A(SP_HASH, pixelIdx));
 
-    //no center sample or no resolved cell -> passthrough the canonical, with one
-    //deferred visibility ray so the displayed value is shadowed.
-    if (rdi.M == 0u || cellCenter == SP_UNDEF)
+    //no center sample / no resolved cell -> passthrough. Also low-roughness glass: its
+    //near-specular transmit/refract lobe is strongly view-dependent, so spatial resampling
+    //across neighbours spikes p_hat -> fireflies; skip SPMIS and keep the (view-stable)
+    //temporal + canonical reservoir. See SPMIS_GLASS_ROUGHNESS_MIN.
+    const bool glassNoReuse = sv_me.Pr < SPMIS_GLASS_ROUGHNESS_MIN
+                              && LoadKd_w(sv_me.matID) < 1.0f - EPSILON;
+    if (rdi.M == 0u || cellCenter == SP_UNDEF || glassNoReuse)
     {
         const float  W    = (rdi.W > 0.0f) ? rdi.W : 0.0f;
         float3       outC = rdi.F * W;
@@ -172,13 +176,16 @@ void main(uint3 tid : SV_DispatchThreadID)
             //shadowed resample: visibility of the centre's sample from the partner pixel,
             //keeping the canonical MIS weight consistent with the shadowed non-canonical.
             //Volume vertices are in-medium (entry surface self-occludes) -> skip the ray.
+            //thin glass attenuates (1-F)*Tf -> fold the RGB transmittance into the target.
             if (ph > 0.0f && !IsVolumeVertex(rdi.matID))
             {
+                float3 visT;
                 if (rdi.matID == MATID_ENV_MISS)
                 { const float3 md = normalize(rdi.x2);
-                  ph *= IsVisible(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+                  visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md); }
                 else
-                  ph *= IsVisible(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s) ? 1.0f : 0.0f;
+                  visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s);
+                ph = GetPHat(cr * visT);
             }
             const float tf_center_at_neighbor = ph * JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
             const float denom_mc = tf_center_at_neighbor * neighbors_conf_sum + p_c * centerConf;
@@ -245,14 +252,14 @@ void main(uint3 tid : SV_DispatchThreadID)
             //Shadowed resample: trace the reconnection shadow ray now so the target +
             //contribution carry visibility and occluded neighbours (target 0) are never
             //selected. Volume vertices are in-medium, so skip the (self-occluding) ray.
-            float vis = 1.0f;
+            float3 vis = 1.0.xxx;
             if (GetPHat(c) > 0.0f && !IsVolumeVertex(pr.matID))
             {
                 if (pr.matID == MATID_ENV_MISS)
                 { const float3 md = normalize(pr.x2);
-                  vis = IsVisible(sv_me.x, sv_me.n_s, sv_me.x + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f; }
+                  vis = VisibilityTransmittance(sv_me.x, sv_me.n_s, sv_me.x + md * RAY_TMAX_PLANET, -md); }
                 else
-                  vis = IsVisible(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s) ? 1.0f : 0.0f;
+                  vis = VisibilityTransmittance(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s);
             }
             c *= vis;
             const float tf_center   = GetPHat(c);                  // shadowed (visibility folded in)

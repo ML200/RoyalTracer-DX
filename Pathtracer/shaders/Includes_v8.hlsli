@@ -880,7 +880,9 @@ inline float ResolveReuseVis(uint pixelIdx, Reservoir r, float3 contrib)
     if (!REUSE_VIS_OFF || FINAL_VIS_OFF || GetPHat(contrib) <= 0.0f) return 1.0f;
     const float3        x1 = load_x1(g_sample_current, pixelIdx);
     const SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, x1, InitOrigin());
-    return ReconnectVis(sv.x, sv.n_s, r.matID, r.x2, r.n2_s);
+    //scalar return for this deferred final-visibility path -> achromatic transmittance (the
+    //per-channel thin-glass tint is carried by the inline RIS-target visibility upstream).
+    return Luma(ReconnectVis(sv.x, sv.n_s, r.matID, r.x2, r.n2_s));
 }
 
 #endif

@@ -20,6 +20,19 @@ inline bool RefractVector(float3 wo, float3 m, float eta, out float3 wi)
 }
 
 //====================================
+//THIN-GLASS STRAIGHT-THROUGH
+//====================================
+//Mirror a direction across the surface plane (flips only the normal component). Thin-glass
+//transmission folds the lower-hemisphere L into this mirror and evaluates the GGX REFLECTION
+//lobe against it: at Pr=0 the mirror of reflect(-V,N) is exactly -V (straight through, no Snell
+//bend); with roughness it spreads symmetrically to the reflection lobe. Tangential dots are
+//mirror-invariant (u·N=0 -> u·mirror(L)=u·L), so only the half-vector and NdotL sign change.
+inline float3 MirrorAcrossPlane(float3 v, float3 n)
+{
+    return v - 2.0f * dot(v, n) * n;
+}
+
+//====================================
 //GGX BRDF EVALUATION
 //====================================
 inline float3 EvaluateBRDF_GGX(
@@ -230,6 +243,14 @@ inline float3 SampleBRDF_GGX(
         L = reflect(-V, H);
         refract = false;
     }
+    else if (LoadIsThinGlass(mID))
+    {
+        //thin glass: straight-through. Mirror the reflected micro-facet direction across the
+        //surface -> -V at Pr=0 (no bend), spreading with roughness. NdotL<0, so refract=true
+        //keeps BXDF's below-surface acceptance (the sample stays on the far side).
+        L = MirrorAcrossPlane(reflect(-V, H), N);
+        refract = true;
+    }
     else
     {
         float eta = etai / etat;
@@ -271,6 +292,9 @@ inline GGXResult EvalGGXAll(
     const bool  isReflect = NdotL_f > 0.0f;
     const float absNdotL  = abs(NdotL_f);
 
+    //thin-walled glass: the transmit lobe is a mirrored reflection, not a refraction (see below).
+    const bool  thinTransmit = !isReflect && LoadIsThinGlass(matID);
+
     //bounded material params already half from the signature
     const half Kd_w_h     = (half)LoadKd_w(matID);
     const half oneMinusPm = (half)1.0 - Pm;
@@ -303,6 +327,55 @@ inline GGXResult EvalGGXAll(
     }
     float3 T, B;
     BuildAnisotropicFrame(N, LoadAnisoRot(matID), T, B);
+
+    //====================================
+    //THIN-GLASS TRANSMIT (mirrored reflection lobe)
+    //====================================
+    //Evaluate the GGX reflection lobe against the mirror of L, weight by (1-F)*trans_w (no metal
+    //transmit) and tint by Tf. Early return keeps the solid-glass refraction path below untouched
+    //and off this branch. r.t was already set above (gate for any diffuse layer beneath).
+    [branch]
+    if (thinTransmit)
+    {
+        const float3 Lm  = MirrorAcrossPlane(L, N);   //NdotLm = absNdotL > 0
+        const float3 Hun = V + Lm;
+        if (dot(Hun, Hun) <= 1e-16f) return r;
+        const float3 Ht  = normalize(Hun);
+
+        const float VdotHt = dot(V, Ht);
+        const half  NdotHt = (half)dot(N, Ht);
+        const half  TdotHt = (half)dot(T, Ht);
+        const half  BdotHt = (half)dot(B, Ht);
+        const half  TdotV  = (half)dot(T, V);
+        const half  BdotV  = (half)dot(B, V);
+        const half  TdotLm = (half)dot(T, Lm);        //== dot(T,L), mirror-invariant
+        const half  BdotLm = (half)dot(B, Lm);
+
+        const float D   = D_GGX_Aniso(NdotHt, TdotHt, BdotHt, ax_h, ay_h);
+        const float G1V = G1_SmithGGX_Aniso(NdotV,    TdotV,  BdotV,  ax_h, ay_h);
+        const float G1L = G1_SmithGGX_Aniso(absNdotL, TdotLm, BdotLm, ax_h, ay_h);
+        const float G2  = G1V * G1L;
+
+        const float F  = FresnelDielectricTIR(V, Ht, etai, etat).x;   //air->glass, real Ni
+        const float wT = (1.0f - F) * (float)trans_w * (float)oneMinusPm;
+
+        const float  DG2_over_den = (D * G2) / (4.0f * NdotV * absNdotL);
+        float3 spec_t = (wT * DG2_over_den) * LoadTf(matID);
+        r.f = (any(isnan(spec_t)) || any(isinf(spec_t))) ? 0.0.xxx : spec_t;
+
+        //pdf: reflection-form half-vector pdf scaled by the transmit selection fraction
+        const half p_refl = oneMinusPm * (half)F + Pm;
+        const half p_tran = oneMinusPm * ((half)1.0 - (half)F) * trans_w;
+        const half p_sum  = p_refl + p_tran;
+        if (p_sum > (half)0.0)
+        {
+            const float VdotHt_pos = max(1e-6f, VdotHt);
+            const float pdf_H      = (D * G1V * VdotHt_pos) / max(1e-6f, NdotV);
+            const float pTranScale = noReflect ? 1.0f : ((float)p_tran / (float)p_sum);
+            r.pdf = max(0.0f, pTranScale * pdf_H / (4.0f * VdotHt_pos));
+        }
+        return r;
+    }
 
     //half vector
     float3 H;
@@ -445,6 +518,34 @@ inline float BRDF_PDF_GGX(
     float fNdotL = dot(fN, L);
 
     bool reflect = NdotL > 0.0f;
+
+    //thin-glass transmit: mirrored-reflection pdf (mirrors EvalGGXAll's thinTransmit branch).
+    if (!reflect && LoadIsThinGlass(mID))
+    {
+        const float3 Lm = MirrorAcrossPlane(L, N);
+        float3 Hun = V + Lm;
+        if (dot(Hun, Hun) <= 1e-16f) return 0.0f;
+        float3 Ht = normalize(Hun);
+
+        float alpha_t = max(0.001f, Pr * Pr);
+        float ax_t, ay_t;
+        ComputeAnisotropicAlphas(alpha_t, LoadAniso(mID), ax_t, ay_t);
+        float3 Tt, Bt;
+        BuildAnisotropicFrame(N, LoadAnisoRot(mID), Tt, Bt);
+
+        float VdotHt = max(1e-6f, dot(V, Ht));
+        float pdf_H  = (D_GGX_Aniso(dot(N, Ht), dot(Tt, Ht), dot(Bt, Ht), ax_t, ay_t)
+                      * G1_SmithGGX_Aniso(NdotV, dot(Tt, V), dot(Bt, V), ax_t, ay_t) * VdotHt)
+                      / max(1e-6f, NdotV);
+
+        float F        = FresnelDielectricTIR(V, Ht, etai, etat).x;
+        float trans_wt = 1.0f - LoadKd_w(mID);
+        float p_refl   = (1.0f - Pm) * F + Pm;
+        float p_tran   = (1.0f - Pm) * (1.0f - F) * trans_wt;
+        float p_sum    = p_refl + p_tran;
+        if (p_sum <= 0.0f) return 0.0f;
+        return max(0.0f, (p_tran / p_sum) * pdf_H / (4.0f * VdotHt));
+    }
 
     float3 H;
     if (reflect) {

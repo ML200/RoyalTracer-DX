@@ -93,6 +93,13 @@
 #define REUSE_ROUGHNESS_MIN 0.15f
 #define REUSE_ROUGHNESS_MAX 0.6f
 
+//SPMIS spatial reuse is invalid on near-specular transmissive surfaces (glass): the tight
+//transmit/refract lobe is strongly view-dependent, so resampling across neighbouring pixels
+//(different view directions) produces tight-lobe p_hat spikes -> fireflies. Glass whose PRIMARY
+//surface roughness is below this skips spatial reuse and keeps its (view-stable) temporal +
+//canonical reservoir. Opaque specular is self-gating (mismatched candidates get p_hat=0).
+#define SPMIS_GLASS_ROUGHNESS_MIN 0.3f
+
 //====================================
 //BOILING FILTER
 //====================================

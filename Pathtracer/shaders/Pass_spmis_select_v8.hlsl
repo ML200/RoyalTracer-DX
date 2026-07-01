@@ -57,6 +57,20 @@ void main(uint3 tid : SV_DispatchThreadID)
         return;
     }
 
+    //Low-roughness glass: the near-specular transmit/refract lobe is strongly view-dependent,
+    //so spatial resampling across neighbouring pixels spikes p_hat -> fireflies. Skip SPMIS for
+    //it (-> passthrough: shadowed canonical, no spatial reuse). Temporal reuse, which runs
+    //earlier on the same view direction, is unaffected. See SPMIS_GLASS_ROUGHNESS_MIN.
+    {
+        float cpr, cpm; load_prpm(g_sample_current, pixelIdx, cpr, cpm);
+        if (cpr < SPMIS_GLASS_ROUGHNESS_MIN &&
+            LoadKd_w(load_matID(g_sample_current, pixelIdx)) < 1.0f - EPSILON)
+        {
+            g_pathStateBuffer.Store(SPM_w0(pixelIdx), SPM_packHdr(0u, SPM_STATUS_PASS));
+            return;
+        }
+    }
+
     const uint   myInst = load_instID(g_sample_current, pixelIdx);
     const float3 myN    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInst);
     const float3 camPos = InitOrigin();

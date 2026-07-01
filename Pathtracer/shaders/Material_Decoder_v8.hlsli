@@ -125,10 +125,18 @@ inline int LoadRmaTexID(uint matID)
 
 //bit 16 of texIDs_2: 1 = opacity-channel sample is transparency (1=transparent, 0=opaque),
 //AnyHit flips the cutout test so map_Tr-style and inverted-PNG opacity textures render correctly.
-//(bit 17 = SSS-enable, bits 24..31 = SSS entry weight — see the SSS decoders below.)
+//(bit 17 = SSS-enable, bit 18 = thin-glass, bits 24..31 = SSS entry weight — see decoders below.)
 inline bool LoadInvertAlpha(uint matID)
 {
     return (g_mat[matID].texIDs_2 & (1u << 16)) != 0u;
+}
+
+//bit 18 of texIDs_2: 1 = thin-walled glass. Single Fresnel interface — the GGX transmit branch
+//mirrors the reflection lobe straight through (no Snell bend), no medium is entered, and the
+//visibility walk attenuates by (1-F)*Tf instead of blocking. See Material_GGX_v8 / Inline_RT_v8.
+inline bool LoadIsThinGlass(uint matID)
+{
+    return (g_mat[matID].texIDs_2 & (1u << 18)) != 0u;
 }
 
 inline float2 LoadAlbedoUVScale(uint matID)

@@ -82,6 +82,37 @@ inline float EvaluatePhaseHG(float g, float cosTheta)
     return (1.0f - gg) / (4.0f * 3.14159265359f * max(denom * sqrt(max(denom, 1e-8f)), 1e-8f));
 }
 
+//Outward shading normal at the walk's boundary exit B. The re-emergence surface is forced
+//white diffuse, so the full EvalSurfaceState (UV interp, tangent frame, normal-map sample,
+//light-ID lookup, view-clamp) is wasted here — only the world shading normal is needed.
+//`dir` is the flight direction leaving the medium; the result is oriented along it (outward).
+inline float3 SSS_ExitNormal(uint instID, uint primID, float2 bc, float3 dir)
+{
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint i0 = indices[baseI + 3u * primID + 0u];
+    const uint i1 = indices[baseI + 3u * primID + 1u];
+    const uint i2 = indices[baseI + 3u * primID + 2u];
+
+    const float b1 = bc.x;
+    const float b2 = bc.y;
+    const float b0 = 1.0f - b1 - b2;
+
+    float3 n_local = UnpackNormal_INT(BTriVertex[i0].packedNormal) * b0
+                   + UnpackNormal_INT(BTriVertex[i1].packedNormal) * b1
+                   + UnpackNormal_INT(BTriVertex[i2].packedNormal) * b2;
+
+    //degenerate interpolated normal -> fall back to the geometric face normal (object space)
+    if (dot(n_local, n_local) < 1e-20f)
+        n_local = cross(BTriVertex[i1].vertex - BTriVertex[i0].vertex,
+                        BTriVertex[i2].vertex - BTriVertex[i0].vertex);
+
+    const float3x3 R = (float3x3)instanceProps[instID].objectToWorld;
+    float3 nW = mul(R, n_local);
+    nW *= rsqrt(max(dot(nW, nW), 1e-20f));
+
+    return (dot(nW, dir) > 0.0f) ? nW : -nW;
+}
+
 //March a ray inside the SSS object. Homogeneous: scalar sigma_t = 1/radius drives the
 //analog free-flight, the RGB single-scatter albedo carries the colour (throughput *=
 //albedo per scatter). The first scatter S1 is recorded separately so the caller can
@@ -121,38 +152,36 @@ inline SSSWalkResult SubsurfaceWalk(
     {
         if (!IsRayValid(pos, dir, 10000.0f)) return r;
 
+        //analog free-flight distance to the next scatter event. Sampled BEFORE the trace so it
+        //can bound the boundary search: "did we reach the wall before dl?" == "does a ray of
+        //length dl hit?". The trace consumes no RNG, so the seed stream is byte-identical.
+        const float u  = RandomFloatSingle(seed);
+        const float dl = -log(max(1.0f - u, 1e-6f)) / sigma_t;
+
         RayDesc ray;
         ray.Origin    = pos;
         ray.Direction = dir;
         ray.TMin      = 0.0001f;
-        ray.TMax      = RAY_TMAX_PLANET;
+        ray.TMax      = dl;        //bound to the free flight: dense media cull almost immediately
 
-        //closest-hit traversal: the boundary is the nearest wall of the closed mesh seen
-        //from inside. Commit alpha triangles as opaque too so a cutout texture can't punch
-        //a false hole in the medium boundary.
-        RayQuery<RAY_FLAG_NONE> q;
-        q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
-        while (q.Proceed()) {
-            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-                q.CommitNonOpaqueTriangleHit();
-        }
-        if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return r;   //escaped (open mesh)
+        //closest-hit traversal bounded by dl. FORCE_OPAQUE treats alpha-cutout triangles as
+        //solid in fixed-function (so a cutout can't punch a false hole in the boundary) AND
+        //skips any-hit, so no Proceed() loop is needed. Assumes a closed/watertight mesh: an
+        //open mesh no longer reports "escaped" here, it terminates via RR / step cap instead.
+        RayQuery<RAY_FLAG_FORCE_OPAQUE> q;
+        q.TraceRayInline(SceneBVH, RAY_FLAG_FORCE_OPAQUE, 0xFF, ray);
+        q.Proceed();
 
-        const float tHit = q.CommittedRayT();
-
-        //analog free-flight distance to the next scatter event
-        const float u  = RandomFloatSingle(seed);
-        const float dl = -log(max(1.0f - u, 1e-6f)) / sigma_t;
-
-        if (dl >= tHit)
+        if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
         {
-            //reached the boundary: resolve the exit surface, report outward normal.
+            //reached the boundary within dl: the nearest hit inside a closed mesh is its wall.
+            //Only the outward world shading normal is needed (white-diffuse re-emergence).
+            const float tHit  = q.CommittedRayT();
             const uint instID = q.CommittedInstanceID();
             const uint primID = FlatPrimID(instID, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
-            HitInfo h = EvalSurfaceState(instID, primID, q.CommittedTriangleBarycentrics(), pos, 0u);
 
             r.exitPos    = pos + dir * tHit;
-            r.exitNormal = (dot(h.hitNormal, dir) > 0.0f) ? h.hitNormal : -h.hitNormal;
+            r.exitNormal = SSS_ExitNormal(instID, primID, q.CommittedTriangleBarycentrics(), dir);
             r.wRest      = wRest;
             r.wTotal     = wTotal;
             //Reaching the boundary is ALWAYS a valid exit. nScatters==0 (thin area / large
@@ -161,7 +190,7 @@ inline SSSWalkResult SubsurfaceWalk(
             return r;
         }
 
-        //scatter inside the medium
+        //no boundary within dl -> scatter inside the medium at dl
         pos += dir * dl;
         const float3 newDir = SampleHenyeyGreenstein(dir, g, seed);
 

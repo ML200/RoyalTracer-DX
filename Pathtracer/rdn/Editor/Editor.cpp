@@ -508,7 +508,24 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings&
         if (ImGui::CollapsingHeader("Transmission")) {
             changed |= ImGui::ColorEdit3("Filter (Tf)", &mats.Tf[i].x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Volume absorption color\nWhite = no absorption");
+                ImGui::SetTooltip("Volume absorption color (solid glass)\n"
+                                  "Thin glass: flat per-surface transmission tint\nWhite = no absorption");
+
+            //ensure the SoA slot exists (older materials predate this field)
+            if (i >= (int)mats.thinGlass.size()) mats.thinGlass.resize(i + 1, 0u);
+            bool thin = mats.thinGlass[i] != 0u;
+            if (ImGui::Checkbox("Thin glass (Fresnel only)", &thin)) {
+                mats.thinGlass[i] = thin ? 1u : 0u;
+                changed = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "Single-surface glass: reflects a roughness-aware Fresnel lobe and transmits\n"
+                    "the rest straight through (no refraction, no medium/absorption). Shadow rays\n"
+                    "attenuate by (1-F)*Tf instead of blocking.\n"
+                    "Works live as long as Opacity < 1 (any transmissive material is already\n"
+                    "non-opaque geometry). A material that was fully opaque (Opacity = 1) at load\n"
+                    "needs a scene reload to become shadow-passable.");
         }
 
         // ── Subsurface scattering ────────────────────────────────

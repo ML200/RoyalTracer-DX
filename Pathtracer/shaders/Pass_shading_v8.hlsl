@@ -36,9 +36,103 @@ inline float3 DlssReinhard(float3 c) {
 //Tunable: raise the cap for brighter emitters (closer to the rail / more risk),
 //lower it for safer denoising.
 #define DLSS_EMITTER_CAP 16.0f
+//RTXPT kSpecularRoughnessThreshold: above this roughness the virtual-image reflection MV is too
+//noisy to help, so the glass/mirror spec channel falls back to the surface MV (see spec-MV below).
+#define DLSS_SPEC_ROUGHNESS_THRESHOLD 0.25f
 inline float3 ClampEmitterLum(float3 c) {
     const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
     return (lum > DLSS_EMITTER_CAP) ? c * (DLSS_EMITTER_CAP / lum) : c;
+}
+
+//====================================
+//DLSS RR SEE-THROUGH GUIDE (thin glass transmission)
+//====================================
+//The path tracer shades the glass as the real primary x1, but for DLSS-RR the see-through
+//content (windows into buildings, car interiors) is the DOMINANT signal and lives at the depth
+//BEHIND the glass. If RR's primary depth + motion vectors describe the glass surface, the
+//see-through reprojects with the wrong depth/motion and parallax-SMEARS. So we feed the BEHIND
+//surface to RR's diffuse/depth/normal/primary-MV channel (this function resolves it); the glass
+//Fresnel reflection stays on RR's SPECULAR channel (spec albedo + the slot-4 reflection-probe
+//spec MV) at the call site. Thin glass only (straight through, no bend) — solid refractive glass
+//would need a per-interface refraction re-trace, too expensive for the guide pass. Returns the
+//input surface unchanged when the primary isn't thin glass; ray-escapes-to-sky -> far guide.
+struct RRGuide { float3 x; float3 n; float3 Kd; float Pr; float Pm; uint instID; };
+
+inline RRGuide ResolveRRGuideThroughGlass(SurfaceVertex sv, uint sInstID, float3 camPos)
+{
+    RRGuide g;
+    g.x = sv.x; g.n = sv.n_s; g.Kd = sv.Kd; g.Pr = sv.Pr; g.Pm = sv.Pm; g.instID = sInstID;
+
+    if (!LoadIsThinGlass(sv.matID))
+        return g;
+
+    const float3 vdir = normalize(sv.x - camPos);
+    float3 tint = LoadTf(sv.matID);                 // primary pane
+    float3 ro   = offset_ray(sv.x, -sv.n_s);        // just past the primary pane (exit side)
+
+    //Re-trace loop: each pass finds the closest hit; if it's thin glass — whether NON-opaque
+    //(surfaced as a candidate) OR opaque in the BLAS (auto-committed, e.g. a sphere whose load-time
+    //Opacity was 1) — accumulate its Tf and step past it, then re-trace. Stop at the first
+    //non-thin-glass surface. Robust to the BLAS opaque/non-opaque classification.
+    [loop]
+    for (uint pane = 0u; pane < 16u; ++pane)
+    {
+        RayDesc r;
+        r.Origin    = ro;
+        r.Direction = vdir;
+        r.TMin      = 0.00001f;
+        r.TMax      = RAY_TMAX_PLANET;
+
+        RayQuery<RAY_FLAG_NONE> q;
+        q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, r);
+        [loop]
+        for (uint it = 0u; q.Proceed() && it < 64u; ++it)
+        {
+            if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+            {
+                const uint ci = q.CandidateInstanceID();
+                const uint cp = FlatPrimID(ci, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+                const uint cm = GetMatIDFast(ci, cp);
+                if (LoadIsThinGlass(cm) || LoadKd_w(cm) < 1.0f - EPSILON)
+                    q.CommitNonOpaqueTriangleHit();
+                else if (AlphaCandidateOccludes(ci, cp, q.CandidateTriangleBarycentrics()))
+                    q.CommitNonOpaqueTriangleHit();
+            }
+        }
+
+        if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)
+        {
+            //saw through to the background -> far guide. Mark instID = env-miss sentinel so the
+            //call site uses a ROTATION-ONLY sky MV: a world-point reprojection of an infinity
+            //point (esp. through the glass instID) adds bogus camera-translation parallax.
+            g.x = camPos + vdir * cameraFar; g.n = -vdir;
+            g.Kd = float3(1.0f, 1.0f, 1.0f); g.Pr = 1.0f; g.Pm = 0.0f;
+            g.instID = 0xFFFFFFFFu;
+            return g;
+        }
+
+        const uint   hi   = q.CommittedInstanceID();
+        const uint   hp   = FlatPrimID(hi, q.CommittedGeometryIndex(), q.CommittedPrimitiveIndex());
+        const uint   hm   = GetMatIDFast(hi, hp);
+        const float3 hpos = ro + vdir * q.CommittedRayT();
+
+        if (LoadIsThinGlass(hm))
+        {
+            tint *= LoadTf(hm);
+            const float3 geoN = CandidateGeoNormalW(hi, hp);
+            ro = offset_ray(hpos, (dot(vdir, geoN) >= 0.0f) ? geoN : -geoN);
+            continue;
+        }
+
+        //first non-thin-glass surface -> the transmission guide surface
+        HitInfo bh = EvalSurfaceState(hi, hp, q.CommittedTriangleBarycentrics(), ro, 0u);
+        float3 bKd; float bPr, bPm;
+        RefetchMaterial(hm, bh.uv, bKd, bPr, bPm, 0u);
+        g.x = bh.hitPos; g.n = bh.hitNormal; g.Kd = bKd * tint; g.Pr = bPr; g.Pm = bPm;
+        g.instID = hi;
+        return g;
+    }
+    return g;   // exceeded pane cap -> keep glass (rare)
 }
 
 //====================================
@@ -406,67 +500,118 @@ void main(uint3 DTid : SV_DispatchThreadID)
             uint sInstID = load_instID(g_sample_current, pixelIdx);
             float3 sPos  = load_x1(g_sample_current, pixelIdx);
             SurfaceVertex sv = BuildVertex(g_sample_current, pixelIdx, sPos, camPosWorld);
-            //DLSS RR input data
-            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(sv.x);
 
-            g_dlssNormals[DTid.xy] = float4(sv.n_s, 0.0f);
-            g_dlssDiffuseAlbedo[DTid.xy] = float4(sv.Kd, 1.0f);
-            g_dlssRoughness[DTid.xy] = sv.Pr;
+            //DLSS RR channel split for thin glass: the DIFFUSE/depth/normal/primary-MV channel
+            //tracks the surface seen THROUGH the glass (transmission, the dominant signal -> no
+            //parallax smear), while the SPECULAR channel below stays the GLASS Fresnel reflection.
+            //rg == sv for non-glass primaries, so this is a no-op everywhere else.
+            const RRGuide rg = ResolveRRGuideThroughGlass(sv, sInstID, camPosWorld);
+
+            //DLSS RR input data (diffuse/geometry channel = the see-through transmission surface)
+            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(rg.x);
+
+            //Specular albedo = the GLASS Fresnel reflection (on sv, NOT the see-through surface).
+            //reflW is the reflection throughput (~integrated Fresnel), reused for the guide-normal
+            //blend and the spec-MV roughness gate below. rg==sv off glass, so both stay no-ops there.
+            float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
+            float  reflW          = saturate(Luma(specularAlbedo));
+
+            //RTXPT-style throughput-weighted guide normal: the see-through (transmission) normal when
+            //Fresnel is weak (near-normal -> transmission dominates), rotating toward the GLASS normal
+            //as Fresnel grows (grazing -> reflection dominates). rg.n==sv.n_s off glass => no-op.
+            g_dlssNormals[DTid.xy] = float4(normalize(lerp(rg.n, sv.n_s, reflW)), 0.0f);
+            g_dlssDiffuseAlbedo[DTid.xy] = float4(rg.Kd, 1.0f);
+            g_dlssRoughness[DTid.xy] = sv.Pr;   // GLASS roughness -> keeps the specular (reflection) channel sharp
             //debug mirror of diffuse albedo passed to DLSS RR
 #if SHADING_DEBUG_SLICES
-            gOutput[uint3(DTid.xy, 5)] = float4(sv.Kd, 1.0f);
+            gOutput[uint3(DTid.xy, 5)] = float4(rg.Kd, 1.0f);
 #endif
 
             float2 curPix = DTid.xy;
-            //DoF aware MV, sv.x is the lens jittered hit so its pinhole projection differs
-            //from curPix. Use the pinhole projection of sv.x on both ends so the MV describes
+            //DoF aware MV, rg.x is the lens jittered hit so its pinhole projection differs
+            //from curPix. Use the pinhole projection of rg.x on both ends so the MV describes
             //pure scene motion in pinhole space, the lens offset cancels terrain
-            //terrain uses the same instanceProps reprojection as scene meshes
-            //(its transform is a translation, so the MV is correct).
-            float2 prevPix       = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
-            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
+            //terrain uses the same instanceProps reprojection as scene meshes (its transform is a
+            //translation, so the MV is correct). rg.x is the see-through surface for thin glass,
+            //so the transmission reprojects at its own depth/motion -> no parallax smear.
+            float2 prevPix       = GetLastFramePixelCoordinates_Unclamped(rg.x, prevView, prevProjection, dims, rg.instID);
+            float2 curPinholePix = GetCurrentFramePixelCoordinates_Unclamped(rg.x, view, projection, dims, rg.instID);
 
             bool validPrev = (prevPix.x > -1e8f) && (curPinholePix.x > -1e8f);
 
             float2 mvPixels = validPrev ? (prevPix - curPinholePix) : float2(0.0, 0.0);
 
+            //see-through escaped to SKY (rg.instID == env-miss sentinel): rotation-only MV, same as
+            //the direct-sky path. Sky is at infinity so camera TRANSLATION must not move it; the
+            //world-point reprojection above (a cameraFar point) adds parallax and breaks the MV.
+            if (rg.instID == 0xFFFFFFFFu)
+            {
+                float2 dSky = ((float2(DTid.xy) + 0.5f) / dims) * 2.0f - 1.0f;
+                float4 tSky = mul(projectionI, float4(dSky.x, -dSky.y, 1, 1));
+                float3 worldDirSky  = normalize(mul(viewI, float4(tSky.xyz, 0)).xyz);
+                float3 prevViewDirSky = mul(prevView, float4(worldDirSky, 0)).xyz;
+                float2 skyMV = float2(0.0f, 0.0f);
+                if (prevViewDirSky.z < 0.0f)
+                {
+                    float4 prevClipSky = mul(prevProjection, float4(prevViewDirSky * cameraFar, 1.0f));
+                    if (prevClipSky.w > 0.0f)
+                    {
+                        float2 prevNdcSky = prevClipSky.xy / prevClipSky.w;
+                        float2 prevUVSky  = float2(prevNdcSky.x * 0.5f + 0.5f, 0.5f - prevNdcSky.y * 0.5f);
+                        float2 prevPixSky = prevUVSky * dims - 0.5f;
+                        skyMV = prevPixSky - float2(DTid.xy) - jitter;
+                    }
+                }
+                mvPixels = skyMV;
+            }
+
             g_dlssMVec[curPix] = mvPixels;
 
+            //disocclusion keys on the GLASS instID (g_sample_last stores the glass primary).
             biasInstID = sInstID;
             biasMV = mvPixels;
 
-            //specular albedo
-            float3 specularAlbedo = EnvBRDFApprox2(sv.Kd, sv.Pr, sv.Pm, dot(sv.o, sv.n_s));
+            //specular albedo written to the GLASS-reflection channel (specularAlbedo computed above,
+            //on sv — the half that broke when earlier see-through code used the behind surface here).
             g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
             //specHitDist needs only the reservoir's reconnection vertex x2 — read
             //that one plane (+ objID) instead of the whole reservoir struct (~56B -> 20B).
+            //Relative to the glass surface (the reflection originates there).
             const uint   rsvObjID = g_Reservoirs_current.Load(addr_objid(pixelIdx));
             const float3 rsvX2    = load_x2(g_Reservoirs_current, pixelIdx, rsvObjID);
             g_dlssSpecHitDist[DTid.xy] = length(rsvX2 - sv.x);
 
-            //specular MV from raygen's perfect reflection probe in scratch slice 4
-            float specularity = Luma(specularAlbedo);
-            float2 specMV = mvPixels;
-            bool validSpecReproj = false;
+            //Spec-MV fallback = the GLASS SURFACE motion (NOT the see-through MV): a rough or sky
+            //reflection is anchored to the glass and must track it. sv.x is the glass primary; off
+            //glass rg.x==sv.x so this equals mvPixels (no change for opaque/metal primaries).
+            float2 surfaceMV = mvPixels;
+            if (LoadIsThinGlass(sv.matID))
             {
-                float4 reflData = gScratchPing[uint3(DTid.xy, 4)];
+                float2 gPrev = GetLastFramePixelCoordinates_Unclamped(sv.x, prevView, prevProjection, dims, sInstID);
+                float2 gCur  = GetCurrentFramePixelCoordinates_Unclamped(sv.x, view, projection, dims, sInstID);
+                if (gPrev.x > -1e8f && gCur.x > -1e8f)
+                    surfaceMV = gPrev - gCur;
+            }
+
+            //Virtual-reflection MV from the slice-4 probe, used ONLY for SHARP reflections
+            //(sv.Pr < kSpecularRoughnessThreshold, per RTXPT). Rough reflections blur toward the
+            //surface and a probe-miss (sky) has no virtual hit -> both keep surfaceMV.
+            float2 specMV = surfaceMV;
+            if (reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD)
+            {
+                float4 reflData   = gScratchPing[uint3(DTid.xy, 4)];
                 uint   reflInstID = asuint(reflData.w);
-                //reflInstID is a valid instance index unless the reflection
-                //probe missed (0xFFFFFFFF sentinel) - guard that, not terrain.
-                if (specularity > 0.04f && reflInstID != 0xFFFFFFFFu)
+                //reflInstID is the reflected instance unless the probe missed (0xFFFFFFFF sentinel).
+                if (reflInstID != 0xFFFFFFFFu)
                 {
                     //DoF aware spec MV, pinhole on both ends like the surface MV above
                     float2 prevRefl = GetLastFramePixelCoordinates_Unclamped(
                         reflData.xyz, prevView, prevProjection, dims, reflInstID);
                     float2 curRefl  = GetCurrentFramePixelCoordinates_Unclamped(
                         reflData.xyz, view, projection, dims, reflInstID);
-                    bool validRefl = (prevRefl.x > -1e8f) && (curRefl.x > -1e8f);
-                    if (validRefl)
-                    {
+                    if (prevRefl.x > -1e8f && curRefl.x > -1e8f)
                         specMV = prevRefl - curRefl;
-                        validSpecReproj = true;
-                    }
                 }
             }
             g_dlssSpecMVec[DTid.xy] = specMV;
@@ -481,28 +626,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 #else
             g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
 #endif
-        }
-    }
-
-    //====================================
-    //BIAS HINT INSTANCE ID DISOCCLUSION
-    //====================================
-    //instID mismatch at reprojected pixel marks disocclusion, bias=1
-    {
-        float disoccBias = 1.0f;
-        float2 reprojPrev = float2(DTid.xy) + biasMV;
-        int2 prevPixI = int2(round(reprojPrev));
-        if (all(prevPixI >= 0) && all(prevPixI < int2(dims))) {
-            uint prevPixelIdx = MapPixelID(uint2(dims), prevPixI);
-            uint prevInstID = load_instID(g_sample_last, prevPixelIdx);
-            disoccBias = (biasInstID != prevInstID) ? 1.0f : 0.0f;
-        }
-        float emitterBias = isEmitterSurface ? 1.0f : 0.0f;
-
-        float bias = max(disoccBias, emitterBias);
-        g_dlssBiasHint[DTid.xy] = bias;
-        if (disoccBias > 0.5f && !isEmissiveOrSky) {
-            g_dlssSpecHitDist[DTid.xy] = g_dlssDepth[DTid.xy];
         }
     }
 

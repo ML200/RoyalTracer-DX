@@ -458,8 +458,10 @@ inline float3 Reconnect(
         //absorption only when x1 is inside transmissive medium
         const float rayDotN1    = dot(-ndirNT, n1_s);
         const float iorAfterX1  = (rayDotN1 >= 0.0f) ? etai1 : etat1;
+        //thin glass is a single interface with no interior -> never apply Beer-Lambert.
         const bool  m1_inMedium = (iorAfterX1 > 1.0f + EPSILON)
-                                  && (LoadKd_w(mID1) < 1.0f - EPSILON);
+                                  && (LoadKd_w(mID1) < 1.0f - EPSILON)
+                                  && !LoadIsThinGlass(mID1);
         float3 transmittance = float3(1.0f, 1.0f, 1.0f);
         if (m1_inMedium) {
             transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), distT);
@@ -535,8 +537,9 @@ inline float3 Reconnect(
 
     const float m1_Kd_w = LoadKd_w(mID1);
     const float m2_Kd_w = LoadKd_w(baseID2);
-    const bool m1_transmissive = m1_Kd_w < 1.0f - EPSILON;
-    const bool m2_transmissive = m2_Kd_w < 1.0f - EPSILON;
+    //thin glass is a single interface with no interior -> excluded from medium / Beer-Lambert.
+    const bool m1_transmissive = m1_Kd_w < 1.0f - EPSILON && !LoadIsThinGlass(mID1);
+    const bool m2_transmissive = m2_Kd_w < 1.0f - EPSILON && !LoadIsThinGlass(baseID2);
 
     const bool x1_inMedium = (iorAfterX1  > 1.0f + EPSILON) && m1_transmissive;
     const bool x2_inMedium = (iorBeforeX2 > 1.0f + EPSILON) && m2_transmissive;

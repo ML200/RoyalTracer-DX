@@ -133,8 +133,10 @@ void Pass_raygen_v8()
                 if (cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f)
                 {
                     //visibility first: keep the strategy+BSDF eval out of the
-                    //cross-ray live set; run it only if unoccluded.
-                    if (IsVisible(ctx.hitPos, ctx.hitNormal, light.position, light.normal))
+                    //cross-ray live set; run it only if unoccluded. Thin glass attenuates
+                    //(1-F)*Tf rather than blocking, so visibility is an RGB transmittance.
+                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, light.position, light.normal);
+                    if (any(visT > 0.0f))
                     {
                         const float3 throughput = UnpackRGB9E5(throughputPk);
 
@@ -146,7 +148,7 @@ void Pass_raygen_v8()
                         if (bsdfPdf > 0.0f)
                         {
                             const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
-                            const float3 localMeasurement = light.emission * bdataNEE.val * cosSurf;
+                            const float3 localMeasurement = light.emission * bdataNEE.val * cosSurf * visT;
                             const float3 F_contrib        = throughput * localMeasurement * pdf_product;
                             const float  p_hat            = GetPHat(F_contrib);
                             const float  p_full           = pdf_product * lightPdf;
@@ -200,7 +202,8 @@ void Pass_raygen_v8()
 
                 if (NdotL > 1e-6f && sun.pdf > 1e-20f)
                 {
-                    if (IsVisible(ctx.hitPos, ctx.hitNormal, ctx.hitPos + sun.direction * RAY_TMAX_PLANET, -sun.direction))
+                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, ctx.hitPos + sun.direction * RAY_TMAX_PLANET, -sun.direction);
+                    if (any(visT > 0.0f))
                     {
                     if (cloud_cloudShadowOnSurfaces > 0.5f)
                     {
@@ -222,7 +225,7 @@ void Pass_raygen_v8()
                     if (bsdfPdf > 0.0f)
                     {
                         const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
-                        const float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL;
+                        const float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL * visT;
                         const float3 F_contrib        = throughput * localMeasurement * pdf_product;
                         const float  p_hat            = GetPHat(F_contrib);
                         const float  p_full           = pdf_product * lightPdf;
@@ -490,7 +493,8 @@ void Pass_raygen_v8()
 
         const float  matNi_n        = LoadNi(matID_n);
         const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
-        const bool   flipIOR_n      = hinfo_n.backface && transmissive_n;
+        //thin glass: single interface, never enters a medium (see Pass_camera for the rationale)
+        const bool   flipIOR_n      = hinfo_n.backface && transmissive_n && !LoadIsThinGlass(matID_n);
         const float2 iors_n         = flipIOR_n ? float2(matNi_n, 1.0f) : float2(1.0f, matNi_n);
         const uint   mediumMatID_n  = flipIOR_n ? matID_n : MEDIUM_INVALID;
 

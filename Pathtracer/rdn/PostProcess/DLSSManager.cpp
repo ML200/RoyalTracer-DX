@@ -239,7 +239,6 @@ void DLSSManager::Evaluate(
     sl::Resource slRough   (sl::ResourceType::eTex2d, m_roughness.Get(),     (uint32_t)stateSRV);
     sl::Resource slSpecHit (sl::ResourceType::eTex2d, m_specHitDist.Get(),   (uint32_t)stateSRV);
     sl::Resource slInput   (sl::ResourceType::eTex2d, m_input.Get(),         (uint32_t)stateSRV);
-    sl::Resource slBias    (sl::ResourceType::eTex2d, m_biasHint.Get(),      (uint32_t)stateSRV);
     sl::Resource slSpecMV  (sl::ResourceType::eTex2d, m_specMvec.Get(),     (uint32_t)stateSRV);
     sl::Resource slOutput  (sl::ResourceType::eTex2d, m_output.Get(),        (uint32_t)stateUAV);
 
@@ -257,7 +256,6 @@ void DLSSManager::Evaluate(
         { &slSpecAlb, sl::kBufferTypeSpecularAlbedo,       life, &renderExtent  },
         { &slSpecHit, sl::kBufferTypeSpecularHitDistance,   life, &renderExtent  },
         { &slInput,   sl::kBufferTypeScalingInputColor,    life, &renderExtent  },
-        { &slBias,    sl::kBufferTypeBiasCurrentColorHint, life, &renderExtent  },
         { &slSpecMV,  sl::kBufferTypeSpecularMotionVectors, life, &renderExtent },
         { &slOutput,  sl::kBufferTypeScalingOutputColor,   life, &displayExtent },
     };

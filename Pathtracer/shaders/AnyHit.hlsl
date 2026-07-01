@@ -15,6 +15,14 @@ void AlphaTestAnyHit(inout TracePayload payload,
     uint primID = FlatPrimID(instID, GeometryIndex(), PrimitiveIndex());
 
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
+
+    //Glass (thin OR solid transmissive) is non-opaque geometry only so the visibility walk can
+    //intercept it (thin glass attenuates shadow rays). The closest-hit path must still accept it
+    //so camera/GI rays shade the surface — never alpha-cut it. Shadow passthrough/occlusion is
+    //decided in VisibilityTransmittance, not here.
+    if (LoadIsThinGlass(matID) || LoadKd_w(matID) < 1.0f - EPSILON)
+        return;
+
     const int texID = LoadAlbedoTexID(matID);
 
     //no albedo means fully opaque

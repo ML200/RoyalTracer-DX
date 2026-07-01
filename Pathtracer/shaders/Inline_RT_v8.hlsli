@@ -147,6 +147,100 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
 }
 
 //====================================
+//THIN-GLASS SHADOW TRANSMITTANCE
+//====================================
+//World-space geometric normal of a candidate triangle (flat face normal, no normal map —
+//cheap, sufficient for the per-pane Fresnel). Mirrors EvalSurfaceState's geoNorm transform.
+inline float3 CandidateGeoNormalW(uint instID, uint primID)
+{
+    const uint baseI = instanceProps[instID].indexBase;
+    const uint i0 = indices[baseI + 3u * primID + 0u];
+    const uint i1 = indices[baseI + 3u * primID + 1u];
+    const uint i2 = indices[baseI + 3u * primID + 2u];
+    const float3 p0 = BTriVertex[i0].vertex;
+    const float3 p1 = BTriVertex[i1].vertex;
+    const float3 p2 = BTriVertex[i2].vertex;
+    const float3x3 R = (float3x3)instanceProps[instID].objectToWorld;
+    float3 nW = mul(R, cross(p1 - p0, p2 - p0));
+    return nW * rsqrt(max(dot(nW, nW), 1e-20f));
+}
+
+//Per-pane shadow-ray transmittance for a thin-glass candidate: (1-F)*Tf. F is the dielectric
+//Fresnel at the pane (air->glass, real Ni) for the shadow direction; FresnelDielectric uses
+//|cos| so the geo-normal sign is irrelevant.
+inline float3 ThinGlassShadowTr(uint matID, uint instID, uint primID, float3 dir)
+{
+    const float3 nW = CandidateGeoNormalW(instID, primID);
+    const float  Ni = LoadNi(matID);
+    const float  F  = FresnelDielectric(-dir, nW, 1.0f, Ni).x;
+    return (1.0f - F) * LoadTf(matID);
+}
+
+//====================================
+//VISIBILITY TRANSMITTANCE  (RGB)
+//====================================
+//Generalises IsVisible: returns the product of (1-F)*Tf over every thin-glass pane crossed,
+//0 if any opaque / alpha-cutout occluder blocks, 1 if fully clear. ACCEPT_FIRST_HIT is kept,
+//so opaque-blocked rays end immediately (zero regression for non-thin scenes) — only thin-glass
+//candidates accumulate and let traversal continue. This is the single visibility model used by
+//every NEE + ReSTIR resampling target so the target functions stay consistent (unbiased).
+inline float3 VisibilityTransmittance(float3 A, float3 nA, float3 B, float3 nB)
+{
+    const float3 link = B - A;
+    const float3 oA = offset_ray(A, dot( link, nA) >= 0.0f ? nA : -nA);
+    const float3 oB = offset_ray(B, dot(-link, nB) >= 0.0f ? nB : -nB);
+
+    const float3 conn = oB - oA;
+    if (dot(conn, link) <= 0.0f) return 1.0.xxx;
+
+    const float dist = length(conn);
+    if (dist <= EPSILON) return 1.0.xxx;
+
+    const float3 direction = conn / dist;
+    if (!IsRayValid(oA, direction, dist)) return 0.0.xxx;
+
+    RayDesc ray;
+    ray.Origin    = oA;
+    ray.Direction = direction;
+    ray.TMin      = 0.001f;
+    ray.TMax      = dist * 0.998f;
+
+    RayQuery<RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+       | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> q;
+    q.TraceRayInline(SceneBVH, RAY_FLAG_NONE, 0xFF, ray);
+
+    float3 tr = 1.0.xxx;
+    [loop]
+    for (uint i = 0u; q.Proceed() && i < 128u; ++i)
+    {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
+        {
+            const uint cInstID = q.CandidateInstanceID();
+            const uint cPrimID = FlatPrimID(cInstID, q.CandidateGeometryIndex(), q.CandidatePrimitiveIndex());
+            const uint cMatID  = materialIDs[instanceProps[cInstID].materialBase + cPrimID];
+
+            if (LoadIsThinGlass(cMatID))
+            {
+                //attenuate and pass: do NOT commit, so traversal walks on through the pane.
+                tr *= ThinGlassShadowTr(cMatID, cInstID, cPrimID, direction);
+            }
+            else if (LoadKd_w(cMatID) < 1.0f - EPSILON)
+            {
+                //solid (non-thin) glass is non-opaque geometry only so thin glass can be
+                //intercepted here; it still FULLY occludes the shadow ray (behaviour unchanged
+                //from when it was opaque). Commit regardless of any albedo cutout.
+                q.CommitNonOpaqueTriangleHit();
+            }
+            else if (AlphaCandidateOccludes(cInstID, cPrimID, q.CandidateTriangleBarycentrics()))
+            {
+                q.CommitNonOpaqueTriangleHit();   // opaque at this texel -> blocks, ends search
+            }
+        }
+    }
+    return (q.CommittedStatus() == COMMITTED_NOTHING) ? tr : 0.0.xxx;
+}
+
+//====================================
 //DEFERRED RECONNECTION VISIBILITY
 //====================================
 //One reconnection shadow ray for a resolved reservoir sample: x1 -> x2 (or, for an
@@ -154,14 +248,14 @@ inline bool IsVisible(float3 A, float3 nA, float3 B, float3 nB)
 //when RS_FLAG_NO_REUSE_VIS has moved the shadow ray out of the reuse passes, so the
 //stored F is unshadowed and needs its visibility applied exactly once. Mirrors the
 //env-miss / surface split the temporal & spatial passes use inline.
-inline float ReconnectVis(float3 x1, float3 n1_s, uint matID, float3 x2, float3 n2_s)
+inline float3 ReconnectVis(float3 x1, float3 n1_s, uint matID, float3 x2, float3 n2_s)
 {
     if (matID == MATID_ENV_MISS)
     {
         const float3 md = normalize(x2);
-        return IsVisible(x1, n1_s, x1 + md * RAY_TMAX_PLANET, -md) ? 1.0f : 0.0f;
+        return VisibilityTransmittance(x1, n1_s, x1 + md * RAY_TMAX_PLANET, -md);
     }
-    return IsVisible(x1, n1_s, x2, n2_s) ? 1.0f : 0.0f;
+    return VisibilityTransmittance(x1, n1_s, x2, n2_s);
 }
 
 //====================================

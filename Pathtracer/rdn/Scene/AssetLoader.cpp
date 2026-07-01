@@ -25,7 +25,17 @@ MeshSplitResult AssetLoader::SplitOpaqueAlpha(
     std::vector<UINT> opaqueIdx, alphaIdx, opaqueMatIDs, alphaMatIDs;
 
     for (UINT t = 0; t < triCount; ++t) {
-        bool isAlpha = (allMaterials.alphaThreshold[perTriMatIDs[t]] < 1.0f);
+        const UINT matID = perTriMatIDs[t];
+        // Glass (any transmissive Kd.w<1, plus the thin-glass flag) joins the alpha (non-opaque)
+        // bucket so it surfaces as a candidate in the visibility walk (Inline_RT). That lets thin
+        // glass attenuate shadow rays, and — because classification keys on the load-time Kd.w —
+        // the editor's thin-glass toggle works on already-transmissive materials without a BLAS
+        // rebuild. Solid glass stays a full occluder (decided in the walk). Guard the thinGlass
+        // index: it predates older materials (tolerance pattern).
+        const bool isThinGlass    = (matID < allMaterials.thinGlass.size())
+                                    && (allMaterials.thinGlass[matID] != 0u);
+        const bool isTransmissive = allMaterials.Kd[matID].w < 1.0f;
+        bool isAlpha = (allMaterials.alphaThreshold[matID] < 1.0f) || isTransmissive || isThinGlass;
         auto& dstIdx = isAlpha ? alphaIdx  : opaqueIdx;
         auto& dstMat = isAlpha ? alphaMatIDs : opaqueMatIDs;
         dstIdx.push_back(indices[3*t+0]);
@@ -435,7 +445,13 @@ void AssetLoader::LoadModels(
             // and append with vbase-offset indices into the merged vertex array.
             for (UINT t = 0; t < thisTris; ++t) {
                 const UINT gMat    = srcMesh.perTriMaterialIDs[t] + globalMatBase;
-                const bool isAlpha = scene.materials.alphaThreshold[gMat] < 1.0f;
+                // mirror SplitOpaqueAlpha: glass (transmissive Kd.w<1 / thin) is non-opaque so the
+                // shadow walk can attenuate thin glass instead of auto-committing on it.
+                const bool isThinGlass    = (gMat < scene.materials.thinGlass.size())
+                                            && (scene.materials.thinGlass[gMat] != 0u);
+                const bool isTransmissive = scene.materials.Kd[gMat].w < 1.0f;
+                const bool isAlpha = scene.materials.alphaThreshold[gMat] < 1.0f
+                                     || isTransmissive || isThinGlass;
                 auto& dstIdx = isAlpha ? mAlphaIdx : mOpaqueIdx;
                 auto& dstMat = isAlpha ? mAlphaMat : mOpaqueMat;
                 dstIdx.push_back(srcMesh.indices[3*t+0] + vbase);
