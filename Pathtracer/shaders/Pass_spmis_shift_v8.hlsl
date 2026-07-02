@@ -114,10 +114,9 @@ void Pass_spmis_shift_v8()
     [loop]
     for (uint d = 0u; d < Ntn; ++d)
     {
-        const uint sa  = SPM_slot(pixelIdx, d);
-        const uint zPx = g_pathStateBuffer.Load(sa);
+        const uint zPx = g_pathStateBuffer.Load(SPM_slotZ(pixelIdx, d));
         if (zPx == SP_UNDEF) continue;
-        const float selProb = asfloat(g_pathStateBuffer.Load(sa + 4u));
+        const float selProb = asfloat(g_pathStateBuffer.Load(SPM_slotP(pixelIdx, d)));
 
         Reservoir pr = loadReservoir(g_Reservoirs_current, zPx);
         //roughness gate + dead-reservoir gate -> mark the slot dead so merge skips it.
@@ -126,7 +125,7 @@ void Pass_spmis_shift_v8()
             (pr.matID != MATID_LIGHT_TRI && pr.matID != MATID_ENV_MISS &&
              !IsVolumeVertex(pr.matID) && pr.Pr < SAMPLE_PT_ROUGHNESS_MIN))
         {
-            g_pathStateBuffer.Store(sa, SP_UNDEF);
+            g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), SP_UNDEF);
             continue;
         }
 
@@ -142,7 +141,7 @@ void Pass_spmis_shift_v8()
         const float shift_jac = JacobianRatioRej(Jn, Jc_z, spmis_jacThreshold);
         if (shift_jac <= 0.0f)
         {
-            g_pathStateBuffer.Store(sa, SP_UNDEF);
+            g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), SP_UNDEF);
             continue;
         }
 
@@ -168,7 +167,7 @@ void Pass_spmis_shift_v8()
         const float spmis  = (selProb > 0.0f) ? (1.0f / ((float)Ntn * selProb)) : 0.0f;
         const float w_draw = spmis * mi * tf_center * pr.W * shift_jac;
 
-        g_pathStateBuffer.Store (sa + 4u, asuint(w_draw));
-        g_pathStateBuffer.Store3(sa + 8u, asuint(c));
+        g_pathStateBuffer.Store (SPM_slotP(pixelIdx, d), asuint(w_draw));
+        g_pathStateBuffer.Store3(SPM_slotC(pixelIdx, d), asuint(c));
     }
 }

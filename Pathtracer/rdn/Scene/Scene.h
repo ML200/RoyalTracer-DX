@@ -191,8 +191,9 @@ struct Scene {
     UINT totalBindlessTextures = 0;
     std::vector<ComPtr<ID3D12Resource>> bindlessGpuTextures;
 
-    //CPU shadow of GPU instance properties, avoids WC upload-heap reads
-    std::vector<InstanceProperties> cpuInstanceProps;
+    //CPU shadow of GPU instance properties (full-4x4 working struct; packed to
+    //the 224B GPU record at upload), avoids WC upload-heap reads
+    std::vector<InstancePropertiesCpu> cpuInstanceProps;
 
     //per-instance dirty flags
     std::vector<uint8_t> instanceDirty;

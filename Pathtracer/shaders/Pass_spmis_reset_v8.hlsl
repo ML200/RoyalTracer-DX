@@ -28,6 +28,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     {
         g_spmisBuffer.Store(SP_A(SP_HASH, pixelIdx), SP_UNDEF);
         g_spmisBuffer.Store(SP_A(SP_IDX,  pixelIdx), 0u);
+        //search-record cell word: select's probes reject on the RECORD now (fused
+        //32B probe), so no-hit pixels — which sort never touches — must carry a
+        //valid UNDEF key. pos/conf/n stay stale; select only reads them past the
+        //UNDEF reject.
+        g_spmisBuffer.Store(SP_SRCH(pixelIdx), SP_UNDEF);
     }
 
     if (denseCell == 0u)

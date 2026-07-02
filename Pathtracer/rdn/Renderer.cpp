@@ -1689,9 +1689,10 @@ void Renderer::PopulateCommandList() {
     // SRVs at t49/t50.
     RecordSkyLUTBake(cmdList);
 
-    // Bind main descriptor heap
-    ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
-    cmdList->SetDescriptorHeaps(1, heaps);
+    // Bind main descriptor heap (+ the dynamic sampler heap for
+    // SamplerDescriptorHeap[] in SampleMaterialTex)
+    ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get(), m_samplerHeap.Get() };
+    cmdList->SetDescriptorHeaps(2, heaps);
 
     // ── Build ray dispatch descriptor ────────────────────────────
     // Pre-DLSS passes render at internal resolution; post-DLSS at display res
@@ -1734,6 +1735,15 @@ void Renderer::PopulateCommandList() {
       cmdList->ResourceBarrier(1, &b);
       cmdList->CopyBufferRegion(m_globalCounterBuffer.Get(), 0, m_zeroBuffer.Get(), 0, MAX_STACKS * sizeof(uint32_t));
       auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(),
+          D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+      cmdList->ResourceBarrier(1, &b2); }
+
+    // Clear the active-pixel queue count (camera appends survivors this frame)
+    { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+      cmdList->ResourceBarrier(1, &b);
+      cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, sizeof(uint32_t));
+      auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       cmdList->ResourceBarrier(1, &b2); }
 
@@ -2048,6 +2058,9 @@ void Renderer::PopulateCommandList() {
         // Pass_spmis_* kernels + raygen hash insertion. Bound for every main-root-sig
         // pass; shaders that don't reference it strip the binding (DXC).
         cmdList->SetComputeRootUnorderedAccessView(2, m_spmisBuffer->GetGPUVirtualAddress());
+        // Active-pixel queue (u26): camera appends, raygen dequeues. Same
+        // bound-everywhere / stripped-when-unused pattern as u25.
+        cmdList->SetComputeRootUnorderedAccessView(3, m_raygenQueueBuffer->GetGPUVirtualAddress());
     };
 
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
@@ -2085,6 +2098,39 @@ void Renderer::PopulateCommandList() {
             cmdList->SetComputeRootSignature(m_rayGenSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, 0, 0);
+
+            if (p.file == L"Pass_raygen_v8.hlsl")
+            {
+                //COMPACTED indirect dispatch: 1D over exactly the survivor count
+                //Pass_camera queued (u26). Args = CPU-side template (SBT records,
+                //H=D=1) + the GPU count copied into Width; the args buffer rides
+                //COMMON->promoted COPY_DEST->INDIRECT_ARGUMENT and decays back at
+                //ExecuteCommandLists, so no cross-frame state tracking is needed.
+                { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                  cmdList->ResourceBarrier(1, &b); }
+                //template slot 1 = lite variant (cloud-surface-shadow block compiled
+                //out) — dispatched exactly when the editor toggle makes the block
+                //inert, so the output is bit-identical to the full variant.
+                const bool useLite = (m_camera.cloudSettings.cloudShadowOnSurfaces < 0.5f)
+                                     && (m_raygenLiteSbtSlot != UINT32_MAX);
+                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), 0,
+                    m_raysArgsTemplate.Get(),
+                    useLite ? sizeof(D3D12_DISPATCH_RAYS_DESC) : 0,
+                    sizeof(D3D12_DISPATCH_RAYS_DESC));
+                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(),
+                    offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
+                    m_raygenQueueBuffer.Get(), 0, sizeof(uint32_t));
+                { CD3DX12_RESOURCE_BARRIER post[] = {
+                      CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                          D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                      CD3DX12_RESOURCE_BARRIER::Transition(m_raysIndirectArgs.Get(),
+                          D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) };
+                  cmdList->ResourceBarrier(2, post); }
+                cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1,
+                    m_raysIndirectArgs.Get(), 0, nullptr, 0);
+                break;
+            }
 
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
@@ -2210,9 +2256,9 @@ void Renderer::PopulateCommandList() {
             dispW = GetWidth();
             dispH = GetHeight();
 
-            // Rebind our heap (DLSS may have changed it)
-            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
-            cmdList->SetDescriptorHeaps(1, h);
+            // Rebind our heaps (DLSS may have changed them)
+            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get(), m_samplerHeap.Get() };
+            cmdList->SetDescriptorHeaps(2, h);
             break;
         }
 
@@ -2245,9 +2291,9 @@ void Renderer::PopulateCommandList() {
             m_cudaInterop.CudaSignal(m_cudaFence, postVal);
             m_ctx.WaitAndReopen(m_cudaFence.fence.Get(), postVal);
 
-            // cmdList was Reset — rebind the descriptor heap for subsequent passes.
-            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
-            cmdList->SetDescriptorHeaps(1, h);
+            // cmdList was Reset — rebind the heaps for subsequent passes.
+            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get(), m_samplerHeap.Get() };
+            cmdList->SetDescriptorHeaps(2, h);
             break;
         }
 

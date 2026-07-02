@@ -31,9 +31,10 @@
 
 //CPU-side sizing stubs matching shader SoA sizes
 // Sizes mirror the HLSL SoA strides exactly. Reservoir comes from
-// PLANE_WSUM(60) + SZ_4(4) in Reservoir_v8.hlsli. SampleData is BYTES_SD
-// in Sample_Data_v8.hlsli.
-struct Reservoir_GI  { uint8_t pad[64]; };
+// PLANE_WSUM(68) + 4 in Reservoir_v8.hlsli (48B RECON record + 16B FW plane
+// + 4B solo V2 plane + 4B wsum plane). SampleData is BYTES_SD in
+// Sample_Data_v8.hlsli.
+struct Reservoir_GI  { uint8_t pad[72]; };
 struct SampleData    { uint8_t pad[36]; };
 
 // Pixel count for the per-pixel SoA buffers (reservoirs, sample data, path
@@ -228,6 +229,10 @@ private:
     // the DI ones are gone. Heap slots stay alive via null UAV bindings to
     // preserve the contiguous u2..u7 descriptor range.
     ComPtr<ID3D12Resource>       m_reservoirBuffer_3, m_reservoirBuffer_4;
+    //2-slot shader-visible sampler heap for SamplerDescriptorHeap[] in
+    //SampleMaterialTex (slot 0 = s0 clone, slot 1 = s3 clone); created in
+    //CreateShaderResourceHeap, bound alongside m_srvUavHeap.
+    ComPtr<ID3D12DescriptorHeap> m_samplerHeap;
     ComPtr<ID3D12Resource>       m_sampleBuffer_current, m_sampleBuffer_last;
     ComPtr<ID3D12DescriptorHeap> m_srvUavHeap;
     ComPtr<ID3D12DescriptorHeap> m_stagingUavHeap;
@@ -241,6 +246,17 @@ private:
     ComPtr<ID3D12Resource>         m_indirectArgsBuffer;
     ComPtr<ID3D12Resource>         m_zeroBuffer;
     ComPtr<ID3D12CommandSignature> m_commandSignature;
+    //compacted raygen indirect dispatch: survivor queue (root UAV u26),
+    //104B DISPATCH_RAYS args (default heap) + template (upload, rewritten on
+    //SBT rebuild), and the DISPATCH_RAYS command signature.
+    ComPtr<ID3D12Resource>         m_raygenQueueBuffer;
+    ComPtr<ID3D12Resource>         m_raysIndirectArgs;
+    ComPtr<ID3D12Resource>         m_raysArgsTemplate;
+    ComPtr<ID3D12CommandSignature> m_raysCommandSignature;
+    //SBT slot of the lite raygen variant (cloud surface shadows compiled out),
+    //appended after the token-derived raygen records in CreateShaderBindingTable.
+    uint32_t                       m_raygenLiteSbtSlot = UINT32_MAX;
+    void WriteRaysIndirectTemplate();
     ComPtr<ID3D12PipelineState>    m_psoSetupIndirect, m_psoSetupIndirectNoClear;
     ComPtr<ID3D12RootSignature>    m_rsSetupIndirect;
 

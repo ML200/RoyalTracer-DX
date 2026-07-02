@@ -46,12 +46,11 @@ inline void fill_terrain_props(InstanceProperties& p, const planet::CellInstance
     const double dz  = c.anchor_world.z - origin.z;
     const XMMATRIX M    = XMMatrixTranslation( (float)dx,  (float)dy,  (float)dz);
     const XMMATRIX Minv = XMMatrixTranslation(-(float)dx, -(float)dy, -(float)dz);
-    p.objectToWorld            = M;
-    p.objectToWorldInverse     = Minv;
-    p.prevObjectToWorld        = M;
-    p.prevObjectToWorldInverse = Minv;
-    p.objectToWorldNormal      = XMMatrixIdentity();
-    p.prevObjectToWorldNormal  = XMMatrixIdentity();
+    p.objectToWorld        = MakeFloat3x4(M);
+    p.objectToWorldInverse = MakeFloat3x4(Minv);
+    p.objectToWorldNormal  = MakeFloat3x4(XMMatrixIdentity());
+    p.prevObjectToWorld    = MakeFloat3x4(M);
+    //(prevObjectToWorldInverse/Normal dropped from the GPU record — never read)
     p.indexBase      = c.idx_base_elems;
     p.vertexBase     = c.vtx_base_elems;
     p.materialBase   = matIDBase;
@@ -89,12 +88,11 @@ inline void fill_rock_props(InstanceProperties& p,
         r.rot_scale[2], r.rot_scale[5], r.rot_scale[8], 0.0f,
         tx,             ty,             tz,             1.0f);
     const XMMATRIX Minv = XMMatrixInverse(nullptr, M);
-    p.objectToWorld            = M;
-    p.objectToWorldInverse     = Minv;
-    p.prevObjectToWorld        = M;
-    p.prevObjectToWorldInverse = Minv;
-    p.objectToWorldNormal      = M;   // uniform scale -> the shading path renormalizes
-    p.prevObjectToWorldNormal  = M;
+    p.objectToWorld        = MakeFloat3x4(M);
+    p.objectToWorldInverse = MakeFloat3x4(Minv);
+    p.objectToWorldNormal  = MakeFloat3x4(M);   // uniform scale -> the shading path renormalizes
+    p.prevObjectToWorld    = MakeFloat3x4(M);
+    //(prevObjectToWorldInverse/Normal dropped from the GPU record — never read)
     p.indexBase      = var.indexBase;
     p.vertexBase     = var.vertexBase;
     p.materialBase   = matIDBase;     // reuse terrain's shared flat-material region

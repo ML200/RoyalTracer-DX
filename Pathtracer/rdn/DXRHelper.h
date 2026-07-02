@@ -82,7 +82,8 @@ static const CD3DX12_HEAP_PROPERTIES kReadbackHeapProps(D3D12_HEAP_TYPE_READBACK
 // Internal Helper: Compile using IDxcCompiler3 (Modern Interface)
 // This is required for SM 6.x signing and validation to work correctly.
 //--------------------------------------------------------------------------------------------------
-inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR targetProfile)
+inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR targetProfile,
+                                  const std::vector<std::wstring>& extraDefines = {})
 {
     // 1. Initialize DXC Compiler and Utils
     static IDxcCompiler3* pCompiler3 = nullptr;
@@ -141,6 +142,13 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
     args.push_back(L"-D"); args.push_back(L"MAX_REGS=96");
     args.push_back(L"-HV"); args.push_back(L"2021");
 
+    // Caller-supplied variant defines (e.g. the lite raygen specialization).
+    // Strings must outlive the Compile call — they do, extraDefines is by-ref.
+    for (const auto& d : extraDefines) {
+        args.push_back(L"-D");
+        args.push_back(d.c_str());
+    }
+
     // 4. Compile
     ComPtr<IDxcResult> pResult;
     auto compileT0 = std::chrono::high_resolution_clock::now();
@@ -197,9 +205,10 @@ inline IDxcBlob* CompileShaderNew(LPCWSTR fileName, LPCWSTR entryPoint, LPCWSTR 
 //--------------------------------------------------------------------------------------------------
 
 // Compile a HLSL file into a DXIL library (e.g. for Ray Tracing)
-inline IDxcBlob* CompileShaderLibrary(LPCWSTR fileName)
+inline IDxcBlob* CompileShaderLibrary(LPCWSTR fileName,
+                                      const std::vector<std::wstring>& extraDefines = {})
 {
-    return CompileShaderNew(fileName, L"", L"lib_6_9");
+    return CompileShaderNew(fileName, L"", L"lib_6_9", extraDefines);
 }
 
 // Compile a HLSL file as a Compute Shader

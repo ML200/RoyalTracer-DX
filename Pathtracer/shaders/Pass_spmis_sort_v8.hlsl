@@ -43,12 +43,17 @@ void main(uint3 tid : SV_DispatchThreadID)
         g_spmisBuffer.Store(SP_A(SP_SORTEDW, pos), asuint(tf));
     }
 
-    //Search-record fast path for Pass_spmis_select: bundle this cell's confidence sum and
-    //this pixel's world position into one AoS record (npx-indexed) so each cell-search
-    //probe is a single Load4 instead of a scattered SP_CONF[ncell] + neighbour-G-buffer
-    //fan-out. cell==UNDEF pixels returned above; the select hash check rejects them before
-    //ever reading the record, so they need no entry (hence no separate reset).
+    //Search-record fast path for Pass_spmis_select: bundle this pixel's cell, world
+    //position, cell confidence sum AND world shading normal into one 32B sector-aligned
+    //record (npx-indexed) so each cell-search probe is a single 32B load instead of the
+    //former scattered SP_HASH[npx] + 16B record pair (2 dependent sectors -> 1). Select
+    //also reads its OWN record for cellCenter/myPos/myN, so the normal is stored even
+    //though the probe cone (spmis_normalSimCos) is off by default. cell==UNDEF pixels
+    //returned above; Pass_spmis_reset stamped SP_UNDEF into their record cell word.
     const float  cellConf = (float)agg.z;                  // CONF (from the Load4 above)
-    const float3 wpos     = load_x1(g_sample_current, pixelIdx);
-    g_spmisBuffer.Store4(SP_SRCH(pixelIdx), uint4(asuint(cellConf), asuint(wpos)));
+    const uint   inst     = load_instID(g_sample_current, pixelIdx);
+    const float3 wpos     = load_x1_with_instID  (g_sample_current, pixelIdx, inst);
+    const float3 wnrm     = load_n1_s_with_instID(g_sample_current, pixelIdx, inst);
+    g_spmisBuffer.Store4(SP_SRCH(pixelIdx),       uint4(cell, asuint(wpos)));
+    g_spmisBuffer.Store4(SP_SRCH(pixelIdx) + 16u, uint4(asuint(cellConf), asuint(wnrm)));
 }

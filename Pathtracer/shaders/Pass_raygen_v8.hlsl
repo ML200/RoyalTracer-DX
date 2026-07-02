@@ -1,6 +1,25 @@
 #include "Includes_v8.hlsli"
 #include "Raygen_Common_v8.hlsli"
 
+//====================================
+//VARIANT SPECIALIZATION
+//====================================
+//The library is compiled TWICE (Renderer::CreateRaytracingPipeline): the default
+//entry, and a "lite" variant (-D RAYGEN_ENTRY=Pass_raygen_v8_lite
+//-D RAYGEN_NO_CLOUD_SURF_SHADOW=1) with the sun-NEE cloud-shadow block compiled
+//OUT. The host's indirect-dispatch template selects the lite SBT record whenever
+//the editor's cloud_cloudShadowOnSurfaces toggle is off — exactly the condition
+//under which the block is inert — so the render is bit-identical while the hot
+//variant sheds ~1.5k instructions of I$ footprint + the block's register
+//pressure. Extend with more -D axes (e.g. RAYGEN_NO_SSS for SSS-free scenes) by
+//adding records the same way.
+#ifndef RAYGEN_ENTRY
+#define RAYGEN_ENTRY Pass_raygen_v8
+#endif
+#ifndef RAYGEN_NO_CLOUD_SURF_SHADOW
+#define RAYGEN_NO_CLOUD_SURF_SHADOW 0
+#endif
+
 
 //One reservoir: emissive-tri DI (d==1), first-bounce DI (d==2), GI (d>=3).
 //d==1 direct sky+sun -> scratch slot 3; cold state in g_pathStateBuffer.
@@ -11,18 +30,22 @@
 //direct emitter, all flagged SD_FLAG_NOBOUNCE). This pass rebuilds the primary
 //ctx from that G-buffer per sample and runs the initial-sample + bounce loops.
 [shader("raygeneration")]
-void Pass_raygen_v8()
+void RAYGEN_ENTRY()
 {
-    const uint2 pixel    = DispatchRaysIndex().xy;
-    const uint2 imgSize  = DispatchRaysDimensions().xy;
+    //COMPACTED 1D dispatch: Pass_camera queued only the non-terminal pixels and
+    //the host launches exactly that count via ExecuteIndirect, so there is no
+    //NOBOUNCE test and no dead lane rides the bounce loop. Pixel coords come
+    //from the queue; the image size from the push constants (the dispatch dims
+    //are the 1D queue count now). Per-pixel seeds derive from `pixel`, so the
+    //output is bit-identical to the full-screen dispatch.
+    const uint  packedPx = g_raygenQueue.Load(16u + DispatchRaysIndex().x * 4u);
+    const uint2 pixel    = uint2(packedPx & 0xFFFFu, packedPx >> 16);
+    const uint2 imgSize  = uint2(IMG_W, IMG_H);
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
 
-    //terminal pixels (miss / degenerate / direct emitter) were finalized by
-    //Pass_camera and flagged NOBOUNCE — skip them, reservoir already invalid.
-    if (load_flagsWord(g_sample_current, pixelIdx) & SD_FLAG_NOBOUNCE)
-        return;
-
-    storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
+    //(no zero storeReservoir here: Pass_camera already zero-initialized every
+    //pixel's reservoir this frame — the old re-zero was redundant and cost two
+    //instanceProps[0] matrix fetches per pixel through WorldToObjectPos/Nrm.)
 
     float wsum = 0.0f;
 
@@ -62,17 +85,18 @@ void Pass_raygen_v8()
     {
         //rebuild the shared primary ctx from the G-buffer + HOT2 extras (same
         //quantized surface as the reuse passes, so N==1 differs imperceptibly
-        //from the pre-spill build).
-        const uint primInst = load_instID(g_sample_current, pixelIdx);
-        ctx.instID          = primInst;
-        ctx.hitPos          = load_x1_with_instID  (g_sample_current, pixelIdx, primInst);
-        ctx.hitNormal       = load_n1_s_with_instID(g_sample_current, pixelIdx, primInst);
-        ctx.matID           = load_matID  (g_sample_current, pixelIdx);
-        ctx.backface        = load_backface(g_sample_current, pixelIdx);
-        ctx.hitLocalKd      = (half3)load_kd(g_sample_current, pixelIdx);
-        float pr_, pm_; load_prpm(g_sample_current, pixelIdx, pr_, pm_);
-        ctx.hitLocalPr      = (half)pr_;
-        ctx.hitLocalPm      = (half)pm_;
+        //from the pre-spill build). Bundled record load (2xLoad4+Load) instead
+        //of 8 field-wise loads; stays inside the sample loop on purpose — the
+        //fields must NOT be live across the inner bounce traces.
+        const SDRecord sd   = load_SD(g_sample_current, pixelIdx);
+        ctx.instID          = sd.instID;
+        ctx.hitPos          = sd.x1;
+        ctx.hitNormal       = sd.n1_s;
+        ctx.matID           = sd.matID;
+        ctx.backface        = (sd.flags & SD_FLAG_BACKFACE) != 0u;
+        ctx.hitLocalKd      = (half3)sd.Kd;
+        ctx.hitLocalPr      = (half)sd.Pr;
+        ctx.hitLocalPm      = (half)sd.Pm;
         float2 iors_; uint medium_; float3 absorb_;
         load_rg_primaryExtra(g_pathStateBuffer, pixelIdx, iors_, medium_, absorb_);
         ctx.iors            = (half2)iors_;
@@ -116,151 +140,146 @@ void Pass_raygen_v8()
         const SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
 
         //------------- NEE: point light + sun (MIS partner of the bottom trace) -------------
+        //FUSED into one 2-iteration technique loop (0 = light-tree point light, 1 = sun):
+        //the two bodies were structurally identical — sample, inline visibility,
+        //EvaluateAndPdf_COMBINED, depth-branched candidate store — and inlined twice,
+        //which was a large slice of the pre-trace instruction footprint. One inlined
+        //instance now serves both. RNG draw order matches the old back-to-back blocks
+        //exactly (light-tree draws, then rSun, then the cloud-shadow draws gated inside
+        //the sun iteration), and every expression keeps its original form, so the
+        //output is bit-identical. [loop] keeps DXC from unrolling it back into two copies.
         const bool performNEE = !(ctx.mediumMatID != MEDIUM_INVALID || LoadKd_w(ctx.matID) < EPSILON);
         if (performNEE)
         {
-            //point-light technique, visibility inline
+            [loop]
+            for (uint tech = 0u; tech < 2u; ++tech)
             {
-                LT_LightSampleResult light = LT_SamplePointOnLight(ctx.hitPos, ctx.hitNormal, seed);
+                float3 L;                    //direction to the light
+                float3 visTarget;            //visibility endpoint
+                float3 visTargetN;           //endpoint normal
+                float3 radiance;             //emission / sun radiance along -L
+                float  lightPdf;             //solid-angle pdf
+                float  cosSurf;
+                float3 lightPos = float3(0, 0, 0);   //point-light only (depth==1 payload)
+                float3 lightN   = float3(0, 1, 0);
+                uint   lightObjID = 0u;
 
-                const float3 toLight = light.position - ctx.hitPos;
-                const float  dist    = sqrt(dot(toLight, toLight));
-                const float3 L       = toLight / dist;
-
-                const float cosSurf   = dot(ctx.hitNormal, L);
-                const float cosLightS = dot(light.normal, -L);
-
-                if (cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f)
+                if (tech == 0u)
                 {
-                    //visibility first: keep the strategy+BSDF eval out of the
-                    //cross-ray live set; run it only if unoccluded. Thin glass attenuates
-                    //(1-F)*Tf rather than blocking, so visibility is an RGB transmittance.
-                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, light.position, light.normal);
-                    if (any(visT > 0.0f))
+                    LT_LightSampleResult light = LT_SamplePointOnLight(ctx.hitPos, ctx.hitNormal, seed);
+
+                    const float3 toLight = light.position - ctx.hitPos;
+                    const float  dist    = sqrt(dot(toLight, toLight));
+                    L = toLight / dist;
+
+                    cosSurf = dot(ctx.hitNormal, L);
+                    const float cosLightS = dot(light.normal, -L);
+                    if (!(cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f))
+                        continue;
+
+                    visTarget  = light.position;
+                    visTargetN = light.normal;
+                    radiance   = light.emission;
+                    lightPdf   = light.pdfSolidAngle;
+                    lightPos   = light.position;
+                    lightN     = light.normal;
+                    lightObjID = light.objID;
+                }
+                else
+                {
+                    const float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
+                    SunSampleResult sun = SampleSun(rSun);
+                    L = sun.direction;
+
+                    cosSurf = dot(ctx.hitNormal, L);   //== NdotL
+                    if (!(cosSurf > 1e-6f && sun.pdf > 1e-20f))
+                        continue;
+
+                    visTarget  = ctx.hitPos + sun.direction * RAY_TMAX_PLANET;
+                    visTargetN = -sun.direction;
+                    radiance   = sun.radiance;
+                    lightPdf   = sun.pdf;
+                }
+
+                //visibility first: keep the strategy+BSDF eval out of the
+                //cross-ray live set; run it only if unoccluded. Thin glass attenuates
+                //(1-F)*Tf rather than blocking, so visibility is an RGB transmittance.
+                const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
+                if (!any(visT > 0.0f))
+                    continue;
+
+                //sun-only cloud shadow (draw order preserved: after the vis test, as
+                //before). Compiled out of the lite variant — the host dispatches that
+                //variant only when the toggle is off, i.e. when this block is inert.
+#if !RAYGEN_NO_CLOUD_SURF_SHADOW
+                if (tech == 1u && cloud_cloudShadowOnSurfaces > 0.5f)
+                {
+                    float2 rCone = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
+                    float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
+                    float3 Lj = SampleConeAroundDir(L, cosCone, rCone);
+                    float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj,
+                                                    RandomFloatSingle(seed));
+                    radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
+                }
+#endif
+
+                const float3 throughput = UnpackRGB9E5(throughputPk);
+
+                BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+
+                const float bsdfPdf = bdataNEE.pdf;
+                if (!(bsdfPdf > 0.0f))
+                    continue;
+
+                const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
+                const float3 localMeasurement = radiance * bdataNEE.val * cosSurf * visT;
+                const float3 F_contrib        = throughput * localMeasurement * pdf_product;
+                const float  p_hat            = GetPHat(F_contrib);
+                const float  p_full           = pdf_product * lightPdf;
+                const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
+
+                if (depth == 1)
+                {
+                    if (tech == 0u)
                     {
-                        const float3 throughput = UnpackRGB9E5(throughputPk);
-
-                        BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
-
-                        const float lightPdf = light.pdfSolidAngle;
-                        const float bsdfPdf  = bdataNEE.pdf;
-
-                        if (bsdfPdf > 0.0f)
-                        {
-                            const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
-                            const float3 localMeasurement = light.emission * bdataNEE.val * cosSurf * visT;
-                            const float3 F_contrib        = throughput * localMeasurement * pdf_product;
-                            const float  p_hat            = GetPHat(F_contrib);
-                            const float  p_full           = pdf_product * lightPdf;
-                            const float  wi               = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-
-                            if (depth == 1)
-                            {
-                                //primary DI, x2 is the light
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    light.position, light.normal,
-                                    light.emission, diMarkerFor(pixelIdx, time),
-                                    float3(0,0,0), 0.0f, 0.0f,
-                                    MATID_LIGHT_TRI, light.objID, 1.0f,
-                                    F_contrib, seed);
-                            }
-                            else if (depth == 2 && !sssActive)
-                            {
-                                //first-bounce DI, x2 is the surface. sssEntered here means a
-                                //no-scatter SSS pass-through: x2 is the white-diffuse exit B,
-                                //tag it MATID_SSS_EXIT_BIT so Reconnect uses the 1/pi entry
-                                //coupling for x1 (matching the forward pdf_product fold).
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    ctx.hitPos, ctx.hitNormal,
-                                    light.emission, -L,
-                                    (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
-                                    ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
-                                    F_contrib, seed);
-                            }
-                            else
-                            {
-                                const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                                const float3 tpost    = load_rg_tpost(g_pathStateBuffer, pixelIdx);
-                                const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    ps.x2, ps.n2_s,
-                                    light.emission * tpostNEE, ps.v2,
-                                    ps.Kd, ps.Pr, ps.Pm,
-                                    ps.matID, ps.objID, ps.eta,
-                                    F_contrib, seed);
-                            }
-                        }
+                        //primary DI, x2 is the light
+                        AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                            lightPos, lightN,
+                            radiance, diMarkerFor(pixelIdx, time),
+                            float3(0,0,0), 0.0f, 0.0f,
+                            MATID_LIGHT_TRI, lightObjID, 1.0f,
+                            F_contrib, seed);
+                    }
+                    else
+                    {
+                        //primary direct sun -> directAtX1, out of the reservoir
+                        add_rg_directX1(g_pathStateBuffer, pixelIdx, DirectContribution(wi, F_contrib));
                     }
                 }
-            }
-
-            //sun technique
-            {
-                const float2 rSun = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
-                SunSampleResult sun = SampleSun(rSun);
-                const float  NdotL = dot(ctx.hitNormal, sun.direction);
-
-                if (NdotL > 1e-6f && sun.pdf > 1e-20f)
+                else if (depth == 2 && !sssActive)
                 {
-                    const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, ctx.hitPos + sun.direction * RAY_TMAX_PLANET, -sun.direction);
-                    if (any(visT > 0.0f))
-                    {
-                    if (cloud_cloudShadowOnSurfaces > 0.5f)
-                    {
-                        float2 rCone = float2(RandomFloatSingle(seed), RandomFloatSingle(seed));
-                        float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
-                        float3 Lj = SampleConeAroundDir(sun.direction, cosCone, rCone);
-                        float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj,
-                                                        RandomFloatSingle(seed));
-                        sun.radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
-                    }
-
-                    const float3 throughput = UnpackRGB9E5(throughputPk);
-
-                    BrdfData  bdataNEE = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, sun.direction, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
-
-                    const float lightPdf = sun.pdf;
-                    const float bsdfPdf  = bdataNEE.pdf;
-
-                    if (bsdfPdf > 0.0f)
-                    {
-                        const float  misWeight        = lightPdf / (lightPdf + bsdfPdf);
-                        const float3 localMeasurement = sun.radiance * bdataNEE.val * NdotL * visT;
-                        const float3 F_contrib        = throughput * localMeasurement * pdf_product;
-                        const float  p_hat            = GetPHat(F_contrib);
-                        const float  p_full           = pdf_product * lightPdf;
-
-                            const float wi = (p_full > 1e-20f) ? (misWeight * p_hat / p_full) : 0.0f;
-
-                            if (depth == 1)
-                            {
-                                //primary direct sun -> directAtX1, out of the reservoir
-                                add_rg_directX1(g_pathStateBuffer, pixelIdx, DirectContribution(wi, F_contrib));
-                            }
-                            else if (depth == 2 && !sssActive)
-                            {
-                                //x2 = surface; tag a no-scatter SSS exit B (see point-light branch)
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    ctx.hitPos, ctx.hitNormal,
-                                    sun.radiance, -sun.direction,
-                                    (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
-                                    ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
-                                    F_contrib, seed);
-                            }
-                            else
-                            {
-                                const float3 tpost    = load_rg_tpost(g_pathStateBuffer, pixelIdx);
-                                const float3 tpostNEE = tpost * bdataNEE.val * NdotL;
-                                const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
-                                AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
-                                    ps.x2, ps.n2_s,
-                                    sun.radiance * tpostNEE, ps.v2,
-                                    ps.Kd, ps.Pr, ps.Pm,
-                                    ps.matID, ps.objID, ps.eta,
-                                    F_contrib, seed);
-                            }
-                        }
-                    }
+                    //first-bounce DI, x2 is the surface. sssEntered here means a
+                    //no-scatter SSS pass-through: x2 is the white-diffuse exit B,
+                    //tag it MATID_SSS_EXIT_BIT so Reconnect uses the 1/pi entry
+                    //coupling for x1 (matching the forward pdf_product fold).
+                    AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                        ctx.hitPos, ctx.hitNormal,
+                        radiance, -L,
+                        (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
+                        ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
+                        F_contrib, seed);
+                }
+                else
+                {
+                    const PathVertexState ps = load_ps(g_pathStateBuffer, pixelIdx);
+                    const float3 tpost    = load_rg_tpost(g_pathStateBuffer, pixelIdx);
+                    const float3 tpostNEE = tpost * bdataNEE.val * cosSurf;
+                    AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
+                        ps.x2, ps.n2_s,
+                        radiance * tpostNEE, ps.v2,
+                        ps.Kd, ps.Pr, ps.Pm,
+                        ps.matID, ps.objID, ps.eta,
+                        F_contrib, seed);
                 }
             }
         }
@@ -505,10 +524,16 @@ void Pass_raygen_v8()
             ? CalculateAbsorptionThroughput(LoadTf(mediumMatID_n), hitT_n)
             : float3(1, 1, 1);
 
-        const float3 emission_n = GetEmissionFast(instID_n, primID_n);
+        //emission via the lightID EvalSurfaceState already resolved (GetEmissionFast
+        //re-walked instanceProps.triToLightBase + gTriToLightId for the same value).
+        //hinfo lightID is backface-nulled, which only zeroes emission in cases the
+        //old `&& lightID != -1` guard rejected anyway — branch decisions unchanged.
+        const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
+            ? g_EmissiveTriangles[hinfo_n.lightID].emission * GLOBAL_EMISSION_STRENGTH
+            : float3(0, 0, 0);
 
         //----- Emitter hit at v_{depth+1}: BSDF-technique direct emission -----
-        if (any(emission_n > 0.0f) && hinfo_n.lightID != 0xFFFFFFFFu)
+        if (any(emission_n > 0.0f))
         {
             const float3 throughputCur = UnpackRGB9E5(throughputPk);
             const float3 prevNormalCur = UnpackNormal(prevNormalPk);

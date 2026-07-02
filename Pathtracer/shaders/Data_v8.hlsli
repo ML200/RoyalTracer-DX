@@ -14,20 +14,27 @@ struct Attributes {
 //====================================
 //INSTANCE PROPERTIES
 //====================================
+//224B record (was 416B with six float4x4). Transforms are affine float3x4
+//(the dropped 4th ROW was 0,0,0,1): mul(M, float4(p,1)) computes the same
+//4-term dot per component as the float4x4 path, so transforms stay
+//bit-identical while each fetch shrinks 64B -> 48B. Hot fields (current
+//transforms + index/material bases) pack into the first 176B; the ONE prev
+//matrix any shader reads (prevObjectToWorld, Camera_Ray reprojection) sits
+//cold at the tail. prevObjectToWorldInverse/Normal were never read by any
+//pass and now exist only on the CPU working struct.
+//MUST mirror InstanceProperties in Common.h field-for-field.
 struct InstanceProperties
 {
-    float4x4 objectToWorld;
-    float4x4 objectToWorldInverse;
-    float4x4 prevObjectToWorld;
-    float4x4 prevObjectToWorldInverse;
-    float4x4 objectToWorldNormal;
-    float4x4 prevObjectToWorldNormal;
+    float3x4 objectToWorld;
+    float3x4 objectToWorldInverse;
+    float3x4 objectToWorldNormal;
     uint  indexBase;
     uint  vertexBase;
     uint  materialBase;
-    uint triToLightBase;
-    uint opaqueTriCount;
-    uint _pad[3];
+    uint  triToLightBase;
+    uint  opaqueTriCount;
+    uint  _pad[3];
+    float3x4 prevObjectToWorld;
 };
 
 //====================================

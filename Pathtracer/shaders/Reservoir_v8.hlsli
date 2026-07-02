@@ -30,22 +30,25 @@ struct Reservoir
 
 
 //====================================
-//SOA GROUP PLANES
+//SOA GROUP PLANES  (72 B/px)
 //====================================
-//64 B/px in 5 planes, grouped by co-access so scattered partner reads
-//(temporal candidate, spatial shift / merge lazy accept) touch 4-5 cache
-//lines instead of the former 11 single-field planes. Coalesced own-pixel
-//access is unchanged (same bytes, fewer transactions + less address math).
-//  PACK1 16B  x2(12) | n2pk(4)              reconnection geometry
-//  PAY   16B  L2 | Kd | eta/Pr/Pm | matID   reconnection material payload
-//  FW    16B  F(12) | W(4)                  RIS state, one Load4 in merge
-//  V2     4B  solo plane                    dup pass streams it at 4B stride
-//  MISC  12B  objID | M | wsum
-static const uint PLANE_PACK1 =  0u;
-static const uint PLANE_PAY   = 16u;
-static const uint PLANE_FW    = 32u;
-static const uint PLANE_V2    = 48u;
-static const uint PLANE_MISC  = 52u;
+//Round 2 of the co-access grouping (was 5 planes / 64 B): scattered partner reads
+//(temporal candidate, spmis shift draws, merge lazy accept) always want the FULL
+//reconnection payload, so it now lives in ONE 48B AoS record — exactly 2 sectors at
+//any pixel (48B never straddles a third 32B sector at a 48B stride) instead of 4-5
+//scattered plane sectors + a separate M fetch. FW keeps its own plane (merge streams
+//F/W without payload); V2 is DUPLICATED into a solo 4B plane so Pass_dup_gi's
+//4B-stride streaming stays cheap (writers store it twice); wsum stays raygen-owned
+//in its own plane. Own-pixel access is a wash (same bytes either way).
+//  RECON 48B  +0  x2(12) | n2pk(4)               reconnection geometry
+//             +16 L2 | Kd | eta/Pr/Pm | matID    reconnection material payload
+//             +32 objID | v2pk | M | pad         provenance + confidence
+//  FW    16B  F(12) | W(4)                       RIS state, one Load4 in merge
+//  V2     4B  solo DUPLICATE plane               dup pass streams it at 4B stride
+//  WSUM   4B  raygen-owned
+static const uint PLANE_FW    = 48u;
+static const uint PLANE_V2    = 64u;
+static const uint PLANE_WSUM  = 68u;
 
 //====================================
 //SOA ADDRESS HELPERS
@@ -57,11 +60,12 @@ static const uint PLANE_MISC  = 52u;
 uint numPx()                       { return ((IMG_W + 7u) / 8u) * ((IMG_H + 3u) / 4u) * 32u; }
 
 //group bases
-uint addr_pack1(uint px)           { return px * 16u; }
-uint addr_pay  (uint px)           { uint N = numPx(); return N * PLANE_PAY  + px * 16u; }
+uint addr_recon(uint px)           { return px * 48u; }
+uint addr_pack1(uint px)           { return addr_recon(px); }
+uint addr_pay  (uint px)           { return addr_recon(px) + 16u; }
+uint addr_pm   (uint px)           { return addr_recon(px) + 32u; }   // objID | v2pk | M | pad
 uint addr_fw   (uint px)           { uint N = numPx(); return N * PLANE_FW   + px * 16u; }
 uint addr_v2   (uint px)           { uint N = numPx(); return N * PLANE_V2   + px *  4u; }
-uint addr_misc (uint px)           { uint N = numPx(); return N * PLANE_MISC + px * 12u; }
 
 //per-field addresses inside the groups (legacy helper API preserved)
 uint addr_l2(uint px)              { return addr_pay(px); }
@@ -70,9 +74,9 @@ uint addr_eta(uint px)             { return addr_pay(px)  +  8u; }
 uint addr_matid(uint px)           { return addr_pay(px)  + 12u; }
 uint addr_f(uint px)               { return addr_fw(px); }
 uint addr_w(uint px)               { return addr_fw(px)   + 12u; }
-uint addr_objid(uint px)           { return addr_misc(px); }
-uint addr_m(uint px)               { return addr_misc(px) +  4u; }
-uint addr_wsum(uint px)            { return addr_misc(px) +  8u; }
+uint addr_objid(uint px)           { return addr_pm(px); }
+uint addr_m(uint px)               { return addr_pm(px)   +  8u; }
+uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM + px * 4u; }
 
 //luminance
 inline float GetPHat(float3 v) {
@@ -147,6 +151,7 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
 {
     float3 xO  = WorldToObjectPos(r.objID, r.x2);
     float3 nSO = WorldToObjectNrm(r.objID, r.n2_s);
+    const uint v2pk = PackNormal(r.V2);
 
     //no outer normalize: PackNormal normalizes internally, and its zero/NaN
     //guard must see the raw vector so a cleared reservoir packs the
@@ -155,23 +160,23 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     buf.Store4(addr_pay(pixelIdx),
                uint4(PackRGB9E5(r.L2), PackRGB9E5(r.Kd),
                      PackEtaPrPm(r.eta, r.Pr, r.Pm), r.matID));
+    buf.Store4(addr_pm(pixelIdx), uint4(r.objID, v2pk, r.M, 0u));
     buf.Store4(addr_fw(pixelIdx), uint4(asuint(r.F), asuint(r.W)));
-    buf.Store (addr_v2(pixelIdx), PackNormal(r.V2));
-    //objID + M only: wsum (addr_misc + 8) is raygen-owned and not part of
-    //the merged record
-    buf.Store2(addr_misc(pixelIdx), uint2(r.objID, r.M));
+    buf.Store (addr_v2(pixelIdx), v2pk);   //solo duplicate for the dup pass stream
+    //wsum is raygen-owned and not part of the merged record
 }
 
 //payload-only load: everything Reconnect needs (x2/n2/L2/V2/Kd/Pr/Pm/eta/
-//matID/objID) in 4 grouped fetches; F/W/M/w_sum of 'r' are left untouched.
-//For scattered partner reads (spat shift, merge lazy accept) where the RIS
-//state either is not needed or is being accumulated in place.
+//matID/objID) in 3 grouped fetches over the ONE 48B record (2 sectors at any
+//pixel); F/W/M/w_sum of 'r' are left untouched — merge's lazy winner accept
+//relies on keeping its own accumulated RIS state.
 void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoir r)
 {
     const uint4 p1  = buf.Load4(addr_pack1(pixelIdx));
     const uint4 pay = buf.Load4(addr_pay(pixelIdx));
+    const uint4 pm  = buf.Load4(addr_pm(pixelIdx));   // objID | v2pk | M | pad
 
-    r.objID = buf.Load(addr_objid(pixelIdx));
+    r.objID = pm.x;
     r.matID = pay.w;
 
     r.x2    = ObjectToWorldPos(r.objID, asfloat(p1.xyz));
@@ -181,7 +186,7 @@ void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoi
     r.Kd    = UnpackRGB9E5(pay.y);
     UnpackEtaPrPm(pay.z, r.eta, r.Pr, r.Pm);
 
-    r.V2    = UnpackNormal(buf.Load(addr_v2(pixelIdx)));
+    r.V2    = UnpackNormal(pm.y);
 }
 
 Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
@@ -650,16 +655,18 @@ inline bool AddInitialCandidate(
     wsum += wi;
     if (wsum > EPSILON && RandomFloatSingle(seed) < (wi / wsum))
     {
-        const float3 xO  = WorldToObjectPos(objID, x2);
-        const float3 nSO = WorldToObjectNrm(objID, n2_s);
+        const float3 xO   = WorldToObjectPos(objID, x2);
+        const float3 nSO  = WorldToObjectNrm(objID, n2_s);
+        const uint   v2pk = PackNormal(V2);
         buf.Store4(addr_pack1(pixelIdx), uint4(asuint(xO), PackNormal(nSO)));
         buf.Store4(addr_pay  (pixelIdx),
                    uint4(PackRGB9E5(L2), PackRGB9E5(Kd),
                          PackEtaPrPm(eta, Pr, Pm), matID));
-        //F only - W and M land in the FW/MISC groups at raygen finalize
+        //objID + v2 land in the record; M is finalize-owned so Store2 only.
+        //F only - W and M land at raygen finalize
+        buf.Store2(addr_pm   (pixelIdx), uint2(objID, v2pk));
         buf.Store3(addr_f    (pixelIdx), asuint(F_contrib));
-        buf.Store (addr_v2   (pixelIdx), PackNormal(V2));
-        buf.Store (addr_objid(pixelIdx), objID);
+        buf.Store (addr_v2   (pixelIdx), v2pk);   //solo duplicate for the dup pass stream
         return true;
     }
     return false;

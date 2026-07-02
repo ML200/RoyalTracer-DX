@@ -323,7 +323,7 @@ void Renderer::CreateAccelerationStructures() {
 //====================================
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-    CD3DX12_ROOT_PARAMETER1 rootParameters[3];
+    CD3DX12_ROOT_PARAMETER1 rootParameters[4];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
@@ -433,6 +433,11 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // root descriptor rather than a heap entry to avoid descriptor-table surgery; set
     // per-pass via SetComputeRootUnorderedAccessView (Renderer.cpp setConsts).
     rootParameters[2].InitAsUnorderedAccessView(25, 0);
+    // Active-pixel queue for the compacted indirect raygen dispatch (u26,
+    // g_raygenQueue): count + packed survivor pixel coords, appended by
+    // Pass_camera, consumed by Pass_raygen via ExecuteIndirect. Root UAV for the
+    // same no-descriptor-surgery reason as u25.
+    rootParameters[3].InitAsUnorderedAccessView(26, 0);
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[4];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -464,8 +469,12 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
         D3D12_TEXTURE_ADDRESS_MODE_WRAP);
 
     CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
+    //SAMPLER_HEAP_DIRECTLY_INDEXED: SampleMaterialTex (Includes_v8.hlsli) picks the
+    //linear-vs-point material sampler via SamplerDescriptorHeap[] (slots 0/1 of
+    //m_samplerHeap, exact clones of static s0/s3) instead of a two-op uniform branch.
     desc.Init_1_1(_countof(rootParameters), rootParameters, _countof(staticSamplers),
-        staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED);
+        staticSamplers, D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
+                      | D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED);
 
     ComPtr<ID3DBlob> signature, error;
     HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &signature, &error);
@@ -608,6 +617,19 @@ void Renderer::CreateRaytracingPipeline() {
         pipeline.AddLibrary(lib.Get(), { base.c_str() });
         m_passes.RegisterPassIndex(p.file, rgSlot);
         rgSlot++;
+
+        // Lite bounce-pass variant: the sun-NEE cloud-surface-shadow block compiled
+        // OUT (-D). The indirect-dispatch template points at its SBT record whenever
+        // the editor toggle is off — the exact condition under which the block is
+        // inert — so output is bit-identical while the dispatched shader sheds the
+        // block's I$ footprint + register pressure. Its SBT record is appended AFTER
+        // the token-derived raygen entries (CreateShaderBindingTable).
+        if (base == L"Pass_raygen_v8") {
+            ComPtr<IDxcBlob> lite = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str(),
+                { L"RAYGEN_ENTRY=Pass_raygen_v8_lite", L"RAYGEN_NO_CLOUD_SURF_SHADOW=1" });
+            pipeline.AddLibrary(lite.Get(), { L"Pass_raygen_v8_lite" });
+            rayGenNames.push_back(L"Pass_raygen_v8_lite");
+        }
     }
 
     // Fixed shaders
@@ -723,10 +745,42 @@ void Renderer::CreatePathStateBuffer() {
 
     // SPMIS global hash grid (root UAV u25, g_spmisBuffer): 10 SoA arrays each
     // TileAlignedPx uints wide (must match SP_STR()/SP_ARRAYS in HashGridHash_v8.hlsli) +
-    // a global offset counter + a 16B/px AoS search-record region (SP_SRCH = cellConf +
-    // worldPos) => 14*TileAlignedPx + 4 uints. Resolution-dependent -> recreated on resize.
+    // a 32B-padded global offset counter + a 32B/px sector-aligned AoS search-record
+    // region (SP_SRCH = {cell|worldPos, conf|worldN}, one 32B load per select probe)
+    // => 18*TileAlignedPx + 8 uints. Resolution-dependent -> recreated on resize.
     m_spmisBuffer = rf.CreateUAVBuffer(
-        (14u * TileAlignedPx(GetWidth(), GetHeight()) + 4u) * 4u, L"SPMISBuffer");
+        (18u * TileAlignedPx(GetWidth(), GetHeight()) + 8u) * 4u, L"SPMISBuffer");
+
+    // Active-pixel queue (root UAV u26, g_raygenQueue): [0] count, [16+i*4] packed
+    // survivor pixel coords. Camera appends non-terminal pixels; the raygen bounce
+    // pass launches 1D over exactly that count via ExecuteIndirect. Resolution-
+    // dependent -> recreated on resize.
+    m_raygenQueueBuffer = rf.CreateUAVBuffer(
+        16u + TileAlignedPx(GetWidth(), GetHeight()) * 4u, L"RaygenQueue");
+
+    // 104B DISPATCH_RAYS_DESC args for the compacted raygen ExecuteIndirect.
+    // Default-heap, created in COMMON: each frame it implicitly promotes to
+    // COPY_DEST for the template+count copies, gets an explicit transition to
+    // INDIRECT_ARGUMENT, and decays back to COMMON at ExecuteCommandLists.
+    // The template half lives in an upload buffer rewritten whenever the SBT is
+    // (re)built — see WriteRaysIndirectTemplate.
+    if (!m_raysIndirectArgs) {
+        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
+        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgs)));
+        m_raysIndirectArgs->SetName(L"RaysIndirectArgs");
+    }
+    if (!m_raysArgsTemplate) {
+        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+        //TWO template slots: [0] = full raygen variant, [1] = lite variant (cloud
+        //surface shadows compiled out). The record path copies slot 0 or 1 based
+        //on the editor toggle.
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(2 * sizeof(D3D12_DISPATCH_RAYS_DESC));
+        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_raysArgsTemplate)));
+        m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
+    }
 
     // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),
@@ -755,6 +809,36 @@ void Renderer::CreateShaderResourceHeap() {
     stagingDesc.NumDescriptors = 4;
     stagingDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     ThrowIfFailed(dev->CreateDescriptorHeap(&stagingDesc, IID_PPV_ARGS(&m_stagingUavHeap)));
+
+    //Dynamic sampler heap for SamplerDescriptorHeap[] in SampleMaterialTex
+    //(Includes_v8.hlsli). Slot 0 = EXACT clone of static sampler s0 (aniso 16,
+    //wrap, LESS_EQUAL, opaque-white border, full mip range); slot 1 = clone of
+    //static s3 (min/mag point, mip linear, wrap). Identical descs -> identical
+    //filtering hardware state -> bit-identical sampling vs the old branch.
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC shd = {};
+        shd.NumDescriptors = 2;
+        shd.Type  = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        shd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        ThrowIfFailed(dev->CreateDescriptorHeap(&shd, IID_PPV_ARGS(&m_samplerHeap)));
+
+        D3D12_SAMPLER_DESC sd = {};
+        sd.AddressU = sd.AddressV = sd.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        sd.MipLODBias     = 0.0f;
+        sd.MaxAnisotropy  = 16;
+        sd.ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        sd.BorderColor[0] = sd.BorderColor[1] = sd.BorderColor[2] = sd.BorderColor[3] = 1.0f;
+        sd.MinLOD = 0.0f;
+        sd.MaxLOD = D3D12_FLOAT32_MAX;
+
+        const UINT sinc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE sh(m_samplerHeap->GetCPUDescriptorHandleForHeapStart());
+        sd.Filter = D3D12_FILTER_ANISOTROPIC;             // slot 0: g_sampler clone
+        dev->CreateSampler(&sd, sh);
+        sh.Offset(1, sinc);
+        sd.Filter = D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR; // slot 1: g_samplerPoint clone
+        dev->CreateSampler(&sd, sh);
+    }
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE handle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart());
     CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
@@ -1279,6 +1363,7 @@ void Renderer::CreateShaderBindingTable() {
     D3D12_GPU_DESCRIPTOR_HANDLE heapHandle = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
     auto heapPointer = reinterpret_cast<UINT64*>(heapHandle.ptr);
 
+    uint32_t rgEntryCount = 0;
     for (const auto& entry : m_passes.Tokens()) {
         if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 ||
             entry == L"endloop" || entry == L"pingswap" ||
@@ -1295,6 +1380,18 @@ void Renderer::CreateShaderBindingTable() {
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
         m_sbtHelper.AddRayGenerationProgram(base.c_str(), { heapPointer });
+        rgEntryCount++;
+    }
+
+    // Lite bounce-pass variant record, appended AFTER the token-derived entries so
+    // their pass-index -> SBT-slot mapping stays untouched. The indirect template
+    // (WriteRaysIndirectTemplate) points at it when cloud surface shadows are off.
+    // Only present when the pass list actually contains the bounce pass (the lite
+    // library is compiled alongside it in CreateRaytracingPipeline).
+    m_raygenLiteSbtSlot = UINT32_MAX;
+    if (m_passes.PassIndexByFile(L"Pass_raygen_v8.hlsl") != UINT32_MAX) {
+        m_raygenLiteSbtSlot = rgEntryCount;
+        m_sbtHelper.AddRayGenerationProgram(L"Pass_raygen_v8_lite", { heapPointer });
     }
 
     m_sbtHelper.AddMissProgram(L"Miss", {});
@@ -1332,6 +1429,9 @@ void Renderer::CreateShaderBindingTable() {
         D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ,
         nv_helpers_dx12::kUploadHeapProps);
     m_sbtHelper.Generate(m_sbtStorage.Get(), m_rtStateObjectProps.Get());
+
+    //refresh the compacted-raygen indirect template (SBT addresses moved)
+    WriteRaysIndirectTemplate();
 }
 
 //====================================
@@ -1407,6 +1507,61 @@ void Renderer::CreateIndirectCommandSignature() {
     cd.pArgumentDescs    = &ad;
     ThrowIfFailed(m_ctx.Device()->CreateCommandSignature(
         &cd, nullptr, IID_PPV_ARGS(&m_commandSignature)));
+
+    // DISPATCH_RAYS signature for the compacted raygen dispatch: one
+    // D3D12_DISPATCH_RAYS_DESC argument, no root-constant args (nullptr root sig).
+    D3D12_INDIRECT_ARGUMENT_DESC rad = {};
+    rad.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+    D3D12_COMMAND_SIGNATURE_DESC rcd = {};
+    rcd.ByteStride      = sizeof(D3D12_DISPATCH_RAYS_DESC);
+    rcd.NumArgumentDescs = 1;
+    rcd.pArgumentDescs   = &rad;
+    ThrowIfFailed(m_ctx.Device()->CreateCommandSignature(
+        &rcd, nullptr, IID_PPV_ARGS(&m_raysCommandSignature)));
+}
+
+//Write the DISPATCH_RAYS_DESC template for the compacted raygen ExecuteIndirect:
+//identical to PopulateCommandList's raysDesc except Width=0 (patched on the GPU
+//from the survivor-queue count each frame), Height=Depth=1, and the raygen record
+//pinned to Pass_raygen_v8's SBT slot. Contents only change when the SBT moves, so
+//this is (re)written at CreateShaderBindingTable time — no per-frame CPU write and
+//therefore no in-flight-frame race on the upload buffer.
+void Renderer::WriteRaysIndirectTemplate() {
+    if (!m_raysArgsTemplate || !m_sbtStorage) return;
+    const uint32_t rgSlot = m_passes.PassIndexByFile(L"Pass_raygen_v8.hlsl");
+    if (rgSlot == UINT32_MAX) return;
+
+    D3D12_DISPATCH_RAYS_DESC d{};
+    const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
+    d.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * m_sbtHelper.GetRayGenEntrySize();
+    d.RayGenerationShaderRecord.SizeInBytes  = m_sbtHelper.GetRayGenEntrySize();
+    d.MissShaderTable.StartAddress  = sbtStart + m_sbtHelper.GetRayGenSectionSize();
+    d.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
+    d.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
+    d.HitGroupTable.StartAddress    = d.MissShaderTable.StartAddress + d.MissShaderTable.SizeInBytes;
+    d.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
+    d.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
+    if (m_sbtHelper.GetCallableSectionSize() > 0) {
+        d.CallableShaderTable.StartAddress  = d.HitGroupTable.StartAddress + d.HitGroupTable.SizeInBytes;
+        d.CallableShaderTable.SizeInBytes   = m_sbtHelper.GetCallableSectionSize();
+        d.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
+    }
+    d.Width = 0; d.Height = 1; d.Depth = 1;
+
+    //slot 1: identical desc pointed at the LITE variant's record (falls back to
+    //the full record if the variant is absent; the record path never selects
+    //slot 1 in that case anyway)
+    D3D12_DISPATCH_RAYS_DESC dLite = d;
+    if (m_raygenLiteSbtSlot != UINT32_MAX)
+        dLite.RayGenerationShaderRecord.StartAddress =
+            sbtStart + m_raygenLiteSbtSlot * m_sbtHelper.GetRayGenEntrySize();
+
+    void* p = nullptr;
+    CD3DX12_RANGE noRead(0, 0);
+    ThrowIfFailed(m_raysArgsTemplate->Map(0, &noRead, &p));
+    memcpy(p, &d, sizeof(d));
+    memcpy(static_cast<uint8_t*>(p) + sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite, sizeof(dLite));
+    m_raysArgsTemplate->Unmap(0, nullptr);
 }
 
 void Renderer::CompileSetupIndirectShader() {

@@ -118,7 +118,50 @@ struct BTriVertex {
 //====================================
 //PER-INSTANCE GPU DATA
 //====================================
+//GPU-packed affine 3x4 matrix: 4 packed float3 rows (the w column is dropped —
+//always 0,0,0,1 for these affine transforms). This byte layout equals HLSL's
+//default column_major float3x4 in a StructuredBuffer, so mul(M, float4(p,1))
+//computes exactly the same 4-term dot per component as the old float4x4 path
+//(bit-identical transforms, 48B per matrix instead of 64B).
+struct Float3x4 { float m[12]; };
+inline Float3x4 MakeFloat3x4(DirectX::XMMATRIX M) {
+    Float3x4 r;
+    for (int row = 0; row < 4; ++row) {
+        DirectX::XMFLOAT4 f;
+        XMStoreFloat4(&f, M.r[row]);
+        r.m[row * 3 + 0] = f.x;
+        r.m[row * 3 + 1] = f.y;
+        r.m[row * 3 + 2] = f.z;
+    }
+    return r;
+}
+
+//GPU per-instance record (224B, was 416B). Hot transforms as affine 3x4 (25%
+//fewer bytes per fetch, 2 sectors -> 1-2), the hot index/material bases packed
+//right after them, and only the ONE prev matrix any shader reads
+//(prevObjectToWorld — Camera_Ray reprojection) kept, cold at the tail.
+//prevObjectToWorldInverse/prevObjectToWorldNormal were uploaded every frame but
+//never read by any pass, so they exist only on the CPU working struct now.
+//MUST mirror InstanceProperties in Data_v8.hlsli field-for-field.
 struct InstanceProperties {
+    Float3x4 objectToWorld;
+    Float3x4 objectToWorldInverse;
+    Float3x4 objectToWorldNormal;
+    UINT     indexBase;
+    UINT     vertexBase;
+    UINT     materialBase;
+    UINT     triToLightBase;
+    UINT     opaqueTriCount;
+    UINT     _pad[3];
+    Float3x4 prevObjectToWorld;
+};
+static_assert(sizeof(InstanceProperties) == 224, "GPU record must stay in sync with Data_v8.hlsli");
+
+//CPU working state (full 4x4s): Scene::PrepareInstanceProperties runs inverse /
+//transpose math and prev-frame caching on these, then packs to the GPU record at
+//upload (Scene::UploadInstanceProperties). prevObjectToWorldInverse/Normal stay
+//here because the snap-recompute logic writes them (GPU never reads them).
+struct InstancePropertiesCpu {
     XMMATRIX objectToWorld;
     XMMATRIX objectToWorldInverse;
     XMMATRIX prevObjectToWorld;

@@ -212,6 +212,18 @@ void Pass_camera_v8()
     }
 
     //====================================
+    //ACTIVE-PIXEL QUEUE
+    //====================================
+    //Queue this survivor for the compacted indirect bounce dispatch (terminal
+    //pixels returned above and never get a slot). Order within the queue is
+    //arbitrary — raygen's math depends only on the pixel coords it dequeues.
+    {
+        uint slot;
+        g_raygenQueue.InterlockedAdd(0, 1u, slot);
+        g_raygenQueue.Store(16u + slot * 4u, (pixel.x & 0xFFFFu) | (pixel.y << 16));
+    }
+
+    //====================================
     //SPMIS HASH INSERTION
     //====================================
     //Insert this pixel into the SPMIS hash grid for the spatial-reuse pass. The

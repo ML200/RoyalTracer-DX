@@ -42,39 +42,51 @@ inline uint SP_PIXCNT_A(uint cell) { return SP_AGG(cell) +  0u; }
 inline uint SP_NZ_A(uint cell)     { return SP_AGG(cell) +  4u; }
 inline uint SP_CONF_A(uint cell)   { return SP_AGG(cell) +  8u; }
 inline uint SP_OFF_A(uint cell)    { return SP_AGG(cell) + 12u; }
-//Per-pixel SEARCH RECORD (AoS, 16B = cellConf + worldPos) for the Pass_spmis_select
-//cell-search fast path: bundled so each probe is ONE Load4 (npx-indexed, framebuffer-
-//local) instead of a scattered SP_CONF[ncell] + neighbour-G-buffer fan-out. Lives after
-//the SoA arrays + counter, 16B-aligned (the 1-uint counter occupies the first 16B slot).
-//Written by Pass_spmis_sort, read by Pass_spmis_select; host buffer sized for it in
-//Renderer_Pipeline.cpp ((14*TileAlignedPx + 4) uints).
-inline uint SP_SRCH(uint px) { return (SP_ARRAYS * SP_STR()) * 4u + 16u + px * 16u; }
+//Per-pixel SEARCH RECORD (AoS, 32B) for the Pass_spmis_select cell-search fast path.
+//One SECTOR-ALIGNED record now carries EVERYTHING a probe needs, so each probe is a
+//single 32B load instead of the former scattered SP_HASH[npx] (4B) + 16B record pair
+//in two regions (2 dependent sectors -> 1):
+//  half A @ +0  : cell | worldPos.xyz     reject key + plane-distance test
+//  half B @ +16 : conf | worldN.xyz       WRS weight + (gated) normal cone
+//cell duplicates SP_HASH[px]: Pass_spmis_reset writes SP_UNDEF into it for every pixel
+//(no-hit pixels never reach sort), Pass_spmis_sort overwrites it with the resolved cell
+//and fills pos/conf/n. Select also reads its OWN record for cellCenter/myPos/myN, which
+//kills its per-pixel instanceProps matrix fan-out. Base is padded to 32B (the counter
+//slot below occupies the first 32B) so records never straddle sectors. Host buffer
+//sized in Renderer_Pipeline.cpp ((18*TileAlignedPx + 8) uints).
+inline uint SP_SRCH(uint px) { return (SP_ARRAYS * SP_STR()) * 4u + 32u + px * 32u; }
 
 //====================================
 //SPMIS SPLIT-PASS SCRATCH  (aliases g_pathStateBuffer in SPMIS mode)
 //====================================
 //The reuse pass is split select -> shift -> merge to lift per-pass occupancy (the rays
-//land in shift with minimal live state). Per-pixel record packs a header + up to
+//land in shift with minimal live state). Per-pixel state packs a header + up to
 //SPMIS_SPLIT_MAXDRAWS non-canonical draw slots into the path-state scratch (texture
 //spatial reuse is idle in SPMIS mode, so the buffer is free). Sized to the existing
 //kPathStateBytesPerPx (88 B): 8 B header + 4*20 B = 88 B, so no host allocation change.
-//  header w0 = (status<<28) | reuseCell[27:0]    select -> shift(reuseCell)/merge(status)
-//         w1 = partnerPx (select) -> mis_c | passVis (shift) -> merge
-//  draw d  +0 = zPx       select; shift clears to SP_UNDEF on gate-reject; merge reads
-//          +4 = selProb (select) -> w_draw (shift) -> merge
-//          +8 = c.xyz 12B (shift) -> merge   (shadowed reconnection contribution)
+//
+//LAYOUT: SoA PLANES over SP_STR() pixels (was a px*88 AoS record). Select's stores and
+//shift/merge's reloads are all own-pixel, so plane-major makes every access warp-
+//coalesced (adjacent threads hit adjacent dwords) instead of scattering header+slots
+//across ~3 sectors per pixel at an 88B stride. Same total bytes (88 * SP_STR).
+//  w0 plane   4B/px = (status<<28) | reuseCell[27:0]  select -> shift(reuseCell)/merge(status)
+//  w1 plane   4B/px = partnerPx (select) -> mis_c | passVis (shift) -> merge
+//  per draw d: zPx plane 4B/px   select; shift clears to SP_UNDEF on gate-reject; merge reads
+//              prob plane 4B/px  selProb (select) -> w_draw (shift) -> merge
+//              c   plane 12B/px  (shift) -> merge   (shadowed reconnection contribution)
 //status: 0 = emitter/skip, 1 = passthrough, 2 = normal.
 //To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to >= 8 + N*20.
 #define SPMIS_SPLIT_MAXDRAWS 4u
 static const uint SPM_STATUS_SKIP = 0u;
 static const uint SPM_STATUS_PASS = 1u;
 static const uint SPM_STATUS_NORM = 2u;
-static const uint SPM_HDR_BYTES   = 8u;
-static const uint SPM_SLOT_BYTES  = 20u;
-inline uint SPM_STRIDE()              { return SPM_HDR_BYTES + SPMIS_SPLIT_MAXDRAWS * SPM_SLOT_BYTES; }
-inline uint SPM_w0(uint px)           { return px * SPM_STRIDE(); }
-inline uint SPM_w1(uint px)           { return px * SPM_STRIDE() + 4u; }
-inline uint SPM_slot(uint px, uint d) { return px * SPM_STRIDE() + SPM_HDR_BYTES + d * SPM_SLOT_BYTES; }
+inline uint SPM_w0(uint px)            { return px * 4u; }
+inline uint SPM_w1(uint px)            { return SP_STR() * 4u + px * 4u; }
+//draw-d plane group starts after the two header planes (8B/px worth = 8*SP_STR bytes)
+inline uint SPM_dBase(uint d)          { return SP_STR() * (8u + d * 20u); }
+inline uint SPM_slotZ(uint px, uint d) { return SPM_dBase(d) + px * 4u; }
+inline uint SPM_slotP(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 4u + px * 4u; }
+inline uint SPM_slotC(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 8u + px * 12u; }
 inline uint SPM_packHdr(uint reuseCell, uint status) { return (reuseCell & 0x0FFFFFFFu) | (status << 28u); }
 inline uint SPM_hdrStatus(uint w0)    { return w0 >> 28u; }
 inline uint SPM_hdrCell(uint w0)      { return w0 & 0x0FFFFFFFu; }

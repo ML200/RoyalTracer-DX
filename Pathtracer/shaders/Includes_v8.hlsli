@@ -220,14 +220,20 @@ Texture2DArray g_LUT         : register(t33);
 
 //Material-texture fetch. Routes through the point sampler when the editor's
 //"disable texture interpolation" toggle (pt_pointFilter) is on, else the
-//default bilinear/aniso g_sampler. A SamplerState can't be picked with ?: in
-//HLSL, so branch. All material textures are Texture2D<float4> (albedo / RMA /
-//normal / alpha-cutout), sampled with an explicit mip level.
+//default bilinear/aniso g_sampler. Picked via SamplerDescriptorHeap (SM6.6
+//dynamic sampler indexing) — sampler heap slot 0 is an exact clone of the
+//static s0 (aniso 16 / wrap), slot 1 of the static s3 (point / mip-linear /
+//wrap), created in Renderer::CreateShaderResourceHeap, so filtering is
+//bit-identical to the old two-op branch. The former uniform branch emitted
+//BOTH sampleLevel ops at every material-fetch call site (raygen alone carried
+//~20 dead duplicates); the dynamic handle collapses each site to one op.
+//pt_pointFilter is a cbuffer uniform, so no NonUniformResourceIndex needed.
+//All material textures are Texture2D<float4> (albedo / RMA / normal /
+//alpha-cutout), sampled with an explicit mip level.
 float4 SampleMaterialTex(Texture2D<float4> tex, float2 uv, float level)
 {
-    if (pt_pointFilter != 0u)
-        return tex.SampleLevel(g_samplerPoint, uv, level);
-    return tex.SampleLevel(g_sampler, uv, level);
+    SamplerState s = SamplerDescriptorHeap[(pt_pointFilter != 0u) ? 1u : 0u];
+    return tex.SampleLevel(s, uv, level);
 }
 
 //====================================
@@ -754,6 +760,13 @@ RWByteAddressBuffer g_Reservoirs_last        : register(u5);
 //cell-search / inner-RIS gathers (the Pass_spmis_select L2 bottleneck). Every WRITER
 //and same-dispatch cross-group READER (raygen CAS hash insert, count/offsets atomics)
 //keeps coherence by simply never defining the macro.
+//Active-pixel queue for the compacted indirect raygen dispatch (root UAV u26).
+//[0] count (cleared host-side each frame) | [16 + i*4] packed survivor pixel
+//coords (x | y<<16). Pass_camera appends every non-terminal pixel; Pass_raygen
+//launches 1D over exactly that count via ExecuteIndirect, so sky/degenerate/
+//direct-emitter pixels never occupy lanes through the bounce loop.
+RWByteAddressBuffer g_raygenQueue            : register(u26);
+
 #ifdef SPMIS_GRID_NONCOHERENT
 RWByteAddressBuffer g_pathStateBuffer        : register(u10);
 RWByteAddressBuffer g_spmisBuffer            : register(u25);

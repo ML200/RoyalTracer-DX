@@ -343,14 +343,27 @@ void Scene::PrepareInstanceProperties() {
 }
 
 void Scene::UploadInstanceProperties() {
-    // Write only dirty instances to GPU upload heap
+    // Write only dirty instances to GPU upload heap, packing the CPU working
+    // struct (full 4x4s) into the 224B GPU record (affine 3x4s, hot fields
+    // first, only prevObjectToWorld kept of the prev matrices).
     if (!dirtyInstanceList.empty()) {
         uint8_t* gpuDst = nullptr;
         CD3DX12_RANGE readRange(0, 0);
         ThrowIfFailed(instanceProperties->Map(0, &readRange, reinterpret_cast<void**>(&gpuDst)));
         for (uint32_t idx : dirtyInstanceList) {
-            memcpy(gpuDst + idx * sizeof(InstanceProperties),
-                   &cpuInstanceProps[idx], sizeof(InstanceProperties));
+            const InstancePropertiesCpu& src = cpuInstanceProps[idx];
+            InstanceProperties gp;
+            gp.objectToWorld        = MakeFloat3x4(src.objectToWorld);
+            gp.objectToWorldInverse = MakeFloat3x4(src.objectToWorldInverse);
+            gp.objectToWorldNormal  = MakeFloat3x4(src.objectToWorldNormal);
+            gp.indexBase      = src.indexBase;
+            gp.vertexBase     = src.vertexBase;
+            gp.materialBase   = src.materialBase;
+            gp.triToLightBase = src.triToLightBase;
+            gp.opaqueTriCount = src.opaqueTriCount;
+            gp._pad[0] = src._pad[0]; gp._pad[1] = src._pad[1]; gp._pad[2] = src._pad[2];
+            gp.prevObjectToWorld = MakeFloat3x4(src.prevObjectToWorld);
+            memcpy(gpuDst + idx * sizeof(InstanceProperties), &gp, sizeof(gp));
         }
         instanceProperties->Unmap(0, nullptr);
     }

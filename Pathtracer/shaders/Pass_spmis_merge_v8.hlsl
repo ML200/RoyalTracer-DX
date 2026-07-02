@@ -68,12 +68,11 @@ void main(uint3 tid : SV_DispatchThreadID)
     [loop]
     for (uint d = 0u; d < Ntn; ++d)
     {
-        const uint sa  = SPM_slot(pixelIdx, d);
-        const uint zPx = g_pathStateBuffer.Load(sa);
+        const uint zPx = g_pathStateBuffer.Load(SPM_slotZ(pixelIdx, d));
         if (zPx == SP_UNDEF) continue;   // unmaterialized or gate-rejected in shift
 
-        const float  w_draw = asfloat(g_pathStateBuffer.Load(sa + 4u));
-        const float3 c      = asfloat(g_pathStateBuffer.Load3(sa + 8u));
+        const float  w_draw = asfloat(g_pathStateBuffer.Load(SPM_slotP(pixelIdx, d)));
+        const float3 c      = asfloat(g_pathStateBuffer.Load3(SPM_slotC(pixelIdx, d)));
 
         rdi.w_sum += w_draw;
         effDraws++;

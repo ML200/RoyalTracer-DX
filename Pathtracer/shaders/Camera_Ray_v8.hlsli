@@ -80,9 +80,9 @@ inline float2 GetLastFramePixelCoordinates_Float(
     float2 resolution,
     uint objID)
 {
-    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
-    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
-    float4 clipPos      = mul(prevProjection, mul(prevView, prevWorldPos));
+    float3 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float3 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, float4(localPos, 1.0f));
+    float4 clipPos      = mul(prevProjection, mul(prevView, float4(prevWorldPos, 1.0f)));
 
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1.0f, -1.0f);
 
@@ -116,9 +116,9 @@ inline float2 GetCurrentFramePixelCoordinates_Unclamped(
     float2 resolution,
     uint objID)
 {
-    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
-    float4 currWorldPos = mul(instanceProps[objID].objectToWorld,        localPos);
-    float3 viewPos      = mul((float3x3)V, currWorldPos.xyz - InitOrigin());
+    float3 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float3 currWorldPos = mul(instanceProps[objID].objectToWorld,        float4(localPos, 1.0f));
+    float3 viewPos      = mul((float3x3)V, currWorldPos - InitOrigin());
     float4 clipPos      = mul(P, float4(viewPos, 1.0f));
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);
     float2 ndc = clipPos.xy / clipPos.w;
@@ -137,12 +137,12 @@ inline float2 GetLastFramePixelCoordinates_Unclamped(
     float2 resolution,
     uint objID)
 {
-    float4 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
-    float4 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, localPos);
+    float3 localPos     = mul(instanceProps[objID].objectToWorldInverse, float4(worldPos, 1.0f));
+    float3 prevWorldPos = mul(instanceProps[objID].prevObjectToWorld, float4(localPos, 1.0f));
     //prevCamPos = -R^T * t where R^T is the upper 3x3 of prevView and t is its translation column
     float3 prevTransCol = mul(prevView, float4(0, 0, 0, 1)).xyz;
     float3 prevCamPos   = -mul(transpose((float3x3)prevView), prevTransCol);
-    float3 viewPos      = mul((float3x3)prevView, prevWorldPos.xyz - prevCamPos);
+    float3 viewPos      = mul((float3x3)prevView, prevWorldPos - prevCamPos);
     float4 clipPos      = mul(prevProjection, float4(viewPos, 1.0f));
 
     if (clipPos.w <= 0.0f || !isfinite(clipPos.w)) return float2(-1e9f, -1e9f);

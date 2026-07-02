@@ -402,8 +402,15 @@ inline dx::HitObject TraceRay_Custom(
     //RayContribution=0, MultiplierForGeometry=1 (opaque vs alpha hit group per geometry), MissIndex=0
     dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 
-    uint hint = hitObj.IsHit()?1:0;
-    dx::MaybeReorderThread(hitObj, hint, 1);
+    //7-bit coherence hint (was 1 bit hit/miss). Top bit keeps the hit/miss split —
+    //misses go straight to the fat sky/cloud eval — and the low 6 bits sort hits by
+    //instance ID so a warp shades same-instance hits together: EvalSurfaceState's
+    //index/vertex/transform gathers and RefetchMaterial's texture fetches become
+    //warp-coherent instead of taking the hit population's random instance mix.
+    //InstanceID comes off the hit record (no memory fetch before the reorder), and
+    //reordering is execution-order only, so the output is bit-identical.
+    const uint hint = hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u;
+    dx::MaybeReorderThread(hitObj, hint, 7);
     return hitObj;
 }
 
@@ -515,10 +522,10 @@ HitInfo EvalSurfaceState(
     float3 tangentW_geom;
 
     {
-        const float4x4 M = instanceProps[instID].objectToWorld;
+        const float3x4 M = instanceProps[instID].objectToWorld;
         const float3x3 R = (float3x3)M;
 
-        posW     = mul(M, float4(p_local, 1.0f)).xyz;
+        posW     = mul(M, float4(p_local, 1.0f));
         normW    = mul(R, n_local);
         normW   *= rsqrt(max(dot(normW, normW), 1e-20f));
 

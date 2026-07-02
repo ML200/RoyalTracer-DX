@@ -148,31 +148,46 @@ inline float LT_NodeImportance_BLAS(LightBLASNodeGpu n, float3 x, float3 norm)
 uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS)
 {
     pdfTLAS = 1.0;
-    uint node = 0;
+
+    //The chosen child's topology (firstChild/childCount/blasIndex) is captured in the
+    //children-importance loop and carried in registers, so the loop never re-loads
+    //gLT_TLAS[node] at the top. The importance fields already touch both 32B sectors
+    //of the 64B node, so grabbing the tail words is traffic-FREE — this removes one
+    //dependent 64B fetch per level from the descent's serial chain. Only the root's
+    //topology needs an explicit load.
+    uint firstChild, childCount, blasIndex;
+    {
+        const LightTLASNodeGpu Nroot = gLT_TLAS[0];
+        firstChild = Nroot.firstChild; childCount = Nroot.childCount; blasIndex = Nroot.blasIndex;
+    }
 
     //depth cap, malformed tree could hang GPU, zero pdf invalidates sample
     [loop] for (uint iter = 0u; iter < 64u; ++iter)
     {
-        LightTLASNodeGpu N = gLT_TLAS[node];
-        if (N.childCount == 0) {
-            return N.blasIndex;
+        if (childCount == 0) {
+            return blasIndex;
         }
 
         float w[4];
+        uint3 ctopo[4];
         [unroll] for (uint i=0;i<4;i++){
-            if (i < N.childCount) {
-                LightTLASNodeGpu C = gLT_TLAS[N.firstChild + i];
-                w[i] = max(LT_NodeImportance_TLAS(C, x, n), 0.0);
+            if (i < childCount) {
+                LightTLASNodeGpu C = gLT_TLAS[firstChild + i];
+                w[i]     = max(LT_NodeImportance_TLAS(C, x, n), 0.0);
+                ctopo[i] = uint3(C.firstChild, C.childCount, C.blasIndex);
             } else {
-                w[i] = 0.0;
+                w[i]     = 0.0;
+                ctopo[i] = uint3(0u, 0u, 0u);
             }
         }
 
         float p, xi_next;
-        uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
+        uint  idx = LT_PickAndRescale(w, childCount, xi, p, xi_next);
         pdfTLAS *= p;
-        node = N.firstChild + idx;
-        xi   = xi_next;
+        firstChild = ctopo[idx].x;
+        childCount = ctopo[idx].y;
+        blasIndex  = ctopo[idx].z;
+        xi = xi_next;
     }
 
     pdfTLAS = 0.0f;
@@ -197,30 +212,46 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
 
     uint node = 0;
 
+    //chosen-child topology carried in registers — same rework as the TLAS descent
+    //above (no dependent per-level node reload; tail words ride the sectors the
+    //importance fields already touch).
+    uint firstChild, childCount, triFirst, triCount;
+    {
+        const LightBLASNodeGpu Nroot = gLT_BLAS[R.nodeOffset];
+        firstChild = Nroot.firstChild; childCount = Nroot.childCount;
+        triFirst   = Nroot.triFirst;   triCount   = Nroot.triCount;
+    }
+
     //depth cap, zero pdf on overflow, zero-count leaf is safe since LeafTriangle clamps
     [loop] for (uint iter = 0u; iter < 64u; ++iter)
     {
-        LightBLASNodeGpu N = gLT_BLAS[R.nodeOffset + node];
-        if (N.childCount == 0) {
-            LTLeaf L; L.triFirst = N.triFirst; L.triCount = N.triCount; L.nodeIndex = node;
+        if (childCount == 0) {
+            LTLeaf L; L.triFirst = triFirst; L.triCount = triCount; L.nodeIndex = node;
             return L;
         }
 
         float w[4];
+        uint4 ctopo[4];
         [unroll] for (uint i=0;i<4;i++){
-            if (i < N.childCount) {
-                LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
+            if (i < childCount) {
+                LightBLASNodeGpu C = gLT_BLAS[R.nodeOffset + (firstChild + i)];
+                w[i]     = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
+                ctopo[i] = uint4(C.firstChild, C.childCount, C.triFirst, C.triCount);
             } else {
-                w[i] = 0.0;
+                w[i]     = 0.0;
+                ctopo[i] = uint4(0u, 0u, 0u, 0u);
             }
         }
 
         float p, xi_next;
-        uint  idx = LT_PickAndRescale(w, N.childCount, xi, p, xi_next);
+        uint  idx = LT_PickAndRescale(w, childCount, xi, p, xi_next);
         pdfBLAS *= p;
-        node = N.firstChild + idx;
-        xi   = xi_next;
+        node       = firstChild + idx;
+        firstChild = ctopo[idx].x;
+        childCount = ctopo[idx].y;
+        triFirst   = ctopo[idx].z;
+        triCount   = ctopo[idx].w;
+        xi = xi_next;
     }
 
     pdfBLAS = 0.0f;
@@ -309,33 +340,41 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     uint blasTrail = gLT_BLASBitTrail[blas];
     uint triTrail  = gLT_TriBitTrail[triIndex];
 
-    //TLAS path probability
+    //TLAS path probability — chosen-child topology carried in registers (same
+    //no-dependent-reload rework as the stochastic descents above)
     float pdfTLAS = 1.0f;
-    uint  tnode   = 0;
     uint  tdepth  = 0;
+    uint  tFirstChild, tChildCount;
+    {
+        const LightTLASNodeGpu Nroot = gLT_TLAS[0];
+        tFirstChild = Nroot.firstChild; tChildCount = Nroot.childCount;
+    }
 
     [loop] for (uint iterT = 0u; iterT < 64u; ++iterT)
     {
-        LightTLASNodeGpu N = gLT_TLAS[tnode];
-        if (N.childCount == 0) break;
+        if (tChildCount == 0) break;
 
         const uint childIdx = (blasTrail >> (2u * tdepth)) & 3u;
 
         float w[4]; float sum = 0.0;
+        uint2 ctopo[4];
         [unroll] for (uint i=0;i<4;i++){
-            if (i < N.childCount) {
-                LightTLASNodeGpu C = gLT_TLAS[N.firstChild + i];
-                w[i] = max(LT_NodeImportance_TLAS(C, x, n), 0.0);
+            if (i < tChildCount) {
+                LightTLASNodeGpu C = gLT_TLAS[tFirstChild + i];
+                w[i]     = max(LT_NodeImportance_TLAS(C, x, n), 0.0);
+                ctopo[i] = uint2(C.firstChild, C.childCount);
                 sum += w[i];
             } else {
-                w[i] = 0.0;
+                w[i]     = 0.0;
+                ctopo[i] = uint2(0u, 0u);
             }
         }
 
         //sum==0 mirrors LT_PickAndRescale's uniform fallback
-        float p = (sum > 0.0f) ? (w[childIdx] / sum) : (1.0f / float(N.childCount));
+        float p = (sum > 0.0f) ? (w[childIdx] / sum) : (1.0f / float(tChildCount));
         pdfTLAS *= p;
-        tnode = N.firstChild + childIdx;
+        tFirstChild = ctopo[childIdx].x;
+        tChildCount = ctopo[childIdx].y;
         tdepth++;
     }
 
@@ -345,23 +384,26 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     const float3 xL  = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
     const float3 nL  = normalize(mul((float3x3)Rng.worldToLocal, n));
     float pdfBLAS    = 1.0f;
-    uint  bnode      = 0;
     uint  bdepth     = 0;
+    uint  bFirstChild, bChildCount, bTriFirst, bTriCount;
+    {
+        const LightBLASNodeGpu Nroot = gLT_BLAS[Rng.nodeOffset];
+        bFirstChild = Nroot.firstChild; bChildCount = Nroot.childCount;
+        bTriFirst   = Nroot.triFirst;   bTriCount   = Nroot.triCount;
+    }
 
     [loop] for (uint iterB = 0u; iterB < 64u; ++iterB)
     {
-        LightBLASNodeGpu N = gLT_BLAS[Rng.nodeOffset + bnode];
-
-        if (N.childCount == 0)
+        if (bChildCount == 0)
         {
             //fast path: single-tri leaf is the common case with maxLeafTris=1
-            if (N.triCount <= 1u) {
+            if (bTriCount <= 1u) {
                 return pdfTLAS * pdfBLAS;
             }
 
             //fallback: power-weighted, matches LT_SampleLeafTriangle_Stratified
-            const uint count    = N.triCount;
-            const uint leafBase = Rng.triIndexOffset + N.triFirst;
+            const uint count    = bTriCount;
+            const uint leafBase = Rng.triIndexOffset + bTriFirst;
             float sumW = 0.0f;
             float myW  = 0.0f;
             [loop] for (uint j = 0u; j < count; ++j) {
@@ -377,19 +419,25 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         const uint childIdx = (triTrail >> (2u * bdepth)) & 3u;
 
         float w[4]; float sum = 0.0;
+        uint4 ctopo[4];
         [unroll] for (uint i=0;i<4;i++){
-            if (i < N.childCount) {
-                LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (N.firstChild + i)];
-                w[i] = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
+            if (i < bChildCount) {
+                LightBLASNodeGpu C = gLT_BLAS[Rng.nodeOffset + (bFirstChild + i)];
+                w[i]     = max(LT_NodeImportance_BLAS(C, xL, nL), 0.0);
+                ctopo[i] = uint4(C.firstChild, C.childCount, C.triFirst, C.triCount);
                 sum += w[i];
             } else {
-                w[i] = 0.0;
+                w[i]     = 0.0;
+                ctopo[i] = uint4(0u, 0u, 0u, 0u);
             }
         }
 
-        float p = (sum > 0.0f) ? (w[childIdx] / sum) : (1.0f / float(N.childCount));
+        float p = (sum > 0.0f) ? (w[childIdx] / sum) : (1.0f / float(bChildCount));
         pdfBLAS *= p;
-        bnode = N.firstChild + childIdx;
+        bFirstChild = ctopo[childIdx].x;
+        bChildCount = ctopo[childIdx].y;
+        bTriFirst   = ctopo[childIdx].z;
+        bTriCount   = ctopo[childIdx].w;
         bdepth++;
     }
 
@@ -398,9 +446,9 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
 inline float LT_TriangleArea(uint tri, uint objID)
 {
-    float3 A = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].x, 1)).xyz;
-    float3 B = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].y, 1)).xyz;
-    float3 C = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].z, 1)).xyz;
+    float3 A = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].x, 1));
+    float3 B = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].y, 1));
+    float3 C = mul(instanceProps[objID].objectToWorld, float4(g_EmissiveTriangles[tri].z, 1));
     return 0.5 * length(cross(B - A, C - A));
 }
 
@@ -435,10 +483,10 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
     result.objID    = triData.instanceID;
     result.emission = triData.emission * GLOBAL_EMISSION_STRENGTH;
 
-    float4x4 worldMat = instanceProps[result.objID].objectToWorld;
-    float3 v0 = mul(worldMat, float4(triData.x, 1.0)).xyz;
-    float3 v1 = mul(worldMat, float4(triData.y, 1.0)).xyz;
-    float3 v2 = mul(worldMat, float4(triData.z, 1.0)).xyz;
+    float3x4 worldMat = instanceProps[result.objID].objectToWorld;
+    float3 v0 = mul(worldMat, float4(triData.x, 1.0));
+    float3 v1 = mul(worldMat, float4(triData.y, 1.0));
+    float3 v2 = mul(worldMat, float4(triData.z, 1.0));
 
     //uniform tri sample
     float r1 = RandomFloatSingle(rng);
