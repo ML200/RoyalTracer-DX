@@ -1804,12 +1804,14 @@ void Renderer::PopulateCommandList() {
     // Hybrid-shift pin criteria (slots 18-20): minimum reconnection-segment
     // length as a FRACTION of the primary camera distance (legacy criteria),
     // the pin-depth cap (replay length = rcMaxK-2, bounded by
-    // RC_REPLAY_MAX_BOUNCES=8 in Hybrid_Replay_v8.hlsli, hence the 10 clamp),
+    // RC_REPLAY_MAX_BOUNCES=8 in Hybrid_Replay_v8.hlsli, hence the 10 clamp;
+    // lobe-indexed PSS caps at 8 — the rcInfo lobe mask covers vertices 1..8),
     // and the Enhanced §4 dual-footprint constant c (Eq. 5 literal).
     {
         const float rdm = std::clamp(rs.reconnectDistMin, 0.0f, 1.0f);
         memcpy(&rsConsts[18], &rdm, 4);
-        rsConsts[19] = (UINT)std::clamp(rs.rcMaxK, 2, 10);
+        rsConsts[19] = (UINT)std::clamp(rs.rcMaxK, 2,
+                                        (rs.hybridShift && rs.lobeIndexedPss) ? 8 : 10);
         const float fpk = std::clamp(rs.rcFpKappa, 0.0001f, 100.0f);
         memcpy(&rsConsts[20], &fpk, 4);
     }

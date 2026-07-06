@@ -227,6 +227,22 @@ cbuffer Push : register(b1)
 #define RS_FLAG_RGB_SHADE  0x400000u
 #define RGB_SHADE_ON  ((rs_flags & RS_FLAG_RGB_SHADE) != 0u)
 
+//RS_FLAG_LOBE_PSS — ReSTIR PT Enhanced supplemental §1: LOBE-INDEXED paths in
+//the PSS. Raygen splits the extension estimator per sampled lobe — throughput
+//takes rho_l/(P(l)*p(w|l)) and the pmf product peels back out of the stored F
+//via lobeProd, exactly the RR survival pattern — records the 2-bit lobe ids in
+//rcInfo bits 16-31 (RC_F_LOBES), and the jacobian bundles switch to the
+//CONDITIONAL pdfs p(w|l). Shifts then PRESERVE the lobe sequence: replay
+//FORCES the recorded lobe per bounce (no strategy re-roll flips at offset
+//pixels — the multilobe/plastic variance fix) and reconnection evaluates the
+//recorded lobe at both jacobian slots. MIS vs NEE/sun and the footprint
+//criteria stay on MARGINAL pdfs (supp §3; marginal MIS is required for
+//unbiasedness). Samples self-describe via RC_F_LOBES, so toggling needs no
+//reservoir reset. Host caps rcMaxK at 8 under the flag (mask covers 8
+//vertices). Needs HYBRID_SHIFT_ON.
+#define RS_FLAG_LOBE_PSS  0x800000u
+#define LOBE_PSS_ON  (((rs_flags & RS_FLAG_LOBE_PSS) != 0u) && HYBRID_SHIFT_ON)
+
 //====================================
 //IMAGE SIZE MACROS
 //====================================

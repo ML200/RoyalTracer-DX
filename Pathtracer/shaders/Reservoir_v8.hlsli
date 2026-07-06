@@ -119,14 +119,37 @@ uint addr_hyb(uint px)             { uint N = numPx(); return N * PLANE_HYB  + p
 #define RC_F_NOPPREV    (1u << 13)
 #define RC_F_PAREA      (1u << 14)
 #define RC_F_ENV_REPLAY (1u << 15)
+//RC_F_LOBES — the sample is LOBE-INDEXED (Enhanced supp §1): bits 16-31 carry
+//the 2-bit sampled-lobe ids of vertices 1..8 (0 diffuse, 1 GGX, 2 coat,
+//3 sheen). Shifts PRESERVE the lobe sequence — replay forces the recorded lobe
+//per bounce, and the jacobian bundles/re-evaluations use the CONDITIONAL pdfs
+//p(w|l) at the two reconnection slots (the pmf product P(l) lives in the
+//source pdf like RR survival, NOT in the jacobian). Samples without the bit
+//keep marginal semantics end to end — mixed populations are self-consistent,
+//so toggling RS_FLAG_LOBE_PSS needs no reservoir reset. k is capped at 8 for
+//lobe samples (mask coverage).
+#define RC_F_LOBES      (1u << 10)
 
-inline uint RcPackInfo(uint k, uint d, uint flags) { return (k & 63u) | ((d & 63u) << 6) | flags; }
-inline uint RcK(uint info)        { return info & 63u; }
-inline uint RcD(uint info)        { return (info >> 6) & 63u; }
-inline bool RcReusable(uint info) { return (info & 63u) >= 2u; }
+//layout: k:0-3 | d:4-9 | LOBES:10 | (11 spare) | RC_F_*:12-15 | lobe ids:16-31
+inline uint RcPackInfo(uint k, uint d, uint flags) { return (k & 15u) | ((d & 63u) << 4) | flags; }
+inline uint RcK(uint info)        { return info & 15u; }
+inline uint RcD(uint info)        { return (info >> 4) & 63u; }
+inline bool RcReusable(uint info) { return (info & 15u) >= 2u; }
 inline bool RcEnvReplay(uint info){ return (info & RC_F_ENV_REPLAY) != 0u; }
-//prefix bounces a shift eval must re-trace; env-replay adds the re-derived final
-//dim, so it routes through the replay queues even at k==2.
+inline bool RcHasLobes(uint info) { return (info & RC_F_LOBES) != 0u; }
+//sampled-lobe id of vertex vtx (1-based; meaningful for vertices 1..8 of
+//RC_F_LOBES samples — the segment lobe is RcLobeAt(k-1), the continuation
+//lobe RcLobeAt(k))
+inline uint RcLobeAt(uint info, uint vtx)
+{
+    return (info >> (16u + ((vtx - 1u) << 1))) & 3u;
+}
+//generation-side: the mask word a candidate ORs into rcInfo (marker + ids)
+inline uint RcLobesWord(uint mask) { return RC_F_LOBES | ((mask & 0xFFFFu) << 16); }
+//ROUTING metric: nonzero routes the shift through the replay queues/passes.
+//Env-replay adds its re-derived final dim so it queues even at k==2; the
+//ReplayPrefix WALK length is rcK-2 regardless (the tail dim belongs to
+//EnvReplayEval, never the prefix loop).
 inline uint RcReplayLen(uint info)
 {
     const uint k = RcK(info);
@@ -287,6 +310,26 @@ BrdfData BSDF_term_pdf(
 {
     const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
     return EvaluateAndPdf_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
+}
+
+//single-lobe variant (RC_F_LOBES samples, supp §1): the RECORDED lobe's gated
+//value and CONDITIONAL pdf {rho_l, p(w|l)} — what the lobe-indexed jacobian
+//bundle and target re-evaluation use at the two reconnection slots.
+BrdfData BSDF_term_lobe(
+    uint   lobe,
+    uint   mID,
+    float3 n_s,
+    float3 n_g,
+    float3 s,
+    float3 o,
+    float3 localKd,
+    float  localPr,
+    float  localPm,
+    float  etai,
+    float  etat)
+{
+    const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
+    return EvaluateLobePdf_COMBINED(p, lobe, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
 //geometry term uses shading normal
@@ -613,6 +656,15 @@ inline float3 ReconnectPSS(
     //diffuse entry term 1/pi.
     const bool sss1 = LoadIsSSS(mID1);
 
+    //supp §1 lobe preservation: RC_F_LOBES samples evaluate the RECORDED lobe
+    //(single-lobe rho + conditional pdf) at the two jacobian slots — the
+    //reconnection segment's lobe l_{k-1} unless the segment is a non-BSDF dim
+    //(RC_F_NOPPREV / PAREA / SSS exit), the continuation's lobe l_k unless the
+    //pin leaves via a non-BSDF dim (RC_F_NOPK). Those exempt dims stay
+    //full-BSDF ("lobe 0 = all lobes" in the paper's indexing).
+    const bool useLobes = RcHasLobes(rcInfo);
+    const uint rcKk     = RcK(rcInfo);
+
     //====================================
     //DI ENV SKY  (direction payload: BSDF-miss dir-copy or sun-NEE copy)
     //====================================
@@ -627,8 +679,15 @@ inline float3 ReconnectPSS(
     if (mID2 == MATID_ENV_MISS)
     {
         const float3 wi  = normalize(x2);
-        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, wi, o,
-                                           localKd1, localPr1, localPm1, etai1, etat1);
+        //dir-copy (BSDF dim): lobe samples re-evaluate the RECORDED escaping
+        //lobe; PAREA (sun-NEE) is an all-lobes dim -> full BSDF either way.
+        BrdfData bd1;
+        if (useLobes && !(rcInfo & RC_F_PAREA))
+            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, wi, o,
+                                 localKd1, localPr1, localPm1, etai1, etat1);
+        else
+            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, wi, o,
+                                localKd1, localPr1, localPm1, etai1, etat1);
         const float  ct  = max(1e-15f, dot(n1_s, wi));
         float3 r = bd1.val * L2 * ct;
         if (any(isnan(r)) || any(isinf(r))) return 0.0f;
@@ -652,8 +711,15 @@ inline float3 ReconnectPSS(
         if (distT < EPSILON) return 0.0f;
         const float3 ndirNT = normalize(-dirT);
 
-        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirNT, o,
-                                           localKd1, localPr1, localPm1, etai1, etat1);
+        //BSDF-end (emitter hit): the segment lobe is recorded; NEE-end (PAREA)
+        //is an all-lobes dim -> full BSDF.
+        BrdfData bd1;
+        if (useLobes && !(rcInfo & RC_F_PAREA))
+            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, -ndirNT, o,
+                                 localKd1, localPr1, localPm1, etai1, etat1);
+        else
+            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirNT, o,
+                                localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
 
         //absorption only when x1 is inside transmissive medium
@@ -772,13 +838,26 @@ inline float3 ReconnectPSS(
     if (exit2) {
         F1 = localKd1 * SSS_INV_PI;                               //entry coupling tinted by x1 surface albedo
     } else {
-        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirN, o,
-                                           localKd1, localPr1, localPm1, etai1, etat1);
+        //reconnection segment: single recorded lobe when BSDF-sampled
+        BrdfData bd1;
+        if (useLobes && !(rcInfo & RC_F_NOPPREV))
+            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, -ndirN, o,
+                                 localKd1, localPr1, localPm1, etai1, etat1);
+        else
+            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirN, o,
+                                localKd1, localPr1, localPm1, etai1, etat1);
         F1   = bd1.val;
         pdf1 = bd1.pdf;
     }
-    const BrdfData bd2 = BSDF_term_pdf(baseID2, n2_s, n2_s, -V2, ndirN,
-                                       localKd2, localPr2, localPm2, etai2, etat2);
+    //continuation at the pin: single recorded lobe when it left via a BSDF dim
+    //(at-pin NEE / SSS-entry pins carry RC_F_NOPK -> full BSDF toward V2)
+    BrdfData bd2;
+    if (useLobes && !(rcInfo & RC_F_NOPK))
+        bd2 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk), baseID2, n2_s, n2_s, -V2, ndirN,
+                             localKd2, localPr2, localPm2, etai2, etat2);
+    else
+        bd2 = BSDF_term_pdf(baseID2, n2_s, n2_s, -V2, ndirN,
+                            localKd2, localPr2, localPm2, etai2, etat2);
     const float3 F2 = bd2.val;
 
     float  G2  = G_term(n2_s, -V2);

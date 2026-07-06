@@ -21,6 +21,17 @@
 //    require ENTER, all others require REFLECT)
 //  * a prefix trace misses, dies, or lands on an emitter (raygen would have
 //    terminated the path there)
+//  * an RC_F_LOBES sample's recorded lobe is ABSENT at the offset vertex
+//    (strategy probability ~ 0) — checked before sampling/tracing
+//
+//LOBE-INDEXED samples (RC_F_LOBES, supp §1) replay DETERMINISTICALLY in lobe
+//space: the recorded lobe is FORCED per bounce (the selection draw is burned
+//for stream alignment, the direction dims replay within the lobe), and the
+//throughput takes the lobe-clean rho_l*cos/p(w|l) matching the lobe-clean
+//stored F. No strategy re-roll can flip lobes at offset pixels — the shift
+//map is continuous across the multilobe seam — and the per-bounce eval drops
+//from the full 4-lobe marginal walk to one lobe + the upper-layer
+//transmittances.
 
 #ifndef HYBRID_REPLAY_V8_HLSLI
 #define HYBRID_REPLAY_V8_HLSLI
@@ -88,9 +99,17 @@ inline ReplayResult ReplayPrefix(
     rr.thr = float3(1, 1, 1);
     rr.sv  = (SurfaceVertex)0;
 
+    //prefix walk = bounces 1..k-2 ONLY. RcReplayLen is the ROUTING metric — it
+    //adds the env-replay tail dim so k==2 env candidates still queue, but that
+    //dim belongs to EnvReplayEval, never this loop (walking it here traced one
+    //bounce past y_{k-1} and double-consumed the tail's stream).
     const uint rcK      = RcK(r.rcInfo);
-    const uint nBounces = RcReplayLen(r.rcInfo);
-    if (rcK < 2u || nBounces > RC_REPLAY_MAX_BOUNCES) return rr;
+    if (rcK < 2u) return rr;
+    const uint nBounces = rcK - 2u;
+    if (nBounces > RC_REPLAY_MAX_BOUNCES) return rr;
+
+    //supp §1: forced-lobe replay for lobe-indexed samples
+    const bool forceLobes = RcHasLobes(r.rcInfo);
 
     HitContext ctx;
     float3 camToX1;
@@ -111,13 +130,34 @@ inline ReplayResult ReplayPrefix(
         const SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal,
                                                             ctx.iors.x, ctx.iors.y,
                                                             ctx.hitLocalKd, ctx.hitLocalPm);
-        const float3 s       = SampleBRDF(sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
-                                          ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                                          sBsdf, ctx.iors.x, ctx.iors.y, false);
-        const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal,
-                                                       s, -rayDir,
-                                                       ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                                                       ctx.iors.x, ctx.iors.y, false);
+        //forced lobe (RC_F_LOBES): availability check BEFORE any sampling or
+        //tracing — a missing lobe kills the whole walk early. The lobe-clean
+        //bdata makes the identical w formula below produce rho_l*cos/p(w|l).
+        float3   s;
+        BrdfData bdata;
+        if (forceLobes)
+        {
+            const uint lb = RcLobeAt(r.rcInfo, b);
+            if (StrategyP(sp, lb) < EPSILON)
+                return rr;
+            s     = SampleBRDF_Forced(lb, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
+                                      ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                                      sBsdf, ctx.iors.x, ctx.iors.y, false);
+            bdata = EvaluateLobePdf_COMBINED(sp, lb, ctx.matID, ctx.hitNormal, ctx.hitNormal,
+                                             s, -rayDir,
+                                             ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                                             ctx.iors.x, ctx.iors.y, false);
+        }
+        else
+        {
+            s     = SampleBRDF(sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
+                               ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                               sBsdf, ctx.iors.x, ctx.iors.y, false);
+            bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal,
+                                            s, -rayDir,
+                                            ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                                            ctx.iors.x, ctx.iors.y, false);
+        }
 
         const float  cosTheta = abs(dot(ctx.hitNormal, s));
         const float3 w        = (bdata.pdf > 1e-6f)
@@ -233,15 +273,46 @@ inline float3 EnvReplayEval(
     const SamplingP sp = CalculateStrategyProbabilities(rr.sv.matID, rr.sv.o, rr.sv.n_s,
                                                         (half)rr.sv.etai, (half)rr.sv.etat,
                                                         rr.sv.Kd, (half)rr.sv.Pm);
-    const float3 s       = SampleBRDF(sp, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
-                                      rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                                      sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
-    const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
-                                                   s, rr.sv.o,
-                                                   rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                                                   (half)rr.sv.etai, (half)rr.sv.etat, false);
+    //final dim: forced recorded lobe for RC_F_LOBES samples (throughput-side
+    //value/pdf go lobe-clean), but the sun MIS weight MUST stay on the
+    //MARGINAL pdf — generation folded prev_pdf (marginal) into its MIS.
+    float3 s;
+    float3 dimVal;
+    float  dimPdf;    //throughput-side pdf (conditional under lobes)
+    float  misPdf;    //sun-MIS pdf (always marginal)
+    if (RcHasLobes(r.rcInfo))
+    {
+        const uint lb = RcLobeAt(r.rcInfo, kk - 1u);
+        if (StrategyP(sp, lb) < EPSILON)
+            return (float3)0.0f;
+        s = SampleBRDF_Forced(lb, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
+                              rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                              sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
+        const BrdfData lbd = EvaluateLobePdf_COMBINED(sp, lb, rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
+                                                      s, rr.sv.o,
+                                                      rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                                                      (half)rr.sv.etai, (half)rr.sv.etat, false);
+        dimVal = lbd.val;
+        dimPdf = lbd.pdf;
+        misPdf = BRDF_PDF_COMBINED(sp, rr.sv.matID, rr.sv.n_s, rr.sv.n_s, s, rr.sv.o,
+                                   rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                                   (half)rr.sv.etai, (half)rr.sv.etat);
+    }
+    else
+    {
+        s = SampleBRDF(sp, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
+                       rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                       sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
+        const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
+                                                       s, rr.sv.o,
+                                                       rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                                                       (half)rr.sv.etai, (half)rr.sv.etat, false);
+        dimVal = bdata.val;
+        dimPdf = bdata.pdf;
+        misPdf = bdata.pdf;
+    }
     const float cosTheta = abs(dot(rr.sv.n_s, s));
-    if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f)
+    if (dot(s, s) < 1e-12f || dimPdf <= 1e-6f)
         return (float3)0.0f;
 
     //the re-derived ray must ESCAPE — a hit is a structural divergence (and the
@@ -264,12 +335,12 @@ inline float3 EnvReplayEval(
     const float  sunSAPdf   = GetSunPdf(s);
     const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(s) : float3(0, 0, 0);
     const float  sunMisBsdf = (sunSAPdf > 0.0f)
-        ? bdata.pdf / max(bdata.pdf + sunSAPdf, EPSILON) : 0.0f;
+        ? misPdf / max(misPdf + sunSAPdf, EPSILON) : 0.0f;
     float3 cloudTr;
     const float3 sky  = EvaluateSky(s, cloudTr);
     const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
 
-    float3 c = rr.thr * (bdata.val * cosTheta / bdata.pdf) * envL;
+    float3 c = rr.thr * (dimVal * cosTheta / dimPdf) * envL;
     if (any(isnan(c)) || any(isinf(c)))
         return (float3)0.0f;
     cachedNew = 1.0f;

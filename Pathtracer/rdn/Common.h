@@ -279,6 +279,14 @@ struct ReSTIRSettings {
     //ReSTIR PT Enhanced §6.3 RGB shading weights (flag 0x400000): the spatial
     //resolve blends contributor chroma via vectorized resampling weights.
     bool  rgbShadeWeights = true;
+    //ReSTIR PT Enhanced supplemental §1 lobe-indexed PSS (flag 0x800000):
+    //extension dims split per sampled BSDF lobe (throughput rho_l/(P(l)*p(w|l)),
+    //pmf product peels out of the stored F like RR survival), the 2-bit lobe
+    //ids ride rcInfo bits 16-31, jacobian bundles go conditional, and shifts
+    //PRESERVE the lobe sequence — replay forces the recorded lobe per bounce
+    //(the multilobe/plastic variance fix). Needs hybridShift; host caps rcMaxK
+    //at 8 while set (the rcInfo mask covers 8 vertices).
+    bool  lobeIndexedPss = true;
 
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
@@ -293,7 +301,8 @@ struct ReSTIRSettings {
              | (hybridShift ? 0x4000u : 0u)
              | (rcFootprint ? 0x100000u : 0u)
              | (dualMotionVectors ? 0x200000u : 0u)
-             | (rgbShadeWeights ? 0x400000u : 0u);
+             | (rgbShadeWeights ? 0x400000u : 0u)
+             | ((lobeIndexedPss && hybridShift) ? 0x800000u : 0u);
     }
 };
 

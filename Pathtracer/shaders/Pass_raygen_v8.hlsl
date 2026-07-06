@@ -30,7 +30,15 @@
 //The resampling weight wi = mis * lum(F_pss_boosted) is ALGEBRAICALLY IDENTICAL
 //to the legacy mis * p_hat / p_full, so candidate selection matches the old
 //build draw-for-draw; only the stored representation changes (W becomes a
-//dimensionless O(1) ratio). The reconnection vertex is pinned at the FIRST
+//dimensionless O(1) ratio).
+//
+//LOBE-INDEXED PSS (supp §1, LOBE_PSS_ON): extension dims additionally split
+//per sampled lobe — throughput takes rho_l/(P(l)*p(w|l)), the pmf product
+//peels out of the stored F via lobeProd (so F is lobe-clean like it is
+//RR-clean), the 2-bit lobe ids of vertices 1..8 ride rcInfo bits 16-31
+//(RC_F_LOBES) and the jacobian bundles below use the CONDITIONAL prev_pdfL.
+//MIS vs NEE/sun and the footprint criteria keep the MARGINAL prev_pdf
+//(supp §3; marginal MIS is what keeps the lobe-summed estimator unbiased). The reconnection vertex is pinned at the FIRST
 //vertex pair passing RcCritPair (hybrid ON) or unconditionally at x2 (hybrid
 //OFF = legacy reconnection shift); every pin records rcInfo + the base-side
 //jacobian bundle (cachedJac/gBase) + the pathSeed whose per-bounce streams
@@ -87,7 +95,10 @@ void RAYGEN_ENTRY()
     //length as a fraction of the primary camera distance. Enhanced §4
     //(footprint ON): the per-pixel dual-footprint threshold, Eq. 5 literal.
     const float rcDistMin = rs_reconnectDistMin * length(toPrim0);
-    const uint  rcMaxK    = HYBRID_SHIFT_ON ? max(rs_rcMaxK, 2u) : 2u;
+    uint rcMaxK = HYBRID_SHIFT_ON ? max(rs_rcMaxK, 2u) : 2u;
+    //supp §1: the rcInfo lobe mask covers vertices 1..8 (host clamps slot 19
+    //too; this is the shader-side belt)
+    if (LOBE_PSS_ON) rcMaxK = min(rcMaxK, 8u);
     float rcFpThresh = 0.0f;
     if (HYBRID_SHIFT_ON && RC_FOOTPRINT_ON)
     {
@@ -102,8 +113,13 @@ void RAYGEN_ENTRY()
     uint   pathSeed;      //per-sample replay identity -> RcBounceSeed streams
     uint   throughputPk;
     uint   prevNormalPk;
-    float  prev_pdf;
+    float  prev_pdf;      //MARGINAL pdf of the last extension (MIS + criteria, supp §3)
+    float  prev_pdfL;     //bundle-side pdf of the last extension: conditional p(w|l)
+                          //under LOBE_PSS, == prev_pdf otherwise
     float  rrProd;        //product of RR survival probabilities (PSS source pdf)
+    float  lobeProd;      //product of sampled-lobe pmfs P(l) — peels out of the
+                          //stored F exactly like rrProd (supp §1 lobe indexing)
+    uint   rcLobes;       //2-bit sampled-lobe ids of vertices 1..8 (rcInfo 16-31)
     uint   rayDirPk;
     float3 rayOrigin;
 
@@ -145,7 +161,10 @@ void RAYGEN_ENTRY()
         throughputPk = PackRGB9E5(float3(1, 1, 1));
         prevNormalPk = PackNormal(float3(0, 1, 0));
         prev_pdf     = 1.0f;
+        prev_pdfL    = 1.0f;
         rrProd       = 1.0f;
+        lobeProd     = 1.0f;
+        rcLobes      = 0u;
         store_rg_tpost(g_pathStateBuffer, pixelIdx, float3(1, 1, 1));
         rayDirPk     = rayDirPk0;
 
@@ -289,7 +308,11 @@ void RAYGEN_ENTRY()
                 const float3 Fp        = throughput * localMeasurement / lightPdf;
                 const float  misWeight = lightPdf / (lightPdf + bsdfPdf);
                 const float  wi        = misWeight * GetPHat(Fp);
-                const float3 F_store   = Fp * rrProd;
+                //lobe-clean like RR-clean: the pmf boosts stay in wi, peel out of F
+                const float3 F_store   = Fp * rrProd * lobeProd;
+                //supp §1: candidates self-describe their lobe sequence (prefix
+                //dims 1..depth-1 here — the NEE segment itself is all-lobes)
+                const uint   lobeW     = LOBE_PSS_ON ? RcLobesWord(rcLobes) : 0u;
 
                 if (depth == 1)
                 {
@@ -306,7 +329,7 @@ void RAYGEN_ENTRY()
                             float3(0,0,0), 0.0f, 0.0f,
                             MATID_LIGHT_TRI, lightObjID, 1.0f,
                             F_store,
-                            RcPackInfo(2u, 2u, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA),
+                            RcPackInfo(2u, 2u, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA) | lobeW,
                             pathSeed, lightPdf * gB, gB,
                             seed);
                     }
@@ -323,7 +346,7 @@ void RAYGEN_ENTRY()
                             float3(0,0,0), 0.0f, 0.0f,
                             MATID_ENV_MISS, 0xFFFFFFFFu, 1.0f,
                             F_store,
-                            RcPackInfo(2u, 2u, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA),
+                            RcPackInfo(2u, 2u, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA) | lobeW,
                             pathSeed, max(lightPdf, EPSILON), 1.0f,
                             seed);
                     }
@@ -344,7 +367,7 @@ void RAYGEN_ENTRY()
                         (float3)ctx.hitLocalKd, (float)ctx.hitLocalPr, (float)ctx.hitLocalPm,
                         ctx.matID | (sssEntered ? MATID_SSS_EXIT_BIT : 0u), ctx.instID, ctx.iors.y,
                         F_store,
-                        RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags | RC_F_NOPK),
+                        RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags | RC_F_NOPK) | lobeW,
                         pathSeed, rcJacNoPk, rcGBase,
                         seed);
                 }
@@ -362,7 +385,7 @@ void RAYGEN_ENTRY()
                         ps.Kd, ps.Pr, ps.Pm,
                         ps.matID, ps.objID, ps.eta,
                         F_store,
-                        RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags),
+                        RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags) | lobeW,
                         pathSeed, rcJac, rcGBase,
                         seed);
                 }
@@ -387,7 +410,7 @@ void RAYGEN_ENTRY()
                         endPin ? (sunEnd ? MATID_ENV_MISS : MATID_LIGHT_TRI) : ctx.matID,
                         endPin ? (sunEnd ? 0xFFFFFFFFu : lightObjID) : ctx.instID, 1.0f,
                         F_store,
-                        endPin ? RcPackInfo(kEnd, kEnd, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA) : 0u,
+                        endPin ? (RcPackInfo(kEnd, kEnd, RC_F_NOPK | RC_F_NOPPREV | RC_F_PAREA) | lobeW) : 0u,
                         pathSeed, endPin ? max(lightPdf * gB, EPSILON) : 0.0f, endPin ? gB : 0.0f,
                         seed);
                 }
@@ -535,16 +558,29 @@ void RAYGEN_ENTRY()
 
         //------------- BSDF sample (MIS partner for NEE; bottom trace evaluates it) -------------
         //sp hoisted to the top of the bounce (reused by both NEE techniques above).
-        const float3 s       = SampleBRDF        (sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false);
-        const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal, s, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false);
+        //supp §1 lobe-indexed PSS (LOBE_PSS_ON): the extension dim splits per
+        //sampled lobe — throughput takes rho_l/(P(l)*p(w|l)) with the pmf
+        //product peeling out of the stored F via lobeProd (the RR pattern), the
+        //suffix payload takes the lobe-clean rho_l/p(w|l). MIS and the
+        //footprint criteria stay on the MARGINAL pdf (supp §3). Legacy keeps
+        //the mixture estimator f_full/p_marginal (all selects collapse).
+        uint strat;
+        const float3 s = SampleBRDF(sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false, strat);
+        float3 lobeVal; float lobePdf;
+        const BrdfData bdata = EvaluateAndPdf_COMBINED_L(sp, strat, ctx.matID, ctx.hitNormal, ctx.hitNormal, s, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, lobeVal, lobePdf);
+
+        const bool   lobeMode = LOBE_PSS_ON;
+        const float  pSel     = lobeMode ? StrategyP(sp, strat) : 1.0f;
+        const float  pdfSel   = lobeMode ? lobePdf : bdata.pdf;
+        const float3 valSel   = lobeMode ? lobeVal : bdata.val;
 
         const float  cosTheta     = abs(dot(ctx.hitNormal, s));
-        const float3 updateWeight = (bdata.pdf > 1e-6f)
-            ? (bdata.val * ctx.absorptionTint * cosTheta) / bdata.pdf
+        const float3 updateWeight = (bdata.pdf > 1e-6f && pdfSel > 1e-9f && pSel > EPSILON)
+            ? (valSel * ctx.absorptionTint * cosTheta) / (pdfSel * pSel)
             : float3(0, 0, 0);
 
         //state update + termination. bad BSDF sample -> no valid next direction
-        if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f ||
+        if (dot(s, s) < 1e-12f || bdata.pdf <= 1e-6f || pdfSel <= 1e-9f ||
             any(isnan(updateWeight)) || any(isinf(updateWeight)))
             break;
 
@@ -576,7 +612,9 @@ void RAYGEN_ENTRY()
                 }
                 else
                 {
-                    rcJac    = rcJacNoPk * bdata.pdf;
+                    //p(w_k) fold: CONDITIONAL p(w_k|l_k) under lobe PSS — the
+                    //inverse footprint test above stays marginal (supp §3)
+                    rcJac    = rcJacNoPk * pdfSel;
                     rcPkPend = RC_PK_NONE;
                     sufOpen  = true;
                     foldedPk = true;
@@ -584,7 +622,7 @@ void RAYGEN_ENTRY()
             }
             else // RC_PK_TPOSTPDF: invariant continuation pdf -> payload
             {
-                const float3 tp = load_rg_tpost(g_pathStateBuffer, pixelIdx) / bdata.pdf;
+                const float3 tp = load_rg_tpost(g_pathStateBuffer, pixelIdx) / pdfSel;
                 store_rg_tpost(g_pathStateBuffer, pixelIdx, tp);
                 rcPkPend = RC_PK_NONE;
                 sufOpen  = true;
@@ -592,7 +630,13 @@ void RAYGEN_ENTRY()
             }
         }
 
-        prev_pdf     = bdata.pdf;
+        prev_pdf     = bdata.pdf;   //marginal (MIS + criteria)
+        prev_pdfL    = pdfSel;      //bundle side (conditional under lobe PSS)
+        lobeProd    *= pSel;
+        //record the sampled lobe id for this vertex (unconditional per depth —
+        //a revoked tentative pin must not leave mask holes)
+        if (lobeMode && (uint)depth <= 8u)
+            rcLobes |= (strat & 3u) << (((uint)depth - 1u) << 1);
         rayDir       = s;
         rayDirPk     = PackNormal(s);  //carrier for next iter back-edge
 
@@ -609,8 +653,10 @@ void RAYGEN_ENTRY()
         store_ray_origin(g_pathStateBuffer, pixelIdx, rayOrigin);
 
         float3 throughput        = UnpackRGB9E5(throughputPk) * updateWeight;
-        //suffix accumulator entry: pdf-DIVIDED under PSS (f*cos/pdf), RR-free.
-        const float3 tpostWeight = (bdata.val * ctx.absorptionTint * cosTheta) / bdata.pdf;
+        //suffix accumulator entry: pdf-DIVIDED under PSS, RR-free AND lobe-pmf-
+        //free (rho_l*cos/p(w|l) under lobe PSS — the payload must be lobe-clean
+        //like the stored F; legacy: f*cos/p_marginal).
+        const float3 tpostWeight = (valSel * ctx.absorptionTint * cosTheta) / pdfSel;
 
         //Russian roulette (off when pt_rrStartDepth high). The 1/p boost cancels
         //in the RR-clean stored F (via rrProd) but survives in wi; must NOT
@@ -672,7 +718,8 @@ void RAYGEN_ENTRY()
 
             const float3 Fp      = throughputCur * envL;
             const float  wi      = GetPHat(Fp);
-            const float3 F_store = Fp * rrProd;
+            const float3 F_store = Fp * rrProd * lobeProd;
+            const uint   lobeW   = LOBE_PSS_ON ? RcLobesWord(rcLobes) : 0u;
 
             //§6.1/§6.2.3: EVERY BSDF miss is a reservoir candidate now (directAtX1
             //removed). With a pin, the env tail folds into the suffix as before.
@@ -691,7 +738,7 @@ void RAYGEN_ENTRY()
                     ps.Kd, ps.Pr, ps.Pm,
                     ps.matID, ps.objID, ps.eta,
                     F_store,
-                    RcPackInfo(rcK, (uint)depth, rcPinFlags),
+                    RcPackInfo(rcK, (uint)depth, rcPinFlags) | lobeW,
                     pathSeed, rcJac, rcGBase,
                     seed);
             }
@@ -709,14 +756,16 @@ void RAYGEN_ENTRY()
                 float cj   = 0.0f, gB = 0.0f;
                 if (feasible && copyGuard)
                 {
-                    info = RcPackInfo(kEnd, kEnd, RC_F_NOPK);          //dir-copy
-                    cj   = max(prev_pdf, EPSILON);
+                    //dir-copy: bundle = CONDITIONAL p(w_{d-1}|l) under lobe PSS
+                    //(ReconnectPSS re-derives the recorded lobe at the receiver)
+                    info = RcPackInfo(kEnd, kEnd, RC_F_NOPK) | lobeW;
+                    cj   = max(prev_pdfL, EPSILON);
                     gB   = 1.0f;
                 }
                 else if (feasible && HYBRID_SHIFT_ON)
                 {
                     info = RcPackInfo(kEnd, kEnd,                      //full replay
-                                      RC_F_NOPK | RC_F_NOPPREV | RC_F_ENV_REPLAY);
+                                      RC_F_NOPK | RC_F_NOPPREV | RC_F_ENV_REPLAY) | lobeW;
                     cj   = 1.0f;
                     gB   = 1.0f;
                 }
@@ -781,7 +830,8 @@ void RAYGEN_ENTRY()
 
             const float3 Fp      = throughputCur * emission_n;
             const float  wi      = misWeight * GetPHat(Fp);
-            const float3 F_store = Fp * rrProd;
+            const float3 F_store = Fp * rrProd * lobeProd;
+            const uint   lobeW   = LOBE_PSS_ON ? RcLobesWord(rcLobes) : 0u;
 
             if (rcK != 0u && depth > 1)
             {
@@ -794,15 +844,15 @@ void RAYGEN_ENTRY()
                     ps.Kd, ps.Pr, ps.Pm,
                     ps.matID, ps.objID, ps.eta,
                     F_store,
-                    RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags),
+                    RcPackInfo(rcK, (uint)depth + 1u, rcPinFlags) | lobeW,
                     pathSeed, rcJac, rcGBase,
                     seed);
             }
             else
             {
                 //no pin (depth==1, or a glossy prefix): BSDF end-pin AT the light
-                //vertex (k==d, bundle = p(w_{d-1})*gBase) when the leaving vertex
-                //passes the guard; else canonical-only.
+                //vertex (k==d, bundle = p(w_{d-1})*gBase — CONDITIONAL under lobe
+                //PSS) when the leaving vertex passes the guard; else canonical-only.
                 const uint kEnd = (uint)depth + 1u;
                 const bool endGuard = RC_FOOTPRINT_ON
                     ? (RcLobeProxyPass(prev_pdf) && RcFpDensityPass(prev_pdf, segG_n, rcFpThresh))
@@ -815,8 +865,8 @@ void RAYGEN_ENTRY()
                     float3(0,0,0), 0.0f, 0.0f,
                     MATID_LIGHT_TRI, instID_n, 1.0f,
                     F_store,
-                    endPin ? RcPackInfo(kEnd, kEnd, RC_F_NOPK) : 0u,
-                    pathSeed, endPin ? (prev_pdf * segG_n) : 0.0f, endPin ? segG_n : 0.0f,
+                    endPin ? (RcPackInfo(kEnd, kEnd, RC_F_NOPK) | lobeW) : 0u,
+                    pathSeed, endPin ? (prev_pdfL * segG_n) : 0.0f, endPin ? segG_n : 0.0f,
                     seed);
             }
             break;
@@ -850,7 +900,9 @@ void RAYGEN_ENTRY()
                 rcK        = (uint)depth + 1u;
                 rcPinFlags = 0u;
                 rcGBase    = segG_n;
-                rcJacNoPk  = prev_pdf * segG_n;
+                //bundle side: conditional p(w_{k-1}|l) under lobe PSS (the
+                //criteria above tested the MARGINAL prev_pdf, supp §3)
+                rcJacNoPk  = prev_pdfL * segG_n;
                 rcJac      = rcJacNoPk;      //completed by RC_PK_BUNDLE next sample
                 rcPkPend   = RC_PK_BUNDLE;
                 //inverse-footprint operand: G(x_k -> x_{k-1}) of this segment

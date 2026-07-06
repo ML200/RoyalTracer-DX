@@ -71,12 +71,23 @@ inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 }
 
 
+//strategy pmf by id (0 diffuse, 1 GGX, 2 coat, 3 sheen)
+inline float StrategyP(SamplingP p, uint strategy)
+{
+    if (strategy == 0u) return p.Pdiff;
+    if (strategy == 1u) return p.Pspec;
+    if (strategy == 2u) return p.Pcoat;
+    return p.Psheen;
+}
+
 //====================================
 //BRDF SAMPLING
 //====================================
 //ggxNoReflect routes the GGX sampler into the refract branch, NRC owns the reflection delta
-inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
-    uint strategy = SelectSamplingStrategy(p, seed);
+//_WithStrategy takes the lobe as INPUT (no selection draw): the lobe-indexed
+//replay forces the reservoir's recorded lobe; its callers burn the selection
+//draw themselves so the direction dims stay stream-aligned with generation.
+inline float3 SampleBRDF_WithStrategy(uint strategy, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
     float3 sample;
 
     bool refract = false;
@@ -114,6 +125,25 @@ inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n
     }
 
     return sample;
+}
+
+//strategy-reporting variant: the lobe-indexed PSS records the sampled lobe id
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect, out uint strategyOut) {
+    strategyOut = SelectSamplingStrategy(p, seed);
+    return SampleBRDF_WithStrategy(strategyOut, matID, o, n_s, n_g, localKd, localPr, localPm, seed, etai, etat, ggxNoReflect);
+}
+
+inline float3 SampleBRDF(SamplingP p, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
+    uint strategy;
+    return SampleBRDF(p, matID, o, n_s, n_g, localKd, localPr, localPm, seed, etai, etat, ggxNoReflect, strategy);
+}
+
+//forced-lobe sampling (hybrid replay, RC_F_LOBES): burn the selection draw for
+//stream alignment, then sample the SUPPLIED lobe — the direction dims consume
+//exactly the draws generation consumed within that lobe.
+inline float3 SampleBRDF_Forced(uint strategy, uint matID, float3 o, float3 n_s, float3 n_g, float3 localKd, half localPr, half localPm, inout uint seed, half etai, half etat, bool ggxNoReflect = false) {
+    RandomFloatSingle(seed);   //the SelectSamplingStrategy draw
+    return SampleBRDF_WithStrategy(strategy, matID, o, n_s, n_g, localKd, localPr, localPm, seed, etai, etat, ggxNoReflect);
 }
 
 
@@ -225,6 +255,123 @@ inline BrdfData EvaluateAndPdf_COMBINED(
     if (p.Pdiff >= EPSILON) {
         res.val += (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
         res.pdf += p.Pdiff * BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+    }
+    return res;
+}
+
+//====================================
+//SINGLE-LOBE EVAL AND PDF  (lobe-indexed PSS, supp §1)
+//====================================
+//The gated value of ONE lobe (upper-layer transmittances applied, so the sum
+//over lobes equals the COMBINED value) and its OWN directional pdf, NOT
+//probability-weighted: {rho_l, p(w|l)}. The p.X EPSILON skip set must match
+//EvaluateAndPdf_COMBINED so generation, reconnection and replay agree on what
+//a lobe is. Returns {0,0} when the lobe is absent at this vertex (strategy
+//probability < EPSILON) — the shift-undefined signal for forced replay.
+//Early-outs at the target lobe: layers BELOW it never evaluate.
+inline BrdfData EvaluateLobePdf_COMBINED(
+    SamplingP p, uint strategy,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, half localPr, half localPm, half etai, half etat,
+    bool ggxNoReflect = false)
+{
+    BrdfData res;
+    res.val = 0.0f;
+    res.pdf = 0.0f;
+
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
+
+    half gate = (half)1.0;
+
+    if (p.Psheen >= EPSILON) {
+        if (strategy == 3u) {
+            res.val = (float)gate * EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+            res.pdf = BRDF_PDF_SHEEN(matID, n_s, -s, o);
+            return res;
+        }
+        gate *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
+    }
+    if (p.Pcoat >= EPSILON) {
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        if (strategy == 2u) {
+            res.val = (float)gate * cr.f;
+            res.pdf = cr.pdf;
+            return res;
+        }
+        gate *= (half)cr.t;
+    }
+    if (p.Pspec >= EPSILON) {
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
+        if (strategy == 1u) {
+            res.val = (float)gate * gr.f;
+            res.pdf = gr.pdf;
+            return res;
+        }
+        gate *= (half)gr.t;
+    }
+    if (p.Pdiff >= EPSILON && strategy == 0u) {
+        res.val = (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        res.pdf = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+    }
+    return res;
+}
+
+//fused marginal + selected-lobe latch: ONE walk yields the MIS/criteria pdf
+//(marginal over lobes, supp §3) AND the sampled lobe's {rho_l, p(w|l)} for the
+//lobe-indexed throughput and jacobian bundles. The latched pair matches
+//EvaluateLobePdf_COMBINED exactly (same formulas, same skips) so raygen's
+//base-side bundle and the reuse-side re-evaluation cancel correctly.
+inline BrdfData EvaluateAndPdf_COMBINED_L(
+    SamplingP p, uint strategy,
+    uint matID, float3 n_s, float3 n_g, float3 s, float3 o,
+    float3 localKd, half localPr, half localPm, half etai, half etat,
+    bool ggxNoReflect,
+    out float3 lobeVal, out float lobePdf)
+{
+    BrdfData res;
+    res.val = 0.0f;
+    res.pdf = 0.0f;
+    lobeVal = 0.0f;
+    lobePdf = 0.0f;
+
+    const float3 N  = normalize(n_s);
+    const float3 fN = normalize(n_g);
+    const float3 V  = normalize(o);
+    const float3 L  = normalize(s);
+
+    half gate = (half)1.0;
+
+    if (p.Psheen >= EPSILON) {
+        const float3 fS = EvaluateBRDF_SHEEN(matID, n_s, -s, o);
+        const float  pS = BRDF_PDF_SHEEN(matID, n_s, -s, o);
+        res.val += (float)gate * fS;
+        res.pdf += p.Psheen * pS;
+        if (strategy == 3u) { lobeVal = (float)gate * fS; lobePdf = pS; }
+        gate    *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
+    }
+    if (p.Pcoat >= EPSILON) {
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        res.val += (float)gate * cr.f;
+        res.pdf += p.Pcoat * cr.pdf;
+        if (strategy == 2u) { lobeVal = (float)gate * cr.f; lobePdf = cr.pdf; }
+        gate    *= (half)cr.t;
+    }
+    if (p.Pspec >= EPSILON) {
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
+        res.val += (float)gate * gr.f;
+        res.pdf += p.Pspec * gr.pdf;
+        if (strategy == 1u) { lobeVal = (float)gate * gr.f; lobePdf = gr.pdf; }
+        gate    *= (half)gr.t;
+    }
+    if (p.Pdiff >= EPSILON) {
+        const float3 fD = EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        const float  pD = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+        res.val += (float)gate * fD;
+        res.pdf += p.Pdiff * pD;
+        if (strategy == 0u) { lobeVal = (float)gate * fD; lobePdf = pD; }
     }
     return res;
 }

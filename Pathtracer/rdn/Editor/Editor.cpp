@@ -729,7 +729,17 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SetItemTooltip("Deepest reconnection-vertex index raygen may pin. Replay cost per reuse "
                               "eval is k-2 bounces (TraceRay each), so this is the main perf lever for "
                               "glossy-prefix scenes. 2 = first-vertex pins only (zero replay even when "
-                              "hybrid is on).");
+                              "hybrid is on). Host-capped at 8 while lobe-indexed PSS is on.");
+        ImGui::Checkbox("Lobe-indexed PSS (Enhanced supp 1)##Hybrid", &rs.lobeIndexedPss);
+        ImGui::SetItemTooltip("Lobe-indexed paths: the extension estimator splits per sampled BSDF lobe "
+                              "(single-lobe rho over conditional pdf; the lobe pmf peels out of the "
+                              "stored F exactly like RR survival) and shifts PRESERVE the lobe sequence. "
+                              "Replay forces the recorded lobe per bounce - no strategy re-roll flips at "
+                              "offset pixels - which fixes the multilobe (plastic) variance regression "
+                              "and makes replay cheaper (one lobe eval instead of the 4-lobe walk). "
+                              "Jacobian bundles go conditional; MIS and footprint criteria stay marginal "
+                              "(supp 3). Samples self-describe (RC_F_LOBES), so toggling is safe without "
+                              "a reservoir reset.");
         ImGui::Separator();
         ImGui::Checkbox("Footprint pin criteria (Enhanced 4)##Hybrid", &rs.rcFootprint);
         ImGui::SetItemTooltip("ReSTIR PT Enhanced 4: dual footprint threshold + pdf-proxy glossiness "
