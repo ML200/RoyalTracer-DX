@@ -245,16 +245,5 @@ void load_SD_header(RWByteAddressBuffer buf, uint pixelIdx,
     UnpackFloat2x16(a.w, pr, pm);
 }
 
-//====================================
-//SAMPLE DATA COPY FOR TEMPORAL REUSE
-//====================================
-//No longer called per frame: the renderer ping-pongs the current/last
-//sample-buffer bindings instead (Renderer::SwapSampleBuffers), which
-//replaced the 72 B/px copy the merge pass used to do here.
-void copySampleData(RWByteAddressBuffer dst, RWByteAddressBuffer src, uint pixelIdx)
-{
-    uint base = pixelBaseAddr_SD(pixelIdx);
-    dst.Store4(base,       src.Load4(base));
-    dst.Store4(base + 16u, src.Load4(base + 16u));
-    dst.Store (base + 32u, src.Load (base + 32u));
-}
+//(copySampleData removed — the renderer ping-pongs the current/last sample-buffer
+//bindings instead, Renderer::SwapSampleBuffers.)

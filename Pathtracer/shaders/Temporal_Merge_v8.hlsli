@@ -42,6 +42,14 @@
 #define TM_CAND_DEAD    1u   //off-screen / emitter / invalid / unreusable
 #define TM_CAND_GEOMREJ 2u   //geometry mismatch (dual-MV eligible)
 
+//correlation-reduction strength: effMcap = lerp(mcap, 1, pow(D, e)) with the
+//dup fraction D in [0,1] and e = rs_corrReductionPow (cbuffer slot 21, editor
+//slider). SMALLER exponent = stronger collapse of the temporal M cap at the
+//same duplication (each halving doubles the strength in log space; 0.1 was the
+//original tuning — mcap 20 at e=0.025: a single 17x17 duplicate caps at ~3.5,
+//D=0.1 at ~2.1). D==0 (unique sample) always keeps the FULL mcap — the
+//exponent only steepens the response to duplication that actually exists.
+
 //Resolve one candidate coordinate: bounds/emitter test, reservoir validity +
 //reusability, geometry rejects. On TM_CAND_GEOMREJ, rPos still holds the
 //rejected surface (the dual-MV occluder estimate).
@@ -121,6 +129,10 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
     float3    rPos;
     uint st = TemporalResolveCand(cand, dims_f, myPos, myN1s, cameraPos,
                                   tempPixelIdx, rdi_r, rPos);
+#if !TEMPORAL_CAN_REPLAY
+    //(replay variant: the parked coordinate is temp_gi's FINAL resolved cand,
+    //and resolution is deterministic over buffers no pass wrote since — the
+    //retry can never trigger there, so it compiles out of Pass_temp_replay.)
     if (st == TM_CAND_GEOMREJ && DUAL_MV_ON && !dual)
     {
         //occluder screen motion under the current camera; deterministic, no RNG
@@ -137,6 +149,7 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
             }
         }
     }
+#endif
     if (st != TM_CAND_OK)
         return;
 
@@ -172,6 +185,11 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
     //====================================
     //FORWARD: neighbour sample evaluated at me   (target + accept payload)
     //====================================
+    //Direct (k==2) evaluations run FIRST for both directions, replay walks
+    //after: the direct evals are the only pre-walk consumers of the resolve
+    //loads, so ordering them ahead keeps both 84B reservoir records out of
+    //the walk live-state (re-loaded post-walk below). The fwd/rev evals share
+    //no state and consume no RNG — the reorder cannot change any value.
     float  Jn_f = 0.0f, cachedNew_f = 0.0f;
     float3 c_f  = (float3)0.0f;                //shifted numerator * vis
     if (!fwdReplay)
@@ -198,52 +216,68 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
             c_f = c * vis;
         }
     }
-#if TEMPORAL_CAN_REPLAY
-    else
-    {
-        //replay shifts fold visibility inline at the replayed vertex — the
-        //deferred resolve can never re-derive y_{k-1}, so REUSE_VIS_OFF does
-        //not apply here.
-        c_f = HybridShiftEval(g_sample_current, pixelIdx, rdi_r,
-                              true, Jn_f, cachedNew_f);
-    }
-#endif
 
     //====================================
     //REVERSE: my sample evaluated at the neighbour   (canonical MIS denominator)
     //====================================
     float  Jn_r = 0.0f, cachedNew_r = 0.0f;
     float3 c_r  = (float3)0.0f;
-    if (revValid)
+    if (revValid && !revReplay)
     {
-        if (!revReplay)
+        const SurfaceVertex sv_r = BuildVertex(g_sample_last, tempPixelIdx, rPos, cameraPos);
+        float3 c = ReconnectPSS_sv(sv_r, rdi, Jn_r, cachedNew_r);
+        if (GetPHat(c) > 0.0f)
         {
-            const SurfaceVertex sv_r = BuildVertex(g_sample_last, tempPixelIdx, rPos, cameraPos);
-            float3 c = ReconnectPSS_sv(sv_r, rdi, Jn_r, cachedNew_r);
-            if (GetPHat(c) > 0.0f)
+            float3 vis = 1.0.xxx;
+            if (!REUSE_VIS_OFF && !IsVolumeVertex(rdi.matID))
             {
-                float3 vis = 1.0.xxx;
-                if (!REUSE_VIS_OFF && !IsVolumeVertex(rdi.matID))
+                if (rdi.matID == MATID_ENV_MISS)
                 {
-                    if (rdi.matID == MATID_ENV_MISS)
-                    {
-                        const float3 md = normalize(rdi.x2);
-                        vis = VisibilityTransmittance(rPos, sv_r.n_s, rPos + md * RAY_TMAX_PLANET, -md);
-                    }
-                    else
-                        vis = VisibilityTransmittance(rPos, sv_r.n_s, rdi.x2, rdi.n2_s);
+                    const float3 md = normalize(rdi.x2);
+                    vis = VisibilityTransmittance(rPos, sv_r.n_s, rPos + md * RAY_TMAX_PLANET, -md);
                 }
-                c_r = c * vis;
+                else
+                    vis = VisibilityTransmittance(rPos, sv_r.n_s, rdi.x2, rdi.n2_s);
             }
+            c_r = c * vis;
         }
-#if TEMPORAL_CAN_REPLAY
-        else
-        {
-            c_r = HybridShiftEval(g_sample_last, tempPixelIdx, rdi,
-                                  true, Jn_r, cachedNew_r);
-        }
-#endif
     }
+
+#if TEMPORAL_CAN_REPLAY
+    //====================================
+    //REPLAY WALKS  (slim: only the three ident words cross the traces)
+    //====================================
+    if (fwdReplay)
+    {
+        //replay shifts fold visibility inline at the replayed vertex — the
+        //deferred resolve can never re-derive y_{k-1}, so REUSE_VIS_OFF does
+        //not apply here. Ctx hoisted from the entry my* loads (the same decode
+        //helpers as load_SD, documented bit-identical) — skips the walk's own
+        //SD-record fetch.
+        HitContext myCtx;
+        float3     myCamToX1;
+        Replay_CtxFromLocals(myInstID, myPos, myN1s, myMatID,
+                             (myFlags & SD_FLAG_BACKFACE) != 0u,
+                             myKd, myPr, myPm, myCtx, myCamToX1);
+        c_f = HybridShiftEvalCtx(myCtx, myCamToX1,
+                                 g_Reservoirs_last, tempPixelIdx,
+                                 rdi_r.seed, rdi_r.rcInfo, rdi_r.matID,
+                                 true, Jn_f, cachedNew_f);
+    }
+    if (revValid && revReplay)
+    {
+        c_r = HybridShiftEval(g_sample_last, tempPixelIdx,
+                              g_Reservoirs_current, pixelIdx,
+                              rdi.seed, rdi.rcInfo, rdi.matID,
+                              true, Jn_r, cachedNew_r);
+    }
+
+    //re-load both reservoirs AFTER the last trace: the resolve-time records
+    //must not ride the SER reorders through the walks. Nothing writes either
+    //buffer between resolve and here, so the values are bit-identical.
+    rdi_r = loadReservoir(g_Reservoirs_last, tempPixelIdx);
+    rdi   = loadReservoir(g_Reservoirs_current, pixelIdx);
+#endif
 
     //====================================
     //MIS + RESERVOIR MERGE  (PSS weights)
@@ -276,7 +310,7 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
     const float D        = saturate(gScratchPing[uint3(uint2(cand), 6)].x);
     const float effMcapF = (CORR_REDUCTION_OFF || rdi_r.matID == MATID_ENV_MISS)
                            ? (float)rs_tempMcap
-                           : lerp((float)rs_tempMcap, 1.0f, pow(D, 0.1f));
+                           : lerp((float)rs_tempMcap, 1.0f, pow(D, rs_corrReductionPow));
 
     const uint mcapU   = max(1u, rs_tempMcap);
     const uint effMcap = (uint)clamp(round(effMcapF), 1.0f, (float)mcapU);

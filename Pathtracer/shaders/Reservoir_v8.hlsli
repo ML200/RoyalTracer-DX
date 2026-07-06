@@ -44,7 +44,7 @@ struct Reservoir
 
 
 //====================================
-//SOA GROUP PLANES  (84 B/px)
+//SOA GROUP PLANES  (80 B/px)
 //====================================
 //Round 2 of the co-access grouping (was 5 planes / 64 B): scattered partner reads
 //(temporal candidate, spmis shift draws, merge lazy accept) always want the FULL
@@ -52,19 +52,19 @@ struct Reservoir
 //any pixel (48B never straddles a third 32B sector at a 48B stride) instead of 4-5
 //scattered plane sectors + a separate M fetch. FW keeps its own plane (merge streams
 //F/W without payload); V2 is DUPLICATED into a solo 4B plane so Pass_dup_gi's
-//4B-stride streaming stays cheap (writers store it twice); wsum stays raygen-owned
-//in its own plane. Own-pixel access is a wash (same bytes either way).
+//4B-stride streaming stays cheap (writers store it twice). Own-pixel access is a
+//wash (same bytes either way). (The former WSUM plane was write-only — raygen's
+//w_sum lives in registers through FinalizeReservoir and nothing ever read it back —
+//so it was removed; keep host Reservoir_GI at 80 B, see Renderer.h.)
 //  RECON 48B  +0  x2(12) | n2pk(4)               reconnection geometry
 //             +16 L2 | Kd | eta/Pr/Pm | matID    reconnection material payload
 //             +32 objID | v2pk | M | rcInfo      provenance + confidence + pin info
 //  FW    16B  F(12) | W(4)                       RIS state, one Load4 in merge
 //  V2     4B  solo DUPLICATE plane               dup pass streams it at 4B stride
-//  WSUM   4B  raygen-owned
 //  HYB   12B  seed | cachedJac | gBase           hybrid-shift PSS state (one Load3)
 static const uint PLANE_FW    = 48u;
 static const uint PLANE_V2    = 64u;
-static const uint PLANE_WSUM  = 68u;
-static const uint PLANE_HYB   = 72u;
+static const uint PLANE_HYB   = 68u;
 
 //====================================
 //SOA ADDRESS HELPERS
@@ -93,7 +93,6 @@ uint addr_w(uint px)               { return addr_fw(px)   + 12u; }
 uint addr_objid(uint px)           { return addr_pm(px); }
 uint addr_m(uint px)               { return addr_pm(px)   +  8u; }
 uint addr_rcinfo(uint px)          { return addr_pm(px)   + 12u; }
-uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM + px * 4u; }
 uint addr_hyb(uint px)             { uint N = numPx(); return N * PLANE_HYB  + px * 12u; }
 
 //====================================
@@ -277,22 +276,6 @@ void UnpackEtaPrPm(uint p, out float eta, out float pr, out float pm)
 //BRDF WRAPPERS
 //====================================
 //thin aliases to isolate MIS callers from BXDF module
-float3 BSDF_term(
-    uint   mID,
-    float3 n_s,
-    float3 n_g,
-    float3 s,
-    float3 o,
-    float3 localKd,
-    float  localPr,
-    float  localPm,
-    float  etai,
-    float  etat)
-{
-    const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
-    return EvaluateBRDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
-}
-
 //fused value+pdf variant: the PSS shift eval needs the marginal directional pdf
 //of the reconnection segment at both endpoints (the jacobian bundle) alongside
 //the BSDF value — one EvaluateAndPdf walk instead of a second strategy pass.
@@ -358,7 +341,7 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     buf.Store4(addr_fw(pixelIdx), uint4(asuint(r.F), asuint(r.W)));
     buf.Store (addr_v2(pixelIdx), v2pk);   //solo duplicate for the dup pass stream
     buf.Store3(addr_hyb(pixelIdx), uint3(r.seed, asuint(r.cachedJac), asuint(r.gBase)));
-    //wsum is raygen-owned and not part of the merged record
+    //w_sum is transient RIS state (raygen registers / merge-local) — never stored
 }
 
 //payload-only load: everything the shift eval needs (x2/n2/L2/V2/Kd/Pr/Pm/eta/
@@ -409,15 +392,31 @@ uint load_rcInfo(RWByteAddressBuffer b, uint pixelIdx)
     return b.Load(addr_rcinfo(pixelIdx));
 }
 
+uint load_seed(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return b.Load(addr_hyb(pixelIdx));
+}
+
+//RIS + hybrid PSS state WITHOUT the 48B payload record: what the replay passes
+//re-load AFTER a prefix walk. HybridShiftEval consumes the payload internally
+//post-walk; carrying a full Reservoir across the walk instead would ride every
+//SER reorder (see Hybrid_Replay_v8.hlsli's live-state contract).
+void loadReservoirState(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoir r)
+{
+    const uint4 fw  = buf.Load4(addr_fw(pixelIdx));
+    const uint3 hyb = buf.Load3(addr_hyb(pixelIdx));
+    r.F         = asfloat(fw.xyz);
+    r.W         = asfloat(fw.w);
+    r.M         = buf.Load(addr_m(pixelIdx));
+    r.seed      = hyb.x;
+    r.cachedJac = asfloat(hyb.y);
+    r.gBase     = asfloat(hyb.z);
+}
+
 
 //====================================
 //PER-FIELD LOADS AND STORES
 //====================================
-uint load_objID(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return b.Load(addr_objid(pixelIdx));
-}
-
 //_res suffix: distinct from Sample_Data's load_matID which reads the G-buffer
 uint load_matID_res(RWByteAddressBuffer b, uint pixelIdx)
 {
@@ -430,35 +429,6 @@ float3 load_x2(RWByteAddressBuffer b, uint pixelIdx, uint objID)
     return ObjectToWorldPos(objID, xO);
 }
 
-float3 load_n2_s(RWByteAddressBuffer b, uint pixelIdx, uint objID)
-{
-    uint enc = b.Load4(addr_pack1(pixelIdx)).w;
-    return ObjectToWorldNrm(objID, UnpackNormal(enc));
-}
-
-float3 load_L2(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackRGB9E5(b.Load(addr_l2(pixelIdx)));
-}
-
-float3 load_V2(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackNormal(b.Load(addr_v2(pixelIdx)));
-}
-
-//resolved x2 albedo
-float3 load_kd_res(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return UnpackRGB9E5(b.Load(addr_kd(pixelIdx)));
-}
-
-//resolved x2 roughness + metalness (share the eta word)
-void load_prpm_res(RWByteAddressBuffer b, uint pixelIdx, out float pr, out float pm)
-{
-    float eta;
-    UnpackEtaPrPm(b.Load(addr_eta(pixelIdx)), eta, pr, pm);
-}
-
 float load_W(RWByteAddressBuffer b, uint pixelIdx)
 {
     return asfloat(b.Load(addr_w(pixelIdx)));
@@ -467,21 +437,6 @@ float load_W(RWByteAddressBuffer b, uint pixelIdx)
 float3 load_F(RWByteAddressBuffer b, uint pixelIdx)
 {
     return asfloat(b.Load3(addr_f(pixelIdx)));
-}
-
-float load_eta(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return f16tof32(b.Load(addr_eta(pixelIdx)) & 0xFFFFu);
-}
-
-void store_wsum(RWByteAddressBuffer b, uint pixelIdx, float wsum)
-{
-    b.Store(addr_wsum(pixelIdx), asuint(wsum));
-}
-
-float load_wsum(RWByteAddressBuffer b, uint pixelIdx)
-{
-    return asfloat(b.Load(addr_wsum(pixelIdx)));
 }
 
 uint load_M(RWByteAddressBuffer b, uint pixelIdx)
@@ -499,29 +454,11 @@ void store_W(RWByteAddressBuffer b, uint pixelIdx, float W)
     b.Store(addr_w(pixelIdx), asuint(W));
 }
 
-void store_F(RWByteAddressBuffer b, uint pixelIdx, float3 F)
-{
-    b.Store3(addr_f(pixelIdx), asuint(F));
-}
-
 //====================================
 //REJECTION AND VALIDITY
 //====================================
-inline bool RejectNormal(float3 n1, float3 n2, float threshold) {
-    return dot(n1, n2) < threshold;
-}
-
-inline bool RejectDistance(float3 x1, float3 x2, float3 normal, float threshold)
-{
-    return abs(dot(x2 - x1, normal)) > threshold;
-}
-
 inline bool IsValidReservoir(Reservoir r) {
     return any(abs(r.n2_s) > 0.0f) && r.M > 0;
-}
-
-inline bool IsValidReservoir_opt(in float3 n2, in uint M) {
-    return any(abs(n2) > 0.0f) && M > 0.0f;
 }
 
 inline void InvalidateReservoir_ShadingNormal(
@@ -551,49 +488,11 @@ inline float ComputeJc(float3 x1, float3 x2, float3 n2_s)
     return max(abs(dot(d / dist, n2_s)) / dist2, EPSILON);
 }
 
-//volume reconnection vertex (first in-medium SSS scatter): no surface normal, so the
-//geometry term drops the cosine and is a pure inverse-square. Callers select this when
-//IsVolumeVertex(reservoir.matID).
-inline float ComputeJcVol(float3 x1, float3 x2)
-{
-    float3 d = x1 - x2;
-    float  dist2 = dot(d, d);
-    return max(1.0f / max(dist2, EPSILON), EPSILON);
-}
-
-//Reconnection-shift Jacobian ratio for temporal reuse, CLAMPED (not rejected) to
-//[1/T, T]. Near a grazing corner the reconnection cos -> 0 makes ComputeJc tiny
-//and Jn/Jc blows up; the clamp bounds it so the resampling weight can't spike into
-//fireflies. T is editor-tunable (ReSTIRSettings::tempJacClamp): lower = stronger
-//suppression / more bias. (SPMIS uses JacobianRatioRej, which rejects outliers
-//instead, because it draws from a large pool; the small temporal candidate set
-//prefers a bounded sample over a dropped one.)
-inline float JacobianRatio(float Jn, float Jc, float T)
-{
-    //Jc/Jn are both floored to EPSILON in ComputeJc, so at the floor the correct
-    //ratio is EPSILON/EPSILON = 1, NOT 0 — we must NOT reject there (that silently
-    //killed long-range temporal reuse). Guard div-by-zero / non-finite, then clamp.
-    if (Jc <= 0.0f) return 0.0f;
-    const float j = Jn / Jc;
-    if (isnan(j) || isinf(j)) return 0.0f;
-    const float t = max(T, 1.0f);
-    return clamp(j, 1.0f / t, t);
-}
-
-//Reconnection-shift Jacobian WITH outlier rejection (reject band ~[1/T, T], T~15):
-//returns 0 - i.e. REJECTS the shifted sample - when Jn/Jc is extreme (> T or < 1/T)
-//or non-finite. An unbounded Jn/Jc spikes the resampling weight into FIREFLIES; the
-//cell path hits this constantly because it reuses from a large pool where some
-//reconnection vertices are grazing (cos->0) or at a large distance ratio. Applied
-//per non-canonical neighbour in the SPMIS pass; the plain JacobianRatio above does
-//not reject. Slight bias for a large variance win (standard ReSTIR-PT practice).
-inline float JacobianRatioRej(float Jn, float Jc, float T)
-{
-    if (Jc <= EPSILON) return 0.0f;
-    float j = Jn / Jc;
-    if (isnan(j) || isinf(j) || j > T || j < (1.0f / T)) return 0.0f;
-    return j;
-}
+//(ComputeJcVol + JacobianRatio / JacobianRatioRej removed: the volume-vertex 1/d²
+//geometry is derived inline in ReconnectPSS's volume branch, and the legacy
+//full-jacobian clamp/reject pair is superseded by the PSS GEOMETRIC band —
+//RcGeomClampScale / RcGeomReject above — which bands Jn/gBase only and never
+//touches pdf factors.)
 
 //====================================
 //RECONNECTION  (PSS shift evaluation)

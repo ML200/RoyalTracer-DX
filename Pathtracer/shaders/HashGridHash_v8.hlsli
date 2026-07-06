@@ -135,17 +135,22 @@ inline void SP_onb(float3 n, out float3 T, out float3 B)
 //stride, so the 2p/1p/0 shifts stay disjoint. (See the SPMIS tile-artifact fix.)
 inline uint SP_quantize_normal(float3 n)
 {
-    const uint  p     = 2u;                          // bits per component (quantization precision)
+    //bits per component (quantization precision) — editor slider, slot 25.
+    //p is bits-per-component AND the field stride, so the 2p/1p/0 shifts stay
+    //disjoint at every setting.
+    const uint  p     = clamp(spmis_normalBits, 1u, 4u);
     const float scale = (float)((1u << p) - 1u);     // 3 for p=2 -> buckets {0,1,2,3}
     const uint  x = (uint)(saturate(n.x * 0.5f + 0.5f) * scale + 0.5f) << (2u * p);
     const uint  y = (uint)(saturate(n.y * 0.5f + 0.5f) * scale + 0.5f) << (1u * p);
     const uint  z =  (uint)(saturate(n.z * 0.5f + 0.5f) * scale + 0.5f);
     return x | y | z;
 }
-//jitter the normal in its tangent plane (n, pos, 0.2) — deterministic per-position
-//jitter so cell boundaries are fuzzed (anti-aliasing of the discrete normal buckets).
+//jitter the normal in its tangent plane — deterministic per-position jitter so
+//cell boundaries are fuzzed (anti-aliasing of the discrete normal buckets).
+//fuzzy <= 0 returns n untouched (hard buckets).
 inline float3 SP_jitter_normal(float3 n, float3 pos, float fuzzy)
 {
+    if (fuzzy <= 0.0f) return n;
     float3 T, B; SP_onb(n, T, B);
     const float jx = SP_xorshift01(SP_h2_xxhash32(asuint(pos.x * 4294967295.0f))) * 2.0f - 1.0f;
     const float jy = SP_xorshift01(SP_h2_xxhash32(asuint(pos.y * 4294967295.0f))) * 2.0f - 1.0f;
@@ -153,11 +158,12 @@ inline float3 SP_jitter_normal(float3 n, float3 pos, float fuzzy)
 }
 //screen-space g-buffer hash: cell = (pixel/tile_size, jittered-quantized normal).
 //Returns the cell hash; the checksum (for collision resolution) is written to out.
+//Normal fuzz amplitude = spmis_normalFuzz (editor slider, slot 24; was 0.2 fixed).
 inline uint SP_screen_hash(int px, int py, uint tileSize, float3 pos, float3 geomN, out uint outChecksum)
 {
     const uint gx = (uint)px / tileSize;
     const uint gy = (uint)py / tileSize;
-    const uint hn = SP_quantize_normal(SP_jitter_normal(geomN, pos, 0.2f));
+    const uint hn = SP_quantize_normal(SP_jitter_normal(geomN, pos, spmis_normalFuzz));
     outChecksum = SP_h2_xxhash32(gx + SP_h2_xxhash32(gy + SP_h2_xxhash32(hn)));
     return SP_h1_pcg(gx + SP_h1_pcg(gy + SP_h1_pcg(hn)));
 }

@@ -1817,7 +1817,7 @@ void Renderer::PopulateCommandList() {
     }
 
     // Temporal-reuse geometry rejection + Jacobian clamp (slots 13-15; read by
-    // Pass_temp_gi_v8). Reuses the retired texture-spatial slots; 16-21 stay 0.
+    // Pass_temp_gi_v8). Reuses the retired texture-spatial slots.
     {
         const float tnc = std::clamp(rs.tempNormalSimCos, -1.0f, 1.0f);
         const float tpd = std::max(rs.tempPlaneDist, 0.0f);
@@ -1829,9 +1829,32 @@ void Renderer::PopulateCommandList() {
         memcpy(&rsConsts[16], &ucw, 4);
     }
 
+    // Temporal correlation-reduction strength (slot 21): dup-map exponent e in
+    // effMcap = lerp(tempMcap, 1, pow(D, e)); smaller = stronger. Clamp away
+    // from 0 (pow(D, 0) would collapse the cap even at a single duplicate's
+    // worth of D) and cap at 1 (linear response = weakest useful setting).
+    {
+        const float crp = std::clamp(rs.corrReductionPow, 0.005f, 1.0f);
+        memcpy(&rsConsts[21], &crp, 4);
+    }
+
     // Neighbor rejection thresholds (slots 22-23)
     memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
     memcpy(&rsConsts[23], &rs.rejDistance,  4);
+
+    // SPMIS hash-grid + cell-search tuning (slots 24-28; the jitter toggle is
+    // flag 0x40000 in baseFlags). searchIters min 4 keeps the select pass's
+    // 4-wide probe batching meaningful.
+    {
+        const float nf  = std::clamp(rs.spmisNormalFuzz, 0.0f, 1.0f);
+        const float sr0 = std::clamp(rs.spmisSearchR0,   1.0f, 512.0f);
+        const float sg  = std::clamp(rs.spmisSearchGrow, 1.0f, 2.0f);
+        memcpy(&rsConsts[24], &nf, 4);
+        rsConsts[25] = (UINT)std::clamp(rs.spmisNormalBits, 1, 4);
+        memcpy(&rsConsts[26], &sr0, 4);
+        memcpy(&rsConsts[27], &sg, 4);
+        rsConsts[28] = (UINT)std::clamp(rs.spmisSearchIters, 4, 32);
+    }
 
     // SPMIS spatial-reuse params (slots 32-37; read by the Pass_spmis_* kernels).
     // Selected by RS_FLAG_SPMIS_SPATIAL (0x10). Clamp to safe ranges.

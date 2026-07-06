@@ -185,9 +185,10 @@ void Pass_camera_v8()
     //or a miss overwrites this inside TraceCameraRay.
     store_sky(g_sample_current, pixelIdx);
 
-    //slot 1 primary emitter/sky, slot 3 x1 direct (cleared for the bounce pass)
+    //slot 1 primary emitter/sky (cleared for the bounce pass). Slot 3 (ex
+    //directAtX1) is RETIRED — no reader or writer remains, so it is no longer
+    //cleared either.
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
-    gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
 
     storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
@@ -228,12 +229,17 @@ void Pass_camera_v8()
     //====================================
     //Insert this pixel into the SPMIS hash grid for the spatial-reuse pass. The
     //screen-tile origin is jittered per frame (from `time`) so cell boundaries
-    //average out under accumulation. No-op when SPMIS is off.
+    //average out under accumulation — RS_FLAG_SPMIS_CELL_JITTER gates it (off =
+    //static grid). No-op when SPMIS is off.
     if (SPMIS_SPATIAL_MODE)
     {
         const uint ts   = max(spmis_tileSize, 1u);
-        const uint jh   = SP_h2_xxhash32(asuint(time));
-        const int2 tjit = int2((int)(jh % ts), (int)(SP_h2_xxhash32(jh) % ts));
+        int2 tjit = int2(0, 0);
+        if (SPMIS_CELL_JITTER)
+        {
+            const uint jh = SP_h2_xxhash32(asuint(time));
+            tjit = int2((int)(jh % ts), (int)(SP_h2_xxhash32(jh) % ts));
+        }
 
         uint sp_checksum;
         const uint sp_hash = SP_screen_hash((int)pixel.x + tjit.x, (int)pixel.y + tjit.y, ts,

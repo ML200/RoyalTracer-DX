@@ -1584,6 +1584,11 @@ void Renderer::WriteRaysIndirectTemplate() {
         if (slot != UINT32_MAX)
             dSpmisReplay.RayGenerationShaderRecord.StartAddress =
                 sbtStart + slot * m_sbtHelper.GetRayGenEntrySize();
+        //ROLE THREADS: .y = 0 canonical | 1..SPMIS_SPLIT_MAXDRAWS draw slots, one
+        //replay walk per thread instead of a serial per-pixel loop. Must equal
+        //1 + SPMIS_SPLIT_MAXDRAWS (HashGridHash_v8.hlsli); Width stays the
+        //GPU-patched queue count.
+        dSpmisReplay.Height = 1 + 4;
     }
 
     void* p = nullptr;

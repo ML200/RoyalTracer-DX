@@ -363,6 +363,11 @@ float3 EvaluateAlbedo(uint matID, float2 uv, uint level)
 
 float2 EvaluatePBRProperties(uint matID, float2 uv, uint level)
 {
+    //FORCE_DIFFUSE: the RMA texture would re-introduce textured Pr/Pm over the
+    //decoder-forced constants — return them directly (and skip the fetch).
+    if (FORCE_DIFFUSE)
+        return float2(1.0f, 0.0f);
+
     const float4 pbr4 = LoadPrPmPsPc(matID);
     float2 pbrProps = pbr4.xy;
 

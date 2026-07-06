@@ -353,6 +353,15 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings&
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Off = nearest-texel point sampling for every texture\n"
                           "(crisp pixel-art / Minecraft look). On = bilinear/aniso.");
+
+    ImGui::Checkbox("Force diffuse opaque (debug)", &restir.forceDiffuseMats);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every material becomes an opaque Lambertian surface: albedo and\n"
+                          "emission are kept, transmission / specular / metal / coat / sheen /\n"
+                          "thin glass / SSS are forced off at the material decoder (all passes\n"
+                          "see the same forced material, so ReSTIR targets stay consistent).\n"
+                          "Alpha cutout is untouched. Live-toggleable; history re-settles in a\n"
+                          "frame like any material edit.");
     ImGui::Separator();
 
     // Lives on SunSettings only because that struct is the tail of the camera CB.
@@ -603,17 +612,19 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::Checkbox("Disable correlation reduction (A/B)##Temp", &rs.disableCorrReduction);
         ImGui::SetItemTooltip("Turns off the duplication-map decorrelation. Normally the temporal "
                               "confidence cap collapses toward 1 as a sample is shared across "
-                              "neighbours (lerp(M-cap,1,pow(D,0.1)) - very aggressive: D=0.1 -> cap~5). "
+                              "neighbours (lerp(M-cap,1,pow(D,corr-power)), see the slider below). "
                               "Cell reuse spreads good samples, raising D, so this caps them back down "
                               "and fights the reuse. Disable to let well-reused samples keep "
                               "accumulating confidence (suspected cause of weak cell-reuse quality).");
-        ImGui::Checkbox("Disable x1 direct / slot 3 (diagnostic)##Temp", &rs.disableX1Direct);
-        ImGui::SetItemTooltip("Zeroes directAtX1 (depth==1 NEE-sun + BSDF-miss env) - the ONLY radiance "
-                              "that bypasses the reservoir. If the high-variance layer over the clean "
-                              "ReSTIR result DISAPPEARS, the noise is this un-reused env/sun direct "
-                              "(single-sample 1/pdf, immune to M-cap). If it PERSISTS, the noise is inside "
-                              "the reservoir (pixels failing temporal/spatial reuse). Removes that light "
-                              "while on - it's a diagnostic, not a final setting.");
+        ImGui::SliderFloat("Corr-reduction power##Temp", &rs.corrReductionPow, 0.005f, 0.5f,
+                           "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Dup-map exponent e: effMcap = lerp(M-cap, 1, pow(D, e)). SMALLER = "
+                              "stronger decorrelation (each halving doubles the strength in log "
+                              "space). 0.1 = original tuning; at 0.025 with M-cap 20 a single "
+                              "17x17 duplicate caps history at ~3.5 and D=0.1 at ~2.1. Unique "
+                              "samples (D=0) always keep the full M-cap.");
+        //("Disable x1 direct" diagnostic removed — §6.1 made x1 sun/env reservoir
+        // candidates, so the toggle had nothing left to zero.)
         ImGui::Checkbox("Surface reproj only (no specular MV)##Temp", &rs.noSpecReproj);
         ImGui::SetItemTooltip("Forces temporal reuse to self-reproject the DI reservoir instead of the "
                               "stochastic specular reprojection. The default flips per-pixel-per-frame "
@@ -695,6 +706,32 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SetItemTooltip("§4.3 non-canonical confidence scaling (Ntilde/cell_size). OFF gives the "
                               "canonical ~no weight -> maximal neighbour reuse / equalization. ON boosts the "
                               "canonical (~1/(N+1)) -> weaker reuse but less dark-pepper.");
+
+        ImGui::SeparatorText("Hash grid / cell search");
+        ImGui::Checkbox("Cell jitter##SPMIS", &rs.spmisCellJitter);
+        ImGui::SetItemTooltip("Per-frame jitter of the screen-tile origin (from time): cell boundaries "
+                              "move every frame and average out under accumulation/temporal reuse. OFF = "
+                              "static grid - boundary pixels keep the same cell neighbours every frame "
+                              "(isolates boundary artifacts vs jitter noise). Grid rebuilds per frame, "
+                              "always safe to toggle.");
+        ImGui::SliderFloat("Normal fuzz##SPMIS", &rs.spmisNormalFuzz, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Deterministic per-position tangent-plane jitter applied to the normal "
+                              "before quantization in the cell hash - anti-aliases the discrete normal "
+                              "buckets so curved surfaces don't band into cells. 0 = hard buckets.");
+        ImGui::SliderInt("Normal bits##SPMIS", &rs.spmisNormalBits, 1, 4);
+        ImGui::SetItemTooltip("Normal quantization bits per component in the cell key. More bits = finer "
+                              "normal buckets = smaller, more orientation-local cells (less reuse); "
+                              "1 bit = very coarse (walls and floor may share cells at fuzz > 0).");
+        ImGui::SliderFloat("Search radius (px)##SPMIS", &rs.spmisSearchR0, 1.0f, 256.0f, "%.0f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Cell-search initial probe radius. Probes draw uniform offsets in a square "
+                              "of this half-size, growing per probe (below).");
+        ImGui::SliderFloat("Search growth##SPMIS", &rs.spmisSearchGrow, 1.0f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Per-probe radius multiplier: 1.0 = fixed radius, higher reaches farther "
+                              "cells with later probes (12 probes at 1.25 span ~radius x 11.6).");
+        ImGui::SliderInt("Search probes##SPMIS", &rs.spmisSearchIters, 4, 32);
+        ImGui::SetItemTooltip("WRS cell-search probe count (batched 4-wide). More probes = better cell "
+                              "mixing / farther reuse at higher select-pass cost.");
     }
     if (ImGui::CollapsingHeader("Neighbor Rejection", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Normal dot min", &rs.rejNormalDot, 0.0f, 1.0f);

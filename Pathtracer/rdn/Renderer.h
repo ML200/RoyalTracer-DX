@@ -31,10 +31,11 @@
 
 //CPU-side sizing stubs matching shader SoA sizes
 // Sizes mirror the HLSL SoA strides exactly. Reservoir comes from
-// PLANE_HYB(72) + 12 in Reservoir_v8.hlsli (48B RECON record + 16B FW plane
-// + 4B solo V2 plane + 4B wsum plane + 12B hybrid-shift HYB plane:
-// seed | cachedJac | gBase). SampleData is BYTES_SD in Sample_Data_v8.hlsli.
-struct Reservoir_GI  { uint8_t pad[84]; };
+// PLANE_HYB(68) + 12 in Reservoir_v8.hlsli (48B RECON record + 16B FW plane
+// + 4B solo V2 plane + 12B hybrid-shift HYB plane: seed | cachedJac | gBase;
+// the write-only WSUM plane was removed). SampleData is BYTES_SD in
+// Sample_Data_v8.hlsli.
+struct Reservoir_GI  { uint8_t pad[80]; };
 struct SampleData    { uint8_t pad[36]; };
 
 // Pixel count for the per-pixel SoA buffers (reservoirs, sample data, path

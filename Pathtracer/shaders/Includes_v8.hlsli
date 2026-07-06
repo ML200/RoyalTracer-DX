@@ -60,18 +60,24 @@ cbuffer Push : register(b1)
     //implemented literally: threshold = (c/100) * ||x0-x1||^2 / (cos/(4pi))).
     //Paper's cross-scene optimum c = 0.02; ablation range 0.005-0.64.
     float rs_rcFpKappa;
-    uint  _ts_retired8;
+    //slot 21: temporal correlation-reduction strength — the dup-map exponent e
+    //in effMcap = lerp(rs_tempMcap, 1, pow(D, e)). SMALLER = stronger collapse
+    //at the same duplication (each halving doubles the strength in log space;
+    //0.1 = original tuning). Read by the TemporalMergeBody passes.
+    float rs_corrReductionPow;
     //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rs_rejNormalDot;
     float rs_rejDistance;
-    //Slots 24-31 (two 16B cbuffer rows) reserved. Formerly the NRC control +
-    //scene-bounds constants (nrc_flags / area_spread_c / lr_scale /
-    //inference_capacity / scene_center.xyz / scene_scale_inv). NRC was removed
-    //from the shaders on this branch; the slots are kept as padding so the SPMIS
-    //(32..37) and path-trace (38..41) constants keep their register positions and
-    //the cpp root-constant writes need no renumbering. Free for the NIRC rewrite.
-    uint4 _nrc_reserved0;   // slots 24..27
-    uint4 _nrc_reserved1;   // slots 28..31
+    //Slots 24-28: SPMIS hash-grid + cell-search tuning (editor sliders). These
+    //took five of the eight former NRC-padding slots; 29-31 stay reserved for
+    //the NIRC rewrite. SPMIS (32..37) and path-trace (38..41) keep their
+    //register positions.
+    float spmis_normalFuzz;   // slot 24: SP_screen_hash tangent-plane normal jitter amplitude (0 = hard buckets)
+    uint  spmis_normalBits;   // slot 25: SP_quantize_normal bits per component (host-clamped 1..4)
+    float spmis_searchR0;     // slot 26: cell-search initial probe radius (px)
+    float spmis_searchGrow;   // slot 27: cell-search radius growth per probe
+    uint  spmis_searchIters;  // slot 28: cell-search probe count (host-clamped 4..32)
+    uint3 _nirc_reserved;     // slots 29..31 (kept for the NIRC rewrite)
     //SPMIS spatial reuse. Slots 32-37, read by the Pass_spmis_* kernels. Selected by
     //RS_FLAG_SPMIS_SPATIAL (0x10).
     uint  spmis_reuseN;       // Ntilde: non-canonical reuse draws
@@ -89,7 +95,7 @@ cbuffer Push : register(b1)
     uint  pt_initialSamples;
     //slot 41 (register 10.y). SPMIS cell-search plane-distance rejection, as a FRACTION
     //of the distance to camera (regular-ReSTIR geometry rejection). Read by
-    //Pass_spmis_reuse_v8.
+    //Pass_spmis_select_v8.
     float spmis_planeDist;
     //slot 42 (register 10.z). Material-texture filtering mode: 0 = hardware
     //bilinear/aniso (g_sampler s0), 1 = nearest-texel point sampling
@@ -135,7 +141,8 @@ cbuffer Push : register(b1)
 //reduction. Pass_dup_gi counts how many of the 17x17 neighbours share this pixel's
 //reconnection vertex (V2) and writes that fraction D to scratch slot 6; the temporal
 //pass normally COLLAPSES the confidence cap toward 1 as D rises
-//(effMcap = lerp(rs_tempMcap, 1, pow(D,0.1)) — very aggressive: D=0.1 -> cap~5).
+//(effMcap = lerp(rs_tempMcap, 1, pow(D, rs_corrReductionPow)) — strength is the
+//slot-21 slider, smaller exponent = stronger collapse).
 //Because cell reuse deliberately SPREADS a good sample across a coherent cell, D goes
 //up and this decorrelation then caps confidence back down, fighting the reuse. When
 //this flag is set the temporal cap ignores D (effMcap = rs_tempMcap), letting us test
@@ -143,15 +150,31 @@ cbuffer Push : register(b1)
 #define RS_FLAG_DISABLE_CORR_REDUCTION  0x40u
 #define CORR_REDUCTION_OFF  ((rs_flags & RS_FLAG_DISABLE_CORR_REDUCTION) != 0u)
 
-//RS_FLAG_DISABLE_X1_DIRECT — diagnostic A/B: zero scratch slot 3 (directAtX1 =
-//the depth==1 NEE-sun + depth==1 BSDF-ray-miss ENV, the ONLY radiance that bypasses
-//the ReSTIR reservoir). It is a single-sample 1/pdf estimate with NO spatio-temporal
-//reuse, so even a dim env floor (nightBase/stars) shows up as fireflies immune to
-//the temporal M-cap. If the "high-variance layer over clean ReSTIR" DISAPPEARS with
-//this set, the culprit is this un-reused env/sun direct; if it PERSISTS, the noise is
-//inside the reservoir (a fraction of pixels failing temporal/spatial reuse).
-#define RS_FLAG_DISABLE_X1_DIRECT  0x80u
-#define X1_DIRECT_OFF  ((rs_flags & RS_FLAG_DISABLE_X1_DIRECT) != 0u)
+//(flag bit 0x80 RETIRED — was RS_FLAG_DISABLE_X1_DIRECT. §6.1 unification removed
+//directAtX1 entirely: x1 sun-NEE and BSDF-miss env are reservoir candidates now,
+//so the diagnostic had nothing left to zero. Scratch slice 3 is retired with it —
+//allocated but untouched; renumbering the scratch array is a separate change.)
+
+//RS_FLAG_FORCE_DIFFUSE — materials debug: every material decodes as OPAQUE
+//LAMBERTIAN, albedo + emission kept. Kd.w=1 (no transmission, no medium), Ni=1
+//(dielectric Fresnel -> 0), Pr=1 Pm=0 Ps=0 Pc=0 (GGX/sheen/coat weights -> 0,
+//EPSILON-skipped), thin-glass + SSS bits off. Gated INSIDE the Material_Decoder
+//accessors so every consumer — camera, raygen, both replay passes, reconnection,
+//visibility, DLSS guides — sees the same forced material and the ReSTIR target
+//functions stay consistent by construction. Alpha cutout is deliberately left
+//alone (silhouette geometry, not shading). Toggling mid-flight is just a live
+//material edit: pre-toggle reservoirs/pins decay over a frame.
+#define RS_FLAG_FORCE_DIFFUSE  0x20000u
+#define FORCE_DIFFUSE  ((rs_flags & RS_FLAG_FORCE_DIFFUSE) != 0u)
+
+//RS_FLAG_SPMIS_CELL_JITTER — per-frame jitter of the SPMIS hash-grid tile origin
+//(derived from `time` at the single hash site in Pass_camera). ON (default):
+//cell boundaries move every frame and average out under accumulation/temporal
+//reuse. OFF: static grid — boundary pixels keep the same cell neighbours every
+//frame (useful to isolate boundary artifacts vs jitter noise). The grid is
+//rebuilt per frame, so toggling is always safe.
+#define RS_FLAG_SPMIS_CELL_JITTER  0x40000u
+#define SPMIS_CELL_JITTER  ((rs_flags & RS_FLAG_SPMIS_CELL_JITTER) != 0u)
 
 //RS_FLAG_NO_SPEC_REPROJ — force the temporal pass to use SURFACE (self) reprojection
 //for the DI reservoir instead of the stochastic specular reprojection. The temporal
@@ -817,12 +840,13 @@ RWByteAddressBuffer g_sample_current         : register(u6);
 RWByteAddressBuffer g_sample_last            : register(u7);
 RWByteAddressBuffer g_Reservoirs_current     : register(u4);
 RWByteAddressBuffer g_Reservoirs_last        : register(u5);
-//SPMIS_GRID_NONCOHERENT: the SPMIS reuse passes (select/shift/merge) only READ a
-//finished, barrier-fenced grid + scratch, so they drop globallycoherent to get
-//L1-cached reads. The coherent path bypasses L1 and saturates L2 on the scattered
-//cell-search / inner-RIS gathers (the Pass_spmis_select L2 bottleneck). Every WRITER
-//and same-dispatch cross-group READER (raygen CAS hash insert, count/offsets atomics)
-//keeps coherence by simply never defining the macro.
+//SPMIS_GRID_NONCOHERENT: passes that only READ a finished, barrier-fenced grid +
+//scratch (SPMIS select/shift/merge, the two replay passes — temp_replay reads just
+//the parked SPM_w1) drop globallycoherent to get L1-cached reads. The coherent path
+//bypasses L1 and saturates L2 on the scattered cell-search / inner-RIS gathers (the
+//Pass_spmis_select L2 bottleneck). Every WRITER and same-dispatch cross-group READER
+//(raygen CAS hash insert, count/offsets atomics) keeps coherence by simply never
+//defining the macro.
 //Active-pixel queue for the compacted indirect raygen dispatch (root UAV u26).
 //[0] count (cleared host-side each frame) | [16 + i*4] packed survivor pixel
 //coords (x | y<<16). Pass_camera appends every non-terminal pixel; Pass_raygen

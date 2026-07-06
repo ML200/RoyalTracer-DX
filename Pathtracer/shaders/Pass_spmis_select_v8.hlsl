@@ -27,9 +27,13 @@
 //    distributions, same convergence — like merge's dim-9 stream note), NOT the math.
 //The selection math itself is identical to the monolithic Pass_spmis_reuse.
 
-static const float SP_SEARCH_R0    = 20.0f;
-static const float SP_SEARCH_GROW  = 1.25f;
-static const uint  SP_SEARCH_ITERS = 12u;
+//cell-search shape now rides cbuffer slots 26-28 (editor sliders): initial
+//radius spmis_searchR0, per-probe growth spmis_searchGrow, probe count
+//spmis_searchIters (host-clamped 4..32; the 4-wide probe batches skip the
+//tail when the count is not a multiple of 4).
+#define SP_SEARCH_R0    spmis_searchR0
+#define SP_SEARCH_GROW  spmis_searchGrow
+#define SP_SEARCH_ITERS spmis_searchIters
 
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)

@@ -930,11 +930,9 @@ void RAYGEN_ENTRY()
     //====================================
     //FINALIZE
     //====================================
-    //directAtX1 is gone (§6.1 unification: x1 sun-NEE and BSDF-miss env are
-    //reservoir candidates now). Slot 3 keeps its ABI and reads zero; the
-    //X1_DIRECT_OFF diagnostic flag is inert.
-    gScratchPing[uint3(pixel, 3)] = float4(0, 0, 0, 0);
-
+    //(directAtX1 is fully gone — §6.1 unification made x1 sun-NEE and BSDF-miss
+    //env reservoir candidates; scratch slot 3 is retired, nothing writes or
+    //reads it.)
     //RIS-over-N: wsum sums to ~N, so /N for unbiased W (selection is scale-invariant).
     wsum /= max(1.0f, (float)pt_initialSamples);
     FinalizeReservoir(pixelIdx, wsum);

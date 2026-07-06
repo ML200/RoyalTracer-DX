@@ -25,25 +25,12 @@ struct HitContext {
 };
 
 
-//x1 direct sky+sun, pulled OUT of the reservoir to scratch slot 3. Collapses a
-//lone depth==1 candidate to F*W (W = wi/GetPHat(F)). Guards mirror AddInitialCandidate.
-inline float3 DirectContribution(float wi, float3 F_contrib)
-{
-    if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib)))
-        return float3(0, 0, 0);
-    const float ph = GetPHat(F_contrib);
-    if (ph <= 1e-20f)
-        return float3(0, 0, 0);
-    return F_contrib * (wi / ph);
-}
-
-
 //Finalize the pixel reservoir: W = wsum / GetPHat(F) (0 on degenerate/NaN), M=1
 //(the N samples improve sample quality, not confidence — the 1/N is in wsum, so
-//w_sum = W*M*p_hat holds at M=1). Invalidate on W==0.
+//w_sum = W*M*p_hat holds at M=1). Invalidate on W==0. wsum is REGISTER-ONLY
+//state: nothing ever re-read the old WSUM plane, so it was removed outright.
 inline void FinalizeReservoir(uint pixelIdx, float wsum)
 {
-    store_wsum(g_Reservoirs_current, pixelIdx, wsum);
     const float F_mag = GetPHat(load_F(g_Reservoirs_current, pixelIdx));
     float W = (F_mag > 1e-6f && wsum > 0.0f) ? (wsum / F_mag) : 0.0f;
     if (isnan(W) || isinf(W) || W < 0.0f) W = 0.0f;

@@ -327,11 +327,6 @@ void store_tpost_pk(RWByteAddressBuffer buf, uint pixelIdx, uint tpostPk)
     buf.Store(ps_addr_hot2(pixelIdx) + 0u, tpostPk);
 }
 
-void store_ps_wsum(RWByteAddressBuffer buf, uint pixelIdx, float wsum)
-{
-    buf.Store(ps_addr_hot2(pixelIdx) + 4u, asuint(wsum));
-}
-
 HotState load_hot(RWByteAddressBuffer buf, uint pixelIdx)
 {
     HotState h;
@@ -354,12 +349,6 @@ uint load_flags(RWByteAddressBuffer buf, uint pixelIdx)
 {
     return buf.Load(ps_addr_hot2(pixelIdx) + 8u);
 }
-
-float load_wsum_ps(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return asfloat(buf.Load(ps_addr_hot2(pixelIdx) + 4u));
-}
-
 
 //====================================
 //RAY PLANES

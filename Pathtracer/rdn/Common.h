@@ -205,10 +205,19 @@ struct ReSTIRSettings {
     //hardware bilinear/aniso, 1 = nearest-texel point sampling for crisp pixel-art /
     //Minecraft assets. Global (all textures); editor toggle under Materials.
     int   texturePointFilter = 0;
+    //Materials debug (flag 0x20000): every material decodes as opaque Lambertian
+    //(albedo + emission kept; transmission/specular/coat/sheen/thin-glass/SSS
+    //forced off inside Material_Decoder_v8.hlsli). Live-toggleable.
+    bool  forceDiffuseMats = false;
     bool  enableTempGI     = true;
     bool  enableSpatGI     = true;
     bool  disableCorrReduction = false; // A/B: ignore dup-map D in the temporal confidence cap (flag 0x40)
-    bool  disableX1Direct      = false; // diagnostic: zero slot-3 directAtX1 (un-reused env/sun direct) (flag 0x80)
+    //Temporal correlation-reduction strength (cbuffer slot 21): the dup-map
+    //exponent e in effMcap = lerp(tempMcap, 1, pow(D, e)). SMALLER = stronger
+    //collapse at the same duplication; each halving doubles the strength in
+    //log space (0.1 = original tuning, 0.025 = 4x).
+    float corrReductionPow     = 0.025f;
+    // (flag bit 0x80 retired — was disableX1Direct; §6.1 removed directAtX1 so the diagnostic had nothing to zero)
     bool  noSpecReproj         = false; // force surface (self) reprojection for the DI reservoir, off the stochastic specular MV (flag 0x200)
     bool  disableReuseVis      = false; // take the reconnection shadow ray OUT of temporal+spatial reuse and apply it once at the spatial resolve (flag 0x800)
     bool  disableFinalVis      = false; // sub-toggle of disableReuseVis: also skip the deferred resolve shadow ray -> fully unshadowed GI (diagnostic) (flag 0x1000)
@@ -244,6 +253,14 @@ struct ReSTIRSettings {
     int   spmisRisN         = 8;     // inner-RIS candidate count per draw
     int   spmisMcap         = 20;    // output confidence M cap (0 disables)
     int   spmisTileSize     = 32;    // screen-space cell tile size in pixels
+    //Hash-grid + cell-search tuning (cbuffer slots 24-28 + flag 0x40000). The
+    //grid rebuilds every frame, so all of these are live-toggleable.
+    bool  spmisCellJitter   = true;  // per-frame tile-origin jitter (flag 0x40000); off = static grid
+    float spmisNormalFuzz   = 0.2f;  // slot 24: tangent-plane normal jitter in the cell hash (0 = hard buckets)
+    int   spmisNormalBits   = 2;     // slot 25: normal quantization bits per component (1..4)
+    float spmisSearchR0     = 20.0f; // slot 26: cell-search initial probe radius (px)
+    float spmisSearchGrow   = 1.25f; // slot 27: cell-search radius growth per probe
+    int   spmisSearchIters  = 12;    // slot 28: cell-search probe count (4..32)
     float spmisJacThreshold = 15.0f; // reconnection-shift jacobian reject band [1/T, T]
     float spmisNormalSimCos = -1.0f; // neighbor-similarity normal cone (cos); -1 = accept all normals
     float spmisPlaneDist    = 0.111f;// neighbor-similarity plane-distance reject, as a FRACTION of
@@ -294,11 +311,12 @@ struct ReSTIRSettings {
              | (enableSpatGI ? 0x10u : 0u)
              | ((enableSpatGI && spmisConfidenceAdjust) ? 0x2000u : 0u)
              | (disableCorrReduction ? 0x40u : 0u)
-             | (disableX1Direct ? 0x80u : 0u)
              | (noSpecReproj ? 0x200u : 0u)
              | (disableReuseVis ? 0x800u : 0u)
              | (disableFinalVis ? 0x1000u : 0u)
              | (hybridShift ? 0x4000u : 0u)
+             | (forceDiffuseMats ? 0x20000u : 0u)
+             | (spmisCellJitter ? 0x40000u : 0u)
              | (rcFootprint ? 0x100000u : 0u)
              | (dualMotionVectors ? 0x200000u : 0u)
              | (rgbShadeWeights ? 0x400000u : 0u)
@@ -443,7 +461,9 @@ struct SunSettings {
 struct CloudSettings {
     //master toggle: 0 = clouds OFF (early-terrain, cheap), 1 = clouds ON.
     //ENABLE_CLOUDS at compile time still wins over this (kill switch).
-    float enabled            = 1.0f;
+    //Deliberately OFF at startup (the one field whose default diverges from
+    //the shader fallback) — enable via the Clouds panel checkbox.
+    float enabled            = 0.0f;
     //coverage controls how much of the sky is filled with cumulus. 0
     //gives clear skies, ~0.5 is "scattered", 1 is overcast.
     float coverage           = 0.60f;

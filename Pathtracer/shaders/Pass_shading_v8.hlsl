@@ -151,15 +151,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 output_primary  = gScratchPing[uint3(DTid.xy, 1)].rgb;
     float3 output_indirect = gScratchPing[uint3(DTid.xy, 2)].rgb;
-    float3 sunDirect       = gScratchPing[uint3(DTid.xy, 3)].rgb;
 
-    //(x1 sharp-reflection contribution removed — dead feature, slot 8 retired.)
+    //(x1 sharp-reflection contribution removed — dead feature, slot 8 retired.
+    // x1 direct sun/env removed too — §6.1 made them reservoir candidates, so
+    // scratch slot 3 is retired and no longer read here.)
 
     //TEMP DEBUG (ATM_DEBUG_RING in Constants_v8): raw path-traced components,
     //captured before the cloud composite so mode 2 can false-colour them.
     const float3 dbgRawPrimary  = output_primary;
     const float3 dbgRawIndirect = output_indirect;
-    const float3 dbgRawSun      = sunDirect;
 
     //====================================
     //CLOUD + ATMOSPHERE COMPOSITE
@@ -177,12 +177,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //Per-slot composite uniform across sky and mesh — slot 1 AND slot 2 both
     //pick up cloudL on top of their attenuated radiance. The doubling is
     //intentional: raygen writes slot1 = slot2 = sun-disc/emission for sky
-    //and emitter pixels, so the postprocess sum (slot1+slot2+slot3+refl)
-    //naturally counts those contributions twice, which means cloudL must
-    //also land twice for a cloud-occluded mesh to read at the SAME apparent
-    //brightness as the same cloud seen as a sky pixel. Injecting cloudL
-    //only once gave mesh-through-cloud half the cloud brightness, reading
-    //as "dimmed mesh" instead of "covered by a bright cloud".
+    //and emitter pixels, so the accumulation below naturally counts those
+    //contributions twice, which means cloudL must also land twice for a
+    //cloud-occluded mesh to read at the SAME apparent brightness as the same
+    //cloud seen as a sky pixel. Injecting cloudL only once gave
+    //mesh-through-cloud half the cloud brightness, reading as "dimmed mesh"
+    //instead of "covered by a bright cloud".
     //
     //Identity case (no cloud, no atmosphere): cloudL = 0 and cloudTr =
     //(1,1,1) so the composite is a no-op.
@@ -192,10 +192,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         output_primary  = output_primary  * cloudTr + cloudL;
         output_indirect = output_indirect * cloudTr + cloudL;
-        sunDirect      *= cloudTr;
     }
 
-    float3 accumulation = output_primary + output_indirect + sunDirect;
+    float3 accumulation = output_primary + output_indirect;
 
     //Composited radiance -> the postprocess "noisy" debug slice (slot 1), written
     //pre-debug-override so it stays the true radiance. Debug-only view (gated).
@@ -211,7 +210,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     {
         float dr = 1.0f - exp(-max(Luma(dbgRawIndirect), 0.0f) * 3.0f);
         float dg = 0.0f; // sharp-reflection term removed
-        float db = 1.0f - exp(-max(Luma(dbgRawPrimary) + Luma(dbgRawSun), 0.0f) * 3.0f);
+        float db = 1.0f - exp(-max(Luma(dbgRawPrimary), 0.0f) * 3.0f);
         accumulation = float3(dr, dg, db);
     }
     #endif

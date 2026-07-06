@@ -1,3 +1,8 @@
+//This pass only READS g_pathStateBuffer (the parked SPM_w1 candidate below —
+//barrier-fenced from Pass_temp_gi) and never touches g_spmisBuffer; the park/
+//append branch is compiled out at TEMPORAL_CAN_REPLAY=1. Dropping
+//globallycoherent keeps those loads L1-cached (see Includes_v8.hlsli).
+#define SPMIS_GRID_NONCOHERENT
 #include "Includes_v8.hlsli"
 #include "Raygen_Common_v8.hlsli"   // HitContext (replayed bounce-loop ctx)
 #include "Hybrid_Replay_v8.hlsli"
