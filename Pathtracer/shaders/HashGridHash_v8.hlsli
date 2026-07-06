@@ -68,25 +68,33 @@ inline uint SP_SRCH(uint px) { return (SP_ARRAYS * SP_STR()) * 4u + 32u + px * 3
 //LAYOUT: SoA PLANES over SP_STR() pixels (was a px*88 AoS record). Select's stores and
 //shift/merge's reloads are all own-pixel, so plane-major makes every access warp-
 //coalesced (adjacent threads hit adjacent dwords) instead of scattering header+slots
-//across ~3 sectors per pixel at an 88B stride. Same total bytes (88 * SP_STR).
+//across ~3 sectors per pixel. Total bytes 120 * SP_STR (kPathStateBytesPerPx).
 //  w0 plane   4B/px = (status<<28) | reuseCell[27:0]  select -> shift(reuseCell)/merge(status)
-//  w1 plane   4B/px = partnerPx (select) -> mis_c | passVis (shift) -> merge
-//  per draw d: zPx plane 4B/px   select; shift clears to SP_UNDEF on gate-reject; merge reads
-//              prob plane 4B/px  selProb (select) -> w_draw (shift) -> merge
-//              c   plane 12B/px  (shift) -> merge   (shadowed reconnection contribution)
+//  w1 plane   4B/px = partnerPx (select) -> mis_c | passVis | partnerPx|bit31 (shift,
+//              deferred canonical: replay overwrites with mis_c; mis_c >= 0 keeps
+//              bit31 clear, so the two encodings can't collide) -> merge
+//  per draw d: zPx plane 4B/px   select; shift: SP_UNDEF on gate-reject, bit31 set =
+//                                replay-pending (spmis_replay resolves + clears)
+//              prob plane 4B/px  selProb (select) -> w_draw (shift/replay) -> merge
+//              J8  plane  8B/px  cachedNew | Jn (shift/replay) -> merge accept re-anchor
+//              c   plane 12B/px  (shift/replay) -> merge  (re-anchored shifted F, shadowed)
 //status: 0 = emitter/skip, 1 = passthrough, 2 = normal.
-//To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to >= 8 + N*20.
+//To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to >= 8 + N*28.
+//NOTE: the temporal pass also parks its replay candidates in the w1 plane (before
+//select runs and overwrites it) — see Temporal_Merge_v8.hlsli.
 #define SPMIS_SPLIT_MAXDRAWS 4u
+#define SPM_Z_PENDING_BIT 0x80000000u
 static const uint SPM_STATUS_SKIP = 0u;
 static const uint SPM_STATUS_PASS = 1u;
 static const uint SPM_STATUS_NORM = 2u;
 inline uint SPM_w0(uint px)            { return px * 4u; }
 inline uint SPM_w1(uint px)            { return SP_STR() * 4u + px * 4u; }
 //draw-d plane group starts after the two header planes (8B/px worth = 8*SP_STR bytes)
-inline uint SPM_dBase(uint d)          { return SP_STR() * (8u + d * 20u); }
+inline uint SPM_dBase(uint d)          { return SP_STR() * (8u + d * 28u); }
 inline uint SPM_slotZ(uint px, uint d) { return SPM_dBase(d) + px * 4u; }
 inline uint SPM_slotP(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 4u + px * 4u; }
-inline uint SPM_slotC(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 8u + px * 12u; }
+inline uint SPM_slotJ(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 8u + px * 8u; }
+inline uint SPM_slotC(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 16u + px * 12u; }
 inline uint SPM_packHdr(uint reuseCell, uint status) { return (reuseCell & 0x0FFFFFFFu) | (status << 28u); }
 inline uint SPM_hdrStatus(uint w0)    { return w0 >> 28u; }
 inline uint SPM_hdrCell(uint w0)      { return w0 & 0x0FFFFFFFu; }
@@ -152,6 +160,48 @@ inline uint SP_screen_hash(int px, int py, uint tileSize, float3 pos, float3 geo
     const uint hn = SP_quantize_normal(SP_jitter_normal(geomN, pos, 0.2f));
     outChecksum = SP_h2_xxhash32(gx + SP_h2_xxhash32(gy + SP_h2_xxhash32(hn)));
     return SP_h1_pcg(gx + SP_h1_pcg(gy + SP_h1_pcg(hn)));
+}
+
+//------------------------------------------------------------------
+//SPMIS PSS draw algebra — shared by Pass_spmis_shift (k==2 inline) and
+//Pass_spmis_replay (k>2) so both routes produce bit-identical weights.
+//
+//With |J| = cachedNew/cachedJac_i, the pairwise-MIS ratio is computed via
+//  A = lum(F_i) * cachedJac_i      (= p_hat_from_i * cachedNew)
+//  B = lum(c*vis) * Jn             (= p_hat_shifted * cachedNew)
+//so the cachedNew factor cancels out of m_i entirely (numerically robust when
+//the new-side bundle is tiny). The reservoir-combine weight then uses the
+//shifted density against the SOURCE bundle: fwdT = lum(c*vis)*Jn/cachedJac_i.
+//------------------------------------------------------------------
+inline float SpmisDrawWeight(
+    float  phF,          //lum(pr.F): neighbour target in its own domain
+    float  cachedJac_i,  //neighbour's stored jacobian bundle
+    float  phShift,      //lum(c*vis): shifted numerator luminance at the centre
+    float  Jn,
+    float  selProb, uint Ntn,
+    float  neighbors_conf_sum, float centerConf, float c_i_scaled)
+{
+    if (!(cachedJac_i > 0.0f) || !(selProb > 0.0f)) return 0.0f;
+    const float A     = phF * cachedJac_i;
+    const float B     = phShift * Jn;
+    const float denom = A * neighbors_conf_sum + B * centerConf;
+    const float mi    = (denom > EPSILON) ? (A * c_i_scaled / denom) : 0.0f;
+    const float fwdT  = phShift * Jn / cachedJac_i;
+    const float spmis = 1.0f / ((float)Ntn * selProb);
+    return spmis * mi * fwdT;
+}
+
+//canonical pairwise MIS weight (Nc=1 uniform partner pick over the cell).
+//revT = the CENTRE sample's shifted density at the partner pixel
+//     = lum(c_rev*vis) * Jn_rev / cachedJac_centre (0 when the shift failed).
+inline float SpmisCanonicalMis(
+    float revT, float p_c,
+    float centerConf, float neighbors_conf_sum, float partnerConf, float pixCount)
+{
+    const float denom_mc = revT * neighbors_conf_sum + p_c * centerConf;
+    return (denom_mc > EPSILON)
+         ? pixCount * (partnerConf / neighbors_conf_sum) * (p_c * centerConf) / denom_mc
+         : 0.0f;
 }
 
 //------------------------------------------------------------------

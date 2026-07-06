@@ -68,11 +68,13 @@ void main(uint3 tid : SV_DispatchThreadID)
         return;
     }
 
-    //Low-roughness glass: the near-specular transmit/refract lobe is strongly view-dependent,
-    //so spatial resampling across neighbouring pixels spikes p_hat -> fireflies. Skip SPMIS for
-    //it (-> passthrough: shadowed canonical, no spatial reuse). Temporal reuse, which runs
-    //earlier on the same view direction, is unaffected. See SPMIS_GLASS_ROUGHNESS_MIN.
-    if (cpr < SPMIS_GLASS_ROUGHNESS_MIN &&
+    //Low-roughness glass, LEGACY ONLY: the near-specular transmit/refract lobe is strongly
+    //view-dependent, so with the pin frozen at x2 spatial resampling across neighbouring
+    //pixels spikes p_hat -> fireflies. Skip SPMIS for it (-> passthrough: shadowed canonical).
+    //Under the HYBRID shift the pin sits BEYOND the specular chain (random replay walks
+    //through it), so glass pixels take full spatial reuse like everything else.
+    if (!HYBRID_SHIFT_ON &&
+        cpr < SPMIS_GLASS_ROUGHNESS_MIN &&
         LoadKd_w(hdrMatID) < 1.0f - EPSILON)
     {
         g_pathStateBuffer.Store(SPM_w0(pixelIdx), SPM_packHdr(0u, SPM_STATUS_PASS));

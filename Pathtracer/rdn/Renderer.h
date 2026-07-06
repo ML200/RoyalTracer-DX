@@ -31,10 +31,10 @@
 
 //CPU-side sizing stubs matching shader SoA sizes
 // Sizes mirror the HLSL SoA strides exactly. Reservoir comes from
-// PLANE_WSUM(68) + 4 in Reservoir_v8.hlsli (48B RECON record + 16B FW plane
-// + 4B solo V2 plane + 4B wsum plane). SampleData is BYTES_SD in
-// Sample_Data_v8.hlsli.
-struct Reservoir_GI  { uint8_t pad[72]; };
+// PLANE_HYB(72) + 12 in Reservoir_v8.hlsli (48B RECON record + 16B FW plane
+// + 4B solo V2 plane + 4B wsum plane + 12B hybrid-shift HYB plane:
+// seed | cachedJac | gBase). SampleData is BYTES_SD in Sample_Data_v8.hlsli.
+struct Reservoir_GI  { uint8_t pad[84]; };
 struct SampleData    { uint8_t pad[36]; };
 
 // Pixel count for the per-pixel SoA buffers (reservoirs, sample data, path
@@ -49,11 +49,11 @@ inline UINT TileAlignedPx(UINT w, UINT h) {
 
 // Backed bytes per pixel of the path-state buffer. The HLSL plane layout
 // (Path_State_v8.hlsli) spans 176 B/px, but only the raygen-live prefix
-// (PACK1..CLAS2, 72 B/px) plus the spatial-select scratch that aliases the
-// buffer from offset 0 (4 + SPAT_COUNT_MAX*24 = 76 B/px) need backing - the
-// wavefront-only planes past 88 B/px are dead code. Bump this if
-// SPAT_COUNT_MAX grows past 3 or a wavefront plane comes back to life.
-constexpr UINT kPathStateBytesPerPx = 88;
+// (PACK1..CLAS2, 72 B/px) plus the SPMIS split-pass scratch that aliases the
+// buffer from offset 0 (8B header + SPMIS_SPLIT_MAXDRAWS*28 = 120 B/px; the
+// hybrid shift added the 8B J8 sub-slot {cachedNew, Jn} per draw — see
+// HashGridHash_v8.hlsli) need backing. Bump if SPMIS_SPLIT_MAXDRAWS grows.
+constexpr UINT kPathStateBytesPerPx = 120;
 
 class Renderer {
 public:
@@ -251,6 +251,10 @@ private:
     //SBT rebuild), and the DISPATCH_RAYS command signature.
     ComPtr<ID3D12Resource>         m_raygenQueueBuffer;
     ComPtr<ID3D12Resource>         m_raysIndirectArgs;
+    //hybrid-shift replay dispatches ([0] temporal, [1] spatial): each owns its
+    //args buffer so the COMMON->COPY_DEST->INDIRECT_ARGUMENT->decay cycle never
+    //collides with the raygen args buffer parked in INDIRECT_ARGUMENT.
+    ComPtr<ID3D12Resource>         m_raysIndirectArgsReplay[2];
     ComPtr<ID3D12Resource>         m_raysArgsTemplate;
     ComPtr<ID3D12CommandSignature> m_raysCommandSignature;
     //SBT slot of the lite raygen variant (cloud surface shadows compiled out),

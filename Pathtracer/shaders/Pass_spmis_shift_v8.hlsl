@@ -2,22 +2,27 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//SPMIS SPATIAL REUSE - SHIFT  (pass 2/3: reconnections + visibility rays) — RAYGEN
+//SPMIS SPATIAL REUSE - SHIFT  (pass 2/4: k==2 reconnections + visibility rays) — RAYGEN
 //====================================
 //Ray-heavy stage of the split reuse. A RAYGENERATION shader, not compute: measured ~1.4ms
 //vs ~2.3ms for the equivalent compute dispatch - DispatchRays scheduling keeps far more
 //rays in flight here. (An SER thread reorder was tried and removed: the state-movement cost
 //outweighed any coherence gain for these short <=5-ray threads.) Visibility is the inline
 //RayQuery IsVisible. Consumes select's candidate indices -> canonical mis_c + per-draw
-//{w_draw, c}; the WRS combine + finalize stay in the compute merge pass.
+//{w_draw, J8, F_shifted}; the WRS combine + finalize stay in the compute merge pass.
+//
+//HYBRID SHIFT: this pass keeps ZERO replay code (no TraceRay). Draws whose source pin
+//sits at k>2, and the canonical reverse-shift when the CENTRE pin sits at k>2, are
+//deferred: the draw slot gets SPM_Z_PENDING_BIT, the canonical parks partnerPx in
+//SPM_w1 with bit31, and the pixel is appended ONCE to the spatial replay queue
+//(g_raygenQueue counter at byte 8). Pass_spmis_replay resolves them before merge.
 //
 //Note: sv_me (the centre vertex) is built up-front with rdi/myPos so its G-buffer loads
-//issue early and their latency overlaps the canonical work. Sinking it to just before the
-//draws to shave ~a SurfaceVertex of registers was tried and reverted - it measurably hurt
-//latency hiding for no real occupancy gain. Math mirrors the monolithic Pass_spmis_reuse.
+//issue early and their latency overlaps the canonical work. Math mirrors the temporal
+//merge body's PSS algebra (weight = lum(c*vis)*Jn/cachedJac_src*W; band on Jn/gBase).
 //Layout: see HashGridHash_v8.hlsli. Export name MUST equal the filename base.
 
-#define SAMPLE_PT_ROUGHNESS_MIN rs_reconnectRoughnessMin   // editor-settable reconnection-vertex (x2) roughness reject (default 0.15)
+#define SAMPLE_PT_ROUGHNESS_MIN rs_reconnectRoughnessMin   // legacy reconnection-vertex (x2) roughness reject (hybrid OFF)
 
 [shader("raygeneration")]
 void Pass_spmis_shift_v8()
@@ -38,12 +43,17 @@ void Pass_spmis_shift_v8()
     const SurfaceVertex sv_me = BuildVertex(g_sample_current, pixelIdx, myPos, camPos);
 
     //==== passthrough: one deferred visibility ray, cached for merge ====
+    //direct k==2 ONLY: a replay canonical's reconnection segment starts at its
+    //(never re-derived here) replayed prefix vertex — x1 -> x_k is a
+    //non-segment through geometry. Its F was generated fully shadowed, so
+    //passVis stays 1.
     if (status == SPM_STATUS_PASS)
     {
         const float  W    = (rdi.W > 0.0f) ? rdi.W : 0.0f;
         const float3 outC = rdi.F * W;
         float passVis = 1.0f;
-        if (GetPHat(outC) > 0.0f && !IsVolumeVertex(rdi.matID))   //volume vertex is in-medium
+        if (GetPHat(outC) > 0.0f && !IsVolumeVertex(rdi.matID) &&
+            RcK(rdi.rcInfo) == 2u && !RcEnvReplay(rdi.rcInfo))
             //deferred passthrough stores a single float -> achromatic transmittance here (the
             //per-channel thin-glass tint is carried by the inline RIS-target visibility).
             passVis = Luma(ReconnectVis(sv_me.x, sv_me.n_s, rdi.matID, rdi.x2, rdi.n2_s));
@@ -55,9 +65,6 @@ void Pass_spmis_shift_v8()
     const uint  reuseCell  = SPM_hdrCell(w0);
     const uint  Ntn        = min(max(spmis_reuseN, 1u), SPMIS_SPLIT_MAXDRAWS);
     const float centerConf = (float)rdi.M;                 // UNCAPPED
-    const float my_Jc      = (rdi.matID == MATID_ENV_MISS) ? 1.0f
-                           : (IsVolumeVertex(rdi.matID) ? ComputeJcVol(myPos, rdi.x2)
-                                                        : ComputeJc(myPos, rdi.x2, rdi.n2_s));
     const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
     const float p_c        = GetPHat(rdi.F) * visReuse_c;
 
@@ -66,51 +73,63 @@ void Pass_spmis_shift_v8()
     const float scaling   = (SPMIS_CONF_ADJUST && pixCount > 0.0f) ? min(1.0f, (float)Ntn / pixCount) : 1.0f;
     const float neighbors_conf_sum = (float)agg.z * scaling;   // CONF
 
-    //==== CANONICAL MIS WEIGHT (non-defensive Eq.18, Nc=1 uniform pick over the cell) ====
+    bool queueCanonical = false;
+    bool queueDraws     = false;
+
+    //==== CANONICAL MIS WEIGHT (non-defensive, Nc=1 uniform pick over the cell) ====
     //Uses rdi (the centre sample) reconnected at the partner pixel.
     const uint partnerPx = g_pathStateBuffer.Load(SPM_w1(pixelIdx));
     float mis_c = 1.0f;
-    if (neighbors_conf_sum > EPSILON && pixCount > 0.0f && partnerPx != SP_UNDEF)
+    const bool canonReusable = !HYBRID_SHIFT_ON || RcReusable(rdi.rcInfo);
+    const bool canonEligible = neighbors_conf_sum > EPSILON && pixCount > 0.0f &&
+                               partnerPx != SP_UNDEF && p_c > EPSILON && canonReusable;
+    if (canonEligible && HYBRID_SHIFT_ON && RcReplayLen(rdi.rcInfo) > 0u)
     {
-        const float  partnerConf = (float)load_M(g_Reservoirs_current, partnerPx) * scaling;
-        const float3 pPos = load_x1(g_sample_current, partnerPx);
-        const SurfaceVertex sv_p = BuildVertex(g_sample_current, partnerPx, pPos, camPos);
-
-        float Jn_rev = 0.0f;
-        float3 cr = Reconnect(sv_p.x, sv_p.n_s, sv_p.o, sv_p.matID,
-                              sv_p.Kd, sv_p.Pr, sv_p.Pm, sv_p.etai, sv_p.etat,
-                              rdi.matID, rdi.x2, rdi.n2_s, rdi.L2, rdi.V2,
-                              rdi.Kd, rdi.Pr, rdi.Pm, rdi.eta, Jn_rev);
-        float ph = GetPHat(cr);
-        if (rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS &&
-            !IsVolumeVertex(rdi.matID) && rdi.Pr < SAMPLE_PT_ROUGHNESS_MIN)
-            ph = 0.0f;
-        //A rejected Jacobian zeroes tf regardless of visibility, so fold it in BEFORE the
-        //shadow ray and skip the IsVisible trace when jr_c==0 (mirrors the non-canonical
-        //loop's shift_jac<=0 early-out below). Identical result, one fewer ray on reject.
-        const float jr_c = JacobianRatioRej(Jn_rev, my_Jc, spmis_jacThreshold);
-        //shadowed resample: visibility of the centre's sample from the partner pixel.
-        //A volume vertex is in-medium (the entry surface self-occludes x1->S1) -> skip.
-        //thin glass attenuates (1-F)*Tf -> fold the RGB transmittance into the target.
-        if (ph > 0.0f && jr_c > 0.0f && !IsVolumeVertex(rdi.matID))
-        {
-            float3 visT;
-            if (rdi.matID == MATID_ENV_MISS)
-            { const float3 md = normalize(rdi.x2);
-              visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md); }
-            else
-              visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s);
-            ph = GetPHat(cr * visT);
-        }
-        const float tf_center_at_neighbor = ph * jr_c;
-        const float denom_mc = tf_center_at_neighbor * neighbors_conf_sum + p_c * centerConf;
-        mis_c = (denom_mc > EPSILON)
-              ? (pixCount) * (partnerConf / neighbors_conf_sum) * (p_c * centerConf) / denom_mc
-              : 0.0f;
+        //centre pin needs a replay at the partner -> defer (bit31 marks the
+        //w1 payload as a parked partner index; mis_c >= 0 can never set bit31).
+        g_pathStateBuffer.Store(SPM_w1(pixelIdx), partnerPx | 0x80000000u);
+        queueCanonical = true;
     }
-    g_pathStateBuffer.Store(SPM_w1(pixelIdx), asuint(mis_c));   // overwrite partnerPx
+    else
+    {
+        if (canonEligible)
+        {
+            const float  partnerConf = (float)load_M(g_Reservoirs_current, partnerPx) * scaling;
+            const float3 pPos = load_x1(g_sample_current, partnerPx);
 
-    //==== NON-CANONICAL: reconnect + shadow ray per selected draw ====
+            float revT = 0.0f;
+            {
+                const SurfaceVertex sv_p = BuildVertex(g_sample_current, partnerPx, pPos, camPos);
+                float Jn_rev = 0.0f, cachedNew_rev = 0.0f;
+                float3 cr = ReconnectPSS_sv(sv_p, rdi, Jn_rev, cachedNew_rev);
+                float ph = GetPHat(cr);
+                if (!HYBRID_SHIFT_ON &&
+                    rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS &&
+                    !IsVolumeVertex(rdi.matID) && rdi.Pr < SAMPLE_PT_ROUGHNESS_MIN)
+                    ph = 0.0f;
+                //A banded geometric ratio zeroes the shifted density regardless of
+                //visibility, so fold it in BEFORE the shadow ray and skip the trace
+                //when rejected. Identical result, one fewer ray on reject.
+                const bool geomOk = !RcGeomReject(Jn_rev, rdi.gBase, spmis_jacThreshold);
+                if (ph > 0.0f && geomOk && !IsVolumeVertex(rdi.matID))
+                {
+                    float3 visT;
+                    if (rdi.matID == MATID_ENV_MISS)
+                    { const float3 md = normalize(rdi.x2);
+                      visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, sv_p.x + md * RAY_TMAX_PLANET, -md); }
+                    else
+                      visT = VisibilityTransmittance(sv_p.x, sv_p.n_s, rdi.x2, rdi.n2_s);
+                    ph = GetPHat(cr * visT);
+                }
+                if (geomOk && rdi.cachedJac > 0.0f)
+                    revT = ph * Jn_rev / rdi.cachedJac;
+            }
+            mis_c = SpmisCanonicalMis(revT, p_c, centerConf, neighbors_conf_sum, partnerConf, pixCount);
+        }
+        g_pathStateBuffer.Store(SPM_w1(pixelIdx), asuint(mis_c));   // overwrite partnerPx
+    }
+
+    //==== NON-CANONICAL: reconnect + shadow ray per selected draw (k==2 only) ====
     [loop]
     for (uint d = 0u; d < Ntn; ++d)
     {
@@ -119,27 +138,46 @@ void Pass_spmis_shift_v8()
         const float selProb = asfloat(g_pathStateBuffer.Load(SPM_slotP(pixelIdx, d)));
 
         Reservoir pr = loadReservoir(g_Reservoirs_current, zPx);
-        //roughness gate + dead-reservoir gate -> mark the slot dead so merge skips it.
-        //Volume vertices are exempt (the phase function is always "rough").
-        if (pr.W <= 0.0f ||
-            (pr.matID != MATID_LIGHT_TRI && pr.matID != MATID_ENV_MISS &&
-             !IsVolumeVertex(pr.matID) && pr.Pr < SAMPLE_PT_ROUGHNESS_MIN))
+
+        //dead-reservoir gate + mode-specific reusability gates. NO roughness or
+        //distance gating under the hybrid shift — full reuse across all
+        //roughnesses; the shifted BSDF magnitude self-gates and the geometric
+        //band below bounds the singularities.
+        bool dead = (pr.W <= 0.0f);
+        if (!dead)
+        {
+            if (HYBRID_SHIFT_ON)
+            {
+                if (!RcReusable(pr.rcInfo))
+                    dead = true;
+                else if (RcReplayLen(pr.rcInfo) > 0u)
+                {
+                    //prefix/env replay needed: defer to the replay pass
+                    //(keeps selProb in slotP)
+                    g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), zPx | SPM_Z_PENDING_BIT);
+                    queueDraws = true;
+                    continue;
+                }
+            }
+            else if (RcReplayLen(pr.rcInfo) > 0u)
+            {
+                dead = true;   //stale replay candidate after a hybrid-off toggle
+            }
+            else if (pr.matID != MATID_LIGHT_TRI && pr.matID != MATID_ENV_MISS &&
+                     !IsVolumeVertex(pr.matID) && pr.Pr < SAMPLE_PT_ROUGHNESS_MIN)
+            {
+                dead = true;   //legacy roughness gate
+            }
+        }
+        if (dead)
         {
             g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), SP_UNDEF);
             continue;
         }
 
-        const float3 zPos = load_x1(g_sample_current, zPx);
-        float Jn = 0.0f;
-        float3 c = Reconnect(sv_me.x, sv_me.n_s, sv_me.o, sv_me.matID,
-                             sv_me.Kd, sv_me.Pr, sv_me.Pm, sv_me.etai, sv_me.etat,
-                             pr.matID, pr.x2, pr.n2_s, pr.L2, pr.V2,
-                             pr.Kd, pr.Pr, pr.Pm, pr.eta, Jn);
-        const float Jc_z      = (pr.matID == MATID_ENV_MISS) ? 1.0f
-                              : (IsVolumeVertex(pr.matID) ? ComputeJcVol(zPos, pr.x2)
-                                                          : ComputeJc(zPos, pr.x2, pr.n2_s));
-        const float shift_jac = JacobianRatioRej(Jn, Jc_z, spmis_jacThreshold);
-        if (shift_jac <= 0.0f)
+        float Jn = 0.0f, cachedNew = 0.0f;
+        float3 c = ReconnectPSS_sv(sv_me, pr, Jn, cachedNew);
+        if (RcGeomReject(Jn, pr.gBase, spmis_jacThreshold) || GetPHat(c) <= 0.0f || cachedNew <= 0.0f)
         {
             g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), SP_UNDEF);
             continue;
@@ -148,7 +186,7 @@ void Pass_spmis_shift_v8()
         //Shadowed resample: trace the reconnection shadow ray (inline RayQuery) so the
         //target + contribution carry visibility (occluded neighbours get target 0).
         float3 vis = 1.0.xxx;
-        if (GetPHat(c) > 0.0f && !IsVolumeVertex(pr.matID))   //volume vertex: in-medium, skip
+        if (!IsVolumeVertex(pr.matID))   //volume vertex: in-medium, skip
         {
             if (pr.matID == MATID_ENV_MISS)
             { const float3 md = normalize(pr.x2);
@@ -157,17 +195,27 @@ void Pass_spmis_shift_v8()
               vis = VisibilityTransmittance(sv_me.x, sv_me.n_s, pr.x2, pr.n2_s);
         }
         c *= vis;
-        const float tf_center   = GetPHat(c);                  // shadowed (visibility folded in)
-        const float tf_neighbor = GetPHat(pr.F) / shift_jac;   // p_hat_i / J
-        const float c_i_scaled  = (float)pr.M * scaling;       // UNCAPPED * SS4.3 scaling
 
-        //non-defensive Eq.16 non-canonical -> reservoir-combine weight
-        const float denom  = tf_neighbor * neighbors_conf_sum + tf_center * centerConf;
-        const float mi     = (denom > EPSILON) ? (tf_neighbor * c_i_scaled / denom) : 0.0f;
-        const float spmis  = (selProb > 0.0f) ? (1.0f / ((float)Ntn * selProb)) : 0.0f;
-        const float w_draw = spmis * mi * tf_center * pr.W * shift_jac;
+        const float c_i_scaled = (float)pr.M * scaling;       // UNCAPPED * SS4.3 scaling
+        const float w_draw = SpmisDrawWeight(GetPHat(pr.F), pr.cachedJac,
+                                             GetPHat(c), Jn, selProb, Ntn,
+                                             neighbors_conf_sum, centerConf, c_i_scaled) * pr.W;
+
+        //re-anchored shifted contribution (what the merge accepts as the new F)
+        const float3 Fshift = c * Jn / cachedNew;
 
         g_pathStateBuffer.Store (SPM_slotP(pixelIdx, d), asuint(w_draw));
-        g_pathStateBuffer.Store3(SPM_slotC(pixelIdx, d), asuint(c));
+        g_pathStateBuffer.Store2(SPM_slotJ(pixelIdx, d), uint2(asuint(cachedNew), asuint(Jn)));
+        g_pathStateBuffer.Store3(SPM_slotC(pixelIdx, d), asuint(Fshift));
+    }
+
+    //==== ONE queue entry per pixel when anything was deferred ====
+    if (queueCanonical || queueDraws)
+    {
+        uint slot;
+        g_raygenQueue.InterlockedAdd(8u, 1u, slot);
+        g_raygenQueue.Store(16u + slot * 4u,
+                            (launchIndex.x & 0xFFFFu) | (launchIndex.y << 16) |
+                            (queueCanonical ? 0x80000000u : 0u));
     }
 }

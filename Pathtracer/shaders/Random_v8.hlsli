@@ -58,3 +58,26 @@ inline float RandomFloatPCG(inout uint s)
 uint initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
     return GetSeed(idx, t, c).x;
 }
+
+//====================================
+//PER-BOUNCE RNG STREAMS (hybrid shift / PSS replay)
+//====================================
+//The serial LCG makes bounce j+1's draws depend on how many numbers bounce j
+//consumed (light-tree descent depth, cloud-shadow taps, SSS walk length all
+//vary), so replaying "the same u" at an offset pixel desyncs the moment any
+//draw count differs. Instead each (path, bounce, purpose) gets its own stream
+//seeded by full-avalanche mixing — replay re-derives bounce j's BSDF stream
+//from the stored pathSeed alone, independent of every other stream's
+//consumption. Only the BSDF and SSS-enter streams are ever replayed; NEE/RR/
+//RIS streams exist so their variable draw counts can't contaminate the
+//replayed ones. NOTE: changes the noise realization vs the serial-seed build
+//(same distributions).
+#define RC_STREAM_BSDF 0u
+#define RC_STREAM_NEE  1u
+#define RC_STREAM_SSS  2u
+#define RC_STREAM_RR   3u
+
+inline uint RcBounceSeed(uint pathSeed, uint depth, uint stream)
+{
+    return Hash32(pathSeed ^ (depth * 0x9E3779B9u) ^ (stream * 0x85EBCA6Bu));
+}

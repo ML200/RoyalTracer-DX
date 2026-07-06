@@ -43,15 +43,24 @@ cbuffer Push : register(b1)
     //feed back into a diverging firefly. <= 0 disables. Read by Pass_temp_gi /
     //Pass_spmis_{merge,reuse}.
     float ucw_clampMax;
-    //slot 17: reconnection-vertex (x2) roughness reject threshold. A temporal or
-    //spatial neighbour whose GI reconnection vertex roughness is below this is
-    //dropped from reuse (near-delta BSDF at x2 -> reconnection shift invalid).
-    //Read by Pass_temp_gi + Pass_spmis_{reuse,shift}. Repurposed from retired
-    //tex-spatial slot 17; slots 18-21 stay padding so SPMIS (32-37) and path-trace
-    //(38-41) constants keep their register slots.
+    //slot 17: reconnection-vertex (x2) roughness reject threshold. Under the
+    //HYBRID shift this is the PIN criteria roughness (both sides of the pair);
+    //with hybrid OFF it keeps its legacy role as the reuse-time x2 reject.
+    //Read by Pass_temp_gi + Pass_spmis_{reuse,shift} + raygen/replay.
     float rs_reconnectRoughnessMin;
-    uint  _ts_retired5;
-    uint  _ts_retired6; uint _ts_retired7; uint _ts_retired8;
+    //slot 18: hybrid pin criteria — minimum reconnection-segment length as a
+    //FRACTION of the primary camera distance (short segments make the area-
+    //measure geometric factor singular; postpone the pin via replay instead).
+    float rs_reconnectDistMin;
+    //slot 19: hybrid pin cap — the largest reconnection-vertex index k raygen
+    //may pin (replay length = k-2, bounded by RC_REPLAY_MAX_BOUNCES). 2 turns
+    //every pin into the legacy first-vertex reconnection (zero replay).
+    uint  rs_rcMaxK;
+    //slot 20: dual-footprint threshold constant c (ReSTIR PT Enhanced Eq. 5,
+    //implemented literally: threshold = (c/100) * ||x0-x1||^2 / (cos/(4pi))).
+    //Paper's cross-scene optimum c = 0.02; ablation range 0.005-0.64.
+    float rs_rcFpKappa;
+    uint  _ts_retired8;
     //neighbor rejection thresholds (SPMIS cell search + reconnection rejection)
     float rs_rejNormalDot;
     float rs_rejDistance;
@@ -179,6 +188,44 @@ cbuffer Push : register(b1)
 //the reuse rays already gone, this removes the last visibility too.
 #define RS_FLAG_NO_FINAL_VIS  0x1000u
 #define FINAL_VIS_OFF  ((rs_flags & RS_FLAG_NO_FINAL_VIS) != 0u)
+
+//RS_FLAG_HYBRID_SHIFT — ReSTIR PT hybrid shift (random replay + reconnection in
+//primary sample space). ON: raygen pins the reconnection vertex at the FIRST pair
+//of consecutive vertices passing the criteria (RcCritPair) — glossy prefixes are
+//random-replayed at reuse (Pass_temp_replay / Pass_spmis_replay consume the k>2
+//queues) instead of being rejected by the legacy roughness gates. OFF: raygen pins
+//at x2 unconditionally (legacy reconnection shift, zero replay, empty queues) and
+//the reuse passes keep their legacy glossy-x2 rejection gates. The PSS reservoir
+//encoding (F = f/p_noRR) is NOT gated — it is the storage format either way.
+#define RS_FLAG_HYBRID_SHIFT  0x4000u
+#define HYBRID_SHIFT_ON  ((rs_flags & RS_FLAG_HYBRID_SHIFT) != 0u)
+
+//RS_FLAG_RC_FOOTPRINT — ReSTIR PT Enhanced §4 pin criteria: the dual footprint
+//threshold (Eq. 5, rs_rcFpKappa) + the supplemental-§4 pdf-proxy glossiness
+//guard (1/p(w)^2 >= sigma_min, same rs_reconnectRoughnessMin slider) replace
+//the material-roughness + distance pair test when choosing the reconnection
+//vertex. GENERATION-side only — reuse carries the pin in rcInfo, so no offset
+//re-derivation exists. OFF = criteria v1 (material roughness both sides +
+//reconnectDistMin). Only meaningful under HYBRID_SHIFT_ON.
+#define RS_FLAG_RC_FOOTPRINT  0x100000u
+#define RC_FOOTPRINT_ON  ((rs_flags & RS_FLAG_RC_FOOTPRINT) != 0u)
+
+//RS_FLAG_DUAL_MV — ReSTIR PT Enhanced §6.4 dual motion vectors (Zeng 2021):
+//when the reprojected temporal candidate fails the geometry reject (a moving
+//occluder disoccluded this pixel), retry at launchIndex - (occluder screen
+//motion), estimated from the prev G-buffer surface at the reprojected pixel
+//projected with the CURRENT camera. Dual candidates use the geometric REJECT
+//band instead of the force-to-1 clamp (far-field Jgeo + clamp = energy bias
+//at motion disocclusions).
+#define RS_FLAG_DUAL_MV  0x200000u
+#define DUAL_MV_ON  ((rs_flags & RS_FLAG_DUAL_MV) != 0u)
+
+//RS_FLAG_RGB_SHADE — ReSTIR PT Enhanced §6.3 RGB shading weights (color-noise
+//reduction): the spatial resolve accumulates the VECTORIZED resampling weights
+//(sum of w_i * c_i/lum(c_i)) and scales by (W*p_hat/wsum), blending contributor
+//chroma at identical luminance instead of outputting the lone winner's color.
+#define RS_FLAG_RGB_SHADE  0x400000u
+#define RGB_SHADE_ON  ((rs_flags & RS_FLAG_RGB_SHADE) != 0u)
 
 //====================================
 //IMAGE SIZE MACROS

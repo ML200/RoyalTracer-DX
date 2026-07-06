@@ -253,6 +253,33 @@ struct ReSTIRSettings {
     //Flag 0x2000.
     bool  spmisConfidenceAdjust = true;
 
+    //ReSTIR PT hybrid shift (random replay + reconnection in primary sample
+    //space; flag 0x4000). ON: raygen pins the reconnection vertex at the first
+    //vertex pair passing the criteria and glossy prefixes are random-replayed
+    //at reuse (Pass_temp_replay / Pass_spmis_replay compacted indirect
+    //dispatches). OFF: legacy pin at x2, zero replay, legacy glossy reuse gates.
+    bool  hybridShift = true;
+    //Hybrid pin criteria: minimum reconnection-segment length as a FRACTION of
+    //the primary camera distance (cbuffer slot 18). Short segments make the
+    //area-measure geometric factor singular; the pin postpones via replay.
+    float reconnectDistMin = 0.01f;
+    //Hybrid pin cap: largest reconnection-vertex index k raygen may pin
+    //(cbuffer slot 19; replay length = k-2, capped at RC_REPLAY_MAX_BOUNCES=8).
+    //2 = first-vertex pins only (zero replay even with hybrid ON).
+    int   rcMaxK = 8;
+    //ReSTIR PT Enhanced §4 pin criteria (flag 0x100000): dual footprint
+    //threshold + pdf-proxy glossiness guard replace the roughness+distance
+    //pair test. rcFpKappa is the paper's c (cbuffer slot 20; Eq. 5 literal,
+    //cross-scene optimum 0.02, ablation range 0.005-0.64).
+    bool  rcFootprint = true;
+    float rcFpKappa   = 0.02f;
+    //ReSTIR PT Enhanced §6.4 dual motion vectors (flag 0x200000): on a
+    //temporal geometry reject, retry at launchIndex - occluder screen motion.
+    bool  dualMotionVectors = true;
+    //ReSTIR PT Enhanced §6.3 RGB shading weights (flag 0x400000): the spatial
+    //resolve blends contributor chroma via vectorized resampling weights.
+    bool  rgbShadeWeights = true;
+
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
@@ -262,7 +289,11 @@ struct ReSTIRSettings {
              | (disableX1Direct ? 0x80u : 0u)
              | (noSpecReproj ? 0x200u : 0u)
              | (disableReuseVis ? 0x800u : 0u)
-             | (disableFinalVis ? 0x1000u : 0u);
+             | (disableFinalVis ? 0x1000u : 0u)
+             | (hybridShift ? 0x4000u : 0u)
+             | (rcFootprint ? 0x100000u : 0u)
+             | (dualMotionVectors ? 0x200000u : 0u)
+             | (rgbShadeWeights ? 0x400000u : 0u);
     }
 };
 

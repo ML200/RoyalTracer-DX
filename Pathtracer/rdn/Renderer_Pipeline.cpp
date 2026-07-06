@@ -771,12 +771,25 @@ void Renderer::CreatePathStateBuffer() {
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgs)));
         m_raysIndirectArgs->SetName(L"RaysIndirectArgs");
     }
+    //hybrid-shift replay dispatch args ([0] temporal, [1] spatial) — separate
+    //buffers so each rides its own COMMON->COPY_DEST->INDIRECT_ARGUMENT->decay
+    //cycle per frame (the raygen args buffer is parked in INDIRECT_ARGUMENT by
+    //the time the replay passes patch theirs).
+    for (int r = 0; r < 2; ++r) {
+        if (m_raysIndirectArgsReplay[r]) continue;
+        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
+        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgsReplay[r])));
+        m_raysIndirectArgsReplay[r]->SetName(r == 0 ? L"RaysIndirectArgsTempReplay"
+                                                    : L"RaysIndirectArgsSpmisReplay");
+    }
     if (!m_raysArgsTemplate) {
         auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        //TWO template slots: [0] = full raygen variant, [1] = lite variant (cloud
-        //surface shadows compiled out). The record path copies slot 0 or 1 based
-        //on the editor toggle.
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(2 * sizeof(D3D12_DISPATCH_RAYS_DESC));
+        //FOUR template slots: [0] = full raygen variant, [1] = lite variant
+        //(cloud surface shadows compiled out), [2] = Pass_temp_replay_v8,
+        //[3] = Pass_spmis_replay_v8. The record paths copy the matching slot.
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(4 * sizeof(D3D12_DISPATCH_RAYS_DESC));
         ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_raysArgsTemplate)));
         m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
@@ -1556,11 +1569,30 @@ void Renderer::WriteRaysIndirectTemplate() {
         dLite.RayGenerationShaderRecord.StartAddress =
             sbtStart + m_raygenLiteSbtSlot * m_sbtHelper.GetRayGenEntrySize();
 
+    //slots 2/3: the hybrid-shift replay passes (compacted 1D indirect over the
+    //temporal / spatial replay queues). Same tables, raygen record swapped.
+    D3D12_DISPATCH_RAYS_DESC dTempReplay = d;
+    {
+        const uint32_t slot = m_passes.PassIndexByFile(L"Pass_temp_replay_v8.hlsl");
+        if (slot != UINT32_MAX)
+            dTempReplay.RayGenerationShaderRecord.StartAddress =
+                sbtStart + slot * m_sbtHelper.GetRayGenEntrySize();
+    }
+    D3D12_DISPATCH_RAYS_DESC dSpmisReplay = d;
+    {
+        const uint32_t slot = m_passes.PassIndexByFile(L"Pass_spmis_replay_v8.hlsl");
+        if (slot != UINT32_MAX)
+            dSpmisReplay.RayGenerationShaderRecord.StartAddress =
+                sbtStart + slot * m_sbtHelper.GetRayGenEntrySize();
+    }
+
     void* p = nullptr;
     CD3DX12_RANGE noRead(0, 0);
     ThrowIfFailed(m_raysArgsTemplate->Map(0, &noRead, &p));
     memcpy(p, &d, sizeof(d));
-    memcpy(static_cast<uint8_t*>(p) + sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite, sizeof(dLite));
+    memcpy(static_cast<uint8_t*>(p) + 1 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite,        sizeof(dLite));
+    memcpy(static_cast<uint8_t*>(p) + 2 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dTempReplay,  sizeof(dTempReplay));
+    memcpy(static_cast<uint8_t*>(p) + 3 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dSpmisReplay, sizeof(dSpmisReplay));
     m_raysArgsTemplate->Unmap(0, nullptr);
 }
 

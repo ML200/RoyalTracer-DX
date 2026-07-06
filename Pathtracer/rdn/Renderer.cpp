@@ -37,11 +37,13 @@ Renderer::Renderer(UINT width, UINT height)
         //L"cuda:nrc_inference",                          L"barrier",
         //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
+        L"Pass_temp_replay_v8.hlsl|rg",                 L"barrier",
         L"Pass_spmis_count_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_spmis_offsets_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_spmis_sort_v8.hlsl|cs:16x16",              L"barrier",
         L"Pass_spmis_select_v8.hlsl|cs:16x16",          L"barrier",
         L"Pass_spmis_shift_v8.hlsl|rg",                 L"barrier",
+        L"Pass_spmis_replay_v8.hlsl|rg",                L"barrier",
         L"Pass_spmis_merge_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
         //L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
@@ -1738,11 +1740,15 @@ void Renderer::PopulateCommandList() {
           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       cmdList->ResourceBarrier(1, &b2); }
 
-    // Clear the active-pixel queue count (camera appends survivors this frame)
+    // Clear the queue HEADER (16B): [0] camera survivor count, [4] temporal
+    // replay count, [8] spatial replay count, [12] spare. The entry region from
+    // byte 16 is reused sequentially by the three producers within the frame
+    // (camera -> raygen consumed it before temp_gi enqueues; temporal entries
+    // are consumed by Pass_temp_replay before spmis_shift enqueues).
     { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
       cmdList->ResourceBarrier(1, &b);
-      cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, sizeof(uint32_t));
+      cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, 4 * sizeof(uint32_t));
       auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       cmdList->ResourceBarrier(1, &b2); }
@@ -1787,11 +1793,25 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
-    // Reconnection-vertex (x2) roughness reject threshold (slot 17; read by
-    // Pass_temp_gi + Pass_spmis_{reuse,shift}). Clamp to [0,1].
+    // Reconnection-vertex (x2) roughness reject threshold (slot 17; the hybrid
+    // pin-criteria roughness, and the legacy reuse gate when hybrid is off).
+    // Clamp to [0,1].
     {
         const float rrm = std::clamp(rs.reconnectRoughnessMin, 0.0f, 1.0f);
         memcpy(&rsConsts[17], &rrm, 4);
+    }
+
+    // Hybrid-shift pin criteria (slots 18-20): minimum reconnection-segment
+    // length as a FRACTION of the primary camera distance (legacy criteria),
+    // the pin-depth cap (replay length = rcMaxK-2, bounded by
+    // RC_REPLAY_MAX_BOUNCES=8 in Hybrid_Replay_v8.hlsli, hence the 10 clamp),
+    // and the Enhanced §4 dual-footprint constant c (Eq. 5 literal).
+    {
+        const float rdm = std::clamp(rs.reconnectDistMin, 0.0f, 1.0f);
+        memcpy(&rsConsts[18], &rdm, 4);
+        rsConsts[19] = (UINT)std::clamp(rs.rcMaxK, 2, 10);
+        const float fpk = std::clamp(rs.rcFpKappa, 0.0001f, 100.0f);
+        memcpy(&rsConsts[20], &fpk, 4);
     }
 
     // Temporal-reuse geometry rejection + Jacobian clamp (slots 13-15; read by
@@ -2129,6 +2149,46 @@ void Renderer::PopulateCommandList() {
                   cmdList->ResourceBarrier(2, post); }
                 cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1,
                     m_raysIndirectArgs.Get(), 0, nullptr, 0);
+                break;
+            }
+
+            //HYBRID SHIFT replay passes: compacted 1D indirect over the replay
+            //queues (temporal counter at byte 4, spatial at byte 8 of u26).
+            //Template slots 2/3 pin the SBT record; Width is patched from the
+            //counter exactly like the compacted raygen dispatch above. Each pass
+            //owns its OWN args buffer (m_raysIndirectArgsReplay[]) so the state
+            //cycle stays the simple COMMON->promoted COPY_DEST->INDIRECT_ARGUMENT
+            //->decay pattern — the shared raygen args buffer is already parked in
+            //INDIRECT_ARGUMENT by this point in the list. Skipped outright when
+            //the hybrid shift (or the owning reuse stage) is off — the producing
+            //pass never enqueues then, so nothing is lost.
+            if (p.file == L"Pass_temp_replay_v8.hlsl" ||
+                p.file == L"Pass_spmis_replay_v8.hlsl")
+            {
+                const bool isTemp = (p.file == L"Pass_temp_replay_v8.hlsl");
+                const bool active = rs.hybridShift &&
+                    (isTemp ? (baseFlags & 0x2u) != 0u : (baseFlags & 0x10u) != 0u);
+                if (!active)
+                    break;
+                ID3D12Resource* args = m_raysIndirectArgsReplay[isTemp ? 0 : 1].Get();
+                { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                  cmdList->ResourceBarrier(1, &b); }
+                cmdList->CopyBufferRegion(args, 0,
+                    m_raysArgsTemplate.Get(),
+                    (isTemp ? 2 : 3) * sizeof(D3D12_DISPATCH_RAYS_DESC),
+                    sizeof(D3D12_DISPATCH_RAYS_DESC));
+                cmdList->CopyBufferRegion(args,
+                    offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
+                    m_raygenQueueBuffer.Get(), isTemp ? 4 : 8, sizeof(uint32_t));
+                { CD3DX12_RESOURCE_BARRIER post[] = {
+                      CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                          D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                      CD3DX12_RESOURCE_BARRIER::Transition(args,
+                          D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) };
+                  cmdList->ResourceBarrier(2, post); }
+                cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1,
+                    args, 0, nullptr, 0);
                 break;
             }
 

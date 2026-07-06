@@ -706,9 +706,54 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SliderFloat("Min##Rough", &rs.reuseRoughnessMin, 0.0f, 1.0f);
         ImGui::SliderFloat("Max##Rough", &rs.reuseRoughnessMax, 0.0f, 1.0f);
         ImGui::SliderFloat("Reconnect x2 min##Rough", &rs.reconnectRoughnessMin, 0.0f, 1.0f);
-        ImGui::SetItemTooltip("Reject any temporal/spatial neighbour whose GI reconnection "
-                              "vertex (x2) roughness is below this — a near-specular x2 can't be "
-                              "reconnection-shifted without bias. Sky / light (NEE) samples are exempt.");
+        ImGui::SetItemTooltip("Hybrid ON: the pin-criteria roughness — BOTH vertices of the reconnection "
+                              "pair must be at least this rough for raygen to pin there (glossier pairs "
+                              "postpone the pin via random replay). Hybrid OFF: the legacy reuse-time "
+                              "reject of glossy reconnection vertices. Sky / light (NEE) ends are exempt.");
+    }
+    if (ImGui::CollapsingHeader("Hybrid Shift (ReSTIR PT)", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Checkbox("Enable##Hybrid", &rs.hybridShift);
+        ImGui::SetItemTooltip("ReSTIR PT hybrid shift: reconnection + random replay in primary sample "
+                              "space. Raygen pins the reconnection vertex at the FIRST vertex pair passing "
+                              "the roughness+distance criteria; glossy prefixes are random-replayed at "
+                              "reuse (compacted Pass_temp_replay / Pass_spmis_replay indirect dispatches) "
+                              "instead of being rejected. OFF = legacy pin-at-x2 reconnection shift, zero "
+                              "replay (queues stay empty, replay dispatches are skipped).");
+        ImGui::SliderFloat("Reconnect dist min (xCamDist)##Hybrid", &rs.reconnectDistMin,
+                           0.0f, 0.25f, "%.4f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("Pin distance criterion: the reconnection segment must be at least this "
+                              "FRACTION of the primary camera distance, or the pin postpones via replay. "
+                              "Short segments make the area-measure geometric factor singular (corner "
+                              "noise). 0 = off.");
+        ImGui::SliderInt("Max pin depth k##Hybrid", &rs.rcMaxK, 2, 10);
+        ImGui::SetItemTooltip("Deepest reconnection-vertex index raygen may pin. Replay cost per reuse "
+                              "eval is k-2 bounces (TraceRay each), so this is the main perf lever for "
+                              "glossy-prefix scenes. 2 = first-vertex pins only (zero replay even when "
+                              "hybrid is on).");
+        ImGui::Separator();
+        ImGui::Checkbox("Footprint pin criteria (Enhanced 4)##Hybrid", &rs.rcFootprint);
+        ImGui::SetItemTooltip("ReSTIR PT Enhanced 4: dual footprint threshold + pdf-proxy glossiness "
+                              "guard choose the pin instead of the material-roughness + distance pair "
+                              "test. Lobe-aware (diffuse bounces on plastics pin cleanly) and scale-"
+                              "adaptive (thresholds derive from the primary ray footprint). The distance "
+                              "slider above is inert while this is on; 'Reconnect x2 min' acts as the "
+                              "proxy sigma_min. Generation-side only.");
+        ImGui::SliderFloat("Footprint c (Eq.5)##Hybrid", &rs.rcFpKappa, 0.001f, 2.56f, "%.4f",
+                           ImGuiSliderFlags_Logarithmic);
+        ImGui::SetItemTooltip("The paper's threshold constant c, implemented literally (Eq. 5). Larger = "
+                              "stricter footprints = rarer but more robust reconnections (more replay). "
+                              "Paper optimum 0.02 across scenes; diffuse scenes are insensitive, calibrate "
+                              "on glossy content (their ablation: 0.005-0.64).");
+        ImGui::Checkbox("Dual motion vectors (Enhanced 6.4)##Hybrid", &rs.dualMotionVectors);
+        ImGui::SetItemTooltip("On a temporal geometry reject (moving-occluder disocclusion), retry the "
+                              "history fetch at launchIndex - occluder screen motion (prev surface at the "
+                              "reprojected pixel, projected with the current camera). Dual candidates use "
+                              "the geometric REJECT band instead of the force-to-1 clamp (clamping their "
+                              "far-field Jgeo is an energy bias at disocclusions).");
+        ImGui::Checkbox("RGB shading weights (Enhanced 6.3)##Hybrid", &rs.rgbShadeWeights);
+        ImGui::SetItemTooltip("Color-noise reduction: the spatial resolve accumulates vectorized "
+                              "resampling weights and blends contributor chroma at the scalar chain's "
+                              "luminance, instead of outputting the lone winner's color. Nearly free.");
     }
     ImGui::End();
 }

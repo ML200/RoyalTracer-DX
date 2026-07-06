@@ -1,19 +1,27 @@
 //====================================
-//RIS RESERVOIR UNIFIED DI+GI
+//RIS RESERVOIR UNIFIED DI+GI  (PSS / hybrid shift)
 //====================================
 //matID discriminates path kind
-//matID < MATID_LIGHT_TRI, BSDF-sampled GI vertex at x2, d>=3
-//matID == MATID_LIGHT_TRI, NEE to emissive triangle, x2 is hit position, L2 is emission
+//matID < MATID_LIGHT_TRI, BSDF-sampled GI vertex at x_k, d>=3
+//matID == MATID_LIGHT_TRI, NEE/emitter end, x_k is the light position, L2 is emission
 //matID == MATID_ENV_MISS, env/sky, x2 is unit direction, L2 is radiance
+//
+//PSS SEMANTICS: F is the RR-clean PRIMARY-SAMPLE-SPACE contribution f/p_noRR at
+//the owning pixel (every sampling pdf except RR survival folded in; suffix pdfs
+//pre-divided inside L2). p_hat = lum(F); the pixel estimate stays F*W. The
+//reconnection vertex sits at a VARIABLE index k (rcInfo), pinned by the hybrid
+//shift criteria; the prefix x_1..x_{k-1} is reproducible from `seed` via the
+//per-bounce RNG streams (RcBounceSeed). k==2 shifts reconnect directly from the
+//receiver (no replay) — identical structure to the legacy reconnection shift.
 struct Reservoir
 {
     //constant-after-hit payload
-    float3 x2;
+    float3 x2;          //reconnection vertex x_k (world)
     float3 n2_s;
     uint   objID;
     uint   matID;
     float  eta;
-    //resolved x2 material - baked by raygen so reconnection never re-fetches
+    //resolved x_k material - baked by raygen so reconnection never re-fetches
     float3 Kd;
     float  Pr;
     float  Pm;
@@ -26,11 +34,17 @@ struct Reservoir
     float  W;
     uint   M;
     float  w_sum;
+
+    //hybrid-shift PSS state
+    uint   rcInfo;      //k | d | RC_F_* flags (PM record pad word)
+    uint   seed;        //pathSeed: prefix replay streams via RcBounceSeed
+    float  cachedJac;   //base-side jacobian bundle * gBase (case-appropriate, see RcEval)
+    float  gBase;       //base-side GEOMETRIC factor of the reconnection segment
 };
 
 
 //====================================
-//SOA GROUP PLANES  (72 B/px)
+//SOA GROUP PLANES  (84 B/px)
 //====================================
 //Round 2 of the co-access grouping (was 5 planes / 64 B): scattered partner reads
 //(temporal candidate, spmis shift draws, merge lazy accept) always want the FULL
@@ -42,13 +56,15 @@ struct Reservoir
 //in its own plane. Own-pixel access is a wash (same bytes either way).
 //  RECON 48B  +0  x2(12) | n2pk(4)               reconnection geometry
 //             +16 L2 | Kd | eta/Pr/Pm | matID    reconnection material payload
-//             +32 objID | v2pk | M | pad         provenance + confidence
+//             +32 objID | v2pk | M | rcInfo      provenance + confidence + pin info
 //  FW    16B  F(12) | W(4)                       RIS state, one Load4 in merge
 //  V2     4B  solo DUPLICATE plane               dup pass streams it at 4B stride
 //  WSUM   4B  raygen-owned
+//  HYB   12B  seed | cachedJac | gBase           hybrid-shift PSS state (one Load3)
 static const uint PLANE_FW    = 48u;
 static const uint PLANE_V2    = 64u;
 static const uint PLANE_WSUM  = 68u;
+static const uint PLANE_HYB   = 72u;
 
 //====================================
 //SOA ADDRESS HELPERS
@@ -76,7 +92,123 @@ uint addr_f(uint px)               { return addr_fw(px); }
 uint addr_w(uint px)               { return addr_fw(px)   + 12u; }
 uint addr_objid(uint px)           { return addr_pm(px); }
 uint addr_m(uint px)               { return addr_pm(px)   +  8u; }
+uint addr_rcinfo(uint px)          { return addr_pm(px)   + 12u; }
 uint addr_wsum(uint px)            { uint N = numPx(); return N * PLANE_WSUM + px * 4u; }
+uint addr_hyb(uint px)             { uint N = numPx(); return N * PLANE_HYB  + px * 12u; }
+
+//====================================
+//RC INFO  (pin descriptor, PM record pad word)
+//====================================
+//k = reconnection-vertex index (x_1 = primary hit; k==2 is the legacy pin, k==0
+//means the sample carries NO reusable pin — it still shades canonically but every
+//shift to/from it is undefined). d = path length (vertex index of the last vertex).
+//Replay length = k-2 bounces.
+//Bundle flags say which pdf factors cachedJac carries beside gBase:
+//  RC_F_NOPK       bundle lacks p(w_k)      (candidate ends at/leaves the pin via a
+//                                            non-BSDF dim: at-pin NEE, k==d ends)
+//  RC_F_NOPPREV    bundle lacks p(w_{k-1})  (reconnection segment is not BSDF-sampled)
+//  RC_F_PAREA      NEE-end at a light / sun / any invariant-density copy: cachedJac
+//                  IS the (approx. position-invariant) source density — the shift
+//                  copies it (cachedNew = cachedJac of the source, |J| = 1).
+//  RC_F_ENV_REPLAY glossy-tail env end: NO reconnection — the shift replays the
+//                  prefix AND re-derives the final BSDF dim from the stream, the
+//                  trace must MISS, sky+sun re-evaluated (pure PSS, J = 1,
+//                  cachedJac = gBase = 1). Routes through the replay queues even
+//                  at k==2 (RcReplayLen = k-1).
+#define RC_F_NOPK       (1u << 12)
+#define RC_F_NOPPREV    (1u << 13)
+#define RC_F_PAREA      (1u << 14)
+#define RC_F_ENV_REPLAY (1u << 15)
+
+inline uint RcPackInfo(uint k, uint d, uint flags) { return (k & 63u) | ((d & 63u) << 6) | flags; }
+inline uint RcK(uint info)        { return info & 63u; }
+inline uint RcD(uint info)        { return (info >> 6) & 63u; }
+inline bool RcReusable(uint info) { return (info & 63u) >= 2u; }
+inline bool RcEnvReplay(uint info){ return (info & RC_F_ENV_REPLAY) != 0u; }
+//prefix bounces a shift eval must re-trace; env-replay adds the re-derived final
+//dim, so it routes through the replay queues even at k==2.
+inline uint RcReplayLen(uint info)
+{
+    const uint k = RcK(info);
+    if (k < 2u) return 0u;
+    return (k - 2u) + (RcEnvReplay(info) ? 1u : 0u);
+}
+
+//====================================
+//HYBRID PIN CRITERIA  (generation-side ONLY)
+//====================================
+//Raygen alone decides the pin vertex; reuse carries it in rcInfo, and every shift
+//is the FIXED map T_k for that sample — bijective without any offset-side criteria
+//re-derivation, so none exists. Two criteria families, RS_FLAG_RC_FOOTPRINT picks:
+//
+//v1 (footprint OFF): material roughness both sides + minimum segment distance.
+inline bool RcRoughPass(float Pr) { return Pr >= rs_reconnectRoughnessMin; }
+
+inline bool RcCritPair(float PrPrev, float PrHit, bool hitIsEndOrVolume, float segDist, float distMin)
+{
+    if (!RcRoughPass(PrPrev)) return false;
+    if (!hitIsEndOrVolume && !RcRoughPass(PrHit)) return false;
+    return segDist >= distMin;
+}
+
+//Enhanced §4 (footprint ON):
+//  * pdf-proxy glossiness guard (supplemental §4, Eq. 26): 1/p(w_{k-1})^2 >=
+//    sigma_min — lobe-aware for multilobe/black-box materials (a diffuse-lobe
+//    bounce on a plastic passes even when the material Pr is low). Reuses the
+//    rs_reconnectRoughnessMin slider as sigma_min.
+//  * dual footprint threshold (Eq. 5, literal): both the forward area density
+//    p(w_{k-1})*G(x_{k-1}->x_k) and the inverse p(w_k)*G(x_k->x_{k-1}) must stay
+//    below 1/threshold, threshold = (c/100) * ||x0-x1||^2 / (cos/(4pi)).
+//    The forward half gates the pin at the hit; the inverse half is only known at
+//    the NEXT BSDF sample -> raygen pins TENTATIVELY and revokes at the p(w_k)
+//    fold (candidates stored before the fold keep the tentative pin — their
+//    continuation is a non-BSDF dim, so the inverse test does not apply to them).
+//    Subsumes the distance criterion (short segments blow up G).
+inline bool RcLobeProxyPass(float pdf)
+{
+    return pdf * pdf * rs_reconnectRoughnessMin <= 1.0f;
+}
+
+//per-pixel Eq.5 threshold (the RHS); test densities against 1/thresh
+inline float RcFpThreshold(float camDist2, float cosPrim)
+{
+    return (rs_rcFpKappa * 0.01f) * camDist2 * (4.0f * PI) / max(cosPrim, 1e-4f);
+}
+
+inline bool RcFpDensityPass(float pdf, float G, float fpThresh)
+{
+    return pdf * G * fpThresh <= 1.0f;
+}
+
+//====================================
+//GEOMETRIC OUTLIER BAND  (PSS)
+//====================================
+//The resampling weight is lum(c*vis)*Jn/cachedJac*W; its pdf factors are exact
+//and must NEVER be clamped (clamping them is a systematic energy bias — the
+//force-to-1 band may only touch geometry). The band therefore acts on the
+//GEOMETRIC ratio Jn/gBase alone. Reject variant for the spatial pool, scale
+//variant (clamp to [1/T,T], T=temp_jacClamp) for the temporal candidate.
+inline bool RcGeomReject(float Jn, float gBase, float T)
+{
+    if (!(gBase > 0.0f)) return true;
+    const float j = Jn / gBase;
+    return (isnan(j) || isinf(j) || j > T || j < (1.0f / T));
+}
+
+inline float RcGeomClampScale(float Jn, float gBase, float T)
+{
+    if (!(gBase > 0.0f) || !(Jn > 0.0f)) return 0.0f;
+    const float j = Jn / gBase;
+    if (isnan(j) || isinf(j)) return 0.0f;
+    const float t = max(T, 1.0f);
+    return clamp(j, 1.0f / t, t) / j;
+}
+
+//NOTE: there is deliberately NO reuse-time roughness/distance gate under the
+//hybrid shift — shifts are the fixed per-sample maps T_k (bijective without
+//offset-side criteria), glossy receivers self-gate through the BSDF magnitude
+//in the shifted target, and geometric singularities are handled by the band
+//above. Full spatial/temporal reuse across all roughnesses is intended.
 
 //luminance
 inline float GetPHat(float3 v) {
@@ -138,6 +270,25 @@ float3 BSDF_term(
     return EvaluateBRDF_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
 }
 
+//fused value+pdf variant: the PSS shift eval needs the marginal directional pdf
+//of the reconnection segment at both endpoints (the jacobian bundle) alongside
+//the BSDF value — one EvaluateAndPdf walk instead of a second strategy pass.
+BrdfData BSDF_term_pdf(
+    uint   mID,
+    float3 n_s,
+    float3 n_g,
+    float3 s,
+    float3 o,
+    float3 localKd,
+    float  localPr,
+    float  localPm,
+    float  etai,
+    float  etat)
+{
+    const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
+    return EvaluateAndPdf_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
+}
+
 //geometry term uses shading normal
 float G_term(float3 n, float3 s)
 {
@@ -160,21 +311,23 @@ void storeReservoir(RWByteAddressBuffer buf, uint pixelIdx, const Reservoir r)
     buf.Store4(addr_pay(pixelIdx),
                uint4(PackRGB9E5(r.L2), PackRGB9E5(r.Kd),
                      PackEtaPrPm(r.eta, r.Pr, r.Pm), r.matID));
-    buf.Store4(addr_pm(pixelIdx), uint4(r.objID, v2pk, r.M, 0u));
+    buf.Store4(addr_pm(pixelIdx), uint4(r.objID, v2pk, r.M, r.rcInfo));
     buf.Store4(addr_fw(pixelIdx), uint4(asuint(r.F), asuint(r.W)));
     buf.Store (addr_v2(pixelIdx), v2pk);   //solo duplicate for the dup pass stream
+    buf.Store3(addr_hyb(pixelIdx), uint3(r.seed, asuint(r.cachedJac), asuint(r.gBase)));
     //wsum is raygen-owned and not part of the merged record
 }
 
-//payload-only load: everything Reconnect needs (x2/n2/L2/V2/Kd/Pr/Pm/eta/
-//matID/objID) in 3 grouped fetches over the ONE 48B record (2 sectors at any
-//pixel); F/W/M/w_sum of 'r' are left untouched — merge's lazy winner accept
-//relies on keeping its own accumulated RIS state.
+//payload-only load: everything the shift eval needs (x2/n2/L2/V2/Kd/Pr/Pm/eta/
+//matID/objID + rcInfo/seed/cachedJac/gBase) in 4 grouped fetches; F/W/M/w_sum
+//of 'r' are left untouched — merge's lazy winner accept relies on keeping its
+//own accumulated RIS state.
 void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoir r)
 {
     const uint4 p1  = buf.Load4(addr_pack1(pixelIdx));
     const uint4 pay = buf.Load4(addr_pay(pixelIdx));
-    const uint4 pm  = buf.Load4(addr_pm(pixelIdx));   // objID | v2pk | M | pad
+    const uint4 pm  = buf.Load4(addr_pm(pixelIdx));   // objID | v2pk | M | rcInfo
+    const uint3 hyb = buf.Load3(addr_hyb(pixelIdx));  // seed | cachedJac | gBase
 
     r.objID = pm.x;
     r.matID = pay.w;
@@ -187,6 +340,11 @@ void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoi
     UnpackEtaPrPm(pay.z, r.eta, r.Pr, r.Pm);
 
     r.V2    = UnpackNormal(pm.y);
+
+    r.rcInfo    = pm.w;
+    r.seed      = hyb.x;
+    r.cachedJac = asfloat(hyb.y);
+    r.gBase     = asfloat(hyb.z);
 }
 
 Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
@@ -201,6 +359,11 @@ Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
     r.w_sum = 0.0f;
 
     return r;
+}
+
+uint load_rcInfo(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return b.Load(addr_rcinfo(pixelIdx));
 }
 
 
@@ -390,11 +553,26 @@ inline float JacobianRatioRej(float Jn, float Jc, float T)
 }
 
 //====================================
-//RECONNECTION
+//RECONNECTION  (PSS shift evaluation)
 //====================================
+//Evaluates the reconnection of the receiving vertex (x1 = the receiver's primary
+//hit for k==2, or the REPLAYED offset vertex y_{k-1} for k>2) to the reservoir's
+//pin vertex. Outputs, per the uniform PSS shift rules:
+//  return  c          shifted numerator: full f product around the reconnection
+//                     (prefix throughput NOT included — the caller multiplies its
+//                     replayed prefix), WITHOUT pdf divisions, WITHOUT Jn
+//  Jn                 new-side GEOMETRIC factor of the reconnection segment
+//                     (surface cos/d² | volume 1/d² | env 1 | light cosL/d²)
+//  cachedNew          new-side jacobian bundle * Jn. The uniform reuse algebra:
+//                       resampling weight = m * lum(c*vis) * Jn / cachedJac_src * W
+//                       accept re-anchor:  F = c*vis * Jn / cachedNew
+//                       outlier band:      Jn / gBase_src ONLY (pdfs never banded)
+//                     Bundle contents follow rcInfo: {p(w_{k-1})}·{p(w_k)} for
+//                     continuations, dropped per RC_F_NOPK/RC_F_NOPPREV; RC_F_PAREA
+//                     (NEE light end) copies the source's invariant area density.
 //etai1/etat1 are the IOR pair at x1 per raygen's hinfo.backface derivation
-inline float3 Reconnect(
-    //x1 camera path hit
+inline float3 ReconnectPSS(
+    //x1 receiving vertex (receiver primary hit or replayed y_{k-1})
     in float3  x1,
     in float3  n1_s,
     in float3  o,
@@ -405,7 +583,7 @@ inline float3 Reconnect(
     in float   etai1,
     in float   etat1,
 
-    //x2 reservoir / reconnection vertex
+    //reservoir pin vertex payload
     in uint    mID2,
     in float3  x2,
     in float3  n2_s,
@@ -416,10 +594,16 @@ inline float3 Reconnect(
     in float   localPm2,
     in float   eta2,
 
-    out float  Jn
+    //pin descriptor (bundle shape + source-side invariant copy)
+    in uint    rcInfo,
+    in float   srcCachedJac,
+
+    out float  Jn,
+    out float  cachedNew
 )
 {
-    Jn = 1.0f;
+    Jn        = 1.0f;
+    cachedNew = 0.0f;
 
     if (length(L2) < EPSILON)
         return 0.0f;
@@ -430,25 +614,37 @@ inline float3 Reconnect(
     const bool sss1 = LoadIsSSS(mID1);
 
     //====================================
-    //DI ENV SKY
+    //DI ENV SKY  (direction payload: BSDF-miss dir-copy or sun-NEE copy)
     //====================================
-    //x2 is direction, no G, no BSDF at x2, Jn=1
+    //x2 is direction, no G, no BSDF at x2, Jn=1.
+    //  BSDF dir-copy: the bundle is the receiver-side marginal pdf of the
+    //    stored direction (position-dependent).
+    //  RC_F_PAREA (sun/NEE-sampled direction): the sampling density is globally
+    //    position-INVARIANT — copy the source bundle, |J| = 1.
+    //(RC_F_ENV_REPLAY candidates never reach this eval — they route through
+    //EnvReplayEval in the replay passes.)
     //env treated as infinitely far, no medium absorption applied
     if (mID2 == MATID_ENV_MISS)
     {
         const float3 wi  = normalize(x2);
-        const float3 F1  = BSDF_term(mID1, n1_s, n1_s, wi, o,
-                                     localKd1, localPr1, localPm1, etai1, etat1);
+        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, wi, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
         const float  ct  = max(1e-15f, dot(n1_s, wi));
-        float3 r = F1 * L2 * ct;
+        float3 r = bd1.val * L2 * ct;
         if (any(isnan(r)) || any(isinf(r))) return 0.0f;
+        cachedNew = (rcInfo & RC_F_PAREA) ? srcCachedJac
+                                          : max(bd1.pdf, EPSILON);
         return max(r, 0.0f);
     }
 
     //====================================
-    //DI EMISSIVE TRIANGLE NEE
+    //LIGHT VERTEX END (k==d at an emissive triangle)
     //====================================
-    //x2 is light position, n2_s is light normal, L2 is emission
+    //x2 is light position, n2_s is light normal, L2 is emission.
+    //  NEE end (RC_F_PAREA): the light point was area-sampled; its (approx.
+    //    position-invariant) area density IS the source's cachedJac — copy it,
+    //    which makes the PSS jacobian exactly 1 in area measure.
+    //  BSDF end (emitter hit): the segment is a BSDF dim — bundle = p'(w)·Jn.
     if (mID2 == MATID_LIGHT_TRI)
     {
         const float3 dirT  = x2 - x1;
@@ -456,8 +652,8 @@ inline float3 Reconnect(
         if (distT < EPSILON) return 0.0f;
         const float3 ndirNT = normalize(-dirT);
 
-        const float3 F1 = BSDF_term(mID1, n1_s, n1_s, -ndirNT, o,
-                                    localKd1, localPr1, localPm1, etai1, etat1);
+        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirNT, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
 
         //absorption only when x1 is inside transmissive medium
@@ -472,10 +668,12 @@ inline float3 Reconnect(
             transmittance = CalculateAbsorptionThroughput(LoadTf(mID1), distT);
         }
 
-        float3 r = F1 * L2 * G1 * transmittance;
+        float3 r = bd1.val * L2 * G1 * transmittance;
         if (any(isnan(r)) || any(isinf(r))) r = 0.0f;
 
         Jn = max(abs(dot(ndirNT, n2_s)) / (distT * distT), EPSILON);
+        cachedNew = (rcInfo & RC_F_PAREA) ? srcCachedJac
+                                          : max(bd1.pdf, EPSILON) * Jn;
         return max(r, 0.0f);
     }
 
@@ -497,21 +695,30 @@ inline float3 Reconnect(
     //F2 = scattering coefficient * Henyey-Greenstein phase; the connecting segment
     //carries Beer-Lambert transmittance; the geometry term drops the x2-side cosine
     //(no surface there). The shift never re-enters the walk.
+    //PSS bundle mirrors the walk's entry pdf chain exactly (raygen's pdfFac):
+    //cos-hemisphere entry (G1/pi) * free flight (sigma_t*exp(-sigma_t*d)) * HG
+    //phase pdf (== the phase value). A non-SSS receiver has no entry dims to map
+    //-> shift undefined (the legacy build approximated this; PSS cannot).
     if (volume2)
     {
-        const float3 F1v = sss1
-            ? (localKd1 * SSS_INV_PI)                             //SSS entry coupling tinted by surface albedo
-            : BSDF_term(mID1, n1_s, n1_s, -ndirN, o, localKd1, localPr1, localPm1, etai1, etat1);
+        if (!sss1)
+            return 0.0f;
+        const float3 F1v = localKd1 * SSS_INV_PI;                //SSS entry coupling tinted by surface albedo
 
         const float  radius  = max(LoadSSSRadius(baseID2), SSS_MIN_RADIUS);
         const float  sigma_t = 1.0f / radius;
         const float3 albedo  = saturate(LoadSSSAlbedo(baseID2));
         const float  gg      = LoadPhaseG(baseID2);
         const float  cosP    = dot(-ndirN, V2);                  //arriving (x1->S1) vs outgoing V2
-        const float3 F2v     = sigma_t * albedo * EvaluatePhaseHG(gg, cosP);
+        const float  phase   = EvaluatePhaseHG(gg, cosP);
+        const float3 F2v     = sigma_t * albedo * phase;
         const float3 Tv      = (float3)exp(-sigma_t * dist);     //x1->S1 transmittance
 
         Jn = max(1.0f / (dist * dist), EPSILON);                 //volume: no cos at x2
+        cachedNew = max((G1 * SSS_INV_PI)                        //entry-dir pdf (cos-hemisphere)
+                        * (sigma_t * exp(-sigma_t * dist))       //free-flight pdf to S1
+                        * phase                                  //HG phase pdf (self-normalized)
+                        * Jn, EPSILON);
         float3 rv = F1v * F2v * L2 * G1 * Tv;                    //G2 == 1
         if (any(isnan(rv)) || any(isinf(rv)) || all(rv < EPSILON))
             rv = (float3)0.0f;
@@ -557,10 +764,22 @@ inline float3 Reconnect(
     //light ENTERED at x1, so x1's coupling is the diffuse entry term 1/pi, not its
     //reflective BRDF (this is what the forward path folded into pdf_product). Without
     //this the reuse target would disagree with the stored F -> ReSTIR bias in thin areas.
-    float3 F1 = IsSSSExitVertex(mID2)
-        ? (localKd1 * SSS_INV_PI)                                 //entry coupling tinted by x1 surface albedo
-        : BSDF_term(mID1, n1_s, n1_s, -ndirN, o,  localKd1, localPr1, localPm1, etai1, etat1);
-    float3 F2 = BSDF_term(baseID2, n2_s, n2_s, -V2, ndirN, localKd2, localPr2, localPm2, etai2, etat2);
+    //The exit path's walk is analog (bundle == 1); its rcInfo carries NOPK|NOPPREV so
+    //the pdf factors below drop out.
+    const bool exit2 = IsSSSExitVertex(mID2);
+    float  pdf1 = 0.0f;
+    float3 F1;
+    if (exit2) {
+        F1 = localKd1 * SSS_INV_PI;                               //entry coupling tinted by x1 surface albedo
+    } else {
+        const BrdfData bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirN, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
+        F1   = bd1.val;
+        pdf1 = bd1.pdf;
+    }
+    const BrdfData bd2 = BSDF_term_pdf(baseID2, n2_s, n2_s, -V2, ndirN,
+                                       localKd2, localPr2, localPm2, etai2, etat2);
+    const float3 F2 = bd2.val;
 
     float  G2  = G_term(n2_s, -V2);
 
@@ -573,6 +792,14 @@ inline float3 Reconnect(
     }
 
     Jn = max(abs(dot(ndirN, n2_s)) / (dist * dist), EPSILON);
+
+    //new-side jacobian bundle per the pin descriptor: p'(w_{k-1}) for a BSDF-sampled
+    //reconnection segment, p'(w_k) for a BSDF-sampled continuation at the pin.
+    float bundle = 1.0f;
+    if (!(rcInfo & RC_F_NOPPREV)) bundle *= max(pdf1,    EPSILON);
+    if (!(rcInfo & RC_F_NOPK))    bundle *= max(bd2.pdf, EPSILON);
+    cachedNew = bundle * Jn;
+
     float3 r = F1 * F2 * L2 * G1 * G2 * transmittance;
 
     if (any(isnan(r)) || any(isinf(r)) || all(r < EPSILON))
@@ -581,29 +808,36 @@ inline float3 Reconnect(
     return max(r,0.0f);
 }
 
+//SurfaceVertex convenience wrapper — every reuse call site holds one.
+inline float3 ReconnectPSS_sv(in SurfaceVertex sv, in Reservoir r,
+                              out float Jn, out float cachedNew)
+{
+    return ReconnectPSS(sv.x, sv.n_s, sv.o, sv.matID,
+                        sv.Kd, sv.Pr, sv.Pm, sv.etai, sv.etat,
+                        r.matID, r.x2, r.n2_s, r.L2, r.V2,
+                        r.Kd, r.Pr, r.Pm, r.eta,
+                        r.rcInfo, r.cachedJac,
+                        Jn, cachedNew);
+}
+
 
 
 //====================================
-//RESERVOIR UPDATE
+//RESERVOIR UPDATE  (shift accept = PSS re-anchor)
 //====================================
+//On accepting a shifted neighbour sample the reservoir becomes the OWNER of
+//that sample at this pixel: the payload + replay identity (rcInfo/seed) copy
+//over, while F re-anchors to the SHIFTED contribution and the jacobian cache
+//re-anchors to the NEW side (cachedJac = cachedNew, gBase = Jn) so the next
+//reuse of this reservoir measures its bundle against this pixel's prefix.
 bool UpdateReservoir(
     inout Reservoir reservoir,
     in float wi,
     in uint  M,
-
-    in float3 x2,
-    in float3 n2_s,
-    in float3 L2,
-    in float3 V2,
-
-    in float3 Kd, in float Pr, in float Pm,
-
-    in uint matID,
-    in uint objID,
-    in float eta,
-
-    in float3 F,
-
+    in Reservoir src,        //payload + rcInfo/seed source (the neighbour)
+    in float3 F_shifted,     //c*vis*Jn/cachedNew — the re-anchored PSS contribution
+    in float  cachedNew,     //new-side jacobian bundle*Jn
+    in float  Jn,            //new-side geometric factor
     inout uint2 seed
 )
 {
@@ -612,19 +846,24 @@ bool UpdateReservoir(
 
     if (RandomFloatSingle(seed.x) < (wi / reservoir.w_sum))
     {
-        reservoir.x2    = x2;
-        reservoir.n2_s  = n2_s;
-        reservoir.objID = objID;
-        reservoir.matID = matID;
-        reservoir.eta   = eta;
+        reservoir.x2    = src.x2;
+        reservoir.n2_s  = src.n2_s;
+        reservoir.objID = src.objID;
+        reservoir.matID = src.matID;
+        reservoir.eta   = src.eta;
 
-        reservoir.Kd    = Kd;
-        reservoir.Pr    = Pr;
-        reservoir.Pm    = Pm;
+        reservoir.Kd    = src.Kd;
+        reservoir.Pr    = src.Pr;
+        reservoir.Pm    = src.Pm;
 
-        reservoir.L2    = L2;
-        reservoir.V2    = V2;
-        reservoir.F     = F;
+        reservoir.L2    = src.L2;
+        reservoir.V2    = src.V2;
+        reservoir.F     = F_shifted;
+
+        reservoir.rcInfo    = src.rcInfo;
+        reservoir.seed      = src.seed;
+        reservoir.cachedJac = cachedNew;
+        reservoir.gBase     = Jn;
         return true;
     }
     return false;
@@ -635,7 +874,7 @@ bool UpdateReservoir(
 //INITIAL RESAMPLING CANDIDATE
 //====================================
 //wsum lives in a register, on acceptance writes full reservoir payload to SoA buffer
-//F stored as full RGB, target magnitude is GetPHat(F)
+//F stored as full RGB (PSS contribution f/p_noRR), target magnitude is GetPHat(F)
 //sentinel objIDs bypass object-space transform via Sample_Data_v8 identity shortcut
 inline bool AddInitialCandidate(
     inout float wsum,
@@ -647,6 +886,7 @@ inline bool AddInitialCandidate(
     float3 Kd, float Pr, float Pm,
     uint   matID, uint objID, float eta,
     float3 F_contrib,
+    uint   rcInfo, uint pathSeed, float cachedJac, float gBase,
     inout uint seed)
 {
     if (wi <= 0.0f || any(isnan(F_contrib)) || any(isinf(F_contrib))) return false;
@@ -665,8 +905,10 @@ inline bool AddInitialCandidate(
         //objID + v2 land in the record; M is finalize-owned so Store2 only.
         //F only - W and M land at raygen finalize
         buf.Store2(addr_pm   (pixelIdx), uint2(objID, v2pk));
+        buf.Store (addr_rcinfo(pixelIdx), rcInfo);
         buf.Store3(addr_f    (pixelIdx), asuint(F_contrib));
         buf.Store (addr_v2   (pixelIdx), v2pk);   //solo duplicate for the dup pass stream
+        buf.Store3(addr_hyb  (pixelIdx), uint3(pathSeed, asuint(cachedJac), asuint(gBase)));
         return true;
     }
     return false;
