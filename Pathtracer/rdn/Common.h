@@ -249,7 +249,7 @@ struct ReSTIRSettings {
     //select/shift/_v8_1 path was removed). Enabled by enableSpatGI via flag bit 0x10;
     //the Pass_spmis_* pipeline (reset/count/offsets/sort/select/shift/merge) owns
     //spatial reuse, with raygen inserting each pixel's hash.
-    int   spmisReuseN       = 3;     // Ntilde: non-canonical reuse draws
+    int   spmisReuseN       = 2;     // Ntilde: non-canonical reuse draws
     int   spmisRisN         = 8;     // inner-RIS candidate count per draw
     int   spmisMcap         = 20;    // output confidence M cap (0 disables)
     int   spmisTileSize     = 32;    // screen-space cell tile size in pixels
