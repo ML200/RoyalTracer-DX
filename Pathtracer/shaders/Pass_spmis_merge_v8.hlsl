@@ -3,15 +3,19 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//SPMIS SPATIAL REUSE - MERGE  (pass 3/3: WRS combine + finalize, NO rays)
+//SPMIS SPATIAL REUSE - MERGE  (pass 3/3: weights + WRS combine + finalize, NO rays)
 //====================================
-//Final stage of the split SPMIS reuse (analogue of the texture path's Pass_spat_gi_v8_1).
-//Pure data: reads the cached canonical MIS weight + per-draw {w_draw, c} that shift
-//produced, runs the outer WRS combine into the center reservoir, lazy-loads only the
-//winning candidate's payload, finalizes (M, UCW, M-cap) and writes F*W -> scratch slot 2
-//and the resampled reservoir -> g_Reservoirs_last. No reconnections, no rays - all of
-//that was done in shift, so this stage runs lean / high-occupancy. Layout: see
-//HashGridHash_v8.hlsli (SPM_*).
+//Final stage of the split SPMIS reuse. Reads the RAW shifted {c, Jn, cachedNew}
+//the unified Pass_shift_v8 produced for the canonical (job slot d=0) and each
+//draw (d=1..Ntn) — see the "UNIFIED SHIFT JOB" note in HashGridHash_v8.hlsli —
+//computes the SpmisCanonicalMis / SpmisDrawWeight algebra itself (round 8:
+//this used to be shift's job; moving it here is what let Pass_shift_v8 shrink
+//to a single, role-agnostic code path with no per-role weight tail — see its
+//header), does the outer WRS combine into the centre reservoir, lazy-loads
+//only the winning candidate's payload, finalizes (M, UCW, M-cap) and writes
+//F*W -> scratch slot 2 and the resampled reservoir -> g_Reservoirs_last. No
+//reconnections, no rays - all of that was done in the shift loop, so this
+//stage runs lean / high-occupancy. Layout: see HashGridHash_v8.hlsli (SPM_*).
 //
 //Note: the outer WRS uses its own RNG stream (dim 9) since select consumed the
 //cell-search / inner-RIS draws (dim 6). The estimate stays unbiased; the noise pattern
@@ -40,7 +44,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         Reservoir rdiP = loadReservoir(g_Reservoirs_current, pixelIdx);
         const float  Wp   = (rdiP.W > 0.0f) ? rdiP.W : 0.0f;
         float3 outCP = rdiP.F * Wp;
-        if (RcK(rdiP.rcInfo) == 2u && !RcEnvReplay(rdiP.rcInfo))   //direct k==2 only, see below
+        if (RcK(rdiP.rcInfo) == 2u && !RcEnvReplay(rdiP.rcInfo))
             outCP *= ResolveReuseVis(pixelIdx, rdiP, outCP);       //deferred vis (REUSE_VIS_OFF)
         gScratchPing[uint3(tid.xy, 2)] = float4(outCP, 0);
         storeReservoir(g_Reservoirs_last, pixelIdx, rdiP);
@@ -59,7 +63,7 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
 
-    //passthrough: shadowed canonical (visibility was cached by shift).
+    //passthrough: shadowed canonical (visibility was cached by Pass_spmis_passthrough).
     if (status == SPM_STATUS_PASS)
     {
         const float  W    = (rdi.W > 0.0f) ? rdi.W : 0.0f;
@@ -71,10 +75,62 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
 
     //==== normal path: canonical seed + outer WRS over the cached draws ====
+    const uint  reuseCell = SPM_hdrCell(w0);
+    const uint4 agg       = g_spmisBuffer.Load4(SP_AGG(reuseCell));   // PIXCNT|NZ|CONF|OFF
+    const float pixCount  = (float)agg.x;
+    const uint  Ntn       = min(max(spmis_reuseN, 1u), SPMIS_SPLIT_MAXDRAWS);
+    const float scaling   = (SPMIS_CONF_ADJUST && pixCount > 0.0f) ? min(1.0f, (float)Ntn / pixCount) : 1.0f;
+    const float neighbors_conf_sum = (float)agg.z * scaling;
+
     const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
     const float p_c        = GetPHat(rdi.F) * visReuse_c;
     const float centerConf = (float)rdi.M;
-    const float mis_c      = asfloat(g_pathStateBuffer.Load(SPM_w1(pixelIdx)));
+
+    //Per-pixel sky observer for any DEFERRED env-replay finish (canonical or draws)
+    //below: Pass_shift_v8 kept the atmosphere stack out of its RT binary and only
+    //persisted {partial, dir, misPdf}; EnvTailFinish reads this observer. Approx:
+    //the offset bounce vertex is replaced by this pixel's primary hit (sky observer
+    //is very low-frequency over a pixel neighbourhood).
+    SetSkyObserver(load_x1(g_sample_current, pixelIdx) + sceneOriginWorld);
+
+    //==== canonical (job slot d=0): re-derive SpmisCanonicalMis from the raw shift output ====
+    float mis_c = 1.0f;
+    {
+        const uint canonRes = g_pathStateBuffer.Load(SPM_slotZ(pixelIdx, 0u));
+        if (canonRes != SP_UNDEF)
+        {
+            const uint  partnerPx = g_pathStateBuffer.Load(SPM_slotS(pixelIdx, 0u)) & 0x7FFFFFFFu;
+            const uint2 j0        = g_pathStateBuffer.Load2(SPM_slotJ(pixelIdx, 0u));
+            const float3 c0raw    = asfloat(g_pathStateBuffer.Load3(SPM_slotC(pixelIdx, 0u)));
+            //DEFERRED env-replay canonical: slotJ = {PackNormal(dir), misPdf}, c0raw
+            //is the partial → finish the sky+sun eval here (observer set once above);
+            //cachedNew/Jn are the env const 1, so Jn_c := 1. Reconnect/direct
+            //canonicals keep the old {Jn} (its sign = preVisDead, unused here).
+            float  Jn_c;
+            float3 c_canon;
+            if (RcEnvReplay(rdi.rcInfo))
+            {
+                Jn_c    = 1.0f;
+                c_canon = (GetPHat(c0raw) > 0.0f)
+                    ? EnvTailFinish(c0raw, UnpackNormal(j0.x), asfloat(j0.y)) : (float3)0.0f;
+            }
+            else
+            {
+                Jn_c    = abs(asfloat(j0.y));
+                c_canon = c0raw;
+            }
+            const float partnerConf = (float)load_M(g_Reservoirs_current, partnerPx) * scaling;
+
+            //revT naturally collapses to 0 on a killed/failed job (c_canon == 0
+            //from Pass_shift_v8's early-out or a dead env finish), so no explicit
+            //dead check is needed here — unlike draws, canonical never had one.
+            float revT = 0.0f;
+            if (!RcGeomReject(Jn_c, rdi.gBase, spmis_jacThreshold) && rdi.cachedJac > 0.0f)
+                revT = GetPHat(c_canon) * Jn_c / rdi.cachedJac;
+
+            mis_c = SpmisCanonicalMis(revT, p_c, centerConf, neighbors_conf_sum, partnerConf, pixCount);
+        }
+    }
 
     rdi.w_sum = mis_c * p_c * rdi.W;
     float3 contrib_final = rdi.F * visReuse_c;
@@ -89,31 +145,84 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float lumC0 = GetPHat(contrib_final);
     float3 rgbWsum = (lumC0 > 0.0f) ? rdi.w_sum * (contrib_final / lumC0) : (float3)0.0f;
 
-    const uint Ntn = min(max(spmis_reuseN, 1u), SPMIS_SPLIT_MAXDRAWS);
     uint2 seed = GetSeed(pixelIdx, time, 9);
     seed.x = Hash32(seed.x);
 
     [loop]
     for (uint d = 0u; d < Ntn; ++d)
     {
-        const uint zPx = g_pathStateBuffer.Load(SPM_slotZ(pixelIdx, d));
-        if (zPx == SP_UNDEF || (zPx & SPM_Z_PENDING_BIT) != 0u)
-            continue;   // unmaterialized, gate-rejected, or an unresolved replay slot
-                        // (pending only possible if the replay pass was skipped)
+        //job slot d+1 (canonical owns d=0 — see HashGridHash_v8.hlsli)
+        const uint slot = d + 1u;
+        const uint resRaw = g_pathStateBuffer.Load(SPM_slotZ(pixelIdx, slot));
+        if (resRaw == SP_UNDEF)
+            continue;   //select-gated: no job ever existed for this draw
 
-        const float  w_draw = asfloat(g_pathStateBuffer.Load(SPM_slotP(pixelIdx, d)));
-        const float3 c      = asfloat(g_pathStateBuffer.Load3(SPM_slotC(pixelIdx, d)));
+        const uint zPx = resRaw & SPM_RESPX_MASK;
+        //loadReservoirState (not loadReservoir): the 48B payload is only needed for
+        //the eventual WINNER, loaded lazily below. prRcInfo also tells us how to
+        //read this draw's slotJ/slotC (env-replay vs reconnect/direct).
+        Reservoir pr = (Reservoir)0;
+        loadReservoirState(g_Reservoirs_current, zPx, pr);
+        const uint prRcInfo = load_rcInfo(g_Reservoirs_current, zPx);
+        const bool isEnv    = RcEnvReplay(prRcInfo);
+        const bool needWalk = HYBRID_SHIFT_ON && RcReplayLen(prRcInfo) > 0u;
+
+        const uint2  j8   = g_pathStateBuffer.Load2(SPM_slotJ(pixelIdx, slot));
+        const float3 craw = asfloat(g_pathStateBuffer.Load3(SPM_slotC(pixelIdx, slot)));
+        //DEFERRED env-replay: slotJ = {PackNormal(offset dir), misPdf}, craw = the
+        //partial → finish the sky+sun eval here (observer set once above). cachedNew/
+        //Jn are the env const 1. Reconnect/direct draws keep {cachedNew, Jn} and
+        //preVisDead in Jn's sign.
+        float  cachedNew, Jn;
+        bool   preVisDead;
+        float3 c;
+        if (isEnv)
+        {
+            cachedNew = 1.0f; Jn = 1.0f; preVisDead = false;   //preVisDead unused (env is a walk job)
+            c = (GetPHat(craw) > 0.0f)
+                ? EnvTailFinish(craw, UnpackNormal(j8.x), asfloat(j8.y)) : (float3)0.0f;
+        }
+        else
+        {
+            cachedNew            = asfloat(j8.x);
+            const float JnSigned = asfloat(j8.y);
+            Jn                   = abs(JnSigned);
+            preVisDead           = JnSigned < 0.0f;
+            c                    = craw;
+        }
+
+        //dead condition: walked branches re-derive the post-fence geometric band
+        //via RcGeomReject(Jn, pr.gBase) (env-replay has Jn=gBase=1 so it never
+        //rejects there). The direct branch's reject was folded OUT of the shift
+        //(useHint, ~30-VGPR spatial recovery) and re-derived here — same Jn/gBase/
+        //threshold. Walked jobs reject on their SHADOWED target; a direct job's
+        //preVisDead is PRE-visibility, so a materialized draw whose shadow ray
+        //lands fully occluded still counts into M (M tracks sample validity, not
+        //this frame's momentary visibility). needWalk re-derived from resPx's own
+        //rcInfo (not stored in the descriptor) — cheap, same L1-cached word.
+        const bool dead = needWalk
+            ? (GetPHat(c) <= 0.0f || cachedNew <= 0.0f || RcGeomReject(Jn, pr.gBase, spmis_jacThreshold))
+            : (preVisDead || cachedNew <= 0.0f || RcGeomReject(Jn, pr.gBase, spmis_jacThreshold));
+        if (dead)
+            continue;
+
+        const float selProb    = asfloat(g_pathStateBuffer.Load(SPM_slotP(pixelIdx, slot)));
+        const float c_i_scaled = (float)pr.M * scaling;
+        const float w_draw = SpmisDrawWeight(GetPHat(pr.F), pr.cachedJac,
+                                             GetPHat(c), Jn, selProb, Ntn,
+                                             neighbors_conf_sum, centerConf, c_i_scaled) * pr.W;
+        const float3 Fshift = c * Jn / cachedNew;
 
         rdi.w_sum += w_draw;
         effDraws++;
-        const float lumCd = GetPHat(c);
+        const float lumCd = GetPHat(Fshift);
         if (w_draw > 0.0f && lumCd > 0.0f)
-            rgbWsum += w_draw * (c / lumCd);
+            rgbWsum += w_draw * (Fshift / lumCd);
         if (rdi.w_sum > 0.0f && RandomFloatPCG(seed.x) < w_draw / rdi.w_sum)
         {
             winnerZPx     = zPx;
-            winnerD       = d;
-            contrib_final = c;
+            winnerD       = slot;
+            contrib_final = Fshift;
         }
     }
 
@@ -121,14 +230,24 @@ void main(uint3 tid : SV_DispatchThreadID)
     //(x2/n2/objID/matID/eta/Kd/Pr/Pm/L2/V2 + rcInfo/seed); F/W/M/w_sum are managed
     //here. The accept RE-ANCHORS the jacobian cache to this pixel: cachedJac takes
     //the shift's new-side bundle, gBase its geometric factor (SPM_slotJ), so the
-    //next reuse of this reservoir measures against THIS pixel's prefix. slotC
-    //already holds the re-anchored F = c*vis*Jn/cachedNew.
+    //next reuse of this reservoir measures against THIS pixel's prefix.
     if (winnerZPx != SP_UNDEF)
     {
         loadReservoirPayload(g_Reservoirs_current, winnerZPx, rdi);
-        const uint2 j8 = g_pathStateBuffer.Load2(SPM_slotJ(pixelIdx, winnerD));
-        rdi.cachedJac = asfloat(j8.x);
-        rdi.gBase     = asfloat(j8.y);
+        if (RcEnvReplay(rdi.rcInfo))
+        {
+            //env-replay winner: slotJ held {PackNormal(dir), misPdf}, NOT
+            //{cachedNew, Jn} — the env re-anchor constants are cachedJac = gBase = 1
+            //(exactly what the old {1,1} slotJ used to decode to here).
+            rdi.cachedJac = 1.0f;
+            rdi.gBase     = 1.0f;
+        }
+        else
+        {
+            const uint2 j8 = g_pathStateBuffer.Load2(SPM_slotJ(pixelIdx, winnerD));
+            rdi.cachedJac = asfloat(j8.x);
+            rdi.gBase     = abs(asfloat(j8.y));
+        }
     }
 
     //==== FINALIZE (M = center.M + materialized draws; UCW = wsum / target; M-cap last) ====

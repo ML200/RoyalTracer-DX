@@ -753,9 +753,10 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
         ImGui::SetItemTooltip("ReSTIR PT hybrid shift: reconnection + random replay in primary sample "
                               "space. Raygen pins the reconnection vertex at the FIRST vertex pair passing "
                               "the roughness+distance criteria; glossy prefixes are random-replayed at "
-                              "reuse (compacted Pass_temp_replay / Pass_spmis_replay indirect dispatches) "
-                              "instead of being rejected. OFF = legacy pin-at-x2 reconnection shift, zero "
-                              "replay (queues stay empty, replay dispatches are skipped).");
+                              "reuse (temporal: compacted Pass_temp_replay indirect dispatch; spatial: "
+                              "replay roles inside the unified Pass_spmis_shift) instead of being "
+                              "rejected. OFF = legacy pin-at-x2 reconnection shift, zero replay (the "
+                              "temporal queue stays empty and its dispatch is skipped).");
         ImGui::SliderFloat("Reconnect dist min (xCamDist)##Hybrid", &rs.reconnectDistMin,
                            0.0f, 0.25f, "%.4f", ImGuiSliderFlags_Logarithmic);
         ImGui::SetItemTooltip("Pin distance criterion: the reconnection segment must be at least this "

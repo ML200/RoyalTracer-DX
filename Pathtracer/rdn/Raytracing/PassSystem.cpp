@@ -35,11 +35,11 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
         return p;
     }
 
-    //loop with count
+    //loop:N — redispatch the passes up to the matching 'endloop' N times.
     if (token.rfind(L"loop:", 0) == 0) {
         p.stage = Stage::LoopStart;
         if (swscanf_s(token.c_str() + 5, L"%u", &p.loopCount) != 1)
-            throw std::runtime_error("Invalid loop count format");
+            throw std::runtime_error("Invalid loop count");
         return p;
     }
 
@@ -51,6 +51,10 @@ PassDesc PassSystem::ParseToken(const std::wstring& token) {
     const std::wstring tail = token.substr(bar + 1);
 
     if (tail == L"rg" || tail == L"raygen") return p;
+    //rg:<tag> — a RayGen entry with a dispatch-shape annotation (see PassDesc::
+    //dispatchTag): lets two entries dispatching the SAME file pick a different
+    //Depth in Stage::RayGen, without needing two different compiled shaders.
+    if (tail.rfind(L"rg:", 0) == 0) { p.dispatchTag = tail.substr(3); return p; }
     if (tail == L"call") { p.stage = Stage::Callable; return p; }
 
     if (tail.rfind(L"wg:", 0) == 0) {

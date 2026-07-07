@@ -1387,3 +1387,25 @@ float3 EvaluateSky(float3 rayDir)
     float3 cloudTrIgnored;
     return EvaluateSky(rayDir, cloudTrIgnored);
 }
+
+//Deferred RC_F_ENV_REPLAY finish (merge side of EnvReplayTailPartial — see
+//Hybrid_Replay_v8.hlsli). The shift persisted the partial contribution `cPartial`
+//and the re-derived offset direction `s` + its marginal BSDF pdf `misPdf`; here
+//we do the atmosphere eval (sky + MIS sun disc) the shift used to inline, keeping
+//that LUT/march stack OUT of the register-tight RT shift binary. Same algebra as
+//the old inline tail — the ONLY difference is the observer, which the CALLER sets
+//once per pixel via SetSkyObserver (per-pixel approximation of the offset bounce
+//vertex; sky observer is very low-frequency over a pixel neighbourhood).
+float3 EnvTailFinish(float3 cPartial, float3 s, float misPdf)
+{
+    const float  sunSAPdf   = GetSunPdf(s);
+    const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(s) : float3(0, 0, 0);
+    const float  sunMisBsdf = (sunSAPdf > 0.0f)
+        ? misPdf / max(misPdf + sunSAPdf, EPSILON) : 0.0f;
+    float3 cloudTr;
+    const float3 sky  = EvaluateSky(s, cloudTr);
+    const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
+
+    float3 c = cPartial * envL;
+    return (any(isnan(c)) || any(isinf(c))) ? (float3)0.0f : max(c, 0.0f);
+}

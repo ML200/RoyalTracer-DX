@@ -51,10 +51,15 @@ inline UINT TileAlignedPx(UINT w, UINT h) {
 // Backed bytes per pixel of the path-state buffer. The HLSL plane layout
 // (Path_State_v8.hlsli) spans 176 B/px, but only the raygen-live prefix
 // (PACK1..CLAS2, 72 B/px) plus the SPMIS split-pass scratch that aliases the
-// buffer from offset 0 (8B header + SPMIS_SPLIT_MAXDRAWS*28 = 120 B/px; the
-// hybrid shift added the 8B J8 sub-slot {cachedNew, Jn} per draw — see
-// HashGridHash_v8.hlsli) need backing. Bump if SPMIS_SPLIT_MAXDRAWS grows.
-constexpr UINT kPathStateBytesPerPx = 120;
+// buffer from offset 0 need backing: 8B header + SPMIS_TOTAL_ROLES(5) * 32B
+// generic job-slot planes (startPx/resPx/prob/J8/c — see the UNIFIED SHIFT
+// JOB layout in HashGridHash_v8.hlsli) = 168 B/px. Bump if SPMIS_SPLIT_MAXDRAWS
+// grows (>= 8 + (SPMIS_SPLIT_MAXDRAWS+1)*32).
+constexpr UINT kPathStateBytesPerPx = 168;
+
+// Mirrors HLSL's SPMIS_SPLIT_MAXDRAWS (HashGridHash_v8.hlsli) — the host needs
+// it to size the dynamic "spatial_shift" loop count (Ntn+1) each frame.
+constexpr UINT kSpmisSplitMaxDraws = 4;
 
 class Renderer {
 public:
@@ -252,10 +257,9 @@ private:
     //SBT rebuild), and the DISPATCH_RAYS command signature.
     ComPtr<ID3D12Resource>         m_raygenQueueBuffer;
     ComPtr<ID3D12Resource>         m_raysIndirectArgs;
-    //hybrid-shift replay dispatches ([0] temporal, [1] spatial): each owns its
-    //args buffer so the COMMON->COPY_DEST->INDIRECT_ARGUMENT->decay cycle never
-    //collides with the raygen args buffer parked in INDIRECT_ARGUMENT.
-    ComPtr<ID3D12Resource>         m_raysIndirectArgsReplay[2];
+    //(No hybrid-shift replay args buffer: Pass_temp_replay and
+    //Pass_spmis_shift are both plain full-screen DispatchRays calls, walking
+    //in place as role threads — neither uses an indirect dispatch / queue.)
     ComPtr<ID3D12Resource>         m_raysArgsTemplate;
     ComPtr<ID3D12CommandSignature> m_raysCommandSignature;
     //SBT slot of the lite raygen variant (cloud surface shadows compiled out),

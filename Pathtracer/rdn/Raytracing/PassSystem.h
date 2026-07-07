@@ -24,6 +24,11 @@ struct PassDesc {
     uint32_t      wgIdx      = UINT32_MAX;
     uint32_t      loopCount  = 0;
     int32_t       targetIdx  = -1;
+    //optional "rg:<tag>" annotation on a RayGen entry (ParseToken) — lets two
+    //pass-list entries sharing the same file (same SBT record) pick a
+    //different per-dispatch Depth in Stage::RayGen (e.g. shift's temporal vs
+    //spatial role count). Empty for every ordinary RayGen entry.
+    std::wstring  dispatchTag;
 };
 
 class PassSystem {

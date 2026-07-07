@@ -102,6 +102,14 @@ cbuffer Push : register(b1)
     //(g_samplerPoint s3) for crisp pixel-art / Minecraft-style assets. Editor
     //toggle under Materials. Read by SampleMaterialTex below.
     uint  pt_pointFilter;
+    //slot 43 (register 10.w, fills the register out exactly). SPARE/UNUSED as
+    //of round 13: used to carry Pass_shift_v8's role (shift_loopRole) when
+    //role dispatch was a host-side redispatch loop; that loop was reverted in
+    //favor of a single Depth-dimensioned DispatchRays per domain (role now
+    //read from DispatchRaysIndex().z in-shader, no root constant needed).
+    //Left declared, always 0, to avoid touching the root signature's 44-
+    //constant count for a slot that may find another use later.
+    uint  _shift_loopRole_unused;
 };
 
 //====================================
@@ -215,11 +223,12 @@ cbuffer Push : register(b1)
 //RS_FLAG_HYBRID_SHIFT — ReSTIR PT hybrid shift (random replay + reconnection in
 //primary sample space). ON: raygen pins the reconnection vertex at the FIRST pair
 //of consecutive vertices passing the criteria (RcCritPair) — glossy prefixes are
-//random-replayed at reuse (Pass_temp_replay / Pass_spmis_replay consume the k>2
-//queues) instead of being rejected by the legacy roughness gates. OFF: raygen pins
-//at x2 unconditionally (legacy reconnection shift, zero replay, empty queues) and
-//the reuse passes keep their legacy glossy-x2 rejection gates. The PSS reservoir
-//encoding (F = f/p_noRR) is NOT gated — it is the storage format either way.
+//random-replayed at reuse (temporal: Pass_temp_replay consumes the k>2 queue;
+//spatial: replay roles inside the unified Pass_spmis_shift) instead of being
+//rejected by the legacy roughness gates. OFF: raygen pins at x2 unconditionally
+//(legacy reconnection shift, zero replay, empty queue) and select keeps the
+//legacy glossy-x2 rejection gates. The PSS reservoir encoding (F = f/p_noRR) is
+//NOT gated — it is the storage format either way.
 #define RS_FLAG_HYBRID_SHIFT  0x4000u
 #define HYBRID_SHIFT_ON  ((rs_flags & RS_FLAG_HYBRID_SHIFT) != 0u)
 

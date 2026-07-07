@@ -276,29 +276,19 @@ void UnpackEtaPrPm(uint p, out float eta, out float pr, out float pm)
 //BRDF WRAPPERS
 //====================================
 //thin aliases to isolate MIS callers from BXDF module
-//fused value+pdf variant: the PSS shift eval needs the marginal directional pdf
-//of the reconnection segment at both endpoints (the jacobian bundle) alongside
-//the BSDF value — one EvaluateAndPdf walk instead of a second strategy pass.
-BrdfData BSDF_term_pdf(
-    uint   mID,
-    float3 n_s,
-    float3 n_g,
-    float3 s,
-    float3 o,
-    float3 localKd,
-    float  localPr,
-    float  localPm,
-    float  etai,
-    float  etat)
-{
-    const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
-    return EvaluateAndPdf_COMBINED(p, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
-}
-
-//single-lobe variant (RC_F_LOBES samples, supp §1): the RECORDED lobe's gated
-//value and CONDITIONAL pdf {rho_l, p(w|l)} — what the lobe-indexed jacobian
-//bundle and target re-evaluation use at the two reconnection slots.
-BrdfData BSDF_term_lobe(
+//FUSED lobe-or-marginal variant: ONE EvaluateAndPdf_COMBINED_L walk yields the
+//marginal pair (its res) AND the recorded lobe's latched pair (documented to
+//match EvaluateLobePdf_COMBINED exactly — same formulas, same EPSILON skips) —
+//the output select picks per useLobe. Value-identical to the old
+//BSDF_term_pdf / BSDF_term_lobe if/else pairs, but the material stack inlines
+//ONCE per call site instead of twice: those pairs were the dominant code mass
+//of every reconnection-bearing pass (I$ / noinstr pressure). Lobe absent at
+//this vertex -> the latch never fires -> {0,0}, the shift-undefined signal,
+//exactly like EvaluateLobePdf_COMBINED. (Slight ALU trade on lobe samples:
+//the old lobe walk early-outed past the target lobe, the fused walk always
+//evaluates every present lobe — code footprint beats the saved lanes here.)
+BrdfData BSDF_term_sel(
+    bool   useLobe,
     uint   lobe,
     uint   mID,
     float3 n_s,
@@ -312,7 +302,15 @@ BrdfData BSDF_term_lobe(
     float  etat)
 {
     const SamplingP p = CalculateStrategyProbabilities(mID, o, n_s, etai, etat, localKd, localPm);
-    return EvaluateLobePdf_COMBINED(p, lobe, mID, n_s, n_g, s, o, localKd, localPr, localPm, etai, etat);
+    float3 lobeVal; float lobePdf;
+    const BrdfData m = EvaluateAndPdf_COMBINED_L(p, useLobe ? lobe : 0xFFFFFFFFu,
+                                                 mID, n_s, n_g, s, o,
+                                                 localKd, localPr, localPm, etai, etat, false,
+                                                 lobeVal, lobePdf);
+    BrdfData r;
+    r.val = useLobe ? lobeVal : m.val;
+    r.pdf = useLobe ? lobePdf : m.pdf;
+    return r;
 }
 
 //geometry term uses shading normal
@@ -371,6 +369,18 @@ void loadReservoirPayload(RWByteAddressBuffer buf, uint pixelIdx, inout Reservoi
     r.seed      = hyb.x;
     r.cachedJac = asfloat(hyb.y);
     r.gBase     = asfloat(hyb.z);
+}
+
+//Buffer-selected payload load for the single-call-site shift eval
+//(HybridShiftEval_post): the temporal pass shifts FROM g_Reservoirs_last
+//(forward) and FROM g_Reservoirs_current (reverse) through one inlined post
+//body — a per-call buffer PARAMETER would specialize the whole body per
+//buffer and double it again. Pass literals where the buffer is fixed (the
+//spatial pass always resolves against current) so the dead half folds.
+void loadReservoirPayloadSel(bool fromLast, uint pixelIdx, inout Reservoir r)
+{
+    if (fromLast) loadReservoirPayload(g_Reservoirs_last,    pixelIdx, r);
+    else          loadReservoirPayload(g_Reservoirs_current, pixelIdx, r);
 }
 
 Reservoir loadReservoir(RWByteAddressBuffer buf, uint pixelIdx)
@@ -442,6 +452,13 @@ float3 load_F(RWByteAddressBuffer b, uint pixelIdx)
 uint load_M(RWByteAddressBuffer b, uint pixelIdx)
 {
     return b.Load(addr_m(pixelIdx));
+}
+
+//source-side geometric factor alone (the pre-visibility reject hint of the
+//direct shift paths — see HybridShiftEval_post's gBaseHint)
+float load_gBase(RWByteAddressBuffer b, uint pixelIdx)
+{
+    return asfloat(b.Load(addr_hyb(pixelIdx) + 8u));
 }
 
 void store_M(RWByteAddressBuffer b, uint pixelIdx, uint M)
@@ -580,13 +597,10 @@ inline float3 ReconnectPSS(
         const float3 wi  = normalize(x2);
         //dir-copy (BSDF dim): lobe samples re-evaluate the RECORDED escaping
         //lobe; PAREA (sun-NEE) is an all-lobes dim -> full BSDF either way.
-        BrdfData bd1;
-        if (useLobes && !(rcInfo & RC_F_PAREA))
-            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, wi, o,
-                                 localKd1, localPr1, localPm1, etai1, etat1);
-        else
-            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, wi, o,
-                                localKd1, localPr1, localPm1, etai1, etat1);
+        const BrdfData bd1 = BSDF_term_sel(useLobes && !(rcInfo & RC_F_PAREA),
+                                           RcLobeAt(rcInfo, rcKk - 1u),
+                                           mID1, n1_s, n1_s, wi, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
         const float  ct  = max(1e-15f, dot(n1_s, wi));
         float3 r = bd1.val * L2 * ct;
         if (any(isnan(r)) || any(isinf(r))) return 0.0f;
@@ -612,13 +626,10 @@ inline float3 ReconnectPSS(
 
         //BSDF-end (emitter hit): the segment lobe is recorded; NEE-end (PAREA)
         //is an all-lobes dim -> full BSDF.
-        BrdfData bd1;
-        if (useLobes && !(rcInfo & RC_F_PAREA))
-            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, -ndirNT, o,
-                                 localKd1, localPr1, localPm1, etai1, etat1);
-        else
-            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirNT, o,
-                                localKd1, localPr1, localPm1, etai1, etat1);
+        const BrdfData bd1 = BSDF_term_sel(useLobes && !(rcInfo & RC_F_PAREA),
+                                           RcLobeAt(rcInfo, rcKk - 1u),
+                                           mID1, n1_s, n1_s, -ndirNT, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
         const float  G1 = G_term(n1_s, -ndirNT);
 
         //absorption only when x1 is inside transmissive medium
@@ -738,25 +749,19 @@ inline float3 ReconnectPSS(
         F1 = localKd1 * SSS_INV_PI;                               //entry coupling tinted by x1 surface albedo
     } else {
         //reconnection segment: single recorded lobe when BSDF-sampled
-        BrdfData bd1;
-        if (useLobes && !(rcInfo & RC_F_NOPPREV))
-            bd1 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk - 1u), mID1, n1_s, n1_s, -ndirN, o,
-                                 localKd1, localPr1, localPm1, etai1, etat1);
-        else
-            bd1 = BSDF_term_pdf(mID1, n1_s, n1_s, -ndirN, o,
-                                localKd1, localPr1, localPm1, etai1, etat1);
+        const BrdfData bd1 = BSDF_term_sel(useLobes && !(rcInfo & RC_F_NOPPREV),
+                                           RcLobeAt(rcInfo, rcKk - 1u),
+                                           mID1, n1_s, n1_s, -ndirN, o,
+                                           localKd1, localPr1, localPm1, etai1, etat1);
         F1   = bd1.val;
         pdf1 = bd1.pdf;
     }
     //continuation at the pin: single recorded lobe when it left via a BSDF dim
     //(at-pin NEE / SSS-entry pins carry RC_F_NOPK -> full BSDF toward V2)
-    BrdfData bd2;
-    if (useLobes && !(rcInfo & RC_F_NOPK))
-        bd2 = BSDF_term_lobe(RcLobeAt(rcInfo, rcKk), baseID2, n2_s, n2_s, -V2, ndirN,
-                             localKd2, localPr2, localPm2, etai2, etat2);
-    else
-        bd2 = BSDF_term_pdf(baseID2, n2_s, n2_s, -V2, ndirN,
-                            localKd2, localPr2, localPm2, etai2, etat2);
+    const BrdfData bd2 = BSDF_term_sel(useLobes && !(rcInfo & RC_F_NOPK),
+                                       RcLobeAt(rcInfo, rcKk),
+                                       baseID2, n2_s, n2_s, -V2, ndirN,
+                                       localKd2, localPr2, localPm2, etai2, etat2);
     const float3 F2 = bd2.val;
 
     float  G2  = G_term(n2_s, -V2);

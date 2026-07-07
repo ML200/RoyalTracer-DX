@@ -16,6 +16,7 @@
 #include <fstream>
 #include <filesystem>
 #include <random>
+#include <unordered_set>
 #include <d3dcompiler.h>
 #include <DirectXPackedVector.h>
 #include "../DirectXTex/DirectXTex.h"
@@ -424,11 +425,13 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // jacThreshold/normalSimCos) + 3 path-trace constants [38..40]
     // (pt_maxBounces, pt_rrStartDepth, pt_initialSamples) + 1 SPMIS plane-distance
     // constant [41] (spmis_planeDist) + 1 material-texture filter mode [42]
-    // (pt_pointFilter) = 43.
+    // (pt_pointFilter) + 1 spare/unused constant [43] (_shift_loopRole_unused —
+    // formerly Pass_shift_v8's host-loop role index, round 13 moved role to
+    // DispatchRaysIndex().z; left declared, always 0) = 44.
     // (Last 5 of the NRC block are scene-bounds normalization for the position
     // input; the SPMIS block is the hash-grid reuse params, see
     // Includes_v8.hlsli / the Pass_spmis_* kernels.)
-    rootParameters[1].InitAsConstants(43, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    rootParameters[1].InitAsConstants(44, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     // SPMIS global hash-grid buffer as a root UAV at u25 (g_spmisBuffer). Bound as a
     // root descriptor rather than a heap entry to avoid descriptor-table surgery; set
     // per-pass via SetComputeRootUnorderedAccessView (Renderer.cpp setConsts).
@@ -609,7 +612,16 @@ void Renderer::CreateRaytracingPipeline() {
             continue;
         }
 
-        // RayGen
+        // RayGen. A file can appear MORE THAN ONCE in the token stream now
+        // (Pass_shift_v8.hlsl gets a separate "|rg:temporal_shift" and
+        // "|rg:spatial_shift" entry — see PassDesc::dispatchTag) — compile +
+        // export it only on the FIRST sighting; a DXR state object rejects
+        // duplicate export names, and every later occurrence just needs
+        // PassIndexByFile to resolve to the SAME SBT record, which it already
+        // does once registered once.
+        if (m_passes.PassIndexByFile(p.file) != UINT32_MAX)
+            continue;
+
         std::wstring base = p.file.substr(p.file.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
         rayGenNames.push_back(base);
@@ -771,25 +783,15 @@ void Renderer::CreatePathStateBuffer() {
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgs)));
         m_raysIndirectArgs->SetName(L"RaysIndirectArgs");
     }
-    //hybrid-shift replay dispatch args ([0] temporal, [1] spatial) — separate
-    //buffers so each rides its own COMMON->COPY_DEST->INDIRECT_ARGUMENT->decay
-    //cycle per frame (the raygen args buffer is parked in INDIRECT_ARGUMENT by
-    //the time the replay passes patch theirs).
-    for (int r = 0; r < 2; ++r) {
-        if (m_raysIndirectArgsReplay[r]) continue;
-        auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
-        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
-            D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&m_raysIndirectArgsReplay[r])));
-        m_raysIndirectArgsReplay[r]->SetName(r == 0 ? L"RaysIndirectArgsTempReplay"
-                                                    : L"RaysIndirectArgsSpmisReplay");
-    }
+    //(No more hybrid-shift replay args buffer: Pass_temp_replay and
+    //Pass_spmis_shift are both plain full-screen DispatchRays calls now, no
+    //indirect dispatch / queue involved for either.)
     if (!m_raysArgsTemplate) {
         auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        //FOUR template slots: [0] = full raygen variant, [1] = lite variant
-        //(cloud surface shadows compiled out), [2] = Pass_temp_replay_v8,
-        //[3] = Pass_spmis_replay_v8. The record paths copy the matching slot.
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(4 * sizeof(D3D12_DISPATCH_RAYS_DESC));
+        //TWO template slots: [0] = full raygen variant, [1] = lite variant
+        //(cloud surface shadows compiled out). The record paths copy the
+        //matching slot.
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(2 * sizeof(D3D12_DISPATCH_RAYS_DESC));
         ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_raysArgsTemplate)));
         m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
@@ -1377,6 +1379,15 @@ void Renderer::CreateShaderBindingTable() {
     auto heapPointer = reinterpret_cast<UINT64*>(heapHandle.ptr);
 
     uint32_t rgEntryCount = 0;
+    std::unordered_set<std::wstring> seenRayGenFiles;   // a file may appear more than once
+                                                          // (Pass_shift_v8.hlsl gets separate
+                                                          // "temporal_shift"/"spatial_shift"
+                                                          // dispatchTag entries) — one SBT
+                                                          // record per file, matching
+                                                          // CreateRaytracingPipeline's dedup
+                                                          // so rgEntryCount stays in lockstep
+                                                          // with the PassIndexByFile slots
+                                                          // Stage::RayGen dispatches use.
     for (const auto& entry : m_passes.Tokens()) {
         if (entry == L"barrier" || entry.rfind(L"loop:", 0) == 0 ||
             entry == L"endloop" || entry == L"pingswap" ||
@@ -1389,6 +1400,8 @@ void Renderer::CreateShaderBindingTable() {
             entry.find(L"|fx:") != std::wstring::npos ||
             entry.find(L"|call") != std::wstring::npos)
             continue;
+        if (!seenRayGenFiles.insert(entry).second)
+            continue;   //already added this file's SBT record
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
@@ -1569,35 +1582,18 @@ void Renderer::WriteRaysIndirectTemplate() {
         dLite.RayGenerationShaderRecord.StartAddress =
             sbtStart + m_raygenLiteSbtSlot * m_sbtHelper.GetRayGenEntrySize();
 
-    //slots 2/3: the hybrid-shift replay passes (compacted 1D indirect over the
-    //temporal / spatial replay queues). Same tables, raygen record swapped.
-    D3D12_DISPATCH_RAYS_DESC dTempReplay = d;
-    {
-        const uint32_t slot = m_passes.PassIndexByFile(L"Pass_temp_replay_v8.hlsl");
-        if (slot != UINT32_MAX)
-            dTempReplay.RayGenerationShaderRecord.StartAddress =
-                sbtStart + slot * m_sbtHelper.GetRayGenEntrySize();
-    }
-    D3D12_DISPATCH_RAYS_DESC dSpmisReplay = d;
-    {
-        const uint32_t slot = m_passes.PassIndexByFile(L"Pass_spmis_replay_v8.hlsl");
-        if (slot != UINT32_MAX)
-            dSpmisReplay.RayGenerationShaderRecord.StartAddress =
-                sbtStart + slot * m_sbtHelper.GetRayGenEntrySize();
-        //ROLE THREADS: .y = 0 canonical | 1..SPMIS_SPLIT_MAXDRAWS draw slots, one
-        //replay walk per thread instead of a serial per-pixel loop. Must equal
-        //1 + SPMIS_SPLIT_MAXDRAWS (HashGridHash_v8.hlsli); Width stays the
-        //GPU-patched queue count.
-        dSpmisReplay.Height = 1 + 4;
-    }
+    //(Slots 2/3 — the old temporal/spatial replay-queue templates — are gone.
+    //Pass_temp_replay and Pass_spmis_shift are both plain full-screen
+    //DispatchRays calls now (role dimension via raysDesc.Depth in the RayGen
+    //dispatch case, see Renderer.cpp), self-selecting per pixel/role from
+    //parked PENDING sentinels instead of consuming an indirect-dispatch
+    //queue — no per-pass args buffer or template slot needed for either.)
 
     void* p = nullptr;
     CD3DX12_RANGE noRead(0, 0);
     ThrowIfFailed(m_raysArgsTemplate->Map(0, &noRead, &p));
     memcpy(p, &d, sizeof(d));
-    memcpy(static_cast<uint8_t*>(p) + 1 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite,        sizeof(dLite));
-    memcpy(static_cast<uint8_t*>(p) + 2 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dTempReplay,  sizeof(dTempReplay));
-    memcpy(static_cast<uint8_t*>(p) + 3 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dSpmisReplay, sizeof(dSpmisReplay));
+    memcpy(static_cast<uint8_t*>(p) + 1 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite, sizeof(dLite));
     m_raysArgsTemplate->Unmap(0, nullptr);
 }
 

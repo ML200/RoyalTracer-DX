@@ -273,8 +273,9 @@ struct ReSTIRSettings {
     //ReSTIR PT hybrid shift (random replay + reconnection in primary sample
     //space; flag 0x4000). ON: raygen pins the reconnection vertex at the first
     //vertex pair passing the criteria and glossy prefixes are random-replayed
-    //at reuse (Pass_temp_replay / Pass_spmis_replay compacted indirect
-    //dispatches). OFF: legacy pin at x2, zero replay, legacy glossy reuse gates.
+    //at reuse (temporal: compacted Pass_temp_replay indirect dispatch;
+    //spatial: replay roles inside the unified Pass_spmis_shift). OFF: legacy
+    //pin at x2, zero replay, legacy glossy reuse gates.
     bool  hybridShift = true;
     //Hybrid pin criteria: minimum reconnection-segment length as a FRACTION of
     //the primary camera distance (cbuffer slot 18). Short segments make the

@@ -7,18 +7,40 @@
 //final reconnection segment contributes the jacobian bundle, which ReconnectPSS
 //evaluates at the replayed vertex y_{k-1}.
 //
-//Included ONLY by Pass_temp_replay_v8 / Pass_spmis_replay_v8: this is the sole
-//reuse-side TraceRay site, so the select/shift passes stay RayQuery-only and the
-//replay cost is compacted into the two indirect dispatches.
+//Included ONLY by Pass_shift_v8.hlsl (ONE binary handling both spatial and
+//temporal shift/replay mapping — round 8 unification, round 8b split into two
+//compile-time specializations, round 12 reverted back to one binary after
+//profiling showed the split dispatched slower despite its lower register
+//count): the sole reuse-side TraceRay site for either domain — select/temp_gi
+//and the compute merges stay ray-free.
 //
 //LIVE-STATE CONTRACT: the walk carries ONLY {HitContext, thr, rayDir} plus the
 //three ident words {pathSeed, rcInfo, pinMatID} across its SER reorder points.
 //The 48B reservoir payload the reconnection needs is loaded AFTER the last
-//trace (loadReservoirPayload inside HybridShiftEval_post) — callers must NOT
-//hold a full Reservoir across a HybridShiftEval call: pass the ident words from
-//the routing loads and re-load merge state (F/W/M/cachedJac/gBase, or the full
-//record) post-call. Nothing writes the reservoir buffers while the replay
-//passes run, so every post-walk re-load is bit-identical to a pre-walk load.
+//trace (loadReservoirPayloadSel inside HybridShiftEval_post) — callers must NOT
+//hold a full Reservoir across the walk: pass the ident words from the routing
+//loads and re-load merge state (F/W/M/cachedJac/gBase, or the full record)
+//post-call. Nothing writes the reservoir buffers while the walk passes run, so
+//every post-walk re-load is bit-identical to a pre-walk load.
+//
+//ENFORCEMENT (Replay_AnchorLoads): the deferral above is only real if the
+//compiler cannot undo it. The reservoir buffers are NOT globallycoherent (and
+//the reuse passes drop it from the scratch buffers for L1 reads), so plain
+//"reload after the trace" code is legal to fold back: DXC store-to-load
+//forwards / CSEs a post-walk reload into the pre-walk load of the same address,
+//and the driver may hoist fresh post-walk loads ABOVE the traces to hide their
+//latency — either way the full records ride every reorder point again and the
+//contract silently dies (measured ~600B live state vs raygen's ~230B). Callers
+//MUST place Replay_AnchorLoads() between the last trace of a walk and the
+//first deferred load; loads sequenced after the fence cannot move above it.
+//
+//CALL-SITE BUDGET: ReplayWalk and HybridShiftEval_post inline the full
+//material stack (4-lobe eval + forced-lobe variants, ReconnectPSS). Each pass
+//keeps exactly ONE call site of each — route every direction/role through the
+//same call with selected arguments (a direct k==2 reconnection is the
+//{ok, thr=1, sv=receiver} degenerate of the same map). Two call sites double
+//the shader; the old split passes carried 2x walks + 2-4x reconnects each,
+//which is where the compile time and the I$-thrash (noinstr) stalls lived.
 //
 //Every shift is the FIXED map T_k of its sample (k rides rcInfo), so NO pin
 //criteria are re-derived on the offset side — full reuse across all
@@ -83,6 +105,26 @@ struct ReplayResult
     float3        thr;      //pdf-divided prefix throughput  prod(f*cos/pdf), RR-free
     SurfaceVertex sv;       //y_{k-1}, ready for ReconnectPSS (o points at y_{k-2})
 };
+
+//Direct-shift wrapper: a k==2 reconnection is the walk-free degenerate of the
+//replay map. Funnelling it through the SAME HybridShiftEval_post call site as
+//the replayed shifts keeps ReconnectPSS inlined once per pass.
+inline ReplayResult DirectShiftResult(in SurfaceVertex sv)
+{
+    ReplayResult rr;
+    rr.ok  = true;
+    rr.thr = float3(1, 1, 1);
+    rr.sv  = sv;
+    return rr;
+}
+
+//Acquire fence between a walk's LAST trace and the first deferred merge-state
+//load (see the header's ENFORCEMENT note). Loads sequenced after this cannot
+//be hoisted above it and cannot be satisfied by forwarding a pre-walk load, so
+//the post-walk placement is enforced rather than advisory. Cheap: the walk has
+//no pending UAV stores for the fence to drain, and the reloads still come from
+//L1 (the fence orders, it does not decohere).
+inline void Replay_AnchorLoads() { DeviceMemoryBarrier(); }
 
 //Bounce-loop context from already-decoded primary-hit fields. The temporal merge
 //body's own-pixel entry loads use the exact same decode helpers as load_SD
@@ -177,34 +219,42 @@ inline ReplayResult ReplayWalk(HitContext ctx, float3 camToX1,
         const SamplingP sp = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal,
                                                             ctx.iors.x, ctx.iors.y,
                                                             ctx.hitLocalKd, ctx.hitLocalPm);
-        //forced lobe (RC_F_LOBES): availability check BEFORE any sampling or
-        //tracing — a missing lobe kills the whole walk early. The lobe-clean
-        //bdata makes the identical w formula below produce rho_l*cos/p(w|l).
-        float3   s;
-        BrdfData bdata;
+        //FUSED forced/free bounce (code-size: the sampling and eval stacks
+        //inline ONCE, not per branch — the old if/else pair doubled them):
+        //  forced lobe (RC_F_LOBES): availability check BEFORE any sampling or
+        //  tracing — a missing lobe kills the whole walk early — then the
+        //  selection draw is burned for stream alignment and the RECORDED lobe
+        //  sampled; free mode consumes the same draw to select. Identical draw
+        //  order either way. The _L walk's latched pair IS the old
+        //  EvaluateLobePdf_COMBINED result; its marginal IS the old
+        //  EvaluateAndPdf_COMBINED — the select below is value-identical to
+        //  the old branch pair.
+        uint strat;
         if (forceLobes)
         {
             const uint lb = RcLobeAt(rcInfo, b);
             if (StrategyP(sp, lb) < EPSILON)
                 return rr;
-            s     = SampleBRDF_Forced(lb, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
-                                      ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                                      sBsdf, ctx.iors.x, ctx.iors.y, false);
-            bdata = EvaluateLobePdf_COMBINED(sp, lb, ctx.matID, ctx.hitNormal, ctx.hitNormal,
-                                             s, -rayDir,
-                                             ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                                             ctx.iors.x, ctx.iors.y, false);
+            RandomFloatSingle(sBsdf);   //burn the SelectSamplingStrategy draw
+            strat = lb;
         }
         else
         {
-            s     = SampleBRDF(sp, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
-                               ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                               sBsdf, ctx.iors.x, ctx.iors.y, false);
-            bdata = EvaluateAndPdf_COMBINED(sp, ctx.matID, ctx.hitNormal, ctx.hitNormal,
-                                            s, -rayDir,
-                                            ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
-                                            ctx.iors.x, ctx.iors.y, false);
+            strat = SelectSamplingStrategy(sp, sBsdf);
         }
+        const float3 s = SampleBRDF_WithStrategy(strat, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal,
+                                                 ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                                                 sBsdf, ctx.iors.x, ctx.iors.y, false);
+        float3 lobeVal; float lobePdf;
+        const BrdfData mbd = EvaluateAndPdf_COMBINED_L(sp, forceLobes ? strat : 0xFFFFFFFFu,
+                                                       ctx.matID, ctx.hitNormal, ctx.hitNormal,
+                                                       s, -rayDir,
+                                                       ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm,
+                                                       ctx.iors.x, ctx.iors.y, false,
+                                                       lobeVal, lobePdf);
+        BrdfData bdata;
+        bdata.val = forceLobes ? lobeVal : mbd.val;
+        bdata.pdf = forceLobes ? lobePdf : mbd.pdf;
 
         const float  cosTheta = abs(dot(ctx.hitNormal, s));
         const float3 w        = (bdata.pdf > 1e-6f)
@@ -298,18 +348,26 @@ inline ReplayResult ReplayWalk(HitContext ctx, float3 camToX1,
     return rr;
 }
 
-//RC_F_ENV_REPLAY tail: consumes a COMPLETED prefix walk, then the FINAL BSDF
-//dim is RE-DERIVED from the stream at y_{k-1} (bounce k-1); the trace must MISS
-//(doubling as visibility) and sky+sun are re-evaluated along the new direction
-//with raygen's exact MIS. Pure PSS: identity replay of every dim, jacobian 1,
-//cachedNew = 1 — the returned c IS the shifted F' directly. Touches NO
-//reservoir payload at all.
-inline float3 EnvReplayTail(
+//RC_F_ENV_REPLAY tail — SHIFT-SIDE HALF (the atmosphere eval is DEFERRED to the
+//merges; see EnvTailFinish in SunSampler_v8.hlsli). Consumes a COMPLETED prefix
+//walk, RE-DERIVES the FINAL BSDF dim from the stream at y_{k-1} (bounce k-1),
+//and traces the must-miss (which doubles as the env visibility test). Returns
+//the PARTIAL contribution cPartial = thr·dimVal·cosTheta/dimPdf and hands back
+//the offset direction `sOut` + its MARGINAL BSDF pdf `misPdfOut`; the merge
+//finishes c = cPartial·envL(sOut) with sky+sun re-evaluated at sOut (per-pixel
+//observer). Splitting it this way keeps the atmosphere LUT/march stack
+//(SetSkyObserver/EvaluateSky/EvaluateSun/GetSunPdf) OUT of the register-tight RT
+//shift binary — inlined there it set the occupancy ceiling for ALL shift lanes,
+//not just env-replay ones. Pure PSS: identity replay of every dim, jacobian 1,
+//cachedNew = 1 (the caller stamps those). `ok` is false on any structural
+//failure (dead tail dim / trace hit); sOut/misPdfOut are then meaningless and
+//the caller writes cPartial = 0 as the merge's dead sentinel. Touches NO payload.
+inline float3 EnvReplayTailPartial(
     in ReplayResult rr,
     uint pathSeed, uint rcInfo,
-    out float Jn, out float cachedNew)
+    out float3 sOut, out float misPdfOut, out bool ok)
 {
-    Jn = 1.0f; cachedNew = 0.0f;
+    sOut = float3(0, 0, 1); misPdfOut = 0.0f; ok = false;
 
     if (!rr.ok) return (float3)0.0f;
 
@@ -319,49 +377,39 @@ inline float3 EnvReplayTail(
     const SamplingP sp = CalculateStrategyProbabilities(rr.sv.matID, rr.sv.o, rr.sv.n_s,
                                                         (half)rr.sv.etai, (half)rr.sv.etat,
                                                         rr.sv.Kd, (half)rr.sv.Pm);
-    //final dim: forced recorded lobe for RC_F_LOBES samples (throughput-side
-    //value/pdf go lobe-clean), but the sun MIS weight MUST stay on the
-    //MARGINAL pdf — generation folded prev_pdf (marginal) into its MIS.
-    float3 s;
-    float3 dimVal;
-    float  dimPdf;    //throughput-side pdf (conditional under lobes)
-    float  misPdf;    //sun-MIS pdf (always marginal)
-    if (RcHasLobes(rcInfo))
+    //final dim, FUSED forced/free exactly like the walk bounce above (one
+    //sampling + one _L eval inline): forced recorded lobe for RC_F_LOBES
+    //samples (throughput-side value/pdf go lobe-clean), but the sun MIS weight
+    //MUST stay on the MARGINAL pdf — generation folded prev_pdf (marginal)
+    //into its MIS, and the _L marginal is the SAME accumulation raygen's miss
+    //MIS folded at generation. misPdf (=that marginal) is handed to the merge.
+    const bool tailLobe = RcHasLobes(rcInfo);
+    uint strat;
+    if (tailLobe)
     {
         const uint lb = RcLobeAt(rcInfo, kk - 1u);
         if (StrategyP(sp, lb) < EPSILON)
             return (float3)0.0f;
-        s = SampleBRDF_Forced(lb, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
-                              rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                              sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
-        //ONE fused walk (was EvaluateLobePdf_COMBINED + a second BRDF_PDF_COMBINED
-        //pass): the latched pair matches EvaluateLobePdf_COMBINED exactly, and the
-        //marginal is the SAME accumulation raygen's miss MIS folded at generation
-        //(EvaluateAndPdf_COMBINED_L) — the separate pdf-only walk was the
-        //approximate reconstruction, not this.
-        float3 lobeVal; float lobePdf;
-        const BrdfData mbd = EvaluateAndPdf_COMBINED_L(sp, lb, rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
-                                                       s, rr.sv.o,
-                                                       rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                                                       (half)rr.sv.etai, (half)rr.sv.etat, false,
-                                                       lobeVal, lobePdf);
-        dimVal = lobeVal;
-        dimPdf = lobePdf;
-        misPdf = mbd.pdf;
+        RandomFloatSingle(sBsdf);   //burn the SelectSamplingStrategy draw
+        strat = lb;
     }
     else
     {
-        s = SampleBRDF(sp, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
-                       rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                       sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
-        const BrdfData bdata = EvaluateAndPdf_COMBINED(sp, rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
-                                                       s, rr.sv.o,
-                                                       rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
-                                                       (half)rr.sv.etai, (half)rr.sv.etat, false);
-        dimVal = bdata.val;
-        dimPdf = bdata.pdf;
-        misPdf = bdata.pdf;
+        strat = SelectSamplingStrategy(sp, sBsdf);
     }
+    const float3 s = SampleBRDF_WithStrategy(strat, rr.sv.matID, rr.sv.o, rr.sv.n_s, rr.sv.n_s,
+                                             rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                                             sBsdf, (half)rr.sv.etai, (half)rr.sv.etat, false);
+    float3 lobeVal; float lobePdf;
+    const BrdfData mbd = EvaluateAndPdf_COMBINED_L(sp, tailLobe ? strat : 0xFFFFFFFFu,
+                                                   rr.sv.matID, rr.sv.n_s, rr.sv.n_s,
+                                                   s, rr.sv.o,
+                                                   rr.sv.Kd, (half)rr.sv.Pr, (half)rr.sv.Pm,
+                                                   (half)rr.sv.etai, (half)rr.sv.etat, false,
+                                                   lobeVal, lobePdf);
+    const float3 dimVal = tailLobe ? lobeVal : mbd.val;   //throughput-side (conditional under lobes)
+    const float  dimPdf = tailLobe ? lobePdf : mbd.pdf;
+    const float  misPdf = mbd.pdf;                        //sun-MIS pdf (always marginal)
     const float cosTheta = abs(dot(rr.sv.n_s, s));
     if (dot(s, s) < 1e-12f || dimPdf <= 1e-6f)
         return (float3)0.0f;
@@ -381,49 +429,57 @@ inline float3 EnvReplayTail(
     if (hit.IsHit())
         return (float3)0.0f;
 
-    //sky/sun from the replayed bounce origin, raygen's exact MIS
-    SetSkyObserver(rayOrigin + sceneOriginWorld);
-    const float  sunSAPdf   = GetSunPdf(s);
-    const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(s) : float3(0, 0, 0);
-    const float  sunMisBsdf = (sunSAPdf > 0.0f)
-        ? misPdf / max(misPdf + sunSAPdf, EPSILON) : 0.0f;
-    float3 cloudTr;
-    const float3 sky  = EvaluateSky(s, cloudTr);
-    const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
-
-    float3 c = rr.thr * (dimVal * cosTheta / dimPdf) * envL;
-    if (any(isnan(c)) || any(isinf(c)))
-        return (float3)0.0f;
-    cachedNew = 1.0f;
-    return max(c, 0.0f);
+    //DEFERRED: the merge evaluates sky+sun at sOut (per-pixel observer) and
+    //multiplies. We only hand back the partial throughput + the direction + pdf.
+    sOut      = s;
+    misPdfOut = misPdf;
+    ok        = true;
+    return rr.thr * (dimVal * cosTheta / dimPdf);
 }
 
-//Post-walk half of the shift eval: env tail OR payload load + reconnection +
-//reuse visibility. The FIRST reservoir-payload touch sits here, after the last
-//prefix trace. Returns the SHIFTED PSS numerator c (prefix folded in), Jn,
-//cachedNew; c==0 on any failure. `vis` is the reconnection-segment
-//transmittance (folded by callers into the shifted target exactly like the
-//k==2 inline paths do).
-inline float3 HybridShiftEval_post(
+//Post half of the shift eval, GIVEN an already-selected payload Reservoir
+//(garbage/zero is fine when RcEnvReplay(rcInfo) — the env tail never reads
+//it). This is the split-out reconnect MATH: env tail OR reconnection + reuse
+//visibility, ONE call site regardless of how many buffers a caller's payload
+//could have come from — see HybridShiftEval_post below for why that split
+//matters. Same contract as before: caller calls Replay_AnchorLoads() between
+//the walk and loading `r`; gBaseHint/killPh/preVisDead semantics unchanged.
+inline float3 HybridShiftEval_post_r(
     in ReplayResult rr,
-    RWByteAddressBuffer resBuf, uint resPx,
-    uint pathSeed, uint rcInfo,
+    in Reservoir r,
+    uint  pathSeed, uint rcInfo,
     bool  traceVis,
-    out float Jn, out float cachedNew)
+    float gBaseHint, float jacThreshold, bool killPh,
+    out float Jn, out float cachedNew, out bool preVisDead,
+    out float3 envDir, out float envMisPdf)
 {
-    Jn = 1.0f; cachedNew = 0.0f;
+    Jn = 1.0f; cachedNew = 0.0f; preVisDead = true;
+    envDir = (float3)0.0f; envMisPdf = 0.0f;   //only the env-replay branch fills these
 
     if (RcEnvReplay(rcInfo))
-        return EnvReplayTail(rr, pathSeed, rcInfo, Jn, cachedNew);
+    {
+        //DEFERRED env tail: the shift produces the PARTIAL contribution + the
+        //offset direction, the MERGE finishes sky+sun (EnvTailFinish). cachedNew/
+        //Jn are the env constant 1; final dead-ness is decided in the merge from
+        //the finished c. preVisDead just tracks the structural-failure sentinel
+        //(!ok -> cPartial 0). The must-miss trace inside IS the visibility.
+        bool ok;
+        const float3 cPartial = EnvReplayTailPartial(rr, pathSeed, rcInfo, envDir, envMisPdf, ok);
+        cachedNew  = 1.0f;   //Jn already 1
+        preVisDead = !ok;
+        return ok ? cPartial : (float3)0.0f;
+    }
 
-    if (!rr.ok) return (float3)0.0f;
-
-    //payload load DEFERRED past the walk (live-state contract)
-    Reservoir r = (Reservoir)0;
-    loadReservoirPayload(resBuf, resPx, r);
+    if (!rr.ok || killPh) return (float3)0.0f;
 
     float3 c = ReconnectPSS_sv(rr.sv, r, Jn, cachedNew);
+    //hinted geometric reject (direct paths, gBaseHint >= 0): identical to
+    //rejecting after the ray, minus the ray — including the gBase<=0 reject
+    //inside RcGeomReject. Replay paths pass -1 and band post-fence instead.
+    if (gBaseHint >= 0.0f && RcGeomReject(Jn, gBaseHint, jacThreshold))
+        return (float3)0.0f;
     if (GetPHat(c) <= 0.0f) return (float3)0.0f;
+    preVisDead = false;
     c *= rr.thr;
 
     if (traceVis && !IsVolumeVertex(r.matID))
@@ -444,35 +500,42 @@ inline float3 HybridShiftEval_post(
     return c;
 }
 
-//Full replay-shift evaluation, G-buffer primary context: prefix replay +
-//reconnection (or the env-replay tail) + reuse visibility. (resBuf, resPx)
-//locate the reservoir whose payload the reconnection consumes — loaded
-//post-walk; the caller supplies only the three ident words.
-inline float3 HybridShiftEval(
-    RWByteAddressBuffer sampleBuf, uint startPx,
-    RWByteAddressBuffer resBuf, uint resPx,
-    uint pathSeed, uint rcInfo, uint pinMatID,
+//Convenience wrapper: loads the payload itself, buffer picked by `resLast`.
+//  * REPLAY (rr from ReplayWalk): the caller MUST call Replay_AnchorLoads()
+//    between the walk and this call (payload load is a live-state-contract
+//    deferral, not just a convenience — see the header note).
+//  * DIRECT k==2 (rr = DirectShiftResult(receiver sv)): no walk, no fence.
+//  gBaseHint/killPh/rcInfo/pathSeed semantics: see HybridShiftEval_post_r.
+//
+//resLast MUST be a call-site LITERAL, not a value threaded through from a
+//runtime condition (e.g. a per-thread dispatch index) — this is what lets
+//loadReservoirPayloadSel's dead branch fold away entirely. A caller whose
+//buffer choice IS runtime-only (temporal's forward-vs-reverse) must NOT
+//route it through this bool: branch on its own condition with literal `true`/
+//`false` arguments to TWO calls of the small loadReservoirPayload load, then
+//call HybridShiftEval_post_r ONCE with the resulting value — that keeps the
+//expensive reconnect math single-instanced and only duplicates the tiny load
+//(see Pass_shift_v8.hlsl's resBufLast branch — runtime for both domains now,
+//literal true/false at each of its two call sites — for the pattern). Threading a runtime bool through
+//THIS wrapper instead would still compile (HLSL doesn't require the literal),
+//but silently reintroduces the exact per-call-site doubling the split above
+//exists to avoid — the compiler cannot fold the dead half without the literal,
+//and inlining then duplicates everything downstream of it, not just the load.
+inline float3 HybridShiftEval_post(
+    in ReplayResult rr,
+    bool  resLast, uint resPx,
+    uint  pathSeed, uint rcInfo,
     bool  traceVis,
-    out float Jn, out float cachedNew)
+    float gBaseHint, float jacThreshold, bool killPh,
+    out float Jn, out float cachedNew, out bool preVisDead,
+    out float3 envDir, out float envMisPdf)
 {
-    HitContext ctx;
-    float3 camToX1;
-    Replay_PrimaryCtx(sampleBuf, startPx, ctx, camToX1);
-    ReplayResult rr = ReplayWalk(ctx, camToX1, pathSeed, rcInfo, pinMatID);
-    return HybridShiftEval_post(rr, resBuf, resPx, pathSeed, rcInfo, traceVis, Jn, cachedNew);
-}
-
-//Ctx-hoisted variant: the caller already decoded the receiver's primary hit
-//(the temporal merge body's own-pixel entry loads) — skips the SD-record fetch.
-inline float3 HybridShiftEvalCtx(
-    in HitContext ctx0, float3 camToX1,
-    RWByteAddressBuffer resBuf, uint resPx,
-    uint pathSeed, uint rcInfo, uint pinMatID,
-    bool  traceVis,
-    out float Jn, out float cachedNew)
-{
-    ReplayResult rr = ReplayWalk(ctx0, camToX1, pathSeed, rcInfo, pinMatID);
-    return HybridShiftEval_post(rr, resBuf, resPx, pathSeed, rcInfo, traceVis, Jn, cachedNew);
+    //payload load DEFERRED past the walk (live-state contract; fence at caller)
+    Reservoir r = (Reservoir)0;
+    if (!RcEnvReplay(rcInfo) && rr.ok && !killPh)
+        loadReservoirPayloadSel(resLast, resPx, r);
+    return HybridShiftEval_post_r(rr, r, pathSeed, rcInfo, traceVis, gBaseHint, jacThreshold, killPh,
+                                  Jn, cachedNew, preVisDead, envDir, envMisPdf);
 }
 
 #endif // HYBRID_REPLAY_V8_HLSLI

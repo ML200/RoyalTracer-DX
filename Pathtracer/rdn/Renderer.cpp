@@ -37,13 +37,14 @@ Renderer::Renderer(UINT width, UINT height)
         //L"cuda:nrc_inference",                          L"barrier",
         //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
-        L"Pass_temp_replay_v8.hlsl|rg",                 L"barrier",
+        L"Pass_shift_v8.hlsl|rg:temporal_shift",        L"barrier",
+        L"Pass_temp_merge_v8.hlsl|cs:16x16",              L"barrier",
         L"Pass_spmis_count_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_spmis_offsets_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_spmis_sort_v8.hlsl|cs:16x16",              L"barrier",
         L"Pass_spmis_select_v8.hlsl|cs:16x16",          L"barrier",
-        L"Pass_spmis_shift_v8.hlsl|rg",                 L"barrier",
-        L"Pass_spmis_replay_v8.hlsl|rg",                L"barrier",
+        L"Pass_spmis_passthrough_v8.hlsl|rg",           L"barrier",
+        L"Pass_shift_v8.hlsl|rg:spatial_shift",         L"barrier",
         L"Pass_spmis_merge_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
         //L"Pass_nrc_train_gather_v8.hlsl|cs:8x8",        L"barrier",
@@ -1740,11 +1741,13 @@ void Renderer::PopulateCommandList() {
           D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
       cmdList->ResourceBarrier(1, &b2); }
 
-    // Clear the queue HEADER (16B): [0] camera survivor count, [4] temporal
-    // replay count, [8] spatial replay count, [12] spare. The entry region from
-    // byte 16 is reused sequentially by the three producers within the frame
-    // (camera -> raygen consumed it before temp_gi enqueues; temporal entries
-    // are consumed by Pass_temp_replay before spmis_shift enqueues).
+    // Clear the queue HEADER (16B): [0] camera survivor count, [4]/[8]/[12]
+    // spare (both replay queues are gone — Pass_temp_replay and the unified
+    // Pass_spmis_shift are full-screen role-threaded dispatches now, self-
+    // selecting per pixel/role from parked PENDING sentinels instead of
+    // consuming an indirect-dispatch queue). The entry region from byte 16 is
+    // reused once per frame (camera -> raygen consumed it before temp_gi
+    // runs; temp_gi no longer writes it).
     { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
       cmdList->ResourceBarrier(1, &b);
@@ -1755,6 +1758,9 @@ void Renderer::PopulateCommandList() {
 
     // ── Execute pass pipeline ────────────────────────────────────
     uint32_t currentStack = 0, nextStack = 1;
+    // {total, remaining} per active loop — total lets the shift loop's role-
+    // constant derive its 0-based iteration index (total - remaining) at
+    // dispatch time; remaining is what LoopEnd counts down (see Stage::LoopEnd).
     std::vector<std::pair<int, uint32_t>> loopStack;
     // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
     UINT dispW = renderW, dispH = renderH;
@@ -1772,7 +1778,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[43] = {};
+    UINT rsConsts[44] = {};   // slot 43: Pass_shift_v8's per-dispatch loop role (set in Stage::RayGen)
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -2098,7 +2104,7 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 43, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, 44, rsConsts, 0);
         // SPMIS hash-grid buffer as a root UAV (u25) — see Includes_v8.hlsli / the
         // Pass_spmis_* kernels + raygen hash insertion. Bound for every main-root-sig
         // pass; shaders that don't reference it strip the binding (DXC).
@@ -2113,7 +2119,14 @@ void Renderer::PopulateCommandList() {
 
         switch (p.stage) {
         case Stage::LoopStart:
-            loopStack.push_back({ -1, p.loopCount });
+            // Plain numeric loop:N. Not exercised by anything in the live pass
+            // list right now — shift's spatial/temporal role dispatch moved to
+            // a Depth-dimension single DispatchRays (round 13; see
+            // Stage::RayGen) after Malte's profiling showed the host-redispatch
+            // loop's per-iteration barrier was serializing roles that a single
+            // multi-Depth dispatch lets the GPU overlap freely. Kept as general
+            // pass-list infrastructure for whatever needs it next.
+            loopStack.push_back({ (int)p.loopCount, p.loopCount });
             break;
 
         case Stage::PingSwap:
@@ -2177,49 +2190,28 @@ void Renderer::PopulateCommandList() {
                 break;
             }
 
-            //HYBRID SHIFT replay passes: compacted 1D indirect over the replay
-            //queues (temporal counter at byte 4, spatial at byte 8 of u26).
-            //Template slots 2/3 pin the SBT record; Width is patched from the
-            //counter exactly like the compacted raygen dispatch above. Each pass
-            //owns its OWN args buffer (m_raysIndirectArgsReplay[]) so the state
-            //cycle stays the simple COMMON->promoted COPY_DEST->INDIRECT_ARGUMENT
-            //->decay pattern — the shared raygen args buffer is already parked in
-            //INDIRECT_ARGUMENT by this point in the list. Skipped outright when
-            //the hybrid shift (or the owning reuse stage) is off — the producing
-            //pass never enqueues then, so nothing is lost.
-            if (p.file == L"Pass_temp_replay_v8.hlsl" ||
-                p.file == L"Pass_spmis_replay_v8.hlsl")
-            {
-                const bool isTemp = (p.file == L"Pass_temp_replay_v8.hlsl");
-                const bool active = rs.hybridShift &&
-                    (isTemp ? (baseFlags & 0x2u) != 0u : (baseFlags & 0x10u) != 0u);
-                if (!active)
-                    break;
-                ID3D12Resource* args = m_raysIndirectArgsReplay[isTemp ? 0 : 1].Get();
-                { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
-                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-                  cmdList->ResourceBarrier(1, &b); }
-                cmdList->CopyBufferRegion(args, 0,
-                    m_raysArgsTemplate.Get(),
-                    (isTemp ? 2 : 3) * sizeof(D3D12_DISPATCH_RAYS_DESC),
-                    sizeof(D3D12_DISPATCH_RAYS_DESC));
-                cmdList->CopyBufferRegion(args,
-                    offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
-                    m_raygenQueueBuffer.Get(), isTemp ? 4 : 8, sizeof(uint32_t));
-                { CD3DX12_RESOURCE_BARRIER post[] = {
-                      CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
-                          D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-                      CD3DX12_RESOURCE_BARRIER::Transition(args,
-                          D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) };
-                  cmdList->ResourceBarrier(2, post); }
-                cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1,
-                    args, 0, nullptr, 0);
-                break;
-            }
-
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
             raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
+            //Pass_shift_v8 (the unified spatial+temporal shift mapping, ONE
+            //binary — see its header) gets its role count from the Depth
+            //dimension of a SINGLE DispatchRays, not a host-side redispatch
+            //loop: round 8 tried loop:temporal_shift/loop:spatial_shift
+            //(2 / Ntn+1 host iterations, one role per DispatchRays call),
+            //round 13 reverted it (Malte's profiling: the barrier the pass
+            //list forces after each loop iteration serialized the roles a
+            //single multi-Depth dispatch lets the GPU overlap freely). The
+            //pass-list token's "rg:<tag>" (PassDesc::dispatchTag, see
+            //PassSystem::ParseToken) is what lets this SAME file/SBT-record
+            //pick a different Depth at its two call sites; every other
+            //RayGen pass has no tag and gets Depth=1. Shader reads its role
+            //from DispatchRaysIndex().z now, not a root constant.
+            UINT shiftDepth = 1;
+            if (p.dispatchTag == L"temporal_shift")
+                shiftDepth = 2;   // forward, reverse — always exactly 2, never runtime-tunable
+            else if (p.dispatchTag == L"spatial_shift")
+                shiftDepth = std::clamp((UINT)rs.spmisReuseN, 1u, kSpmisSplitMaxDraws) + 1;   // Ntn draws + 1 canonical
+            raysDesc.Depth = shiftDepth;
             cmdList->DispatchRays(&raysDesc);
             break;
         }

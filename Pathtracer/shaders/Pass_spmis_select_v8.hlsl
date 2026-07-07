@@ -3,15 +3,41 @@
 #include "Includes_v8.hlsli"
 
 //====================================
-//SPMIS SPATIAL REUSE - SELECT  (pass 1/3: cell search + candidate selection, NO rays)
+//SPMIS SPATIAL REUSE - SELECT  (pass 1/3: cell search + selection + shift routing, NO rays)
 //====================================
 //First stage of the split SPMIS reuse (select -> shift -> merge), the structural
 //analogue of the texture path's Pass_spat_gi_select. Owns the memory-heavy selection -
 //hash-cell WRS search, the canonical partner pick, and the Ntilde inner-RIS draws - and
 //writes the chosen candidate indices into the per-pixel scratch planes
 //(g_pathStateBuffer, free in SPMIS mode). Casts NO rays and stores NO reservoir; the
-//reconnections + visibility happen in shift, the WRS combine + output in merge.
-//Layout + status codes: see HashGridHash_v8.hlsli (SPM_*).
+//shift MAPPING (reconnection or replay) happens in shift, the WRS combine + output in
+//merge. Layout + status codes: see HashGridHash_v8.hlsli (SPM_*).
+//
+//JOB ROUTING lives here too, for the unified Pass_shift_v8 (round-8): select
+//decides per direction whether a shift job exists at all and writes a full
+//job descriptor (see the "UNIFIED SHIFT JOB" note in HashGridHash_v8.hlsli),
+//so every shift thread knows its one job from two loads. Slot d=0 is the
+//canonical (reverse) job, d=1..Ntn are the draws (draw index = d-1):
+//    slotS(d) = startPx                  receiver: partnerPx (canonical) /
+//                                        pixelIdx (draws — always the centre)
+//    slotZ(d) = SP_UNDEF                 dead (W<=0, unreusable, legacy gates,
+//                                        or canonical ineligible)
+//    slotZ(d) = resPx                    a job exists; Pass_shift_v8 produces
+//                                        the raw {c,Jn,cachedNew} unconditionally
+//                                        and the geometric reject band is
+//                                        re-derived post-fence in the merges
+//                                        for walked AND direct jobs alike (no
+//                                        pre-visibility-ray hint any more —
+//                                        see Pass_shift_v8.hlsl)
+//    slotZ(0)|= SPM_KILLPH_BIT           legacy near-specular canonical
+//                                        zeroing (hybrid OFF only)
+//needWalk itself is NOT stored: Pass_shift_v8 re-derives it from the source
+//reservoir's own rcInfo, which select already loaded here to decide whether a
+//job exists in the first place — recomputing it is free, and it keeps the
+//shift shader from needing ANY routing decision passed in besides "where."
+//The gates are byte-identical to the ones shift used to run (same post-temporal
+//reservoir data, barrier-fenced), and classification consumes NO RNG, so the
+//realized selection is unchanged.
 //
 //2026-07 L2 rework (this pass was L2-throughput/latency bound on the scattered search):
 //  * every probe is ONE 32B sector-aligned SP_SRCH record {cell|pos, conf|n} written by
@@ -38,12 +64,28 @@
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
-    if (!SPMIS_SPATIAL_MODE) return;
     if (tid.x >= IMG_W || tid.y >= IMG_H) return;
     gDispatchIdx = tid;
 
     const float2 dims     = float2(IMG_W, IMG_H);
     const uint   pixelIdx = MapPixelID(dims, tid.xy);
+
+    //Pessimistic job clear, FIRST thing, unconditionally: the unified
+    //Pass_shift_v8's spatial_shift Depth-slices are dispatched full-screen
+    //by the host (the dispatch has no per-pixel/per-mode gate) and
+    //check ONLY slotZ to decide whether a job exists, so every early-return
+    //path below — spatial mode off, emitter, no resolved cell — must leave
+    //"no job" behind rather than whatever a past frame (or, within THIS same
+    //frame, temporal's own d=0/1 writes) last left there; g_pathStateBuffer
+    //persists across frames and nothing else clears it. Harmless either way
+    //for RENDER correctness (merge's own early-returns on these same statuses
+    //never read the job slots at all) — this is purely about not wasting the
+    //shift loop's work on stale descriptors.
+    [unroll]
+    for (uint dOff = 0u; dOff < SPMIS_TOTAL_ROLES; ++dOff)
+        g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, dOff), SP_UNDEF);
+
+    if (!SPMIS_SPATIAL_MODE) return;
 
     //entry gates read ONE bundled header word group (flags|matID|Kd|PrPm) instead of
     //three field-wise loads of the same 36B record.
@@ -64,8 +106,8 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint  cellCenter = recA.x;
     const uint  centerM    = load_M(g_Reservoirs_current, pixelIdx);
 
-    //no center sample or no resolved cell -> passthrough (shift casts the one deferred
-    //visibility ray, merge writes the shadowed canonical).
+    //no center sample or no resolved cell -> passthrough (Pass_spmis_passthrough
+    //casts the one deferred visibility ray, merge writes the shadowed canonical).
     if (centerM == 0u || cellCenter == SP_UNDEF)
     {
         g_pathStateBuffer.Store(SPM_w0(pixelIdx), SPM_packHdr(0u, SPM_STATUS_PASS));
@@ -174,8 +216,36 @@ void main(uint3 tid : SV_DispatchThreadID)
         partnerPx = g_spmisBuffer.Load(SP_A(SP_SORTED, cellBase + k));
     }
 
+    //canonical job (slot d=0): full ELIGIBILITY check up front (mirrors the
+    //old shift's direct-path re-derivation exactly) — an ineligible canonical
+    //gets NO job at all, so merge's mis_c degenerates to 1 without Pass_shift_v8
+    //ever running for this slot. Eligible always gets a job; Pass_shift_v8 bands
+    //post-fence in Pass_spmis_merge regardless of walk/direct, so there's no
+    //routing split here any more — only the legacy killPh gate remains.
+    uint canonRes = SP_UNDEF;
+    const bool partnerOk = (partnerPx != SP_UNDEF) && neighbors_conf_sum > EPSILON && pixCount > 0.0f;
+    if (partnerOk)
+    {
+        const Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
+        const bool  canonReusable = !HYBRID_SHIFT_ON || RcReusable(rdi.rcInfo);
+        const float p_c = GetPHat(rdi.F) * ((rdi.W > 0.0f) ? 1.0f : 0.0f);
+        if (canonReusable && p_c > EPSILON)
+        {
+            canonRes = pixelIdx;
+            //legacy near-specular canonical zeroing (hybrid OFF only —
+            //only REJECTION is unbiased there), pre-ray like the old inline path
+            if (!HYBRID_SHIFT_ON &&
+                rdi.matID != MATID_LIGHT_TRI && rdi.matID != MATID_ENV_MISS &&
+                !IsVolumeVertex(rdi.matID) && rdi.Pr < rs_reconnectRoughnessMin)
+                canonRes |= SPM_KILLPH_BIT;
+        }
+    }
+
     g_pathStateBuffer.Store(SPM_w0(pixelIdx), SPM_packHdr(reuseCell, SPM_STATUS_NORM));
-    g_pathStateBuffer.Store(SPM_w1(pixelIdx), partnerPx);
+    //startBufLast is always 0 (g_sample_current) for spatial, so the raw
+    //partnerPx (top bit clear) is already the correctly-encoded startPx word.
+    g_pathStateBuffer.Store(SPM_slotS(pixelIdx, 0u), partnerPx & 0x7FFFFFFFu);
+    g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, 0u), canonRes);
 
     //==== Ntilde inner-RIS selections (each prop. UCW*target*M, P=1/UCW) ====
     //Every slot in [0,Ntn) is written (valid zPx or SP_UNDEF) so merge can skip
@@ -222,7 +292,53 @@ void main(uint3 tid : SV_DispatchThreadID)
                 if (zPx != SP_UNDEF) { outZ = zPx; outP = ris_selTF / ris_wsum; }
             }
         }
-        g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d), outZ);
-        g_pathStateBuffer.Store(SPM_slotP(pixelIdx, d), asuint(outP));
+
+        //==== job routing (was the top of shift's draw loop, gate-for-gate) ====
+        //dead-reservoir + mode-specific reusability gates. NO roughness or
+        //distance gating under the hybrid shift — full reuse across all
+        //roughnesses; the shifted BSDF magnitude self-gates and the geometric
+        //band in Pass_spmis_merge bounds the singularities post-fence, for
+        //walked AND direct draws alike (draws have no killPh — only the
+        //legacy branch below can kill a draw's job outright).
+        uint outRes = SP_UNDEF;
+        if (outZ != SP_UNDEF)
+        {
+            const uint  zRcInfo = load_rcInfo(g_Reservoirs_current, outZ);
+            const float zW      = load_W(g_Reservoirs_current, outZ);
+            bool dead = (zW <= 0.0f);
+            if (!dead)
+            {
+                if (HYBRID_SHIFT_ON)
+                {
+                    if (!RcReusable(zRcInfo))
+                        dead = true;
+                }
+                else if (RcReplayLen(zRcInfo) > 0u)
+                {
+                    dead = true;   //stale replay candidate after a hybrid-off toggle
+                }
+                else
+                {
+                    //legacy near-specular reconnection-vertex reject (hybrid OFF)
+                    const uint zMat = load_matID_res(g_Reservoirs_current, outZ);
+                    if (zMat != MATID_LIGHT_TRI && zMat != MATID_ENV_MISS &&
+                        !IsVolumeVertex(zMat))
+                    {
+                        float zEta, zPr, zPm;
+                        UnpackEtaPrPm(g_Reservoirs_current.Load(addr_pay(outZ) + 8u),
+                                      zEta, zPr, zPm);
+                        if (zPr < rs_reconnectRoughnessMin)
+                            dead = true;
+                    }
+                }
+            }
+            if (!dead)
+                outRes = outZ;
+        }
+
+        //draws' receiver is ALWAYS the centre pixel itself (startBufLast=0).
+        g_pathStateBuffer.Store(SPM_slotS(pixelIdx, d + 1u), pixelIdx);
+        g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, d + 1u), outRes);
+        g_pathStateBuffer.Store(SPM_slotP(pixelIdx, d + 1u), asuint(outP));
     }
 }

@@ -1,28 +1,39 @@
 //====================================
-//TEMPORAL MERGE BODY  (shared: Pass_temp_gi + Pass_temp_replay)
+//TEMPORAL MERGE — RESOLVE + ROUTE  (Pass_temp_gi only)
 //====================================
-//The complete temporal resampling for one pixel given the already-chosen
-//reprojected candidate coordinate. Compiled in two variants:
-//  TEMPORAL_CAN_REPLAY == 0  (Pass_temp_gi): direct (no-replay) shifts + RayQuery
-//    visibility. Any direction needing a prefix/env replay parks the resolved
-//    candidate (coord + dual flag) in SPM_w1 and appends the pixel to the
-//    temporal replay queue (g_raygenQueue counter at byte 4) — no TraceRay ever
-//    links into this pass.
-//  TEMPORAL_CAN_REPLAY == 1  (Pass_temp_replay): identical body, but replay
-//    shifts evaluate through Hybrid_Replay's HybridShiftEval. Runs as a
-//    compacted 1D indirect dispatch over exactly the queued pixels.
-//Both variants execute the same loads, gates, MIS and accept algebra, so a
-//pixel produces the same merge no matter which pass finishes it.
+//The candidate resolution for one pixel, reduced (round 8) to JUST resolving
+//+ writing the two job descriptors Pass_shift_v8 needs — see the "UNIFIED
+//SHIFT JOB" note in HashGridHash_v8.hlsli. Mirrors spatial's select/
+//shift/merge exactly: temp_gi (this file) resolves + routes, Pass_shift_v8
+//(dispatched right after as a single Depth=2 DispatchRays — the SAME one
+//binary spatial's Depth=Ntn+1 dispatch also uses, see its header for why one
+//binary/one dispatch beats specialized-and-looped alternatives here) performs
+//both directions' reconnection-or-replay mapping, Pass_temp_merge is pure
+//data that reads the raw {c, Jn, cachedNew} outputs and does the MIS combine
+//+ reservoir update.
+//
+//ROUND 8 UNIFICATION: previously this file ALSO evaluated whichever direction
+//didn't need a prefix/env replay walk directly (ReconnectPSS_sv + a
+//visibility ray, right here), parking a PENDING sentinel for the walk-needing
+//direction so a separate Pass_temp_replay could fill it in later. That's
+//gone: EVERY direction is now a job descriptor Pass_shift_v8 resolves
+//uniformly (walk or direct, it doesn't matter which — see its header for why
+//unifying the *mapping* itself, not just where it runs, is what let the
+//register-pressure fix stick). This file no longer touches
+//ReconnectPSS/VisibilityTransmittance/MakeVertex at all, and no longer needs
+//myKd/myPr/myPm/myMatID/myFlags — only the geometry-gate inputs survive.
 //
 //§6.4 DUAL MOTION VECTORS: when the reprojected candidate fails the geometry
 //reject (a moving occluder disoccluded this pixel), retry once at
 //launchIndex - (occluder screen motion), where the occluder is the prev-frame
 //surface at the reprojected pixel projected with the CURRENT camera (static-
-//occluder approximation). Dual candidates carry far-field geometry, so they
-//use the geometric REJECT band (spmis_jacThreshold) instead of the force-to-1
-//clamp — clamping their Jgeo is a systematic energy bias at disocclusions.
+//occluder approximation). Dual candidates carry far-field geometry, so
+//Pass_temp_merge uses the geometric REJECT band (spmis_jacThreshold) instead
+//of the force-to-1 clamp for them — clamping their Jgeo is a systematic
+//energy bias at disocclusions.
 //
-//PSS reuse algebra (see Reservoir_v8.hlsli / ReconnectPSS):
+//PSS reuse algebra (see Reservoir_v8.hlsli / ReconnectPSS; Pass_temp_merge
+//applies the weight/accept/band forms — this file only produces their inputs):
 //  weight     w_n = mis * lum(c*vis) * Jn * geomScale / cachedJac_src * W_src
 //  accept     F   = c*vis * Jn / cachedNew ; cachedJac = cachedNew ; gBase = Jn
 //  band       geometric ratio Jn/gBase only (clamp for base candidates,
@@ -33,22 +44,10 @@
 #ifndef TEMPORAL_MERGE_V8_HLSLI
 #define TEMPORAL_MERGE_V8_HLSLI
 
-#ifndef TEMPORAL_CAN_REPLAY
-#define TEMPORAL_CAN_REPLAY 0
-#endif
-
 //candidate resolution status
 #define TM_CAND_OK      0u
 #define TM_CAND_DEAD    1u   //off-screen / emitter / invalid / unreusable
 #define TM_CAND_GEOMREJ 2u   //geometry mismatch (dual-MV eligible)
-
-//correlation-reduction strength: effMcap = lerp(mcap, 1, pow(D, e)) with the
-//dup fraction D in [0,1] and e = rs_corrReductionPow (cbuffer slot 21, editor
-//slider). SMALLER exponent = stronger collapse of the temporal M cap at the
-//same duplication (each halving doubles the strength in log space; 0.1 was the
-//original tuning — mcap 20 at e=0.025: a single 17x17 duplicate caps at ~3.5,
-//D=0.1 at ~2.1). D==0 (unique sample) always keeps the FULL mcap — the
-//exponent only steepens the response to duplication that actually exists.
 
 //Resolve one candidate coordinate: bounds/emitter test, reservoir validity +
 //reusability, geometry rejects. On TM_CAND_GEOMREJ, rPos still holds the
@@ -104,19 +103,20 @@ inline uint TemporalResolveCand(
     return TM_CAND_OK;
 }
 
+//Resolve the candidate and write both direction job descriptors. Caller
+//(Pass_temp_gi) has already written TEMP_STATUS_DEAD to SPM_w0 before calling
+//this — every return here (including TemporalResolveCand failing) leaves
+//that sentinel in place, so Pass_shift_v8 and Pass_temp_merge always
+//see a coherent per-pixel status regardless of which path was taken.
 void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool dualIn)
 {
     const float2 dims_f = float2(IMG_W, IMG_H);
 
-    //own-pixel loads up front (the geometry gate + reverse shift need them)
-    const uint   myFlags  = load_flagsWord(g_sample_current, pixelIdx);
+    //geometry-gate inputs only — the direct-eval loads (Kd/Pr/Pm/matID/flags)
+    //are gone along with the direct eval itself (see header).
     const uint   myInstID = load_instID(g_sample_current, pixelIdx);
-    const uint   myMatID  = load_matID(g_sample_current, pixelIdx);
     const float3 myPos    = load_x1_with_instID(g_sample_current, pixelIdx, myInstID);
     const float3 myN1s    = load_n1_s_with_instID(g_sample_current, pixelIdx, myInstID);
-    float3 myKd = load_kd(g_sample_current, pixelIdx);
-    float  myPr, myPm;
-    load_prpm(g_sample_current, pixelIdx, myPr, myPm);
     const float3 cameraPos = InitOrigin();
 
     //====================================
@@ -129,10 +129,6 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
     float3    rPos;
     uint st = TemporalResolveCand(cand, dims_f, myPos, myN1s, cameraPos,
                                   tempPixelIdx, rdi_r, rPos);
-#if !TEMPORAL_CAN_REPLAY
-    //(replay variant: the parked coordinate is temp_gi's FINAL resolved cand,
-    //and resolution is deterministic over buffers no pass wrote since — the
-    //retry can never trigger there, so it compiles out of Pass_temp_replay.)
     if (st == TM_CAND_GEOMREJ && DUAL_MV_ON && !dual)
     {
         //occluder screen motion under the current camera; deterministic, no RNG
@@ -149,225 +145,36 @@ void TemporalMergeBody(uint pixelIdx, uint2 launchIndex, int2 candCoord, bool du
             }
         }
     }
-#endif
     if (st != TM_CAND_OK)
-        return;
+        return;   //w0 stays TEMP_STATUS_DEAD (caller's pre-write)
 
-    //canonical reservoir
-    Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
-
-    //====================================
-    //SHIFT STRUCTURE (replay need per direction) + REPLAY ROUTING
-    //====================================
-    const bool fwdReplay = RcReplayLen(rdi_r.rcInfo) > 0u;     //neighbour sample -> me
-    const bool revValid  = IsValidReservoir(rdi) && rdi.W > 0.0f &&
-                           (!HYBRID_SHIFT_ON || RcReusable(rdi.rcInfo));
-    const bool revReplay = revValid && RcReplayLen(rdi.rcInfo) > 0u;   //my sample -> neighbour
-
-#if !TEMPORAL_CAN_REPLAY
-    if (fwdReplay || revReplay)
-    {
-        //park the resolved candidate (coord + dual band policy) for the replay pass
-        g_pathStateBuffer.Store(SPM_w1(pixelIdx),
-                                (uint(cand.x) & 0xFFFFu) | ((uint(cand.y) & 0x7FFFu) << 16) |
-                                (dual ? 0x80000000u : 0u));
-        uint slot;
-        g_raygenQueue.InterlockedAdd(4u, 1u, slot);
-        g_raygenQueue.Store(16u + slot * 4u,
-                            (launchIndex.x & 0xFFFFu) | (launchIndex.y << 16));
-        return;
-    }
-#endif
-
-    uint2 seed = GetSeed(pixelIdx, time, 12);
-    seed.x = Hash32(seed.x);
+    //reverse job existence: my own reservoir has to be valid + reusable for
+    //"my sample evaluated at the neighbour" to mean anything.
+    const Reservoir rdi = loadReservoir(g_Reservoirs_current, pixelIdx);
+    const bool revValid = IsValidReservoir(rdi) && rdi.W > 0.0f &&
+                          (!HYBRID_SHIFT_ON || RcReusable(rdi.rcInfo));
 
     //====================================
-    //FORWARD: neighbour sample evaluated at me   (target + accept payload)
+    //JOB DESCRIPTORS (d=0 forward, d=1 reverse — see HashGridHash_v8.hlsli)
     //====================================
-    //Direct (k==2) evaluations run FIRST for both directions, replay walks
-    //after: the direct evals are the only pre-walk consumers of the resolve
-    //loads, so ordering them ahead keeps both 84B reservoir records out of
-    //the walk live-state (re-loaded post-walk below). The fwd/rev evals share
-    //no state and consume no RNG — the reorder cannot change any value.
-    float  Jn_f = 0.0f, cachedNew_f = 0.0f;
-    float3 c_f  = (float3)0.0f;                //shifted numerator * vis
-    if (!fwdReplay)
-    {
-        const SurfaceVertex sv_c = MakeVertex(myPos, myN1s, cameraPos, myMatID,
-                                              myKd, myPr, myPm,
-                                              (myFlags & SD_FLAG_BACKFACE) != 0u);
-        float3 c = ReconnectPSS_sv(sv_c, rdi_r, Jn_f, cachedNew_f);
-        if (GetPHat(c) > 0.0f)
-        {
-            //RS_FLAG_NO_REUSE_VIS: skip the reuse shadow ray (deferred to resolve).
-            //Volume vertices are in-medium (entry surface self-occludes) -> visible.
-            float3 vis = 1.0.xxx;
-            if (!REUSE_VIS_OFF && !IsVolumeVertex(rdi_r.matID))
-            {
-                if (rdi_r.matID == MATID_ENV_MISS)
-                {
-                    const float3 md = normalize(rdi_r.x2);
-                    vis = VisibilityTransmittance(myPos, myN1s, myPos + md * RAY_TMAX_PLANET, -md);
-                }
-                else
-                    vis = VisibilityTransmittance(myPos, myN1s, rdi_r.x2, rdi_r.n2_s);
-            }
-            c_f = c * vis;
-        }
-    }
+    //forward ALWAYS exists: TM_CAND_OK already guarantees a valid, reusable
+    //neighbour reservoir at tempPixelIdx. Receiver is me (current); source is
+    //the neighbour's LAST-frame reservoir. No pre-ray hint (gBaseHint is
+    //compile-time -1 in Pass_shift_v8 for every job, both domains) —
+    //temporal bands post-fence in Pass_temp_merge, dual-aware, regardless of
+    //walk vs. direct.
+    g_pathStateBuffer.Store(SPM_slotS(pixelIdx, 0u), pixelIdx);
+    g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, 0u), tempPixelIdx | SPM_BUF_LAST_BIT);
 
-    //====================================
-    //REVERSE: my sample evaluated at the neighbour   (canonical MIS denominator)
-    //====================================
-    float  Jn_r = 0.0f, cachedNew_r = 0.0f;
-    float3 c_r  = (float3)0.0f;
-    if (revValid && !revReplay)
-    {
-        const SurfaceVertex sv_r = BuildVertex(g_sample_last, tempPixelIdx, rPos, cameraPos);
-        float3 c = ReconnectPSS_sv(sv_r, rdi, Jn_r, cachedNew_r);
-        if (GetPHat(c) > 0.0f)
-        {
-            float3 vis = 1.0.xxx;
-            if (!REUSE_VIS_OFF && !IsVolumeVertex(rdi.matID))
-            {
-                if (rdi.matID == MATID_ENV_MISS)
-                {
-                    const float3 md = normalize(rdi.x2);
-                    vis = VisibilityTransmittance(rPos, sv_r.n_s, rPos + md * RAY_TMAX_PLANET, -md);
-                }
-                else
-                    vis = VisibilityTransmittance(rPos, sv_r.n_s, rdi.x2, rdi.n2_s);
-            }
-            c_r = c * vis;
-        }
-    }
+    //reverse only if my sample is valid: receiver is the neighbour (last
+    //frame's G-buffer); source is my own CURRENT reservoir.
+    g_pathStateBuffer.Store(SPM_slotS(pixelIdx, 1u), tempPixelIdx | SPM_BUF_LAST_BIT);
+    g_pathStateBuffer.Store(SPM_slotZ(pixelIdx, 1u), revValid ? pixelIdx : SP_UNDEF);
 
-#if TEMPORAL_CAN_REPLAY
-    //====================================
-    //REPLAY WALKS  (slim: only the three ident words cross the traces)
-    //====================================
-    if (fwdReplay)
-    {
-        //replay shifts fold visibility inline at the replayed vertex — the
-        //deferred resolve can never re-derive y_{k-1}, so REUSE_VIS_OFF does
-        //not apply here. Ctx hoisted from the entry my* loads (the same decode
-        //helpers as load_SD, documented bit-identical) — skips the walk's own
-        //SD-record fetch.
-        HitContext myCtx;
-        float3     myCamToX1;
-        Replay_CtxFromLocals(myInstID, myPos, myN1s, myMatID,
-                             (myFlags & SD_FLAG_BACKFACE) != 0u,
-                             myKd, myPr, myPm, myCtx, myCamToX1);
-        c_f = HybridShiftEvalCtx(myCtx, myCamToX1,
-                                 g_Reservoirs_last, tempPixelIdx,
-                                 rdi_r.seed, rdi_r.rcInfo, rdi_r.matID,
-                                 true, Jn_f, cachedNew_f);
-    }
-    if (revValid && revReplay)
-    {
-        c_r = HybridShiftEval(g_sample_last, tempPixelIdx,
-                              g_Reservoirs_current, pixelIdx,
-                              rdi.seed, rdi.rcInfo, rdi.matID,
-                              true, Jn_r, cachedNew_r);
-    }
-
-    //re-load both reservoirs AFTER the last trace: the resolve-time records
-    //must not ride the SER reorders through the walks. Nothing writes either
-    //buffer between resolve and here, so the values are bit-identical.
-    rdi_r = loadReservoir(g_Reservoirs_last, tempPixelIdx);
-    rdi   = loadReservoir(g_Reservoirs_current, pixelIdx);
-#endif
-
-    //====================================
-    //MIS + RESERVOIR MERGE  (PSS weights)
-    //====================================
-    const float visReuse_c = (rdi.W > 0.0f) ? 1.0f : 0.0f;
-    const float p_c = GetPHat(rdi.F) * visReuse_c;
-
-    //geometric band (Jn/gBase only, pdf factors stay exact): clamp-scale for
-    //base candidates, REJECT band for dual candidates (see header).
-    float geomScale_f, geomScale_r;
-    if (dual)
-    {
-        geomScale_f = RcGeomReject(Jn_f, rdi_r.gBase, spmis_jacThreshold) ? 0.0f : 1.0f;
-        geomScale_r = RcGeomReject(Jn_r, rdi.gBase,   spmis_jacThreshold) ? 0.0f : 1.0f;
-    }
-    else
-    {
-        geomScale_f = RcGeomClampScale(Jn_f, rdi_r.gBase, temp_jacClamp);
-        geomScale_r = RcGeomClampScale(Jn_r, rdi.gBase,   temp_jacClamp);
-    }
-
-    //shifted target densities (lum(c*vis) * Jn / cachedJac_src), band-scaled
-    const float fwdT = (rdi_r.cachedJac > 0.0f)
-        ? GetPHat(c_f) * Jn_f * geomScale_f / rdi_r.cachedJac : 0.0f;   //neighbour sample at me
-    const float revT = (rdi.cachedJac > 0.0f)
-        ? GetPHat(c_r) * Jn_r * geomScale_r / rdi.cachedJac   : 0.0f;   //my sample at neighbour
-    const float n_n  = GetPHat(rdi_r.F) * ((rdi_r.W > 0.0f) ? 1.0f : 0.0f);
-
-    //correlation reduction cCap, dup count D refreshes the chain (2026 paper).
-    const float D        = saturate(gScratchPing[uint3(uint2(cand), 6)].x);
-    const float effMcapF = (CORR_REDUCTION_OFF || rdi_r.matID == MATID_ENV_MISS)
-                           ? (float)rs_tempMcap
-                           : lerp((float)rs_tempMcap, 1.0f, pow(D, rs_corrReductionPow));
-
-    const uint mcapU   = max(1u, rs_tempMcap);
-    const uint effMcap = (uint)clamp(round(effMcapF), 1.0f, (float)mcapU);
-
-    //Roughness-dependent neighbour mcap: LEGACY ONLY — it papered over the old
-    //shift's specular temporal lag; the hybrid shift replays exactly that
-    //transport, so the full mcap applies to every roughness.
-    uint dynTempMcap = effMcap;
-    if (!HYBRID_SHIFT_ON)
-    {
-        const float roughScale    = smoothstep(rs_reuseRoughnessMin, rs_reuseRoughnessMax, myPr);
-        const float tempMcapScale = lerp(1.0f, roughScale, myPm);   // dielectrics exempt
-        dynTempMcap = (uint)clamp(round(effMcap * tempMcapScale), 1.0f, (float)mcapU);
-    }
-
-    const uint M_c = clamp(min(effMcap,     rdi.M),   1u, mcapU);
-    const uint M_n = clamp(min(dynTempMcap, rdi_r.M), 1u, mcapU);
-
-    //  canonical: m_c = M_c p_c / (M_c p_c + M_n revT)   [canonical at center vs shifted to neighbour]
-    //  neighbour: m_n = M_n n_n / (M_n n_n + M_c fwdT)   [neighbour in its domain vs shifted to center]
-    const float denom_c = M_c * p_c + M_n * revT;
-    const float denom_n = M_n * n_n + M_c * fwdT;
-    const float mis_c = (denom_c > EPSILON) ? (M_c * p_c / denom_c) : 1.0f;
-    const float mis_n = (denom_n > EPSILON) ? (M_n * n_n / denom_n) : 0.0f;
-
-    //resampling weights: canonical keeps its own-domain form; the neighbour's is
-    //its shifted density at this pixel times its unbiased contribution weight.
-    const float w_c = mis_c * p_c * rdi.W;
-    const float w_n = mis_n * fwdT * rdi_r.W;
-
-    //accept payload: re-anchored PSS contribution + new-side jacobian cache
-    const float3 F_shifted = (cachedNew_f > 0.0f) ? (c_f * Jn_f / cachedNew_f) : (float3)0.0f;
-
-    rdi.w_sum = w_c;
-
-    float p_hat_final = p_c;
-    bool  accepted    = false;
-    if (UpdateReservoir(rdi, w_n, M_n, rdi_r, F_shifted, cachedNew_f, Jn_f, seed))
-    {
-        p_hat_final = GetPHat(F_shifted);
-        accepted    = true;
-    }
-
-    //bounded UCW: an unclamped w_sum/p_hat spikes + feeds back every frame near
-    //grazing/occluded surfaces (see FinalizeUCW). ucw_clampMax breaks it.
-    rdi.W = FinalizeUCW(rdi.w_sum, p_hat_final, ucw_clampMax);
-
-    if (accepted)
-    {
-        storeReservoir(g_Reservoirs_current, pixelIdx, rdi);
-    }
-    else
-    {
-        //payload bits in memory are still raygen's - persist only W and M
-        store_W(g_Reservoirs_current, pixelIdx, rdi.W);
-        store_M(g_Reservoirs_current, pixelIdx, rdi.M);
-    }
+    g_pathStateBuffer.Store(SPM_w1(pixelIdx),
+                            (uint(cand.x) & 0xFFFFu) | ((uint(cand.y) & 0x7FFFu) << 16) |
+                            (dual ? 0x80000000u : 0u));
+    g_pathStateBuffer.Store(SPM_w0(pixelIdx), TEMP_STATUS_OK);
 }
 
 #endif // TEMPORAL_MERGE_V8_HLSLI

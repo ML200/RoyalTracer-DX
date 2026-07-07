@@ -60,41 +60,90 @@ inline uint SP_SRCH(uint px) { return (SP_ARRAYS * SP_STR()) * 4u + 32u + px * 3
 //SPMIS SPLIT-PASS SCRATCH  (aliases g_pathStateBuffer in SPMIS mode)
 //====================================
 //The reuse pass is split select -> shift -> merge to lift per-pass occupancy (the rays
-//land in shift with minimal live state). Per-pixel state packs a header + up to
-//SPMIS_SPLIT_MAXDRAWS non-canonical draw slots into the path-state scratch (texture
-//spatial reuse is idle in SPMIS mode, so the buffer is free). Sized to the existing
-//kPathStateBytesPerPx (88 B): 8 B header + 4*20 B = 88 B, so no host allocation change.
+//land in shift with minimal live state). Per-pixel state packs a header + JOB SLOTS
+//(one canonical + up to SPMIS_SPLIT_MAXDRAWS non-canonical) into the path-state scratch
+//(texture spatial reuse is idle in SPMIS mode, so the buffer is free).
 //
-//LAYOUT: SoA PLANES over SP_STR() pixels (was a px*88 AoS record). Select's stores and
-//shift/merge's reloads are all own-pixel, so plane-major makes every access warp-
-//coalesced (adjacent threads hit adjacent dwords) instead of scattering header+slots
-//across ~3 sectors per pixel. Total bytes 120 * SP_STR (kPathStateBytesPerPx).
+//LAYOUT: SoA PLANES over SP_STR() pixels. Select's stores and shift/merge's reloads are
+//all own-pixel, so plane-major makes every access warp-coalesced (adjacent threads hit
+//adjacent dwords) instead of scattering header+slots across multiple sectors per pixel.
+//Total bytes 8 + SPMIS_TOTAL_ROLES*32 per px = kPathStateBytesPerPx (Renderer.h).
 //  w0 plane   4B/px = (status<<28) | reuseCell[27:0]  select -> shift(reuseCell)/merge(status)
-//  w1 plane   4B/px = partnerPx (select) -> mis_c | passVis | partnerPx|bit31 (shift,
-//              deferred canonical: replay overwrites with mis_c; mis_c >= 0 keeps
-//              bit31 clear, so the two encodings can't collide) -> merge
-//  per draw d: zPx plane 4B/px   select; shift: SP_UNDEF on gate-reject, bit31 set =
-//                                replay-pending (spmis_replay resolves + clears)
-//              prob plane 4B/px  selProb (select) -> w_draw (shift/replay) -> merge
-//              J8  plane  8B/px  cachedNew | Jn (shift/replay) -> merge accept re-anchor
-//              c   plane 12B/px  (shift/replay) -> merge  (re-anchored shifted F, shadowed)
+//  w1 plane   4B/px = partnerPx (select, canonical routing only — NEVER overwritten by
+//              shift anymore; merge reads it directly for the reverse-shift MIS term)
+//  per role d (JOB SLOT, generic — see "UNIFIED SHIFT JOB" below): d == DispatchRaysIndex().z
+//              DIRECTLY (no remapping anywhere) — spatial d=0 is canonical, d=1..Ntn are
+//              draws (draw index = d-1); temporal d=0 is forward, d=1 is reverse:
+//              startPx plane 4B/px  startPx | startBufLast<<31        (select/temp_gi input)
+//              resPx   plane 4B/px  SP_UNDEF (no job) | resPx | resBufLast<<31 | killPh<<30
+//              prob    plane 4B/px  selProb (draws only; canonical's is unused garbage)
+//              J8      plane 8B/px  cachedNew | Jn (Jn's SIGN carries preVisDead — see
+//                      Pass_shift_v8) — shift output, merge input; draws' cachedNew<=0
+//                      after a walk (visibility folded in) and preVisDead after a direct
+//                      eval are BOTH still "dead" to merge, same asymmetry as before
+//              c       plane 12B/px shift output (re-anchored shifted F, shadowed)
 //status: 0 = emitter/skip, 1 = passthrough, 2 = normal.
-//To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to >= 8 + N*28.
-//NOTE: the temporal pass also parks its replay candidates in the w1 plane (before
-//select runs and overwrites it) — see Temporal_Merge_v8.hlsli.
+//To raise SPMIS_SPLIT_MAXDRAWS, bump kPathStateBytesPerPx (Renderer.h) to
+//>= 8 + (SPMIS_SPLIT_MAXDRAWS+1)*32, and spatial_shift's Depth (Renderer.cpp's
+//Stage::RayGen dispatchTag resolution — keep it at Ntn+1).
+//
+//UNIFIED SHIFT JOB (Pass_shift_v8, round-8 unification): a "job" is one
+//reconnection-or-replay mapping, fully described by {startPx, startBufLast,
+//resPx, resBufLast, killPh} — generic across BOTH domains, addressed
+//purely by d = DispatchRaysIndex().z (the shader never asks "which domain am I"):
+//  spatial canonical (d=0): startPx=partnerPx, startBufLast=0, resPx=pixelIdx, resBufLast=0
+//  spatial draw d (1..Ntn): startPx=pixelIdx (ALWAYS — stored anyway so the shader never
+//                      special-cases domains), startBufLast=0, resPx=zPx, resBufLast=0
+//  temporal forward (d=0): startPx=pixelIdx, startBufLast=0, resPx=tempPixelIdx, resBufLast=1
+//  temporal reverse (d=1): startPx=tempPixelIdx, startBufLast=1, resPx=pixelIdx, resBufLast=0
+//needWalk is NOT stored — Pass_shift_v8 derives it itself from RcReplayLen(rcInfo) after
+//loading rcInfo from (resBufLast,resPx), so select/temp_gi only decide WHETHER a job
+//exists (resPx==SP_UNDEF gates dead-on-arrival slots out before shift ever runs) and
+//WHERE it points; the routing stage that used to also pick a "pending" bit is gone —
+//the walk-or-direct branch inside Pass_shift_v8 is the ONLY place that decides.
+//there is no more pre-visibility-ray hint (removed — held gBaseHint/a divergent
+//early-out live across the reconnect block for ~30 spurious VGPRs on the
+//spatial binary): every job, walked or direct, bands post-fence in its merge
+//instead (Pass_spmis_merge / Pass_temp_merge), same Jn/gBase/threshold. killPh
+//is the one surviving spatial-only legacy near-specular zeroing bit; temporal
+//jobs never set it.
+//
+//TEMPORAL PHASE (before any of the above): temp_gi/Pass_shift_v8(loop:temporal_shift)/
+//temp_merge run BEFORE select and give w0/w1/job-slot-0/1 their OWN meaning for that
+//window — temp_merge is the last temporal reader, so select's overwrite right after is
+//safe. w0 = TEMP_STATUS_* (temp_gi's pessimistic-DEAD-first write makes every
+//early-return path, including the tempGI-off/emitter cases, leave a coherent status even
+//though this word is otherwise spatial-only); w1 = candidate coord|dualBit (same slot
+//spatial later reuses for partnerPx); job slots d=0 (forward) / d=1 (reverse) hold the
+//SAME {startPx,resPx,killPh=0} input / {cachedNew,Jn,c} output shape as
+//spatial's — temp_gi always writes a full job descriptor (never SP_UNDEF unless the
+//direction is genuinely inactive, e.g. no valid reverse candidate), so Pass_shift_v8
+//runs unconditionally for both temporal slots every OK pixel (no more per-direction
+//PENDING-sentinel skip — the old "maybe temp_gi already resolved this directly" case is
+//gone too: ALL direction resolution, walk or direct, now happens in Pass_shift_v8 only).
+static const uint TEMP_STATUS_DEAD = 0u;   //no candidate this frame -> reservoir left untouched
+static const uint TEMP_STATUS_OK   = 1u;
 #define SPMIS_SPLIT_MAXDRAWS 4u
-#define SPM_Z_PENDING_BIT 0x80000000u
+#define SPMIS_TOTAL_ROLES (SPMIS_SPLIT_MAXDRAWS + 1u)   // draws 0..3 + canonical/temporal-dir @ index 4
+//job-descriptor resPx word: top bits of resPx (real pixel counts sit
+//comfortably under 2^29, even at 8K) — SP_UNDEF (all-ones) can never collide
+//with a valid combination of these. Used by select/temp_gi (write) and
+//Pass_shift_v8/the merge passes (read) — see the "UNIFIED SHIFT JOB" note above.
+#define SPM_BUF_LAST_BIT 0x80000000u
+#define SPM_KILLPH_BIT   0x40000000u
+#define SPM_RESPX_MASK   0x1FFFFFFFu   // bit 29 (was SPM_HINT_BIT) is unused/reserved
 static const uint SPM_STATUS_SKIP = 0u;
 static const uint SPM_STATUS_PASS = 1u;
 static const uint SPM_STATUS_NORM = 2u;
 inline uint SPM_w0(uint px)            { return px * 4u; }
 inline uint SPM_w1(uint px)            { return SP_STR() * 4u + px * 4u; }
-//draw-d plane group starts after the two header planes (8B/px worth = 8*SP_STR bytes)
-inline uint SPM_dBase(uint d)          { return SP_STR() * (8u + d * 28u); }
-inline uint SPM_slotZ(uint px, uint d) { return SPM_dBase(d) + px * 4u; }
-inline uint SPM_slotP(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 4u + px * 4u; }
-inline uint SPM_slotJ(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 8u + px * 8u; }
-inline uint SPM_slotC(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 16u + px * 12u; }
+//job-slot d plane group starts after the two header planes (8B/px worth = 8*SP_STR bytes)
+inline uint SPM_dBase(uint d)          { return SP_STR() * (8u + d * 32u); }
+inline uint SPM_slotS(uint px, uint d) { return SPM_dBase(d) + px * 4u; }
+inline uint SPM_slotZ(uint px, uint d) { return SPM_dBase(d) + SP_STR() *  4u + px * 4u; }
+inline uint SPM_slotP(uint px, uint d) { return SPM_dBase(d) + SP_STR() *  8u + px * 4u; }
+inline uint SPM_slotJ(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 12u + px * 8u; }
+inline uint SPM_slotC(uint px, uint d) { return SPM_dBase(d) + SP_STR() * 20u + px * 12u; }
 inline uint SPM_packHdr(uint reuseCell, uint status) { return (reuseCell & 0x0FFFFFFFu) | (status << 28u); }
 inline uint SPM_hdrStatus(uint w0)    { return w0 >> 28u; }
 inline uint SPM_hdrCell(uint w0)      { return w0 & 0x0FFFFFFFu; }
@@ -169,8 +218,9 @@ inline uint SP_screen_hash(int px, int py, uint tileSize, float3 pos, float3 geo
 }
 
 //------------------------------------------------------------------
-//SPMIS PSS draw algebra — shared by Pass_spmis_shift (k==2 inline) and
-//Pass_spmis_replay (k>2) so both routes produce bit-identical weights.
+//SPMIS PSS draw algebra — one implementation for both mapping kinds inside
+//Pass_spmis_shift (direct k==2 reconnection and k>2 replay roles), so both
+//routes produce bit-identical weights.
 //
 //With |J| = cachedNew/cachedJac_i, the pairwise-MIS ratio is computed via
 //  A = lum(F_i) * cachedJac_i      (= p_hat_from_i * cachedNew)
