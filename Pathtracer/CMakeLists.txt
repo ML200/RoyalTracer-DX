@@ -226,6 +226,8 @@ add_executable(Pathtracer WIN32
         rdn/Editor/Editor.cpp
         rdn/PostProcess/DLSSManager.h
         rdn/PostProcess/DLSSManager.cpp
+        rdn/PostProcess/DLSSNRManager.h
+        rdn/PostProcess/DLSSNRManager.cpp
         rdn/Raytracing/PassSystem.h
         rdn/Raytracing/PassSystem.cpp
         rdn/Scene/Scene.h
@@ -359,6 +361,52 @@ target_link_libraries(Pathtracer PRIVATE
         dxcompiler.lib d3dcompiler.lib windowsapp)
 
 target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
+
+# ───────────────────── DLSS-NR (optional, official NVIDIA NGX SDK) ──────────
+# DLSSNRManager builds in one of two modes:
+#   - Real NGX backend when NVIDIA's public DLSS SDK (github.com/NVIDIA/DLSS)
+#     is found via DLSS_NGX_SDK_ROOT (cache variable or environment variable).
+#   - Status-only stub otherwise: the app still compiles and runs, and the
+#     editor panel reports that the backend is not compiled in.
+# The build NEVER downloads the SDK and never copies any nvngx_dlssnr.dll —
+# the runtime DLL stays outside the tree and is only discovered at runtime.
+option(PATHTRACER_ENABLE_DLSSNR "Compile the DLSS-NR NGX backend when the official DLSS SDK is available" ON)
+set(DLSS_NGX_SDK_ROOT "" CACHE PATH "Root of an NVIDIA DLSS SDK checkout (github.com/NVIDIA/DLSS) for the DLSS-NR backend")
+
+set(_dlssnr_backend OFF)
+if(PATHTRACER_ENABLE_DLSSNR)
+    set(_dlssnr_root "${DLSS_NGX_SDK_ROOT}")
+    if(NOT _dlssnr_root AND DEFINED ENV{DLSS_NGX_SDK_ROOT})
+        set(_dlssnr_root "$ENV{DLSS_NGX_SDK_ROOT}")
+    endif()
+    if(_dlssnr_root)
+        file(TO_CMAKE_PATH "${_dlssnr_root}" _dlssnr_root)
+    endif()
+    # nvsdk_ngx_d*.lib = dynamic-CRT variants, matching this project's default
+    # MSVC runtime (/MD, /MDd in Debug — the _dbg lib pairs with /MDd).
+    if(_dlssnr_root
+       AND EXISTS "${_dlssnr_root}/include/nvsdk_ngx.h"
+       AND EXISTS "${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib"
+       AND EXISTS "${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib")
+        set(_dlssnr_backend ON)
+        target_compile_definitions(Pathtracer PRIVATE PATHTRACER_DLSSNR_WITH_NGX=1)
+        target_include_directories(Pathtracer PRIVATE "${_dlssnr_root}/include")
+        # advapi32/user32: the NGX static lib pulls Reg* and
+        # GetWindowThreadProcessId and neither resolves out of windowsapp.lib
+        target_link_libraries(Pathtracer PRIVATE
+            "$<IF:$<CONFIG:Debug>,${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib,${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib>"
+            advapi32.lib user32.lib)
+    elseif(_dlssnr_root)
+        message(WARNING "DLSS_NGX_SDK_ROOT set but headers/libs not found under ${_dlssnr_root} — building DLSS-NR stub")
+    endif()
+endif()
+if(_dlssnr_backend)
+    message(STATUS "DLSS-NR backend   : NGX SDK at ${_dlssnr_root}")
+else()
+    message(STATUS "DLSS-NR backend   : stub (set DLSS_NGX_SDK_ROOT to an official DLSS SDK checkout to enable)")
+endif()
+# Runtime discovery (Authenticode verify + version query) runs in both modes.
+target_link_libraries(Pathtracer PRIVATE wintrust.lib version.lib)
 
 
 # ────────────────── copy the contents of 'includes' on every build ─────────

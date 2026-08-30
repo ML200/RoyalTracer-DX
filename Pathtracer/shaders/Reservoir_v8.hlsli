@@ -474,6 +474,17 @@ void store_W(RWByteAddressBuffer b, uint pixelIdx, float W)
 //====================================
 //REJECTION AND VALIDITY
 //====================================
+//symmetric pair-rejection primitives for the texture-paired spatial reuse
+//(Pass_spat_gi_select): normal cone + plane-slab distance.
+inline bool RejectNormal(float3 n1, float3 n2, float threshold) {
+    return dot(n1, n2) < threshold;
+}
+
+inline bool RejectDistance(float3 x1, float3 x2, float3 normal, float threshold)
+{
+    return abs(dot(x2 - x1, normal)) > threshold;
+}
+
 inline bool IsValidReservoir(Reservoir r) {
     return any(abs(r.n2_s) > 0.0f) && r.M > 0;
 }

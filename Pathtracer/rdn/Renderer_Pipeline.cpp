@@ -359,7 +359,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 36, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 13, 11, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 60, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // Paired reuse textures (t19, t20, t21) — 3 Texture2D<int2> SRVs at heap slots 55..57
+    // t19-t21 (heap slots 55..57): reserved. Was the texture-paired spatial-
+    // reuse SRVs; that variant was removed and these are bound as null SRVs,
+    // but the range stays so appended ranges below keep their heap offsets.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 19, 0, STATIC, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // NRC shared D3D12/CUDA UAVs (u40..u44) at heap slots 58..62 — see
     // shaders/Nrc_v8.hlsli for binding order.
@@ -1125,9 +1127,10 @@ void Renderer::CreateShaderResourceHeap() {
     { auto [c,g] = sortUAV(m_sortOffsetBuffer, SORT_BUCKETS); m_sortOffsetCpuHandle = c; m_sortOffsetGpuHandle = g; }
     { auto [c,g] = sortUAV(m_sortBoundsBuffer, 8);            m_sortBoundsCpuHandle = c; m_sortBoundsGpuHandle = g; }
 
-    // Slots 55-57: retired texture-spatial paired reuse textures (t19-t21). SPMIS
-    // owns spatial reuse now; bind null SRVs to keep the heap layout stable for the
-    // slots that follow.
+    // Slots 55-57 (t19-t21): formerly the texture-paired spatial-reuse
+    // textures. That variant was removed; nothing samples t19-t21 now, but the
+    // root-signature SRV range still appends here, so bind 3 null SRVs to keep
+    // the descriptor-table layout (and every downstream slot 58+) unchanged.
     for (int i = 0; i < 3; ++i)
         nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
 

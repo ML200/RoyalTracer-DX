@@ -8,6 +8,7 @@
 #include "../Camera/Camera.h"
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
+#include "../PostProcess/DLSSNRManager.h"
 #include "../NRC/NrcLayout.h"
 #include "../planet/stream_orchestrator.h"
 #include "../../engine/Camera/FlyCamController.h"
@@ -25,7 +26,8 @@ public:
     void Shutdown();
 
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
-              PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
+              PassSystem& passes, DLSSManager& dlss, DLSSNRManager& dlssNR,
+              DLSSGSettings& dlssG,
               ReSTIRSettings& restir, nrc::Settings& nrc,
               float fps, const FrameStats& stats,
               const planet::StreamOrchestrator::Stats& planetStats);
@@ -39,6 +41,8 @@ private:
     void DrawCameraPanel(Camera& camera, FlyCamController& flyCam);
     void DrawPassPipelinePanel(PassSystem& passes);
     void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
+    //settings/request writes only — the manager performs all NGX work itself
+    void DrawDLSSNRPanel(DLSSNRManager& nr);
     void DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings& restir);
     void DrawReSTIRPanel(ReSTIRSettings& restir);
     void DrawInitialSamplingPanel(ReSTIRSettings& restir);
@@ -53,6 +57,7 @@ private:
     bool m_showCamera     = false;
     bool m_showPipeline   = false;
     bool m_showDLSS       = false;
+    bool m_showDLSSNR     = false;
     bool m_showReSTIR     = false;
     bool m_showNRC        = false;
     bool m_showInitialSampling = false;

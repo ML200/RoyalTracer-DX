@@ -200,6 +200,12 @@ struct ReSTIRSettings {
     //ReSTIR per se, but they ride the same rs-consts block. Editor caps both at 32.
     int   maxBounces       = 32;  // raygen path loop bound: depth runs [1, maxBounces)
     int   rrStartDepth     = 2;   // Russian roulette starts at depth >= this; set to 32 to disable
+    //Diffuse-bounce budget (cbuffer slot 29, read by raygen). A path may take at
+    //most this many scattering events on materials with a diffuse component
+    //(also metals and specular/coat layered over diffuse); glass and translucent
+    //(SSS) materials bounce past it, up to the maxBounces hard cap. Caps the
+    //expensive/noisy diffuse GI depth while letting refraction paths run deep.
+    int   maxDiffuseBounces = 3;
     int   initialSamples   = 1;   // RIS-over-N initial samples per pixel (host-clamped [1,8])
     //Material-texture filtering (cbuffer slot 42, read by SampleMaterialTex). 0 =
     //hardware bilinear/aniso, 1 = nearest-texel point sampling for crisp pixel-art /
@@ -209,8 +215,8 @@ struct ReSTIRSettings {
     //(albedo + emission kept; transmission/specular/coat/sheen/thin-glass/SSS
     //forced off inside Material_Decoder_v8.hlsli). Live-toggleable.
     bool  forceDiffuseMats = false;
-    bool  enableTempGI     = true;
-    bool  enableSpatGI     = true;
+    bool  enableTempGI     = false;
+    bool  enableSpatGI     = false;
     bool  disableCorrReduction = false; // A/B: ignore dup-map D in the temporal confidence cap (flag 0x40)
     //Temporal correlation-reduction strength (cbuffer slot 21): the dup-map
     //exponent e in effMcap = lerp(tempMcap, 1, pow(D, e)). SMALLER = stronger
@@ -245,10 +251,10 @@ struct ReSTIRSettings {
     //feeds back through reuse into a diverging firefly. Clamp bounds it. <=0 disables.
     float ucwClampMax      = 10000.0f;
 
-    //SPMIS spatial reuse — the spatial-reuse implementation (the old texture-paired
-    //select/shift/_v8_1 path was removed). Enabled by enableSpatGI via flag bit 0x10;
-    //the Pass_spmis_* pipeline (reset/count/offsets/sort/select/shift/merge) owns
-    //spatial reuse, with raygen inserting each pixel's hash.
+    //Spatial reuse is the SPMIS global-hash-grid pipeline (Pass_spmis_*
+    //reset/count/offsets/sort/select/passthrough/shift/merge; raygen inserts
+    //each pixel's hash). The old texture-paired select/shift/_v8_1 variant was
+    //removed — RS_FLAG_SPMIS_SPATIAL (0x10) is now raised whenever enableSpatGI.
     int   spmisReuseN       = 2;     // Ntilde: non-canonical reuse draws
     int   spmisRisN         = 8;     // inner-RIS candidate count per draw
     int   spmisMcap         = 20;    // output confidence M cap (0 disables)
@@ -309,7 +315,7 @@ struct ReSTIRSettings {
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
-             | (enableSpatGI ? 0x10u : 0u)
+             | (enableSpatGI ? 0x10u : 0u)   // spatial reuse is always SPMIS now
              | ((enableSpatGI && spmisConfidenceAdjust) ? 0x2000u : 0u)
              | (disableCorrReduction ? 0x40u : 0u)
              | (noSpecReproj ? 0x200u : 0u)

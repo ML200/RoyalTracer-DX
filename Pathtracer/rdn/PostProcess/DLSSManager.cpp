@@ -137,6 +137,25 @@ bool DLSSManager::UpdateMode(ID3D12Device* device) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// A preset letter is handed to NGX unvalidated — there is no API to ask which
+// letters the installed nvngx_dlssd.dll actually implements, so an unsupported
+// one only surfaces as a failed SetOptions/Evaluate. Without this, the failure
+// repeats every frame and DLSS stays dead for the rest of the session, so fall
+// back to the last letter that completed a frame and let the UI show the snap-back.
+void DLSSManager::RevertPresetIfPending(const wchar_t* stage) {
+    if (!m_presetChangePending) return;
+
+    std::wcout << L"[DLSS-RR] preset " << (int)m_activePresets[kPresetDLAA]
+               << L" rejected by " << stage << L" — reverting to preset "
+               << (int)m_lastGoodPresets[kPresetDLAA] << std::endl;
+
+    std::memcpy(rrPresets,       m_lastGoodPresets, sizeof(rrPresets));
+    std::memcpy(m_activePresets, m_lastGoodPresets, sizeof(m_activePresets));
+    m_presetChangePending = false;
+    m_forceReset = true;
+}
+
+// ─────────────────────────────────────────────────────────────────
 void DLSSManager::Evaluate(
     ID3D12GraphicsCommandList* cmdList,
     ID3D12Device* device,
@@ -154,6 +173,15 @@ void DLSSManager::Evaluate(
         !m_diffuseAlbedo || !m_specAlbedo || !m_roughness || !m_specHitDist)
         return;
 
+    // A preset swap rebuilds DLSS-RR around a different model. Checked before the
+    // constants block below so the reset flag it raises lands on THIS frame — the
+    // frames the old model accumulated are not valid history for the new one.
+    if (std::memcmp(m_activePresets, rrPresets, sizeof(rrPresets)) != 0) {
+        std::memcpy(m_activePresets, rrPresets, sizeof(rrPresets));
+        m_forceReset = true;
+        m_presetChangePending = true;
+    }
+
     constexpr D3D12_RESOURCE_STATES stateUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     constexpr D3D12_RESOURCE_STATES stateSRV =
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
@@ -169,6 +197,24 @@ void DLSSManager::Evaluate(
     for (auto* r : dlssInputs)
         if (r) preB.push_back(CD3DX12_RESOURCE_BARRIER::Transition(r, stateUAV, stateSRV));
     cmdList->ResourceBarrier((UINT)preB.size(), preB.data());
+
+    // Everything below here can bail early — a preset the runtime rejects, a failed
+    // tag, a failed evaluate — so the SRV -> UAV restore has to be unconditional.
+    // Returning with the guides still in SRV makes the NEXT frame's UAV -> SRV
+    // barrier a before-state mismatch, which the debug layer raises as an ERROR;
+    // break-on-error then takes the process down a frame away from the real cause.
+    // Built from the same null filter as preB so the two lists always pair up.
+    struct GuideStateRestore {
+        ID3D12GraphicsCommandList* cmdList;
+        std::vector<D3D12_RESOURCE_BARRIER> barriers;
+        ~GuideStateRestore() {
+            if (!barriers.empty())
+                cmdList->ResourceBarrier((UINT)barriers.size(), barriers.data());
+        }
+    } guideRestore{ cmdList, {} };
+    for (auto* r : dlssInputs)
+        if (r) guideRestore.barriers.push_back(
+            CD3DX12_RESOURCE_BARRIER::Transition(r, stateSRV, stateUAV));
 
     // ── Build Streamline constants ────────────────────────────────
     // Use render resolution for aspect ratio in the projection
@@ -193,7 +239,9 @@ void DLSSManager::Evaluate(
     constants.cameraAspectRatio = renderAspect;
     constants.cameraNear        = nearPlane;
     constants.cameraFar         = farPlane;
-    constants.jitterOffset      = { -jitterX, -jitterY };
+    //Scaled report only — the raygen already sampled at the unscaled offset. See
+    //DLSSManager::jitterScale; 1.0 is the truthful value.
+    constants.jitterOffset      = { -jitterX * jitterScale, -jitterY * jitterScale };
     constants.mvecScale         = { 1.0f / (float)m_renderWidth, 1.0f / (float)m_renderHeight };
     constants.motionVectorsInvalidValue = -1.0f;
     constants.cameraMotionIncluded      = sl::Boolean::eTrue;
@@ -224,11 +272,19 @@ void DLSSManager::Evaluate(
     options.worldToCameraView   = XmToSl(viewMatrix);
     options.cameraViewToWorld   = XmToSl(XMMatrixInverse(nullptr, viewMatrix));
 
-    sl::DLSSDPreset preset = sl::DLSSDPreset::ePresetE;
-    options.dlaaPreset = options.qualityPreset = options.balancedPreset =
-        options.performancePreset = options.ultraPerformancePreset =
-        options.ultraQualityPreset = preset;
-    SL_CHECK(slDLSSDSetOptions(viewport, options));
+    // Model preset per quality mode — editor-driven, see DLSSManager.h. The plugin
+    // only consults the slot matching options.mode, but the struct takes all six.
+    options.dlaaPreset             = rrPresets[kPresetDLAA];
+    options.qualityPreset          = rrPresets[kPresetQuality];
+    options.balancedPreset         = rrPresets[kPresetBalanced];
+    options.performancePreset      = rrPresets[kPresetPerformance];
+    options.ultraPerformancePreset = rrPresets[kPresetUltraPerformance];
+    options.ultraQualityPreset     = rrPresets[kPresetUltraQuality];
+    if (sl::Result r = slDLSSDSetOptions(viewport, options); r != sl::Result::eOk) {
+        std::wcout << L"[DLSS-RR] slDLSSDSetOptions failed: " << (int)r << std::endl;
+        RevertPresetIfPending(L"slDLSSDSetOptions");
+        return;  // guides restored by guideRestore
+    }
 
     // ── Tag resources ────────────────────────────────────────────
     sl::Resource slDepth   (sl::ResourceType::eTex2d, m_depth.Get(),         (uint32_t)stateSRV);
@@ -275,14 +331,15 @@ void DLSSManager::Evaluate(
 
     if (evalResult != sl::Result::eOk) {
         std::wcout << L"[DLSS-RR] slEvaluateFeature failed: " << (int)evalResult << std::endl;
-        return;
+        RevertPresetIfPending(L"slEvaluateFeature");
+        return;  // guides restored by guideRestore
     }
 
-    // Transition inputs back SRV → UAV
-    std::vector<D3D12_RESOURCE_BARRIER> postB;
-    for (auto* r : dlssInputs)
-        postB.push_back(CD3DX12_RESOURCE_BARRIER::Transition(r, stateSRV, stateUAV));
-    cmdList->ResourceBarrier((UINT)postB.size(), postB.data());
+    // Survived a full frame, so this preset is the one to fall back to next time.
+    if (m_presetChangePending) {
+        std::memcpy(m_lastGoodPresets, m_activePresets, sizeof(m_lastGoodPresets));
+        m_presetChangePending = false;
+    }
 
     m_dlssPrevView = viewMatrix;
     m_dlssPrevProj = xmProj;

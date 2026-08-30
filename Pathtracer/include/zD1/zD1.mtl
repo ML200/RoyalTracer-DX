@@ -1,0 +1,2548 @@
+# Blender 5.0.1 MTL File: 'None'
+# www.blender.org
+
+newmtl 09.11_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 09.11_BaseColor.dds
+map_d -o 0 -1 0 09.11_BaseColor.dds
+
+newmtl 091_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 091_BaseColor.dds
+map_d -o 0 -1 0 091_BaseColor.dds
+
+newmtl 7890_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 7890_BaseColor.dds
+map_d -o 0 -1 0 7890_BaseColor.dds
+
+newmtl 851_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 851_BaseColor.dds
+map_d -o 0 -1 0 851_BaseColor.dds
+
+newmtl 852_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 852_BaseColor.dds
+map_d -o 0 -1 0 852_BaseColor.dds
+
+newmtl Alluminio-2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -2 0 -s 0.5 0.5 1 Alluminio-2_BaseColor.dds
+map_d -o 0 -2 0 -s 0.5 0.5 1 Alluminio-2_BaseColor.dds
+
+newmtl Alluminio_Piastre1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Alluminio Piastre1_BaseColor.dds
+map_d -o 0 -1 0 Alluminio Piastre1_BaseColor.dds
+
+newmtl Aluminium__c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Aluminium _BaseColor.dds
+map_d -o 0 -1 0 Aluminium _BaseColor.dds
+
+newmtl BASE_ROOM-FLOOR_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0.05 -1.1 0 BASE ROOM-FLOOR_BaseColor.dds
+map_d -o 0.05 -1.1 0 BASE ROOM-FLOOR_BaseColor.dds
+
+newmtl BASE_ROOM1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.3 0 -s 3.3333333 3.3333333 1 BASE ROOM1_BaseColor.dds
+map_d -o 0 -0.3 0 -s 3.3333333 3.3333333 1 BASE ROOM1_BaseColor.dds
+map_Bump -o 0 -0.3 0 -s 3.3333333 3.3333333 1 -bm 1.000000 BASE ROOM1_Normal.dds
+
+newmtl BASE_ROOM2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.4485 0 -s 2 2.5641026 1 BASE ROOM2_BaseColor.dds
+map_d -o 0 -0.4485 0 -s 2 2.5641026 1 BASE ROOM2_BaseColor.dds
+map_Bump -o 0 -0.4485 0 -s 2 2.5641026 1 -bm 1.000000 BASE ROOM2_Normal.dds
+
+newmtl BASE_ROOM3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 BASE ROOM3_BaseColor.dds
+map_d -o 0 -1 0 BASE ROOM3_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 BASE ROOM3_Normal.dds
+
+newmtl BOLTS_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 BOLTS_BaseColor.dds
+map_d -o 0 -1 0 BOLTS_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 BOLTS_Normal.dds
+
+newmtl Carbonfibre_V2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Carbonfibre V2_BaseColor.dds
+map_d -o 0 -1 0 Carbonfibre V2_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 Carbonfibre V2_Normal.dds
+
+newmtl DOORS_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 DOORS_BaseColor.dds
+map_d -o 0 -1 0 DOORS_BaseColor.dds
+
+newmtl Default_Material
+Kd 0.500000 0.500000 0.500000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl FIRST-KICK-LIGHT_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 FIRST-KICK-LIGHT_BaseColor.dds
+map_Ke -o 0 -1 0 FIRST-KICK-LIGHT_Emissive.dds
+map_d -o 0 -1 0 FIRST-KICK-LIGHT_BaseColor.dds
+
+newmtl FLOOR-CLICKER2_c4d.5
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.05 0 -s 20 20 1 FLOOR-CLICKER2_BaseColor.dds
+map_d -o 0 -0.05 0 -s 20 20 1 FLOOR-CLICKER2_BaseColor.dds
+map_Bump -o 0 -0.05 0 -s 20 20 1 -bm 1.000000 FLOOR-CLICKER2_Normal.dds
+
+newmtl FULL_BLACK_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 FULL BLACK_BaseColor.dds
+map_d -o 0 -1 0 FULL BLACK_BaseColor.dds
+
+newmtl GL-10_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-10_BaseColor.dds
+map_d -o 0 -1 0 GL-10_BaseColor.dds
+
+newmtl GL-13_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-13_BaseColor.dds
+map_d -o 0 -1 0 GL-13_BaseColor.dds
+
+newmtl GL-14_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-14_BaseColor.dds
+map_d -o 0 -1 0 GL-14_BaseColor.dds
+
+newmtl GL-15_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-15_BaseColor.dds
+map_d -o 0 -1 0 GL-15_BaseColor.dds
+
+newmtl GL-18_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-18_BaseColor.dds
+map_d -o 0 -1 0 GL-18_BaseColor.dds
+
+newmtl GL-2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-2_BaseColor.dds
+map_d -o 0 -1 0 GL-2_BaseColor.dds
+
+newmtl GL-3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-3_BaseColor.dds
+map_d -o 0 -1 0 GL-3_BaseColor.dds
+
+newmtl GL-6_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-6_BaseColor.dds
+map_d -o 0 -1 0 GL-6_BaseColor.dds
+
+newmtl GL-7_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 GL-7_BaseColor.dds
+map_d -o 0 -1 0 GL-7_BaseColor.dds
+
+newmtl Glossy_Material_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Glossy Material_BaseColor.dds
+map_d -o 0 -1 0 Glossy Material_BaseColor.dds
+
+newmtl LIGHTTOWER_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 LIGHTTOWER_BaseColor.dds
+map_Ke -o 0 -1 0 LIGHTTOWER_Emissive.dds
+map_d -o 0 -1 0 LIGHTTOWER_BaseColor.dds
+
+newmtl MAIN_SHAFT1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 MAIN SHAFT1_BaseColor.dds
+map_d -o 0 -1 0 MAIN SHAFT1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 MAIN SHAFT1_Normal.dds
+
+newmtl NEW-1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 NEW-1_BaseColor.dds
+map_d -o 0 -1 0 NEW-1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 NEW-1_Normal.dds
+
+newmtl OctDiffuse1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctDiffuse1_BaseColor.dds
+map_d -o 0 -1 0 OctDiffuse1_BaseColor.dds
+
+newmtl OctDiffuse2_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctDiffuse2_BaseColor.dds
+map_Ke -o 0 -1 0 OctDiffuse2_Emissive.dds
+map_d -o 0 -1 0 OctDiffuse2_BaseColor.dds
+
+newmtl OctDiffuse_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.0318 -0.9996 0 -s 0.9433963 0.98039216 1 OctDiffuse_BaseColor.dds
+map_d -o -0.0318 -0.9996 0 -s 0.9433963 0.98039216 1 OctDiffuse_BaseColor.dds
+
+newmtl OctGlossy.11_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.11_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.11_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 OctGlossy.11_Normal.dds
+
+newmtl OctGlossy.13_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.13_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.13_BaseColor.dds
+
+newmtl OctGlossy.14_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.14_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.14_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 OctGlossy.14_Normal.dds
+
+newmtl OctGlossy.1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.1_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.1_BaseColor.dds
+
+newmtl OctGlossy.22_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.22_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.22_BaseColor.dds
+
+newmtl OctGlossy.24_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.24_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.24_BaseColor.dds
+
+newmtl OctGlossy.28_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy.28_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy.28_BaseColor.dds
+
+newmtl OctGlossy10_c4d
+Kd 0.800000 0.800000 0.800000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl OctGlossy11_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy11_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy11_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 OctGlossy11_Normal.dds
+
+newmtl OctGlossy12_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy12_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy12_BaseColor.dds
+
+newmtl OctGlossy13_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy13_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy13_BaseColor.dds
+
+newmtl OctGlossy15_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy15_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy15_BaseColor.dds
+
+newmtl OctGlossy16_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy16_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy16_BaseColor.dds
+
+newmtl OctGlossy17_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy17_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy17_BaseColor.dds
+
+newmtl OctGlossy18_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy18_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy18_BaseColor.dds
+
+newmtl OctGlossy19_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy19_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy19_BaseColor.dds
+
+newmtl OctGlossy25_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy25_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy25_BaseColor.dds
+
+newmtl OctGlossy26_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy26_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy26_BaseColor.dds
+
+newmtl OctGlossy30_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy30_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy30_BaseColor.dds
+
+newmtl OctGlossy3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy3_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy3_BaseColor.dds
+
+newmtl OctGlossy9_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy9_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy9_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 OctGlossy9_Normal.dds
+
+newmtl OctGlossy_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 OctGlossy_BaseColor.dds
+map_d -o 0 -1 0 OctGlossy_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 OctGlossy_Normal.dds
+
+newmtl Orey-jack_base_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Orey-jack base_BaseColor.dds
+map_d -o 0 -1 0 Orey-jack base_BaseColor.dds
+
+newmtl Orey-jack_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Orey-jack_BaseColor.dds
+map_d -o 0 -1 0 Orey-jack_BaseColor.dds
+
+newmtl Orey-jack_c4d.4
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.5 0 -s 2 2 1 Orey-jack_BaseColor.dds
+map_d -o 0 -0.5 0 -s 2 2 1 Orey-jack_BaseColor.dds
+
+newmtl Orey1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.16 -2.26 0 -s 0.5 0.5 1 Orey1_BaseColor.dds
+map_d -o -0.16 -2.26 0 -s 0.5 0.5 1 Orey1_BaseColor.dds
+
+newmtl Orey1_c4d.001
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 Orey1_BaseColor.dds
+map_d -o 0 -1 0 Orey1_BaseColor.dds
+
+newmtl Orey_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0.1696 -1.01 0 -s 0.9433963 0.990099 1 Orey_BaseColor.dds
+map_d -o 0.1696 -1.01 0 -s 0.9433963 0.990099 1 Orey_BaseColor.dds
+
+newmtl SCREEN_REFLECTIONS_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SCREEN REFLECTIONS_BaseColor.dds
+map_d -o 0 -1 0 SCREEN REFLECTIONS_BaseColor.dds
+
+newmtl SIDE-SMASH-1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SIDE-SMASH-1_BaseColor.dds
+map_d -o 0 -1 0 SIDE-SMASH-1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 SIDE-SMASH-1_Normal.dds
+
+newmtl SIDE-SMASH-1_c4d.1
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.1 0 -s 10 10 1 SIDE-SMASH-1_BaseColor.dds
+map_d -o 0 -0.1 0 -s 10 10 1 SIDE-SMASH-1_BaseColor.dds
+map_Bump -o 0 -0.1 0 -s 10 10 1 -bm 1.000000 SIDE-SMASH-1_Normal.dds
+
+newmtl SIDE-SMASH-1_c4d.15
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.2 0 -s 5 5 1 SIDE-SMASH-1_BaseColor.dds
+map_d -o 0 -0.2 0 -s 5 5 1 SIDE-SMASH-1_BaseColor.dds
+map_Bump -o 0 -0.2 0 -s 5 5 1 -bm 1.000000 SIDE-SMASH-1_Normal.dds
+
+newmtl SIDE-SMASH-2_c4d.11
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.15 -1 0 SIDE-SMASH-2_BaseColor.dds
+map_d -o -0.15 -1 0 SIDE-SMASH-2_BaseColor.dds
+map_Bump -o -0.15 -1 0 -bm 1.000000 SIDE-SMASH-2_Normal.dds
+
+newmtl SIDE-SMASH-2_c4d.16
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.1 -0.43 0 -s 2 2 1 SIDE-SMASH-2_BaseColor.dds
+map_d -o -0.1 -0.43 0 -s 2 2 1 SIDE-SMASH-2_BaseColor.dds
+map_Bump -o -0.1 -0.43 0 -s 2 2 1 -bm 1.000000 SIDE-SMASH-2_Normal.dds
+
+newmtl SIDE_-white1_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SIDE -white1_BaseColor.dds
+map_Ke -o 0 -1 0 SIDE -white1_Emissive.dds
+map_d -o 0 -1 0 SIDE -white1_BaseColor.dds
+
+newmtl SIDE_-white2_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SIDE -white2_BaseColor.dds
+map_Ke -o 0 -1 0 SIDE -white2_Emissive.dds
+map_d -o 0 -1 0 SIDE -white2_BaseColor.dds
+
+newmtl SIDE_ACCENTS_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SIDE ACCENTS_BaseColor.dds
+map_Ke -o 0 -1 0 SIDE ACCENTS_Emissive.dds
+map_d -o 0 -1 0 SIDE ACCENTS_BaseColor.dds
+
+newmtl SIMPLE_KICK_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SIMPLE KICK_BaseColor.dds
+map_d -o 0 -1 0 SIMPLE KICK_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 SIMPLE KICK_Normal.dds
+
+newmtl SMOOTHED1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SMOOTHED1_BaseColor.dds
+map_d -o 0 -1 0 SMOOTHED1_BaseColor.dds
+
+newmtl SMOOTHED_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 SMOOTHED_BaseColor.dds
+map_d -o 0 -1 0 SMOOTHED_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 SMOOTHED_Normal.dds
+
+newmtl TRIANGLE_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 TRIANGLE_BaseColor.dds
+map_d -o 0 -1 0 TRIANGLE_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 TRIANGLE_Normal.dds
+
+newmtl _Glossy_Material1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 _Glossy Material1_BaseColor.dds
+map_d -o 0 -1 0 _Glossy Material1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 _Glossy Material1_Normal.dds
+
+newmtl _Glossy_Material_c4d.2
+Kd 0.800000 0.800000 0.800000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl accent-THREE1_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 accent-THREE1_BaseColor.dds
+map_Ke -o 0 -1 0 accent-THREE1_Emissive.dds
+map_d -o 0 -1 0 accent-THREE1_BaseColor.dds
+
+newmtl accent-TWO_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 accent-TWO_BaseColor.dds
+map_Ke -o 0 -1 0 accent-TWO_Emissive.dds
+map_d -o 0 -1 0 accent-TWO_BaseColor.dds
+
+newmtl accent-_FOUR_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.161645
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 accent- FOUR_BaseColor.dds
+map_Ke -o 0 -1 0 accent- FOUR_Emissive.dds
+map_d -o 0 -1 0 accent- FOUR_BaseColor.dds
+
+newmtl accent-bigger_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 accent-bigger_BaseColor.dds
+map_Ke -o 0 -1 0 accent-bigger_Emissive.dds
+map_d -o 0 -1 0 accent-bigger_BaseColor.dds
+
+newmtl black_metal1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -3 0 -s 0.2 0.33333334 1 black metal1_BaseColor.dds
+map_d -o 0 -3 0 -s 0.2 0.33333334 1 black metal1_BaseColor.dds
+map_Bump -o 0 -3 0 -s 0.2 0.33333334 1 -bm 1.000000 black metal1_Normal.dds
+
+newmtl black_metal4_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 black metal4_BaseColor.dds
+map_d -o 0 -1 0 black metal4_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 black metal4_Normal.dds
+
+newmtl black_metal5_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -2 0 -s 0.5 0.5 1 black metal5_BaseColor.dds
+map_d -o 0 -2 0 -s 0.5 0.5 1 black metal5_BaseColor.dds
+map_Bump -o 0 -2 0 -s 0.5 0.5 1 -bm 1.000000 black metal5_Normal.dds
+
+newmtl black_metal5_c4d.104
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.3 0 -s 3.3333333 3.3333333 1 black metal5_BaseColor.dds
+map_d -o 0 -0.3 0 -s 3.3333333 3.3333333 1 black metal5_BaseColor.dds
+map_Bump -o 0 -0.3 0 -s 3.3333333 3.3333333 1 -bm 1.000000 black metal5_Normal.dds
+
+newmtl black_metal5_c4d.109
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.2 0 -s 5 5 1 black metal5_BaseColor.dds
+map_d -o 0 -0.2 0 -s 5 5 1 black metal5_BaseColor.dds
+map_Bump -o 0 -0.2 0 -s 5 5 1 -bm 1.000000 black metal5_Normal.dds
+
+newmtl black_metal_-_BASE1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 black metal - BASE1_BaseColor.dds
+map_d -o 0 -1 0 black metal - BASE1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 black metal - BASE1_Normal.dds
+
+newmtl brushed-dirt_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.1 0 -s 10 10 1 brushed-dirt_BaseColor.dds
+map_d -o 0 -0.1 0 -s 10 10 1 brushed-dirt_BaseColor.dds
+map_Bump -o 0 -0.1 0 -s 10 10 1 -bm 1.000000 brushed-dirt_Normal.dds
+
+newmtl canisters_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 canisters_BaseColor.dds
+map_d -o 0 -1 0 canisters_BaseColor.dds
+
+newmtl caution_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 caution_BaseColor.dds
+map_d -o 0 -1 0 caution_BaseColor.dds
+
+newmtl ceiling-1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 ceiling-1_BaseColor.dds
+map_d -o 0 -1 0 ceiling-1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 ceiling-1_Normal.dds
+
+newmtl ceiling-1_c4d.9
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -2 0 -s 0.5 0.5 1 ceiling-1_BaseColor.dds
+map_d -o 0 -2 0 -s 0.5 0.5 1 ceiling-1_BaseColor.dds
+map_Bump -o 0 -2 0 -s 0.5 0.5 1 -bm 1.000000 ceiling-1_Normal.dds
+
+newmtl ceiling-2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 ceiling-2_BaseColor.dds
+map_d -o 0 -1 0 ceiling-2_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 ceiling-2_Normal.dds
+
+newmtl ceiling-31_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 ceiling-31_BaseColor.dds
+map_d -o 0 -1 0 ceiling-31_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 ceiling-31_Normal.dds
+
+newmtl chinese-one_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 chinese-one_BaseColor.dds
+map_d -o 0 -1 0 chinese-one_BaseColor.dds
+
+newmtl decal16_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal16_BaseColor.dds
+map_d -o 0 -1 0 decal16_BaseColor.dds
+
+newmtl decal21_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal21_BaseColor.dds
+map_d -o 0 -1 0 decal21_BaseColor.dds
+
+newmtl decal26_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal26_BaseColor.dds
+map_d -o 0 -1 0 decal26_BaseColor.dds
+
+newmtl decal27_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal27_BaseColor.dds
+map_d -o 0 -1 0 decal27_BaseColor.dds
+
+newmtl decal32_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal32_BaseColor.dds
+map_d -o 0 -1 0 decal32_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 decal32_Normal.dds
+
+newmtl decal33_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal33_BaseColor.dds
+map_d -o 0 -1 0 decal33_BaseColor.dds
+
+newmtl decal35_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal35_BaseColor.dds
+map_d -o 0 -1 0 decal35_BaseColor.dds
+
+newmtl decal36_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal36_BaseColor.dds
+map_d -o 0 -1 0 decal36_BaseColor.dds
+
+newmtl decal37_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal37_BaseColor.dds
+map_d -o 0 -1 0 decal37_BaseColor.dds
+
+newmtl decal38_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal38_BaseColor.dds
+map_d -o 0 -1 0 decal38_BaseColor.dds
+
+newmtl decal39_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal39_BaseColor.dds
+map_d -o 0 -1 0 decal39_BaseColor.dds
+
+newmtl decal3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal3_BaseColor.dds
+map_d -o 0 -1 0 decal3_BaseColor.dds
+
+newmtl decal40_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal40_BaseColor.dds
+map_d -o 0 -1 0 decal40_BaseColor.dds
+
+newmtl decal41_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal41_BaseColor.dds
+map_d -o 0 -1 0 decal41_BaseColor.dds
+
+newmtl decal42_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal42_BaseColor.dds
+map_d -o 0 -1 0 decal42_BaseColor.dds
+
+newmtl decal43_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal43_BaseColor.dds
+map_d -o 0 -1 0 decal43_BaseColor.dds
+
+newmtl decal44_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal44_BaseColor.dds
+map_d -o 0 -1 0 decal44_BaseColor.dds
+
+newmtl decal45_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal45_BaseColor.dds
+map_d -o 0 -1 0 decal45_BaseColor.dds
+
+newmtl decal46_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal46_BaseColor.dds
+map_d -o 0 -1 0 decal46_BaseColor.dds
+
+newmtl decal47_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal47_BaseColor.dds
+map_d -o 0 -1 0 decal47_BaseColor.dds
+
+newmtl decal48_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal48_BaseColor.dds
+map_d -o 0 -1 0 decal48_BaseColor.dds
+
+newmtl decal49_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal49_BaseColor.dds
+map_d -o 0 -1 0 decal49_BaseColor.dds
+
+newmtl decal4_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal4_BaseColor.dds
+map_d -o 0 -1 0 decal4_BaseColor.dds
+
+newmtl decal6_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal6_BaseColor.dds
+map_d -o 0 -1 0 decal6_BaseColor.dds
+
+newmtl decal7_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal7_BaseColor.dds
+map_d -o 0 -1 0 decal7_BaseColor.dds
+
+newmtl decal9_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal9_BaseColor.dds
+map_d -o 0 -1 0 decal9_BaseColor.dds
+
+newmtl decal_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 decal_BaseColor.dds
+map_d -o 0 -1 0 decal_BaseColor.dds
+
+newmtl diag_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 diag_BaseColor.dds
+map_d -o 0 -1 0 diag_BaseColor.dds
+
+newmtl dull-lighter1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 dull-lighter1_BaseColor.dds
+map_d -o 0 -1 0 dull-lighter1_BaseColor.dds
+
+newmtl dull-lighter3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 dull-lighter3_BaseColor.dds
+map_d -o 0 -1 0 dull-lighter3_BaseColor.dds
+
+newmtl dull2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 dull2_BaseColor.dds
+map_d -o 0 -1 0 dull2_BaseColor.dds
+
+newmtl dull_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 dull_BaseColor.dds
+map_d -o 0 -1 0 dull_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 dull_Normal.dds
+
+newmtl dull_two_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 dull two_BaseColor.dds
+map_d -o 0 -1 0 dull two_BaseColor.dds
+
+newmtl elec1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 elec1_BaseColor.dds
+map_d -o 0 -1 0 elec1_BaseColor.dds
+
+newmtl emmobart1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 emmobart1_BaseColor.dds
+map_d -o 0 -1 0 emmobart1_BaseColor.dds
+
+newmtl floor_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 floor_BaseColor.dds
+map_d -o 0 -1 0 floor_BaseColor.dds
+
+newmtl full_-scratched14_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 full -scratched14_BaseColor.dds
+map_d -o 0 -1 0 full -scratched14_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 full -scratched14_Normal.dds
+
+newmtl full_reflection_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 full reflection_BaseColor.dds
+map_d -o 0 -1 0 full reflection_BaseColor.dds
+
+newmtl glass_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 glass_BaseColor.dds
+map_d -o 0 -1 0 glass_BaseColor.dds
+
+newmtl grey_steel12_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 grey steel12_BaseColor.dds
+map_d -o 0 -1 0 grey steel12_BaseColor.dds
+
+newmtl kaution3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 kaution3_BaseColor.dds
+map_d -o 0 -1 0 kaution3_BaseColor.dds
+
+newmtl lambert1
+Kd 0.500000 0.500000 0.500000
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.500000
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl light_tower_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 light tower_BaseColor.dds
+map_d -o 0 -1 0 light tower_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 light tower_Normal.dds
+
+newmtl light_tower_c4d.001
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.1 0 -s 10 10 1 light tower_BaseColor.dds
+map_d -o 0 -0.1 0 -s 10 10 1 light tower_BaseColor.dds
+map_Bump -o 0 -0.1 0 -s 10 10 1 -bm 1.000000 light tower_Normal.dds
+
+newmtl light_tower_c4d.1
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.3 0 -s 3.3333333 3.3333333 1 light tower_BaseColor.dds
+map_d -o 0 -0.3 0 -s 3.3333333 3.3333333 1 light tower_BaseColor.dds
+map_Bump -o 0 -0.3 0 -s 3.3333333 3.3333333 1 -bm 1.000000 light tower_Normal.dds
+
+newmtl light_tower_c4d.14
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.2 0 -s 5 5 1 light tower_BaseColor.dds
+map_d -o 0 -0.2 0 -s 5 5 1 light tower_BaseColor.dds
+map_Bump -o 0 -0.2 0 -s 5 5 1 -bm 1.000000 light tower_Normal.dds
+
+newmtl material2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 material2_BaseColor.dds
+map_d -o 0 -1 0 material2_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 material2_Normal.dds
+
+newmtl multi-arm-1_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.593282
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 multi-arm-1_Emissive2.dds
+map_Ke -o 0 -1 0 multi-arm-1_Emissive2.dds
+map_d -o 0 -1 0 multi-arm-1_Emissive2.dds
+
+newmtl multi-arm-21_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -0.279 0 -s 3.3333333 3.3333333 1 multi-arm-21_BaseColor.dds
+map_d -o 0 -0.279 0 -s 3.3333333 3.3333333 1 multi-arm-21_BaseColor.dds
+map_Bump -o 0 -0.279 0 -s 3.3333333 3.3333333 1 -bm 1.000000 multi-arm-21_Normal.dds
+
+newmtl multi-arm-21_c4d.3
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -1.4 -1.85 0 multi-arm-21_BaseColor.dds
+map_d -o -1.4 -1.85 0 multi-arm-21_BaseColor.dds
+map_Bump -o -1.4 -1.85 0 -bm 1.000000 multi-arm-21_Normal.dds
+
+newmtl multi-arm-31_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 multi-arm-31_BaseColor.dds
+map_d -o 0 -1 0 multi-arm-31_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 multi-arm-31_Normal.dds
+
+newmtl multi-arm-PAY_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.02 -0.1 0 -s 10 10 1 multi-arm-PAY_BaseColor.dds
+map_d -o -0.02 -0.1 0 -s 10 10 1 multi-arm-PAY_BaseColor.dds
+map_Bump -o -0.02 -0.1 0 -s 10 10 1 -bm 1.000000 multi-arm-PAY_Normal.dds
+
+newmtl multi-arm_c4d.1
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0.22 -1 0 multi-arm_BaseColor.dds
+map_d -o 0.22 -1 0 multi-arm_BaseColor.dds
+map_Bump -o 0.22 -1 0 -bm 1.000000 multi-arm_Normal.dds
+
+newmtl new_metal-lighter_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 new metal-lighter_BaseColor.dds
+map_d -o 0 -1 0 new metal-lighter_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 new metal-lighter_Normal.dds
+
+newmtl new_metal_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 new metal_BaseColor.dds
+map_d -o 0 -1 0 new metal_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 new metal_Normal.dds
+
+newmtl perfect_plastic_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 perfect plastic_BaseColor.dds
+map_d -o 0 -1 0 perfect plastic_BaseColor.dds
+
+newmtl phong1
+Kd 0.000000 0.073616 0.174000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.423083 1.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.552786
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl pryramid_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 pryramid_BaseColor.dds
+map_d -o 0 -1 0 pryramid_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 pryramid_Normal.dds
+
+newmtl room-no_bump1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 room-no bump1_BaseColor.dds
+map_d -o 0 -1 0 room-no bump1_BaseColor.dds
+
+newmtl room-no_bump1_c4d.001
+Kd 0.800000 0.800000 0.800000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+
+newmtl room-no_bump2_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 room-no bump2_BaseColor.dds
+map_d -o 0 -1 0 room-no bump2_BaseColor.dds
+
+newmtl room1_c4d.1
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -2 0 -s 0.5 0.5 1 room1_BaseColor.dds
+map_d -o 0 -2 0 -s 0.5 0.5 1 room1_BaseColor.dds
+map_Bump -o 0 -2 0 -s 0.5 0.5 1 -bm 1.000000 room1_Normal.dds
+
+newmtl room3_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 room3_BaseColor.dds
+map_d -o 0 -1 0 room3_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 room3_Normal.dds
+
+newmtl room_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 room_BaseColor.dds
+map_d -o 0 -1 0 room_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 room_Normal.dds
+
+newmtl side_-_blue_three_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 side- blue_Emissive.dds
+map_Ke -o 0 -1 0 side- blue_Emissive.dds
+map_d -o 0 -1 0 side- blue_Emissive.dds
+
+newmtl side_-_white_three_c4d
+Ks 1.000000 1.000000 1.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 side - white three_Emissive2.dds
+map_Ke -o 0 -1 0 side - white three_Emissive2.dds
+map_d -o 0 -1 0 side - white three_Emissive2.dds
+
+newmtl stomp-bottom1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 stomp-bottom1_BaseColor.dds
+map_d -o 0 -1 0 stomp-bottom1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 stomp-bottom1_Normal.dds
+
+newmtl stomp_base_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 stomp base_BaseColor.dds
+map_d -o 0 -1 0 stomp base_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 stomp base_Normal.dds
+
+newmtl stomp_base_c4d.52
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o -0.048 -0.606 0 -s 1.6666666 1.6666666 1 stomp base_BaseColor.dds
+map_d -o -0.048 -0.606 0 -s 1.6666666 1.6666666 1 stomp base_BaseColor.dds
+map_Bump -o -0.048 -0.606 0 -s 1.6666666 1.6666666 1 -bm 1.000000 stomp base_Normal.dds
+
+newmtl stomp_mid1_c4d
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+illum 2
+Pr 0.434315
+Pm 0.000000
+Ps 0.000000
+Pc 0.000000
+Pcr 0.030000
+aniso 0.000000
+anisor 0.000000
+map_Kd -o 0 -1 0 stomp mid1_BaseColor.dds
+map_d -o 0 -1 0 stomp mid1_BaseColor.dds
+map_Bump -o 0 -1 0 -bm 1.000000 stomp mid1_Normal.dds

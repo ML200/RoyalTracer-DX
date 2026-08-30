@@ -186,6 +186,12 @@ void RAYGEN_ENTRY()
         //resolved against p(w_k) at the RC_PK_BUNDLE fold (revokes on fail)
         float rcPendGinv = 0.0f;
 
+        //Diffuse-bounce budget: counts scattering events on materials with a
+        //diffuse component (and metals). Capped at pt_maxDiffuseBounces; glass
+        //and translucent (SSS) materials bounce past the cap. See the check
+        //just before the BSDF sample and MaterialIsFreeBounce.
+        int16_t diffuseDepth = 0;
+
     //====================================
     //BOUNCE LOOP
     //====================================
@@ -554,6 +560,19 @@ void RAYGEN_ENTRY()
                 rayDirPk           = PackNormal(-w.exitNormal);   //outgoing -rayDir = exitNormal (outward)
                 continue;
             }
+        }
+
+        //------------- diffuse-bounce budget -------------
+        //NEE (direct lighting) at this vertex has already run above; the BSDF
+        //sample below is the INDIRECT continuation. Cap how many of those come
+        //off diffuse-bearing materials (diffuse, glossy, metal, and specular/
+        //coat layered over diffuse). Glass/translucent are free so refraction
+        //and SSS paths keep their depth. Terminating here still keeps this
+        //vertex's direct light; it just stops the further indirect bounce.
+        if (!MaterialIsFreeBounce(ctx.matID))
+        {
+            if (diffuseDepth >= (int)pt_maxDiffuseBounces) break;
+            ++diffuseDepth;
         }
 
         //------------- BSDF sample (MIS partner for NEE; bottom trace evaluates it) -------------

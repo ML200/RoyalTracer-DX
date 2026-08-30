@@ -16,6 +16,7 @@
 #include "Camera/Camera.h"
 #include "Raytracing/PassSystem.h"
 #include "PostProcess/DLSSManager.h"
+#include "PostProcess/DLSSNRManager.h"
 #include <sl_reflex.h>
 #include "Editor/Editor.h"
 #include "../engine/Camera/FlyCamController.h"
@@ -135,6 +136,9 @@ private:
     Camera              m_camera;
     PassSystem          m_passes;
     DLSSManager         m_dlss;
+    //DLSS-NR: optional NGX neural post-process on the final composited frame.
+    //Fully isolated from the Streamline DLSS-RR path above.
+    DLSSNRManager       m_dlssNR;
     Editor              m_editor;
     planet::StreamOrchestrator m_planet;   // Phase 4/5 BVH stream pipeline
     //MONOTONIC frame counter for the planet streaming system. m_ctx.FrameIndex()

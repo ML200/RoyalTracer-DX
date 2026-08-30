@@ -39,6 +39,8 @@ Renderer::Renderer(UINT width, UINT height)
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
         L"Pass_shift_v8.hlsl|rg:temporal_shift",        L"barrier",
         L"Pass_temp_merge_v8.hlsl|cs:16x16",              L"barrier",
+        //spatial reuse: SPMIS global hash grid (the texture-paired
+        //Pass_spat_gi_* variant was removed — this is the only spatial path).
         L"Pass_spmis_count_v8.hlsl|cs:16x16",             L"barrier",
         L"Pass_spmis_offsets_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_spmis_sort_v8.hlsl|cs:16x16",              L"barrier",
@@ -504,6 +506,9 @@ void Renderer::InitSceneGPU() {
 
         m_scene.UploadMaterials(m_ctx.Device());
         m_dlss.CreateResources(m_ctx.Device(), GetWidth(), GetHeight());
+        //discovery only (runtime path / signature / version) — no NGX or GPU
+        //work happens until the editor enables the feature
+        m_dlssNR.Initialize(GetWidth(), GetHeight());
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
 
@@ -588,6 +593,9 @@ void Renderer::UpdateRenderer(float dt) {
         if (m_dlss.UpdateMode(m_ctx.Device())) {
             m_dlssModeChangedFrames = 2;  // skip temporal reuse for 2 frames
             m_camera.ResetJitter();       // force DLSS temporal reset (fixes blur)
+            //depth/mvec guides were reallocated at the new render res — DLSS-NR
+            //history built on the old ones is invalid
+            m_dlssNR.ForceReset();
             RebuildDLSSDescriptors();
             LOG(L"[DLSS] Mode changed → render res: "
                 << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
@@ -637,7 +645,7 @@ void Renderer::UpdateRenderer(float dt) {
     // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_nrcSettings,
+                  m_passes, m_dlss, m_dlssNR, m_dlssG, m_restirSettings, m_nrcSettings,
                   m_fps, m_frameStats, m_planet.stats());
     // Debug-view checkbox only enables the calculation into slice 3.
     // Cycle to it with 'C' when you want to look at it.
@@ -699,6 +707,7 @@ void Renderer::UpdateRenderer(float dt) {
     //run before slEvaluateFeature(DLSS_RR) downstream.
     if (m_camera.ConsumeResetPending()) {
         m_dlss.ForceReset();
+        m_dlssNR.ForceReset();   //same camera cut poisons DLSS-NR history
     }
     m_scene.UploadInstanceProperties();
     if (m_scene.materialsDirty) {
@@ -1106,6 +1115,10 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
 
     // Recreate DLSS resources at new display resolution
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
+
+    // DLSS-NR IO textures + feature are display-resolution-bound; drops them
+    // and pulses a temporal reset (GPU was drained by WaitForGPU above).
+    m_dlssNR.OnDisplayResolution(newWidth, newHeight);
 
     // Update descriptors for all resolution-dependent resources. Includes
     // a re-bind of NRC slots 58-60 (the resolution-dependent NRC UAVs)
@@ -1518,6 +1531,10 @@ void Renderer::DestroyRenderer() {
         m_dlssG.enabled = false;
     }
     m_editor.Shutdown();
+    //full NGX teardown (release feature, destroy parameters, shutdown) —
+    //needs the GPU idle and must precede device destruction in ctx.Shutdown
+    m_ctx.WaitForGPU();
+    m_dlssNR.Shutdown(m_ctx.Device());
     m_ctx.Shutdown();
 }
 
@@ -1778,7 +1795,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[44] = {};   // slot 43: Pass_shift_v8's per-dispatch loop role (set in Stage::RayGen)
+    UINT rsConsts[44] = {};   // slot 43: RCAS sharpening strength (float, read by Pass_postprocess_v8)
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1862,6 +1879,13 @@ void Renderer::PopulateCommandList() {
         rsConsts[28] = (UINT)std::clamp(rs.spmisSearchIters, 4, 32);
     }
 
+    // Slot 29: diffuse-bounce budget (pt_maxDiffuseBounces, read by Pass_raygen_v8).
+    // Floored at 1 so at least the primary hit can scatter; capped at maxBounces
+    // (the hard path-length cap) since more diffuse bounces than that is moot.
+    rsConsts[29] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
+    // Slots 30-31 (rs_reserved3031) unused since the texture-paired spatial reuse
+    // was removed; left zero (rsConsts is zero-initialized).
+
     // SPMIS spatial-reuse params (slots 32-37; read by the Pass_spmis_* kernels).
     // Selected by RS_FLAG_SPMIS_SPATIAL (0x10). Clamp to safe ranges.
     rsConsts[32] = (UINT)std::clamp(rs.spmisReuseN,   1, 32);      // Ntilde (reuse_neighbor_count)
@@ -1890,6 +1914,14 @@ void Renderer::PopulateCommandList() {
     // Material-texture filtering mode (slot 42; read by SampleMaterialTex). 0 =
     // bilinear/aniso, 1 = nearest-texel point sampling (pixel-art / Minecraft).
     rsConsts[42] = rs.texturePointFilter ? 1u : 0u;
+
+    // RCAS sharpening strength for Pass_postprocess_v8 (slot 43). Applied after
+    // AgX on the DLSS slice; see DLSSManager::sharpness for why this does not go
+    // through DLSSDOptions::sharpness.
+    {
+        const float sharp = std::clamp(m_dlss.sharpness, 0.0f, 1.0f);
+        memcpy(&rsConsts[43], &sharp, 4);
+    }
 
 #if 0 // ── NRC constants (slots 24-31) removed — left 0 (rsConsts is zero-init); reserved as padding in Includes_v8.hlsli; restore for NIRC ──
     // NRC control constants (slots 24-27). NRC is only driving the
@@ -2383,13 +2415,33 @@ void Renderer::PopulateCommandList() {
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
       cmdList->ResourceBarrier(1, &toSrc); }
 
+    UINT layer = m_displayLevels[m_currentDisplayLevel];
+    UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
+
+    // ── DLSS-NR: optional neural post-process on the composited frame ──
+    // Display-resolution, after every post pass and BEFORE ImGui (the editor
+    // stays outside neural processing). Never in place: the manager copies
+    // the displayed slice into its own input and writes its own output; on
+    // success the back buffer is fed from that output, on any failure this
+    // falls through to presenting m_outputResource untouched.
+    ID3D12Resource* presentSrc = m_outputResource.Get();
+    UINT            presentSub = sub;
+    if (m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub,
+                          m_dlss.Depth(), m_dlss.MVec(),
+                          m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
+        presentSrc = m_dlssNR.Output();   //left in COPY_SOURCE by the manager
+        presentSub = 0;
+    }
+    // NGX evaluation leaves its own descriptor heaps on the list — rebind
+    // ours unconditionally (harmless when DLSS-NR did not run).
+    { ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get(), m_samplerHeap.Get() };
+      cmdList->SetDescriptorHeaps(2, h); }
+
     { auto toDst = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
       cmdList->ResourceBarrier(1, &toDst); }
 
-    UINT layer = m_displayLevels[m_currentDisplayLevel];
-    UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
-    CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), sub);
+    CD3DX12_TEXTURE_COPY_LOCATION src(presentSrc, presentSub);
     CD3DX12_TEXTURE_COPY_LOCATION dst(m_ctx.BackBuffer(), 0);
     D3D12_BOX box = { 0, 0, 0, GetWidth(), GetHeight(), 1 };
     cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);

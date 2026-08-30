@@ -199,6 +199,61 @@ inline float3 ApplyOutputDither(float3 c, uint2 pix, uint frameSeed) {
 }
 
 //====================================
+//RCAS SHARPENING (post-DLSS)
+//====================================
+//Robust Contrast Adaptive Sharpening, the sharpener AMD designed to sit after an
+//upscaler. Chosen over a plain unsharp mask because the per-pixel lobe is clamped
+//against the local min/max, so it cannot ring or halo around the high-contrast
+//edges DLSS RR already reconstructs — it only re-tightens edges that upscaling
+//softened.
+//
+//Runs AFTER AgX, on display-encoded [0,1] values, which is where CAS/RCAS is
+//defined to operate. Sharpening the linear HDR instead would scale the lobe by
+//scene luminance and blow out around emitters.
+//
+//Placed here, and not in DLSSDOptions::sharpness, because DLSS-RR ignores that
+//field (see the pp_sharpness note in Includes_v8.hlsli).
+static const float RCAS_LIMIT = 0.25f - (1.0f / 16.0f);
+
+//Re-derives a neighbour's final tonemapped colour. The neighbourhood has to be
+//sampled in the same space the sharpener works in, and the tonemap is not affine,
+//so the taps cannot be shared with the centre pixel's arithmetic.
+float3 TonemappedCleanAt(int2 p, float exposure) {
+    p = clamp(p, int2(0, 0), int2((int)gImageWidth - 1, (int)gImageHeight - 1));
+    float3 c = InverseDlssReinhard(g_dlssOutput[p].xyz);
+    c = ScrubNonFinite(c);
+    return AgX(c * exposure);
+}
+
+//`e` is the centre pixel already tonemapped by the caller — passed in rather than
+//re-read so the common path costs four extra taps, not five.
+float3 RcasSharpen(uint2 pix, float exposure, float3 e, float sharpness) {
+    //   b
+    // d e f
+    //   h
+    const float3 b = TonemappedCleanAt(int2(pix) + int2( 0, -1), exposure);
+    const float3 d = TonemappedCleanAt(int2(pix) + int2(-1,  0), exposure);
+    const float3 f = TonemappedCleanAt(int2(pix) + int2( 1,  0), exposure);
+    const float3 h = TonemappedCleanAt(int2(pix) + int2( 0,  1), exposure);
+
+    const float3 mn4 = min(min(b, d), min(f, h));
+    const float3 mx4 = max(max(b, d), max(f, h));
+
+    //Per-channel headroom toward 0 and toward 1. The tighter of the two bounds
+    //the lobe, which is what keeps the result inside the local range.
+    const float3 hitMin = min(mn4, e) / max(4.0f * mx4, 1e-4f);
+    const float3 hitMax = (1.0f - max(mx4, e)) / max(4.0f * mn4 - 4.0f, -1e-4f);
+    const float3 lobeRGB = max(-hitMin, hitMax);
+
+    //Most negative channel wins: the sharpest channel sets the limit for all
+    //three, so sharpening cannot pull the pixel off its original hue.
+    float lobe = max(-RCAS_LIMIT,
+                     min(max(max(lobeRGB.r, lobeRGB.g), lobeRGB.b), 0.0f)) * sharpness;
+
+    return saturate((lobe * (b + d + f + h) + e) / (4.0f * lobe + 1.0f));
+}
+
+//====================================
 //POST-PROCESS PASS
 //====================================
 [numthreads(8, 4, 1)]
@@ -248,6 +303,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     refl  = AgX(refl  * exposure);
     //albedo is reflectance in [0,1] - no HDR, no exposure, no tonemap; sRGB only
     albedo = sRGBGammaCorrection(albedo);
+
+    //Sharpen the live DLSS slice only. The debug slices bypass DLSS, so they have
+    //no upscaler softness to recover and sharpening them would just misrepresent
+    //what those views are for. Uniform branch: free when the slider is at 0.
+    if (pp_sharpness > 0.0f)
+        clean = RcasSharpen(DTid.xy, exposure, clean, pp_sharpness);
 
     //triangular dither in display space hides 8-bit banding. Animated per
     //frame so DLSS RR accumulates the noise away on the live slice.

@@ -37,7 +37,8 @@ void Editor::Shutdown() {
 
 // ─────────────────────────────────────────────────────────────────
 void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
-                  PassSystem& passes, DLSSManager& dlss, DLSSGSettings& dlssG,
+                  PassSystem& passes, DLSSManager& dlss, DLSSNRManager& dlssNR,
+                  DLSSGSettings& dlssG,
                   ReSTIRSettings& restir, nrc::Settings& nrc,
                   float fps, const FrameStats& stats,
                   const planet::StreamOrchestrator::Stats& planetStats)
@@ -58,6 +59,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Camera",          nullptr, &m_showCamera);
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
+            ImGui::MenuItem("DLSS Neural Rendering", nullptr, &m_showDLSSNR);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("Initial Sampling", nullptr, &m_showInitialSampling);
             //ImGui::MenuItem("NRC",             nullptr, &m_showNRC); // NRC removed — UI panel disabled; restore for NIRC
@@ -93,6 +95,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showCamera)    DrawCameraPanel(camera, flyCam);
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
     if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
+    if (m_showDLSSNR)    DrawDLSSNRPanel(dlssNR);
     if (m_showReSTIR)    DrawReSTIRPanel(restir);
     if (m_showInitialSampling) DrawInitialSamplingPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
@@ -305,6 +308,87 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
         dlss.RenderWidth(), dlss.RenderHeight(),
         dlss.DisplayWidth(), dlss.DisplayHeight());
 
+    // ── RR model preset ─────────────────────────────────────────
+    // sl::DLSSDPreset is a dense uint32: eDefault=0, then A=1 .. O=15, so the
+    // combo index IS the enum value. The full range is offered because which
+    // letters resolve to a real model is decided by the runtime DLLs, not by the
+    // (older) headers we compile against — see DLSSManager.h.
+    static const char* kPresetLabels[] = {
+        "Default (OTA)", "A", "B", "C", "D", "E", "F", "G",
+        "H", "I", "J", "K", "L", "M", "N", "O"
+    };
+    constexpr int kPresetCount = IM_ARRAYSIZE(kPresetLabels);
+
+    auto presetCombo = [&](const char* label, DLSSManager::PresetSlot slot) {
+        int idx = (int)dlss.rrPresets[slot];
+        if (idx < 0 || idx >= kPresetCount) idx = 0;
+        if (ImGui::Combo(label, &idx, kPresetLabels, kPresetCount)) {
+            const auto p = (sl::DLSSDPreset)idx;
+            if (dlss.rrLinkPresets) {
+                for (int i = 0; i < DLSSManager::kPresetSlotCount; ++i)
+                    dlss.rrPresets[i] = p;
+            } else {
+                dlss.rrPresets[slot] = p;
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "DLSS-RR denoiser/upscaler model.\n"
+                "F is DLSS 4.5 (transformer 2) on the shipped NGX 310.7.129 and is the\n"
+                "default here; D and E are the older transformer models the headers\n"
+                "document (E is the one required for the DoF guide). Letters the\n"
+                "runtime does not implement fall back to its default model.\n"
+                "Switching preset drops temporal history for one frame.");
+    };
+
+    // Linked is the common case: one letter for every quality mode. Unlink to give
+    // each mode its own, which is what DLSSDOptions actually models.
+    ImGui::Checkbox("Link presets across quality modes", &dlss.rrLinkPresets);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "On: one preset applies to every quality mode.\n"
+            "Off: DLAA / Quality / Balanced / Performance each get their own.");
+
+    if (dlss.rrLinkPresets) {
+        // Any slot works while linked — the write fans out to all six.
+        presetCombo("RR Preset", DLSSManager::kPresetDLAA);
+    } else {
+        presetCombo("DLAA",          DLSSManager::kPresetDLAA);
+        presetCombo("Quality",       DLSSManager::kPresetQuality);
+        presetCombo("Balanced",      DLSSManager::kPresetBalanced);
+        presetCombo("Performance",   DLSSManager::kPresetPerformance);
+        presetCombo("Ultra Perf",    DLSSManager::kPresetUltraPerformance);
+        presetCombo("Ultra Quality", DLSSManager::kPresetUltraQuality);
+    }
+
+    // Diagnostic: scales the jitter REPORTED to DLSS without touching the offset
+    // the raygen samples with. Off 1.0 the two disagree on purpose — see
+    // DLSSManager::jitterScale. History is invalid across a change, so drop it.
+    if (ImGui::SliderFloat("DLSS jitter scale", &dlss.jitterScale, 0.0f, 2.0f, "%.3f"))
+        dlss.ForceReset();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "DIAGNOSTIC. Scales only the jitterOffset handed to DLSS.\n"
+            "Rendering still samples at the full Halton [-0.5,+0.5] offset, so any\n"
+            "value except 1.0 reports an offset we did not actually sample with.\n"
+            "1.0 = truthful, and the only value correct by construction.\n"
+            "Sweep it to test whether RR2 (preset F) reads jitterOffset differently\n"
+            "than RR: a stability minimum away from 1.0 would be the evidence.\n"
+            "0.0 tells DLSS there is no jitter at all.");
+
+    // RCAS sharpening on the DLSS output. Deliberately not DLSSDOptions::sharpness,
+    // which DLSS-RR ignores — this runs in Pass_postprocess_v8 after AgX.
+    ImGui::SliderFloat("Sharpness", &dlss.sharpness, 0.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "RCAS sharpening applied to the DLSS output after tonemapping.\n"
+            "0 = off (the pass skips the taps entirely).\n"
+            "Contrast-adaptive, so it re-tightens upscaler softness without\n"
+            "ringing on high-contrast edges. Affects the live DLSS view only,\n"
+            "not the debug slices.\n"
+            "DLSS-RR ignores Streamline's own sharpness field, so this is a\n"
+            "post-process step rather than a DLSS setting.");
+
     // Clamp emitter radiance fed to DLSS RR so big bright emitters don't sit on
     // the Reinhard rail (where the denoiser/inverse amplify error into artefacts).
     ImGui::Checkbox("Clamp emitter spikes (DLSS RR)", &dlss.clampEmitterSpikes);
@@ -329,7 +413,114 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
             int fgIdx = dlssG.framesToGenerate - 1;
             if (ImGui::Combo("Multiplier", &fgIdx, fgLabels, dlssG.maxFrames))
                 dlssG.framesToGenerate = fgIdx + 1;
+
+            // DLSSGOptions exposes no preset field — the interpolation model is
+            // picked by the driver/OTA, so there is nothing to select here.
+            ImGui::TextDisabled("Preset: driver-selected (no app control)");
         }
+    }
+
+    ImGui::End();
+}
+
+//====================================
+//DLSS NEURAL RENDERING PANEL
+//====================================
+//Status + settings for the optional NGX DLSS-NR post-process. This function
+//only reads status and writes DLSSNRManager::settings / request flags — every
+//NGX call happens inside the manager on the render thread.
+void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
+    ImGui::SetNextWindowPos(ImVec2(380, 60), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(430, 480), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("DLSS Neural Rendering")) { ImGui::End(); return; }
+
+    const auto& st = nr.GetStatus();
+    using Sig = DLSSNRManager::SignatureState;
+    using Bk  = DLSSNRManager::BackendState;
+
+    // ── Runtime / trust status ──────────────────────────────────
+    ImGui::SeparatorText("Runtime");
+    ImGui::TextWrapped("Path: %s", st.runtimePath.c_str());
+    if (ImGui::IsItemHovered() && !st.runtimeSearched.empty())
+        ImGui::SetTooltip("Search order:\n%s\n(override with DLSSNR_RUNTIME_PATH)",
+                          st.runtimeSearched.c_str());
+    ImGui::Text("Version: %s", st.runtimeVersion.c_str());
+
+    const bool sigValid = (st.signature == Sig::eSignedValid);
+    const bool sigFound = (st.signature != Sig::eNotFound);
+    ImVec4 sigCol = sigValid          ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f)
+                  : sigFound          ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+                                      : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+    ImGui::TextColored(sigCol, "%s", st.signatureText.c_str());
+    ImGui::TextWrapped("Backend: %s", st.backendText.c_str());
+    if (!st.driverProbe.empty())
+        ImGui::TextDisabled("%s", st.driverProbe.c_str());
+
+    // ── Modified-runtime opt-in (session only) ──────────────────
+    if (sigFound && !sigValid) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.2f, 1.0f));
+        ImGui::TextWrapped(
+            "WARNING: this runtime FAILED signature validation — its content does "
+            "not match its NVIDIA signature. Enabling hands its folder to the NGX "
+            "loader, which applies its own validation. Consent lasts this session "
+            "only and is never saved.");
+        ImGui::PopStyleColor();
+        ImGui::Checkbox("Allow modified runtime (this session only)",
+                        &nr.settings.allowModifiedRuntime);
+    }
+
+    // ── Enable + processing controls ────────────────────────────
+    ImGui::SeparatorText("Processing");
+    const bool backendPresent = (st.backend != Bk::eStubNoSdk &&
+                                 st.backend != Bk::eRuntimeMissing);
+    const bool canEnable = backendPresent && (sigValid || nr.settings.allowModifiedRuntime);
+    if (!canEnable) nr.settings.enabled = false;
+
+    ImGui::BeginDisabled(!canEnable);
+    ImGui::Checkbox("Enable", &nr.settings.enabled);
+    ImGui::EndDisabled();
+    if (!backendPresent && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", st.backendText.c_str());
+
+    ImGui::BeginDisabled(!nr.settings.enabled);
+    ImGui::SliderFloat("Intensity",       &nr.settings.intensity,              0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Local Tone",      &nr.settings.localToneStrength,      0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Local Structure", &nr.settings.localStructureStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Skin Structure",  &nr.settings.skinStructureStrength, -1.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("-1 = runtime default (as shipped); positive values force a strength");
+    ImGui::Checkbox("Auto Skin Mask", &nr.settings.useAutoMask);
+    //Style stays hidden: its valid value range is unverified (no public docs
+    //for this feature) — plumbed through DLSSNRSettings::style only.
+    ImGui::TextDisabled("Style: hidden until its valid range is verified");
+    if (ImGui::Button("Reset temporal history"))
+        nr.ForceReset();
+    ImGui::EndDisabled();
+
+    // ── Diagnostics ─────────────────────────────────────────────
+    ImGui::SeparatorText("Diagnostics");
+    ImGui::TextWrapped("Last NGX result: %s", st.lastResult.c_str());
+    //An OutOfDate here is NGX not exposing feature 18 to this application, not
+    //a stale driver — the installed runtime carries no dlssnr provisioning for
+    //an unregistered app. Spell that out so the raw result isn't misread.
+    if (st.lastResult.find("OutOfDate") != std::string::npos) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.55f, 1.0f));
+        ImGui::TextWrapped(
+            "OutOfDate = the installed NGX runtime does not expose feature 18 to "
+            "this (unregistered) application. It is not necessarily a driver-age "
+            "problem: the feature snippet is located and the deny-list allows it, "
+            "but the runtime has no DLSS-NR provisioning for this app identity.");
+        ImGui::PopStyleColor();
+    }
+    ImGui::Text("Successful evaluations: %llu",
+                (unsigned long long)st.evalCount);
+    auto log = nr.NgxLogTail();
+    if (!log.empty() && ImGui::TreeNode("NGX log tail")) {
+        for (const auto& line : log)
+            ImGui::TextWrapped("%s", line.c_str());
+        ImGui::TreePop();
     }
 
     ImGui::End();
@@ -676,9 +867,9 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
     }
     if (ImGui::CollapsingHeader("Spatial (SPMIS)", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Spat", &rs.enableSpatGI);
-        ImGui::SetItemTooltip("Spatial reuse via the SPMIS global hash grid (raygen inserts each pixel's "
-                              "cell) + materialized per-cell lists + non-defensive stochastic pairwise-MIS "
-                              "reuse. Pass_spmis_* pipeline.");
+        ImGui::SetItemTooltip("Spatial reuse via the SPMIS global hash grid: raygen inserts each pixel's "
+                              "cell, then materialized per-cell lists feed stochastic pairwise-MIS reuse "
+                              "(Pass_spmis_* pipeline). The sliders below tune it.");
         ImGui::SliderInt("Reuse N (Ntilde)##SPMIS", &rs.spmisReuseN, 1, 32);
         ImGui::SetItemTooltip("Non-canonical reuse draws per pixel (NOT the inner-RIS count below). Higher "
                               "dilutes the canonical weight (collapse factor 1/(N+1) where reuse fails).");
@@ -816,9 +1007,16 @@ void Editor::DrawInitialSamplingPanel(ReSTIRSettings& rs) {
                           "into the ReSTIR reservoir (M=N). 1 = legacy single sample (byte-identical). "
                           "Higher = less initial-sample variance at ~linear raygen cost. Capped at 8.");
 
+    ImGui::SliderInt("Max diffuse bounces", &rs.maxDiffuseBounces, 1, 32);
+    ImGui::SetItemTooltip("Caps how many scattering events a path may take on materials with a diffuse "
+                          "component — also metals, and specular/clearcoat lobes layered over diffuse. "
+                          "Glass and translucent (SSS) materials bounce past this (refraction needs the "
+                          "depth), up to 'Max bounces'. Default 3; lower = cheaper/less noisy diffuse GI.");
+
     ImGui::SliderInt("Max bounces", &rs.maxBounces, 2, 32);
-    ImGui::SetItemTooltip("Raygen path loop bound: the loop runs depths [1, N). 2 = primary direct only; "
-                          "higher = deeper GI (more cost + variance). Default 10. Capped at 32.");
+    ImGui::SetItemTooltip("Hard path-length cap: the raygen loop runs depths [1, N). 2 = primary direct "
+                          "only; higher = deeper glass/translucent paths (diffuse GI is bounded by 'Max "
+                          "diffuse bounces' above). Capped at 32.");
 
     ImGui::SliderInt("RR start depth", &rs.rrStartDepth, 1, 32);
     ImGui::SetItemTooltip("Russian roulette begins at depth >= this. Lower = more aggressive termination "

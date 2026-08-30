@@ -77,7 +77,13 @@ cbuffer Push : register(b1)
     float spmis_searchR0;     // slot 26: cell-search initial probe radius (px)
     float spmis_searchGrow;   // slot 27: cell-search radius growth per probe
     uint  spmis_searchIters;  // slot 28: cell-search probe count (host-clamped 4..32)
-    uint3 _nirc_reserved;     // slots 29..31 (kept for the NIRC rewrite)
+    //Slot 29: max diffuse bounces (Pass_raygen_v8 diffuse-bounce budget; a path
+    //may take at most this many scattering events on diffuse-bearing materials,
+    //glass/translucent excepted). Slots 30-31 stay reserved (were the packed
+    //reuse-texture constants for the removed texture-paired spatial reuse; the
+    //host leaves them zero). Kept a uint3-wide so slots 32+ keep their offsets.
+    uint  pt_maxDiffuseBounces;
+    uint2 rs_reserved3031;
     //SPMIS spatial reuse. Slots 32-37, read by the Pass_spmis_* kernels. Selected by
     //RS_FLAG_SPMIS_SPATIAL (0x10).
     uint  spmis_reuseN;       // Ntilde: non-canonical reuse draws
@@ -102,14 +108,17 @@ cbuffer Push : register(b1)
     //(g_samplerPoint s3) for crisp pixel-art / Minecraft-style assets. Editor
     //toggle under Materials. Read by SampleMaterialTex below.
     uint  pt_pointFilter;
-    //slot 43 (register 10.w, fills the register out exactly). SPARE/UNUSED as
-    //of round 13: used to carry Pass_shift_v8's role (shift_loopRole) when
-    //role dispatch was a host-side redispatch loop; that loop was reverted in
-    //favor of a single Depth-dimensioned DispatchRays per domain (role now
-    //read from DispatchRaysIndex().z in-shader, no root constant needed).
-    //Left declared, always 0, to avoid touching the root signature's 44-
-    //constant count for a slot that may find another use later.
-    uint  _shift_loopRole_unused;
+    //slot 43 (register 10.w, fills the register out exactly). RCAS sharpening
+    //strength for the post-DLSS pass, [0,1]; 0 = off (Pass_postprocess_v8 skips
+    //the taps entirely). Claims the slot that carried Pass_shift_v8's role
+    //(shift_loopRole) until round 13 moved role to DispatchRaysIndex().z; it has
+    //been declared-and-always-zero since, so the root signature's 44-constant
+    //count is unchanged.
+    //
+    //Sharpening lives here rather than in DLSSDOptions::sharpness because
+    //DLSS-RR ignores that field outright (NVIDIA's DLSS-RR Programming Guide:
+    //"DLSS-RR will ignore DLSS options sharpness and useAutoExposure").
+    float pp_sharpness;
 };
 
 //====================================
@@ -127,11 +136,11 @@ cbuffer Push : register(b1)
 #define RS_FLAG_CLAMP_EMITTERS  0x100u
 #define CLAMP_EMITTERS_MODE  ((rs_flags & RS_FLAG_CLAMP_EMITTERS) != 0u)
 
-//RS_FLAG_SPMIS_SPATIAL — selects the SPMIS global-hash-grid spatial-reuse path
-//(Pass_spmis_* : reset/count/offsets/sort/reuse)
-//instead of the texture-paired select/shift/_v8_1 passes. Sub-mode of spatial GI
-//(0x8): when set, the texture passes no-op, raygen inserts each pixel's hash, and
-//the SPMIS pipeline owns spatial reuse. Set by ReSTIRSettings::Flags().
+//RS_FLAG_SPMIS_SPATIAL — the SPMIS global-hash-grid spatial-reuse path
+//(Pass_spmis_* : reset/count/offsets/sort/select/passthrough/shift/merge) is
+//active: raygen inserts each pixel's hash and the SPMIS pipeline owns spatial
+//reuse. Now raised whenever spatial GI (0x8) is on — the old texture-paired
+//variant was removed, so this is the only spatial path. Set by Flags().
 #define RS_FLAG_SPMIS_SPATIAL  0x10u
 #define SPMIS_SPATIAL_MODE  ((rs_flags & RS_FLAG_SPMIS_SPATIAL) != 0u)
 

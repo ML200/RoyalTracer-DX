@@ -198,4 +198,31 @@ inline float LoadSSSWeight(uint matID)
     return float((g_mat[matID].texIDs_2 >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
+//====================================
+//DIFFUSE-BOUNCE BUDGET CLASSIFICATION
+//====================================
+//Whether a bounce off this material is EXEMPT from the diffuse-bounce cap
+//(pt_maxDiffuseBounces). Only a purely transmissive glass or a translucent
+//(SSS) material with NO diffuse component may bounce past the cap — refraction
+//and translucency need the extra depth. Everything else counts against the
+//budget: diffuse, glossy/metal (metals reflect, they do not refract), and any
+//specular or clearcoat lobe layered over a diffuse base (a material that
+//"potentially has a diffuse component"), so those are all capped.
+//
+//Signals (see Material_GGX_v8): the GGX transmit weight is (1-Pm)*(1-Kd_w) and
+//its colour is Tf, so real glass has Kd_w~0, Pm~0 and a non-zero Tf (or the
+//thin-glass bit); a metal has Kd_w~0 but Pm~1 and does not transmit. Under
+//FORCE_DIFFUSE every material decodes with Kd_w=1, so this returns false (all
+//bounces count), matching the debug view.
+inline bool MaterialIsFreeBounce(uint matID)
+{
+    //any diffuse component at all -> counts (incl. layered spec/coat over diffuse)
+    if (LoadKd_w(matID) >= 1e-3f) return false;
+    //no diffuse: exempt only if it actually transmits (glass) or is SSS-translucent
+    const bool isGlass      = (LoadPm(matID) < 0.5f) &&
+                              (any(LoadTf(matID) > 0.0f) || LoadIsThinGlass(matID));
+    const bool isTranslucent = LoadIsSSS(matID);
+    return isGlass || isTranslucent;
+}
+
 #endif

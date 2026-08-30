@@ -30,24 +30,24 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float2 dims     = float2(IMG_W, IMG_H);
     const uint   pixelIdx = MapPixelID(dims, tid.xy);
 
-    //SPATIAL-OFF FALLBACK: Pass_shading reads scratch slot 2 unconditionally and
-    //this pass owns the reservoir ping-pong, so with spatial reuse disabled the
-    //(temporal) result must still resolve here — otherwise slot 2 goes stale and
-    //next frame's temporal pass reads a dead history buffer.
+    //Spatial reuse OFF (RS_FLAG_SPMIS_SPATIAL clear): no SPMIS pass produced a
+    //resolved reservoir, so resolve the temporally-merged one straight through
+    //— this is the canonical passthrough the removed texture-paired merge used
+    //to own for the spatial-off case. It writes the reservoir's radiance F*W to
+    //scratch slot 2 (Pass_shading's `output_indirect`, i.e. the DLSS input) and
+    //ping-pongs the reservoir to g_Reservoirs_last for Pass_dup_gi + next-frame
+    //temporal reuse. Without this, disabling spatial reuse leaves slot 2 stale
+    //and kills the DLSS input. Emitter pixels keep the camera pass's slot-2
+    //emission (they carry direct emission, not the GI reservoir).
     if (!SPMIS_SPATIAL_MODE)
     {
-        if (load_isEmitter(g_sample_current, pixelIdx))
+        Reservoir rp = loadReservoir(g_Reservoirs_current, pixelIdx);
+        if (!load_isEmitter(g_sample_current, pixelIdx))
         {
-            g_Reservoirs_last.Store(addr_v2(pixelIdx), PROBE_DI_NORMAL_ZERO_CODE);
-            return;
+            const float Wp = (rp.W > 0.0f) ? rp.W : 0.0f;
+            gScratchPing[uint3(tid.xy, 2)] = float4(rp.F * Wp, 0);
         }
-        Reservoir rdiP = loadReservoir(g_Reservoirs_current, pixelIdx);
-        const float  Wp   = (rdiP.W > 0.0f) ? rdiP.W : 0.0f;
-        float3 outCP = rdiP.F * Wp;
-        if (RcK(rdiP.rcInfo) == 2u && !RcEnvReplay(rdiP.rcInfo))
-            outCP *= ResolveReuseVis(pixelIdx, rdiP, outCP);       //deferred vis (REUSE_VIS_OFF)
-        gScratchPing[uint3(tid.xy, 2)] = float4(outCP, 0);
-        storeReservoir(g_Reservoirs_last, pixelIdx, rdiP);
+        storeReservoir(g_Reservoirs_last, pixelIdx, rp);
         return;
     }
 
