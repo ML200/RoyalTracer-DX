@@ -910,24 +910,40 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
             "coat and GGX layers on the exact tracer, so nothing specular is ever cached. The primary "
             "vertex always stays exact. Uncertain entries keep tracing. Disable for the uncached reference.");
         ImGui::BeginDisabled(!rs.sharcEnabled);
-        const char* cacheViews[] = { "Off", "Cells", "Cell lighting" };
+        const char* cacheViews[] = { "Off", "Cells", "Cell lighting", "Guiding" };
         ImGui::Combo("Cache debug view", &rs.sharcDebugMode, cacheViews, IM_ARRAYSIZE(cacheViews));
         ImGui::SetItemTooltip("Projects the nearest stored cache cells onto visible surfaces. "
             "Bypasses denoising and interpolation; training and normal path tracing keep running. "
             "Off restores the previous display view.");
         if (rs.sharcDebugMode != 0) {
-            ImGui::Checkbox("Show other query level", &rs.sharcDebugCoarse);
-            ImGui::SetItemTooltip("By default the view shows the distance level most rendering queries "
-                "sample at each pixel. This shows the other level of the pair, which receives "
-                "proportionally fewer training deposits.");
+            if (rs.sharcDebugMode == SHARC_DEBUG_GUIDING) {
+                ImGui::Checkbox("Show receivers instead of targets", &rs.sharcDebugCoarse);
+                ImGui::SetItemTooltip("Targets: surfaces guided samples are aimed at. Receivers: how "
+                    "strongly each surface itself guides.");
+            } else {
+                ImGui::Checkbox("Show other query level", &rs.sharcDebugCoarse);
+                ImGui::SetItemTooltip("By default the view shows the distance level most rendering queries "
+                    "sample at each pixel. This shows the other level of the pair, which receives "
+                    "proportionally fewer training deposits.");
+            }
             if (rs.sharcDebugMode == SHARC_DEBUG_CELLS)
                 ImGui::TextWrapped("Cell colors: dim = warming, bright = confident. Dark grey = missing, "
                     "dark red = bucket full (insert pending), slate = surface never cached "
                     "(glossy, metallic, layered, transmitting, SSS or steep normal map).");
-            else
+            else if (rs.sharcDebugMode == SHARC_DEBUG_LIGHTING)
                 ImGui::TextWrapped("Stored diffuse-lobe outgoing radiance (direct + indirect through that lobe, "
                     "normal-incidence view), including untrusted samples. Magenta = missing, dark red = bucket "
                     "full, slate = no diffuse lobe here, amber = no resolved samples, black = stored zero.");
+            else if (!rs.sharcDebugCoarse)
+                ImGui::TextWrapped("Guiding targets: surfaces whose coarse patch is held by some receiver, "
+                    "shown at the brightness guiding believes them to have (normal exposure), fading as "
+                    "receivers stop referencing them. Dark grey = not a target, slate = no diffuse lobe "
+                    "here. Targets are recorded only while this view is on, so allow a few frames.");
+            else
+                ImGui::TextWrapped("Guiding receivers at the primary vertex: green rises with the guided "
+                    "fraction of diffuse samples (relative to the cap), blue with the number of stored "
+                    "patches. Magenta = no receiver cell trained yet, amber = too few irradiance "
+                    "observations, slate = no diffuse lobe here.");
         }
         ImGui::SliderInt("Minimum cell size (log2 metres)", &rs.sharcCellSizeExponent, -6, 4);
         ImGui::SliderFloat("Distance grid scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -952,8 +968,36 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
         ImGui::SetItemTooltip("Path spread a secondary vertex needs before it may terminate into the cache, in "
             "coarser-cell widths (full acceptance at twice this). Cells scale with camera distance, so high "
             "values make distant first bounces trace on instead of terminating.");
+        ImGui::SeparatorText("Cache-driven path guiding");
+        ImGui::Checkbox("Guide diffuse samples toward bright cached patches", &rs.sharcGuideEnabled);
+        ImGui::SetItemTooltip("Training paths record the bright cached patches they see from each coarse "
+            "receiver cell. Diffuse-lobe samples then aim at those patches as a MIS-weighted mixture "
+            "with cosine sampling, so small bright openings such as a lit doorway are found far more "
+            "often. Unbiased: only the sampling density changes. Off = plain cosine sampling.");
+        ImGui::BeginDisabled(!rs.sharcGuideEnabled);
+        ImGui::SliderFloat("Guided fraction cap", &rs.sharcGuideMax, 0.0f, 0.9f, "%.2f");
+        ImGui::SetItemTooltip("Upper bound on the share of diffuse samples that follow the patches. The "
+            "actual share is this times the fraction of the cell's mean incident light the patches "
+            "explain, so open areas fall back to cosine sampling on their own.");
+        ImGui::SliderInt("Receiver cell (log2 x cache cell)", &rs.sharcGuideLevelOffset, 1, 6);
+        ImGui::SetItemTooltip("Receiver cells and patches are this many doublings coarser than the cache "
+            "grid. 3 = 1 m near the camera. Changing it resets the cache.");
+        ImGui::SliderFloat("Patch radius / cell width", &rs.sharcGuideRadius, 0.25f, 2.0f, "%.2f");
+        ImGui::SetItemTooltip("Bounding radius of a patch cone in patch-cell widths. Larger cones cover more "
+            "of an opening but concentrate samples less.");
+        ImGui::SliderInt("Guided path vertices", &rs.sharcGuideDepth, 1, 7);
+        ImGui::SetItemTooltip("Deepest path vertex that is guided and trained (1 = primary only). The first "
+            "two carry the visible noise; deeper vertices mostly end in the cache and cost training time.");
+        ImGui::SliderInt("Patch lifetime (frames)", &rs.sharcGuideLifetime, 8, 2048);
+        ImGui::SetItemTooltip("An unseen patch loses half its weight every this many frames and is dropped "
+            "after four lifetimes, so closed doors and switched-off lights stop attracting samples.");
+        ImGui::Checkbox("Guide training paths", &rs.sharcGuideTrain);
+        ImGui::SetItemTooltip("Training paths use the same mixture, so a patch found once is revisited and "
+            "refreshed quickly and the cache itself learns bright openings faster. Patches are still "
+            "discovered with this off.");
+        ImGui::EndDisabled();
         if (ImGui::Button("Reset radiance cache")) rs.sharcReset = true;
-        ImGui::TextDisabled("164 MiB persistent cache; regular path tracer only");
+        ImGui::TextDisabled("184 MiB persistent cache + guide table; regular path tracer only");
         ImGui::EndDisabled();
     }
     ImGui::SeparatorText(ptActive ? "ReSTIR (deprecated, inactive)" : "ReSTIR (deprecated)");

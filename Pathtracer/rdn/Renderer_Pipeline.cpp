@@ -431,7 +431,9 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // (Last 5 of the NRC block are scene-bounds normalization for the position
     // input; the SPMIS block is the hash-grid reuse params, see
     // Includes_v8.hlsli / the Pass_spmis_* kernels.)
-    // 56 constants + descriptor table (1) + three root UAVs (6) = 63 DWORDs.
+    // SHaRC takes 44..55 and path guiding packs into 56 (guide_params):
+    // 57 constants + descriptor table (1) + three root UAVs (6) = 64 DWORDs,
+    // the whole root budget.
     rootParameters[1].InitAsConstants(SHARC_ROOT_CONSTANTS, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     // SPMIS global hash-grid buffer as a root UAV at u25 (g_spmisBuffer). Bound as a
     // root descriptor rather than a heap entry to avoid descriptor-table surgery; set

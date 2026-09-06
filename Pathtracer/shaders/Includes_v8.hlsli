@@ -127,7 +127,7 @@ cbuffer Push : register(b1)
     //DLSS-RR ignores that field outright (NVIDIA's DLSS-RR Programming Guide:
     //"DLSS-RR will ignore DLSS options sharpness and useAutoExposure").
     float pp_sharpness;
-    // SHaRC, regular PT only. Slots 44..55; total root cost is 63 DWORDs.
+    // SHaRC, regular PT only. Slots 44..56; total root cost is 64 DWORDs.
     uint  sharc_enabled; // bit 0: enabled; debug mode/level: SharcLayout.h
     uint  sharc_reset;
     uint  sharc_frame;
@@ -140,6 +140,9 @@ cbuffer Push : register(b1)
     float sharc_queryFootprint;
     uint  sharc_trainBounces;
     uint  sharc_trainRrDepth;
+    // Slot 56: cache-driven path guiding, packed per SharcLayout.h
+    // GUIDE_PARAM_* (SharcGuide_v8.hlsli decodes it).
+    uint  guide_params;
 };
 
 //====================================

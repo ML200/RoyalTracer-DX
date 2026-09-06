@@ -208,7 +208,7 @@ struct ReSTIRSettings {
     //of two for floating-origin precision; cache memory is resolution-independent.
     bool  sharcEnabled = true;
     bool  sharcReset = false;
-    int   sharcDebugMode = 0; // 0: off, 1: cells, 2: stored cell lighting
+    int   sharcDebugMode = 0; // 0: off, 1: cells, 2: stored cell lighting, 3: guiding coverage
     bool  sharcDebugCoarse = false; // inspect the other (less sampled) of the two queried levels
     int   sharcCellSizeExponent = -3; // 0.125 m minimum spacing
     float sharcLodScale = 0.01f;      // spacing grows with camera distance
@@ -227,6 +227,17 @@ struct ReSTIRSettings {
     // 0.9 survival was latency-bound, 16 with roulette from 6 still left a tail.
     int   sharcTrainBounces = 8;
     int   sharcTrainRrDepth = 5; // difficult multi-bounce areas need the suffix intact this deep
+    // Cache-driven path guiding (SharcGuide_v8.hlsli). Diffuse-lobe samples are
+    // drawn toward bright cached patches that training paths saw from the
+    // receiver cell, as a MIS-weighted mixture with cosine sampling, so the
+    // estimator stays unbiased. Off restores the plain cosine sampler.
+    bool  sharcGuideEnabled = true;
+    bool  sharcGuideTrain = true;    // training paths use the mixture too: faster discovery
+    float sharcGuideMax = 0.6f;      // cap on the guided fraction of diffuse-lobe samples
+    int   sharcGuideLevelOffset = 3; // receiver cell = cache cell x 2^offset (1 m near the camera)
+    int   sharcGuideLifetime = 256;  // frames; an unseen patch fades by 2^(-age / lifetime)
+    float sharcGuideRadius = 0.75f;  // patch bounding radius in cell widths
+    int   sharcGuideDepth = 2;       // deepest guided/trained path vertex (1 = primary only)
 
     int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;

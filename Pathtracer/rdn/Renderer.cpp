@@ -1864,7 +1864,7 @@ void Renderer::PopulateCommandList() {
     // below also skips every reservoir pass in this mode.
     const bool usePtKernel = (rs.integratorMode == 0);
     const bool useSharc = usePtKernel && rs.sharcEnabled;
-    const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 2) : 0u;
+    const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 3) : 0u;
     if (!m_sharcLightingValid ||
         std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0 ||
         std::memcmp(&m_sharcCloudSettings, &m_camera.cloudSettings, sizeof(CloudSettings)) != 0)
@@ -1876,12 +1876,15 @@ void Renderer::PopulateCommandList() {
     }
     rs.sharcCellSizeExponent = std::clamp(rs.sharcCellSizeExponent, -6, 4);
     rs.sharcTrainBounces = std::clamp(rs.sharcTrainBounces, 4, 64);
+    rs.sharcGuideLevelOffset = std::clamp(rs.sharcGuideLevelOffset, 0, 7);
     if (rs.sharcCellSizeExponent != m_sharcCellExponent ||
         rs.sharcTrainBounces != m_sharcBounceLimit ||
+        rs.sharcGuideLevelOffset != m_sharcGuideLevel || // receiver keys change with the level
         rs.texturePointFilter != m_sharcTextureFilter || rs.sharcReset ||
         (useSharc && !m_sharcWasEnabled))
         m_sharcResetPending = true;
     m_sharcCellExponent = rs.sharcCellSizeExponent;
+    m_sharcGuideLevel = rs.sharcGuideLevelOffset;
     m_sharcBounceLimit = rs.sharcTrainBounces;
     m_sharcTextureFilter = rs.texturePointFilter;
     m_sharcWasEnabled = useSharc;
@@ -1903,6 +1906,18 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[53], &sharcFootprint, 4);
     rsConsts[54] = (UINT)rs.sharcTrainBounces;
     rsConsts[55] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
+    // Path guiding, packed per SharcLayout.h. Disabled along with the cache.
+    const UINT guideQ = (UINT)std::lround(std::clamp(rs.sharcGuideMax, 0.0f, 0.9f) * 255.0f);
+    const UINT guideLifetime = (UINT)std::clamp(rs.sharcGuideLifetime / 8 - 1, 0, 255);
+    const UINT guideRadius = (UINT)std::lround(std::clamp(rs.sharcGuideRadius, 0.25f, 3.0f) * 32.0f);
+    rs.sharcGuideDepth = std::clamp(rs.sharcGuideDepth, 1, 7);
+    rsConsts[56] = (useSharc && rs.sharcGuideEnabled ? GUIDE_PARAM_ENABLED : 0u) |
+        (guideQ << GUIDE_PARAM_QMAX_SHIFT) |
+        ((UINT)rs.sharcGuideLevelOffset << GUIDE_PARAM_LEVEL_SHIFT) |
+        (guideLifetime << GUIDE_PARAM_LIFETIME_SHIFT) |
+        (rs.sharcGuideTrain ? GUIDE_PARAM_TRAIN : 0u) |
+        (guideRadius << GUIDE_PARAM_RADIUS_SHIFT) |
+        ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
     if (useSharc) m_sharcResetPending = false;
     if (usePtKernel) baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
     rsConsts[9]  = baseFlags;

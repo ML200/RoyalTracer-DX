@@ -9,6 +9,8 @@ cbuffer TestConstants : register(b0)
     float3 sceneOriginWorld;
     float3 testCamera;
     uint testIndex;
+    uint guide_params; // SharcLayout.h GUIDE_PARAM_* packing, as in production
+    uint3 testPad;
 };
 float3 InitOrigin() { return testCamera; }
 float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
@@ -17,6 +19,7 @@ float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
 #define SHARC_TEST 1
 #define SHARC_UPDATE_PASS 1
 #include "../shaders/SharcPath_v8.hlsli"
+#include "../shaders/SharcGuide_v8.hlsli"
 #include "../shaders/SharcDebug_v8.hlsli"
 #define main prepare
 #include "../shaders/Pass_sharc_prepare_v8.hlsl"
@@ -244,4 +247,163 @@ void benchmark(uint3 tid : SV_DispatchThreadID)
     float3 radiance;
     bool hit = SharcQuery(s, 100.0f, seed, radiance);
     results.Store(tid.x * 4u, asuint(radiance.x) ^ (hit ? 1u : 0u));
+}
+
+//====================================
+// PATH GUIDING (SharcGuide_v8.hlsli)
+//====================================
+// Fixture: a receiver on the floor at the origin cell, a bright patch three
+// metres above it facing down and a dim patch off to the side. Rebase modes
+// express the same absolute points in a local frame eight thousand km away.
+float3 GuideLocal(float3 p, bool rebase)
+{
+    return rebase ? float3(8000000, -8000000, 8000000) - sceneOriginWorld + p : p;
+}
+
+float3 GuideCosineDirection(float3 n, inout uint seed)
+{
+    float u1 = RandomFloatSingle(seed), u2 = RandomFloatSingle(seed);
+    float r = sqrt(u1), phi = 2.0f * GUIDE_PI * u2;
+    float3 t, b;
+    GuideBasis(n, t, b);
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) + n * sqrt(max(0.0f, 1.0f - u1)));
+}
+
+// Integrand with a bright blob around the bright patch: cosine sampling
+// resolves it poorly, the guided mixture must resolve it without bias.
+float GuideTestIntegrand(float3 w, float3 n, float3 blob)
+{
+    return max(dot(n, w), 0.0f) * (1.0f + 200.0f * smoothstep(cos(12.0f * GUIDE_PI / 180.0f),
+        cos(8.0f * GUIDE_PI / 180.0f), dot(w, blob)));
+}
+
+[numthreads(64, 1, 1)]
+void guideFill(uint3 tid : SV_DispatchThreadID)
+{
+    const bool rebase = testMode == 3u;
+    // Single-frame modes insert from one lane: a contended first insertion
+    // deliberately misses (retry next visit), which would leave the fixture empty.
+    if (testMode != 0u && tid.x != 0u) return;
+    float3 receiver = GuideLocal(float3(0.04f, 0.0f, 0.04f), rebase);
+    uint e = GuideFindOrInsert(GuideKeyCentre(receiver, float3(0, 1, 0)));
+    if (testMode == 4u)
+    {
+        // Visibility feedback: the bright patch is stored, then guided rays
+        // toward slot 0 miss it (testIndex times), then reach it (testIndex times).
+        GuideDiscover(e, float3(0.5f, 3.2f, 0.5f), float3(0, -1, 0), 100.0f, false);
+        [loop] for (uint i = 0u; i < testIndex; ++i) GuideReport(e, 0u, true, float3(0.5f, 1.5f, 0.5f));
+        [loop] for (uint j = 0u; j < testIndex; ++j) GuideReport(e, 0u, true, float3(0.6f, 3.4f, 0.4f));
+        return;
+    }
+    if (testMode == 0u || testMode == 3u)
+    {
+        // Mode 0: observations first (frame 1), discoveries once the mean is
+        // known, so the dim patch below the mean radiance is rejected
+        // deterministically. Mode 3 registers both patches against a cold
+        // mean for the rebase comparison.
+        if (tid.x == 0u && (testMode == 3u || sharc_frame > 1u))
+        {
+            GuideDiscover(e, GuideLocal(float3(0.5f, 3.2f, 0.5f), rebase), float3(0, -1, 0), 100.0f, false);
+            GuideDiscover(e, GuideLocal(float3(4.2f, 1.1f, 0.3f), rebase), float3(-1, 0, 0), 1.0f, false);
+        }
+        if (testMode == 0u) GuideObserve(e, 20.0f); // 64 concurrent observations per frame
+    }
+    else if (testMode == 1u && tid.x == 0u)
+    {
+        // Twenty patches straight above the receiver with strictly increasing
+        // contribution (luminance grows faster than distance squared).
+        [loop] for (uint i = 0u; i < 20u; ++i)
+        {
+            float d = 3.0f + (float)i;
+            GuideDiscover(e, float3(0.5f, 3.2f + (float)i, 0.5f), float3(0, -1, 0), (float)(i + 1u) * d * d, false);
+        }
+    }
+    else if (testMode == 2u && tid.x == 0u)
+    {
+        // Three hits inside the same coarse patch merge into one slot.
+        GuideDiscover(e, float3(0.5f, 3.2f, 0.5f), float3(0, -1, 0), 100.0f, false);
+        GuideDiscover(e, float3(0.5f, 3.3f, 0.4f), float3(0, -1, 0), 50.0f, false);
+        GuideDiscover(e, float3(0.6f, 3.1f, 0.5f), float3(0, -1, 0), 50.0f, false);
+    }
+}
+
+[numthreads(64, 1, 1)]
+void guideQuery(uint3 tid : SV_DispatchThreadID)
+{
+    const bool rebase = testIndex == 1u;
+    const float3 n = float3(0, 1, 0);
+    float3 receiver = GuideLocal(float3(0.04f, 0.0f, 0.04f), rebase);
+    GuideKey key = GuideKeyCentre(receiver, n);
+    uint e = GuideFind(key);
+    if (testMode == 2u)
+    {
+        // Stochastic keys: over many draws every neighbour of the receiver cell
+        // must be chosen with a tent probability that sums to one, and the
+        // receiver 0.04 m from the corner must land in its own cell most often.
+        if (tid.x != 0u) return;
+        uint seed = 12345u;
+        uint own = 0u, other = 0u;
+        [loop] for (uint i = 0u; i < 4096u; ++i)
+        {
+            GuideKey k = GuideKeyOf(receiver, n, seed);
+            if (GuideKeyMatches(k, key)) ++own; else ++other;
+        }
+        results.Store4(0u, asuint(float4((float)own, (float)other, 0.0f, 0.0f)));
+        return;
+    }
+    if (testMode == 0u)
+    {
+        if (tid.x != 0u) return;
+        if (e == GUIDE_INVALID) { results.Store4(0u, uint4(0u, 0u, 0u, 0u)); return; }
+        uint4 header = g_sharc.Load4(e + GUIDE_IRRADIANCE);
+        GuideSet g = GuideBuild(e, receiver, n);
+        uint valid = 0u;
+        [unroll] for (uint v = 0u; v < GUIDE_SLOTS; ++v)
+            if ((g_sharc.Load(GuideSlotAddress(e, v) + 4u) & GUIDE_SLOT_VALID) != 0u) ++valid;
+        float mean = SharcFloat(header.xy, rcp(SHARC_RADIANCE_SCALE)) / max((float)header.z, 1.0f);
+        results.Store4(0u, asuint(float4(1.0f, (float)header.z, mean, g.q)));
+        results.Store4(16u, asuint(float4(g.weightSum, (float)valid, 0.0f, 0.0f)));
+        results.Store4(32u, uint4(asuint(key.cell), key.meta));
+        [unroll] for (uint c = 0u; c < GUIDE_SLOTS; ++c)
+        {
+            uint4 w = g_sharc.Load4(GuideSlotAddress(e, c));
+            GuideSlot s = GuideDecodeSlot(w);
+            results.Store4(64u + c * 32u, asuint(float4(s.offset, (float)s.level)));
+            results.Store4(80u + c * 32u, asuint(float4(s.luminance, (float)s.hits,
+                (float)s.visibility, s.valid ? 1.0f : 0.0f)));
+            results.Store4(320u + c * 16u, w);
+        }
+        return;
+    }
+    if (testMode == 1u)
+    {
+        // Monte Carlo per lane: the guide pdf integrates to one over the sphere,
+        // the production mixture estimates the blob integrand without bias and
+        // with far less variance than cosine sampling.
+        GuideSet g = GuideBuild(e, receiver, n);
+        float3 blob = normalize(GuideLocal(float3(0.5f, 3.5f, 0.5f), rebase) - receiver);
+        uint seed = Hash32(tid.x * 7919u + 17u);
+        const uint N = 16384u;
+        float pdfIntegral = 0.0f, mix = 0.0f, mix2 = 0.0f, cosine = 0.0f, cosine2 = 0.0f;
+        [loop] for (uint i = 0u; i < N; ++i)
+        {
+            float z = 1.0f - 2.0f * RandomFloatSingle(seed);
+            float phi = 2.0f * GUIDE_PI * RandomFloatSingle(seed);
+            float s = sqrt(max(0.0f, 1.0f - z * z));
+            pdfIntegral += GuidePdf(g, float3(cos(phi) * s, sin(phi) * s, z)) * 4.0f * GUIDE_PI;
+
+            uint pick;
+            float3 dm = RandomFloatSingle(seed) < g.q ? GuideSample(g, seed, pick) : GuideCosineDirection(n, seed);
+            float pm = GuideMixPdf(g, 1.0f, n, dm, GuideLambertPdf(n, dm));
+            float fm = pm > 0.0f ? GuideTestIntegrand(dm, n, blob) / pm : 0.0f;
+            mix += fm; mix2 += fm * fm;
+
+            float3 dc = GuideCosineDirection(n, seed);
+            float pc = GuideLambertPdf(n, dc);
+            float fc = pc > 0.0f ? GuideTestIntegrand(dc, n, blob) / pc : 0.0f;
+            cosine += fc; cosine2 += fc * fc;
+        }
+        results.Store4(tid.x * 32u, asuint(float4(pdfIntegral, mix, mix2, cosine) / (float)N));
+        results.Store4(tid.x * 32u + 16u, asuint(float4(cosine2 / (float)N, g.q, g.weightSum, e == GUIDE_INVALID ? 0.0f : 1.0f)));
+    }
 }

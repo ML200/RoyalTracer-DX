@@ -277,6 +277,7 @@ private:
     bool                         m_sharcWasEnabled = false;
     uint32_t                     m_sharcFrame = 0;
     int                          m_sharcCellExponent = -3;
+    int                          m_sharcGuideLevel = 3;
     int                          m_sharcBounceLimit = 16;
     int                          m_sharcTextureFilter = 0;
     bool                         m_sharcLightingValid = false;

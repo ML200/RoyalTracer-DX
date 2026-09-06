@@ -7,6 +7,7 @@
 #define PT_ENTRY_NAME Pass_pt_v8
 #endif
 #include "SharcPath_v8.hlsli"
+#include "SharcGuide_v8.hlsli"
 #if !SHARC_UPDATE_PASS
 #include "SharcDebug_v8.hlsli"
 #endif
@@ -93,6 +94,12 @@ void PT_ENTRY_NAME()
                 // is expected here, so this is not a missing cell.
                 debugColor = float4(0.05f, 0.07f, 0.12f, 0.0f);
             }
+            else if (SHARC_DEBUG_MODE == SHARC_DEBUG_GUIDING)
+            {
+                // Targets by default; the level toggle switches to the receiver view.
+                debugColor = GuideDebugColor(primary.x1, dGeometricNormal, dctx.hitNormal,
+                    (sharc_enabled & SHARC_DEBUG_OTHER_LEVEL_BIT) != 0u);
+            }
             else
             {
                 SharcSurface surface = SharcMakeSurface(dctx, dGeometricNormal);
@@ -173,6 +180,11 @@ void PT_ENTRY_NAME()
         float3 geometricNormal = sd.n1_s;
 #if SHARC_UPDATE_PASS
         geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
+#else
+        // Rendering keys guiding on the same geometric normal as training. A
+        // debug view has already replaced that slot with its image by now.
+        if (sharc_enabled != 0u && SHARC_DEBUG_MODE == 0u)
+            geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
 #endif
         float pathSpread = 0.0f;
 
@@ -197,8 +209,9 @@ void PT_ENTRY_NAME()
             // the diffuse lobe from this vertex; sheen, coat and GGX continue on
             // the exact tracer with their own strategy mix, so nothing specular is
             // ever cached. The primary vertex is never queried.
-            if (sharc_enabled != 0u && (SHARC_UPDATE_PASS || depth > 1) && !sssEntered &&
-                SharcMaterialEligible(ctx, spPath, geometricNormal))
+            const bool cacheSurface = sharc_enabled != 0u && !sssEntered &&
+                SharcMaterialEligible(ctx, spPath, geometricNormal);
+            if (cacheSurface && (SHARC_UPDATE_PASS || depth > 1))
             {
                 const SharcSurface surface = SharcMakeSurface(ctx, geometricNormal);
                 const float layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
@@ -331,6 +344,15 @@ void PT_ENTRY_NAME()
                     if (!(bdataNEE.pdf > 0.0f))
                         continue;
 
+                    // MIS partner: the DECLARED continuation pdf, i.e. the plain
+                    // BSDF pdf even with guiding on. Guiding only changes the
+                    // diffuse lobe's actual sampling density; the emitter and sun
+                    // hits below weight with the same declared pdf (prev_pdf), and
+                    // any positive pdf used consistently by both techniques keeps
+                    // the balance heuristic unbiased. Declaring the unguided pdf
+                    // keeps the cone set out of the NEE live state and off the
+                    // shadow-ray path; guided cones aim at cached surfaces, not
+                    // emitters, so the weights lose almost nothing.
                     const float  misWeight  = lightPdf / (lightPdf + bdataNEE.pdf);
                     const float3 lightScale = radiance * cosSurf * visT * (misWeight / lightPdf);
                     const float3 direct     = bdataNEE.val * lightScale;
@@ -394,17 +416,63 @@ void PT_ENTRY_NAME()
                 ++diffuseDepth;
             }
 
+            //------------- path guiding for the diffuse lobe -------------
+            // The receiver cell's bright patches become cones; their share q of
+            // this vertex's cosine samples is drawn from them. The ACTUAL pdf of
+            // the scatter (the mixture) weights the throughput; MIS keeps the
+            // declared BSDF pdf (see NEE). Built here, after NEE and the budget
+            // checks, so nothing of it is live across a trace. Training paths
+            // also keep the receiver entry for discovery after the trace.
+            GuideSet guide = GuideEmpty();
+#if SHARC_UPDATE_PASS
+            uint guideEntry = GUIDE_INVALID;
+            uint guidedSlot = GUIDE_INVALID; // patch this scatter aimed at, for the visibility report
+#endif
+            if (cacheSurface && GUIDE_ENABLED && spPath.Pdiff >= EPSILON && (int)depth <= GUIDE_MAX_DEPTH)
+            {
+                uint sKey = RcBounceSeed(pathSeed, (uint)depth, 0x4b455953u);
+                const GuideKey guideKey = GuideKeyOf(ctx.hitPos, geometricNormal, sKey);
+#if SHARC_UPDATE_PASS
+                guideEntry = GuideFindOrInsert(guideKey);
+                if (GUIDE_TRAIN) guide = GuideBuild(guideEntry, ctx.hitPos, ctx.hitNormal);
+#else
+                guide = GuideBuild(GuideFind(guideKey), ctx.hitPos, ctx.hitNormal);
+#endif
+            }
+
             //------------- BSDF sample (the NEE MIS partner) -------------
             uint sampledStrategy;
-            const float3 dir = SampleBRDF(spPath, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false, sampledStrategy);
+            float3 dir = SampleBRDF(spPath, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false, sampledStrategy);
+            // Guided share of the diffuse lobe: this cosine sample becomes a cone
+            // sample toward a bright patch.
+            if (guide.q > 0.0f && sampledStrategy == 0u)
+            {
+                uint sGuide = RcBounceSeed(pathSeed, (uint)depth, GUIDE_STREAM);
+                if (RandomFloatSingle(sGuide) < guide.q)
+                {
+                    uint pick;
+                    dir = GuideSample(guide, sGuide, pick);
+#if SHARC_UPDATE_PASS
+                    guidedSlot = pick;
+#endif
+                }
+            }
             const BrdfData bdata = EvaluateAndPdf_COMBINED(spPath, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y);
+            // Actual density of this direction under the guided mixture (any lobe
+            // may land in a cone); the throughput must use it.
+            const float pdfTotal = GuideMixPdf(guide, spPath.Pdiff, ctx.hitNormal, dir, bdata.pdf);
 
             const float  cosTheta     = abs(dot(ctx.hitNormal, dir));
-            const float3 updateWeight = (bdata.pdf > 1e-6f)
-                ? (bdata.val * (float3)ctx.absorptionTint * cosTheta / bdata.pdf)
+            const float3 updateWeight = (pdfTotal > 1e-6f)
+                ? (bdata.val * (float3)ctx.absorptionTint * cosTheta / pdfTotal)
                 : float3(0, 0, 0);
-            if (dot(dir, dir) < 1e-12f || bdata.pdf <= 1e-6f ||
+            if (dot(dir, dir) < 1e-12f || pdfTotal <= 1e-6f ||
                 any(isnan(updateWeight)) || any(isinf(updateWeight)))
+                break;
+            // A patch cone may straddle the horizon. A direction the BSDF cannot
+            // scatter into carries nothing from here on, so end the path instead
+            // of tracing it (the same zero the trace would have produced).
+            if (!any(updateWeight > 0.0f))
                 break;
 #if SHARC_UPDATE_PASS
             // Diffuse lobe's share of the same scatter for a vertex registered
@@ -413,9 +481,13 @@ void PT_ENTRY_NAME()
             if (training.fresh != SHARC_INVALID)
                 updateWeightDiffuse = EvaluateLobePdf_COMBINED(spPath, 0u, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
                     ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y).val
-                    * (float3)ctx.absorptionTint * cosTheta / bdata.pdf;
+                    * (float3)ctx.absorptionTint * cosTheta / pdfTotal;
+            // Irradiance observations after the trace divide by the ACTUAL pdf.
+            const float guidePdf = pdfTotal;
 #endif
 
+            // Declared pdf for the emitter / sun MIS partner and the path spread:
+            // the plain BSDF pdf, matching the NEE side above.
             prev_pdf = bdata.pdf;
             rayDir   = dir;
             rayDirPk = PackNormal(dir);
@@ -489,6 +561,11 @@ void PT_ENTRY_NAME()
                 total += throughput * envL;
 #if SHARC_UPDATE_PASS
                 SharcTrainingRadiance(training, envL);
+                // Sky and MIS-weighted sun seen by the continuation: one
+                // irradiance observation for the receiver cell.
+                GuideObserve(guideEntry, Luma(envL) *
+                    max(dot(UnpackNormal(prevNormalPk), rayDir), 0.0f) / guidePdf);
+                GuideReport(guideEntry, guidedSlot, false, 0.0f); // aimed at a patch, reached the sky
 #endif
                 break;
             }
@@ -521,6 +598,9 @@ void PT_ENTRY_NAME()
                 total += throughput * emission_n * misWeight;
 #if SHARC_UPDATE_PASS
                 SharcTrainingRadiance(training, emission_n * misWeight);
+                GuideObserve(guideEntry, Luma(emission_n * misWeight) *
+                    max(dot(UnpackNormal(prevNormalPk), rayDir), 0.0f) / guidePdf);
+                GuideReport(guideEntry, guidedSlot, true, hitPos_n);
 #endif
                 break;   //emitter hits terminate the walk (raygen policy)
             }
@@ -556,6 +636,25 @@ void PT_ENTRY_NAME()
             ctx.iors           = (half2)iors_n;
             ctx.mediumMatID    = mediumMatID_n;
             ctx.absorptionTint = (half3)absorptionTint_n;
+#if SHARC_UPDATE_PASS
+            // Guiding discovery. The cache's outgoing luminance at this hit
+            // (any resolved record, no confidence gate) registers the coarse
+            // patch around it with the receiver cell we scattered from, and the
+            // same hit is one irradiance observation there: zero when the
+            // surface has no record yet, which only makes q conservative.
+            if (guideEntry != GUIDE_INVALID)
+            {
+                const float receiverCos = max(dot(UnpackNormal(prevNormalPk), rayDir), 0.0f);
+                uint sSeen = RcBounceSeed(pathSeed, (uint)depth, 0x5345454eu);
+                float3 seen = 0.0f;
+                const bool known = SharcQueryForced(SharcMakeSurface(ctx, geometricNormal), sSeen, seen);
+                GuideObserve(guideEntry, (known ? Luma(seen) : 0.0f) * receiverCos / guidePdf);
+                // Did a guided ray reach its patch? Learned occlusion per patch.
+                GuideReport(guideEntry, guidedSlot, true, ctx.hitPos);
+                if (known) GuideDiscover(guideEntry, ctx.hitPos, geometricNormal, Luma(seen),
+                    SHARC_DEBUG_MODE == SHARC_DEBUG_GUIDING);
+            }
+#endif
         }
 #if SHARC_UPDATE_PASS
         SharcTrainingCommit(training);

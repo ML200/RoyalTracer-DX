@@ -29,8 +29,8 @@ struct Runner {
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12Resource> cache, output, readback;
     ComPtr<ID3D12Fence> fence;
-    std::array<ComPtr<ID3D12PipelineState>, 6> psos;
-    std::array<uint32_t, 16> constants = {1, 0, 32, 64, 120, 0};
+    std::array<ComPtr<ID3D12PipelineState>, 8> psos;
+    std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
     uint64_t serial = 0;
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     ~Runner() { CloseHandle(event); }
@@ -58,7 +58,7 @@ struct Runner {
         Check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
         D3D12_ROOT_PARAMETER params[3]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-        params[0].Constants = {0, 0, 16};
+        params[0].Constants = {0, 0, 20};
         params[1].ParameterType = params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
         params[1].Descriptor.ShaderRegister = 27;
         params[2].Descriptor.ShaderRegister = 0;
@@ -66,8 +66,8 @@ struct Runner {
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
-        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark"};
-        for (int i = 0; i < 6; ++i) {
+        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery"};
+        for (int i = 0; i < 8; ++i) {
             std::ifstream file(std::string(directory) + "/" + names[i] + ".dxil", std::ios::binary);
             Require(bool(file), "Missing compiled test shader");
             std::vector<char> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -79,6 +79,11 @@ struct Runner {
         output = Buffer(4u * 1024u * 1024u, D3D12_HEAP_TYPE_DEFAULT);
         readback = Buffer(2048, D3D12_HEAP_TYPE_READBACK);
         constants[6] = Bits(0.125f); constants[7] = Bits(0.01f); constants[8] = Bits(3.0f);
+        // Guiding: enabled, cap 1.0, receiver level +3, lifetime 256 frames,
+        // training guided, patch radius 0.75 cell widths (production packing).
+        constants[16] = GUIDE_PARAM_ENABLED | (255u << GUIDE_PARAM_QMAX_SHIFT) | (3u << GUIDE_PARAM_LEVEL_SHIFT) |
+            (31u << GUIDE_PARAM_LIFETIME_SHIFT) | GUIDE_PARAM_TRAIN | (24u << GUIDE_PARAM_RADIUS_SHIFT) |
+            (2u << GUIDE_PARAM_DEPTH_SHIFT);
     }
     void Begin() {
         Check(allocator->Reset()); Check(commands->Reset(allocator.Get(), nullptr));
@@ -88,7 +93,7 @@ struct Runner {
     }
     void Dispatch(int pso, uint32_t groups) {
         commands->SetPipelineState(psos[pso].Get());
-        commands->SetComputeRoot32BitConstants(0, 16, constants.data(), 0);
+        commands->SetComputeRoot32BitConstants(0, 20, constants.data(), 0);
         commands->Dispatch(groups, 1, 1);
         D3D12_RESOURCE_BARRIER barrier{}; barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         commands->ResourceBarrier(1, &barrier);
@@ -133,8 +138,16 @@ struct Runner {
             Dispatch(2, SHARC_CAPACITY / SHARC_GROUP_SIZE); End();
         }
     }
-    std::array<float, 512> Query(uint32_t mode) {
-        constants[5] = mode; Begin(); Dispatch(3, 1);
+    // Production order per frame is prepare -> update; the prepare of the NEXT
+    // frame flags receivers worth guiding, so each fill frame is followed by one.
+    void GuideFill(uint32_t mode, int frames = 1) {
+        for (int f = 0; f < frames; ++f) {
+            ++constants[1]; constants[5] = mode; Begin(); Dispatch(6, 1); End();
+            Begin(); Dispatch(0, SHARC_CAPACITY / SHARC_GROUP_SIZE); End();
+        }
+    }
+    std::array<float, 512> Query(uint32_t mode, int pso = 3) {
+        constants[5] = mode; Begin(); Dispatch(pso, 1);
         D3D12_RESOURCE_BARRIER b{}; b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition.pResource = output.Get(); b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         b.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
@@ -305,6 +318,103 @@ int main(int argc, char** argv) try {
     r.Reset(); r.Train({13}, 1);
     Require(r.Query(20)[3] == 0, "Invalid training position populated the cache");
     std::cout << "PASS: sparse 60-frame revisits accumulate evidence, poisoned history repairs, invalid input rejected\n";
+
+    // ---- Path guiding (SharcGuide_v8.hlsli) ----
+    // Result layout of guideQuery mode 0: [0] found, [1] observations, [2] mean
+    // irradiance, [3] q, [4] weight sum, [5] stored patches, [8..11] raw key,
+    // then per slot at 16 + 8c: offset xyz, level, luminance, hits, lastSeen,
+    // valid; raw slot words from 80.
+    r.Reset(); r.GuideFill(0, 4);
+    auto guide = r.Query(0, 7);
+    Require(guide[0] == 1, "Guide receiver entry was not created");
+    Require(guide[1] >= 192 && guide[1] <= 256 && std::abs(guide[2] - 20.0f) < 0.001f,
+        "Guide irradiance observations were lost or mis-scaled");
+    // The dim patch is below the mean incident radiance (20 / pi) and must be
+    // rejected by the contrast ranking; only the bright one is stored.
+    Require(guide[5] == 1, "Guide discovery stored the wrong number of patches");
+    // Fixture geometry: the bright patch explains 13.48 of the mean 20, so
+    // q = 0.674 of the (unit) cap.
+    Require(std::abs(guide[3] - 0.674f) < 0.02f, "Guide explained-fraction mixture weight is off");
+    bool brightFound = false, dimFound = false;
+    for (int c = 0; c < 8; ++c) {
+        const float* s = &guide[16 + c * 8];
+        if (s[7] != 1) continue;
+        if (std::abs(s[0]) < 1e-4f && std::abs(s[1] - 3.0f) < 1e-4f && std::abs(s[2]) < 1e-4f)
+            brightFound = s[3] == 3 && std::abs(s[4] - 100.0f) < 0.01f && s[5] == 3;
+        if (std::abs(s[0] - 4.0f) < 1e-4f && std::abs(s[1] - 1.0f) < 1e-4f && std::abs(s[2]) < 1e-4f)
+            dimFound = true;
+    }
+    Require(brightFound && !dimFound, "Guide patch offset/level/luminance/hits round trip failed");
+    std::cout << "PASS: guide receiver entry, patch discovery round trip, irradiance mean, q = " << guide[3] << "\n";
+    auto mc = r.Query(1, 7);
+    double pdfIntegral = 0, mix = 0, mix2 = 0, cosine = 0, cosine2 = 0;
+    for (int lane = 0; lane < 64; ++lane) {
+        pdfIntegral += mc[lane * 8 + 0] / 64.0; mix += mc[lane * 8 + 1] / 64.0; mix2 += mc[lane * 8 + 2] / 64.0;
+        cosine += mc[lane * 8 + 3] / 64.0; cosine2 += mc[lane * 8 + 4] / 64.0;
+    }
+    Require(mc[7] == 1 && mc[5] > 0.5f, "Guide Monte Carlo ran without an active cone set");
+    Require(std::abs(pdfIntegral - 1.0) < 0.03, "Guide pdf does not integrate to one over the sphere");
+    Require(std::abs(mix - cosine) < 0.03 * cosine, "Guided mixture estimate disagrees with cosine sampling");
+    const double varMix = mix2 - mix * mix, varCos = cosine2 - cosine * cosine;
+    Require(varMix < 0.5 * varCos, "Guided mixture did not reduce variance on the bright patch");
+    std::cout << "PASS: guide pdf integral " << pdfIntegral << ", mixture " << mix << " vs cosine " << cosine
+        << ", variance ratio " << varMix / varCos << "\n";
+    r.Reset(); r.GuideFill(1, 1);
+    auto ranked = r.Query(0, 7);
+    Require(ranked[0] == 1 && ranked[5] == 8, "Guide slots did not fill under replacement");
+    for (int c = 0; c < 8; ++c) {
+        const float* s = &ranked[16 + c * 8];
+        Require(s[7] == 1 && s[1] >= 14.99f && s[1] <= 22.01f, "Guide replacement kept a weaker patch over a stronger one");
+    }
+    r.Reset(); r.GuideFill(2, 1);
+    auto merged = r.Query(0, 7);
+    Require(merged[0] == 1 && merged[5] == 1 && merged[16 + 5] == 3 && std::abs(merged[16 + 4] - 66.667f) < 0.2f,
+        "Guide hits inside one patch were not merged with averaged luminance");
+    std::cout << "PASS: guide top-8 replacement by contribution, same-patch merging\n";
+    // Visibility: six guided rays that miss the patch leave it at 255 * 0.75^6 = 45,
+    // six that reach it bring it back above 200; the cone weight follows.
+    r.Reset(); r.constants[15] = 6; r.GuideFill(4, 1); r.constants[15] = 0;
+    auto seen = r.Query(0, 7);
+    Require(seen[0] == 1 && seen[5] == 1 && seen[16 + 6] > 200 && seen[16 + 6] < 255,
+        "Guide visibility feedback did not lower and recover the patch estimate");
+    // Stochastic keys: the receiver sits 0.04 m from a corner of its 1 m cell,
+    // so the tent weights give its own cell 0.54 * 0.5 * 0.54 = 14.6% of the
+    // draws (598 of 4096, binomial sd 23) and spread the rest over neighbours.
+    auto stochastic = r.Query(2, 7);
+    Require(stochastic[0] + stochastic[1] == 4096 && stochastic[0] > 520 && stochastic[0] < 680,
+        "Stochastic receiver keys do not follow the tent reconstruction weights");
+    std::cout << "PASS: guide visibility feedback " << seen[16 + 6] << "/255, stochastic key blend "
+        << stochastic[0] << " own / " << stochastic[1] << " neighbour draws\n";
+    r.Reset(); r.GuideFill(0, 2);
+    r.constants[1] += 121; r.Begin(); r.Dispatch(0, SHARC_CAPACITY / SHARC_GROUP_SIZE); r.End();
+    Require(r.Query(0, 7)[0] == 0, "Stale guide entries were not evicted");
+    r.Reset(); r.GuideFill(0, 2);
+    r.constants[4] = 4096; r.constants[1] += 1100;
+    for (int f = 0; f < 16; ++f) { ++r.constants[1]; r.Begin(); r.Dispatch(0, SHARC_CAPACITY / SHARC_GROUP_SIZE); r.End(); }
+    auto retired = r.Query(0, 7);
+    Require(retired[0] == 1 && retired[5] == 0, "Unseen guide patches were not retired");
+    r.constants[4] = 120;
+    std::cout << "PASS: guide entry eviction and patch retirement\n";
+    std::array<float, 512> rebased[2];
+    for (int run = 0; run < 2; ++run) {
+        r.Reset();
+        const float origin = run == 0 ? 8000000.0f : 8001000.0f;
+        r.constants[9] = Bits(origin); r.constants[10] = Bits(-origin); r.constants[11] = Bits(origin);
+        // Same absolute camera, expressed in each local frame.
+        const float camera = 8000000.0f - origin;
+        r.constants[12] = Bits(camera); r.constants[13] = Bits(-camera); r.constants[14] = Bits(camera);
+        r.constants[15] = 1;
+        r.GuideFill(3, 1);
+        rebased[run] = r.Query(0, 7);
+    }
+    r.constants[9] = r.constants[10] = r.constants[11] = 0;
+    r.constants[12] = r.constants[13] = r.constants[14] = 0; r.constants[15] = 0;
+    Require(rebased[0][0] == 1 && rebased[1][0] == 1 && rebased[0][5] == 2 &&
+        std::memcmp(&rebased[0][8], &rebased[1][8], 16) == 0 &&
+        std::memcmp(&rebased[0][80], &rebased[1][80], 128) == 0,
+        "Floating-origin rebase changed guide keys or patch encodings");
+    std::cout << "PASS: guide keys and patches identical across a km rebase at 8,000 km\n";
+
     r.Reset();
     std::cout << "BENCH: 1M cold scattered queries " << r.Benchmark() << " ms\n";
     r.Train({4}, 20);

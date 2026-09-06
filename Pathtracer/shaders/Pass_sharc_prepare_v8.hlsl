@@ -2,11 +2,14 @@
 #define COMPUTE_PASS
 #include "Includes_v8.hlsli"
 #endif
-#include "Sharc_v8.hlsli"
+#include "SharcGuide_v8.hlsli"
 
 [numthreads(SHARC_GROUP_SIZE, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
+    // The guide table is smaller than the cache; its first threads maintain
+    // one receiver entry each before their cache entry (no extra dispatch).
+    if (tid.x < GUIDE_CAPACITY) GuidePrepareEntry(tid.x);
     if (tid.x >= SHARC_CAPACITY) return;
     uint stateAddress = SharcStateAddress(tid.x);
     uint e = SharcEntryAddress(tid.x);
