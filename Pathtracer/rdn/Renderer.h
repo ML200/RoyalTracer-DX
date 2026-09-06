@@ -233,7 +233,15 @@ private:
     ComPtr<ID3D12Resource>       m_scratchPing;
     ComPtr<ID3D12Resource>       m_pathStateBuffer;
     ComPtr<ID3D12Resource>       m_spmisBuffer;       // SPMIS global hash grid (root UAV u25)
-    ComPtr<ID3D12Resource>       m_autoExposeBuffer;  // 32B persistent: sumLog2LumFixed, smoothedLog2Lum, isInitialized, tileCount, prevTime, _pad
+    ComPtr<ID3D12Resource>       m_autoExposeBuffer;  // 128B persistent: AE state (0..19) + DLSS guide sentinel (32..63), see Includes_v8.hlsli
+
+    //DLSS guide sentinel readback: 3-deep ring of 32 B persistently-mapped
+    //readback buffers. Slot n%3 receives frame n's copy of gAutoExpose bytes
+    //32..63 (recorded at Stage::DLSS); slot (n+1)%3 = frame n-2, guaranteed
+    //GPU-complete under the frame fence, is decoded into m_dlss.sentinel.
+    ComPtr<ID3D12Resource>       m_sentinelReadback[3];
+    const uint32_t*              m_sentinelMapped[3] = { nullptr, nullptr, nullptr };
+    uint64_t                     m_sentinelFrame = 0;
     // Heap slots 10/11 (root-sig u2/u3) had two extra reservoir buffers from
     // the old DI/GI split. The unified pipeline only touches the GI pair, so
     // the DI ones are gone. Heap slots stay alive via null UAV bindings to
@@ -260,6 +268,22 @@ private:
     //104B DISPATCH_RAYS args (default heap) + template (upload, rewritten on
     //SBT rebuild), and the DISPATCH_RAYS command signature.
     ComPtr<ID3D12Resource>         m_raygenQueueBuffer;
+    ComPtr<ID3D12Resource>         m_sharcBuffer;
+    ComPtr<ID3D12QueryHeap>        m_sharcTimingHeap;
+    ComPtr<ID3D12Resource>         m_sharcTimingReadback;
+    UINT64                       m_sharcTimestampFrequency = 0;
+    UINT                         m_sharcTimingMask = 0;
+    bool                         m_sharcResetPending = true;
+    bool                         m_sharcWasEnabled = false;
+    uint32_t                     m_sharcFrame = 0;
+    int                          m_sharcCellExponent = -3;
+    int                          m_sharcBounceLimit = 16;
+    int                          m_sharcTextureFilter = 0;
+    bool                         m_sharcLightingValid = false;
+    SunSettings                  m_sharcSunSettings{};
+    CloudSettings                m_sharcCloudSettings{};
+    struct SharcInstanceState { XMMATRIX transform; UINT meshIndex; };
+    std::vector<SharcInstanceState> m_sharcInstanceState;
     ComPtr<ID3D12Resource>         m_raysIndirectArgs;
     //(No hybrid-shift replay args buffer: Pass_temp_replay and
     //Pass_spmis_shift are both plain full-screen DispatchRays calls, walking

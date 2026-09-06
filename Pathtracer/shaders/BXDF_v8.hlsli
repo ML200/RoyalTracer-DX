@@ -416,5 +416,23 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
     return sp;
 }
 
+//drops the diffuse lobe (its share is supplied by the radiance cache) and
+//renormalises the remaining layers; returns false when nothing remains. The
+//same sp must then be used for both sampling and evaluation at that vertex.
+inline bool DropDiffuseLobe(inout SamplingP sp)
+{
+    sp.Pdiff = 0.0f;
+    const float total = sp.Psheen + sp.Pcoat + sp.Pspec;
+    if (total < EPSILON) {
+        sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f;
+        return false;
+    }
+    const float inv = 1.0f / total;
+    sp.Psheen *= inv;
+    sp.Pcoat  *= inv;
+    sp.Pspec  *= inv;
+    return true;
+}
+
 //(ComputeSharpReflectionFresnel removed — sole consumer was the dead x1
 // sharp-reflection feature.)

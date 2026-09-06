@@ -17,6 +17,70 @@ inline float3 DlssReinhard(float3 c) {
     return c / (1.0f + lum);
 }
 
+//PT-mode bypass (RS_FLAG_PT_ONLY): the clean PT kernel's 1-spp output is
+//heavy-tailed — most pixels near zero, rare pixels carrying 1/p spikes.
+//Reinhard bounds every spike to <1 BEFORE DLSS-RR averages, and the inverse
+//runs AFTER the average, so the spike-carried energy is destroyed (Jensen:
+//invert-of-average < average-of-inverts) and the image goes dark even though
+//the estimator is unbiased. Under the PT integrator DLSS therefore gets
+//LINEAR radiance; Pass_postprocess (DlssDecode) and Pass_autoexpose_reduce
+//skip their inverses in lockstep via the same flag.
+//
+//One failure mode remains on the unbounded linear path: a JITTERED BOUNDARY
+//pixel between radiances of very different magnitude (an emitter face vs its
+//housing, grazing specular streaks) flips by the full linear ratio every
+//frame — per-pixel convergence never settles a pixel that alternates
+//surfaces, and preset F visibly loses temporal stability exactly there (sky
+//edges stay fine: modest ratio + hard depth separation). So the linear input
+//gets an EXPOSURE-RELATIVE luminance cap: cap_linear = CAP / exposure, i.e. a
+//fixed display brightness that tracks auto-exposure across day/night. Below
+//the cap the path is exactly linear (no Jensen loss); above it is range AgX
+//crushes to white anyway. Deliberately lossy — postprocess applies NO inverse
+//for it, and the GT slice reads pre-DLSS radiance so it stays unbiased.
+#define DLSS_PT_INPUT_LUMA_CAP 64.0f
+
+//MUST match Pass_postprocess_v8::ReadExposure (same AE state, same key).
+inline float ReadExposureForCap() {
+    const float AE_KEY_VALUE = 0.18f;
+    const float smoothedLog2Lum = asfloat(gAutoExpose.Load(AE_OFFS_SMOOTHED));
+    return AE_KEY_VALUE / max(exp2(smoothedLog2Lum), 1e-6f);
+}
+
+//Non-finite scrub for the DLSS INPUT — the missing half of postprocess's
+//display-side ScrubNonFinite. A rare Inf radiance sample (spike math at
+//grazing slivers / emitter edges: 1/pdf, 1/d^2, 1/cos) previously reached the
+//encoders, and BOTH manufactured NaN from it (Reinhard: Inf/Inf; the PT cap:
+//Inf * (cap/Inf) = Inf * 0). One NaN pixel in g_dlssInput permanently poisons
+//RR's accumulator at that spot and spreads through the (transformer) model —
+//random onset, never heals until a history reset, invisible in the displayed
+//image because postprocess scrubs for DISPLAY only. Mirrors
+//Pass_postprocess_v8::ScrubNonFinite.
+inline float3 ScrubNonFiniteIn(float3 c) {
+    return (any(isnan(c)) || any(isinf(c))) ? float3(0, 0, 0) : c;
+}
+
+inline float3 DlssEncode(float3 c) {
+    c = ScrubNonFiniteIn(c);
+    if (PT_ONLY_MODE) {
+        //PRE-EXPOSED linear. DLSS-RR carries an exposure contract
+        //(DLSSDOptions::preExposure/exposureScale, kBufferTypeExposure) and
+        //with everything left at the 1.0 defaults it assumes DISPLAY-REFERRED
+        //input — raw scene radiance at an arbitrary absolute scale sits
+        //outside the regime its fp16 history accumulates well in, which shows
+        //as "stable at first, jitter creeps in as history builds". Multiply
+        //by the AE exposure so mid-grey lands at ~0.18 like any shipping
+        //game's feed (linear scale — no Jensen energy loss);
+        //Pass_postprocess::DlssDecode divides it back out and
+        //Pass_autoexpose_reduce compensates its measurement, so the display
+        //and the AE fixed point are unchanged. The luma cap then lives in
+        //EXPOSED units — a fixed display brightness by construction.
+        c = max(c, 0.0f) * ReadExposureForCap();
+        const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
+        return (lum > DLSS_PT_INPUT_LUMA_CAP) ? c * (DLSS_PT_INPUT_LUMA_CAP / lum) : c;
+    }
+    return DlssReinhard(c);
+}
+
 //====================================
 //EMITTER SPIKE CLAMP (DLSS RR INPUT)
 //====================================
@@ -267,7 +331,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
             //emitter surface, depth and MV like regular geometry
             float3 emPos  = load_x1(g_sample_current, pixelIdx);
-            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(emPos);
+            g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(emPos);
 
             float2 curPix = DTid.xy;
             //DoF aware MV, pinhole projection on both ends so the lens offset
@@ -282,9 +346,21 @@ void main(uint3 DTid : SV_DispatchThreadID)
             biasMV = emMV;
             isEmitterSurface = true;
 
-            //shading normal for DLSS RR edge detection
-            float3 emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
-            g_dlssNormals[DTid.xy] = float4(emNormal, 0.0f);
+            //shading normal for DLSS RR edge detection — RAW pre-clamp normal
+            //from scratch slot 3 (view-independent; the clamped G-buffer
+            //normal wobbles with jitter at grazing incidence), G-buffer
+            //fallback if the slot reads near-zero.
+            float3 emNormal = gScratchPing[uint3(DTid.xy, 3)].xyz;
+            if (dot(emNormal, emNormal) < 0.25f)
+                emNormal = load_n1_s_with_instID(g_sample_current, pixelIdx, emInstID);
+            //PACKED normal-roughness (ePacked, roughness in .w) — the
+            //convention every shipping RR title uses (Cyberpunk, RTXPT);
+            //the separate-roughness eUnpacked path is rarely exercised and
+            //proved preset-F-sensitive. The standalone g_dlssRoughness
+            //texture is still written for the inspector, but RR now reads
+            //roughness from this .w. Emitter/sky/cloud pixels carry
+            //roughness 1 (matches their g_dlssRoughness writes).
+            g_dlssNormals[DTid.xy] = float4(emNormal, 1.0f);
         }
         else
         {
@@ -309,7 +385,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (cloudIsDominant)
             {
                 //Cloud-aware DLSS inputs.
-                g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(cloudHitPos);
+                g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(cloudHitPos);
 
                 //World-space MV. Cloud is treated as world-static (no wind
                 //animation contribution to MV), so only camera motion
@@ -353,14 +429,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
                     float4 ndTarget = mul(projectionI, float4(nd.x, -nd.y, 1, 1));
                     cloudNormal = -normalize(mul(viewI, float4(ndTarget.xyz, 0)).xyz);
                 }
-                g_dlssNormals[DTid.xy] = float4(cloudNormal, 0.0f);
+                g_dlssNormals[DTid.xy] = float4(cloudNormal, 1.0f);   //packed roughness (.w)
             }
             else
             {
-                //Pure sky: clamp depth to cameraFar so DLSS RR's range
-                //handling stays consistent.
-                g_dlssDepth[DTid.xy] = cameraFar;
-                g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+                //Pure sky: the guide far plane — which is 0 in the reverse-Z
+                //device-depth guide (see DLSS_GUIDE_DEPTH_NEAR/FAR).
+                g_dlssDepth[DTid.xy] = 0.0f;
+                g_dlssNormals[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 1.0f);   //packed roughness (.w)
 
                 //Sky / planet body MV: rotation only reprojection. Sky is
                 //at infinite distance so camera translation between frames
@@ -383,7 +459,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         float2 prevUV  = float2(prevNdc.x * 0.5f + 0.5f,
                                                 0.5f - prevNdc.y * 0.5f);
                         float2 prevPix = prevUV * dims - 0.5f;
-                        skyMV = prevPix - float2(DTid.xy) - jitter;
+                        //NO jitter term: motionVectorsJittered=eFalse promises
+                        //jitter-free MVs, and the surface path's pinhole-both-
+                        //ends MVs are jitter-free (static camera -> exactly 0).
+                        //The old "- jitter" put MV = -jitter on every sky pixel
+                        //of a static frame — per-frame random ±0.5px motion on
+                        //sky while geometry read 0, i.e. a permanent MV
+                        //disagreement along every geometry/sky boundary.
+                        skyMV = prevPix - float2(DTid.xy);
                     }
                 }
                 g_dlssMVec[DTid.xy] = skyMV;
@@ -393,9 +476,18 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         biasInstID = emInstID;
         g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
-        g_dlssDiffuseAlbedo[DTid.xy] = float4(1.0f, 1.0f, 1.0f, 0.0f);
+        //0.5 grey, NOT white: the RR Integration Guide (SWE-DLSS-001-PGRF
+        //§3.4.2) calls uncleared sky albedo "a common integration error" and
+        //names (0.5, 0.5, 0.5) as the good default. White also made the
+        //demodulation basis FLIP 1.0 <-> surface-Kd every frame on jittered
+        //emitter/sky silhouettes (anticorrelated with the radiance flip,
+        //doubling the ratio preset F chokes on) — observed as creeping
+        //instability around emitters.
+        g_dlssDiffuseAlbedo[DTid.xy] = float4(0.5f, 0.5f, 0.5f, 0.0f);
         g_dlssRoughness[DTid.xy] = 1.0f;
-        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : cameraFar;
+        //guide far, NOT cameraFar: 1e9 in the R16F hit-dist texture stores
+        //+INF at every silhouette-against-sky pixel (fp16 max is 65504)
+        g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : DLSS_GUIDE_DEPTH_FAR;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
         //Reinhard pre-tonemap (reversed in postprocess) so emitters survive AgX.
         //Optionally clamp the emitter spike first so DLSS RR / the inverse don't
@@ -405,7 +497,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float3 emitterRadiance = (CLAMP_EMITTERS_MODE && hasPosition)
                                     ? ClampEmitterLum(accumulation)
                                     : accumulation;
-        g_dlssInput[DTid.xy] = float4(DlssReinhard(emitterRadiance), 1.0f);
+        g_dlssInput[DTid.xy] = float4(DlssEncode(emitterRadiance), 1.0f);
 #if SHADING_DEBUG_SLICES
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
 #endif
@@ -446,7 +538,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             //(billboard fallback), and the sky-style flat material (diffuse
             //white, no spec, full roughness) so DLSS RR resolves the cloud
             //silhouette rather than the mesh visible behind cloudTr ≈ 0.
-            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(cloudHitPosM);
+            g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(cloudHitPosM);
 
             float2 prevPixCM = GetLastFramePixelCoordinates_World(
                 cloudHitPosM, prevView, prevProjection, dims);
@@ -469,7 +561,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 float4 ndTargetM = mul(projectionI, float4(ndM.x, -ndM.y, 1, 1));
                 cloudNormalM = -normalize(mul(viewI, float4(ndTargetM.xyz, 0)).xyz);
             }
-            g_dlssNormals[DTid.xy] = float4(cloudNormalM, 0.0f);
+            g_dlssNormals[DTid.xy] = float4(cloudNormalM, 1.0f);   //packed roughness (.w)
 
             g_dlssDiffuseAlbedo[DTid.xy]  = float4(1.0f, 1.0f, 1.0f, 0.0f);
             g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -490,7 +582,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             //internal depth-disocclusion logic (cloud depth ≠ mesh depth).
             biasInstID = load_instID(g_sample_current, pixelIdx);
 
-            g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+            g_dlssInput[DTid.xy] = float4(DlssEncode(accumulation), 1.0f);
         }
         else
         {
@@ -507,7 +599,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             const RRGuide rg = ResolveRRGuideThroughGlass(sv, sInstID, camPosWorld);
 
             //DLSS RR input data (diffuse/geometry channel = the see-through transmission surface)
-            g_dlssDepth[DTid.xy] = DLSS_LinearDepthFromWorldPos(rg.x);
+            g_dlssDepth[DTid.xy] = DLSS_GuideDepthFromWorldPos(rg.x);
 
             //Specular albedo = the GLASS Fresnel reflection (on sv, NOT the see-through surface).
             //reflW is the reflection throughput (~integrated Fresnel), reused for the guide-normal
@@ -517,9 +609,27 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             //RTXPT-style throughput-weighted guide normal: the see-through (transmission) normal when
             //Fresnel is weak (near-normal -> transmission dominates), rotating toward the GLASS normal
-            //as Fresnel grows (grazing -> reflection dominates). rg.n==sv.n_s off glass => no-op.
-            g_dlssNormals[DTid.xy] = float4(normalize(lerp(rg.n, sv.n_s, reflW)), 0.0f);
-            g_dlssDiffuseAlbedo[DTid.xy] = float4(rg.Kd, 1.0f);
+            //as Fresnel grows (grazing -> reflection dominates). The glass/primary side uses the RAW
+            //pre-clamp normal (scratch slot 3): the view-clamped G-buffer normal is a function of the
+            //jittered view ray and wobbles per frame exactly at grazing incidence — the sub-pixel
+            //grazing slivers that destabilize RR. Off glass this resolves to the raw normal outright.
+            float3 rawN = gScratchPing[uint3(DTid.xy, 3)].xyz;
+            if (dot(rawN, rawN) < 0.25f) rawN = sv.n_s;
+            const float3 baseN = LoadIsThinGlass(sv.matID) ? rg.n : rawN;
+            //guarded normalize: near-opposite see-through/primary normals at a
+            //glass edge can cancel the lerp to ~zero, and normalize(0) = NaN
+            //straight into RR's accumulator (permanent history poison).
+            float3 gn = lerp(baseN, rawN, reflW);
+            const float gl2 = dot(gn, gn);
+            gn = (gl2 > 1e-8f) ? gn * rsqrt(gl2) : rawN;
+            g_dlssNormals[DTid.xy] = float4(gn, sv.Pr);   //packed roughness (.w), glass keeps surface Pr
+            //DIFFUSE COMPONENT of reflectance (RR Integration Guide §3.4.1),
+            //not base color: a metal has ~no diffuse layer, so its colour
+            //belongs ONLY in the spec albedo (EnvBRDFApprox2 already lerps
+            //F0 toward Kd by Pm). Raw Kd here double-declared the metal
+            //colour and made RR demodulate a signal-free diffuse layer by a
+            //bright albedo — destabilizing exactly on specular surfaces.
+            g_dlssDiffuseAlbedo[DTid.xy] = float4(rg.Kd * saturate(1.0f - rg.Pm), 1.0f);
             g_dlssRoughness[DTid.xy] = sv.Pr;   // GLASS roughness -> keeps the specular (reflection) channel sharp
             //debug mirror of diffuse albedo passed to DLSS RR
 #if SHADING_DEBUG_SLICES
@@ -558,7 +668,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         float2 prevNdcSky = prevClipSky.xy / prevClipSky.w;
                         float2 prevUVSky  = float2(prevNdcSky.x * 0.5f + 0.5f, 0.5f - prevNdcSky.y * 0.5f);
                         float2 prevPixSky = prevUVSky * dims - 0.5f;
-                        skyMV = prevPixSky - float2(DTid.xy) - jitter;
+                        //NO jitter term — same rationale as the pure-sky path
+                        //above: MVs are jitter-free by contract.
+                        skyMV = prevPixSky - float2(DTid.xy);
                     }
                 }
                 mvPixels = skyMV;
@@ -574,12 +686,21 @@ void main(uint3 DTid : SV_DispatchThreadID)
             //on sv — the half that broke when earlier see-through code used the behind surface here).
             g_dlssSpecularAlbedo[DTid.xy] = float4(specularAlbedo, 0.0f);
 
-            //specHitDist needs only the reservoir's reconnection vertex x2 — read
-            //that one plane (+ objID) instead of the whole reservoir struct (~56B -> 20B).
-            //Relative to the glass surface (the reflection originates there).
-            const uint   rsvObjID = g_Reservoirs_current.Load(addr_objid(pixelIdx));
-            const float3 rsvX2    = load_x2(g_Reservoirs_current, pixelIdx, rsvObjID);
-            g_dlssSpecHitDist[DTid.xy] = length(rsvX2 - sv.x);
+            //Spec hit distance from the slot-4 reflection PROBE (deterministic
+            //mirror ray), NOT the reservoir's reconnection vertex: x2 is the
+            //winning GI sample's random bounce — per-pixel NOISE on diffuse
+            //surfaces, which destabilizes presets that lean on hit-dist
+            //reprojection (preset F). virtualPos is the mirrored reflection
+            //hit and mirroring preserves the distance to sv.x, so
+            //|virtualPos - x1| IS the reflection hit distance. Probe miss
+            //(sky reflection) parks on the guide far plane. Linear metres,
+            //clamped for the R16F target (fp16 max 65504). Read hoisted here;
+            //the spec-MV block below reuses it.
+            const float4 reflData   = gScratchPing[uint3(DTid.xy, 4)];
+            const uint   reflInstID = asuint(reflData.w);
+            g_dlssSpecHitDist[DTid.xy] = (reflInstID != 0xFFFFFFFFu)
+                ? min(length(reflData.xyz - sv.x), DLSS_GUIDE_DEPTH_FAR)
+                : DLSS_GUIDE_DEPTH_FAR;
 
             //Spec-MV fallback = the GLASS SURFACE motion (NOT the see-through MV): a rough or sky
             //reflection is anchored to the glass and must track it. sv.x is the glass primary; off
@@ -599,8 +720,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float2 specMV = surfaceMV;
             if (reflW > 0.04f && sv.Pr < DLSS_SPEC_ROUGHNESS_THRESHOLD)
             {
-                float4 reflData   = gScratchPing[uint3(DTid.xy, 4)];
-                uint   reflInstID = asuint(reflData.w);
+                //reflData/reflInstID hoisted above (spec-hit-dist write).
                 //reflInstID is the reflected instance unless the probe missed (0xFFFFFFFF sentinel).
                 if (reflInstID != 0xFFFFFFFFu)
                 {
@@ -623,7 +743,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             //normal here = the "fucked normals" — the bug is in EvalSurfaceState.
             g_dlssInput[DTid.xy] = float4(sv.n_s * 0.5f + 0.5f, 1.0f);
 #else
-            g_dlssInput[DTid.xy] = float4(DlssReinhard(accumulation), 1.0f);
+            g_dlssInput[DTid.xy] = float4(DlssEncode(accumulation), 1.0f);
 #endif
         }
     }
@@ -633,4 +753,95 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //====================================
     //placeholder side write, host can wire as a post denoise overlay later
     g_dlssTransparency[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+    //====================================
+    //DLSS GUIDE KILL-SWITCHES (diagnostic)
+    //====================================
+    //Editor "Guide inputs" tickboxes (RS_FLAG_GUIDE_OFF_* in rs_flags):
+    //overwrite the flagged guide with its NEUTRAL value here, at one site
+    //after every branch has written, so RR receives a constant field
+    //regardless of which path (sky/cloud/emitter/surface/glass) produced the
+    //pixel. Runs BEFORE the sentinel so the stats describe what RR actually
+    //consumes. Neutral values reuse the sky conventions (depth 0, normal 0)
+    //and the no-demodulation albedos (diffuse white, spec black).
+    if ((rs_flags & RS_FLAG_GUIDE_OFF_ANY) != 0u)
+    {
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_DEPTH)   != 0u) g_dlssDepth[DTid.xy] = 0.0f;
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_MV)      != 0u) g_dlssMVec[DTid.xy] = float2(0.0f, 0.0f);
+        if ((rs_flags & (RS_FLAG_GUIDE_OFF_NORMALS | RS_FLAG_GUIDE_OFF_ROUGH)) != 0u)
+        {
+            float4 nr = g_dlssNormals[DTid.xy];
+            if ((rs_flags & RS_FLAG_GUIDE_OFF_NORMALS) != 0u) nr.xyz = float3(0.0f, 0.0f, 0.0f);
+            if ((rs_flags & RS_FLAG_GUIDE_OFF_ROUGH)   != 0u) nr.w   = 1.0f;
+            g_dlssNormals[DTid.xy] = nr;
+        }
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_ALBEDO)  != 0u) g_dlssDiffuseAlbedo[DTid.xy]  = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECALB) != 0u) g_dlssSpecularAlbedo[DTid.xy] = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        if ((rs_flags & RS_FLAG_GUIDE_OFF_SPECMV)  != 0u) g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
+    }
+
+    //====================================
+    //DLSS GUIDE SENTINEL
+    //====================================
+    //Reads back what THIS thread just wrote to the guide textures (post-fp16
+    //quantization — a value that overflowed to +INF in the texel is caught
+    //here even though the pre-write register value was finite) and reduces
+    //anomaly stats into gAutoExpose bytes 32..63 (SENT_OFFS_*, cleared by
+    //Pass_camera, read back by the host, shown in the DLSS Inputs panel).
+    //Wave-reduced: the all-clean common case costs one atomic set per wave.
+    //Mask bits:
+    //  0x001 color non-finite          0x002 depth non-finite / outside [0,1]
+    //  0x004 MV non-finite             0x008 normal/roughness non-finite
+    //  0x010 packed roughness outside [0,1]
+    //  0x020 spec-MV non-finite        0x040 diffuse albedo non-finite
+    //  0x080 spec albedo non-finite    0x100 |MV| > 256 px
+    //  0x200 |spec MV| > 256 px
+    {
+        const float4 sCol  = g_dlssInput[DTid.xy];
+        const float  sDep  = g_dlssDepth[DTid.xy];
+        const float2 sMV   = g_dlssMVec[DTid.xy];
+        const float4 sNR   = g_dlssNormals[DTid.xy];
+        const float2 sSMV  = g_dlssSpecMVec[DTid.xy];
+        const float4 sAlb  = g_dlssDiffuseAlbedo[DTid.xy];
+        const float4 sSAlb = g_dlssSpecularAlbedo[DTid.xy];
+
+        const float sLum   = 0.2126f * sCol.x + 0.7152f * sCol.y + 0.0722f * sCol.z;
+        const float sMvMag = max(abs(sMV.x),  abs(sMV.y));
+        const float sSmMag = max(abs(sSMV.x), abs(sSMV.y));
+
+        uint bad = 0u;
+        if (any(isnan(sCol.rgb))  || any(isinf(sCol.rgb)))    bad |= 0x001u;
+        if (isnan(sDep) || isinf(sDep) || sDep < 0.0f || sDep > 1.0f)
+                                                              bad |= 0x002u;
+        if (any(isnan(sMV))       || any(isinf(sMV)))         bad |= 0x004u;
+        if (any(isnan(sNR))       || any(isinf(sNR)))         bad |= 0x008u;
+        if (sNR.w < 0.0f || sNR.w > 1.0f)                     bad |= 0x010u;
+        if (any(isnan(sSMV))      || any(isinf(sSMV)))        bad |= 0x020u;
+        if (any(isnan(sAlb.rgb))  || any(isinf(sAlb.rgb)))    bad |= 0x040u;
+        if (any(isnan(sSAlb.rgb)) || any(isinf(sSAlb.rgb)))   bad |= 0x080u;
+        if (sMvMag > 256.0f)                                  bad |= 0x100u;
+        if (sSmMag > 256.0f)                                  bad |= 0x200u;
+
+        //first anomalous pixel of the frame (0 = clean); +1 bias so (0,0) is
+        //distinguishable from "none"
+        if (bad != 0u)
+            gAutoExpose.InterlockedCompareStore(SENT_OFFS_FIRSTBAD, 0u,
+                                                ((DTid.y + 1u) << 16) | (DTid.x + 1u));
+
+        const bool  nearCap = PT_ONLY_MODE && (sLum >= DLSS_PT_INPUT_LUMA_CAP * 0.999f);
+        const uint  wMask   = WaveActiveBitOr(bad);
+        const float wLum    = WaveActiveMax(max(sLum, 0.0f));
+        const float wMv     = WaveActiveMax(sMvMag);
+        const float wSmv    = WaveActiveMax(sSmMag);
+        const uint  wCap    = WaveActiveCountBits(nearCap);
+        const uint  wBad    = WaveActiveCountBits(bad != 0u);
+        if (WaveIsFirstLane()) {
+            if (wMask != 0u) gAutoExpose.InterlockedOr(SENT_OFFS_MASK, wMask);
+            gAutoExpose.InterlockedMax(SENT_OFFS_MAXLUMA,   asuint(wLum));
+            gAutoExpose.InterlockedMax(SENT_OFFS_MAXMV,     asuint(wMv));
+            gAutoExpose.InterlockedMax(SENT_OFFS_MAXSPECMV, asuint(wSmv));
+            if (wCap != 0u) gAutoExpose.InterlockedAdd(SENT_OFFS_CAPCOUNT, wCap);
+            if (wBad != 0u) gAutoExpose.InterlockedAdd(SENT_OFFS_BADCOUNT, wBad);
+        }
+    }
 }

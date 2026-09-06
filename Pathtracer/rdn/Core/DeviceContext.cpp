@@ -32,7 +32,12 @@ extern "C" {
 //failures are still reported through the SL_CHECK macro and the explicit Result
 //checks in DLSSManager, so turning this off does not hide errors.
 #ifndef SL_VERBOSE_LOGGING
-#define SL_VERBOSE_LOGGING 0
+//TEMPORARILY ON for the preset-F instability hunt: every integration
+//parameter now matches docs + NVIDIA's RTXPT reference, so if anything is
+//still wrong it's execution-level (resource states at evaluate, tag/call
+//ordering) — exactly what the interposer's own validation logs catch.
+//Watch the SL console during an instability onset. Set back to 0 when done.
+#define SL_VERBOSE_LOGGING 1
 #endif
 
 //Set to 1 to print non-critical [DX] informational logs (swap-chain buffer
@@ -279,6 +284,21 @@ void DeviceContext::InitStreamline() {
     pref.applicationId   = 231313132;
     pref.showConsole     = SL_VERBOSE_LOGGING;
     pref.logLevel        = SL_VERBOSE_LOGGING ? sl::LogLevel::eVerbose : sl::LogLevel::eOff;
+#if SL_VERBOSE_LOGGING
+    //Also write SL logs to FILES (sl.interposer.log etc.) next to the exe —
+    //the verbose console scrolls past faster than anyone can read and dies
+    //with the process; the file survives for post-mortem reading after an
+    //instability repro. Static storage: SL keeps the pointer.
+    static std::wstring s_slLogDir = [] {
+        wchar_t exePath[MAX_PATH] = {0};
+        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+        std::wstring p(exePath);
+        const size_t slash = p.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) p.resize(slash);
+        return p;
+    }();
+    pref.pathToLogsAndData = s_slLogDir.c_str();
+#endif
     pref.flags           = sl::PreferenceFlags::eLoadDownloadedPlugins
                          | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 

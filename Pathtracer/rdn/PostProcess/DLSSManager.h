@@ -112,17 +112,60 @@ public:
     float sharpness = 0.5f;
 
     //Scales ONLY the value reported to sl::Constants::jitterOffset. The raygen
-    //keeps sampling at the full Halton [-0.5,+0.5] offset regardless, so at
-    //anything other than 1.0 we are deliberately telling DLSS a different offset
-    //than we actually sampled with.
+    //keeps sampling at the camera's actual offset regardless (full Halton
+    //[-0.5,+0.5] times Camera::jitterScale — the knob that scales the REAL
+    //amplitude for both sides consistently), so at anything other than 1.0 we
+    //are deliberately telling DLSS a different offset than we actually sampled
+    //with.
     //
     //That is normally a correctness bug — the upscaler places each sample using
     //this value, so a mismatch misplaces the whole reconstruction. It is exposed
     //on purpose as a diagnostic: if RR2 (preset F) changed how it interprets
     //jitterOffset relative to RR, sweeping this reveals it as a stability minimum
-    //somewhere off 1.0. 1.0 is the truthful value and the only one that is
+    //somewhere off 1.0. {1,1} is the truthful value and the only one that is
     //correct by construction.
-    float jitterScale = 1.0f;
+    //
+    //PER-AXIS so sign-convention errors are separable: {-1,-1} tests a full
+    //sign inversion of the report, {1,-1} tests a Y-only inversion (the
+    //pixel-y-down vs NDC-y-up trap — the one that would preferentially
+    //stair-step HORIZONTAL edges under static-camera history accumulation
+    //while motion, which drops history, straightens them).
+    float jitterScale[2] = { 1.0f, 1.0f };
+
+    //====================================
+    //GUIDE KILL-SWITCHES (diagnostics)
+    //====================================
+    //Per-guide disable toggles, editor "Guide inputs" tickboxes. true = that
+    //guide is replaced with a NEUTRAL constant field at the end of
+    //Pass_shading (depth 0 = far, MV 0, normals 0, roughness 1, diffuse
+    //albedo white, spec albedo black, spec MV 0) — the tag stays in place
+    //because RR treats these buffers as required. The Renderer packs them
+    //into rs_flags high bits (RS_FLAG_GUIDE_OFF_* in Includes_v8.hlsli).
+    //For isolating which guide the creeping preset-F instability follows;
+    //flip one off, reset history, watch whether the creep still develops.
+    bool guideOffDepth    = false;
+    bool guideOffMV       = false;
+    bool guideOffNormals  = false;
+    bool guideOffRough    = false;
+    bool guideOffAlbedo   = false;
+    bool guideOffSpecAlb  = false;
+    bool guideOffSpecMV   = false;
+    //Spec MV is the one OPTIONAL guide: this drops its TAG entirely (null
+    //resource, stale tag cleared) so RR falls back to internal specular
+    //tracking — a different experiment than feeding it zeros.
+    bool untagSpecMV      = false;
+
+    //Renderer helper: the RS_FLAG_GUIDE_OFF_* bits for rs_flags. Values must
+    //match Includes_v8.hlsli.
+    uint32_t GuideOffFlags() const {
+        return (guideOffDepth   ? 0x02000000u : 0u)
+             | (guideOffMV      ? 0x04000000u : 0u)
+             | (guideOffNormals ? 0x08000000u : 0u)
+             | (guideOffRough   ? 0x10000000u : 0u)
+             | (guideOffAlbedo  ? 0x20000000u : 0u)
+             | (guideOffSpecAlb ? 0x40000000u : 0u)
+             | (guideOffSpecMV  ? 0x80000000u : 0u);
+    }
 
     //When true, Pass_shading luminance-clamps emitter radiance (DLSS_EMITTER_CAP)
     //before the reversible DlssReinhard pre-tonemap. This pulls a large bright
@@ -132,6 +175,35 @@ public:
     //of the pipeline (guides, decode, post-process) is untouched, so it is immune
     //to DLSS sub-pixel jitter. Off = unclamped (classic) DLSS input.
     bool clampEmitterSpikes = false;
+
+    //====================================
+    //GUIDE SENTINEL + EVALUATE-WINDOW DX MESSAGES (diagnostics)
+    //====================================
+    //Per-frame anomaly stats over the guide values handed to RR, computed by
+    //the Pass_shading sentinel block into gAutoExpose bytes 32..63 and copied
+    //back by the Renderer (2-frame latency). `last*` latch the most recent
+    //anomalous frame so a one-frame glitch stays visible in the editor.
+    struct GuideSentinel {
+        uint32_t mask      = 0;    //anomaly bits, see the Pass_shading sentinel block
+        uint32_t badCount  = 0;    //pixels with any anomaly bit set
+        uint32_t capCount  = 0;    //pixels at/above the PT input luma cap
+        uint32_t firstBad  = 0;    //((y+1)<<16)|(x+1) of first bad pixel, 0 = none
+        float    maxLuma   = 0.f;  //max input luma (post-encode)
+        float    maxMV     = 0.f;  //max |mv| component, pixels
+        float    maxSpecMV = 0.f;  //max |spec mv| component, pixels
+        uint64_t frame     = 0;    //renderer frame the stats belong to
+        uint32_t lastMask  = 0;    //latched: mask of the most recent anomalous frame
+        uint32_t lastBad   = 0;    //latched: firstBad of that frame
+        uint64_t lastFrame = 0;    //latched: which frame that was (0 = never)
+    } sentinel;
+
+    //D3D12 debug-layer messages generated DURING slEvaluateFeature. Break-on-
+    //error is deliberately suppressed for the evaluate window (SL plugins trip
+    //benign validation), which also meant any REAL violation inside evaluate
+    //was console-only and easy to miss — captured here for the editor instead.
+    //Tail of the last few (severity <= warning); total counts every one seen.
+    std::vector<std::string> evalDxMessages;
+    uint64_t                 evalDxMessageTotal = 0;
 
 private:
     void CreateInputTextures(ID3D12Device* device);

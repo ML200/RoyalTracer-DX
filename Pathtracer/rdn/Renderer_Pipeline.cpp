@@ -324,7 +324,7 @@ void Renderer::CreateAccelerationStructures() {
 //====================================
 
 ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
-    CD3DX12_ROOT_PARAMETER1 rootParameters[4];
+    CD3DX12_ROOT_PARAMETER1 rootParameters[5];
     std::vector<CD3DX12_DESCRIPTOR_RANGE1> ranges;
     ranges.reserve(40);
     const auto VOLATILE = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
@@ -427,13 +427,12 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // jacThreshold/normalSimCos) + 3 path-trace constants [38..40]
     // (pt_maxBounces, pt_rrStartDepth, pt_initialSamples) + 1 SPMIS plane-distance
     // constant [41] (spmis_planeDist) + 1 material-texture filter mode [42]
-    // (pt_pointFilter) + 1 spare/unused constant [43] (_shift_loopRole_unused —
-    // formerly Pass_shift_v8's host-loop role index, round 13 moved role to
-    // DispatchRaysIndex().z; left declared, always 0) = 44.
+    // (pt_pointFilter) + 1 RCAS sharpening constant [43] (pp_sharpness) = 44.
     // (Last 5 of the NRC block are scene-bounds normalization for the position
     // input; the SPMIS block is the hash-grid reuse params, see
     // Includes_v8.hlsli / the Pass_spmis_* kernels.)
-    rootParameters[1].InitAsConstants(44, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // 56 constants + descriptor table (1) + three root UAVs (6) = 63 DWORDs.
+    rootParameters[1].InitAsConstants(SHARC_ROOT_CONSTANTS, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
     // SPMIS global hash-grid buffer as a root UAV at u25 (g_spmisBuffer). Bound as a
     // root descriptor rather than a heap entry to avoid descriptor-table surgery; set
     // per-pass via SetComputeRootUnorderedAccessView (Renderer.cpp setConsts).
@@ -443,6 +442,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     // Pass_camera, consumed by Pass_raygen via ExecuteIndirect. Root UAV for the
     // same no-descriptor-surgery reason as u25.
     rootParameters[3].InitAsUnorderedAccessView(26, 0);
+    rootParameters[4].InitAsUnorderedAccessView(27, 0); // persistent SHaRC
 
     CD3DX12_STATIC_SAMPLER_DESC staticSamplers[4];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
@@ -513,6 +513,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 //====================================
 
 void Renderer::CreateRaytracingPipeline() {
+    m_sharcResetPending = true; // shader reload can change the transport estimator
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_ctx.Device());
 
     m_rayGenSignature  = CreateRayGenSignature();
@@ -752,7 +753,23 @@ void Renderer::CreateRaytracingOutputBuffer() {
 }
 
 void Renderer::CreatePathStateBuffer() {
+    if (!m_sharcTimingHeap) {
+        D3D12_QUERY_HEAP_DESC queries{};
+        queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        queries.Count = 8;
+        ThrowIfFailed(m_ctx.Device()->CreateQueryHeap(&queries, IID_PPV_ARGS(&m_sharcTimingHeap)));
+        auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(8u * sizeof(UINT64));
+        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
+            &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_sharcTimingReadback)));
+        ThrowIfFailed(m_ctx.CmdQueue()->GetTimestampFrequency(&m_sharcTimestampFrequency));
+    }
     ResourceFactory rf(m_ctx.Device());
+    if (!m_sharcBuffer) {
+        m_sharcBuffer = rf.CreateUAVBuffer(
+            SHARC_BUFFER_BYTES, L"SHaRC surface radiance cache");
+        m_sharcResetPending = true;
+    }
     //resolution-DEPENDENT: always recreate.
     m_pathStateBuffer = rf.CreateUAVBuffer(
         TileAlignedPx(GetWidth(), GetHeight()) * kPathStateBytesPerPx, L"PathStateBuffer");
@@ -799,10 +816,22 @@ void Renderer::CreatePathStateBuffer() {
         m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
     }
 
-    // 32B persistent: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
+    // 128B: [0]=sumLog2LumFixed (u32), [4]=smoothedLog2Lum (f32),
     // [8]=isInitialized (u32 flag), [12]=tileCount (u32), [16]=prevTime (f32),
-    // [20..31]=pad. 32 B keeps the UAV 16 B aligned for D3D12. Cleared once at
-    // create; finalize shader manages it after that.
+    // [20..31]=pad, [32..63]=DLSS guide sentinel (SENT_OFFS_* in
+    // Includes_v8.hlsli, copied to the readback ring each frame), [64..127]=pad.
+    // Cleared once at create; the shaders manage it after that.
+    //
+    //The UAV over this buffer MUST cover the whole 128 B (see slot 63 in
+    //CreateShaderResourceHeap). It used to be created 16 B wide against a 32 B
+    //buffer, which silently voided AE_OFFS_PREV_TIME (raw-UAV out-of-view
+    //loads return 0, stores are dropped): prevTime always read 0, dt clamped
+    //to AE_DT_MAX = 0.25 s, and the exposure smoothing alpha pegged at ~0.57
+    //per FRAME instead of the intended dt/tau — auto-exposure tracked 1-spp
+    //measurement noise near-instantly. In PT mode that exposure multiplies
+    //the DLSS-RR input, so the broken view closed a high-gain feedback loop
+    //through the denoiser (input gain -> RR output -> AE measurement -> input
+    //gain), a prime suspect for the preset-F temporal instability.
     //
     //NOT resolution-dependent and holds persistent auto-exposure history that
     //the finalize shader integrates over time. Reallocating on resize a) wipes
@@ -810,7 +839,7 @@ void Renderer::CreatePathStateBuffer() {
     //slot 63 pointing at the freed buffer (-> #1042 stale-resource crash).
     //Guard so this only runs on the first call from InitSceneGPU.
     if (!m_autoExposeBuffer)
-        m_autoExposeBuffer = rf.CreateUAVBuffer(32, L"AutoExposeState");
+        m_autoExposeBuffer = rf.CreateUAVBuffer(128, L"AutoExposeState");
 }
 
 //====================================
@@ -1162,12 +1191,16 @@ void Renderer::CreateShaderResourceHeap() {
     if (m_nrcTrainRecords.resource) nrcUAV(m_nrcTrainRecords); else nullRawUAV();  // u43
     if (m_nrcCounters.resource)     nrcUAV(m_nrcCounters);     else nullRawUAV();  // u44
 
-    // Slot 63: autoexpose persistent state (u24, 16 B raw)
+    // Slot 63: autoexpose persistent state + DLSS guide sentinel (u24, 128 B raw).
+    // The view MUST cover the full buffer: a 4-element view here once silently
+    // voided AE_OFFS_PREV_TIME (offset 16 was out of view — raw-UAV OOB loads
+    // read 0, stores are dropped) and broke the exposure smoothing dt. See the
+    // buffer-creation comment in CreatePathStateBuffer.
     { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
       ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
       ud.Format        = DXGI_FORMAT_R32_TYPELESS;
       ud.Buffer.Flags  = D3D12_BUFFER_UAV_FLAG_RAW;
-      ud.Buffer.NumElements = 4;  // 16 B / 4
+      ud.Buffer.NumElements = 32;  // 128 B / 4
       dev->CreateUnorderedAccessView(m_autoExposeBuffer.Get(), nullptr, &ud, handle); next(); }
 
     // Slot 64: star / Milky Way skybox SRV (t40, gSkyStars in Includes_v8.hlsli).
@@ -1403,7 +1436,12 @@ void Renderer::CreateShaderBindingTable() {
             entry.find(L"|fx:") != std::wstring::npos ||
             entry.find(L"|call") != std::wstring::npos)
             continue;
-        if (!seenRayGenFiles.insert(entry).second)
+        //dedup on the FILE part, not the whole token: "Pass_shift_v8.hlsl|rg:
+        //temporal_shift" and "...|rg:spatial_shift" are one file / one pass
+        //index / ONE record. Keying on the full token minted a second (dead)
+        //shift record that silently shifted any raygen token added after it
+        //off its PassIndexByFile slot.
+        if (!seenRayGenFiles.insert(entry.substr(0, entry.find(L'|'))).second)
             continue;   //already added this file's SBT record
 
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);

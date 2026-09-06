@@ -23,6 +23,31 @@
 #endif
 
 //====================================
+//DLSS GUIDE DEPTH RANGE
+//====================================
+//The camera range ADVERTISED to DLSS-RR and the range of every depth-like
+//guide write. The renderer's real far plane is planet-scale (1e9, see
+//farPlane / RAY_TMAX_PLANET) — advertising THAT degenerates the depth guide
+//(the whole playable scene sits in <1e-5 of the declared range; any internal
+//fp16 pass quantizes it into visible depth STRIPES, and the fp32 projection's
+//far/(near-far) rounds to exactly -1). Sky also wrote cameraFar into the
+//R16F spec-hit-dist guide = +INF at every silhouette-against-sky pixel.
+//
+//The depth guide itself is REVERSE-Z DEVICE DEPTH in [0,1] built from this
+//near/far pair (DLSS_GuideDepthFromWorldPos: near -> 1, far -> 0, tagged
+//kBufferTypeDepth with depthInverted=true) — the convention shipping DLSS
+//titles use and the preset networks are trained on; linear metres fed as
+//"depth" produced preset-dependent striping. Spec hit distance stays LINEAR
+//METRES (it is a distance, not a depth), clamped to the far plane.
+//
+//This pair is deliberately FIXED (not the editor-adjustable camera planes) so
+//the shader-side depth encode always matches the matrices/constants
+//DLSSManager hands Streamline. MUST match DLSSManager.cpp's kGuideDepthNear /
+//kGuideDepthFar.
+#define DLSS_GUIDE_DEPTH_NEAR 0.01f
+#define DLSS_GUIDE_DEPTH_FAR  10000.0f
+
+//====================================
 //RAY TMAX
 //====================================
 //Planet wide ray range. Earth diameter is ~1.27e7 m; this leaves headroom

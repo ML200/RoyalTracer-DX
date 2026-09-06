@@ -292,7 +292,13 @@ private:
 
 public:
     struct Settings {
-        uint32_t maxLeafTris = 1;        // triangles per BLAS leaf
+        //ONE triangle per BLAS leaf is a hard invariant: Build() clamps this
+        //to 1 (warns if configured otherwise) and the degenerate-split
+        //fallback in buildBLASRecursive_SAOH force-splits instead of minting
+        //a multi-tri leaf. Multi-tri leaves were handled consistently by the
+        //shader (power CDF on both the sample and pdf side) but had zero
+        //spatial discrimination inside the leaf.
+        uint32_t maxLeafTris = 1;        // triangles per BLAS leaf (fixed at 1)
         bool     useTwoLevel = true;     // group by instanceID into BLASes
         uint32_t buildBins   = 64;       // spatial bin count for SAOH
         enum class Heuristic { SAOH, SAH }; // What heuristic should we use?
@@ -321,6 +327,15 @@ public:
     //API
     //====================================
 
+    //see Settings::maxLeafTris — one-triangle leaves are a hard invariant
+    void enforceLeafInvariant() {
+        if (m_cfg.maxLeafTris != 1u) {
+            LT_WARN(L"maxLeafTris=" << m_cfg.maxLeafTris
+                  << L" ignored; BLAS leaves are fixed at 1 triangle.");
+            m_cfg.maxLeafTris = 1u;
+        }
+    }
+
     void Build(const std::vector<::LightTriangle>& tris, const Settings& cfg = {}) {
         LT_TIME_SCOPE(L"Build()");
         LT_LOG(L"Build: tris=" << tris.size() << L", maxLeafTris=" << cfg.maxLeafTris
@@ -328,6 +343,7 @@ public:
               << L", bins=" << cfg.buildBins);
         if (tris.empty()) LT_WARN(L"No emissive triangles; tree will be empty.");
         m_cfg = cfg; m_tris = &tris; m_xforms = nullptr;
+        enforceLeafInvariant();
         rebuildXformCaches();
         buildBLASes_SAOH();
         buildTLAS_SAOH();
@@ -346,6 +362,7 @@ public:
               << L", bins=" << cfg.buildBins);
         if (tris.empty()) LT_WARN(L"No emissive triangles; tree will be empty.");
         m_cfg = cfg; m_tris = &tris; m_xforms = &xforms;
+        enforceLeafInvariant();
         rebuildXformCaches();
         buildBLASes_SAOH();
         buildTLAS_SAOH();
@@ -882,20 +899,19 @@ private:
         };
 
         // split entire set into two buckets
-        int ax; float pos; uint32_t mid;
+        int ax = 0; float pos = 0.f; uint32_t mid = 0;
         bool ok = findBinarySplit(begin, end, ax, pos, mid);
         if (!ok) {
-            // Fallback to leaf if something degenerate happens
-            BLASNode& N = nodeAt(nodeIdx);
-            N.triFirst = static_cast<uint32_t>(out.leafTriList.size());
-            N.triCount = count;
-            for (uint32_t i = begin; i < end; ++i) {
-                const uint32_t tri = tmp[i].triIndex;
-                out.leafTriList.push_back(tri);
-                m_triBitTrails[tri] = bitTrail;
-            }
-            N.firstChild = 0xFFFFFFFF; N.childCount = 0;
-            return nodeIdx;
+            // SAOH can only fail here when every axis has (near-)coincident
+            // centroids (any nonzero span yields a valid bin pair), so a
+            // spatial split is meaningless — but a LEAF here would break the
+            // one-triangle-per-leaf invariant (selection inside a multi-tri
+            // leaf collapses to the power CDF with zero spatial
+            // discrimination). Force a plain index split instead; recursion
+            // bottoms out at count==1 exactly like the TLAS builders. Extra
+            // depth on big coincident stacks is bounded by the trail-depth
+            // warning below.
+            mid = (begin + end) / 2;   // count >= 2 here -> strictly interior
         }
 
         struct Range { uint32_t b, e; };
@@ -910,7 +926,12 @@ private:
                 buckets[bucketCount++] = {b, mid2};
                 buckets[bucketCount++] = {mid2, e};
             } else {
-                buckets[bucketCount++] = {b, e};
+                // coincident centroids: forced index split (same rationale as
+                // the top-level fallback) so forced levels stay 4-wide — half
+                // the extra tree depth of deferring to the child's own split
+                mid2 = (b + e) / 2;   // c >= 2 -> strictly interior
+                buckets[bucketCount++] = {b, mid2};
+                buckets[bucketCount++] = {mid2, e};
             }
         };
 

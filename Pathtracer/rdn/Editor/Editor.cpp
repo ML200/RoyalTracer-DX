@@ -60,6 +60,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
             ImGui::MenuItem("DLSS Neural Rendering", nullptr, &m_showDLSSNR);
+            ImGui::MenuItem("DLSS Inputs",     nullptr, &m_showDlssInputs);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("Initial Sampling", nullptr, &m_showInitialSampling);
             //ImGui::MenuItem("NRC",             nullptr, &m_showNRC); // NRC removed — UI panel disabled; restore for NIRC
@@ -94,9 +95,10 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showScene)     DrawScenePanel(scene);
     if (m_showCamera)    DrawCameraPanel(camera, flyCam);
     if (m_showPipeline)  DrawPassPipelinePanel(passes);
-    if (m_showDLSS)      DrawDLSSPanel(dlss, dlssG);
+    if (m_showDLSS)      DrawDLSSPanel(camera, dlss, dlssG);
     if (m_showDLSSNR)    DrawDLSSNRPanel(dlssNR);
-    if (m_showReSTIR)    DrawReSTIRPanel(restir);
+    if (m_showDlssInputs) DrawDlssInputsPanel(restir, dlss);
+    if (m_showReSTIR)    DrawReSTIRPanel(restir, stats);
     if (m_showInitialSampling) DrawInitialSamplingPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
     if (m_showSun)       DrawSunPanel(camera);
@@ -278,7 +280,7 @@ void Editor::DrawPassPipelinePanel(PassSystem& passes) {
 //====================================
 //DLSS PANEL
 //====================================
-void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
+void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dlssG) {
     ImGui::SetNextWindowPos(ImVec2(380, 440), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(350, 200), ImGuiCond_FirstUseEver);
 
@@ -361,20 +363,59 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
         presetCombo("Ultra Quality", DLSSManager::kPresetUltraQuality);
     }
 
-    // Diagnostic: scales the jitter REPORTED to DLSS without touching the offset
-    // the raygen samples with. Off 1.0 the two disagree on purpose — see
-    // DLSSManager::jitterScale. History is invalid across a change, so drop it.
-    if (ImGui::SliderFloat("DLSS jitter scale", &dlss.jitterScale, 0.0f, 2.0f, "%.3f"))
+    // One-frame RR history flush. The creeping-instability diagnostic: if an
+    // established creep clears INSTANTLY on press and then slowly rebuilds,
+    // the corruption lives in RR's recursive accumulator state (poisoned or
+    // diverging history), not in the current-frame inputs.
+    if (ImGui::Button("Reset RR history"))
         dlss.ForceReset();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
-            "DIAGNOSTIC. Scales only the jitterOffset handed to DLSS.\n"
-            "Rendering still samples at the full Halton [-0.5,+0.5] offset, so any\n"
-            "value except 1.0 reports an offset we did not actually sample with.\n"
-            "1.0 = truthful, and the only value correct by construction.\n"
-            "Sweep it to test whether RR2 (preset F) reads jitterOffset differently\n"
-            "than RR: a stability minimum away from 1.0 would be the evidence.\n"
-            "0.0 tells DLSS there is no jitter at all.");
+            "Passes reset=eTrue to DLSS-RR for one frame, dropping all\n"
+            "temporal history. Inputs and guides are untouched.");
+
+    // The ACTUAL sub-pixel jitter amplitude. Scales the Halton offset at the
+    // camera source, so the raygen samples AND the jitterOffset reported to
+    // DLSS shrink together — truthful at every value, unlike the report-only
+    // diagnostic below. History from a different amplitude is still valid
+    // (nothing lied), so no reset per drag tick; one ForceReset on release
+    // gives a clean-slate stability measurement at the new amplitude.
+    ImGui::SliderFloat("Jitter offset", &camera.jitterScale, 0.0f, 1.0f, "%.3f");
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        dlss.ForceReset();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Amplitude of the REAL camera jitter (raygen sampling offset).\n"
+            "The offset reported to DLSS scales with it, so real and reported\n"
+            "jitter stay matched at every value.\n"
+            "1.0 = full Halton [-0.5,+0.5] (correct AA/upscaling input).\n"
+            "0.0 = no jitter: primary rays hit identical sub-pixel positions\n"
+            "every frame — aliased, but grazing-angle surfaces stop being\n"
+            "resampled metres apart each frame. If the preset-F wobble dies\n"
+            "as this approaches 0, the instability is jitter-driven surface\n"
+            "undersampling, not a jitter-transform bug.\n"
+            "DLSS history resets once on slider release.");
+
+    // Diagnostic: scales the jitter REPORTED to DLSS without touching the offset
+    // the raygen samples with. Off {1,1} the two disagree on purpose — see
+    // DLSSManager::jitterScale. History is invalid across a change, so drop it.
+    // PER-AXIS: {-1,-1} is the full sign-convention experiment; {1,-1} the
+    // Y-only inversion (pixel-y-down vs NDC-y-up trap). A misregistered report
+    // shows as stair-stepping on shallow edges that BUILDS under a static
+    // camera and washes out under motion (history dies), preferentially on
+    // horizontal edges for a Y error.
+    if (ImGui::SliderFloat2("DLSS jitter scale", dlss.jitterScale, -2.0f, 2.0f, "%.3f"))
+        dlss.ForceReset();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "DIAGNOSTIC. Scales only the jitterOffset handed to DLSS, per axis.\n"
+            "Rendering still samples at the camera's actual offset, so anything\n"
+            "except {1,1} reports an offset we did not actually sample with.\n"
+            "{1,1} = truthful, and the only value correct by construction.\n"
+            "{-1,-1} = full sign flip, {1,-1} = Y-only flip: if static-camera\n"
+            "stair-steps on shallow edges straighten at one of these, the\n"
+            "baked report convention is wrong on that axis and should be fixed.\n"
+            "{0,0} tells DLSS there is no jitter at all.");
 
     // RCAS sharpening on the DLSS output. Deliberately not DLSSDOptions::sharpness,
     // which DLSS-RR ignores — this runs in Pass_postprocess_v8 after AgX.
@@ -397,6 +438,48 @@ void Editor::DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG) {
             "Luminance-clamps emitter radiance before the DLSS pre-tonemap.\n"
             "Fixes DLSS RR artefacts around a large bright emitter (e.g. a lamp)\n"
             "in an otherwise dark scene. Cap = DLSS_EMITTER_CAP in Pass_shading.");
+
+    // ── RR guide kill-switches ──────────────────────────────────
+    // Ticked = guide fed normally. Unticked = Pass_shading overwrites it with
+    // a neutral constant field (tag stays — RR requires these buffers), so the
+    // creeping-instability hunt can bisect which guide it follows. Any change
+    // invalidates history semantics -> ForceReset.
+    ImGui::SeparatorText("Guide inputs");
+    ImGui::TextDisabled("Untick to feed a neutral field instead");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Diagnostic bisection for the creeping preset-F instability.\n"
+            "Unticked guides are overwritten with neutral values at the end of\n"
+            "Pass_shading: depth 0 (far), MV 0, normals 0, roughness 1,\n"
+            "diffuse albedo white, spec albedo black, spec MV 0. Color input\n"
+            "cannot be disabled (it is the signal being denoised).\n"
+            "History resets on every change.");
+    {
+        auto guideToggle = [&](const char* label, bool& off) {
+            bool on = !off;
+            if (ImGui::Checkbox(label, &on)) { off = !on; dlss.ForceReset(); }
+        };
+        guideToggle("Depth##guide",            dlss.guideOffDepth);
+        guideToggle("Motion vectors##guide",   dlss.guideOffMV);
+        guideToggle("Normals##guide",          dlss.guideOffNormals);
+        guideToggle("Roughness##guide",        dlss.guideOffRough);
+        guideToggle("Diffuse albedo##guide",   dlss.guideOffAlbedo);
+        guideToggle("Specular albedo##guide",  dlss.guideOffSpecAlb);
+        guideToggle("Specular MV##guide",      dlss.guideOffSpecMV);
+
+        // The one guide that may be truly ABSENT: drop the tag instead of
+        // zeroing, RR then uses its internal specular tracking.
+        bool tagged = !dlss.untagSpecMV;
+        if (ImGui::Checkbox("Specular MV tag##guide", &tagged)) {
+            dlss.untagSpecMV = !tagged;
+            dlss.ForceReset();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Unticked: the spec-MV buffer is not tagged at all (null tag),\n"
+                "RR falls back to internal specular tracking. A different\n"
+                "experiment than feeding zero spec MVs via the box above.");
+    }
 
     // ── DLSS-G (Frame Generation) ───────────────────────────────
     ImGui::SeparatorText("Frame Generation");
@@ -793,9 +876,88 @@ void Editor::DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings&
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
+void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
     ImGui::SetNextWindowSize(ImVec2(340, 460), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("ReSTIR")) { ImGui::End(); return; }
+    //"###ReSTIR" keeps the saved window layout/ID while the title reflects the
+    //panel's widened role (integrator select + the deprecated ReSTIR controls).
+    if (!ImGui::Begin("Integrator###ReSTIR")) { ImGui::End(); return; }
+
+    //====================================
+    //INTEGRATOR SELECT
+    //====================================
+    {
+        const char* kIntegrators[] = { "Path tracer", "ReSTIR (deprecated)" };
+        ImGui::Combo("Integrator", &rs.integratorMode, kIntegrators, 2);
+        ImGui::SetItemTooltip("Path tracer: the clean RIS-free kernel (Pass_pt_v8) — per-vertex light-"
+                              "tree NEE + sun NEE with balance-heuristic MIS, same transport math as the "
+                              "ReSTIR raygen but accumulating radiance directly. Every reservoir pass is "
+                              "skipped; disable SHaRC to use it as a reference (its sampling knobs live in "
+                              "the Initial Sampling panel: samples/pixel, bounce caps, RR).\nReSTIR: the "
+                              "deprecated reservoir pipeline, kept selectable for A/B comparison.");
+    }
+    const bool ptActive = (rs.integratorMode == 0);
+    if (ptActive) {
+        ImGui::SeparatorText("SHaRC indirect lighting");
+        if (stats.cacheTimingMask != 0u) {
+            ImGui::Text("GPU ms: prepare %.2f | train %.2f | resolve %.2f | PT %.2f",
+                stats.cachePassMs[0], stats.cachePassMs[1], stats.cachePassMs[2], stats.cachePassMs[3]);
+            ImGui::SetItemTooltip("Actual GPU dispatch timestamps from the previous completed frame. "
+                "PT includes cache lookup and any active cache debug view. Training keeps running independently.");
+        }
+        ImGui::Checkbox("Enable radiance cache", &rs.sharcEnabled);
+        ImGui::SetItemTooltip("Caches the DIFFUSE lobe's outgoing radiance at secondary vertices of any "
+            "diffuse-bearing material; a hit supplies that lobe and the vertex continues with its sheen, "
+            "coat and GGX layers on the exact tracer, so nothing specular is ever cached. The primary "
+            "vertex always stays exact. Uncertain entries keep tracing. Disable for the uncached reference.");
+        ImGui::BeginDisabled(!rs.sharcEnabled);
+        const char* cacheViews[] = { "Off", "Cells", "Cell lighting" };
+        ImGui::Combo("Cache debug view", &rs.sharcDebugMode, cacheViews, IM_ARRAYSIZE(cacheViews));
+        ImGui::SetItemTooltip("Projects the nearest stored cache cells onto visible surfaces. "
+            "Bypasses denoising and interpolation; training and normal path tracing keep running. "
+            "Off restores the previous display view.");
+        if (rs.sharcDebugMode != 0) {
+            ImGui::Checkbox("Show other query level", &rs.sharcDebugCoarse);
+            ImGui::SetItemTooltip("By default the view shows the distance level most rendering queries "
+                "sample at each pixel. This shows the other level of the pair, which receives "
+                "proportionally fewer training deposits.");
+            if (rs.sharcDebugMode == SHARC_DEBUG_CELLS)
+                ImGui::TextWrapped("Cell colors: dim = warming, bright = confident. Dark grey = missing, "
+                    "dark red = bucket full (insert pending), slate = surface never cached "
+                    "(glossy, metallic, layered, transmitting, SSS or steep normal map).");
+            else
+                ImGui::TextWrapped("Stored diffuse-lobe outgoing radiance (direct + indirect through that lobe, "
+                    "normal-incidence view), including untrusted samples. Magenta = missing, dark red = bucket "
+                    "full, slate = no diffuse lobe here, amber = no resolved samples, black = stored zero.");
+        }
+        ImGui::SliderInt("Minimum cell size (log2 metres)", &rs.sharcCellSizeExponent, -6, 4);
+        ImGui::SliderFloat("Distance grid scale", &rs.sharcLodScale, 0.001f, 0.1f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderInt("Training tile width", &rs.sharcUpdateStride, 2, 8);
+        ImGui::SetItemTooltip("One rotating training path per tile each frame. 4 means 1/16 of the pixels. "
+            "Smaller tiles refill new regions faster.");
+        ImGui::SliderInt("Cache path depth", &rs.sharcTrainBounces, 4, 64);
+        ImGui::SetItemTooltip("Depth cap for training paths only; cache misses render with the Initial Sampling "
+            "budget. Training paths normally end earlier by cache resampling or by roulette on their "
+            "suffix throughput.");
+        ImGui::SliderInt("Training roulette starts", &rs.sharcTrainRrDepth, 2, 32);
+        ImGui::SetItemTooltip("From this depth, training survival follows the BSDF throughput accumulated "
+            "since the last registered vertex (floor 0.1), so dark suffixes stop early.");
+        ImGui::SliderInt("Minimum effective samples", &rs.sharcMinSamples, 8, 256);
+        ImGui::SliderInt("History updates per cell", &rs.sharcHistoryFrames, 8, 256);
+        ImGui::SetItemTooltip("History decays when the cell receives new samples. Sparse cells retain "
+            "their learning between visits instead of losing it every frame.");
+        ImGui::SliderInt("Unused cell lifetime", &rs.sharcMaxAge, 32, 4096);
+        ImGui::SetItemTooltip("Base lifetime in frames. Sparse cells adapt up to four times this "
+            "based on revisit intervals. Obsolete distance levels are still reclaimed immediately.");
+        ImGui::SliderFloat("Footprint / cell width", &rs.sharcQueryFootprint, 0.5f, 8.0f, "%.1f");
+        ImGui::SetItemTooltip("Path spread a secondary vertex needs before it may terminate into the cache, in "
+            "coarser-cell widths (full acceptance at twice this). Cells scale with camera distance, so high "
+            "values make distant first bounces trace on instead of terminating.");
+        if (ImGui::Button("Reset radiance cache")) rs.sharcReset = true;
+        ImGui::TextDisabled("164 MiB persistent cache; regular path tracer only");
+        ImGui::EndDisabled();
+    }
+    ImGui::SeparatorText(ptActive ? "ReSTIR (deprecated, inactive)" : "ReSTIR (deprecated)");
+    ImGui::BeginDisabled(ptActive);
 
     if (ImGui::CollapsingHeader("Temporal", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Checkbox("Enable##Temp", &rs.enableTempGI);
@@ -994,6 +1156,7 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs) {
                               "resampling weights and blends contributor chroma at the scalar chain's "
                               "luminance, instead of outputting the lone winner's color. Nearly free.");
     }
+    ImGui::EndDisabled();
     ImGui::End();
 }
 
@@ -1024,6 +1187,96 @@ void Editor::DrawInitialSamplingPanel(ReSTIRSettings& rs) {
                           "bounces) to effectively DISABLE RR. Default 3.");
 
 
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────────────────────
+void Editor::DrawDlssInputsPanel(ReSTIRSettings& rs, DLSSManager& dlss) {
+    ImGui::SetNextWindowSize(ImVec2(320, 150), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("DLSS Inputs", &m_showDlssInputs)) { ImGui::End(); return; }
+
+    //order must match DlssInputDebugView's switch in Pass_postprocess_v8.hlsl
+    static const char* kLayers[] = {
+        "Off (slice stays black)",
+        "Color input (g_dlssInput)",
+        "Denoised output, raw (g_dlssOutput)",
+        "Depth (window)",
+        "Motion vectors (0.5 + mv*0.1)",
+        "Normals (n*0.5+0.5)",
+        "Diffuse albedo",
+        "Specular albedo",
+        "Roughness",
+        "Spec motion vectors (0.5 + mv*0.1)",
+        "Spec hit distance (window)",
+        "Transparency",
+        "Color pre-transparency",
+        "Bias hint",
+    };
+    ImGui::Combo("Layer", &rs.dlssDebugLayer, kLayers, IM_ARRAYSIZE(kLayers));
+    ImGui::SetItemTooltip("Renders the selected DLSS-RR input layer RAW (no exposure/AgX/dither, only a "
+                          "per-layer range map + display gamma) into output slice 3. Color layers are "
+                          "luminance-Reinhard compressed for display; MVs show +-10 px across "
+                          "black..white. Guide layers are render-resolution (nearest-scaled when "
+                          "upscaling); the raw denoised output is display-res.");
+    if (rs.dlssDebugLayer == 3 || rs.dlssDebugLayer == 10) {
+        ImGui::DragFloatRange2("Window (m)", &rs.dlssDebugDepthNear, &rs.dlssDebugDepthFar,
+                               0.25f, 0.0f, 65000.0f, "near %.2f", "far %.2f");
+        ImGui::SetItemTooltip("Depth / hit-dist are mapped LINEARLY from [near, far] onto the 8-bit "
+                              "display. The display itself quantizes to 256 steps, so a wide window "
+                              "shows contour bands on a perfectly smooth R32F buffer — tighten the "
+                              "window around the surface under inspection; banding that SURVIVES a "
+                              "tight window is real buffer content.");
+    }
+    ImGui::TextWrapped("Shown on output slice 3 — press C until the 4th view. "
+                       "For edge instability, compare Normals / Depth / MVs / albedos against the "
+                       "color input along the artifact edge: the guide that disagrees is the culprit.");
+
+    //====================================
+    //GUIDE SENTINEL (live anomaly stats over what RR is being fed)
+    //====================================
+    if (ImGui::CollapsingHeader("Guide sentinel", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto& gs = dlss.sentinel;
+        ImGui::Text("frame %llu  |  max luma %.3f  max |MV| %.2f px  max |specMV| %.2f px",
+                    (unsigned long long)gs.frame, gs.maxLuma, gs.maxMV, gs.maxSpecMV);
+        ImGui::Text("pixels at luma cap: %u", gs.capCount);
+        if (gs.mask != 0) {
+            const uint32_t bx = gs.firstBad & 0xFFFFu, by = gs.firstBad >> 16;
+            ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1),
+                "ANOMALY NOW: mask 0x%03X, %u px, first (%u,%u)",
+                gs.mask, gs.badCount, bx ? bx - 1 : 0, by ? by - 1 : 0);
+        } else {
+            ImGui::TextColored(ImVec4(0.4f, 1, 0.4f, 1), "guides clean");
+        }
+        if (gs.lastFrame != 0) {
+            const uint32_t lx = gs.lastBad & 0xFFFFu, ly = gs.lastBad >> 16;
+            ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1),
+                "last anomaly: frame %llu, mask 0x%03X, first (%u,%u)",
+                (unsigned long long)gs.lastFrame, gs.lastMask,
+                lx ? lx - 1 : 0, ly ? ly - 1 : 0);
+            ImGui::SetItemTooltip(
+                "Mask bits: 0x001 color NaN/Inf  0x002 depth bad  0x004 MV NaN/Inf\n"
+                "0x008 normal/rough NaN/Inf  0x010 roughness out of [0,1]\n"
+                "0x020 specMV NaN/Inf  0x040/0x080 albedo NaN/Inf\n"
+                "0x100 |MV|>256px  0x200 |specMV|>256px\n"
+                "If an instability onset happens while this stays clean, the\n"
+                "poison is NOT in the guide data — it's options/execution side.");
+        } else {
+            ImGui::TextDisabled("no anomaly seen this session");
+        }
+    }
+
+    //====================================
+    //D3D12 MESSAGES FROM THE EVALUATE WINDOW
+    //====================================
+    if (ImGui::CollapsingHeader("D3D12 messages during slEvaluateFeature")) {
+        ImGui::Text("total captured: %llu", (unsigned long long)dlss.evalDxMessageTotal);
+        if (dlss.evalDxMessages.empty()) {
+            ImGui::TextDisabled("none — the evaluate window is validation-clean");
+        } else {
+            for (const auto& m : dlss.evalDxMessages)
+                ImGui::TextWrapped("%s", m.c_str());
+        }
+    }
     ImGui::End();
 }
 
@@ -1974,4 +2227,3 @@ void Editor::DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps,
 
     ImGui::End();
 }
-

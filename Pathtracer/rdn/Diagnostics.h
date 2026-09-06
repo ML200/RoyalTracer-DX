@@ -141,7 +141,14 @@ namespace dxdiag
 
             g_infoQ->GetMessage(i, msg, &sz);
 
-            std::wcout << L"[DX] " << msg->pDescription << std::endl;
+            //CORRUPTION/ERROR/WARNING go through CrashLog so they land in
+            //crash_dxdiag.log (console output is unseen when no console is
+            //attached — validation complaints were silently lost that way).
+            //INFO/MESSAGE spam stays console-only.
+            if (msg->Severity <= D3D12_MESSAGE_SEVERITY_WARNING)
+                CrashLogF(L"[DX] %hs\n", msg->pDescription ? msg->pDescription : "<no description>");
+            else
+                std::wcout << L"[DX] " << msg->pDescription << std::endl;
         }
         g_infoQ->ClearStoredMessages();
     }

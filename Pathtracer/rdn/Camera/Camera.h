@@ -103,6 +103,15 @@ public:
     float   apertureRadius = 0.0f;
     float   focusDistance  = 10.0f;
 
+    //Amplitude of the ACTUAL sub-pixel camera jitter, [0,1]. Scales the Halton
+    //offset at the source (UploadGPUBuffer), so every consumer — the raygen
+    //cbuffer AND the jitterOffset reported to DLSS via JitterX/Y — sees the
+    //same scaled value and real vs reported jitter stay matched at any setting.
+    //0 = no jitter (aliased but temporally frozen sampling), 1 = full
+    //[-0.5,+0.5]. Editor slider lives in the DLSS panel next to the
+    //report-only diagnostic (DLSSManager::jitterScale), which multiplies on top.
+    float   jitterScale = 1.0f;
+
     SunSettings   sunSettings;
     //Volumetric cloud knobs, appended to the camera cbuffer tail after
     //SunSettings. Driven from the editor's Clouds panel.

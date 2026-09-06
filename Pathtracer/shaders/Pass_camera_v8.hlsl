@@ -81,6 +81,18 @@ inline bool TraceCameraRay(
     store_prpm      (g_sample_current, pixelIdx, hitLocalPr, hitLocalPm);
     store_n1_s_world(g_sample_current, pixelIdx, hinfo.hitNormal, instID);
     store_x1        (g_sample_current, pixelIdx, hitPos, instID);
+    //RAW (pre view-clamp) primary shading normal -> retired scratch slot 3,
+    //consumed by Pass_shading as the DLSS-RR normals guide. The clamped
+    //G-buffer normal depends on the jittered view ray and wobbles per frame
+    //at grazing incidence — exactly where sub-pixel slivers destabilize the
+    //denoiser; the raw normal is view-independent and temporally stable on a
+    //given surface. (Shading falls back to the G-buffer normal if this reads
+    //near-zero.)
+    gScratchPing[uint3(pixel, 3)] = float4(hinfo.rawNormal, 0.0f);
+    // Sparse training uses the primary's geometric normal for direct coverage
+    // of visible surfaces. PT may replace it with the debug image AFTER update.
+    if (sharc_enabled != 0u)
+        gScratchPing[uint3(pixel, SHARC_DEBUG_SCRATCH)] = float4(hinfo.geometricNormal, 0.0f);
     if (isEmitter)
     {
         gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
@@ -179,6 +191,20 @@ void Pass_camera_v8()
     const uint2 pixel    = DispatchRaysIndex().xy;
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
+
+    //DLSS guide sentinel accumulators (SENT_OFFS_* in Includes_v8.hlsli) —
+    //zeroed at the top of the frame by this first pass. Pass_shading fills
+    //them, the host copies them out after the frame. One thread; every later
+    //pass is behind an inter-pass barrier so there is no write race.
+    if (all(pixel == uint2(0, 0))) {
+        gAutoExpose.Store(SENT_OFFS_MASK,      0u);
+        gAutoExpose.Store(SENT_OFFS_MAXLUMA,   0u);
+        gAutoExpose.Store(SENT_OFFS_MAXMV,     0u);
+        gAutoExpose.Store(SENT_OFFS_MAXSPECMV, 0u);
+        gAutoExpose.Store(SENT_OFFS_CAPCOUNT,  0u);
+        gAutoExpose.Store(SENT_OFFS_BADCOUNT,  0u);
+        gAutoExpose.Store(SENT_OFFS_FIRSTBAD,  0u);
+    }
 
     //Default the G-buffer to a clean miss so a degenerate camera ray (which
     //TraceCameraRay leaves unwritten) still reads as sky downstream. A real hit

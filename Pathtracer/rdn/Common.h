@@ -23,6 +23,7 @@
 #include "glm/gtc/matrix_transform.hpp"
 #include "../src/Components/Vertex.h"
 #include "d3dx12.h"
+#include "../shaders/SharcLayout.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -190,6 +191,43 @@ struct GeometryOffsets {
 //====================================
 //DI+GI unified, DI knobs removed
 struct ReSTIRSettings {
+    //====================================
+    //INTEGRATOR SELECT
+    //====================================
+    //0 = Path tracer (Pass_pt_v8): the clean RIS-free unidirectional path
+    //    tracer — per-vertex light-tree NEE + sun NEE with balance-heuristic
+    //    MIS, same transport math as Pass_raygen but accumulating radiance
+    //    directly. Every reservoir pass is skipped; doubles as the ground-
+    //    truth reference for the ReSTIR target functions with SHaRC disabled.
+    //1 = ReSTIR (DEPRECATED): the legacy reservoir pipeline, kept selectable
+    //    for comparison. Everything below this block configures it.
+    int   integratorMode   = 0;
+
+    //SHaRC is exclusive to the regular path tracer. Disabling it restores the
+    //uncached reference and its original bounce budgets. Grid size is a power
+    //of two for floating-origin precision; cache memory is resolution-independent.
+    bool  sharcEnabled = true;
+    bool  sharcReset = false;
+    int   sharcDebugMode = 0; // 0: off, 1: cells, 2: stored cell lighting
+    bool  sharcDebugCoarse = false; // inspect the other (less sampled) of the two queried levels
+    int   sharcCellSizeExponent = -3; // 0.125 m minimum spacing
+    float sharcLodScale = 0.01f;      // spacing grows with camera distance
+    int   sharcUpdateStride = 4;      // one rotating sample per 4x4 tile
+    int   sharcMinSamples = 16;
+    int   sharcHistoryFrames = 64;
+    int   sharcMaxAge = 512;
+    // Path spread required before a secondary vertex may terminate into the
+    // cache, in coarser-cell widths (ramps to full at twice this). Cells are
+    // ~1% of the camera distance, so 3 made distant first bounces miss almost
+    // always and trace on instead.
+    float sharcQueryFootprint = 0.5f;
+    // Training paths end by cache resampling or by roulette on their own suffix
+    // throughput; the cap bounds the lanes that do neither. A sparse dispatch
+    // finishes when its longest lane does, so the cap is the tail: 48 with fixed
+    // 0.9 survival was latency-bound, 16 with roulette from 6 still left a tail.
+    int   sharcTrainBounces = 8;
+    int   sharcTrainRrDepth = 5; // difficult multi-bounce areas need the suffix intact this deep
+
     int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;
     int   spatCountMinGI   = 2;
@@ -211,6 +249,18 @@ struct ReSTIRSettings {
     //hardware bilinear/aniso, 1 = nearest-texel point sampling for crisp pixel-art /
     //Minecraft assets. Global (all textures); editor toggle under Materials.
     int   texturePointFilter = 0;
+    //DLSS-RR guide-buffer inspector (cbuffer slot 30, read by
+    //Pass_postprocess_v8::DlssInputDebugView). 0 = off; otherwise the selected
+    //DLSS input layer is rendered raw into gOutput slice 3 — the 4th 'C' stop —
+    //for chasing denoiser artifacts. Layer list in the editor's "DLSS Inputs"
+    //window. Not ReSTIR per se; rides the rs-consts block like the pt_* knobs.
+    int   dlssDebugLayer = 0;
+    //Depth / spec-hit-dist display window in metres (slot 31, packed f16 pair).
+    //The viewer maps [near, far] LINEARLY onto the 8-bit ramp — a planet-scale
+    //log map put ~1 gray step per metre and manufactured contour banding on a
+    //perfectly smooth R32F buffer. Banding that survives a TIGHT window is real.
+    float dlssDebugDepthNear = 0.0f;
+    float dlssDebugDepthFar  = 50.0f;
     //Materials debug (flag 0x20000): every material decodes as opaque Lambertian
     //(albedo + emission kept; transmission/specular/coat/sheen/thin-glass/SSS
     //forced off inside Material_Decoder_v8.hlsli). Live-toggleable.
@@ -802,6 +852,8 @@ struct FrameStats {
     float cpuPopulateMs   = 0;
     float tlasMs          = 0;
     float gpuMs           = 0;
+    float cachePassMs[4]   = {}; // GPU timestamps: prepare, train, resolve, regular PT
+    UINT  cacheTimingMask  = 0;
     UINT  instanceCount   = 0;
     UINT  meshCount       = 0;
     bool  tlasWasRefit    = false;

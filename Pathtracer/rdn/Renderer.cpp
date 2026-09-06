@@ -9,6 +9,8 @@
 #include "Windowsx.h"
 #include "NRC/NrcNetwork.h"
 #include <random>
+#include <unordered_set>
+#include <DirectXPackedVector.h>   //XMConvertFloatToHalf (inspector depth window, slot 31)
 
 #undef SL_CHECK
 #define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
@@ -32,7 +34,14 @@ Renderer::Renderer(UINT width, UINT height)
         //L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_spmis_reset_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_camera_v8.hlsl|rg",                      L"barrier",
+        L"Pass_sharc_prepare_v8.hlsl|fx:4096",           L"barrier",
+        L"Pass_sharc_update_v8.hlsl|rg",                 L"barrier",
+        L"Pass_sharc_resolve_v8.hlsl|fx:4096",           L"barrier",
         L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
+        //Clean RIS-free path tracer. Exactly ONE of Pass_raygen / Pass_pt
+        //dispatches per frame — the pass loop skips the inactive one (and,
+        //under PT, every reservoir pass) by integratorMode.
+        L"Pass_pt_v8.hlsl|rg",                          L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         //L"cuda:nrc_inference",                          L"barrier",
         //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
@@ -656,6 +665,22 @@ void Renderer::UpdateRenderer(float dt) {
     // the TLAS BVH has to be rebuilt (refit can't handle the big jump).
     // Done BEFORE PrepareInstanceProperties so the new origin is in
     // effect when transforms get shifted.
+    // Compare absolute source transforms, not dirtyInstanceList: that list also
+    // carries origin rebases and motion-guide settle frames. tlasFullRebuild is
+    // a legacy sticky flag after adding geometry and cannot be a reset trigger.
+    const bool sharcStructureChanged = m_sharcInstanceState.size() != m_scene.instances.size();
+    if (sharcStructureChanged) m_sharcInstanceState.resize(m_scene.instances.size());
+    if (m_scene.materialsDirty || sharcStructureChanged) m_sharcResetPending = true;
+    for (size_t i = 0; i < m_scene.instances.size(); ++i) {
+        if (!sharcStructureChanged && i < m_scene.instanceDirty.size() && !m_scene.instanceDirty[i]) continue;
+        const auto& instance = m_scene.instances[i];
+        auto& previous = m_sharcInstanceState[i];
+        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex ||
+            std::memcmp(&previous.transform, &instance.worldTransform, sizeof(XMMATRIX)) != 0)
+            m_sharcResetPending = true;
+        previous.transform = instance.worldTransform;
+        previous.meshIndex = instance.meshIndex;
+    }
     m_camera.PollSceneOrigin();
     if (m_camera.consumeOriginShifted()) {
         //Every instance needs its transform re-shifted to the new origin.
@@ -695,6 +720,22 @@ void Renderer::UpdateRenderer(float dt) {
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
     m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+    // The existing previous-frame fence makes this read safe without adding a
+    // stall. These are actual dispatch timestamps, unlike the CPU wait above.
+    m_frameStats.cacheTimingMask = m_sharcTimingMask;
+    for (float& ms : m_frameStats.cachePassMs) ms = 0.0f;
+    if (m_sharcTimingMask != 0u && m_sharcTimestampFrequency != 0u) {
+        void* mappedTicks = nullptr;
+        D3D12_RANGE range{0, 8u * sizeof(UINT64)};
+        ThrowIfFailed(m_sharcTimingReadback->Map(0, &range, &mappedTicks));
+        const auto* ticks = static_cast<const UINT64*>(mappedTicks);
+        for (UINT pass = 0; pass < 4; ++pass)
+            if ((m_sharcTimingMask & (1u << pass)) != 0u && ticks[pass * 2 + 1] >= ticks[pass * 2])
+                m_frameStats.cachePassMs[pass] = float(double(ticks[pass * 2 + 1] - ticks[pass * 2]) *
+                    1000.0 / double(m_sharcTimestampFrequency));
+        D3D12_RANGE written{0, 0};
+        m_sharcTimingReadback->Unmap(0, &written);
+    }
 
     //current/last sample-buffer ping-pong - must come right after the full
     //GPU sync and before any command recording for this frame
@@ -1646,6 +1687,7 @@ void Renderer::HandleSceneStructuralChange() {
     m_emissiveGpuDirty = true;
     m_scene.tlasDirty        = true;
     m_scene.tlasFullRebuild  = true;
+    m_sharcResetPending     = true; // geometry buffers / instance identity changed
     m_scene.lightTreeDirty   = true;
 }
 
@@ -1795,7 +1837,7 @@ void Renderer::PopulateCommandList() {
     rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
     rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[44] = {};   // slot 43: RCAS sharpening strength (float, read by Pass_postprocess_v8)
+    UINT rsConsts[SHARC_ROOT_CONSTANTS] = {};
     rsConsts[4]  = (UINT)rs.tempMcapGI;
     rsConsts[5]  = (UINT)rs.spatCountMaxGI;
     rsConsts[6]  = (UINT)rs.spatCountMinGI;
@@ -1812,6 +1854,57 @@ void Renderer::PopulateCommandList() {
     constexpr uint32_t RS_FLAG_CLAMP_EMITTERS = 0x100u;
     uint32_t baseFlags = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
     if (m_dlss.clampEmitterSpikes) baseFlags |= RS_FLAG_CLAMP_EMITTERS;
+    // DLSS guide kill-switches (RS_FLAG_GUIDE_OFF_* high bits, must match
+    // Includes_v8.hlsli): Pass_shading neutralizes the flagged guides at its
+    // override site. Diagnostic tickboxes in the editor DLSS panel.
+    baseFlags |= m_dlss.GuideOffFlags();
+    // Clean PT integrator (RS_FLAG_PT_ONLY, must match Includes_v8.hlsli):
+    // clear the ReSTIR reuse bits (temporal 0x2 / spatial 0x8 / SPMIS 0x10) so
+    // Pass_camera's hash insert no-ops, and raise the mode flag. The pass loop
+    // below also skips every reservoir pass in this mode.
+    const bool usePtKernel = (rs.integratorMode == 0);
+    const bool useSharc = usePtKernel && rs.sharcEnabled;
+    const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 2) : 0u;
+    if (!m_sharcLightingValid ||
+        std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0 ||
+        std::memcmp(&m_sharcCloudSettings, &m_camera.cloudSettings, sizeof(CloudSettings)) != 0)
+    {
+        m_sharcResetPending = true;
+        m_sharcSunSettings = m_camera.sunSettings;
+        m_sharcCloudSettings = m_camera.cloudSettings;
+        m_sharcLightingValid = true;
+    }
+    rs.sharcCellSizeExponent = std::clamp(rs.sharcCellSizeExponent, -6, 4);
+    rs.sharcTrainBounces = std::clamp(rs.sharcTrainBounces, 4, 64);
+    if (rs.sharcCellSizeExponent != m_sharcCellExponent ||
+        rs.sharcTrainBounces != m_sharcBounceLimit ||
+        rs.texturePointFilter != m_sharcTextureFilter || rs.sharcReset ||
+        (useSharc && !m_sharcWasEnabled))
+        m_sharcResetPending = true;
+    m_sharcCellExponent = rs.sharcCellSizeExponent;
+    m_sharcBounceLimit = rs.sharcTrainBounces;
+    m_sharcTextureFilter = rs.texturePointFilter;
+    m_sharcWasEnabled = useSharc;
+    rs.sharcReset = false;
+    rsConsts[44] = useSharc ? 1u : 0u;
+    rsConsts[44] |= sharcDebugMode << SHARC_DEBUG_MODE_SHIFT;
+    if (sharcDebugMode != 0u && rs.sharcDebugCoarse) rsConsts[44] |= SHARC_DEBUG_OTHER_LEVEL_BIT;
+    rsConsts[45] = m_sharcResetPending ? 1u : 0u;
+    rsConsts[46] = ++m_sharcFrame; // monotonic; unsigned age works across wrap
+    rsConsts[47] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
+    const float sharcCellSize = std::exp2((float)rs.sharcCellSizeExponent);
+    const float sharcLodScale = std::clamp(rs.sharcLodScale, 0.001f, 0.1f);
+    const float sharcFootprint = std::clamp(rs.sharcQueryFootprint, 0.5f, 8.0f);
+    memcpy(&rsConsts[48], &sharcCellSize, 4);
+    memcpy(&rsConsts[49], &sharcLodScale, 4);
+    rsConsts[50] = (UINT)std::clamp(rs.sharcMinSamples, 8, 256);
+    rsConsts[51] = (UINT)std::clamp(rs.sharcHistoryFrames, 8, 256);
+    rsConsts[52] = (UINT)std::clamp(rs.sharcMaxAge, 32, 4096);
+    memcpy(&rsConsts[53], &sharcFootprint, 4);
+    rsConsts[54] = (UINT)rs.sharcTrainBounces;
+    rsConsts[55] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
+    if (useSharc) m_sharcResetPending = false;
+    if (usePtKernel) baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
     rsConsts[9]  = baseFlags;
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
@@ -1883,8 +1976,19 @@ void Renderer::PopulateCommandList() {
     // Floored at 1 so at least the primary hit can scatter; capped at maxBounces
     // (the hard path-length cap) since more diffuse bounces than that is moot.
     rsConsts[29] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
-    // Slots 30-31 (rs_reserved3031) unused since the texture-paired spatial reuse
-    // was removed; left zero (rsConsts is zero-initialized).
+    // Slot 30: DLSS-RR guide-buffer inspector — the input layer
+    // Pass_postprocess_v8 renders into gOutput slice 3 (0 = off; layer list in
+    // the editor's "DLSS Inputs" window). Slot 31: the inspector's depth /
+    // spec-hit-dist display window, metres, packed f16 near | f16 far<<16
+    // (debug-only; reclaim for NIRC alongside slot 30 if needed).
+    rsConsts[30] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13);
+    {
+        using DirectX::PackedVector::XMConvertFloatToHalf;
+        const float dn = std::clamp(rs.dlssDebugDepthNear, 0.0f, 60000.0f);
+        const float df = std::clamp(rs.dlssDebugDepthFar, dn + 0.01f, 65000.0f);
+        rsConsts[31] = (UINT)XMConvertFloatToHalf(dn)
+                     | ((UINT)XMConvertFloatToHalf(df) << 16);
+    }
 
     // SPMIS spatial-reuse params (slots 32-37; read by the Pass_spmis_* kernels).
     // Selected by RS_FLAG_SPMIS_SPATIAL (0x10). Clamp to safe ranges.
@@ -2136,7 +2240,7 @@ void Renderer::PopulateCommandList() {
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
         rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 44, rsConsts, 0);
+        cmdList->SetComputeRoot32BitConstants(1, SHARC_ROOT_CONSTANTS, rsConsts, 0);
         // SPMIS hash-grid buffer as a root UAV (u25) — see Includes_v8.hlsli / the
         // Pass_spmis_* kernels + raygen hash insertion. Bound for every main-root-sig
         // pass; shaders that don't reference it strip the binding (DXC).
@@ -2144,10 +2248,49 @@ void Renderer::PopulateCommandList() {
         // Active-pixel queue (u26): camera appends, raygen dequeues. Same
         // bound-everywhere / stripped-when-unused pattern as u25.
         cmdList->SetComputeRootUnorderedAccessView(3, m_raygenQueueBuffer->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(4, m_sharcBuffer->GetGPUVirtualAddress());
     };
 
+    m_sharcTimingMask = 0u;
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
+
+        // Integrator select: exactly one of Pass_raygen (ReSTIR/RIS, deprecated)
+        // and Pass_pt runs per frame; under PT the whole reservoir pipeline
+        // (temporal, shift, SPMIS, dup, merge) is skipped at dispatch time. Only
+        // file-bearing passes are tested — control tokens (barrier / pingswap /
+        // loop bookkeeping) always execute so the loopStack stays balanced.
+        // Skipping is safe: SBT slots and PSO indices are static.
+        if (!p.file.empty()) {
+            if (!useSharc && p.file.rfind(L"Pass_sharc_", 0) == 0) continue;
+            if (usePtKernel) {
+                static const std::unordered_set<std::wstring> kRestirOnly = {
+                    L"Pass_raygen_v8.hlsl",
+                    L"Pass_spmis_reset_v8.hlsl",
+                    L"Pass_temp_gi_v8.hlsl",
+                    L"Pass_shift_v8.hlsl",
+                    L"Pass_temp_merge_v8.hlsl",
+                    L"Pass_spmis_count_v8.hlsl",
+                    L"Pass_spmis_offsets_v8.hlsl",
+                    L"Pass_spmis_sort_v8.hlsl",
+                    L"Pass_spmis_select_v8.hlsl",
+                    L"Pass_spmis_passthrough_v8.hlsl",
+                    L"Pass_spmis_merge_v8.hlsl",
+                    L"Pass_dup_gi_v8.hlsl",
+                };
+                if (kRestirOnly.count(p.file)) continue;
+            } else {
+                if (p.file == L"Pass_pt_v8.hlsl") continue;
+            }
+        }
+
+        int cacheTimer = -1;
+        if (p.file == L"Pass_sharc_prepare_v8.hlsl") cacheTimer = 0;
+        else if (p.file == L"Pass_sharc_update_v8.hlsl") cacheTimer = 1;
+        else if (p.file == L"Pass_sharc_resolve_v8.hlsl") cacheTimer = 2;
+        else if (p.file == L"Pass_pt_v8.hlsl") cacheTimer = 3;
+        if (cacheTimer >= 0)
+            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
 
         switch (p.stage) {
         case Stage::LoopStart:
@@ -2244,6 +2387,13 @@ void Renderer::PopulateCommandList() {
             else if (p.dispatchTag == L"spatial_shift")
                 shiftDepth = std::clamp((UINT)rs.spmisReuseN, 1u, kSpmisSplitMaxDraws) + 1;   // Ntn draws + 1 canonical
             raysDesc.Depth = shiftDepth;
+            if (p.file == L"Pass_sharc_update_v8.hlsl") {
+                raysDesc.Width = (dispW + rsConsts[47] - 1u) / rsConsts[47];
+                raysDesc.Height = (dispH + rsConsts[47] - 1u) / rsConsts[47];
+            } else {
+                raysDesc.Width = dispW;
+                raysDesc.Height = dispH;
+            }
             cmdList->DispatchRays(&raysDesc);
             break;
         }
@@ -2282,7 +2432,8 @@ void Renderer::PopulateCommandList() {
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, currentStack, nextStack);
-            cmdList->Dispatch(p.groupX, p.groupY, 1);
+            cmdList->Dispatch(p.file.rfind(L"Pass_sharc_", 0) == 0
+                ? SHARC_CAPACITY / SHARC_GROUP_SIZE : p.groupX, p.groupY, 1);
             break;
         }
 
@@ -2322,6 +2473,61 @@ void Renderer::PopulateCommandList() {
 
         case Stage::DLSS:
         {
+            //── DLSS guide sentinel: decode frame n-2, record frame n's copy ──
+            //Pass_shading (recorded above) filled gAutoExpose bytes 32..63;
+            //copy them out here and surface the 2-frame-old slot in
+            //m_dlss.sentinel (editor DLSS Inputs panel + console on anomaly).
+            if (!m_sentinelReadback[0]) {
+                for (int i = 0; i < 3; ++i) {
+                    auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+                    auto bd = CD3DX12_RESOURCE_DESC::Buffer(32);
+                    ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(
+                        &hp, D3D12_HEAP_FLAG_NONE, &bd,
+                        D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                        IID_PPV_ARGS(&m_sentinelReadback[i])));
+                    m_sentinelReadback[i]->SetName(L"DlssSentinelReadback");
+                    void* p = nullptr;
+                    ThrowIfFailed(m_sentinelReadback[i]->Map(0, nullptr, &p));
+                    m_sentinelMapped[i] = static_cast<const uint32_t*>(p);
+                }
+            }
+            if (m_sentinelFrame >= 2) {
+                const uint32_t* s = m_sentinelMapped[(m_sentinelFrame + 1) % 3];
+                auto bitsToF = [](uint32_t u) { float x; std::memcpy(&x, &u, 4); return x; };
+                auto& gs = m_dlss.sentinel;
+                gs.mask      = s[0];
+                gs.maxLuma   = bitsToF(s[1]);
+                gs.maxMV     = bitsToF(s[2]);
+                gs.maxSpecMV = bitsToF(s[3]);
+                gs.capCount  = s[4];
+                gs.badCount  = s[5];
+                gs.firstBad  = s[6];
+                gs.frame     = m_sentinelFrame - 2;
+                if (gs.mask != 0) {
+                    gs.lastMask  = gs.mask;
+                    gs.lastBad   = gs.firstBad;
+                    gs.lastFrame = gs.frame;
+                    const uint32_t bx = gs.firstBad & 0xFFFFu, by = gs.firstBad >> 16;
+                    std::wcout << L"[DLSS-SENTINEL] frame " << gs.frame
+                               << L" mask 0x" << std::hex << gs.mask << std::dec
+                               << L" badPixels " << gs.badCount
+                               << L" first (" << (bx ? bx - 1 : 0) << L"," << (by ? by - 1 : 0) << L")"
+                               << L" maxMV " << gs.maxMV
+                               << L" maxLuma " << gs.maxLuma << std::endl;
+                }
+            }
+            {
+                auto toCopy = CD3DX12_RESOURCE_BARRIER::Transition(m_autoExposeBuffer.Get(),
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                cmdList->ResourceBarrier(1, &toCopy);
+                cmdList->CopyBufferRegion(m_sentinelReadback[m_sentinelFrame % 3].Get(), 0,
+                                          m_autoExposeBuffer.Get(), 32, 32);
+                auto backToUav = CD3DX12_RESOURCE_BARRIER::Transition(m_autoExposeBuffer.Get(),
+                    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &backToUav);
+            }
+            ++m_sentinelFrame;
+
             // UAV barriers on all DLSS inputs
             ID3D12Resource* uavs[] = {
                 m_dlss.Depth(), m_dlss.MVec(), m_dlss.Normals(),
@@ -2408,6 +2614,13 @@ void Renderer::PopulateCommandList() {
 
         default: break;
         } // switch
+        if (cacheTimer >= 0) {
+            UINT query = (UINT)cacheTimer * 2u;
+            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1u);
+            cmdList->ResolveQueryData(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                query, 2u, m_sharcTimingReadback.Get(), query * sizeof(UINT64));
+            m_sharcTimingMask |= 1u << (UINT)cacheTimer;
+        }
     } // for passes
 
     // ── Copy output → back buffer ────────────────────────────────
@@ -2415,7 +2628,7 @@ void Renderer::PopulateCommandList() {
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
       cmdList->ResourceBarrier(1, &toSrc); }
 
-    UINT layer = m_displayLevels[m_currentDisplayLevel];
+    UINT layer = sharcDebugMode != 0u ? 3u : m_displayLevels[m_currentDisplayLevel];
     UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
 
     // ── DLSS-NR: optional neural post-process on the composited frame ──
@@ -2426,7 +2639,7 @@ void Renderer::PopulateCommandList() {
     // falls through to presenting m_outputResource untouched.
     ID3D12Resource* presentSrc = m_outputResource.Get();
     UINT            presentSub = sub;
-    if (m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub,
+    if (sharcDebugMode == 0u && m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub,
                           m_dlss.Depth(), m_dlss.MVec(),
                           m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
         presentSrc = m_dlssNR.Output();   //left in COPY_SOURCE by the manager

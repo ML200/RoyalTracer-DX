@@ -13,6 +13,7 @@
 #include <sl_helpers.h>
 #include <sl_dlss.h>
 #include "sl_dlss_d.h"
+#include <limits>   //motionVectorsInvalidValue sentinel
 
 #undef SL_CHECK
 #define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
@@ -217,13 +218,39 @@ void DLSSManager::Evaluate(
             CD3DX12_RESOURCE_BARRIER::Transition(r, stateSRV, stateUAV));
 
     // ── Build Streamline constants ────────────────────────────────
-    // Use render resolution for aspect ratio in the projection
+    // DLSS gets its own GUIDE camera range and depth convention, decoupled
+    // from the renderer's planet-scale camera (near 0.01 / far 1e9 —
+    // near:far = 1e11 degenerates everything depth-related: the fp32
+    // projection's far/(near-far) rounds to exactly -1, and any internal
+    // fp16 pass over metre-scale linear depth quantizes it into visible
+    // depth stripes; preset F proved most sensitive). The guide is
+    // REVERSE-Z DEVICE DEPTH in [0,1] over this FIXED near/far pair —
+    // near -> 1, far -> 0, tagged kBufferTypeDepth with depthInverted=true —
+    // the convention shipping DLSS titles use. Pass_shading encodes depth
+    // with the same pair (DLSS_GUIDE_DEPTH_NEAR/FAR in Constants_v8.hlsli —
+    // MUST match), which is also why the caller's editor-adjustable
+    // nearPlane is deliberately NOT used here.
+    constexpr float kGuideDepthNear = 0.01f;
+    constexpr float kGuideDepthFar  = 10000.0f;
+    (void)nearPlane; (void)farPlane;
+
+    // Use render resolution for aspect ratio in the projection. Swapped
+    // near/far args = the standard reverse-Z construction (matches the
+    // shader-side d = n(f-z)/((f-n)z) exactly).
     float renderAspect = (float)m_renderWidth / (float)m_renderHeight;
     XMMATRIX xmProj = XMMatrixPerspectiveFovRH(
-        XMConvertToRadians(fovDegrees), renderAspect, nearPlane, farPlane);
+        XMConvertToRadians(fovDegrees), renderAspect, kGuideDepthFar, kGuideDepthNear);
     XMMATRIX xmViewProj     = XMMatrixMultiply(viewMatrix, xmProj);
-    // Use unjittered prev projection for clip-to-prev-clip (DLSS handles jitter separately)
-    XMMATRIX xmPrevViewProj = XMMatrixMultiply(prevViewMatrix, prevProjMatrix);
+    // Use unjittered prev projection for clip-to-prev-clip (DLSS handles jitter
+    // separately). Rebuilt with the SAME guide planes instead of the caller's
+    // prevProjMatrix (which carries the 1e9 forward-Z camera projection) so
+    // this frame's and last frame's clip spaces share one Z mapping; XY rows
+    // don't depend on near/far, so reprojection is unaffected. (Assumes fov is
+    // frame-coherent — a live fov edit mismatches for one frame, harmless.)
+    (void)prevProjMatrix;
+    XMMATRIX xmPrevProj = XMMatrixPerspectiveFovRH(
+        XMConvertToRadians(fovDegrees), renderAspect, kGuideDepthFar, kGuideDepthNear);
+    XMMATRIX xmPrevViewProj = XMMatrixMultiply(prevViewMatrix, xmPrevProj);
 
     auto XmToSl = [](const XMMATRIX& m) -> sl::float4x4 {
         XMFLOAT4X4 t; XMStoreFloat4x4(&t, m);
@@ -237,18 +264,30 @@ void DLSSManager::Evaluate(
     constants.prevClipToClip    = XmToSl(XMMatrixMultiply(XMMatrixInverse(nullptr, xmPrevViewProj), xmViewProj));
     constants.cameraFOV         = XMConvertToRadians(fovDegrees);
     constants.cameraAspectRatio = renderAspect;
-    constants.cameraNear        = nearPlane;
-    constants.cameraFar         = farPlane;
+    constants.cameraNear        = kGuideDepthNear;   //the guide range, see above
+    constants.cameraFar         = kGuideDepthFar;
     //Scaled report only — the raygen already sampled at the unscaled offset. See
-    //DLSSManager::jitterScale; 1.0 is the truthful value.
-    constants.jitterOffset      = { -jitterX * jitterScale, -jitterY * jitterScale };
+    //DLSSManager::jitterScale; {1,1} is the truthful value. Per-axis so a
+    //Y-only sign flip is testable independently of X.
+    constants.jitterOffset      = { -jitterX * jitterScale[0], -jitterY * jitterScale[1] };
     constants.mvecScale         = { 1.0f / (float)m_renderWidth, 1.0f / (float)m_renderHeight };
-    constants.motionVectorsInvalidValue = -1.0f;
+    //FLT_MIN sentinel, matching NVIDIA's RTXPT reference — the old -1.0f is a
+    //legitimately occurring MV value (per docs the field is only consumed when
+    //cameraMotionIncluded is false, but exact-match collisions cost nothing to
+    //rule out).
+    constants.motionVectorsInvalidValue = std::numeric_limits<float>::min();
     constants.cameraMotionIncluded      = sl::Boolean::eTrue;
-    constants.depthInverted             = sl::Boolean::eFalse;
+    constants.depthInverted             = sl::Boolean::eTrue;   //reverse-Z guide depth
     constants.motionVectors3D           = sl::Boolean::eFalse;
     constants.motionVectorsJittered     = sl::Boolean::eFalse;
-    constants.cameraPinholeOffset       = { 0.5f, 0.5f };
+    //"Optional - specifies camera pinhole offset IF USED" (sl_consts.h) — this
+    //camera is a centered pinhole (thin-lens DoF is not a pinhole shift), so
+    //the correct value is ZERO. The previous {0.5, 0.5} declared a phantom
+    //half-pixel pinhole displacement (pixel-space units, same as jitterOffset)
+    //= a permanent sub-pixel misregistration of the whole reconstruction —
+    //visible as stair-stepping / crawling on shallow edges that builds as
+    //history accumulates against the misplaced reference.
+    constants.cameraPinholeOffset       = { 0.0f, 0.0f };
     constants.reset = (jitterFrameIndex <= 1 || m_forceReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
     m_forceReset = false;
 
@@ -268,7 +307,14 @@ void DLSSManager::Evaluate(
     options.outputWidth      = m_displayWidth;
     options.outputHeight     = m_displayHeight;
     options.colorBuffersHDR  = sl::Boolean::eTrue;
-    options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::eUnpacked;
+    //PACKED normal-roughness: roughness rides in the normals buffer's .w and
+    //is tagged as kBufferTypeNormalRoughness. This is the convention every
+    //shipping RR integration uses (Cyberpunk, RTXPT reference — which passes
+    //a null standalone-roughness texture and tags only the packed buffer).
+    //The eUnpacked path with a separate kBufferTypeRoughness tag is rarely
+    //exercised in the wild and correlated with preset-F temporal instability
+    //here — do not switch back without retesting F on grazing geometry.
+    options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
     options.worldToCameraView   = XmToSl(viewMatrix);
     options.cameraViewToWorld   = XmToSl(XMMatrixInverse(nullptr, viewMatrix));
 
@@ -304,15 +350,34 @@ void DLSSManager::Evaluate(
     auto life = sl::ResourceLifecycle::eValidUntilEvaluate;
 
     std::vector<sl::ResourceTag> tags = {
-        { &slDepth,   sl::kBufferTypeLinearDepth,          life, &renderExtent  },
+        //reverse-Z device depth (see the constants block) — kBufferTypeDepth,
+        //the primary convention ("must be suitable for clipToPrevClip"), not
+        //the linear tag: linear metres proved preset-sensitive (striping).
+        { &slDepth,   sl::kBufferTypeDepth,                life, &renderExtent  },
         { &slMVec,    sl::kBufferTypeMotionVectors,        life, &renderExtent  },
-        { &slNormals, sl::kBufferTypeNormals,              life, &renderExtent  },
-        { &slRough,   sl::kBufferTypeRoughness,            life, &renderExtent  },
+        //packed mode: normals .w carries roughness, tagged as the combined
+        //buffer; the standalone roughness tag is retired (null resource
+        //clears any stale tag — the texture itself is still written for the
+        //layer inspector).
+        { &slNormals, sl::kBufferTypeNormalRoughness,      life, &renderExtent  },
+        { nullptr,    sl::kBufferTypeRoughness,            life, &renderExtent  },
         { &slAlbedo,  sl::kBufferTypeAlbedo,               life, &renderExtent  },
         { &slSpecAlb, sl::kBufferTypeSpecularAlbedo,       life, &renderExtent  },
-        { &slSpecHit, sl::kBufferTypeSpecularHitDistance,   life, &renderExtent  },
+        //SPECULAR HIT DISTANCE IS DELIBERATELY UNTAGGED (null resource keeps
+        //any stale tag cleared). Per NVIDIA's RTXPT reference the spec-MV and
+        //spec-hit-dist guides are MUTUALLY EXCLUSIVE — their wrapper hard-
+        //errors when both are provided — and their call site ships spec MVs
+        //with the hitT path disabled ("it's buggy"). We were tagging BOTH,
+        //an unsupported combination no shipping title runs. We keep the
+        //(deterministic, probe-based) spec MVs; m_specHitDist is still
+        //written for the guide-inspector view, just never handed to RR.
+        { nullptr,    sl::kBufferTypeSpecularHitDistance,   life, &renderExtent  },
         { &slInput,   sl::kBufferTypeScalingInputColor,    life, &renderExtent  },
-        { &slSpecMV,  sl::kBufferTypeSpecularMotionVectors, life, &renderExtent },
+        //untagSpecMV: spec MV is the one optional guide — null resource drops
+        //the tag (and clears a stale one) so RR falls back to internal
+        //specular tracking. See DLSSManager.h.
+        { untagSpecMV ? nullptr : &slSpecMV,
+                      sl::kBufferTypeSpecularMotionVectors, life, &renderExtent },
         { &slOutput,  sl::kBufferTypeScalingOutputColor,   life, &displayExtent },
     };
     SL_CHECK(slSetTagForFrame(frameToken, viewport, tags.data(), (uint32_t)tags.size(), cmdList));
@@ -322,12 +387,37 @@ void DLSSManager::Evaluate(
     if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))))
         infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
 
+    //Suppressing break-on-error above also silences any REAL validation
+    //violation inside the evaluate window, so capture the messages the call
+    //generates and surface them (editor DLSS Inputs panel + console). The
+    //per-frame DumpNewMessages clears the queue at present, so indices here
+    //are frame-relative and stable.
+    const UINT64 dxMsgsBefore = infoQueue ? infoQueue->GetNumStoredMessages() : 0;
+
     const sl::BaseStructure* evalInputs[] = { &viewport, &options };
     sl::Result evalResult = slEvaluateFeature(
         sl::kFeatureDLSS_RR, frameToken, evalInputs, _countof(evalInputs), cmdList);
 
-    if (infoQueue)
+    if (infoQueue) {
         infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+
+        const UINT64 dxMsgsAfter = infoQueue->GetNumStoredMessages();
+        for (UINT64 i = dxMsgsBefore; i < dxMsgsAfter; ++i) {
+            SIZE_T sz = 0;
+            infoQueue->GetMessage(i, nullptr, &sz);
+            if (!sz) continue;
+            std::vector<uint8_t> blob(sz);
+            auto* msg = reinterpret_cast<D3D12_MESSAGE*>(blob.data());
+            if (FAILED(infoQueue->GetMessage(i, msg, &sz))) continue;
+            //INFO spam (state-decay notices etc.) is noise; keep warnings up
+            if (msg->Severity > D3D12_MESSAGE_SEVERITY_WARNING) continue;
+            ++evalDxMessageTotal;
+            evalDxMessages.emplace_back(msg->pDescription ? msg->pDescription : "<no description>");
+            if (evalDxMessages.size() > 8)
+                evalDxMessages.erase(evalDxMessages.begin());
+            std::wcout << L"[DLSS-EVAL DX] " << (msg->pDescription ? msg->pDescription : "") << std::endl;
+        }
+    }
 
     if (evalResult != sl::Result::eOk) {
         std::wcout << L"[DLSS-RR] slEvaluateFeature failed: " << (int)evalResult << std::endl;

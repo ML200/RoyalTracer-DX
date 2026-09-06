@@ -42,9 +42,24 @@ void main(uint3 DTid : SV_DispatchThreadID, uint GIdx : SV_GroupIndex)
 {
     //per-thread log2-luminance + valid-pixel mask written to groupshared
     if (DTid.x < gImageWidth && DTid.y < gImageHeight) {
-        const float3 reinhard = g_dlssOutput[DTid.xy].xyz;
-        const float3 hdr      = InverseReinhardForAE(reinhard);
-        const float  lum      = max(Luminance(hdr), 1e-6f);
+        //PT-mode bypass (RS_FLAG_PT_ONLY): shading fed DLSS PRE-EXPOSED
+        //linear radiance (radiance * AE exposure — this state's own output),
+        //so divide the exposure back out to keep measuring TRUE scene
+        //luminance; the closed loop then has the same fixed point as the
+        //Reinhard path. (Inverting the Reinhard instead would saturate any
+        //value >= 1 and blow the measurement up 10000x.) Must stay in
+        //lockstep with DlssEncode / DlssDecode in Pass_shading /
+        //Pass_postprocess — same AE state, same 0.18 key.
+        const float3 dlssOut = g_dlssOutput[DTid.xy].xyz;
+        float3 hdr;
+        if (PT_ONLY_MODE) {
+            const float expNow =
+                0.18f / max(exp2(asfloat(gAutoExpose.Load(AE_OFFS_SMOOTHED))), 1e-6f);
+            hdr = max(dlssOut, 0.0f) / max(expNow, 1e-8f);
+        } else {
+            hdr = InverseReinhardForAE(dlssOut);
+        }
+        const float  lum     = max(Luminance(hdr), 1e-6f);
         g_tileLL[GIdx]   = clamp(log2(lum), -AE_LOG_OFFSET, AE_LOG_OFFSET);
         g_tileMask[GIdx] = 1u;
     } else {

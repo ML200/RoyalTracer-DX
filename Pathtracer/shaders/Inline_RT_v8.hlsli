@@ -13,6 +13,14 @@ static const uint MEDIUM_INVALID = 0xFFFFFFFFu;
 struct HitInfo {
     float3 hitPos;
     float3 hitNormal;
+    //RAW pre-clamp shading normal (normal-mapped, backface-oriented, BEFORE
+    //ClampNormalToViewAndReflection). The clamp makes hitNormal a function of
+    //the JITTERED view ray — correct for BSDF validity, poison as a temporal
+    //guide: at grazing incidence it wobbles per frame even on one surface.
+    //Pass_camera parks this in scratch slot 3 for the DLSS-RR normals guide.
+    //Unread consumers cost nothing (DXC strips the dead lane).
+    float3 rawNormal;
+    float3 geometricNormal; // oriented, view-independent face normal for SHaRC
     bool   backface;
     uint   lightID;
     float2 uv;
@@ -400,7 +408,9 @@ inline dx::HitObject TraceRay_Custom(
     RaytracingAccelerationStructure SceneBVH,
     RayDesc ray,
     uint rayFlags = RAY_FLAG_NONE,
-    uint instanceMask = 0xFF)
+    uint instanceMask = 0xFF,
+    uint lowHint = 0u,
+    uint lowHintBits = 0u)
 {
 
     TracePayload payload = (TracePayload)0;
@@ -414,8 +424,10 @@ inline dx::HitObject TraceRay_Custom(
     //warp-coherent instead of taking the hit population's random instance mix.
     //InstanceID comes off the hit record (no memory fetch before the reorder), and
     //reordering is execution-order only, so the output is bit-identical.
-    const uint hint = hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u;
-    dx::MaybeReorderThread(hitObj, hint, 7);
+    //Callers may append lower-priority bits below the instance sort (SHaRC
+    //training groups lanes by expected remaining path life within an instance).
+    const uint hint = ((hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u) << lowHintBits) | lowHint;
+    dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);
     return hitObj;
 }
 
@@ -585,6 +597,8 @@ HitInfo EvalSurfaceState(
 
     hit.hitPos    = posW;
     hit.hitNormal = isBackface ? -normW : normW;
+    hit.rawNormal = hit.hitNormal;   //view-independent, pre-clamp (see struct)
+    hit.geometricNormal = geoNormOriented;
     hit.backface  = isBackface;
 
     //clamp normal so ray can proceed

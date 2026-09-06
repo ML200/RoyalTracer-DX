@@ -158,8 +158,26 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
         XMConvertToRadians(fovDegrees), aspectRatio, nearPlane, farPlane);
 
     m_jitterFrameIndex++;
-    m_jitterX = Halton(m_jitterFrameIndex % 16 + 1, 2) - 0.5f;
-    m_jitterY = Halton(m_jitterFrameIndex % 16 + 1, 3) - 0.5f;
+    //1024-phase Halton(2,3) cycle — effectively non-repeating (4-17 s per lap
+    //at 60-240 fps) while keeping the radical-inverse index small enough that
+    //float precision is never a question. The old 16-phase cycle was BOTH
+    //under NVIDIA's minimum phase count for upscaling (8*scale^2: DLAA needs 8,
+    //Quality ~18, Balanced ~24) AND a periodicity trap: on a grazing surface
+    //each sub-pixel phase maps to a fixed world stripe, so 16 phases re-sample
+    //the same 16 stripes forever and RR's accumulator can lock onto the loop
+    //instead of averaging it out (the preset-F "jitter builds up" suspect).
+    //Halton is progressively stratified, so every prefix of the long cycle is
+    //still low-discrepancy — DLSS sees a well-distributed sequence at any
+    //history length, it just never sees the same offset twice within a lap.
+    //
+    //jitterScale scales the REAL offset here at the source: the raygen cbuffer
+    //value and the DLSS-reported jitterOffset both read m_jitterX/Y, so they
+    //stay consistent at any amplitude. m_jitterFrameIndex still advances at 0,
+    //so per-frame random seeds (`time`) keep varying — only the sub-pixel
+    //offset freezes.
+    const float jScale = std::clamp(jitterScale, 0.0f, 1.0f);
+    m_jitterX = (Halton(m_jitterFrameIndex % 1024 + 1, 2) - 0.5f) * jScale;
+    m_jitterY = (Halton(m_jitterFrameIndex % 1024 + 1, 3) - 0.5f) * jScale;
 
     XMVECTOR det;
     matrices[2] = XMMatrixInverse(&det, matrices[0]);

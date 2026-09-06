@@ -40,11 +40,16 @@ private:
     void DrawScenePanel(Scene& scene);
     void DrawCameraPanel(Camera& camera, FlyCamController& flyCam);
     void DrawPassPipelinePanel(PassSystem& passes);
-    void DrawDLSSPanel(DLSSManager& dlss, DLSSGSettings& dlssG);
+    //camera: the DLSS panel owns the actual-jitter-amplitude slider
+    //(Camera::jitterScale) so it sits next to the report-only diagnostic
+    void DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dlssG);
     //settings/request writes only — the manager performs all NGX work itself
     void DrawDLSSNRPanel(DLSSNRManager& nr);
+    //guide-buffer inspector: picks the DLSS input layer Pass_postprocess_v8
+    //renders into gOutput slice 3 (the 4th 'C' stop)
+    void DrawDlssInputsPanel(ReSTIRSettings& restir, DLSSManager& dlss);
     void DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings& restir);
-    void DrawReSTIRPanel(ReSTIRSettings& restir);
+    void DrawReSTIRPanel(ReSTIRSettings& restir, const FrameStats& stats);
     void DrawInitialSamplingPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
     void DrawSunPanel(Camera& camera);
@@ -58,6 +63,7 @@ private:
     bool m_showPipeline   = false;
     bool m_showDLSS       = false;
     bool m_showDLSSNR     = false;
+    bool m_showDlssInputs = false;
     bool m_showReSTIR     = false;
     bool m_showNRC        = false;
     bool m_showInitialSampling = false;

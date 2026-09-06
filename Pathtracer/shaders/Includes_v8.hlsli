@@ -5,6 +5,8 @@
 
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
+#include "SharcLayout.h"
+#define SHARC_DEBUG_MODE ((sharc_enabled >> SHARC_DEBUG_MODE_SHIFT) & SHARC_DEBUG_MODE_MASK)
 
 //====================================
 //TEMP: ALPHA TEST KILL SWITCH
@@ -79,11 +81,17 @@ cbuffer Push : register(b1)
     uint  spmis_searchIters;  // slot 28: cell-search probe count (host-clamped 4..32)
     //Slot 29: max diffuse bounces (Pass_raygen_v8 diffuse-bounce budget; a path
     //may take at most this many scattering events on diffuse-bearing materials,
-    //glass/translucent excepted). Slots 30-31 stay reserved (were the packed
-    //reuse-texture constants for the removed texture-paired spatial reuse; the
-    //host leaves them zero). Kept a uint3-wide so slots 32+ keep their offsets.
+    //glass/translucent excepted).
     uint  pt_maxDiffuseBounces;
-    uint2 rs_reserved3031;
+    //Slot 30: DLSS-RR guide-buffer inspector — which input layer
+    //Pass_postprocess_v8 renders into gOutput slice 3 (the 4th 'C' stop).
+    //0 = off (slice stays the retired-NRC black); layer list in the editor's
+    //"DLSS Inputs" window / DlssInputDebugView.
+    //Slot 31: the inspector's depth / spec-hit-dist display window in metres,
+    //packed f16 near | f16 far<<16 — mapped LINEARLY so residual banding in
+    //the view is real buffer content, not the mapping. Slots 32+ keep offsets.
+    uint  dbg_dlssLayer;
+    uint  dbg_dlssDepthWin;
     //SPMIS spatial reuse. Slots 32-37, read by the Pass_spmis_* kernels. Selected by
     //RS_FLAG_SPMIS_SPATIAL (0x10).
     uint  spmis_reuseN;       // Ntilde: non-canonical reuse draws
@@ -119,6 +127,19 @@ cbuffer Push : register(b1)
     //DLSS-RR ignores that field outright (NVIDIA's DLSS-RR Programming Guide:
     //"DLSS-RR will ignore DLSS options sharpness and useAutoExposure").
     float pp_sharpness;
+    // SHaRC, regular PT only. Slots 44..55; total root cost is 63 DWORDs.
+    uint  sharc_enabled; // bit 0: enabled; debug mode/level: SharcLayout.h
+    uint  sharc_reset;
+    uint  sharc_frame;
+    uint  sharc_updateStride;
+    float sharc_cellSize;
+    float sharc_lodScale;
+    uint  sharc_minSamples;
+    uint  sharc_historyFrames;
+    uint  sharc_maxAge;
+    float sharc_queryFootprint;
+    uint  sharc_trainBounces;
+    uint  sharc_trainRrDepth;
 };
 
 //====================================
@@ -261,6 +282,15 @@ cbuffer Push : register(b1)
 #define RS_FLAG_DUAL_MV  0x200000u
 #define DUAL_MV_ON  ((rs_flags & RS_FLAG_DUAL_MV) != 0u)
 
+//RS_FLAG_PT_ONLY — the clean RIS-free path tracer (Pass_pt_v8) owns the
+//frame: the host skips Pass_raygen_v8 and every reservoir pass (temporal,
+//shift, spmis, dup, merge) and dispatches Pass_pt_v8 instead, which writes
+//its radiance estimate straight to scratch slot 2. The host also clears the
+//ReSTIR reuse bits (0x2/0x8/0x10) while this is set so Pass_camera's SPMIS
+//hash insert no-ops. ReSTIR is DEPRECATED — kept selectable for comparison.
+#define RS_FLAG_PT_ONLY  0x1000000u
+#define PT_ONLY_MODE  ((rs_flags & RS_FLAG_PT_ONLY) != 0u)
+
 //RS_FLAG_RGB_SHADE — ReSTIR PT Enhanced §6.3 RGB shading weights (color-noise
 //reduction): the spatial resolve accumulates the VECTORIZED resampling weights
 //(sum of w_i * c_i/lum(c_i)) and scales by (W*p_hat/wsum), blending contributor
@@ -283,6 +313,26 @@ cbuffer Push : register(b1)
 //vertices). Needs HYBRID_SHIFT_ON.
 #define RS_FLAG_LOBE_PSS  0x800000u
 #define LOBE_PSS_ON  (((rs_flags & RS_FLAG_LOBE_PSS) != 0u) && HYBRID_SHIFT_ON)
+
+//RS_FLAG_GUIDE_OFF_* — DLSS-RR guide kill-switches (diagnostics, editor
+//"Guide inputs" tickboxes). Pass_shading overwrites the flagged guide with a
+//NEUTRAL value at the single override site before its sentinel block, so RR
+//receives a constant field instead of the computed one: depth 0 (far plane,
+//sky convention), MV 0, normals 0 (sky convention), roughness 1, diffuse
+//albedo white (no demodulation), spec albedo black, spec MV 0. The tags stay
+//in place because RR treats these buffers as REQUIRED (untagging fails the
+//evaluate); the one optional guide, spec MV, can additionally be untagged
+//host-side (DLSSManager::untagSpecMV). For isolating which guide the
+//creeping preset-F history corruption follows. Bits ride the free high end
+//of rs_flags — 0x1000000 (RS_FLAG_PT_ONLY) is the highest bit in use below.
+#define RS_FLAG_GUIDE_OFF_DEPTH    0x02000000u
+#define RS_FLAG_GUIDE_OFF_MV       0x04000000u
+#define RS_FLAG_GUIDE_OFF_NORMALS  0x08000000u
+#define RS_FLAG_GUIDE_OFF_ROUGH    0x10000000u
+#define RS_FLAG_GUIDE_OFF_ALBEDO   0x20000000u
+#define RS_FLAG_GUIDE_OFF_SPECALB  0x40000000u
+#define RS_FLAG_GUIDE_OFF_SPECMV   0x80000000u
+#define RS_FLAG_GUIDE_OFF_ANY      0xFE000000u
 
 //====================================
 //IMAGE SIZE MACROS
@@ -909,6 +959,23 @@ static const uint  AE_OFFS_TILE_COUNT = 12u;  // uint, contributing tile count (
 static const uint  AE_OFFS_PREV_TIME  = 16u;  // float, persistent
 static const float AE_LOG_OFFSET      = 14.0f;
 static const float AE_LOG_SCALE       =  8.0f;
+
+//====================================
+//DLSS GUIDE SENTINEL (bytes 32..63 of gAutoExpose)
+//====================================
+//Per-frame anomaly stats over the values Pass_shading hands DLSS-RR, read
+//back post-write from the guide textures themselves (so fp16 overflow that
+//became +INF in the texel is caught). Pass_camera zeroes the block at the
+//top of the frame, Pass_shading fills it, the host copies bytes 32..63 to a
+//readback ring after the frame and surfaces anomalies in the editor's DLSS
+//Inputs panel. Mask bits are documented at the Pass_shading sentinel block.
+static const uint SENT_OFFS_MASK      = 32u;  // OR of anomaly bits
+static const uint SENT_OFFS_MAXLUMA   = 36u;  // asuint(float) — monotonic for >= 0
+static const uint SENT_OFFS_MAXMV     = 40u;  // asuint(float), max |mv| component (pixels)
+static const uint SENT_OFFS_MAXSPECMV = 44u;  // asuint(float), max |spec mv| component
+static const uint SENT_OFFS_CAPCOUNT  = 48u;  // pixels at/above the PT input luma cap
+static const uint SENT_OFFS_BADCOUNT  = 52u;  // pixels with any anomaly bit set
+static const uint SENT_OFFS_FIRSTBAD  = 56u;  // ((y+1)<<16)|(x+1) of first anomalous pixel, 0 = none
 
 //====================================
 //SCENE DATA

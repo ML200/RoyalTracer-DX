@@ -139,6 +139,15 @@ inline float3 InverseDlssReinhard(float3 r) {
     return r / max(1.0f - lumR, 1e-4f);
 }
 
+//PT-mode bypass (RS_FLAG_PT_ONLY): Pass_shading fed DLSS-RR PRE-EXPOSED
+//linear radiance (radiance * AE exposure — see DlssEncode there), so the
+//decode divides the exposure back out instead of inverting a Reinhard.
+//Negative DLSS residuals still get floored; saturating would clip the HDR.
+inline float3 DlssDecode(float3 r, float exposure) {
+    return PT_ONLY_MODE ? (max(r, 0.0f) / max(exposure, 1e-8f))
+                        : InverseDlssReinhard(r);
+}
+
 //====================================
 //NON-FINITE SCRUB (safety backstop)
 //====================================
@@ -220,7 +229,7 @@ static const float RCAS_LIMIT = 0.25f - (1.0f / 16.0f);
 //so the taps cannot be shared with the centre pixel's arithmetic.
 float3 TonemappedCleanAt(int2 p, float exposure) {
     p = clamp(p, int2(0, 0), int2((int)gImageWidth - 1, (int)gImageHeight - 1));
-    float3 c = InverseDlssReinhard(g_dlssOutput[p].xyz);
+    float3 c = DlssDecode(g_dlssOutput[p].xyz, exposure);
     c = ScrubNonFinite(c);
     return AgX(c * exposure);
 }
@@ -254,6 +263,68 @@ float3 RcasSharpen(uint2 pix, float exposure, float3 e, float sharpness) {
 }
 
 //====================================
+//DLSS GUIDE-BUFFER INSPECTOR  (dbg_dlssLayer -> gOutput slice 3)
+//====================================
+//Renders the selected DLSS-RR input layer into the retired NRC debug slice
+//(the 4th 'C' stop) for chasing denoiser artifacts — e.g. edge instability
+//caused by a guide (normals/depth/MV/albedo) disagreeing with the color.
+//Raw stored values, NO exposure / AgX / dither — only a per-layer range map
+//so everything fits the UNORM target, then display gamma:
+//  color layers      luminance-Reinhard compressed for display (they are HDR
+//                    under the PT integrator's linear path)
+//  depth / hit dist  LINEAR map of the editor's [near, far] window
+//                    (dbg_dlssDepthWin, f16 pair in metres). Linear on
+//                    purpose: the target is 8-bit, so a whole-scene (let
+//                    alone log-to-cameraFar) range would quantize the VIEW
+//                    and fake banding on a smooth R32F buffer — window the
+//                    region under inspection instead; banding that survives
+//                    a tight window is real buffer content.
+//  motion vectors    0.5 + mv * 0.1 in RG (+-10 px spans black..white), B=0.5
+//  normals           n * 0.5 + 0.5
+//Guide layers live at RENDER resolution (DLSSManager allocates them at
+//m_renderWidth/Height); the display-res pixel maps through the texture's own
+//dimensions, so upscaled modes show them nearest-scaled. g_dlssOutput is
+//display-res and maps 1:1.
+float3 DlssInputDebugView(uint2 px, uint layer)
+{
+    uint rw, rh;
+    g_dlssInput.GetDimensions(rw, rh);
+    const uint2 rpx = min((px * uint2(rw, rh)) / uint2(gImageWidth, gImageHeight),
+                          uint2(rw - 1u, rh - 1u));
+
+    //depth / hit-dist display window (metres, editor-driven)
+    const float winNear = f16tof32(dbg_dlssDepthWin & 0xFFFFu);
+    const float winFar  = f16tof32(dbg_dlssDepthWin >> 16);
+    const float winInv  = 1.0f / max(winFar - winNear, 1e-3f);
+
+    float3 v = float3(0, 0, 0);
+    switch (layer)
+    {
+    case 1u:  { const float3 c = max(g_dlssInput[rpx].rgb, 0.0f);         v = c / (1.0f + Luma(c)); } break;
+    case 2u:  { const float3 c = max(g_dlssOutput[px].rgb, 0.0f);         v = c / (1.0f + Luma(c)); } break;
+    case 3u:  { //stored as reverse-Z device depth — invert back to metres so
+                //the window UI stays in world units (z = nf / (d(f-n) + n))
+                const float d = g_dlssDepth[rpx];
+                const float n = DLSS_GUIDE_DEPTH_NEAR, f = DLSS_GUIDE_DEPTH_FAR;
+                const float z = (n * f) / max(d * (f - n) + n, 1e-7f);
+                v = saturate((z - winNear) * winInv).xxx; } break;
+    case 4u:  { const float2 m = g_dlssMVec[rpx];     v = float3(saturate(0.5f + m * 0.1f), 0.5f); } break;
+    case 5u:  v = g_dlssNormals[rpx].xyz * 0.5f + 0.5f; break;
+    case 6u:  v = g_dlssDiffuseAlbedo[rpx].rgb; break;
+    case 7u:  v = g_dlssSpecularAlbedo[rpx].rgb; break;
+    case 8u:  v = g_dlssRoughness[rpx].xxx; break;
+    case 9u:  { const float2 m = g_dlssSpecMVec[rpx]; v = float3(saturate(0.5f + m * 0.1f), 0.5f); } break;
+    case 10u: v = saturate((g_dlssSpecHitDist[rpx] - winNear) * winInv).xxx; break;
+    case 11u: v = g_dlssTransparency[rpx].rgb; break;
+    case 12u: { const float3 c = max(g_dlssColorPreTrans[rpx].rgb, 0.0f);  v = c / (1.0f + Luma(c)); } break;
+    case 13u: v = g_dlssBiasHint[rpx].xxx; break;
+    default:  break;
+    }
+    //display gamma so mid-range guide detail reads on the 8-bit target
+    return sRGBGammaCorrection(saturate(ScrubNonFinite(v)));
+}
+
+//====================================
 //POST-PROCESS PASS
 //====================================
 [numthreads(8, 4, 1)]
@@ -262,6 +333,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (DTid.x >= gImageWidth || DTid.y >= gImageHeight) return;
 
     const float exposure = ReadExposure();
+    if (SHARC_DEBUG_MODE != 0u)
+    {
+        uint rw, rh;
+        g_dlssInput.GetDimensions(rw, rh);
+        uint2 rpx = min((DTid.xy * uint2(rw, rh)) / uint2(gImageWidth, gImageHeight),
+            uint2(rw - 1u, rh - 1u));
+        float4 debugValue = gScratchPing[uint3(rpx, SHARC_DEBUG_SCRATCH)];
+        float3 color = debugValue.w > 0.0f ? AgX(ScrubNonFinite(debugValue.rgb) * exposure) : debugValue.rgb;
+        // Raw nearest-scaled cache inspector: bypass DLSS, sharpening, dither
+        // and the guide inspector. The host presents this slice while enabled.
+        gOutput[uint3(DTid.xy, 3)] = float4(color, 0.0f);
+        return;
+    }
 
     //HDR debug slices read from FP32 scratchPing / gPermanentData. Writing raw HDR
     //into the R8G8B8A8 UNORM gOutput would clip to 1.0 and quantize to 8 bits linear
@@ -271,7 +355,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     //(was slots 1/2/3 summed here) — one FP32 scratch read instead of three.
     //clean came through DLSS RR which received Reinhard-tonemapped input —
     //undo that here so AgX sees the original HDR
-    float3 clean  = InverseDlssReinhard(g_dlssOutput[DTid.xy].xyz);
+    float3 clean  = DlssDecode(g_dlssOutput[DTid.xy].xyz, exposure);
     float3 nrc    = float3(0, 0, 0); // NRC debug slice retired (kept black)
     float3 refl   = float3(0, 0, 0); // sharp-reflection slice retired (kept black)
 #if SHADING_DEBUG_SLICES
@@ -323,7 +407,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
     gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
-    gOutput[uint3(DTid.xy, 3)] = float4(nrc, 0.0f);
+    //slice 3: retired NRC slot, now the DLSS guide-buffer inspector when a
+    //layer is selected in the editor's "DLSS Inputs" window. Written raw
+    //(no exposure/AgX/dither) — see DlssInputDebugView.
+    gOutput[uint3(DTid.xy, 3)] = (dbg_dlssLayer != 0u)
+        ? float4(DlssInputDebugView(DTid.xy, dbg_dlssLayer), 0.0f)
+        : float4(nrc, 0.0f);
     gOutput[uint3(DTid.xy, 4)] = float4(refl, 0.0f);
     gOutput[uint3(DTid.xy, 5)] = float4(albedo, 0.0f);
 }
