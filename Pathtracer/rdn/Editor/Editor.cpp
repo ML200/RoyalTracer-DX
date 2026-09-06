@@ -981,7 +981,7 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
             "explain, so open areas fall back to cosine sampling on their own.");
         ImGui::SliderInt("Receiver cell (log2 x cache cell)", &rs.sharcGuideLevelOffset, 1, 6);
         ImGui::SetItemTooltip("Receiver cells and patches are this many doublings coarser than the cache "
-            "grid. 3 = 1 m near the camera. Changing it resets the cache.");
+            "grid. 2 = 0.5 m near the camera. Changing it resets the cache.");
         ImGui::SliderFloat("Patch radius / cell width", &rs.sharcGuideRadius, 0.25f, 2.0f, "%.2f");
         ImGui::SetItemTooltip("Bounding radius of a patch cone in patch-cell widths. Larger cones cover more "
             "of an opening but concentrate samples less.");
@@ -997,7 +997,53 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
             "discovered with this off.");
         ImGui::EndDisabled();
         if (ImGui::Button("Reset radiance cache")) rs.sharcReset = true;
-        ImGui::TextDisabled("184 MiB persistent cache + guide table; regular path tracer only");
+        ImGui::TextDisabled("205 MiB persistent cache + guide table; regular path tracer only");
+        ImGui::EndDisabled();
+        ImGui::SeparatorText("ReSTIR lite (diffuse primary vertex)");
+        if ((stats.cacheTimingMask & 0xF0u) != 0u) {
+            ImGui::Text("GPU ms: dup %.3f | temporal %.3f | shift %.3f | merge %.3f  (sum %.3f)",
+                stats.cachePassMs[4], stats.cachePassMs[5], stats.cachePassMs[6], stats.cachePassMs[7],
+                stats.cachePassMs[4] + stats.cachePassMs[5] + stats.cachePassMs[6] + stats.cachePassMs[7]);
+            ImGui::SetItemTooltip("GPU dispatch timestamps of the lite passes from the previous completed frame.");
+        }
+        ImGui::Checkbox("Resample the primary diffuse lobe", &rs.liteEnabled);
+        ImGui::SetItemTooltip("The primary vertex's diffuse lobe leaves the path tracer: its NEE samples and "
+            "whatever its scatter ray finds (an emitter, the sky, or the secondary vertex with its cached or "
+            "path-traced outgoing radiance) "
+            "become reservoir candidates that temporal and paired spatial reuse resample before shading. "
+            "Every other lobe and every cache miss stays on the path tracer. The winner is shaded with the "
+            "exact lobe and its own traced visibility.");
+        ImGui::BeginDisabled(!rs.liteEnabled);
+        ImGui::Checkbox("Temporal reuse", &rs.liteTemporal);
+        ImGui::SameLine();
+        ImGui::Checkbox("Spatial reuse", &rs.liteSpatial);
+        ImGui::Checkbox("Permutation sampling", &rs.litePermutation);
+        ImGui::SetItemTooltip("Reads history from a permuted pixel of the reprojected 4x4 block each frame, "
+            "so no pixel keeps its own chain (correlation reduction).");
+        ImGui::SameLine();
+        ImGui::Checkbox("Duplication map", &rs.liteDupMap);
+        ImGui::SetItemTooltip("Counts pixels of the 17x17 neighbourhood holding the same sample and collapses "
+            "that history's confidence toward one, so a sample cannot keep spreading (correlation reduction).");
+        ImGui::SliderInt("Temporal confidence cap", &rs.liteTempMcap, 1, 64);
+        ImGui::SliderInt("Spatial confidence cap", &rs.liteSpatMcap, 1, 64);
+        ImGui::SliderInt("Spatial partners", &rs.liteSpatSlots, 0, 3);
+        ImGui::SetItemTooltip("Self-inverting pair tables: a partner's partner is the pixel itself, so one "
+            "shadow ray per pair serves both sides of the pairwise MIS.");
+        ImGui::SliderFloat("Pair distance (px std dev)", &rs.liteReuseSigma, 2.0f, 40.0f, "%.1f");
+        ImGui::SetItemTooltip("Regenerates the pair tables when changed.");
+        ImGui::SliderFloat("Reuse normal cone (cos)", &rs.tempNormalSimCos, -1.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Reuse plane distance / camera distance", &rs.tempPlaneDist, 0.0f, 0.5f, "%.3f");
+        ImGui::SliderFloat("Correlation reduction power", &rs.corrReductionPow, 0.005f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderFloat("Contribution weight clamp", &rs.ucwClampMax, 0.0f, 100000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::Checkbox("Unshadowed reuse targets", &rs.liteUnshadowedTargets);
+        ImGui::SetItemTooltip("Default: reuse targets ignore visibility and only the winner traces a shadow ray "
+            "(about 0.2 ms cheaper). Generation still drops occluded NEE candidates, so the reuse MIS can "
+            "slightly over-credit a neighbour or the history right at its own shadow edges (the classic "
+            "visibility-reuse compromise, a thin band). Off: every reuse target traces its own ray "
+            "(two temporal, one per partner) and the estimator is exact.");
+        ImGui::SameLine();
+        ImGui::Checkbox("Show lite only", &rs.liteDebugView);
+        ImGui::SetItemTooltip("Displays only the resampled diffuse contribution (the path tracer's part is dropped).");
         ImGui::EndDisabled();
     }
     ImGui::SeparatorText(ptActive ? "ReSTIR (deprecated, inactive)" : "ReSTIR (deprecated)");

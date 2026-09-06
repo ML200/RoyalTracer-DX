@@ -5,6 +5,7 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
+#include "ReuseTextureGen.h"
 #include "Diagnostics.h"
 #include "Windowsx.h"
 #include "NRC/NrcNetwork.h"
@@ -42,6 +43,12 @@ Renderer::Renderer(UINT width, UINT height)
         //dispatches per frame — the pass loop skips the inactive one (and,
         //under PT, every reservoir pass) by integratorMode.
         L"Pass_pt_v8.hlsl|rg",                          L"barrier",
+        //ReSTIR lite (RestirLite_v8.hlsli): the primary vertex's diffuse lobe,
+        //resampled. PT only; the pass loop skips them otherwise.
+        L"Pass_lite_dup_v8.hlsl|cs:16x16",              L"barrier",
+        L"Pass_lite_temporal_v8.hlsl|cs:16x16",         L"barrier",
+        L"Pass_lite_shift_v8.hlsl|cs:16x16",            L"barrier",
+        L"Pass_lite_merge_v8.hlsl|cs:16x16",            L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
         //L"cuda:nrc_inference",                          L"barrier",
         //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
@@ -675,8 +682,12 @@ void Renderer::UpdateRenderer(float dt) {
         if (!sharcStructureChanged && i < m_scene.instanceDirty.size() && !m_scene.instanceDirty[i]) continue;
         const auto& instance = m_scene.instances[i];
         auto& previous = m_sharcInstanceState[i];
-        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex ||
-            std::memcmp(&previous.transform, &instance.worldTransform, sizeof(XMMATRIX)) != 0)
+        // A moved instance invalidates only its own records: Pass_sharc_prepare
+        // evicts every record whose instance transform differs from the previous
+        // frame's (both are in the instance table). Resetting the whole cache
+        // here made any animated instance stop the cache from ever converging.
+        // A mesh swap changes what the instance id means, so that still resets.
+        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex)
             m_sharcResetPending = true;
         previous.transform = instance.worldTransform;
         previous.meshIndex = instance.meshIndex;
@@ -726,10 +737,10 @@ void Renderer::UpdateRenderer(float dt) {
     for (float& ms : m_frameStats.cachePassMs) ms = 0.0f;
     if (m_sharcTimingMask != 0u && m_sharcTimestampFrequency != 0u) {
         void* mappedTicks = nullptr;
-        D3D12_RANGE range{0, 8u * sizeof(UINT64)};
+        D3D12_RANGE range{0, 16u * sizeof(UINT64)};
         ThrowIfFailed(m_sharcTimingReadback->Map(0, &range, &mappedTicks));
         const auto* ticks = static_cast<const UINT64*>(mappedTicks);
-        for (UINT pass = 0; pass < 4; ++pass)
+        for (UINT pass = 0; pass < 8; ++pass)
             if ((m_sharcTimingMask & (1u << pass)) != 0u && ticks[pass * 2 + 1] >= ticks[pass * 2])
                 m_frameStats.cachePassMs[pass] = float(double(ticks[pass * 2 + 1] - ticks[pass * 2]) *
                     1000.0 / double(m_sharcTimestampFrequency));
@@ -1807,7 +1818,8 @@ void Renderer::PopulateCommandList() {
     // consuming an indirect-dispatch queue). The entry region from byte 16 is
     // reused once per frame (camera -> raygen consumed it before temp_gi
     // runs; temp_gi no longer writes it).
-    { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+    if (m_restirSettings.integratorMode != 0) {
+      auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
       cmdList->ResourceBarrier(1, &b);
       cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, 4 * sizeof(uint32_t));
@@ -1816,6 +1828,24 @@ void Renderer::PopulateCommandList() {
       cmdList->ResourceBarrier(1, &b2); }
 
     // ── Execute pass pipeline ────────────────────────────────────
+    // ReSTIR lite reuse tables: (re)generated on the host when their sigma
+    // changes and copied once into the SHaRC allocation (LITE_REUSE_OFFSET).
+    if (m_restirSettings.liteReuseSigma != m_liteReuseSigma) {
+        m_liteReuseSigma = m_restirSettings.liteReuseSigma;
+        BuildLiteReuseTables(m_liteReuseSigma);
+    }
+    if (m_liteReusePending && m_liteReuseUpload && m_sharcBuffer) {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_sharcBuffer.Get(),
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &b);
+        cmdList->CopyBufferRegion(m_sharcBuffer.Get(), LITE_REUSE_OFFSET, m_liteReuseUpload.Get(), 0,
+            (UINT64)LITE_REUSE_TEXELS * 4u);
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_sharcBuffer.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &b2);
+        m_liteReusePending = false;
+    }
+
     uint32_t currentStack = 0, nextStack = 1;
     // {total, remaining} per active loop — total lets the shift loop's role-
     // constant derive its 0-based iteration index (total - remaining) at
@@ -1852,7 +1882,11 @@ void Renderer::PopulateCommandList() {
     // RS_FLAG_CLAMP_EMITTERS (0x100, must match Includes_v8.hlsli) is a high bit
     // clear of the ReSTIR bits; Pass_shading reads it to clamp emitter spikes.
     constexpr uint32_t RS_FLAG_CLAMP_EMITTERS = 0x100u;
-    uint32_t baseFlags = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    // PT leaves reservoir buffers untouched. On returning to ReSTIR, its
+    // first frame must generate fresh history before temporal reuse resumes.
+    const bool integratorChanged = rs.integratorMode != m_previousIntegratorMode;
+    m_previousIntegratorMode = rs.integratorMode;
+    uint32_t baseFlags = (dlssResChanged || integratorChanged) ? (rs.Flags() & ~3u) : rs.Flags();
     if (m_dlss.clampEmitterSpikes) baseFlags |= RS_FLAG_CLAMP_EMITTERS;
     // DLSS guide kill-switches (RS_FLAG_GUIDE_OFF_* high bits, must match
     // Includes_v8.hlsli): Pass_shading neutralizes the flagged guides at its
@@ -1920,10 +1954,42 @@ void Renderer::PopulateCommandList() {
         ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
     if (useSharc) m_sharcResetPending = false;
     if (usePtKernel) baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
+    // ReSTIR lite (LITE_FLAG_*, SharcLayout.h): regular path tracer only.
+    // Temporal reuse is withheld for one frame whenever the history buffers
+    // may be stale (integrator switch, resolution change, first active frame).
+    const bool liteActive = usePtKernel && rs.liteEnabled;
+    const bool liteHistoryValid = m_liteWasActive && !dlssResChanged && !integratorChanged;
+    m_liteWasActive = liteActive;
+    if (liteActive) {
+        baseFlags |= LITE_FLAG_ENABLED
+            | ((rs.liteTemporal && liteHistoryValid) ? LITE_FLAG_TEMPORAL : 0u)
+            | (rs.liteSpatial ? LITE_FLAG_SPATIAL : 0u)
+            | (rs.litePermutation ? LITE_FLAG_PERMUTE : 0u)
+            | (rs.liteDupMap ? LITE_FLAG_DUPMAP : 0u)
+            | (rs.liteUnshadowedTargets ? LITE_FLAG_UNSHADOWED : 0u)
+            | (rs.liteDebugView ? LITE_FLAG_DEBUG : 0u);
+    }
     rsConsts[9]  = baseFlags;
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
+    // ReSTIR lite takes over the deprecated pipeline's slots 4-8 and 12 under
+    // the regular tracer (RestirLite_v8.hlsli aliases): confidence caps, the
+    // partner count and one packed wrap offset + flip/transpose per reuse
+    // table, redrawn every frame so the pair pattern never repeats.
+    if (liteActive) {
+        rsConsts[4] = (UINT)std::clamp(rs.liteTempMcap, 1, 255);
+        rsConsts[5] = (UINT)std::clamp(rs.liteSpatMcap, 1, 255);
+        rsConsts[6] = (UINT)std::clamp(rs.liteSpatSlots, 0, (int)LITE_SLOTS_MAX);
+        const UINT sizes[3] = { LITE_REUSE_SIZE0, LITE_REUSE_SIZE1, LITE_REUSE_SIZE2 };
+        const UINT slots[3] = { 7u, 8u, 12u };
+        for (int t = 0; t < 3; ++t) {
+            const UINT ox = m_liteRng() % sizes[t];
+            const UINT oy = m_liteRng() % sizes[t];
+            const UINT flags = m_liteRng() & 7u;
+            rsConsts[slots[t]] = ox | (oy << 8) | (flags << LITE_REUSE_FLAGS_SHIFT);
+        }
+    }
     // Reconnection-vertex (x2) roughness reject threshold (slot 17; the hybrid
     // pin-criteria roughness, and the legacy reuse gate when hybrid is off).
     // Clamp to [0,1].
@@ -2273,11 +2339,15 @@ void Renderer::PopulateCommandList() {
         // Integrator select: exactly one of Pass_raygen (ReSTIR/RIS, deprecated)
         // and Pass_pt runs per frame; under PT the whole reservoir pipeline
         // (temporal, shift, SPMIS, dup, merge) is skipped at dispatch time. Only
-        // file-bearing passes are tested — control tokens (barrier / pingswap /
-        // loop bookkeeping) always execute so the loopStack stays balanced.
+        // file-bearing passes are tested. A skipped pass's immediately trailing
+        // barrier has no producer, so skip it too; loop/ping tokens still execute.
         // Skipping is safe: SBT slots and PSO indices are static.
         if (!p.file.empty()) {
-            if (!useSharc && p.file.rfind(L"Pass_sharc_", 0) == 0) continue;
+            auto skipPass = [&]() {
+                if (i + 1 < m_passes.Passes().size() && m_passes.Passes()[i + 1].stage == Stage::Barrier)
+                    ++i;
+            };
+            if (!useSharc && p.file.rfind(L"Pass_sharc_", 0) == 0) { skipPass(); continue; }
             if (usePtKernel) {
                 static const std::unordered_set<std::wstring> kRestirOnly = {
                     L"Pass_raygen_v8.hlsl",
@@ -2293,9 +2363,17 @@ void Renderer::PopulateCommandList() {
                     L"Pass_spmis_merge_v8.hlsl",
                     L"Pass_dup_gi_v8.hlsl",
                 };
-                if (kRestirOnly.count(p.file)) continue;
+                if (kRestirOnly.count(p.file)) { skipPass(); continue; }
             } else {
-                if (p.file == L"Pass_pt_v8.hlsl") continue;
+                if (p.file == L"Pass_pt_v8.hlsl") { skipPass(); continue; }
+            }
+            // ReSTIR lite passes run only under the regular tracer with lite on;
+            // the duplication map only feeds temporal reuse, the shift only spatial.
+            if (p.file.rfind(L"Pass_lite_", 0) == 0) {
+                const bool run = liteActive &&
+                    (p.file == L"Pass_lite_dup_v8.hlsl" ? (rs.liteDupMap && rs.liteTemporal) :
+                     p.file == L"Pass_lite_shift_v8.hlsl" ? rs.liteSpatial : true);
+                if (!run) { skipPass(); continue; }
             }
         }
 
@@ -2304,6 +2382,10 @@ void Renderer::PopulateCommandList() {
         else if (p.file == L"Pass_sharc_update_v8.hlsl") cacheTimer = 1;
         else if (p.file == L"Pass_sharc_resolve_v8.hlsl") cacheTimer = 2;
         else if (p.file == L"Pass_pt_v8.hlsl") cacheTimer = 3;
+        else if (p.file == L"Pass_lite_dup_v8.hlsl") cacheTimer = 4;
+        else if (p.file == L"Pass_lite_temporal_v8.hlsl") cacheTimer = 5;
+        else if (p.file == L"Pass_lite_shift_v8.hlsl") cacheTimer = 6;
+        else if (p.file == L"Pass_lite_merge_v8.hlsl") cacheTimer = 7;
         if (cacheTimer >= 0)
             cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
 
@@ -2447,8 +2529,9 @@ void Renderer::PopulateCommandList() {
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, currentStack, nextStack);
-            cmdList->Dispatch(p.file.rfind(L"Pass_sharc_", 0) == 0
-                ? SHARC_CAPACITY / SHARC_GROUP_SIZE : p.groupX, p.groupY, 1);
+            const UINT groups = p.file == L"Pass_sharc_resolve_v8.hlsl" ? SHARC_RESOLVE_GROUPS
+                : p.file == L"Pass_sharc_prepare_v8.hlsl" ? SHARC_CAPACITY / SHARC_GROUP_SIZE : p.groupX;
+            cmdList->Dispatch(groups, p.groupY, 1);
             break;
         }
 
@@ -2729,3 +2812,32 @@ void Renderer::PopulateCommandList() {
 }
 
 // Old input handlers removed — EngineApp handles input now.
+
+//====================================
+//RESTIR LITE REUSE TABLES
+//====================================
+//Three self-inverting delta tables (ReuseTextureGen) packed as int16 dx | dy
+//<< 16 per texel, staged for the copy into the SHaRC allocation that
+//PopulateCommandList records (SharcLayout.h LITE_REUSE_*).
+void Renderer::BuildLiteReuseTables(float sigma) {
+    const int sizes[3] = { (int)LITE_REUSE_SIZE0, (int)LITE_REUSE_SIZE1, (int)LITE_REUSE_SIZE2 };
+    std::vector<uint32_t> words;
+    words.reserve(LITE_REUSE_TEXELS);
+    for (int t = 0; t < 3; ++t) {
+        std::vector<int16_t> rg;
+        GenerateReuseTexture(sizes[t], std::clamp(sigma, 1.0f, 64.0f), (uint32_t)(t + 1), rg);
+        int bad = -1;
+        if (!ValidateReuseTexture(sizes[t], rg, &bad)) {
+            LOG(L"[ReSTIR lite] reuse table " << sizes[t] << L" failed self-inversion at texel " << bad);
+            return;
+        }
+        for (size_t i = 0; i < rg.size(); i += 2)
+            words.push_back((uint32_t)(uint16_t)rg[i] | ((uint32_t)(uint16_t)rg[i + 1] << 16));
+    }
+    // A previous upload may still be read by a recorded copy; retire it.
+    if (m_liteReuseUpload) m_liteReuseRetired.push_back(m_liteReuseUpload);
+    if (m_liteReuseRetired.size() > 8) m_liteReuseRetired.erase(m_liteReuseRetired.begin());
+    ResourceFactory rf(m_ctx.Device());
+    m_liteReuseUpload = rf.CreateUploadBufferWithData(words.data(), (UINT)(words.size() * sizeof(uint32_t)));
+    m_liteReusePending = true;
+}

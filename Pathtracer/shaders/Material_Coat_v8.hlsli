@@ -106,7 +106,7 @@ struct CoatResult {
 
 inline CoatResult EvalCoatAll(
     uint matID, float3 N, float3 V, float3 L,
-    half etai, half etat)
+    half etai, half etat, bool needTransmission = true)
 {
     CoatResult r;
     r.f = 0.0f;
@@ -123,7 +123,7 @@ inline CoatResult EvalCoatAll(
     const half Pr_coat = (half)LoadPcr(matID);
 
     //transmittance
-    if (NdotV > 0.0f && NdotL > 0.0f)
+    [branch] if (needTransmission && NdotV > 0.0f && NdotL > 0.0f)
     {
         const half PrFactor = (half)1.0 - Pr_coat * (half)0.7;
         const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;

@@ -24,6 +24,7 @@
 #include "Lighting/LightTreeRefit.h"
 #include "CameraRecorder.h"
 #include "CameraPathSimulator.h"
+#include <random>
 
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
@@ -156,6 +157,16 @@ private:
     std::vector<UINT>     m_rockMeshIndices;
     FlyCamController*   m_flyCam = nullptr;
     ReSTIRSettings      m_restirSettings;
+    int                m_previousIntegratorMode = -1;
+    // ReSTIR lite (shaders/RestirLite_v8.hlsli): reuse-table upload into the
+    // SHaRC allocation, per-frame table transforms, history validity.
+    bool                   m_liteWasActive = false;
+    bool                   m_liteReusePending = false;
+    float                  m_liteReuseSigma = 0.0f;
+    ComPtr<ID3D12Resource> m_liteReuseUpload;
+    std::vector<ComPtr<ID3D12Resource>> m_liteReuseRetired; // uploads possibly still in flight
+    std::mt19937           m_liteRng{ 0x4c495445u };
+    void BuildLiteReuseTables(float sigma);
     lt::LightTreeBuilder m_lightTree;
     lt::LightTreeRefitManager m_lightTreeRefit;
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;
@@ -277,7 +288,7 @@ private:
     bool                         m_sharcWasEnabled = false;
     uint32_t                     m_sharcFrame = 0;
     int                          m_sharcCellExponent = -3;
-    int                          m_sharcGuideLevel = 3;
+    int                          m_sharcGuideLevel = 2;
     int                          m_sharcBounceLimit = 16;
     int                          m_sharcTextureFilter = 0;
     bool                         m_sharcLightingValid = false;

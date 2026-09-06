@@ -280,11 +280,12 @@ struct GGXResult {
 inline GGXResult EvalGGXAll(
     uint matID, float3 N, float3 fN, float3 V, float3 L,
     half etai, half etat, float3 Kd, half Pr, half Pm,
-    bool noReflect = false)
+    bool noReflect = false, bool needTransmission = true)
 {
     GGXResult r;
     r.f = 0.0f;
     r.pdf = 0.0f;
+    r.t = 1.0f;
 
     //NdotV stays float, the +1e-5 offset is denormal in fp16 and would flush to zero
     const float NdotV   = abs(dot(N, V)) + 0.00001f;
@@ -300,7 +301,9 @@ inline GGXResult EvalGGXAll(
     const half oneMinusPm = (half)1.0 - Pm;
     const half trans_w    = (half)1.0 - Kd_w_h;
 
-    //transmittance, all factors lie in [0,1]
+    // Only lower lobes use this gate. Metals and cache-terminated diffuse
+    // vertices need the specular value/pdf but none of these Fresnel terms.
+    [branch] if (needTransmission)
     {
         const float Ni       = LoadNi(matID);
         const half  F0_t     = (half)ComputeF0Dielectric(etat, etai).x;

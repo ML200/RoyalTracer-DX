@@ -707,9 +707,8 @@ void GuidePrepareEntry(uint index)
     }
     if (evict)
     {
+        // GuideInitializeEntry clears the payload before publishing a new key.
         g_sharc.Store(stateAddress, 0u);
-        [unroll] for (uint b = 0u; b < GUIDE_ENTRY_BYTES; b += 16u)
-            g_sharc.Store4(e + b, 0u);
     }
 }
 

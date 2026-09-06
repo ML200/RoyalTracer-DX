@@ -198,6 +198,9 @@ No buffer allocation or additional root constants are needed.
 
 ## Performance and warm-up diagnosis
 
+See [non-ReSTIR performance work](NON_RESTIR_PERFORMANCE.md) for the current
+dirty-mask resolve, material/pipeline changes, GPU measurements and validation.
+
 The SHaRC panel shows **GPU ms: prepare / train / resolve / PT**, measured with
 GPU timestamp queries. Results are read only after the existing previous-frame
 fence, with no additional CPU wait. PT includes any enabled cache debug lookup.

@@ -12,7 +12,11 @@
 #include <iostream>
 #include <stdexcept>
 #include <vector>
-#include "../shaders/SharcLayout.h"
+#include "SharcLayout.h"
+// Allow the same fixture to benchmark a pre-optimization shader snapshot.
+#ifndef SHARC_RESOLVE_GROUPS
+#define SHARC_RESOLVE_GROUPS (SHARC_CAPACITY / SHARC_GROUP_SIZE)
+#endif
 using Microsoft::WRL::ComPtr;
 
 void Check(HRESULT hr) {
@@ -29,7 +33,7 @@ struct Runner {
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12Resource> cache, output, readback;
     ComPtr<ID3D12Fence> fence;
-    std::array<ComPtr<ID3D12PipelineState>, 8> psos;
+    std::array<ComPtr<ID3D12PipelineState>, 11> psos;
     std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
     uint64_t serial = 0;
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -66,8 +70,8 @@ struct Runner {
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
-        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery"};
-        for (int i = 0; i < 8; ++i) {
+        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck"};
+        for (int i = 0; i < 11; ++i) {
             std::ifstream file(std::string(directory) + "/" + names[i] + ".dxil", std::ios::binary);
             Require(bool(file), "Missing compiled test shader");
             std::vector<char> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -105,17 +109,20 @@ struct Runner {
         Require(WaitForSingleObject(event, 30000) == WAIT_OBJECT_0, "GPU test timed out");
         Check(device->GetDeviceRemovedReason());
     }
-    double Benchmark() {
+    double Benchmark(int pso = 5, uint32_t groups = 16384, int setupPso = -1, uint32_t setupGroups = 0,
+                     int finishPso = -1, uint32_t finishGroups = 0) {
         D3D12_QUERY_HEAP_DESC desc{}; desc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP; desc.Count = 2;
         ComPtr<ID3D12QueryHeap> heap;
         Check(device->CreateQueryHeap(&desc, IID_PPV_ARGS(&heap)));
         auto timestamps = Buffer(16, D3D12_HEAP_TYPE_READBACK);
         uint64_t frequency = 0; Check(queue->GetTimestampFrequency(&frequency));
         double bestMs = 1e30;
-        for (int repeat = 0; repeat < 4; ++repeat) {
+        for (int repeat = 0; repeat < 8; ++repeat) {
             Begin();
+            if (setupPso >= 0) { ++constants[1]; Dispatch(setupPso, setupGroups); }
             commands->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0);
-            Dispatch(5, 16384); // 1,048,576 diffuse cache queries
+            Dispatch(pso, groups);
+            if (finishPso >= 0) Dispatch(finishPso, finishGroups);
             commands->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 1);
             commands->ResolveQueryData(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, timestamps.Get(), 0);
             End();
@@ -135,7 +142,7 @@ struct Runner {
         for (int f = 0; f < frames; ++f) {
             ++constants[1]; Begin();
             for (uint32_t mode : modes) { constants[5] = mode; Dispatch(1, 64); }
-            Dispatch(2, SHARC_CAPACITY / SHARC_GROUP_SIZE); End();
+            Dispatch(2, SHARC_RESOLVE_GROUPS); End();
         }
     }
     // Production order per frame is prepare -> update; the prepare of the NEXT
@@ -161,7 +168,13 @@ struct Runner {
 };
 
 int main(int argc, char** argv) try {
+    std::cout << std::unitbuf;
     Require(argc == 2, "Expected compiled shader directory"); Runner r(argv[1]);
+    auto materialErrors = r.Query(0, 8);
+    float maxMaterialError = 0.0f;
+    for (int i = 0; i < 64; ++i) maxMaterialError = std::max(maxMaterialError, materialErrors[i]);
+    Require(maxMaterialError < 2e-5f, "Fused material/lobe evaluation changed the BSDF or PDF");
+    std::cout << "PASS: 16,384 layered material cases, max relative error " << maxMaterialError << '\n';
     r.Reset(); Require(r.Query(0)[3] == 0, "Fresh cache must miss");
     r.Train({0}); auto top = r.Query(0);
     Require(top[3] > 0.95f && std::abs(top[0] - 100.0f) < 0.01f, "Concurrent HDR accumulation/resolve failed");
@@ -420,5 +433,64 @@ int main(int argc, char** argv) try {
     r.Train({4}, 20);
     r.constants[5] = 4;
     std::cout << "BENCH: 1M warm surface queries " << r.Benchmark() << " ms\n";
+
+    r.Reset(); r.constants[5] = 30;
+    r.Begin(); r.Dispatch(1, SHARC_CAPACITY / 64u); r.End();
+    r.constants[5] = 31; r.constants[15] = 7;
+    ++r.constants[1]; r.Begin(); r.Dispatch(1, SHARC_CAPACITY / 64u);
+    r.Dispatch(2, SHARC_RESOLVE_GROUPS); r.End();
+    auto sparseResolved = r.Query(31);
+    // Seven does not divide a word or group: exercises multiple bits per word,
+    // untouched neighbours and updates crossing every mask/group boundary.
+    for (uint32_t offset : {0u, 255u, 8191u, SHARC_CAPACITY - 64u}) {
+        r.constants[17] = offset;
+        auto boundary = r.Query(31);
+        for (uint32_t i = 0; i < 64u; ++i) {
+            const bool updated = (offset + i) % 7u == 0u;
+            Require(boundary[i * 8 + 3] == (updated ? 1.0f : 0.0f), "Resolve changed an untouched slot or missed a dirty bit");
+            Require(boundary[i * 8] == (updated ? 2.0f : 0.0f), "Sparse resolve lost radiance");
+        }
+    }
+    r.constants[17] = 0;
+    r.Begin(); r.Dispatch(2, SHARC_RESOLVE_GROUPS); r.End();
+    auto idle = r.Query(31);
+    Require(sparseResolved == idle, "Resolve replayed a consumed dirty mask");
+    std::cout << "PASS: sparse resolve visits every dirty bit once and preserves untouched history\n";
+    std::cout << "BENCH: occupied idle resolve " << r.Benchmark(2, SHARC_RESOLVE_GROUPS) << " ms\n";
+    for (uint32_t stride : {128u, 16u, 1u}) {
+        r.constants[5] = 31; r.constants[15] = stride;
+        std::cout << "BENCH: resolve 1/" << stride << " occupied slots "
+            << r.Benchmark(2, SHARC_RESOLVE_GROUPS, 1, SHARC_CAPACITY / 64u) << " ms\n";
+        std::cout << "BENCH: accumulate + resolve 1/" << stride << " occupied slots "
+            << r.Benchmark(1, SHARC_CAPACITY / 64u, -1, 0, 2, SHARC_RESOLVE_GROUPS) << " ms\n";
+    }
+    r.constants[0] = 1;
+    std::cout << "BENCH: cache + guide reset " << r.Benchmark(0, SHARC_CAPACITY / SHARC_GROUP_SIZE) << " ms\n";
+    r.constants[0] = 0;
+    for (uint32_t mode : {33u, 34u, 35u, 36u}) {
+        r.constants[5] = mode;
+        std::cout << "BENCH: 1M material evaluations mode " << mode << " " << r.Benchmark(9) << " ms\n";
+    }
+    // ---- ReSTIR lite (RestirLite_v8.hlsli) ----
+    {
+        auto pack = r.Query(0, 10);
+        Require(pack[0] < 1e-6f && pack[1] == 7.0f && pack[2] < 0.005f && pack[3] > 0.9999f &&
+            pack[4] == 3.75f && pack[5] == 200.0f && pack[6] == 1.0f && pack[7] < 0.01f,
+            "Lite reservoir packing changed a field");
+        auto mis = r.Query(1, 10);
+        float worstMis = 0.0f;
+        for (int i = 0; i < 64; ++i) worstMis = std::max(worstMis, mis[i]);
+        Require(worstMis < 1e-5f, "Lite resampling MIS weights do not sum to one");
+        for (uint32_t mode : {2u, 3u}) {
+            auto merged = r.Query(mode, 10);
+            double mean = 0.0;
+            for (int i = 0; i < 64; ++i) mean += merged[i];
+            mean /= 64.0;
+            std::cout << "Lite " << (mode == 2u ? "paired spatial" : "temporal") << " merge: estimate "
+                << mean << " vs exact " << merged[64] << "\n";
+            Require(std::abs(mean / merged[64] - 1.0) < 0.01, "Lite resampling is biased");
+        }
+        std::cout << "PASS: lite reservoir packing, pairwise/temporal MIS normalization, unbiased merges\n";
+    }
     return 0;
 } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

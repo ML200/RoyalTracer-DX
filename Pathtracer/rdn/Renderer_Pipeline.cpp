@@ -758,10 +758,10 @@ void Renderer::CreatePathStateBuffer() {
     if (!m_sharcTimingHeap) {
         D3D12_QUERY_HEAP_DESC queries{};
         queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        queries.Count = 8;
+        queries.Count = 16; // 8 timed passes (SHaRC prepare/train/resolve, PT, lite dup/temporal/shift/merge)
         ThrowIfFailed(m_ctx.Device()->CreateQueryHeap(&queries, IID_PPV_ARGS(&m_sharcTimingHeap)));
         auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
-        auto desc = CD3DX12_RESOURCE_DESC::Buffer(8u * sizeof(UINT64));
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(16u * sizeof(UINT64));
         ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
             &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_sharcTimingReadback)));
         ThrowIfFailed(m_ctx.CmdQueue()->GetTimestampFrequency(&m_sharcTimestampFrequency));

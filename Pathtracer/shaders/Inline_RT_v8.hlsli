@@ -443,11 +443,15 @@ inline float3 EvalMissState(float3 rayDir, float3 sunDisk)
 //====================================
 //SURFACE STATE EVALUATION
 //====================================
-HitInfo EvalSurfaceState(
+//viewIsDir: originOrDir is the unit ray direction instead of the ray origin
+//(EvalSurfaceStateDir), so a caller need not keep the origin alive across a
+//trace only to orient the surface.
+HitInfo EvalSurfaceStateImpl(
     uint   instID,
     uint   primID,
     float2 bc2,
-    float3 origin,
+    float3 originOrDir,
+    bool   viewIsDir,
     uint   level
 )
 {
@@ -589,7 +593,7 @@ HitInfo EvalSurfaceState(
     }
 
     //finalize
-    float3 viewDir = posW - origin;
+    float3 viewDir = viewIsDir ? originOrDir : (posW - originOrDir);
     viewDir *= rsqrt(max(dot(viewDir, viewDir), 1e-20f));
 
     const bool   isBackface      = (dot(viewDir, geoNormW) > 0.0f);
@@ -612,6 +616,19 @@ HitInfo EvalSurfaceState(
     hit.lightID = isBackface ? 0xFFFFFFFFu : frontLightID;
 
     return hit;
+}
+
+HitInfo EvalSurfaceState(uint instID, uint primID, float2 bc2, float3 origin, uint level)
+{
+    return EvalSurfaceStateImpl(instID, primID, bc2, origin, false, level);
+}
+
+//Same surface state from the unit ray direction: the hit position comes
+//from the triangle, so a bounce loop can drop the ray after the trace
+//(Pass_pt_v8 keeps only its packed direction live across the reorder).
+HitInfo EvalSurfaceStateDir(uint instID, uint primID, float2 bc2, float3 rayDir, uint level)
+{
+    return EvalSurfaceStateImpl(instID, primID, bc2, rayDir, true, level);
 }
 
 

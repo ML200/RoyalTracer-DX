@@ -11,14 +11,44 @@
 // Path-guiding receiver table (SharcGuide_v8.hlsli), appended to the same
 // allocation so it needs no root parameter of its own. Same bucketed state
 // word scheme; entries hold 8 bright-patch candidates plus an irradiance mean.
-#define GUIDE_CAPACITY (1u << 17u)
+#define GUIDE_CAPACITY (1u << 18u)
 #define GUIDE_ENTRY_BYTES 160u
 #define GUIDE_SLOTS 8u
 #define GUIDE_STATE_BYTES (GUIDE_CAPACITY * 4u)
 #define GUIDE_BYTES (GUIDE_STATE_BYTES + GUIDE_CAPACITY * GUIDE_ENTRY_BYTES)
-#define SHARC_BUFFER_BYTES (SHARC_CACHE_BYTES + GUIDE_BYTES)
+// One bit per cache slot. Update marks deposits; resolve visits only those
+// slots. Keep this after guiding so existing cache/guide addresses stay stable.
+#define SHARC_DIRTY_OFFSET (SHARC_CACHE_BYTES + GUIDE_BYTES)
+#define SHARC_DIRTY_WORDS (SHARC_CAPACITY / 32u)
+// ReSTIR lite (RestirLite_v8.hlsli) paired spatial reuse: three self-inverting
+// delta tables (Lin, Kettunen, Wyman 2026), one uint per texel holding int16
+// dx | dy << 16, uploaded once by the host after the dirty mask. The region is
+// never touched by cache resets; it only exists here to ride the root UAV.
+#define LITE_REUSE_SIZE0 254u
+#define LITE_REUSE_SIZE1 230u
+#define LITE_REUSE_SIZE2 210u
+#define LITE_REUSE_OFFSET (SHARC_DIRTY_OFFSET + SHARC_DIRTY_WORDS * 4u)
+#define LITE_REUSE_TEXELS (LITE_REUSE_SIZE0 * LITE_REUSE_SIZE0 + \
+    LITE_REUSE_SIZE1 * LITE_REUSE_SIZE1 + LITE_REUSE_SIZE2 * LITE_REUSE_SIZE2)
+#define SHARC_BUFFER_BYTES (LITE_REUSE_OFFSET + LITE_REUSE_TEXELS * 4u)
+// rs_flags bits owned by ReSTIR lite. They are clear of every bit the
+// deprecated reservoir pipeline tests (Includes_v8.hlsli RS_FLAG_*) and are
+// only raised by the host while the regular path tracer owns the frame.
+#define LITE_FLAG_ENABLED 0x1u
+#define LITE_FLAG_TEMPORAL 0x4u
+#define LITE_FLAG_SPATIAL 0x20u
+#define LITE_FLAG_PERMUTE 0x80u
+#define LITE_FLAG_DUPMAP 0x400u
+#define LITE_FLAG_UNSHADOWED 0x8000u
+#define LITE_FLAG_DEBUG 0x10000u
+// Per-frame transform of each reuse table, packed into root constant slots
+// 7, 8 and 12 (the deprecated spatial radius/tries slots, unused under PT):
+// offset x | offset y << 8 | flip/transpose flags << 16.
+#define LITE_REUSE_FLAGS_SHIFT 16u
+#define LITE_SLOTS_MAX 3u
 #define SHARC_MAX_LEVEL 24u
 #define SHARC_GROUP_SIZE 256u
+#define SHARC_RESOLVE_GROUPS (SHARC_CAPACITY / SHARC_GROUP_SIZE)
 #define SHARC_ROOT_CONSTANTS 57u
 // Packed into sharc_enabled; zero still disables all cache work.
 #define SHARC_DEBUG_MODE_SHIFT 1u
@@ -44,6 +74,7 @@
 static_assert((SHARC_CAPACITY & (SHARC_CAPACITY - 1u)) == 0u);
 static_assert(SHARC_CAPACITY % SHARC_BUCKET_SIZE == 0u);
 static_assert(SHARC_CAPACITY % SHARC_GROUP_SIZE == 0u);
+static_assert(SHARC_DIRTY_WORDS % SHARC_GROUP_SIZE == 0u);
 static_assert((GUIDE_CAPACITY & (GUIDE_CAPACITY - 1u)) == 0u);
 static_assert(GUIDE_CAPACITY % SHARC_BUCKET_SIZE == 0u);
 static_assert(GUIDE_CAPACITY <= SHARC_CAPACITY); // the prepare dispatch covers both

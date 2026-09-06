@@ -93,6 +93,7 @@ struct SharcHistory
 
 uint SharcStateAddress(uint slot) { return slot * 4u; }
 uint SharcEntryAddress(uint slot) { return SHARC_STATE_BYTES + slot * SHARC_ENTRY_BYTES; }
+uint SharcDirtyAddress(uint word) { return SHARC_DIRTY_OFFSET + word * 4u; }
 uint SharcBucketOf(uint hash) { return hash & (SHARC_CAPACITY / SHARC_BUCKET_SIZE - 1u); }
 
 SharcDescriptor SharcLoadDescriptor(uint e)
@@ -240,8 +241,11 @@ float SharcSurfaceWeight(SharcDescriptor d, SharcSurface s, float3 relative, flo
     // Albedo demodulation removes texture detail from the cache. Reject large
     // reflectance changes anyway: the layered specular remainder is not Kd-linear.
     float3 ratio = s.demodulator / d.demodulator;
-    w *= 1.0f - smoothstep(0.3f, 0.7f, max(abs(log2(ratio.x)),
-        max(abs(log2(ratio.y)), abs(log2(ratio.z)))));
+    // Positive reflectances: max(abs(log2(r))) = log2(max(max(r), 1/min(r))).
+    // One logarithm instead of three for every compatible cache record.
+    float ratioMax = max(ratio.x, max(ratio.y, ratio.z));
+    float ratioMin = min(ratio.x, min(ratio.y, ratio.z));
+    w *= 1.0f - smoothstep(0.3f, 0.7f, log2(max(ratioMax, rcp(ratioMin))));
     return w;
 }
 
@@ -373,6 +377,10 @@ void SharcAccumulate(uint e, float3 radiance, float w)
     g_sharc.InterlockedAdd64(e + SHARC_FRAME_L2, SharcFixed(lum * lum * w, SHARC_RADIANCE_SCALE));
     g_sharc.InterlockedAdd64(e + SHARC_FRAME_W_W2, ((uint64_t)fixedW2 << 32) | (uint64_t)fixedW);
     if (lum > 1e-8f) g_sharc.InterlockedAdd(e + SHARC_FRAME_POSITIVE, fixedW);
+    // Resolve runs after the update UAV barrier; a bit publishes all sums for
+    // this slot, including zero-radiance observations and concurrent deposits.
+    uint slot = (e - SHARC_STATE_BYTES) / SHARC_ENTRY_BYTES;
+    g_sharc.InterlockedOr(SharcDirtyAddress(slot >> 5u), 1u << (slot & 31u));
 }
 
 bool SharcValidSurface(SharcSurface s)
@@ -526,20 +534,25 @@ void SharcQueryLevel(SharcSurface s, uint level, out float3 sum, out float suppo
     }
 }
 
-bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 radiance)
+// Footprint acceptance of a rendering query as a function of the path spread
+// at a point of the given distance level. ReSTIR lite draws against it at
+// its candidate vertex without the always-trace share (Pass_pt_v8.hlsl).
+float SharcFootprintRamp(float pathSpread, uint level)
+{
+    return smoothstep(sharc_queryFootprint, 2.0f * sharc_queryFootprint,
+        pathSpread / SharcCellSize(level + 1u));
+}
+
+// One node of the rendering reconstruction, every choice drawn from `seed`.
+// Sample the partition of unity over LOD, normal and trilinear corners.
+// E[accepted cached contribution] and E[fallback probability] match the
+// deterministic 48-node reconstruction. This replaces grid discontinuities
+// with ordinary sampling noise, without renormalizing missing cells bright.
+bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
     float lod = SharcLevel(s.position);
     uint level = (uint)lod;
-    // Require a path footprint several times wider than even the coarser cell.
-    float footprint = smoothstep(sharc_queryFootprint, 2.0f * sharc_queryFootprint,
-        pathSpread / SharcCellSize(level + 1u));
-    if (footprint <= 0.0f) return false;
-    // Sample the partition of unity over LOD, normal and trilinear corners.
-    // E[accepted cached contribution] and E[fallback probability] match the
-    // deterministic 48-node reconstruction. This replaces grid discontinuities
-    // with ordinary sampling noise, without renormalizing missing cells bright.
-    if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
     level += RandomFloatSingle(seed) < frac(lod) ? 1u : 0u;
     float3 normalWeights = SharcNormalWeights(s.geometricNormal);
     float r = RandomFloatSingle(seed);
@@ -554,6 +567,16 @@ bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 ra
     if (support <= 1e-5f || RandomFloatSingle(seed) >= support) return false;
     radiance = sum / support * s.demodulator;
     return all(isfinite(radiance));
+}
+
+bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 radiance)
+{
+    radiance = 0.0f;
+    // Require a path footprint several times wider than even the coarser cell.
+    float footprint = SharcFootprintRamp(pathSpread, (uint)SharcLevel(s.position));
+    if (footprint <= 0.0f) return false;
+    if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
+    return SharcQueryDraws(s, seed, radiance);
 }
 
 // Tail termination for a training path at its depth cap: any resolved record

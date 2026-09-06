@@ -54,14 +54,22 @@ SharcSurface SharcMakeSurface(HitContext ctx, float3 geometricNormal)
 #define SHARC_PROPAGATION_DEPTH 2u
 
 // Live training state carried across every trace and reorder. Every loop over
-// the registered vertices is unrolled with a count guard, so DXC keeps these
-// arrays in registers instead of dynamically indexed local memory.
+// the registered vertices is unrolled with a count guard, so DXC keeps the
+// arrays in registers instead of dynamically indexed local memory. With
+// SHARC_TRAINING_SPILL (the update pass) the per-vertex radiance and
+// demodulation weight, 48 bytes, live in the path-state buffer at the
+// training pixel instead (planes no pass uses before the render pass), so
+// only the addresses, splats and counters ride the reorders.
 struct SharcTrainingState
 {
     uint address[SHARC_PROPAGATION_DEPTH];
     float splat[SHARC_PROPAGATION_DEPTH];
+#ifdef SHARC_TRAINING_SPILL
+    uint spill; // byte address of this path's spilled vertices
+#else
     float3 radiance[SHARC_PROPAGATION_DEPTH];
     float3 weight[SHARC_PROPAGATION_DEPTH]; // rcp(Kd x layer transmission) x BSDF/roulette weights since the vertex
+#endif
     uint count;
     // Uncompensated BSDF throughput since the most recent registered vertex:
     // the roulette survival of the suffix. Reset to one at every registration.
@@ -72,15 +80,47 @@ struct SharcTrainingState
     uint fresh;
 };
 
-void SharcTrainingInit(out SharcTrainingState state)
+#ifdef SHARC_TRAINING_SPILL
+uint SharcTrainingSpillAddress(uint pixelIndex) { return pixelIndex * 48u; }
+float3 SharcTrainingRadianceOf(SharcTrainingState s, uint i)
+{
+    return asfloat(g_pathStateBuffer.Load3(s.spill + i * 24u));
+}
+void SharcTrainingSetRadiance(inout SharcTrainingState s, uint i, float3 v)
+{
+    g_pathStateBuffer.Store3(s.spill + i * 24u, asuint(v));
+}
+float3 SharcTrainingWeightOf(SharcTrainingState s, uint i)
+{
+    return asfloat(g_pathStateBuffer.Load3(s.spill + i * 24u + 12u));
+}
+void SharcTrainingSetWeight(inout SharcTrainingState s, uint i, float3 v)
+{
+    g_pathStateBuffer.Store3(s.spill + i * 24u + 12u, asuint(v));
+}
+#else
+float3 SharcTrainingRadianceOf(SharcTrainingState s, uint i) { return s.radiance[i]; }
+void SharcTrainingSetRadiance(inout SharcTrainingState s, uint i, float3 v) { s.radiance[i] = v; }
+float3 SharcTrainingWeightOf(SharcTrainingState s, uint i) { return s.weight[i]; }
+void SharcTrainingSetWeight(inout SharcTrainingState s, uint i, float3 v) { s.weight[i] = v; }
+#endif
+
+void SharcTrainingInit(out SharcTrainingState state, uint spillPixel = 0u)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
     {
         state.address[i] = SHARC_INVALID;
         state.splat[i] = 0.0f;
-        state.radiance[i] = 0.0f;
-        state.weight[i] = 0.0f;
     }
+#ifdef SHARC_TRAINING_SPILL
+    state.spill = SharcTrainingSpillAddress(spillPixel);
+#else
+    [unroll] for (uint k = 0u; k < SHARC_PROPAGATION_DEPTH; ++k)
+    {
+        state.radiance[k] = 0.0f;
+        state.weight[k] = 0.0f;
+    }
+#endif
     state.count = 0u;
     state.suffixLuma = 1.0f;
     state.fresh = SHARC_INVALID;
@@ -89,20 +129,23 @@ void SharcTrainingInit(out SharcTrainingState state)
 void SharcTrainingRadiance(inout SharcTrainingState state, float3 value)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
-        if (i < state.count) state.radiance[i] += state.weight[i] * value;
+        if (i < state.count)
+            SharcTrainingSetRadiance(state, i, SharcTrainingRadianceOf(state, i) + SharcTrainingWeightOf(state, i) * value);
 }
 
 // This bounce's NEE: the fresh vertex takes the diffuse lobe's share.
 void SharcTrainingRadianceSplit(inout SharcTrainingState state, float3 full, float3 diffuseOnly)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
-        if (i < state.count) state.radiance[i] += state.weight[i] * (i == state.fresh ? diffuseOnly : full);
+        if (i < state.count)
+            SharcTrainingSetRadiance(state, i, SharcTrainingRadianceOf(state, i) +
+                SharcTrainingWeightOf(state, i) * (i == state.fresh ? diffuseOnly : full));
 }
 
 void SharcTrainingScatter(inout SharcTrainingState state, float3 weight)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
-        if (i < state.count) state.weight[i] *= weight;
+        if (i < state.count) SharcTrainingSetWeight(state, i, SharcTrainingWeightOf(state, i) * weight);
 }
 
 void SharcTrainingVertex(inout SharcTrainingState state, SharcSurface surface, float layerTransmission, uint seed)
@@ -121,10 +164,10 @@ void SharcTrainingVertex(inout SharcTrainingState state, SharcSurface surface, f
         if (i != state.count) continue;
         state.address[i] = address;
         state.splat[i] = splat;
-        state.radiance[i] = 0.0f;
+        SharcTrainingSetRadiance(state, i, 0.0f);
         // Demodulate at registration by Kd and by the layer transmission for
         // this training view, avoiding another live float3 per vertex.
-        state.weight[i] = rcp(surface.demodulator * max(layerTransmission, 1e-3f));
+        SharcTrainingSetWeight(state, i, rcp(surface.demodulator * max(layerTransmission, 1e-3f)));
     }
     state.fresh = state.count;
     ++state.count;
@@ -146,14 +189,15 @@ void SharcTrainingAdvance(inout SharcTrainingState state, float3 full, float3 di
 {
     state.suffixLuma *= Luma(full); // compensation stays out of the survival estimate
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
-        if (i < state.count) state.weight[i] *= (i == state.fresh ? diffuseOnly : full) * rrWeight;
+        if (i < state.count)
+            SharcTrainingSetWeight(state, i, SharcTrainingWeightOf(state, i) * (i == state.fresh ? diffuseOnly : full) * rrWeight);
     state.fresh = SHARC_INVALID;
 }
 
 void SharcTrainingCommit(SharcTrainingState state)
 {
     [unroll] for (uint i = 0u; i < SHARC_PROPAGATION_DEPTH; ++i)
-        if (i < state.count) SharcAccumulate(state.address[i], state.radiance[i], state.splat[i]);
+        if (i < state.count) SharcAccumulate(state.address[i], SharcTrainingRadianceOf(state, i), state.splat[i]);
 }
 #endif
 #endif

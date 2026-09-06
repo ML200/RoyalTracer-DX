@@ -234,10 +234,27 @@ struct ReSTIRSettings {
     bool  sharcGuideEnabled = true;
     bool  sharcGuideTrain = true;    // training paths use the mixture too: faster discovery
     float sharcGuideMax = 0.6f;      // cap on the guided fraction of diffuse-lobe samples
-    int   sharcGuideLevelOffset = 3; // receiver cell = cache cell x 2^offset (1 m near the camera)
+    int   sharcGuideLevelOffset = 2; // receiver cell = cache cell x 2^offset (0.5 m near the camera)
     int   sharcGuideLifetime = 256;  // frames; an unseen patch fades by 2^(-age / lifetime)
     float sharcGuideRadius = 0.75f;  // patch bounding radius in cell widths
     int   sharcGuideDepth = 2;       // deepest guided/trained path vertex (1 = primary only)
+    // ReSTIR lite (shaders/RestirLite_v8.hlsli), regular path tracer only:
+    // the primary vertex's diffuse lobe is resampled instead of path traced.
+    // Candidates are its NEE samples and whatever its scatter ray finds (an
+    // emitter, the sky, or the secondary vertex with its cached or path-traced
+    // outgoing radiance, ReSTIR GI style); temporal
+    // and paired spatial reuse follow, with visibility in every target.
+    bool  liteEnabled = true;
+    bool  liteTemporal = true;
+    bool  liteSpatial = true;
+    bool  litePermutation = true;       // permuted history source (correlation reduction)
+    bool  liteDupMap = true;            // duplication-map confidence collapse (correlation reduction)
+    bool  liteUnshadowedTargets = true;  // reuse targets without shadow rays, winner traced once (off = exact, +4 rays/px)
+    bool  liteDebugView = false;        // display the resampled contribution only
+    int   liteTempMcap = 8;             // temporal confidence cap
+    int   liteSpatMcap = 8;             // spatial confidence cap (canonical and partners)
+    int   liteSpatSlots = 3;            // paired partners per pixel (0..3)
+    float liteReuseSigma = 30.0f;       // pair distance of the reuse tables, pixels (std dev)
 
     int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;
@@ -863,7 +880,7 @@ struct FrameStats {
     float cpuPopulateMs   = 0;
     float tlasMs          = 0;
     float gpuMs           = 0;
-    float cachePassMs[4]   = {}; // GPU timestamps: prepare, train, resolve, regular PT
+    float cachePassMs[8]   = {}; // GPU timestamps: prepare, train, resolve, regular PT, lite dup, temporal, shift, merge
     UINT  cacheTimingMask  = 0;
     UINT  instanceCount   = 0;
     UINT  meshCount       = 0;

@@ -4,13 +4,11 @@
 #endif
 #include "Sharc_v8.hlsli"
 
-[numthreads(SHARC_GROUP_SIZE, 1, 1)]
-void main(uint3 tid : SV_DispatchThreadID)
+void SharcResolveEntry(uint slot)
 {
-    if (tid.x >= SHARC_CAPACITY) return;
-    uint state = g_sharc.Load(SharcStateAddress(tid.x));
+    uint state = g_sharc.Load(SharcStateAddress(slot));
     if (state == 0u || state == SHARC_LOCKED) return;
-    uint e = SharcEntryAddress(tid.x);
+    uint e = SharcEntryAddress(slot);
     uint4 sumRG = g_sharc.Load4(e + SHARC_FRAME_RGB);
     uint4 sumBL = g_sharc.Load4(e + SHARC_FRAME_RGB + 16u);
     uint4 sumW = g_sharc.Load4(e + SHARC_FRAME_W_W2); // W, W2, positive, spare
@@ -67,4 +65,26 @@ void main(uint3 tid : SV_DispatchThreadID)
     g_sharc.Store4(e + SHARC_FRAME_RGB, 0u);
     g_sharc.Store4(e + SHARC_FRAME_RGB + 16u, 0u);
     g_sharc.Store4(e + SHARC_FRAME_W_W2, 0u);
+}
+
+groupshared uint sharcDirtyMask[SHARC_GROUP_SIZE / 32u];
+
+[numthreads(SHARC_GROUP_SIZE, 1, 1)]
+void main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    uint baseSlot = group.x * SHARC_GROUP_SIZE;
+    if (baseSlot >= SHARC_CAPACITY) return;
+    // Coalesced 32-byte read per group instead of scattered frame-sum reads
+    // for all 256 entries. Keep one lane per slot for fully active tables too.
+    if (lane < SHARC_GROUP_SIZE / 32u)
+    {
+        uint address = SharcDirtyAddress((baseSlot >> 5u) + lane);
+        uint dirty = g_sharc.Load(address);
+        sharcDirtyMask[lane] = dirty;
+        // The update UAV barrier finished all publishers before this pass.
+        if (dirty != 0u) g_sharc.Store(address, 0u);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if ((sharcDirtyMask[lane >> 5u] & (1u << (lane & 31u))) != 0u)
+        SharcResolveEntry(baseSlot + lane);
 }

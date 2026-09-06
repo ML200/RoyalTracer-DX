@@ -14,20 +14,28 @@ cbuffer TestConstants : register(b0)
 };
 float3 InitOrigin() { return testCamera; }
 float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
-#include "../shaders/Compression_v8.hlsli"
-#include "../shaders/Random_v8.hlsli"
+#include "Compression_v8.hlsli"
+#include "Random_v8.hlsli"
 #define SHARC_TEST 1
 #define SHARC_UPDATE_PASS 1
-#include "../shaders/SharcPath_v8.hlsli"
-#include "../shaders/SharcGuide_v8.hlsli"
-#include "../shaders/SharcDebug_v8.hlsli"
+#include "SharcPath_v8.hlsli"
+#include "SharcGuide_v8.hlsli"
+#include "SharcDebug_v8.hlsli"
+// ReSTIR lite: the pure resampling math (packing, links, targets, MIS).
+#ifndef PI
+#define PI 3.1415926535
+#endif
+#define RAY_TMAX_PLANET 1e9f
+#define ucw_clampMax 0.0f
+#include "RestirLite_v8.hlsli"
 #define main prepare
-#include "../shaders/Pass_sharc_prepare_v8.hlsl"
+#include "Pass_sharc_prepare_v8.hlsl"
 #undef main
 #define main resolve
-#include "../shaders/Pass_sharc_resolve_v8.hlsl"
+#include "Pass_sharc_resolve_v8.hlsl"
 #undef main
 RWByteAddressBuffer results : register(u0);
+#include "MaterialGpuTests.hlsli"
 
 SharcSurface Surface(uint mode)
 {
@@ -53,6 +61,21 @@ SharcSurface Surface(uint mode)
 [numthreads(64, 1, 1)]
 void fill(uint3 tid : SV_DispatchThreadID)
 {
+    // Maintenance fixture: fully occupied table, with a controllable fraction
+    // receiving observations. This separates table occupancy from update rate.
+    if (testMode == 30u || testMode == 31u)
+    {
+        if (tid.x >= SHARC_CAPACITY) return;
+        uint e = SharcEntryAddress(tid.x);
+        if (testMode == 30u)
+        {
+            SharcInitializeEntry(e, int3(0, 0, 0), 0u, Surface(0u), 0.0f);
+            g_sharc.Store(SharcStateAddress(tid.x), 1u);
+        }
+        else if (tid.x % max(testIndex, 1u) == 0u)
+            SharcAccumulate(e, float3(2, 3, 4), 1.0f);
+        return;
+    }
     uint seed = Hash32(tid.x ^ Hash32(sharc_frame) ^ Hash32(testMode));
     SharcSurface s = Surface(testMode);
     if (testMode == 16u)
@@ -121,6 +144,13 @@ void fill(uint3 tid : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void query(uint3 tid : SV_DispatchThreadID)
 {
+    if (testMode == 31u)
+    {
+        uint e = SharcEntryAddress(tid.x + testPad.x);
+        results.Store4(tid.x * 32u, uint4(g_sharc.Load3(e + SHARC_MEAN),
+            asuint((float)g_sharc.Load(e + SHARC_FRAMES))));
+        return;
+    }
     if (tid.x >= 64u) return;
     if (testMode == 31u)
     {
@@ -406,4 +436,159 @@ void guideQuery(uint3 tid : SV_DispatchThreadID)
         results.Store4(tid.x * 32u, asuint(float4(pdfIntegral, mix, mix2, cosine) / (float)N));
         results.Store4(tid.x * 32u + 16u, asuint(float4(cosine2 / (float)N, g.q, g.weightSum, e == GUIDE_INVALID ? 0.0f : 1.0f)));
     }
+}
+
+//====================================
+//RESTIR LITE (RestirLite_v8.hlsli): PACKING AND RESAMPLING MIS
+//====================================
+// Mode 0: reservoir pack/unpack round trip.
+// Mode 1: pairwise (spatial) and balance (temporal) MIS weights sum to one
+//         for random targets and confidences, including partners that
+//         cannot produce the sample.
+// Mode 2: end-to-end resampling on a discrete domain, three pixels with
+//         different generation densities, targets and supports through the
+//         paired merge; mode 3 the same through the two-strategy temporal
+//         merge. The mean of f(y) * W over many trials must equal the
+//         exact sum: the merges are unbiased for any target proxy as long
+//         as every strategy's target vanishes exactly where it cannot
+//         produce a sample.
+static const uint LITE_TEST_ITEMS = 8u;
+static const uint LITE_TEST_TRIALS = 4096u;
+
+float LiteTestValue(uint pixel, uint k)
+{
+    const float base = (float)(k + 1u);
+    if (pixel == 0u) return base;                        // canonical target = integrand
+    if (pixel == 1u) return base * ((k & 1u) ? 0.5f : 2.0f);
+    return k >= 6u ? 0.0f : base * 1.5f;                 // pixel 2 cannot produce items 6, 7
+}
+
+float LiteTestDensity(uint pixel, uint k)
+{
+    if (pixel == 0u) return (float)(9u - k);
+    if (pixel == 1u) return 1.0f;
+    return k >= 6u ? 0.0f : (float)(k + 2u);
+}
+
+uint LiteTestDraw(uint pixel, inout uint seed, out float pdf)
+{
+    float total = 0.0f;
+    for (uint i = 0u; i < LITE_TEST_ITEMS; ++i) total += LiteTestDensity(pixel, i);
+    float u = RandomFloatPCG(seed) * total;
+    uint last = 0u;
+    for (uint k = 0u; k < LITE_TEST_ITEMS; ++k)
+    {
+        const float d = LiteTestDensity(pixel, k);
+        if (d <= 0.0f) continue;
+        if (u < d) { pdf = d / total; return k; }
+        u -= d;
+        last = k;
+    }
+    pdf = LiteTestDensity(pixel, last) / total;
+    return last;
+}
+
+[numthreads(64, 1, 1)]
+void liteCheck(uint3 tid : SV_DispatchThreadID)
+{
+    uint seed = Hash32(tid.x * 0x9E3779B9u + testMode * 0x85EBCA6Bu + 7u);
+    if (testMode == 0u)
+    {
+        if (tid.x != 0u) return;
+        LiteReservoir r;
+        r.s.position = float3(1.5f, -2.25f, 3.0f);
+        r.s.instance = 7u;
+        r.s.radiance = float3(0.5f, 123.0f, 4000.0f);
+        r.s.normal = normalize(float3(0.3f, 0.8f, -0.5f));
+        r.s.kind = LITE_KIND_SURFACE;
+        r.W = 3.75f;
+        r.M = 200u;
+        r.tint = float3(1.0f, 0.5f, 0.25f);
+        LiteStore(results, 8u, r);
+        const LiteReservoir q = LiteLoad(results, 8u);
+        const float3 relL = abs(q.s.radiance - r.s.radiance) / max(r.s.radiance.x, max(r.s.radiance.y, r.s.radiance.z));
+        results.Store4(0u, asuint(float4(length(q.s.position - r.s.position), (float)q.s.instance,
+            max(relL.x, max(relL.y, relL.z)), dot(q.s.normal, r.s.normal))));
+        results.Store4(16u, asuint(float4(q.W, (float)q.M, (float)q.s.kind, length(q.tint - r.tint))));
+        return;
+    }
+    if (testMode == 1u)
+    {
+        float worst = 0.0f;
+        for (uint trial = 0u; trial < 256u; ++trial)
+        {
+            const uint n = 1u + (trial % 3u);
+            const float Mc = 1.0f + floor(RandomFloatPCG(seed) * 8.0f);
+            const float pcc = 0.05f + RandomFloatPCG(seed); // the canonical can produce the sample
+            float Mi[3], pii[3];
+            float Msum = Mc;
+            for (uint i = 0u; i < 3u; ++i)
+            {
+                Mi[i] = i < n ? 1.0f + floor(RandomFloatPCG(seed) * 16.0f) : 0.0f;
+                pii[i] = (RandomFloatPCG(seed) < 0.25f) ? 0.0f : RandomFloatPCG(seed) * 3.0f;
+                Msum += Mi[i];
+            }
+            const float O = Msum - Mc;
+            float sum = Mc / Msum;
+            for (uint j = 0u; j < 3u; ++j)
+            {
+                if (j >= n) continue;
+                sum += LiteMisCanonicalTerm(Mi[j], pcc, Mc, pii[j], O, Msum);
+                sum += LiteMisPartner(Mi[j], pii[j], Mc, pcc, O, Msum);
+            }
+            worst = max(worst, abs(sum - 1.0f));
+            const float Ma = 1.0f + floor(RandomFloatPCG(seed) * 8.0f);
+            const float Mb = 1.0f + floor(RandomFloatPCG(seed) * 8.0f);
+            const float pa = RandomFloatPCG(seed);
+            const float pb = (RandomFloatPCG(seed) < 0.3f) ? 0.0f : RandomFloatPCG(seed);
+            worst = max(worst, abs(LiteBalance(Ma, pa, Mb, pb) + LiteBalance(Mb, pb, Ma, pa) - 1.0f));
+        }
+        results.Store(tid.x * 4u, asuint(worst));
+        return;
+    }
+    // Modes 2 and 3: Monte Carlo estimate of sum_k f_c(k) through the merges.
+    float exact = 0.0f;
+    for (uint k = 0u; k < LITE_TEST_ITEMS; ++k) exact += LiteTestValue(0u, k);
+    const float Mc = 1.0f, M1 = 3.0f, M2 = 2.0f;
+    float estimate = 0.0f;
+    for (uint trial = 0u; trial < LITE_TEST_TRIALS; ++trial)
+    {
+        float p0, p1, p2;
+        const uint k0 = LiteTestDraw(0u, seed, p0);
+        const uint k1 = LiteTestDraw(1u, seed, p1);
+        const uint k2 = LiteTestDraw(2u, seed, p2);
+        // one-candidate RIS per pixel: W = 1 / p
+        const float W0 = 1.0f / p0, W1 = 1.0f / p1, W2 = 1.0f / p2;
+        float wsum, phatSel;
+        uint sel;
+        if (testMode == 2u)
+        {
+            const float Msum = Mc + M1 + M2, O = M1 + M2;
+            const float pcc = LiteTestValue(0u, k0);
+            const float pc1 = LiteTestValue(0u, k1), p1c = LiteTestValue(1u, k0), p11 = LiteTestValue(1u, k1);
+            const float pc2 = LiteTestValue(0u, k2), p2c = LiteTestValue(2u, k0), p22 = LiteTestValue(2u, k2);
+            const float mc = Mc / Msum + LiteMisCanonicalTerm(M1, pcc, Mc, p1c, O, Msum)
+                + LiteMisCanonicalTerm(M2, pcc, Mc, p2c, O, Msum);
+            const float m1 = LiteMisPartner(M1, p11, Mc, pc1, O, Msum);
+            const float m2 = LiteMisPartner(M2, p22, Mc, pc2, O, Msum);
+            const float w0 = mc * pcc * W0, w1 = m1 * pc1 * W1, w2 = m2 * pc2 * W2;
+            wsum = w0; sel = k0; phatSel = pcc;
+            wsum += w1; if (w1 > 0.0f && RandomFloatPCG(seed) * wsum < w1) { sel = k1; phatSel = pc1; }
+            wsum += w2; if (w2 > 0.0f && RandomFloatPCG(seed) * wsum < w2) { sel = k2; phatSel = pc2; }
+        }
+        else
+        {
+            // temporal: canonical against a history with pixel 2's density, target and support
+            const float Mt = M2;
+            const float pcc = LiteTestValue(0u, k0), ptc = LiteTestValue(2u, k0);
+            const float pct = LiteTestValue(0u, k2), ptt = LiteTestValue(2u, k2);
+            const float w0 = LiteBalance(Mc, pcc, Mt, ptc) * pcc * W0;
+            const float wt = LiteBalance(Mt, ptt, Mc, pct) * pct * W2;
+            wsum = w0 + wt; sel = k0; phatSel = pcc;
+            if (wt > 0.0f && RandomFloatPCG(seed) * wsum < wt) { sel = k2; phatSel = pct; }
+        }
+        if (wsum > 0.0f && phatSel > 0.0f) estimate += LiteTestValue(0u, sel) * wsum / phatSel;
+    }
+    results.Store(tid.x * 4u, asuint(estimate / (float)LITE_TEST_TRIALS));
+    if (tid.x == 0u) results.Store(64u * 4u, asuint(exact));
 }

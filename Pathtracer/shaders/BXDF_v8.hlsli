@@ -196,12 +196,12 @@ inline float3 EvaluateBRDF_COMBINED(
         gate *= Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, p.Pspec >= EPSILON || p.Pdiff >= EPSILON);
         f    += gate * cr.f;
         gate *= cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, false, p.Pdiff >= EPSILON);
         f    += gate * gr.f;
         gate *= gr.t;
     }
@@ -241,13 +241,13 @@ inline BrdfData EvaluateAndPdf_COMBINED(
         gate    *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, p.Pspec >= EPSILON || p.Pdiff >= EPSILON);
         res.val += (float)gate * cr.f;
         res.pdf += p.Pcoat * cr.pdf;
         gate    *= (half)cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect, p.Pdiff >= EPSILON);
         res.val += (float)gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         gate    *= (half)gr.t;
@@ -295,7 +295,7 @@ inline BrdfData EvaluateLobePdf_COMBINED(
         gate *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, p.Pspec >= EPSILON || p.Pdiff >= EPSILON);
         if (strategy == 2u) {
             res.val = (float)gate * cr.f;
             res.pdf = cr.pdf;
@@ -304,7 +304,7 @@ inline BrdfData EvaluateLobePdf_COMBINED(
         gate *= (half)cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect, p.Pdiff >= EPSILON);
         if (strategy == 1u) {
             res.val = (float)gate * gr.f;
             res.pdf = gr.pdf;
@@ -353,14 +353,14 @@ inline BrdfData EvaluateAndPdf_COMBINED_L(
         gate    *= (half)Transmittance_SHEEN(matID, n_s, -s, o);
     }
     if (p.Pcoat >= EPSILON) {
-        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat);
+        const CoatResult cr = EvalCoatAll(matID, N, V, L, etai, etat, p.Pspec >= EPSILON || p.Pdiff >= EPSILON);
         res.val += (float)gate * cr.f;
         res.pdf += p.Pcoat * cr.pdf;
         if (strategy == 2u) { lobeVal = (float)gate * cr.f; lobePdf = cr.pdf; }
         gate    *= (half)cr.t;
     }
     if (p.Pspec >= EPSILON) {
-        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect);
+        const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect, p.Pdiff >= EPSILON);
         res.val += (float)gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         if (strategy == 1u) { lobeVal = (float)gate * gr.f; lobePdf = gr.pdf; }

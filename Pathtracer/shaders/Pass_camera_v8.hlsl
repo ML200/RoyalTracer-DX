@@ -216,7 +216,8 @@ void Pass_camera_v8()
     //cleared either.
     gScratchPing[uint3(pixel, 1)] = float4(0, 0, 0, 0);
 
-    storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
+    if (!PT_ONLY_MODE)
+        storeReservoir(g_Reservoirs_current, pixelIdx, (Reservoir)0);
 
     uint   seed = initRandomData(pixel, uint2(8, 4), time, 1u);
     float3 rayOrigin;
@@ -234,7 +235,8 @@ void Pass_camera_v8()
     {
         const uint f = load_flagsWord(g_sample_current, pixelIdx) | SD_FLAG_NOBOUNCE;
         store_flagsWord(g_sample_current, pixelIdx, f);
-        FinalizeReservoir(pixelIdx, 0.0f);   // wsum==0: W=0, reservoir invalidated
+        if (!PT_ONLY_MODE)
+            FinalizeReservoir(pixelIdx, 0.0f);   // wsum==0: W=0, reservoir invalidated
         return;
     }
 
@@ -244,6 +246,7 @@ void Pass_camera_v8()
     //Queue this survivor for the compacted indirect bounce dispatch (terminal
     //pixels returned above and never get a slot). Order within the queue is
     //arbitrary — raygen's math depends only on the pixel coords it dequeues.
+    if (!PT_ONLY_MODE)
     {
         uint slot;
         g_raygenQueue.InterlockedAdd(0, 1u, slot);
