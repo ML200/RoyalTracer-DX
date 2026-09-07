@@ -1,25 +1,26 @@
 //====================================
-//RESTIR LITE: RESAMPLED DIFFUSE LOBE AT THE PRIMARY VERTEX
+//RESTIR LITE: RESAMPLED BROAD SHARE AT THE PRIMARY VERTEX
 //====================================
-// The regular path tracer splits the primary vertex's DIFFUSE lobe off the
-// radiance sum. Everything that lobe sees along one path is a candidate for
+// The regular path tracer splits the primary vertex's BROAD share (the
+// diffuse lobe and a rough GGX lobe, LOBE_BROAD) off the radiance sum.
+// Everything that share sees along one path is a candidate for
 // the pixel's reservoir: a light-tree NEE point, the sun, an emitter or the
 // sky the scatter ray found, or the cache-terminated secondary vertex (its
-// diffuse outgoing radiance from SHaRC). A candidate is a point (or a
+// broad-share outgoing radiance from SHaRC). A candidate is a point (or a
 // direction) with a radiance, 32 bytes, so the reservoir passes carry no
 // path state at all. The remaining lobes, cache misses and everything past
 // the secondary vertex stay on the plain tracer.
 //
-// The secondary vertex. Every diffuse scatter ray at x1 yields one candidate:
+// The secondary vertex. Every broad-share scatter ray at x1 yields one candidate:
 // the point x2 with its outgoing radiance toward x1. On a cache hit that is
 // the record (the vertex's direct light included, so nothing follows for the
-// diffuse suffix); otherwise the tracer's continuation from x2 (NEE, sun,
+// suffix); otherwise the tracer's continuation from x2 (NEE, sun,
 // deeper bounces and cache hits) accumulates into the candidate's radiance
 // along the path. The sample is then a point with an unbiased radiance
 // estimate, as in ReSTIR GI, and whether the cache answered only changes its
 // variance. x1's glossy lobes keep their share of the same path on the
-// tracer, and on a cache hit the layers above x2's diffuse lobe are dropped
-// for the diffuse share (their Fresnel remainder, a few percent).
+// tracer, and on a cache hit the layers above x2's broad share are dropped
+// for that share (their Fresnel remainder, a few percent).
 //
 // Target function p_hat_j(y) = lum(albedo_j * L(y)) / pi * G_j(y) * V_j(y):
 // a Lambertian proxy (the exact gated lobe shades the winner), the
@@ -297,16 +298,17 @@ bool LiteSimilar(LiteReceiver a, LiteReceiver b, float camDistA, float camDistB)
     return true;
 }
 
-// Exact gated diffuse lobe of the primary surface toward `dir`: the
-// Lambertian value under the transmittance of the layers above it, the same
-// evaluation the tracer uses for its diffuse share (EvaluateAndPdf_COMBINED_L).
-float3 LiteExactDiffuse(SDRecord sd, float2 iors, float3 dir)
+// Exact gated broad share of the primary surface toward `dir`: the diffuse
+// lobe and a broad GGX lobe under the transmittance of the layers above them,
+// the same evaluation the tracer uses for its share (LOBE_BROAD in
+// EvaluateAndPdf_COMBINED_L).
+float3 LiteExactBroad(SDRecord sd, float2 iors, float3 dir)
 {
     const float3 view = normalize(InitOrigin() - sd.x1);
     const SamplingP sp = CalculateStrategyProbabilities(sd.matID, view, sd.n1_s,
         (half)iors.x, (half)iors.y, sd.Kd, (half)sd.Pm);
-    if (sp.Pdiff < EPSILON) return 0.0f;
-    return EvaluateLobePdf_COMBINED(sp, 0u, sd.matID, sd.n1_s, sd.n1_s, dir, view,
+    if (!HasBroadShare(sp, (half)sd.Pr, (half)sd.Pm)) return 0.0f;
+    return EvaluateLobePdf_COMBINED(sp, LOBE_BROAD, sd.matID, sd.n1_s, sd.n1_s, dir, view,
         sd.Kd, (half)sd.Pr, (half)sd.Pm, (half)iors.x, (half)iors.y).val;
 }
 #endif
@@ -397,27 +399,27 @@ uint LiteShiftOwnAddress(uint px) { return px * LITE_SHIFT_BYTES + 40u; }
 //====================================
 // The candidate reservoir lives in memory while the path runs, so nothing
 // of it is live across a trace. Plane PACK1 of the path-state buffer parks
-// the primary's diffuse-lobe scatter weight and pdf across the trace, plane
+// the primary's broad-share scatter weight and pdf across the trace, plane
 // PACK2 the running target of the selected candidate and the weight sum.
 uint LiteParkAddress(uint px) { return px * 16u; }
 uint LiteParkStateAddress(uint px) { return ps_numPx() * 16u + px * 16u; }
 
-// A pixel without a diffuse lobe: M = 0 in the meta word is all any reader
+// A pixel without a broad share: M = 0 in the meta word is all any reader
 // tests before touching the rest of the entry.
 void LiteMarkEmpty(uint px)
 {
     g_Reservoirs_current.Store(LiteAddress(px) + 28u, 0u);
 }
 
-void LiteParkStore(uint px, float3 diffuseWeight, float pdf)
+void LiteParkStore(uint px, float3 broadWeight, float pdf)
 {
-    g_pathStateBuffer.Store4(LiteParkAddress(px), uint4(asuint(diffuseWeight), asuint(pdf)));
+    g_pathStateBuffer.Store4(LiteParkAddress(px), uint4(asuint(broadWeight), asuint(pdf)));
 }
 
-void LiteParkLoad(uint px, out float3 diffuseWeight, out float pdf)
+void LiteParkLoad(uint px, out float3 broadWeight, out float pdf)
 {
     const uint4 w = g_pathStateBuffer.Load4(LiteParkAddress(px));
-    diffuseWeight = asfloat(w.xyz);
+    broadWeight = asfloat(w.xyz);
     pdf = asfloat(w.w);
 }
 

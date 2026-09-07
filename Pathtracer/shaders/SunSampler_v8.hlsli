@@ -1389,7 +1389,8 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
 
 // Background + cheap clouds for bounce/inline-RT miss. cloudTrOut lets
 // the caller attenuate sun-disc / MIS-sun radiance consistently.
-float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
+// cloudSeed jitters the cheap cloud march (see EvaluateCloudsCheap).
+float3 EvaluateSky(float3 rayDir, uint cloudSeed, out float3 cloudTrOut)
 {
     cloudTrOut = float3(1.0f, 1.0f, 1.0f);
 #if ATM_DEBUG_RING == 3
@@ -1409,8 +1410,15 @@ float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
 
     float3 cloudL = EvaluateCloudsCheap(v, S.dirWS,
                                         ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
-                                        cloudTrOut);
+                                        cloudSeed, cloudTrOut);
     return background * cloudTrOut + cloudL;
+}
+
+// Per-pixel, per-frame cloud jitter for callers without a path RNG stream.
+float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
+{
+    return EvaluateSky(rayDir,
+        initRandomData(DispatchRaysIndex().xy, uint2(0, 0), (uint)time, 73u), cloudTrOut);
 }
 
 // Single-arg overload for legacy call sites.

@@ -424,7 +424,8 @@ void guideQuery(uint3 tid : SV_DispatchThreadID)
 
             uint pick;
             float3 dm = RandomFloatSingle(seed) < g.q ? GuideSample(g, seed, pick) : GuideCosineDirection(n, seed);
-            float pm = GuideMixPdf(g, 1.0f, n, dm, GuideLambertPdf(n, dm));
+            // A Lambertian receiver: the guided share is the whole cosine lobe.
+            float pm = GuideMixPdf(g, 1.0f, GuideLambertPdf(n, dm), dm, GuideLambertPdf(n, dm));
             float fm = pm > 0.0f ? GuideTestIntegrand(dm, n, blob) / pm : 0.0f;
             mix += fm; mix2 += fm * fm;
 

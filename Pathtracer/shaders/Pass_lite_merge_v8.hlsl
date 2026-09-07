@@ -118,14 +118,14 @@ void main(uint3 tid : SV_DispatchThreadID)
     //====================================
     //SHADING
     //====================================
-    // The exact gated diffuse lobe times the sample's radiance, geometry,
+    // The exact gated broad share times the sample's radiance, geometry,
     // visibility and the contribution weight.
     float3 contribution = 0.0f;
     if (shade)
     {
         float2 iors; uint medium; float3 absorb;
         load_rg_primaryExtra(g_pathStateBuffer, px, iors, medium, absorb);
-        contribution = LiteExactDiffuse(sd, iors, lSel.dir) * outR.s.radiance * lSel.geom * visSel * outR.W;
+        contribution = LiteExactBroad(sd, iors, lSel.dir) * outR.s.radiance * lSel.geom * visSel * outR.W;
         if (any(isnan(contribution)) || any(isinf(contribution))) contribution = 0.0f;
     }
     const float4 estimate = gScratchPing[uint3(pixel, 2)];

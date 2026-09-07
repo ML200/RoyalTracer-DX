@@ -57,6 +57,21 @@ inline SamplingP CalculateStrategyProbabilities(uint mID, float3 outgoing, float
 //STRATEGY SELECTION
 //====================================
 //0 diffuse, 1 GGX, 2 coat, 3 sheen
+//LOBE_BROAD selects the CACHED share instead of one lobe: the diffuse lobe
+//plus the GGX lobe when it is rough enough to count as broad. The radiance
+//cache, the lite reservoir and guiding all treat this set the way they used
+//to treat the diffuse lobe alone, so a metal's rough GGX lobe qualifies like
+//a Lambertian one.
+#define LOBE_BROAD 4u
+inline bool IsBroadGGX(half Pr) { return (float)Pr >= BROAD_GGX_ROUGHNESS; }
+//true when the vertex has a broad share at all: a diffuse lobe with a
+//nonzero gate (not a pure metal) or a broad GGX lobe
+inline bool HasBroadShare(SamplingP p, half Pr, half Pm)
+{
+    return (p.Pdiff >= EPSILON && (float)Pm < 1.0f - EPSILON) ||
+           (p.Pspec >= EPSILON && IsBroadGGX(Pr));
+}
+
 inline uint SelectSamplingStrategy(SamplingP p, inout uint seed)
 {
     float r = RandomFloatSingle(seed);
@@ -303,6 +318,9 @@ inline BrdfData EvaluateLobePdf_COMBINED(
         }
         gate *= (half)cr.t;
     }
+    //LOBE_BROAD: the cached share, the broad lobes' summed value with the
+    //probability-weighted mean of their pdfs (see EvaluateAndPdf_COMBINED_L)
+    float broadPdf = 0.0f, broadP = 0.0f;
     if (p.Pspec >= EPSILON) {
         const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect, p.Pdiff >= EPSILON);
         if (strategy == 1u) {
@@ -310,12 +328,19 @@ inline BrdfData EvaluateLobePdf_COMBINED(
             res.pdf = gr.pdf;
             return res;
         }
+        if (strategy == LOBE_BROAD && IsBroadGGX(localPr)) {
+            res.val += (float)gate * gr.f;
+            broadPdf += p.Pspec * gr.pdf; broadP += p.Pspec;
+        }
         gate *= (half)gr.t;
     }
-    if (p.Pdiff >= EPSILON && strategy == 0u) {
-        res.val = (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
-        res.pdf = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+    if (p.Pdiff >= EPSILON && (strategy == 0u || strategy == LOBE_BROAD)) {
+        const float pD = BRDF_PDF_Lambertian(matID, n_s, n_g, -s, o);
+        res.val += (float)gate * EvaluateBRDF_Lambertian(matID, n_s, n_g, -s, o, etai, etat, localKd);
+        res.pdf  = pD;
+        broadPdf += p.Pdiff * pD; broadP += p.Pdiff;
     }
+    if (strategy == LOBE_BROAD) res.pdf = broadP > 0.0f ? broadPdf / broadP : 0.0f;
     return res;
 }
 
@@ -359,11 +384,19 @@ inline BrdfData EvaluateAndPdf_COMBINED_L(
         if (strategy == 2u) { lobeVal = (float)gate * cr.f; lobePdf = cr.pdf; }
         gate    *= (half)cr.t;
     }
+    //LOBE_BROAD latches the cached share: the broad lobes' summed value and
+    //the probability-weighted mean of their pdfs, so the share's strategy
+    //probability times this pdf is the share's sampling density (GuideMixPdf)
+    float broadPdf = 0.0f, broadP = 0.0f;
     if (p.Pspec >= EPSILON) {
         const GGXResult gr = EvalGGXAll(matID, N, fN, V, L, etai, etat, localKd, localPr, localPm, ggxNoReflect, p.Pdiff >= EPSILON);
         res.val += (float)gate * gr.f;
         res.pdf += p.Pspec * gr.pdf;
         if (strategy == 1u) { lobeVal = (float)gate * gr.f; lobePdf = gr.pdf; }
+        if (strategy == LOBE_BROAD && IsBroadGGX(localPr)) {
+            lobeVal += (float)gate * gr.f;
+            broadPdf += p.Pspec * gr.pdf; broadP += p.Pspec;
+        }
         gate    *= (half)gr.t;
     }
     if (p.Pdiff >= EPSILON) {
@@ -372,7 +405,12 @@ inline BrdfData EvaluateAndPdf_COMBINED_L(
         res.val += (float)gate * fD;
         res.pdf += p.Pdiff * pD;
         if (strategy == 0u) { lobeVal = (float)gate * fD; lobePdf = pD; }
+        if (strategy == LOBE_BROAD) {
+            lobeVal += (float)gate * fD;
+            broadPdf += p.Pdiff * pD; broadP += p.Pdiff;
+        }
     }
+    if (strategy == LOBE_BROAD) lobePdf = broadP > 0.0f ? broadPdf / broadP : 0.0f;
     return res;
 }
 
@@ -416,12 +454,14 @@ inline SamplingP DropDeltaLobes(SamplingP sp, bool dropGGX, bool dropCoat)
     return sp;
 }
 
-//drops the diffuse lobe (its share is supplied by the radiance cache) and
-//renormalises the remaining layers; returns false when nothing remains. The
-//same sp must then be used for both sampling and evaluation at that vertex.
-inline bool DropDiffuseLobe(inout SamplingP sp)
+//drops the broad lobes (their share is supplied by the radiance cache: the
+//diffuse lobe, and the GGX lobe when it is broad) and renormalises the
+//remaining layers; returns false when nothing remains. The same sp must then
+//be used for both sampling and evaluation at that vertex.
+inline bool DropBroadLobes(inout SamplingP sp, half Pr)
 {
     sp.Pdiff = 0.0f;
+    if (IsBroadGGX(Pr)) sp.Pspec = 0.0f;
     const float total = sp.Psheen + sp.Pcoat + sp.Pspec;
     if (total < EPSILON) {
         sp.Psheen = 0.0f; sp.Pcoat = 0.0f; sp.Pspec = 0.0f;

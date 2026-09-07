@@ -16,30 +16,42 @@ bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
 }
 
 // Material eligibility shared by training deposits, the inspector and the
-// rendering query. The cache holds the DIFFUSE lobe only; sheen, coat and GGX
-// are always traced, so roughness plays no part. What matters is that a
-// diffuse lobe exists at all: opaque, not a metal, not SSS, not inside a
-// medium, with the shading normal within ~25 deg of the face normal.
+// rendering query. The cache holds the BROAD share: the diffuse lobe and a
+// GGX lobe rough enough to be nearly view-independent (BROAD_GGX_ROUGHNESS),
+// so a rough metal qualifies like a Lambertian surface. Sheen, coat and a
+// glossy GGX lobe are always traced. What matters is that a broad share
+// exists at all: opaque, not SSS, not inside a medium, with the shading
+// normal within ~25 deg of the face normal.
 bool SharcMaterialEligible(HitContext ctx, SamplingP sp, float3 geometricNormal)
 {
     if (ctx.mediumMatID != MEDIUM_INVALID || LoadIsSSS(ctx.matID)) return false;
-    if (LoadKd_w(ctx.matID) < 1.0f - EPSILON || ctx.hitLocalPm > 0.5f) return false;
-    if (sp.Pdiff < EPSILON) return false;
+    if (LoadKd_w(ctx.matID) < 1.0f - EPSILON) return false;
+    if (!HasBroadShare(sp, ctx.hitLocalPr, ctx.hitLocalPm)) return false;
     return dot(ctx.hitNormal, geometricNormal) > 0.9f;
 }
 
-// Transmission of the layers above the diffuse lobe for the OUTGOING direction:
-// the gated Lambert value at normal incidence, divided by Kd/pi. Every layer's
-// transmittance in this BXDF is a product of a view-only and a light-only
-// factor (coat (1-pc Fi)(1-pc Fo), GGX gate (1-Fo)(1-Fi), sheen view only), so
-// dividing a record by this and by Kd makes it exactly independent of the
-// training view; a query multiplies its own factor back.
+// Transmission of the layers ABOVE the broad share for the OUTGOING direction
+// at normal light incidence: sheen and coat, and the GGX gate only while the
+// GGX lobe is not itself part of the share. Every layer's transmittance in
+// this BXDF is a product of a view-only and a light-only factor (coat
+// (1-pc Fi)(1-pc Fo), GGX gate (1-Fo)(1-Fi), sheen view only), so dividing a
+// record by this and by Kd removes those layers' view dependence from the
+// training view; a query multiplies its own factor back. A broad GGX lobe's
+// own Fresnel stays inside the record (small for a rough lobe). The EPSILON
+// skips match EvaluateAndPdf_COMBINED_L, which gates the share the same way.
 float SharcLayerTransmission(SamplingP sp, HitContext ctx, float3 view)
 {
-    const float3 kd = (float3)ctx.hitLocalKd;
-    const float3 gated = EvaluateLobePdf_COMBINED(sp, 0u, ctx.matID, ctx.hitNormal, ctx.hitNormal,
-        ctx.hitNormal, view, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y).val;
-    return saturate(max(gated.x, max(gated.y, gated.z)) * PI / max(max(kd.x, max(kd.y, kd.z)), 1e-4f));
+    const float3 N = normalize(ctx.hitNormal);
+    const float3 V = normalize(view);
+    float gate = 1.0f;
+    if (sp.Psheen >= EPSILON)
+        gate *= Transmittance_SHEEN(ctx.matID, N, -N, V);
+    if (sp.Pcoat >= EPSILON)
+        gate *= EvalCoatAll(ctx.matID, N, V, N, ctx.iors.x, ctx.iors.y, true).t;
+    if (sp.Pspec >= EPSILON && !IsBroadGGX(ctx.hitLocalPr))
+        gate *= EvalGGXAll(ctx.matID, N, N, V, N, ctx.iors.x, ctx.iors.y, (float3)ctx.hitLocalKd,
+            ctx.hitLocalPr, ctx.hitLocalPm, false, true).t;
+    return saturate(gate);
 }
 
 SharcSurface SharcMakeSurface(HitContext ctx, float3 geometricNormal)

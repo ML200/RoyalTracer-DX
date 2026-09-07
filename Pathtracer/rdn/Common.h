@@ -252,7 +252,7 @@ struct ReSTIRSettings {
     bool  liteDebugView = false;        // display the resampled contribution only
     int   liteSpatMcap = 8;             // spatial confidence cap (canonical and partners)
     int   liteSpatSlots = 3;            // paired partners per pixel (0..3)
-    float liteReuseSigma = 30.0f;       // pair distance of the reuse tables, pixels (std dev)
+    float liteReuseSigma = 20.0f;       // pair distance of the reuse tables, pixels (std dev)
 
     int   tempMcapGI       = 8;
     int   spatCountMaxGI   = 2;

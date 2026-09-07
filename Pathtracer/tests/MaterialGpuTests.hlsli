@@ -69,7 +69,7 @@ void materialCheck(uint3 tid : SV_DispatchThreadID)
             max(abs(log2(ratio.x)), max(abs(log2(ratio.y)), abs(log2(ratio.z)))));
         worst = max(worst, abs(referenceWeight - SharcSurfaceWeight(descriptor, surface, 0.0f, 1.0f)));
         SamplingP p = CalculateStrategyProbabilities(m, v, n, etaI, etaT, kd, metal);
-        if ((i & 32u) != 0u) DropDiffuseLobe(p);
+        if ((i & 32u) != 0u) DropBroadLobes(p, rough);
         BrdfData full = EvaluateAndPdf_COMBINED(p, m, n, n, l, v, kd, rough, metal, etaI, etaT);
         [unroll] for (uint strategy = 0u; strategy < 4u; ++strategy)
         {
@@ -80,6 +80,28 @@ void materialCheck(uint3 tid : SV_DispatchThreadID)
                 kd, rough, metal, etaI, etaT);
             worst = max(worst, MaterialRelativeError(float4(full.val, full.pdf), float4(fused.val, fused.pdf)));
             worst = max(worst, MaterialRelativeError(float4(separate.val, separate.pdf), float4(val, pdf)));
+        }
+        // The broad share (LOBE_BROAD, what the cache and the lite reservoir
+        // take): fused and single-walk evaluations agree, and it is the diffuse
+        // lobe plus the GGX lobe when that lobe is broad, with the probability-
+        // weighted mean of their pdfs.
+        {
+            float3 val; float pdf;
+            BrdfData fused = EvaluateAndPdf_COMBINED_L(p, LOBE_BROAD, m, n, n, l, v,
+                kd, rough, metal, etaI, etaT, false, val, pdf);
+            BrdfData separate = EvaluateLobePdf_COMBINED(p, LOBE_BROAD, m, n, n, l, v,
+                kd, rough, metal, etaI, etaT);
+            worst = max(worst, MaterialRelativeError(float4(full.val, full.pdf), float4(fused.val, fused.pdf)));
+            worst = max(worst, MaterialRelativeError(float4(separate.val, separate.pdf), float4(val, pdf)));
+            BrdfData d = EvaluateLobePdf_COMBINED(p, 0u, m, n, n, l, v, kd, rough, metal, etaI, etaT);
+            BrdfData g = EvaluateLobePdf_COMBINED(p, 1u, m, n, n, l, v, kd, rough, metal, etaI, etaT);
+            const bool dif = p.Pdiff >= EPSILON;
+            const bool ggx = p.Pspec >= EPSILON && IsBroadGGX(rough);
+            const float pShare = (dif ? p.Pdiff : 0.0f) + (ggx ? p.Pspec : 0.0f);
+            const float3 sumVal = (dif ? d.val : 0.0f) + (ggx ? g.val : 0.0f);
+            const float  sumPdf = pShare > 0.0f
+                ? ((dif ? p.Pdiff * d.pdf : 0.0f) + (ggx ? p.Pspec * g.pdf : 0.0f)) / pShare : 0.0f;
+            worst = max(worst, MaterialRelativeError(float4(sumVal, sumPdf), float4(val, pdf)));
         }
     }
     results.Store(tid.x * 4u, asuint(worst));
@@ -100,21 +122,21 @@ void materialBenchmark(uint3 tid : SV_DispatchThreadID)
     half metal = m == 2u ? (half)1.0f : (half)0.0f;
     float3 kd = float3(0.25f, 0.5f, 0.75f);
     SamplingP p = CalculateStrategyProbabilities(m, v, n, (half)1.0f, (half)LoadNi(m), kd, metal);
-    if (testMode == 34u) DropDiffuseLobe(p);
+    if (testMode == 34u) DropBroadLobes(p, rough);
     BrdfData full;
-    float3 diffuse = 0.0f;
+    float3 share = 0.0f;   // the broad share, as the tracer and the reservoir take it
     if (testMode == 35u)
     {
-        float diffusePdf;
-        full = EvaluateAndPdf_COMBINED_L(p, 0u, m, n, n, l, v, kd, rough, metal,
-            (half)1.0f, (half)LoadNi(m), false, diffuse, diffusePdf);
+        float sharePdf;
+        full = EvaluateAndPdf_COMBINED_L(p, LOBE_BROAD, m, n, n, l, v, kd, rough, metal,
+            (half)1.0f, (half)LoadNi(m), false, share, sharePdf);
     }
     else
     {
         full = EvaluateAndPdf_COMBINED(p, m, n, n, l, v, kd, rough, metal, (half)1.0f, (half)LoadNi(m));
         if (testMode == 36u)
-            diffuse = EvaluateLobePdf_COMBINED(p, 0u, m, n, n, l, v, kd, rough, metal,
+            share = EvaluateLobePdf_COMBINED(p, LOBE_BROAD, m, n, n, l, v, kd, rough, metal,
                 (half)1.0f, (half)LoadNi(m)).val;
     }
-    results.Store(tid.x * 4u, asuint(dot(full.val + diffuse, kd) + full.pdf));
+    results.Store(tid.x * 4u, asuint(dot(full.val + share, kd) + full.pdf));
 }

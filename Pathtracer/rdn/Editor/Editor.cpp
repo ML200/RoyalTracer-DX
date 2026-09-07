@@ -929,11 +929,12 @@ void Editor::DrawReSTIRPanel(ReSTIRSettings& rs, const FrameStats& stats) {
             if (rs.sharcDebugMode == SHARC_DEBUG_CELLS)
                 ImGui::TextWrapped("Cell colors: dim = warming, bright = confident. Dark grey = missing, "
                     "dark red = bucket full (insert pending), slate = surface never cached "
-                    "(glossy, metallic, layered, transmitting, SSS or steep normal map).");
+                    "(no broad lobe: glossy without a diffuse share, transmitting, SSS, "
+                    "inside a medium, or steep normal map).");
             else if (rs.sharcDebugMode == SHARC_DEBUG_LIGHTING)
-                ImGui::TextWrapped("Stored diffuse-lobe outgoing radiance (direct + indirect through that lobe, "
-                    "normal-incidence view), including untrusted samples. Magenta = missing, dark red = bucket "
-                    "full, slate = no diffuse lobe here, amber = no resolved samples, black = stored zero.");
+                ImGui::TextWrapped("Stored broad-share outgoing radiance (direct + indirect through the diffuse "
+                    "and rough-GGX lobes, normal-incidence view), including untrusted samples. Magenta = missing, "
+                    "dark red = bucket full, slate = no broad lobe here, amber = no resolved samples, black = stored zero.");
             else if (!rs.sharcDebugCoarse)
                 ImGui::TextWrapped("Guiding targets: surfaces whose coarse patch is held by some receiver, "
                     "shown at the brightness guiding believes them to have (normal exposure), fading as "

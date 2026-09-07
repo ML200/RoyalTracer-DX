@@ -508,10 +508,20 @@ static float3 g_cloudEnuUp    = float3(0, 1, 0);
 static float3 g_cloudEnuNorth = float3(0, 0, 1);
 static bool   g_cloudEnuInitDone = false;
 
+// A kernel that loops over traces or reorders (Pass_pt) sets CLOUD_ENU_EAGER:
+// the guard makes an earlier iteration's basis observable, so the statics
+// become loop-carried state, 40 bytes riding every trace and reorder. There
+// the basis is rebuilt at each entry instead: 4 sincos per sky miss.
+#ifndef CLOUD_ENU_EAGER
+#define CLOUD_ENU_EAGER 0
+#endif
+
 inline void InitCloudEnuBasis()
 {
+#if !CLOUD_ENU_EAGER
     if (g_cloudEnuInitDone) return;
     g_cloudEnuInitDone = true;
+#endif
     float L   = SUN_LATITUDE_DEG  * DEG2RAD;
     float lon = SUN_LONGITUDE_DEG * DEG2RAD;
     float sL = sin(L), cL = cos(L);
@@ -1744,8 +1754,10 @@ float3 CloudComputeLighting(float3 P, float3 L, CloudMaterial m,
 // step is capped looser than the primary's (kCheapEmptyStepCap ≈ 8 km)
 // since this loop only has CLOUD_CHEAP_STEPS iterations (≈10) vs the
 // primary's CLOUD_VIEW_STEPS_MAX (≈256).
+// jitterSeed: the march's stochastic offset stream (per pixel and frame from
+// the plain EvaluateSky, per path vertex from Pass_pt).
 float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
-                           out float3 cloudTrOut)
+                           uint jitterSeed, out float3 cloudTrOut)
 {
     cloudTrOut = float3(1, 1, 1);
 
@@ -1781,8 +1793,7 @@ float3 EvaluateCloudsCheap(float3 V, float3 sunDir, float3 sunIrradiance,
                                          ATMOS_BOTTOM_RADIUS,
                                          ATMOS_TOP_RADIUS);
 
-    uint2 px   = DispatchRaysIndex().xy;
-    uint  seed = initRandomData(px, uint2(0, 0), (uint)time, 73u);
+    uint  seed = jitterSeed;
 
     float3 L_acc   = float3(0, 0, 0);
     float3 trCloud = float3(1, 1, 1);

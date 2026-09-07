@@ -10,6 +10,10 @@
 #define MIN_NORMAL_INT 0.33f
 //BSDF delta lobe gate, low so VNDF sampling stays unbiased
 #define SMOOTH_SPECULAR_THRESHOLD 0.06f
+//A GGX lobe at least this rough is BROAD: its outgoing radiance is close to
+//view-independent, so the radiance cache, the lite reservoir and guiding
+//treat it together with the diffuse lobe (LOBE_BROAD, BXDF_v8.hlsli).
+#define BROAD_GGX_ROUGHNESS 0.8f
 #define kInvalidPixel -1u
 
 //Postprocess debug comparison slices: "noisy" (gOutput 0, scratch slot 1),

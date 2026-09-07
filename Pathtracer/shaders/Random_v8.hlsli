@@ -76,6 +76,9 @@ uint initRandomData(uint2 idx, uint2 tileSize, uint t, uint c){
 #define RC_STREAM_NEE  1u
 #define RC_STREAM_SSS  2u
 #define RC_STREAM_RR   3u
+#define RC_STREAM_SKY  4u   // cheap cloud march jitter of a sky miss (Pass_pt)
+#define RC_STREAM_SKY  4u   // cheap cloud march jitter of a sky miss (Pass_pt)
+#define RC_STREAM_SKY  4u   // cheap cloud march jitter of a sky miss (Pass_pt)
 
 inline uint RcBounceSeed(uint pathSeed, uint depth, uint stream)
 {

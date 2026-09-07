@@ -491,12 +491,16 @@ float GuideLambertPdf(float3 n, float3 dir)
     return max(dot(n, dir), 0.0f) / GUIDE_PI;
 }
 
-// Strategy pdf of a direction with the guided diffuse share:
-//   p(w) = p_bsdf(w) + Pdiff * q * (p_guide(w) - p_cos(w)).
-float GuideMixPdf(GuideSet g, float pdiff, float3 n, float3 dir, float bsdfPdf)
+// Strategy pdf of a direction with the guided broad share (the diffuse lobe
+// and a broad GGX lobe, LOBE_BROAD): each broad-lobe sample becomes a cone
+// sample with probability q, so
+//   p(w) = p_bsdf(w) + Pshare * q * (p_guide(w) - p_share(w)),
+// with Pshare the share's strategy probability and p_share the
+// probability-weighted mean of its lobes' pdfs (the LOBE_BROAD latch).
+float GuideMixPdf(GuideSet g, float pShare, float sharePdf, float3 dir, float bsdfPdf)
 {
     if (!(g.q > 0.0f)) return bsdfPdf;
-    return max(bsdfPdf + pdiff * g.q * (GuidePdf(g, dir) - GuideLambertPdf(n, dir)), 0.0f);
+    return max(bsdfPdf + pShare * g.q * (GuidePdf(g, dir) - sharePdf), 0.0f);
 }
 
 //------------------------------------------------------------------

@@ -5,6 +5,9 @@
 // ComputeSunState and the bounce-miss atmosphere read them instead of marching
 // the atmosphere per call. Every miss and sun sample here uses the camera observer.
 #define SKYBAKE_CONSUMER 1
+// Rebuild the cloud ENU basis at each cloud entry (Clouds_v8.hlsli): the
+// guarded thread-local init would ride every trace and reorder as 40 bytes.
+#define CLOUD_ENU_EAGER 1
 #ifndef PT_NO_DEBUG
 #define PT_NO_DEBUG 0
 #endif
@@ -64,13 +67,17 @@
 //
 //SER: the scatter trace and its next vertex's cache decision precede one
 //HitObject reorder, grouping the surviving shading work by instance.
-//Live state across the trace is
-//kept to the path itself: the ray is never read back from the HitObject (the
-//compiler would fold that to the pre-trace registers), the direction is its
-//packed loop copy and the hit position comes from the triangle; the training
-//vertices accumulate in memory; the pixel is recomputed from
-//DispatchRaysIndex, and the primary G-buffer record is reloaded per sample
-//instead of surviving the bounce loop.
+//Live state across the trace and the reorder is kept to the path itself:
+//the ray is never read back from the HitObject (the compiler would fold that
+//to the pre-trace registers), the direction is its packed loop copy and the
+//hit position comes from the triangle; the vertex crosses the reorder with
+//packed normals and one medium flag (loop tail); the sample index, the
+//depth, the diffuse count and the path flags share one packed register; the
+//loops know the pixel only by its swizzled index (every DispatchRaysIndex
+//read folds into one value, so a sample rebuilds the 2D pixel from the
+//index where it needs it); the training vertices accumulate in memory; and
+//the primary G-buffer record is reloaded per sample instead of surviving
+//the bounce loop.
 
 uint2 PtPixel()
 {
@@ -103,13 +110,13 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
 )
 {
     diffuseCached = false;
-    // Cache first, then local NEE. A record stores the DIFFUSE lobe's
-    // outgoing radiance at this vertex (its own direct light through that
-    // lobe included), demodulated by Kd and by the view-dependent
-    // transmission of the layers above it. A hit adds that share and drops
-    // the diffuse lobe from this vertex; sheen, coat and GGX continue on
-    // the exact tracer with their own strategy mix, so nothing specular is
-    // ever cached. The primary vertex is never queried.
+    // Cache first, then local NEE. A record stores the BROAD share's
+    // outgoing radiance at this vertex (the diffuse lobe and a broad GGX
+    // lobe, their own direct light included), demodulated by Kd and by the
+    // view-dependent transmission of the layers above them. A hit adds that
+    // share and drops those lobes from this vertex; sheen, coat and a glossy
+    // GGX lobe continue on the exact tracer with their own strategy mix, so
+    // nothing narrow is ever cached. The primary vertex is never queried.
     cacheSurface = sharc_enabled != 0u && !sssEntered &&
         SharcMaterialEligible(ctx, spPath, geometricNormal);
     if (cacheSurface && (SHARC_UPDATE_PASS || depth > 1))
@@ -188,10 +195,10 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
 #endif
         if (hit)
         {
-            // The diffuse lobe is accounted for; continue with whatever
-            // layers remain. A plain Lambertian vertex is finished here.
+            // The broad share is accounted for; continue with whatever
+            // layers remain. A Lambertian or rough-metal vertex ends here.
             diffuseCached = true;
-            if (!DropDiffuseLobe(spPath)) return false;
+            if (!DropBroadLobes(spPath, ctx.hitLocalPr)) return false;
             // The remaining layers carry about 1 - layerT of this vertex's
             // energy (the Fresnel of the stack). Roulette them BEFORE their
             // NEE and scatter: a hit on a plain dielectric then ends here
@@ -207,6 +214,28 @@ bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
     }
     return true;
 }
+
+//====================================
+//PACKED LOOP STATE
+//====================================
+// The sample index, the bounce depth, the diffuse-bounce count and the path
+// flags ride the trace and the reorder in ONE register. As separate variables
+// each was its own 32-bit live value (DXC keeps a widened copy of an int16
+// depth, and every bool is an i32).
+#define PT_PS_DEPTH_SHIFT   0u
+#define PT_PS_DIFF_SHIFT    8u
+#define PT_PS_SAMPLE_SHIFT  16u
+#define PT_PS_SSS           (1u << 24u)   // the path took a subsurface walk
+#define PT_PS_LITE_VERTEX   (1u << 25u)   // the primary hands its diffuse lobe to the lite reservoir
+#define PT_PS_LITE_X2       (1u << 26u)   // the lite candidate has its second vertex
+#define PT_PS_DIFF_CACHED   (1u << 27u)   // the cache answered the vertex's diffuse lobe
+#define PT_PS_FLIP_IOR      (1u << 28u)   // the vertex carried across the reorder enters its medium
+#define PT_PS_SPREAD        (1u << 29u)   // the scatter grows the path spread
+uint PtPsInit(uint s)       { return (s << PT_PS_SAMPLE_SHIFT) | (1u << PT_PS_DEPTH_SHIFT); }
+uint PtPsDepth(uint ps)     { return (ps >> PT_PS_DEPTH_SHIFT) & 0xFFu; }
+uint PtPsDiffDepth(uint ps) { return (ps >> PT_PS_DIFF_SHIFT) & 0xFFu; }
+uint PtPsSample(uint ps)    { return (ps >> PT_PS_SAMPLE_SHIFT) & 0xFFu; }
+uint PtPsWith(uint ps, uint flag, bool on) { return on ? (ps | flag) : (ps & ~flag); }
 
 [shader("raygeneration")]
 void PT_ENTRY_NAME()
@@ -242,9 +271,10 @@ void PT_ENTRY_NAME()
                 dctx.hitNormal, dctx.iors.x, dctx.iors.y, dctx.hitLocalKd, dctx.hitLocalPm);
             if (!SharcMaterialEligible(dctx, dsp, dGeometricNormal))
             {
-                // Slate: the tracer never caches this surface (glossy, metallic,
-                // layered, transmitting, SSS or a steep normal map). No record
-                // is expected here, so this is not a missing cell.
+                // Slate: the tracer never caches this surface (no broad lobe:
+                // a glossy GGX lobe without a diffuse share, transmitting, SSS,
+                // inside a medium, or a steep normal map). No record is
+                // expected here, so this is not a missing cell.
                 debugColor = float4(0.05f, 0.07f, 0.12f, 0.0f);
             }
             else if (SHARC_DEBUG_MODE == SHARC_DEBUG_GUIDING)
@@ -288,16 +318,21 @@ void PT_ENTRY_NAME()
     // cache depth cap. A miss path does not train anything, so tracing it deeper
     // than the reference only costs time.
     const uint maxBounces = SHARC_UPDATE_PASS ? sharc_trainBounces : pt_maxBounces;
+    //The loops know the pixel by its swizzled index alone. DispatchRaysIndex
+    //is pure, so every PtPixel() call in a loop folds into ONE value that
+    //would ride the trace and the reorder next to the index; a sample rebuilds
+    //the 2D pixel from the index where it needs it (the seed, the store) and
+    //still reloads the primary record.
+    uint ps = PtPsInit(0u);
     [loop]
-    for (uint s = 0u; s < N; ++s)
+    for (;;)
     {
-        //Recompute the pixel and reload the primary record for every sample so
-        //neither survives the bounce loop as reorder live state.
-        const uint2 samplePixel = PtPixel();
-        const uint  sampleIdx   = MapPixelID(imgSize, samplePixel);
+        if (PtPsSample(ps) >= N) break;
+        const uint  sampleIdx   = pixelIdx;
+        const uint2 samplePixel = (uint2)UnmapPixelID(sampleIdx, imgSize);
         //same seed derivation as Pass_raygen so the two integrators sample
         //identical per-bounce streams (RcBounceSeed) at N==1
-        uint seed     = initRandomData(samplePixel, uint2(8, 4), time, s + 1u);
+        uint seed     = initRandomData(samplePixel, uint2(8, 4), time, PtPsSample(ps) + 1u);
         uint pathSeed = Hash32(seed ^ 0x9E3779B9u);
 #if SHARC_UPDATE_PASS
         pathSeed = Hash32(pathSeed ^ sharc_frame ^ 0x53484152u);
@@ -329,8 +364,6 @@ void PT_ENTRY_NAME()
         uint    prevNormalPk = PackNormal(float3(0, 1, 0));
         float   prev_pdf     = 1.0f;   //solid-angle pdf of the last BSDF extension (MIS partner)
         uint    rayDirPk     = PackNormal(normalize(sd.x1 - InitOrigin()));
-        bool    sssEntered   = false;
-        int16_t diffuseDepth = 0;
         float3 geometricNormal = sd.n1_s;
 #if SHARC_UPDATE_PASS
         geometricNormal = gScratchPing[uint3(samplePixel, SHARC_DEBUG_SCRATCH)].xyz;
@@ -342,25 +375,25 @@ void PT_ENTRY_NAME()
 #endif
         float pathSpread = 0.0f;
 #if !SHARC_UPDATE_PASS
-        // ReSTIR lite (RestirLite_v8.hlsli): at the primary vertex the DIFFUSE
-        // lobe's incident light is streamed into the pixel's reservoir instead
-        // of the radiance sum; the lite passes resample and shade it. Once the
-        // scatter ray has found x2, the whole diffuse-lobe suffix (cache value
-        // or traced continuation) accumulates into that candidate's radiance,
-        // while x1's other lobes keep their share of the path on the tracer.
-        bool   liteVertex = false;
-        bool   liteHasX2  = false;
+        // ReSTIR lite (RestirLite_v8.hlsli): at the primary vertex the BROAD
+        // share's incident light (diffuse lobe and broad GGX lobe) is streamed
+        // into the pixel's reservoir instead of the radiance sum; the lite
+        // passes resample and shade it. Once the scatter ray has found x2, the
+        // whole broad-share suffix (cache value or traced continuation)
+        // accumulates into that candidate's radiance, while x1's other lobes
+        // keep their share of the path on the tracer.
         float3 liteL      = 0.0f;        // outgoing radiance of x2 toward x1 (diffuse suffix)
         half3  liteSuffix = (half3)0.0f; // diffuse suffix throughput from x2
         float  liteRr     = 0.0f;        // luminance of x1's diffuse scatter weight (the suffix's roulette share)
 #endif
 
-        bool diffuseCached = false;
-        bool vertexAlive = true;
-
         [loop]
-        for (int16_t depth = 1; vertexAlive && depth < (int)maxBounces; ++depth)
+        for (;;)
         {
+            const uint depth = PtPsDepth(ps);
+            if (depth >= maxBounces) break;
+            const uint s          = PtPsSample(ps);
+            const bool sssEntered = (ps & PT_PS_SSS) != 0u;
             float3 rayDir = UnpackNormal(rayDirPk);
 
             //per-bounce RNG streams (draw-count independent, same ids as raygen)
@@ -372,37 +405,41 @@ void PT_ENTRY_NAME()
             //hit removes the diffuse lobe from this mix for the rest of the vertex.
             SamplingP spPath = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal, ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
 #if !SHARC_UPDATE_PASS
-            if (depth == 1)
+            if (depth == 1u)
             {
-                // A primary with a diffuse lobe that NEE can serve (no medium,
-                // no SSS) hands that lobe to the reservoir. Every other pixel
+                // A primary with a broad share that NEE can serve (no medium,
+                // no SSS) hands that share to the reservoir. Every other pixel
                 // marks its reservoir empty so no pass reads a stale one.
                 // A free-bounce material never counts as a diffuse vertex, so
                 // its scatter could never end in the cache: keep it off the
                 // reservoir, or partners would hand it points it cannot produce.
-                liteVertex = LITE_ENABLED && !sssEntered && spPath.Pdiff >= EPSILON &&
+                const bool primaryLite = LITE_ENABLED && !sssEntered &&
+                    HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
                     !LoadIsSSS(ctx.matID) && ctx.mediumMatID == MEDIUM_INVALID &&
                     LoadKd_w(ctx.matID) >= EPSILON && !MaterialIsFreeBounce(ctx.matID);
-                if (LITE_ENABLED && s == 0u && !liteVertex) LiteMarkEmpty(sampleIdx);
+                ps = PtPsWith(ps, PT_PS_LITE_VERTEX, primaryLite);
+                if (LITE_ENABLED && s == 0u && !primaryLite) LiteMarkEmpty(sampleIdx);
             }
             // Candidates are generated at the primary; from the secondary vertex
             // on, the path is the suffix of the pending point candidate.
-            const bool liteGen  = depth == 1 && liteVertex;
-            const bool liteX2   = depth == 2 && liteVertex;
-            const bool litePath = depth >= 2 && liteVertex;
+            const bool liteVertex = (ps & PT_PS_LITE_VERTEX) != 0u;
+            const bool liteGen  = depth == 1u && liteVertex;
+            const bool liteX2   = depth == 2u && liteVertex;
+            const bool litePath = depth >= 2u && liteVertex;
 #endif
 
             // Rebuild the small strategy mix after SER instead of carrying its
             // four floats. Eligibility uses the full mix, before removing the
-            // diffuse lobe already accounted for at the preceding trace.
+            // broad share already accounted for at the preceding trace.
             bool cacheSurface = sharc_enabled != 0u && !sssEntered &&
                 SharcMaterialEligible(ctx, spPath, geometricNormal);
+            bool diffuseCached = (ps & PT_PS_DIFF_CACHED) != 0u;
 #if SHARC_UPDATE_PASS
-            if (depth == 1 && !PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
+            if (depth == 1u && !PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
                 pathSeed, 1u, maxBounces, pathSpread, spPath, cacheSurface, diffuseCached,
                 throughput, training)) break;
 #endif
-            if (diffuseCached) DropDiffuseLobe(spPath);
+            if (diffuseCached) DropBroadLobes(spPath, ctx.hitLocalPr);
 
 #if !SHARC_UPDATE_PASS
             // Pre-trace candidates (NEE) resample in registers and commit once;
@@ -416,7 +453,7 @@ void PT_ENTRY_NAME()
             {
                 float3 directSum = float3(0, 0, 0);
 #if SHARC_UPDATE_PASS
-                float3 directDiffuse = float3(0, 0, 0);
+                float3 directBroad = float3(0, 0, 0);
 #endif
                 [loop]
                 for (uint tech = 0u; tech < 2u; ++tech)
@@ -445,7 +482,7 @@ void PT_ENTRY_NAME()
                         LT_Sample treeSample;
                         bool prefetched = false;
 #if !SHARC_UPDATE_PASS
-                        prefetched = depth == 1 && s == 0u &&
+                        prefetched = depth == 1u && s == 0u &&
                             load_pt_neePrefetch(g_pathStateBuffer, sampleIdx, treeSample.id, treeSample.pdf, sNee);
 #endif
                         if (!prefetched) treeSample = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee);
@@ -509,12 +546,12 @@ void PT_ENTRY_NAME()
                     }
 #endif
 
-                    // One traversal yields the full BSDF and the diffuse lobe's
-                    // share: training labels fresh records with the share, and
-                    // ReSTIR lite streams the primary's share into its reservoir.
-                    float3 diffuseNEE; float diffuseNeePdf;
-                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, 0u, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
-                        ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, diffuseNEE, diffuseNeePdf);
+                    // One traversal yields the full BSDF and the broad share
+                    // (LOBE_BROAD): training labels fresh records with the share,
+                    // and ReSTIR lite streams the primary's share into its reservoir.
+                    float3 broadNEE; float broadNeePdf;
+                    BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
+                        ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
                     if (!(bdataNEE.pdf > 0.0f))
                         continue;
 
@@ -536,7 +573,7 @@ void PT_ENTRY_NAME()
                         // The diffuse lobe's share becomes a reservoir candidate
                         // (visibility, MIS weight and light pdf ride its weight);
                         // the other lobes keep their direct light here.
-                        PtAccumulate(throughput * (direct - diffuseNEE * lightScale));
+                        PtAccumulate(throughput * (direct - broadNEE * lightScale));
                         uint sLite = RcBounceSeed(pathSeed, (uint)depth, 0x4c495445u + tech);
                         LiteSample cand;
                         LiteLink   link;
@@ -560,7 +597,7 @@ void PT_ENTRY_NAME()
                         // diffuse lobe (its layers are dropped exactly as a cache
                         // hit drops them), deeper or elsewhere the full BSDF.
                         if (litePath)
-                            liteL += (float3)liteSuffix * ((liteX2 && cacheSurface) ? diffuseNEE : bdataNEE.val) * lightScale;
+                            liteL += (float3)liteSuffix * ((liteX2 && cacheSurface) ? broadNEE : bdataNEE.val) * lightScale;
                     }
 #else
                     PtAccumulate(throughput * direct);
@@ -571,11 +608,11 @@ void PT_ENTRY_NAME()
                     // diffuse lobe's share only. The MIS weight keeps the full
                     // strategy pdf, which is what the continuation samples.
                     if (training.fresh != SHARC_INVALID)
-                        directDiffuse += diffuseNEE * lightScale;
+                        directBroad += broadNEE * lightScale;
 #endif
                 }
 #if SHARC_UPDATE_PASS
-                SharcTrainingRadianceSplit(training, directSum, directDiffuse);
+                SharcTrainingRadianceSplit(training, directSum, directBroad);
 #endif
             }
 #if !SHARC_UPDATE_PASS
@@ -603,8 +640,6 @@ void PT_ENTRY_NAME()
 #else
                     if (litePath) liteSuffix *= (half3)(w.wTotal * surfKd);
 #endif
-                    sssEntered  = true;
-
                     ctx.hitPos         = w.exitPos;
                     ctx.hitNormal      = w.exitNormal;
                     ctx.hitLocalKd     = (half3)float3(1, 1, 1);
@@ -614,7 +649,8 @@ void PT_ENTRY_NAME()
                     ctx.mediumMatID    = MEDIUM_INVALID;
                     ctx.absorptionTint = (half3)float3(1, 1, 1);
                     rayDirPk           = PackNormal(-w.exitNormal);
-                    diffuseCached = false;
+                    ps = (ps | PT_PS_SSS) & ~PT_PS_DIFF_CACHED;
+                    ps += 1u << PT_PS_DEPTH_SHIFT;
                     continue;
                 }
             }
@@ -625,8 +661,8 @@ void PT_ENTRY_NAME()
                 // Rendering keeps the reference cap on cache misses too. Training
                 // suffixes stay uncapped here (roulette and the depth cap bound
                 // them) so cold regions are not trained as prematurely dark.
-                if (!SHARC_UPDATE_PASS && diffuseDepth >= (int)pt_maxDiffuseBounces) break;
-                ++diffuseDepth;
+                if (!SHARC_UPDATE_PASS && PtPsDiffDepth(ps) >= (uint)pt_maxDiffuseBounces) break;
+                ps += 1u << PT_PS_DIFF_SHIFT;
             }
 
             //------------- path guiding for the diffuse lobe -------------
@@ -641,7 +677,8 @@ void PT_ENTRY_NAME()
             uint guideEntry = GUIDE_INVALID;
             uint guidedSlot = GUIDE_INVALID; // patch this scatter aimed at, for the visibility report
 #endif
-            if (cacheSurface && GUIDE_ENABLED && spPath.Pdiff >= EPSILON && (int)depth <= GUIDE_MAX_DEPTH)
+            if (cacheSurface && GUIDE_ENABLED && HasBroadShare(spPath, ctx.hitLocalPr, ctx.hitLocalPm) &&
+                (int)depth <= GUIDE_MAX_DEPTH)
             {
                 uint sKey = RcBounceSeed(pathSeed, (uint)depth, 0x4b455953u);
                 const GuideKey guideKey = GuideKeyOf(ctx.hitPos, geometricNormal, sKey);
@@ -656,9 +693,10 @@ void PT_ENTRY_NAME()
             //------------- BSDF sample (the NEE MIS partner) -------------
             uint sampledStrategy;
             float3 dir = SampleBRDF(spPath, ctx.matID, -rayDir, ctx.hitNormal, ctx.hitNormal, ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, sBsdf, ctx.iors.x, ctx.iors.y, false, sampledStrategy);
-            // Guided share of the diffuse lobe: this cosine sample becomes a cone
-            // sample toward a bright patch.
-            if (guide.q > 0.0f && sampledStrategy == 0u)
+            // Guided share of the broad lobes: this cosine or rough-GGX sample
+            // becomes a cone sample toward a bright patch.
+            const bool broadGGX = IsBroadGGX(ctx.hitLocalPr);
+            if (guide.q > 0.0f && (sampledStrategy == 0u || (sampledStrategy == 1u && broadGGX)))
             {
                 uint sGuide = RcBounceSeed(pathSeed, (uint)depth, GUIDE_STREAM);
                 if (RandomFloatSingle(sGuide) < guide.q)
@@ -670,12 +708,14 @@ void PT_ENTRY_NAME()
 #endif
                 }
             }
-            float3 diffuseScatter; float diffuseScatterPdf;
-            const BrdfData bdata = EvaluateAndPdf_COMBINED_L(spPath, 0u, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
-                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, diffuseScatter, diffuseScatterPdf);
+            float3 broadScatter; float broadScatterPdf;
+            const BrdfData bdata = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, dir, -rayDir,
+                ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadScatter, broadScatterPdf);
             // Actual density of this direction under the guided mixture (any lobe
-            // may land in a cone); the throughput must use it.
-            const float pdfTotal = GuideMixPdf(guide, spPath.Pdiff, ctx.hitNormal, dir, bdata.pdf);
+            // may land in a cone); the throughput must use it. The guided share
+            // is the broad share's strategy probability with its latched pdf.
+            const float pdfTotal = GuideMixPdf(guide, spPath.Pdiff + (broadGGX ? spPath.Pspec : 0.0f),
+                broadScatterPdf, dir, bdata.pdf);
 
             const float  cosTheta     = abs(dot(ctx.hitNormal, dir));
             const float3 updateWeight = (pdfTotal > 1e-6f)
@@ -690,19 +730,19 @@ void PT_ENTRY_NAME()
             if (!any(updateWeight > 0.0f))
                 break;
 #if !SHARC_UPDATE_PASS
-            // The primary's diffuse-lobe share of this scatter: the candidate
-            // weight of whatever the ray finds, and the part of the throughput
-            // that the tracer must NOT add for it.
-            float3 liteDiffuse = 0.0f;
+            // The primary's broad share of this scatter: the candidate weight
+            // of whatever the ray finds, and the part of the throughput that
+            // the tracer must NOT add for it.
+            float3 liteBroad = 0.0f;
             if (liteGen)
-                liteDiffuse = diffuseScatter * (float3)ctx.absorptionTint * cosTheta / pdfTotal;
+                liteBroad = broadScatter * (float3)ctx.absorptionTint * cosTheta / pdfTotal;
 #endif
 #if SHARC_UPDATE_PASS
-            // Diffuse lobe's share of the same scatter for a vertex registered
-            // this bounce: that lobe's gated value over the full strategy pdf.
-            float3 updateWeightDiffuse = updateWeight;
+            // Broad share of the same scatter for a vertex registered this
+            // bounce: those lobes' gated value over the full strategy pdf.
+            float3 updateWeightBroad = updateWeight;
             if (training.fresh != SHARC_INVALID)
-                updateWeightDiffuse = diffuseScatter
+                updateWeightBroad = broadScatter
                     * (float3)ctx.absorptionTint * cosTheta / pdfTotal;
             // Irradiance observations after the trace divide by the ACTUAL pdf.
             const float guidePdf = pdfTotal;
@@ -711,7 +751,7 @@ void PT_ENTRY_NAME()
             // Declared pdf for the emitter / sun MIS partner and the path spread:
             // the plain BSDF pdf, matching the NEE side above.
             prev_pdf = bdata.pdf;
-            const bool scatterHasSpread = SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr);
+            ps = PtPsWith(ps, PT_PS_SPREAD, SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr));
             rayDir   = dir;
             rayDirPk = PackNormal(dir);
 
@@ -720,17 +760,17 @@ void PT_ENTRY_NAME()
 
             throughput *= updateWeight;
 #if !SHARC_UPDATE_PASS
-            // The diffuse suffix scatters with x2's diffuse lobe alone where the
-            // cache would have answered, with the full BSDF elsewhere.
+            // The suffix scatters with x2's broad share alone where the cache
+            // would have answered, with the full BSDF elsewhere.
             if (litePath)
                 liteSuffix *= (half3)((liteX2 && cacheSurface)
-                    ? diffuseScatter * (float3)ctx.absorptionTint * cosTheta / pdfTotal
+                    ? broadScatter * (float3)ctx.absorptionTint * cosTheta / pdfTotal
                     : updateWeight);
 #endif
 
             //Russian roulette (off when pt_rrStartDepth is high)
             float rrWeight = 1.0f;
-            if (depth >= (int)(SHARC_UPDATE_PASS ? sharc_trainRrDepth : pt_rrStartDepth))
+            if (depth >= (uint)(SHARC_UPDATE_PASS ? sharc_trainRrDepth : pt_rrStartDepth))
             {
                 uint sRr = RcBounceSeed(pathSeed, (uint)depth, RC_STREAM_RR);
 #if SHARC_UPDATE_PASS
@@ -749,19 +789,19 @@ void PT_ENTRY_NAME()
                 throughput /= survivalProb;
                 rrWeight = rcp(survivalProb);
 #if !SHARC_UPDATE_PASS
-                liteDiffuse /= survivalProb;
+                liteBroad /= survivalProb;
                 if (litePath) liteSuffix = (half3)((float3)liteSuffix * rcp(survivalProb));
 #endif
             }
 #if SHARC_UPDATE_PASS
-            SharcTrainingAdvance(training, updateWeight, updateWeightDiffuse, rrWeight);
+            SharcTrainingAdvance(training, updateWeight, updateWeightBroad, rrWeight);
 #endif
 
             prevNormalPk = PackNormal(ctx.hitNormal);
 #if !SHARC_UPDATE_PASS
-            // Park the diffuse share and the scatter pdf across the trace; the
+            // Park the broad share and the scatter pdf across the trace; the
             // reservoir itself already lives in memory (nothing lite is live).
-            if (liteGen) LiteParkStore(MapPixelID(imgSize, PtPixel()), liteDiffuse, pdfTotal);
+            if (liteGen) LiteParkStore(sampleIdx, liteBroad, pdfTotal);
 #endif
 
             //----- TRACE (BSDF technique, NEE's MIS partner) -----
@@ -797,17 +837,19 @@ void PT_ENTRY_NAME()
                 const float  sunMisBsdf = (sunSAPdf > 0.0f)
                     ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
                 float3 cloudTr;
-                const float3 sky  = EvaluateSky(rayDir, cloudTr);
+                //the cheap cloud march jitters from the path's stream: the
+                //per-pixel seed would fold with the pixel and ride the loops
+                const float3 sky  = EvaluateSky(rayDir, RcBounceSeed(pathSeed, depth, RC_STREAM_SKY), cloudTr);
                 const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
 #if !SHARC_UPDATE_PASS
                 if (liteGen)
                 {
                     // Candidate: the direction with its full radiance; the MIS
                     // weight against sun NEE rides the candidate weight.
-                    const uint litePx = MapPixelID(imgSize, PtPixel());
-                    float3 liteDiffuse; float litePdf;
-                    LiteParkLoad(litePx, liteDiffuse, litePdf);
-                    PtAccumulate((throughput - liteDiffuse) * envL);
+                    const uint litePx = sampleIdx;
+                    float3 liteBroad; float litePdf;
+                    LiteParkLoad(litePx, liteBroad, litePdf);
+                    PtAccumulate((throughput - liteBroad) * envL);
                     const float liteCosX = max(dot(UnpackNormal(prevNormalPk), rayDir), 0.0f);
                     uint sLite = RcBounceSeed(pathSeed, (uint)depth, 0x4c495447u);
                     LiteCandidate(litePx, load_kd(g_sample_current, litePx),
@@ -839,9 +881,17 @@ void PT_ENTRY_NAME()
             const uint   instID_n = hitObj.GetInstanceID();
             const uint   primID_n = FlatPrimID(instID_n, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
             const uint   matID_n  = GetMatIDFast(instID_n, primID_n);
-            BuiltInTriangleIntersectionAttributes attrB;
-            hitObj.GetAttributes(attrB);
-            HitInfo hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, attrB.barycentrics, rayDir, (uint)depth);
+            // The attribute struct's scope ends here: a loop-body local whose
+            // scope holds every later break makes DXC route those breaks and
+            // the fallthrough through one shared cleanup block, whose phis
+            // keep the previous vertex live across the trace.
+            float2 bary_n;
+            {
+                BuiltInTriangleIntersectionAttributes attrB;
+                hitObj.GetAttributes(attrB);
+                bary_n = attrB.barycentrics;
+            }
+            HitInfo hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, bary_n, rayDir, (uint)depth);
             const float3 hitPos_n   = hinfo_n.hitPos;
             const float3 rayOriginR = hitPos_n - rayDir * hitT_n; // previous vertex, for the light-tree pdf
 
@@ -865,10 +915,10 @@ void PT_ENTRY_NAME()
                 {
                     // Candidate: the emitter point, MIS-weighted against NEE
                     // like the tracer's own emitter hit.
-                    const uint litePx = MapPixelID(imgSize, PtPixel());
-                    float3 liteDiffuse; float litePdf;
-                    LiteParkLoad(litePx, liteDiffuse, litePdf);
-                    PtAccumulate((throughput - liteDiffuse) * emission_n * misWeight);
+                    const uint litePx = sampleIdx;
+                    float3 liteBroad; float litePdf;
+                    LiteParkLoad(litePx, liteBroad, litePdf);
+                    PtAccumulate((throughput - liteBroad) * emission_n * misWeight);
                     const float  liteCosX = max(dot(prevNormalCur, rayDir), 0.0f);
                     const float3 liteNy   = dot(hinfo_n.geometricNormal, -rayDir) < 0.0f
                         ? -hinfo_n.geometricNormal : hinfo_n.geometricNormal;
@@ -913,20 +963,20 @@ void PT_ENTRY_NAME()
                 // x2 found: from here the diffuse suffix belongs to the pending
                 // candidate. Park its point (normal facing x1, scatter pdf);
                 // x1's other lobes keep their share of the same path.
-                const uint litePx = MapPixelID(imgSize, PtPixel());
-                float3 liteDiffuse; float litePdf;
-                LiteParkLoad(litePx, liteDiffuse, litePdf);
+                const uint litePx = sampleIdx;
+                float3 liteBroad; float litePdf;
+                LiteParkLoad(litePx, liteBroad, litePdf);
                 const float3 liteNy = dot(hinfo_n.geometricNormal, -rayDir) < 0.0f
                     ? -hinfo_n.geometricNormal : hinfo_n.geometricNormal;
                 LiteParkPointStore(litePx, WorldToObjectPos(instID_n, hitPos_n), instID_n,
                     PackNormal(WorldToObjectNrm(instID_n, liteNy)), litePdf);
                 // The throughput continues as x1's other lobes' share; the
                 // diffuse share restarts as the suffix weight.
-                liteRr     = Luma(liteDiffuse);
-                throughput = max(throughput - liteDiffuse, 0.0f);
+                liteRr     = Luma(liteBroad);
+                throughput = max(throughput - liteBroad, 0.0f);
                 liteSuffix = (half3)1.0f;
                 liteL      = 0.0f;
-                liteHasX2  = true;
+                ps |= PT_PS_LITE_X2;
             }
 #endif
             ctx.hitPos         = hitPos_n;
@@ -934,7 +984,7 @@ void PT_ENTRY_NAME()
             // Spread in area measure (distance / sqrt(pdf * receiver cosine)).
             // Every continuous lobe can grow it; the PDF limits narrow lobes'
             // spread and the samplers' true delta branches leave it unchanged.
-            if (scatterHasSpread)
+            if ((ps & PT_PS_SPREAD) != 0u)
                 pathSpread += hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf *
                     abs(dot(geometricNormal, -rayDir)), 1e-6f))));
             ctx.hitNormal      = hinfo_n.hitNormal;
@@ -947,6 +997,7 @@ void PT_ENTRY_NAME()
             ctx.iors           = (half2)iors_n;
             ctx.mediumMatID    = mediumMatID_n;
             ctx.absorptionTint = (half3)absorptionTint_n;
+            ps = PtPsWith(ps, PT_PS_FLIP_IOR, flipIOR_n);
 #if SHARC_UPDATE_PASS
             // Guiding discovery. The cache's outgoing luminance at this hit
             // (any resolved record, no confidence gate) registers the coarse
@@ -969,38 +1020,56 @@ void PT_ENTRY_NAME()
             // Complete the next vertex's cache decision while its HitObject
             // is local to this iteration. Terminating lanes leave before SER;
             // one reorder groups the remaining hits for their next NEE/scatter.
-            const uint nextDepth = (uint)depth + 1u;
+            const uint nextDepth = depth + 1u;
             if (nextDepth >= maxBounces) break;
             SamplingP spNext = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal,
                 ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
-            bool nextCacheSurface;
-            vertexAlive = PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
-                pathSeed, nextDepth, maxBounces, pathSpread, spNext, nextCacheSurface, diffuseCached, throughput,
+            bool nextCacheSurface, nextDiffuseCached;
+            if (!PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
+                pathSeed, nextDepth, maxBounces, pathSpread, spNext, nextCacheSurface, nextDiffuseCached, throughput,
 #if SHARC_UPDATE_PASS
                 training
 #else
                 nextDepth == 2u && liteVertex, liteVertex, total, liteL, liteSuffix
 #endif
-            );
-            if (!vertexAlive) break;
+            )) break;
+            ps = PtPsWith(ps, PT_PS_DIFF_CACHED, nextDiffuseCached);
             const uint hint = 0x40u | (ctx.instID & 0x3Fu);
+            // Across the reorder the vertex keeps its normals packed and its
+            // medium state as the flag above: the exact normals, the IORs, the
+            // medium id and the absorption (38 bytes) are rebuilt on the other
+            // side from 8 bytes, the hit distance and the material record.
+            const uint hitNormalPk = PackNormal(ctx.hitNormal);
+            const uint geoNormalPk = PackNormal(geometricNormal);
 #if SHARC_UPDATE_PASS
             dx::MaybeReorderThread(hitObj, (hint << 1u) | traceSuffixHint, 8u);
 #else
             dx::MaybeReorderThread(hitObj, hint, 7u);
 #endif
+            ctx.hitNormal   = UnpackNormal(hitNormalPk);
+            geometricNormal = UnpackNormal(geoNormalPk);
+            {
+                const bool  enters = (ps & PT_PS_FLIP_IOR) != 0u;
+                const float ni     = LoadNi(ctx.matID);
+                ctx.iors           = (half2)(enters ? float2(ni, 1.0f) : float2(1.0f, ni));
+                ctx.mediumMatID    = enters ? ctx.matID : MEDIUM_INVALID;
+                ctx.absorptionTint = (half3)(enters
+                    ? CalculateAbsorptionThroughput(LoadTf(ctx.matID), hitT_n) : float3(1, 1, 1));
+            }
+            ps += 1u << PT_PS_DEPTH_SHIFT;
         }
 #if SHARC_UPDATE_PASS
         SharcTrainingCommit(training);
 #else
         // The pending secondary-vertex candidate of this path (cache value or
         // traced suffix), resampled against the reservoir in memory.
-        if (liteHasX2)
+        if ((ps & PT_PS_LITE_X2) != 0u)
         {
             uint sLite = RcBounceSeed(pathSeed, 2u, 0x4c495448u);
-            LiteCandidatePoint(MapPixelID(imgSize, PtPixel()), liteL, rcp((float)N), sLite);
+            LiteCandidatePoint(sampleIdx, liteL, rcp((float)N), sLite);
         }
 #endif
+        ps = PtPsInit(PtPsSample(ps) + 1u);
     }
 
     total /= (float)N;
@@ -1011,6 +1080,6 @@ void PT_ENTRY_NAME()
     //dist guide now comes from the camera pass's slot-4 reflection probe in
     //Pass_shading, so this kernel touches no reservoir plane at all.)
 #if !SHARC_UPDATE_PASS
-    gScratchPing[uint3(PtPixel(), 2)] = float4(total, 0.0f);
+    gScratchPing[uint3((uint2)UnmapPixelID(pixelIdx, imgSize), 2)] = float4(total, 0.0f);
 #endif
 }
