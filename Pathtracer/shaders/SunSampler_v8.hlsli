@@ -1065,7 +1065,7 @@ inline float3 LimbDarkening(float mu)
     return max(ld, 0.0f);
 }
 
-inline SunState ComputeSunState()
+inline SunState ComputeSunStateInline()
 {
     SunState S;
 
@@ -1106,6 +1106,19 @@ inline SunState ComputeSunState()
     S.radiance = S.tint * SUN_INTENSITY_VAL * S.visible / S.omega;
 
     return S;
+}
+
+#include "SkyBake_v8.hlsli"
+
+// Pass_pt (SKYBAKE_CONSUMER): every caller there shares the camera observer,
+// so the state comes from the per-frame bake instead of a march per call.
+inline SunState ComputeSunState()
+{
+#if SKYBAKE_CONSUMER
+    return SkyBakeLoadSunState();
+#else
+    return ComputeSunStateInline();
+#endif
 }
 
 SunSampleResult SampleSun(float2 u)
@@ -1261,6 +1274,23 @@ float3 EvaluateStars(float3 rayDir)
 // Full atmosphere+cloud march lives in EvaluateAtmosphereAndClouds and is
 // only called from Pass_clouds_primary_v8.
 
+// Atmosphere along v from the observer: in-scatter (solar-irradiance units),
+// the view transmittance and whether the ray ends on the planet (0 or 1; the
+// LUT path blends the two across the horizon). Marched per call, or read from
+// the per-frame sky-view LUT (SKYBAKE_CONSUMER, Pass_pt only: its observer is
+// the camera for every miss).
+inline void SkyAtmosphere(float3 v, float3 sunDir,
+                          out float3 scatter, out float3 viewTr, out float hitPlanet)
+{
+#if SKYBAKE_CONSUMER
+    SkyBakeLoadView(v, scatter, viewTr, hitPlanet);
+#else
+    bool hit;
+    scatter   = IntegrateScattering(v, sunDir, viewTr, hit);
+    hitPlanet = hit ? 1.0f : 0.0f;
+#endif
+}
+
 float3 EvaluateSkyBackground(float3 rayDir)
 {
 #if ATM_DEBUG_RING == 3
@@ -1277,10 +1307,11 @@ float3 EvaluateSkyBackground(float3 rayDir)
     float3 O       = g_skyObserverPlanet;
 
     //physical scattering, viewTr is the real atmospheric transmittance along
-    //the integrated path (from observer to atmosphere top OR planet surface),
-    bool   hitPlanet;
-    float3 viewTr;
-    float3 scatter = IntegrateScattering(v, S.dirWS, viewTr, hitPlanet);
+    //the integrated path (from observer to atmosphere top OR planet surface);
+    //marched here, or read from the per-frame sky-view LUT under Pass_pt
+    float3 scatter, viewTr;
+    float  hitPlanet;
+    SkyAtmosphere(v, S.dirWS, scatter, viewTr, hitPlanet);
 
     float3 daySky = scatter * SKY_INTENSITY;
 
@@ -1305,13 +1336,14 @@ float3 EvaluateSkyBackground(float3 rayDir)
     float mu            = saturate(dot(v, WORLD_UP));
     float3 nightBase    = SKY_NIGHT_BASE * skyNightBaseIntensity
                                          * lerp(1.6f, 1.0f, pow(mu, 0.7f));
-    nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f);
+    nightBase          *= atmosResidual * (1.0f - hitPlanet);
 
     // Stars gated by atmospheric scatter only — NO sun-elevation gate, or
     // orbital daytime hides them (scatter ≈ 0 at altitude even with sun up).
     float3 starShield = exp(-scatter * SKY_STAR_SCATTER_SHIELD);
-    float3 stars      = hitPlanet ? float3(0, 0, 0)
-                                  : (EvaluateStars(v) * viewTr * starShield);
+    float3 stars      = (hitPlanet < 1.0f)
+                      ? (EvaluateStars(v) * viewTr * starShield * (1.0f - hitPlanet))
+                      : float3(0, 0, 0);
 
     return lerp(nightBase, daySky, tw) + stars;
 }

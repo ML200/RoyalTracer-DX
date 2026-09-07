@@ -35,6 +35,10 @@ Renderer::Renderer(UINT width, UINT height)
         //L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_spmis_reset_v8.hlsl|cs:16x16",           L"barrier",
         L"Pass_camera_v8.hlsl|rg",                      L"barrier",
+        //Regular path tracer only (skipped under ReSTIR): the frame's sun
+        //state + sky-view LUT for the training and bounce kernels' misses and
+        //sun NEE (SkyBake_v8.hlsli; fx:512 = SKYBAKE_GROUPS).
+        L"Pass_pt_skybake_v8.hlsl|fx:512",              L"barrier",
         L"Pass_sharc_prepare_v8.hlsl|fx:4096",           L"barrier",
         L"Pass_sharc_update_v8.hlsl|rg",                 L"barrier",
         L"Pass_sharc_resolve_v8.hlsl|fx:4096",           L"barrier",
@@ -42,11 +46,12 @@ Renderer::Renderer(UINT width, UINT height)
         //Clean RIS-free path tracer. Exactly ONE of Pass_raygen / Pass_pt
         //dispatches per frame — the pass loop skips the inactive one (and,
         //under PT, every reservoir pass) by integratorMode.
+        //Light-tree descent of the primary vertex's NEE sample, out of the
+        //bounce kernel (Pass_pt_nee_v8.hlsl); Pass_pt reads its record.
+        L"Pass_pt_nee_v8.hlsl|cs:16x16",                L"barrier",
         L"Pass_pt_v8.hlsl|rg",                          L"barrier",
         //ReSTIR lite (RestirLite_v8.hlsli): the primary vertex's diffuse lobe,
         //resampled. PT only; the pass loop skips them otherwise.
-        L"Pass_lite_dup_v8.hlsl|cs:16x16",              L"barrier",
-        L"Pass_lite_temporal_v8.hlsl|cs:16x16",         L"barrier",
         L"Pass_lite_shift_v8.hlsl|cs:16x16",            L"barrier",
         L"Pass_lite_merge_v8.hlsl|cs:16x16",            L"barrier",
         L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
@@ -1955,17 +1960,12 @@ void Renderer::PopulateCommandList() {
     if (useSharc) m_sharcResetPending = false;
     if (usePtKernel) baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
     // ReSTIR lite (LITE_FLAG_*, SharcLayout.h): regular path tracer only.
-    // Temporal reuse is withheld for one frame whenever the history buffers
-    // may be stale (integrator switch, resolution change, first active frame).
+    // Spatial reuse only: nothing lite outlives the frame, so no history
+    // validity tracking is needed.
     const bool liteActive = usePtKernel && rs.liteEnabled;
-    const bool liteHistoryValid = m_liteWasActive && !dlssResChanged && !integratorChanged;
-    m_liteWasActive = liteActive;
     if (liteActive) {
         baseFlags |= LITE_FLAG_ENABLED
-            | ((rs.liteTemporal && liteHistoryValid) ? LITE_FLAG_TEMPORAL : 0u)
             | (rs.liteSpatial ? LITE_FLAG_SPATIAL : 0u)
-            | (rs.litePermutation ? LITE_FLAG_PERMUTE : 0u)
-            | (rs.liteDupMap ? LITE_FLAG_DUPMAP : 0u)
             | (rs.liteUnshadowedTargets ? LITE_FLAG_UNSHADOWED : 0u)
             | (rs.liteDebugView ? LITE_FLAG_DEBUG : 0u);
     }
@@ -1973,12 +1973,11 @@ void Renderer::PopulateCommandList() {
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
-    // ReSTIR lite takes over the deprecated pipeline's slots 4-8 and 12 under
-    // the regular tracer (RestirLite_v8.hlsli aliases): confidence caps, the
-    // partner count and one packed wrap offset + flip/transpose per reuse
+    // ReSTIR lite takes over the deprecated pipeline's slots 5-8 and 12 under
+    // the regular tracer (RestirLite_v8.hlsli aliases): the confidence cap,
+    // the partner count and one packed wrap offset + flip/transpose per reuse
     // table, redrawn every frame so the pair pattern never repeats.
     if (liteActive) {
-        rsConsts[4] = (UINT)std::clamp(rs.liteTempMcap, 1, 255);
         rsConsts[5] = (UINT)std::clamp(rs.liteSpatMcap, 1, 255);
         rsConsts[6] = (UINT)std::clamp(rs.liteSpatSlots, 0, (int)LITE_SLOTS_MAX);
         const UINT sizes[3] = { LITE_REUSE_SIZE0, LITE_REUSE_SIZE1, LITE_REUSE_SIZE2 };
@@ -2333,6 +2332,7 @@ void Renderer::PopulateCommandList() {
     };
 
     m_sharcTimingMask = 0u;
+    bool ptTimerOpen = false;
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
 
@@ -2365,28 +2365,29 @@ void Renderer::PopulateCommandList() {
                 };
                 if (kRestirOnly.count(p.file)) { skipPass(); continue; }
             } else {
-                if (p.file == L"Pass_pt_v8.hlsl") { skipPass(); continue; }
+                if (p.file == L"Pass_pt_v8.hlsl" || p.file == L"Pass_pt_nee_v8.hlsl" ||
+                    p.file == L"Pass_pt_skybake_v8.hlsl") { skipPass(); continue; }
             }
             // ReSTIR lite passes run only under the regular tracer with lite on;
-            // the duplication map only feeds temporal reuse, the shift only spatial.
+            // the shift only with spatial reuse.
             if (p.file.rfind(L"Pass_lite_", 0) == 0) {
-                const bool run = liteActive &&
-                    (p.file == L"Pass_lite_dup_v8.hlsl" ? (rs.liteDupMap && rs.liteTemporal) :
-                     p.file == L"Pass_lite_shift_v8.hlsl" ? rs.liteSpatial : true);
+                const bool run = liteActive && (p.file != L"Pass_lite_shift_v8.hlsl" || rs.liteSpatial);
                 if (!run) { skipPass(); continue; }
             }
         }
 
         int cacheTimer = -1;
+        // The PT timer spans the primary-vertex NEE prefetch and the bounce
+        // kernel: the prefetch opens it, Pass_pt closes it.
+        bool timerBegin = true, timerEnd = true;
         if (p.file == L"Pass_sharc_prepare_v8.hlsl") cacheTimer = 0;
         else if (p.file == L"Pass_sharc_update_v8.hlsl") cacheTimer = 1;
         else if (p.file == L"Pass_sharc_resolve_v8.hlsl") cacheTimer = 2;
-        else if (p.file == L"Pass_pt_v8.hlsl") cacheTimer = 3;
-        else if (p.file == L"Pass_lite_dup_v8.hlsl") cacheTimer = 4;
-        else if (p.file == L"Pass_lite_temporal_v8.hlsl") cacheTimer = 5;
-        else if (p.file == L"Pass_lite_shift_v8.hlsl") cacheTimer = 6;
-        else if (p.file == L"Pass_lite_merge_v8.hlsl") cacheTimer = 7;
-        if (cacheTimer >= 0)
+        else if (p.file == L"Pass_pt_nee_v8.hlsl") { cacheTimer = 3; timerEnd = false; ptTimerOpen = true; }
+        else if (p.file == L"Pass_pt_v8.hlsl") { cacheTimer = 3; timerBegin = !ptTimerOpen; }
+        else if (p.file == L"Pass_lite_shift_v8.hlsl") cacheTimer = 4;
+        else if (p.file == L"Pass_lite_merge_v8.hlsl") cacheTimer = 5;
+        if (cacheTimer >= 0 && timerBegin)
             cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
 
         switch (p.stage) {
@@ -2463,6 +2464,19 @@ void Renderer::PopulateCommandList() {
             }
 
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
+            // The surface-shadow call returns one with clouds disabled. Its RNG
+            // stream ends at sun NEE, so omitting that inactive block does not
+            // change any subsequent sample. Debug views use the full kernel.
+            const bool noSurfaceCloudShadow = m_camera.cloudSettings.enabled < 0.5f ||
+                m_camera.cloudSettings.cloudShadowOnSurfaces <= 0.5f;
+            if (noSurfaceCloudShadow && sharcDebugMode == 0u) {
+                const wchar_t* fastName = p.file == L"Pass_pt_v8.hlsl" ? L"Pass_pt_v8_fast" :
+                    p.file == L"Pass_sharc_update_v8.hlsl" ? L"Pass_sharc_update_v8_fast" : nullptr;
+                if (fastName) {
+                    const uint32_t fastSlot = m_passes.PassIndexByFile(fastName);
+                    if (fastSlot != UINT32_MAX) rgSlot = fastSlot;
+                }
+            }
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
             raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
             //Pass_shift_v8 (the unified spatial+temporal shift mapping, ONE
@@ -2712,7 +2726,7 @@ void Renderer::PopulateCommandList() {
 
         default: break;
         } // switch
-        if (cacheTimer >= 0) {
+        if (cacheTimer >= 0 && timerEnd) {
             UINT query = (UINT)cacheTimer * 2u;
             cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1u);
             cmdList->ResolveQueryData(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,

@@ -24,32 +24,27 @@
 // Target function p_hat_j(y) = lum(albedo_j * L(y)) / pi * G_j(y) * V_j(y):
 // a Lambertian proxy (the exact gated lobe shades the winner), the
 // geometric factor in area measure for points and solid angle for
-// directions, and the receiver's visibility of the point. With
-// LITE_FLAG_UNSHADOWED (the default) the reuse targets drop V and only the
-// winner traces a shadow ray for its shading; generation still drops
-// occluded NEE candidates, so the reuse MIS can over-credit a neighbour or
-// the history in a thin band along its own shadow edges (the classic
-// visibility-reuse compromise, measured as invisible next to the sampling
-// noise, ~0.2 ms cheaper). Without the flag visibility is in every target
-// of every stage, so the supports of all strategies agree and the estimator
-// is exact: one shadow ray per evaluated pair, two in the temporal pass and
-// one per partner in the spatial shift.
+// directions, and the receiver's visibility of the point. Visibility is in
+// every target of every stage, so the supports of all strategies agree and
+// the estimator is exact: one shadow ray per partner in the spatial shift.
+// The A/B option LITE_FLAG_UNSHADOWED (off by default) drops V from the
+// reuse targets and traces only the winner; generation still drops occluded
+// NEE candidates, so the reuse MIS then over-credits a neighbour in a thin
+// band along its own shadow edges (the classic visibility-reuse compromise,
+// ~0.2 ms cheaper).
 //
-// Temporal reuse: reprojected history through the permutation sampling of
-// the deprecated pipeline (a 4x4 shuffle each frame decorrelates the
-// chains), the duplication-map confidence collapse, balance-heuristic MIS
-// between the two strategies. Spatial reuse: the paired reuse of self-
-// inverting delta tables (Lin, Kettunen, Wyman 2026): a partner's partner is
-// the pixel itself, so each pixel evaluates and stores its own target of
-// every partner's sample once, and the merge reads both directions of every
-// pair. Defensive pairwise MIS with confidence weights (Bitterli 2022).
+// Spatial reuse: the paired reuse of self-inverting delta tables (Lin,
+// Kettunen, Wyman 2026): a partner's partner is the pixel itself, so each
+// pixel evaluates and stores its own target of every partner's sample once,
+// and the merge reads both directions of every pair. Defensive pairwise MIS
+// with confidence weights (Bitterli 2022). There is no temporal reuse:
+// spatial reuse alone gives the denoiser enough, and reprojected history
+// left artifacts after denoising, so nothing lite outlives the frame.
 //
 // Buffers. g_Reservoirs_current holds this frame's candidate reservoir
-// (written by Pass_pt, refined in place by the temporal pass);
-// g_Reservoirs_last holds the previous frame's final reservoir and receives
-// this frame's. Partner evaluations live in the path-state buffer's first
-// 32 bytes per pixel (unused under the regular tracer), the duplication map
-// in scratch slice 6, the reuse tables in the SHaRC allocation.
+// (written by Pass_pt, read by the spatial passes). Partner evaluations
+// live in the path-state buffer's first 48 bytes per pixel (unused under the
+// regular tracer), the reuse tables in the SHaRC allocation.
 #ifndef RESTIR_LITE_V8_HLSLI
 #define RESTIR_LITE_V8_HLSLI
 #include "Sharc_v8.hlsli"
@@ -59,17 +54,13 @@
 //====================================
 // Slots of the deprecated reservoir pipeline, repurposed while the regular
 // path tracer owns the frame (Renderer.cpp packs them from ReSTIRSettings).
-#define lite_tempMcap  rs_tempMcap      // slot 4: temporal confidence cap
 #define lite_spatMcap  rs_spatCountMax  // slot 5: spatial confidence cap
 #define lite_spatSlots rs_spatCountMin  // slot 6: partners per pixel (0..3)
 #define lite_reuse0    rs_spatRadMax    // slots 7, 8, 12: per-frame reuse table transforms
 #define lite_reuse1    rs_spatRadMin
 #define lite_reuse2    rs_spatTries
 #define LITE_ENABLED    ((rs_flags & LITE_FLAG_ENABLED) != 0u)
-#define LITE_TEMPORAL   ((rs_flags & LITE_FLAG_TEMPORAL) != 0u)
 #define LITE_SPATIAL    ((rs_flags & LITE_FLAG_SPATIAL) != 0u)
-#define LITE_PERMUTE    ((rs_flags & LITE_FLAG_PERMUTE) != 0u)
-#define LITE_DUPMAP     ((rs_flags & LITE_FLAG_DUPMAP) != 0u)
 #define LITE_UNSHADOWED ((rs_flags & LITE_FLAG_UNSHADOWED) != 0u)
 #define LITE_DEBUG      ((rs_flags & LITE_FLAG_DEBUG) != 0u)
 
@@ -82,8 +73,6 @@ static const uint  LITE_RESERVOIR_BYTES = 32u;
 static const float LITE_RADIANCE_SCALE = 64.0f;       // RGB9E5 range 2^16 -> 4e6
 static const float LITE_TINT_STEPS = 127.0f;
 static const float LITE_INV_PI = 0.31830988618f;
-static const uint  LITE_DUP_SCRATCH = 6u;    // scratch slice: duplication map in .x
-static const float LITE_DUP_NORM = 1.0f / 288.0f; // 17x17 window minus the centre
 
 //====================================
 //SAMPLE AND RESERVOIR
@@ -325,13 +314,6 @@ float3 LiteExactDiffuse(SDRecord sd, float2 iors, float3 dir)
 //====================================
 //RESAMPLING MIS
 //====================================
-// Two strategies (temporal): balance heuristic with confidence weights.
-float LiteBalance(float Ma, float pa, float Mb, float pb)
-{
-    const float d = Ma * pa + Mb * pb;
-    return d > 0.0f ? Ma * pa / d : 0.0f;
-}
-
 // Defensive pairwise MIS (Bitterli 2022) for a canonical c against partners
 // i with confidences M. O = sum of the partners' confidences, Msum = O + Mc.
 // The partner weight compares its own target with the canonical's at its

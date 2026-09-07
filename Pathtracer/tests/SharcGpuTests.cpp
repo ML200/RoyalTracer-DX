@@ -481,16 +481,15 @@ int main(int argc, char** argv) try {
         float worstMis = 0.0f;
         for (int i = 0; i < 64; ++i) worstMis = std::max(worstMis, mis[i]);
         Require(worstMis < 1e-5f, "Lite resampling MIS weights do not sum to one");
-        for (uint32_t mode : {2u, 3u}) {
-            auto merged = r.Query(mode, 10);
+        {
+            auto merged = r.Query(2, 10);
             double mean = 0.0;
             for (int i = 0; i < 64; ++i) mean += merged[i];
             mean /= 64.0;
-            std::cout << "Lite " << (mode == 2u ? "paired spatial" : "temporal") << " merge: estimate "
-                << mean << " vs exact " << merged[64] << "\n";
+            std::cout << "Lite paired spatial merge: estimate " << mean << " vs exact " << merged[64] << "\n";
             Require(std::abs(mean / merged[64] - 1.0) < 0.01, "Lite resampling is biased");
         }
-        std::cout << "PASS: lite reservoir packing, pairwise/temporal MIS normalization, unbiased merges\n";
+        std::cout << "PASS: lite reservoir packing, pairwise MIS normalization, unbiased merge\n";
     }
     return 0;
 } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

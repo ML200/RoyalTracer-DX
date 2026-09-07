@@ -211,12 +211,27 @@ uint GuideFind(GuideKey k)
     uint bucket = GuideBucketOf(hash);
     uint states[SHARC_BUCKET_SIZE];
     GuideLoadBucket(bucket, states);
+#if SHARC_COMPACT_QUERY
+    // Same compaction as SharcQueryNode: one key-load/compare body instead of
+    // sixteen, visited lowest slot first so the same entry is returned.
+    uint matchingSlots = 0u;
+    [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
+        if (states[p] == hash) matchingSlots |= 1u << p;
+    [loop] while (matchingSlots != 0u)
+    {
+        const uint p = (uint)firstbitlow(matchingSlots);
+        matchingSlots &= matchingSlots - 1u;
+        uint e = GuideEntryAddress(bucket * SHARC_BUCKET_SIZE + p);
+        if (GuideKeyMatches(GuideLoadKey(e), k)) return e;
+    }
+#else
     [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
     {
         if (states[p] != hash) continue;
         uint e = GuideEntryAddress(bucket * SHARC_BUCKET_SIZE + p);
         if (GuideKeyMatches(GuideLoadKey(e), k)) return e;
     }
+#endif
     return GUIDE_INVALID;
 }
 

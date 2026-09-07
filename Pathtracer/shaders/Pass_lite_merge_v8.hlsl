@@ -7,9 +7,8 @@
 //PAIRED SPATIAL MERGE AND SHADING
 //====================================
 // Defensive pairwise MIS over the pixel's partners (both directions of each
-// pair come from the shift pass), one resampling step, exact shading of the
-// winner into the radiance estimate, and the final reservoir for the next
-// frame's temporal pass.
+// pair come from the shift pass), one resampling step and exact shading of
+// the winner into the radiance estimate. Nothing lite outlives the frame.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -20,12 +19,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const uint px = MapPixelID(dims, (int2)pixel);
     if (load_flagsWord(g_sample_current, px) & SD_FLAG_NOBOUNCE) return;
     LiteReservoir rc = LiteLoad(g_Reservoirs_current, px);
-    if (rc.M == 0u)
-    {
-        // No diffuse lobe here this frame: next frame must not reuse the stale entry.
-        LiteStore(g_Reservoirs_last, px, LiteEmpty(0u));
-        return;
-    }
+    if (rc.M == 0u) return;
     const SDRecord sd = load_SD(g_sample_current, px);
     const LiteReceiver rcv = LiteReceiverFromSD(sd);
     const float cap = (float)max(lite_spatMcap, 1u);
@@ -116,12 +110,10 @@ void main(uint3 tid : SV_DispatchThreadID)
         nySel = LiteWorldNormal(ri.s);
         lSel = LiteConnect(rcv, ri.s, ySel, nySel);
     }
-    outR.M = min((uint)round(Msum), 255u);
     outR.W = (wsum > 0.0f && phatSel > 0.0f) ? LiteClampW(wsum / phatSel) : 0.0f;
     const bool shade = outR.W > 0.0f && LiteHasSample(outR.s) && LiteLinkValid(lSel);
     // Unshadowed targets (A/B): the winner's visibility is traced exactly once here.
     if (shade && LITE_UNSHADOWED) visSel = LiteVisibility(rcv, outR.s, lSel, ySel, nySel);
-    outR.tint = visSel;
 
     //====================================
     //SHADING
@@ -138,5 +130,4 @@ void main(uint3 tid : SV_DispatchThreadID)
     }
     const float4 estimate = gScratchPing[uint3(pixel, 2)];
     gScratchPing[uint3(pixel, 2)] = LITE_DEBUG ? float4(contribution, 0.0f) : estimate + float4(contribution, 0.0f);
-    LiteStore(g_Reservoirs_last, px, outR);
 }

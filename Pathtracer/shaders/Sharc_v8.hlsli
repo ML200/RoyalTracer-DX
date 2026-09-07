@@ -1,6 +1,12 @@
 #ifndef SHARC_V8_HLSLI
 #define SHARC_V8_HLSLI
 #include "SharcLayout.h"
+#ifndef SHARC_COMPACT_QUERY
+#define SHARC_COMPACT_QUERY 0
+#endif
+#if SHARC_COMPACT_QUERY && SHARC_BUCKET_SIZE > 32
+#error SHARC_COMPACT_QUERY requires a bucket that fits in a uint mask
+#endif
 
 // Original SHaRC implementation. See docs/SHARC.md for the estimators and sources.
 // Update and query are separate dispatches. Metadata is immutable between prepare
@@ -484,9 +490,22 @@ void SharcQueryNode(SharcSurface s, uint level, uint axis, int3 node, float3 rel
     const bool merged = SharcMergedNode(states, hash);
     sum = 0.0f; support = 0.0f;
     float geometricSupport = 0.0f;
+#if SHARC_COMPACT_QUERY
+    // Compact the immutable bucket snapshot into matching slots. Iterating
+    // lowest bit first preserves the original floating-point accumulation order
+    // while compiling just one descriptor/history reconstruction body.
+    uint matchingSlots = 0u;
+    [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
+        if (states[p] == hash) matchingSlots |= 1u << p;
+    [loop] while (matchingSlots != 0u)
+    {
+        const uint p = (uint)firstbitlow(matchingSlots);
+        matchingSlots &= matchingSlots - 1u;
+#else
     [unroll] for (uint p = 0u; p < SHARC_BUCKET_SIZE; ++p)
     {
         if (states[p] != hash) continue;
+#endif
         uint e = SharcEntryAddress(bucket * SHARC_BUCKET_SIZE + p);
         // Descriptor and history are fetched together, before any test, so a
         // matching record costs one memory round trip rather than four.
@@ -569,14 +588,20 @@ bool SharcQueryDraws(SharcSurface s, inout uint seed, out float3 radiance)
     return all(isfinite(radiance));
 }
 
+bool SharcQueryFootprintAccepted(float3 position, float pathSpread, inout uint seed)
+{
+    // Require a path footprint several times wider than even the coarser cell.
+    float footprint = SharcFootprintRamp(pathSpread, (uint)SharcLevel(position));
+    if (footprint <= 0.0f) return false;
+    if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
+    return true;
+}
+
 bool SharcQuery(SharcSurface s, float pathSpread, inout uint seed, out float3 radiance)
 {
     radiance = 0.0f;
-    // Require a path footprint several times wider than even the coarser cell.
-    float footprint = SharcFootprintRamp(pathSpread, (uint)SharcLevel(s.position));
-    if (footprint <= 0.0f) return false;
-    if (RandomFloatSingle(seed) >= footprint * (31.0f / 32.0f)) return false;
-    return SharcQueryDraws(s, seed, radiance);
+    return SharcQueryFootprintAccepted(s.position, pathSpread, seed) &&
+        SharcQueryDraws(s, seed, radiance);
 }
 
 // Tail termination for a training path at its depth cap: any resolved record

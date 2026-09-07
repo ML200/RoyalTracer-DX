@@ -647,6 +647,16 @@ void Renderer::CreateRaytracingPipeline() {
             pipeline.AddLibrary(lite.Get(), { L"Pass_raygen_v8_lite" });
             rayGenNames.push_back(L"Pass_raygen_v8_lite");
         }
+        if (base == L"Pass_pt_v8" || base == L"Pass_sharc_update_v8") {
+            const bool training = base == L"Pass_sharc_update_v8";
+            const std::wstring fastName = base + L"_fast";
+            ComPtr<IDxcBlob> fast = nv_helpers_dx12::CompileShaderLibrary(L"Pass_pt_v8.hlsl",
+                { L"PT_ENTRY_NAME=" + fastName, L"PT_NO_DEBUG=1",
+                  L"PT_NO_CLOUD_SURFACE_SHADOW=1", L"SHARC_COMPACT_QUERY=1",
+                  training ? L"SHARC_UPDATE_PASS=1" : L"SHARC_UPDATE_PASS=0" });
+            pipeline.AddLibrary(fast.Get(), { fastName.c_str() });
+            rayGenNames.push_back(fastName);
+        }
     }
 
     // Fixed shaders
@@ -758,7 +768,7 @@ void Renderer::CreatePathStateBuffer() {
     if (!m_sharcTimingHeap) {
         D3D12_QUERY_HEAP_DESC queries{};
         queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        queries.Count = 16; // 8 timed passes (SHaRC prepare/train/resolve, PT, lite dup/temporal/shift/merge)
+        queries.Count = 16; // 8 timed-pass slots: SHaRC prepare/train/resolve, PT (with its NEE prefetch), lite shift/merge, two spare
         ThrowIfFailed(m_ctx.Device()->CreateQueryHeap(&queries, IID_PPV_ARGS(&m_sharcTimingHeap)));
         auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
         auto desc = CD3DX12_RESOURCE_DESC::Buffer(16u * sizeof(UINT64));
@@ -781,8 +791,12 @@ void Renderer::CreatePathStateBuffer() {
     // a 32B-padded global offset counter + a 32B/px sector-aligned AoS search-record
     // region (SP_SRCH = {cell|worldPos, conf|worldN}, one 32B load per select probe)
     // => 18*TileAlignedPx + 8 uints. Resolution-dependent -> recreated on resize.
+    // Under the regular path tracer the grid is idle and its first SKYBAKE_BYTES
+    // hold the per-frame sky bake (SkyBakeLayout.h); tiny render resolutions
+    // must still fit it.
     m_spmisBuffer = rf.CreateUAVBuffer(
-        (18u * TileAlignedPx(GetWidth(), GetHeight()) + 8u) * 4u, L"SPMISBuffer");
+        std::max<UINT>((18u * TileAlignedPx(GetWidth(), GetHeight()) + 8u) * 4u, SKYBAKE_BYTES),
+        L"SPMISBuffer");
 
     // Active-pixel queue (root UAV u26, g_raygenQueue): [0] count, [16+i*4] packed
     // survivor pixel coords. Camera appends non-terminal pixels; the raygen bounce
@@ -1461,6 +1475,18 @@ void Renderer::CreateShaderBindingTable() {
     if (m_passes.PassIndexByFile(L"Pass_raygen_v8.hlsl") != UINT32_MAX) {
         m_raygenLiteSbtSlot = rgEntryCount;
         m_sbtHelper.AddRayGenerationProgram(L"Pass_raygen_v8_lite", { heapPointer });
+        rgEntryCount++;
+    }
+
+    // Append specializations after the token records so existing pass indices
+    // and the indirect-dispatch templates keep their original mapping.
+    for (const auto* file : { L"Pass_pt_v8.hlsl", L"Pass_sharc_update_v8.hlsl" }) {
+        if (m_passes.PassIndexByFile(file) == UINT32_MAX) continue;
+        std::wstring base(file);
+        base.resize(base.size() - 5u);
+        const std::wstring fastName = base + L"_fast";
+        m_passes.RegisterPassIndex(fastName, rgEntryCount++);
+        m_sbtHelper.AddRayGenerationProgram(fastName.c_str(), { heapPointer });
     }
 
     m_sbtHelper.AddMissProgram(L"Miss", {});

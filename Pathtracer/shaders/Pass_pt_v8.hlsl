@@ -1,7 +1,22 @@
 // PT only reads the primary extras after the camera barrier; it does not use
 // ReSTIR's scratch/reload scheme that requires globally coherent accesses.
 #define SPMIS_GRID_NONCOHERENT
+// Per-frame sun state and sky-view LUT (Pass_pt_skybake_v8.hlsl, SkyBake_v8.hlsli):
+// ComputeSunState and the bounce-miss atmosphere read them instead of marching
+// the atmosphere per call. Every miss and sun sample here uses the camera observer.
+#define SKYBAKE_CONSUMER 1
+#ifndef PT_NO_DEBUG
+#define PT_NO_DEBUG 0
+#endif
+#ifndef PT_NO_CLOUD_SURFACE_SHADOW
+#define PT_NO_CLOUD_SURFACE_SHADOW 0
+#endif
 #include "Includes_v8.hlsli"
+// The host selects this specialization only with cache debug views off.
+#if PT_NO_DEBUG
+#undef SHARC_DEBUG_MODE
+#define SHARC_DEBUG_MODE 0u
+#endif
 #include "Raygen_Common_v8.hlsli"
 #ifndef SHARC_UPDATE_PASS
 #define SHARC_UPDATE_PASS 0
@@ -42,8 +57,14 @@
 //DLSS-RR guides all come from the camera/shading passes, so shading /
 //clouds / postprocess run unchanged and this kernel touches no reservoir.
 //
-//SER: every trace goes through TraceRay_Custom (dx::HitObject +
-//dx::MaybeReorderThread, instance-sorted hint). Live state across the trace is
+//Two helper passes feed it (both PT-only, skipped under ReSTIR):
+//Pass_pt_skybake_v8 bakes the frame's sun state and sky-view LUT, and
+//Pass_pt_nee_v8 runs the primary vertex's light-tree descent, so neither
+//is part of this kernel's instruction footprint (see those files).
+//
+//SER: the scatter trace and its next vertex's cache decision precede one
+//HitObject reorder, grouping the surviving shading work by instance.
+//Live state across the trace is
 //kept to the path itself: the ray is never read back from the HitObject (the
 //compiler would fold that to the pre-trace registers), the direction is its
 //packed loop copy and the hit position comes from the triangle; the training
@@ -67,6 +88,125 @@ uint2 PtPixel()
 // Radiance estimate accumulation (a register: memory round trips at every
 // event cost more than the 12 live bytes; the training pass never reads it).
 #define PtAccumulate(value) (total += (value))
+
+// Prepare a vertex before its one trace reorder. Cache termination and lobe
+// roulette happen here, so only surviving lanes enter the expensive NEE work.
+bool PtPrepareVertex(HitContext ctx, float3 geometricNormal, float3 rayDir,
+    bool sssEntered, uint pathSeed, uint depth, uint maxBounces, float pathSpread,
+    inout SamplingP spPath, out bool cacheSurface, out bool diffuseCached, inout float3 throughput,
+#if SHARC_UPDATE_PASS
+    inout SharcTrainingState training
+#else
+    bool liteX2, bool litePath, inout float3 total, inout float3 liteL,
+    inout half3 liteSuffix
+#endif
+)
+{
+    diffuseCached = false;
+    // Cache first, then local NEE. A record stores the DIFFUSE lobe's
+    // outgoing radiance at this vertex (its own direct light through that
+    // lobe included), demodulated by Kd and by the view-dependent
+    // transmission of the layers above it. A hit adds that share and drops
+    // the diffuse lobe from this vertex; sheen, coat and GGX continue on
+    // the exact tracer with their own strategy mix, so nothing specular is
+    // ever cached. The primary vertex is never queried.
+    cacheSurface = sharc_enabled != 0u && !sssEntered &&
+        SharcMaterialEligible(ctx, spPath, geometricNormal);
+    if (cacheSurface && (SHARC_UPDATE_PASS || depth > 1))
+    {
+        const SharcSurface surface = SharcMakeSurface(ctx, geometricNormal);
+#if SHARC_UPDATE_PASS
+        const float layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
+        const bool queryable = pathSpread > 0.0f && layerT > 1e-3f;
+#else
+        float layerT = 0.0f;
+#endif
+        uint sCache = RcBounceSeed(pathSeed, (uint)depth, 0x53484152u);
+        float3 cached;
+        bool hit = false;
+#if SHARC_UPDATE_PASS
+        // Cache resampling: once a training path has registered a vertex,
+        // a confident record at the next eligible vertex supplies that
+        // vertex's diffuse share exactly as it would for a rendered path.
+        // Records keep being re-measured by the paths that do not resample
+        // (the query's confidence, footprint and 1/32 always-trace gates).
+        hit = queryable && training.count > 0u &&
+            SharcQuery(surface, pathSpread, sCache, cached);
+        // Last vertex before the depth cap: the loop would trace once more
+        // and drop the hit, training the suffix as darkness. Any resolved
+        // record for this vertex is an unbiased stand-in for that tail.
+        if (!hit && training.count > 0u && (uint)depth + 1u >= maxBounces)
+            hit = SharcQueryForced(surface, sCache, cached);
+        if (hit)
+            SharcTrainingRadiance(training, cached * layerT);
+        // Register BEFORE this vertex's NEE so the new record receives its
+        // own diffuse direct light. Leave at least half the path budget
+        // behind every training vertex; never train a capped tail as
+        // darkness. Views through a nearly opaque layer stack would need
+        // huge demodulation weights; other paths cover that record.
+        else if ((uint)depth < maxBounces / 2u && layerT >= 0.2f)
+            SharcTrainingVertex(training, surface, layerT,
+                RcBounceSeed(pathSeed, (uint)depth, 0x53504c54u));
+#else
+        // Share the reconstruction after the two acceptance policies.
+        // Each policy consumes the same cache RNG draws as before.
+        bool queryAccepted;
+        if (liteX2)
+        {
+            // First bounce of a lite path: the tracer's footprint ramp
+            // without its always-trace share (a miss only means the
+            // candidate's radiance is path traced instead of read).
+            const float ramp = SharcFootprintRamp(pathSpread, (uint)SharcLevel(ctx.hitPos));
+            queryAccepted = pathSpread > 0.0f && ramp > 0.0f && RandomFloatSingle(sCache) < ramp;
+        }
+        else
+            queryAccepted = pathSpread > 0.0f &&
+                SharcQueryFootprintAccepted(surface.position, pathSpread, sCache);
+        hit = queryAccepted && SharcQueryDraws(surface, sCache, cached);
+        // Misses and small footprints do not need layer demodulation.
+        // This uses only the cache RNG stream, so deferring the layer
+        // test preserves all NEE/BSDF draws and accepted contributions.
+        if (hit)
+        {
+            layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
+            hit = layerT > 1e-3f;
+        }
+        if (hit)
+        {
+            PtAccumulate(throughput * cached * layerT);
+            if (litePath)
+            {
+                // The record ends the diffuse suffix here: it holds this
+                // vertex's direct light already, so no NEE follows for
+                // it. x1's other lobes (the throughput) take the value
+                // and may carry on through this vertex's layers.
+                liteL += (float3)liteSuffix * cached * layerT;
+                liteSuffix = (half3)0.0f;
+                if (!any(throughput > 0.0f)) return false;
+            }
+        }
+#endif
+        if (hit)
+        {
+            // The diffuse lobe is accounted for; continue with whatever
+            // layers remain. A plain Lambertian vertex is finished here.
+            diffuseCached = true;
+            if (!DropDiffuseLobe(spPath)) return false;
+            // The remaining layers carry about 1 - layerT of this vertex's
+            // energy (the Fresnel of the stack). Roulette them BEFORE their
+            // NEE and scatter: a hit on a plain dielectric then ends here
+            // ~96% of the time instead of paying a full specular vertex
+            // for a 4% term. Survivors are compensated, so nothing is lost.
+            const float pSpecular = clamp(1.0f - layerT, 0.02f, 1.0f);
+            if (RandomFloatSingle(sCache) >= pSpecular) return false;
+            throughput *= rcp(pSpecular);
+#if SHARC_UPDATE_PASS
+            SharcTrainingScatter(training, rcp(pSpecular));
+#endif
+        }
+    }
+    return true;
+}
 
 [shader("raygeneration")]
 void PT_ENTRY_NAME()
@@ -215,8 +355,11 @@ void PT_ENTRY_NAME()
         float  liteRr     = 0.0f;        // luminance of x1's diffuse scatter weight (the suffix's roulette share)
 #endif
 
+        bool diffuseCached = false;
+        bool vertexAlive = true;
+
         [loop]
-        for (int16_t depth = 1; depth < (int)maxBounces; ++depth)
+        for (int16_t depth = 1; vertexAlive && depth < (int)maxBounces; ++depth)
         {
             float3 rayDir = UnpackNormal(rayDirPk);
 
@@ -249,110 +392,17 @@ void PT_ENTRY_NAME()
             const bool litePath = depth >= 2 && liteVertex;
 #endif
 
-            // Cache first, then local NEE. A record stores the DIFFUSE lobe's
-            // outgoing radiance at this vertex (its own direct light through that
-            // lobe included), demodulated by Kd and by the view-dependent
-            // transmission of the layers above it. A hit adds that share and drops
-            // the diffuse lobe from this vertex; sheen, coat and GGX continue on
-            // the exact tracer with their own strategy mix, so nothing specular is
-            // ever cached. The primary vertex is never queried.
-            const bool cacheSurface = sharc_enabled != 0u && !sssEntered &&
+            // Rebuild the small strategy mix after SER instead of carrying its
+            // four floats. Eligibility uses the full mix, before removing the
+            // diffuse lobe already accounted for at the preceding trace.
+            bool cacheSurface = sharc_enabled != 0u && !sssEntered &&
                 SharcMaterialEligible(ctx, spPath, geometricNormal);
-            if (cacheSurface && (SHARC_UPDATE_PASS || depth > 1))
-            {
-                const SharcSurface surface = SharcMakeSurface(ctx, geometricNormal);
 #if SHARC_UPDATE_PASS
-                const float layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
-                const bool queryable = diffuseDepth > 0 && layerT > 1e-3f;
-#else
-                float layerT = 0.0f;
+            if (depth == 1 && !PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
+                pathSeed, 1u, maxBounces, pathSpread, spPath, cacheSurface, diffuseCached,
+                throughput, training)) break;
 #endif
-                uint sCache = RcBounceSeed(pathSeed, (uint)depth, 0x53484152u);
-                float3 cached;
-                bool hit = false;
-#if SHARC_UPDATE_PASS
-                // Cache resampling: once a training path has registered a vertex,
-                // a confident record at the next eligible vertex supplies that
-                // vertex's diffuse share exactly as it would for a rendered path.
-                // Records keep being re-measured by the paths that do not resample
-                // (the query's confidence, footprint and 1/32 always-trace gates).
-                hit = queryable && training.count > 0u &&
-                    SharcQuery(surface, pathSpread, sCache, cached);
-                // Last vertex before the depth cap: the loop would trace once more
-                // and drop the hit, training the suffix as darkness. Any resolved
-                // record for this vertex is an unbiased stand-in for that tail.
-                if (!hit && training.count > 0u && (uint)depth + 1u >= maxBounces)
-                    hit = SharcQueryForced(surface, sCache, cached);
-                if (hit)
-                    SharcTrainingRadiance(training, cached * layerT);
-                // Register BEFORE this vertex's NEE so the new record receives its
-                // own diffuse direct light. Leave at least half the path budget
-                // behind every training vertex; never train a capped tail as
-                // darkness. Views through a nearly opaque layer stack would need
-                // huge demodulation weights; other paths cover that record.
-                else if ((uint)depth < maxBounces / 2u && layerT >= 0.2f)
-                    SharcTrainingVertex(training, surface, layerT,
-                        RcBounceSeed(pathSeed, (uint)depth, 0x53504c54u));
-#else
-                if (liteX2)
-                {
-                    // First bounce of a lite path: the tracer's footprint ramp
-                    // without its always-trace share (a miss only means the
-                    // candidate's radiance is path traced instead of read).
-                    const float ramp = SharcFootprintRamp(pathSpread, (uint)SharcLevel(ctx.hitPos));
-                    hit = diffuseDepth > 0 && ramp > 0.0f && RandomFloatSingle(sCache) < ramp &&
-                        SharcQueryDraws(surface, sCache, cached);
-                }
-                else
-                    hit = diffuseDepth > 0 && SharcQuery(surface, pathSpread, sCache, cached);
-                // Misses and small footprints do not need layer demodulation.
-                // This uses only the cache RNG stream, so deferring the layer
-                // test preserves all NEE/BSDF draws and accepted contributions.
-                if (hit)
-                {
-                    layerT = SharcLayerTransmission(spPath, ctx, -rayDir);
-                    hit = layerT > 1e-3f;
-                }
-                if (hit)
-                {
-                    PtAccumulate(throughput * cached * layerT);
-                    if (litePath)
-                    {
-                        // The record ends the diffuse suffix here: it holds this
-                        // vertex's direct light already, so no NEE follows for
-                        // it. x1's other lobes (the throughput) take the value
-                        // and may carry on through this vertex's layers.
-                        liteL += (float3)liteSuffix * cached * layerT;
-                        liteSuffix = (half3)0.0f;
-                        if (!any(throughput > 0.0f)) break;
-                    }
-                }
-#endif
-                if (hit)
-                {
-                    // The diffuse lobe is accounted for; continue with whatever
-                    // layers remain. A plain Lambertian vertex is finished here.
-                    if (!DropDiffuseLobe(spPath)) break;
-                    // The remaining layers carry about 1 - layerT of this vertex's
-                    // energy (the Fresnel of the stack). Roulette them BEFORE their
-                    // NEE and scatter: a hit on a plain dielectric then ends here
-                    // ~96% of the time instead of paying a full specular vertex
-                    // for a 4% term. Survivors are compensated, so nothing is lost.
-                    const float pSpecular = clamp(1.0f - layerT, 0.02f, 1.0f);
-                    if (RandomFloatSingle(sCache) >= pSpecular) break;
-                    throughput *= rcp(pSpecular);
-#if SHARC_UPDATE_PASS
-                    SharcTrainingScatter(training, rcp(pSpecular));
-#endif
-                }
-            }
-            // Lanes that just ended at the cache leave their waves sparse for the
-            // most expensive part of the vertex (light-tree sample, two shadow
-            // rays, cloud march). This is a COMPACTION, not a trace reorder:
-            // with a warm cache most lanes exit at the query above, and without
-            // it the survivors run that work in near-empty waves.
-            if (sharc_enabled != 0u && depth > 1)
-                dx::MaybeReorderThread(0x40u | (ctx.instID & 0x3Fu), 7u);
+            if (diffuseCached) DropDiffuseLobe(spPath);
 
 #if !SHARC_UPDATE_PASS
             // Pre-trace candidates (NEE) resample in registers and commit once;
@@ -388,7 +438,18 @@ void PT_ENTRY_NAME()
 #endif
                     if (tech == 0u)
                     {
-                        LT_LightSampleResult light = LT_SamplePointOnLight(ctx.hitPos, ctx.hitNormal, sNee);
+                        // Initial sample 0 of the primary vertex: the descent ran in
+                        // Pass_pt_nee_v8; continue its NEE stream from the record
+                        // (Path_State_v8.hlsli). Deeper vertices, further initial
+                        // samples and pixels without a record descend inline.
+                        LT_Sample treeSample;
+                        bool prefetched = false;
+#if !SHARC_UPDATE_PASS
+                        prefetched = depth == 1 && s == 0u &&
+                            load_pt_neePrefetch(g_pathStateBuffer, sampleIdx, treeSample.id, treeSample.pdf, sNee);
+#endif
+                        if (!prefetched) treeSample = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee);
+                        LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, treeSample, sNee);
 
                         const float3 toLight = light.position - ctx.hitPos;
                         const float  dist    = sqrt(dot(toLight, toLight));
@@ -433,6 +494,9 @@ void PT_ENTRY_NAME()
                     if (!any(visT > 0.0f))
                         continue;
 
+#if !PT_NO_CLOUD_SURFACE_SHADOW
+                    // Compiled out only when surface shadows are disabled or
+                    // clouds themselves are disabled (visibility is exactly one).
                     //sun-only cloud shadow (same block as raygen, runtime-gated)
                     if (tech == 1u && cloud_cloudShadowOnSurfaces > 0.5f)
                     {
@@ -443,6 +507,7 @@ void PT_ENTRY_NAME()
                                                         RandomFloatSingle(sNee));
                         radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
                     }
+#endif
 
                     // One traversal yields the full BSDF and the diffuse lobe's
                     // share: training labels fresh records with the share, and
@@ -549,6 +614,7 @@ void PT_ENTRY_NAME()
                     ctx.mediumMatID    = MEDIUM_INVALID;
                     ctx.absorptionTint = (half3)float3(1, 1, 1);
                     rayDirPk           = PackNormal(-w.exitNormal);
+                    diffuseCached = false;
                     continue;
                 }
             }
@@ -645,6 +711,7 @@ void PT_ENTRY_NAME()
             // Declared pdf for the emitter / sun MIS partner and the path spread:
             // the plain BSDF pdf, matching the NEE side above.
             prev_pdf = bdata.pdf;
+            const bool scatterHasSpread = SharcScatterHasSpread(sampledStrategy, ctx.matID, ctx.hitLocalPr);
             rayDir   = dir;
             rayDirPk = PackNormal(dir);
 
@@ -706,14 +773,11 @@ void PT_ENTRY_NAME()
             rayB.Direction = rayDir;
             rayB.TMin      = 0.00001f;
             rayB.TMax      = RAY_TMAX_PLANET;
+            TracePayload payload = (TracePayload)0;
+            dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, RAY_FLAG_FORCE_OMM_2_STATE,
+                0xFF, 0, 1, 0, rayB, payload);
 #if SHARC_UPDATE_PASS
-            // Lowest reorder bit: lanes whose suffix is about to be rouletted
-            // away sort together, so waves drain as a group instead of one lane
-            // at a time while the survivors keep full waves.
-            dx::HitObject hitObj = TraceRay_Custom(SceneBVH, rayB, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF,
-                training.suffixLuma < 0.25f ? 1u : 0u, 1u);
-#else
-            dx::HitObject hitObj = TraceRay_Custom(SceneBVH, rayB, RAY_FLAG_FORCE_OMM_2_STATE, 0xFF);
+            const uint traceSuffixHint = training.suffixLuma < 0.25f ? 1u : 0u;
 #endif
 
             //Nothing of the ray is read back from the HitObject: the compiler
@@ -868,8 +932,9 @@ void PT_ENTRY_NAME()
             ctx.hitPos         = hitPos_n;
             geometricNormal    = hinfo_n.geometricNormal;
             // Spread in area measure (distance / sqrt(pdf * receiver cosine)).
-            // Only a sampled diffuse lobe increases it; delta chains stay sharp.
-            if (sampledStrategy == 0u)
+            // Every continuous lobe can grow it; the PDF limits narrow lobes'
+            // spread and the samplers' true delta branches leave it unchanged.
+            if (scatterHasSpread)
                 pathSpread += hitT_n * sqrt(min(16.0f, rcp(max(prev_pdf *
                     abs(dot(geometricNormal, -rayDir)), 1e-6f))));
             ctx.hitNormal      = hinfo_n.hitNormal;
@@ -900,6 +965,29 @@ void PT_ENTRY_NAME()
                 if (known) GuideDiscover(guideEntry, ctx.hitPos, geometricNormal, Luma(seen),
                     SHARC_DEBUG_MODE == SHARC_DEBUG_GUIDING);
             }
+#endif
+            // Complete the next vertex's cache decision while its HitObject
+            // is local to this iteration. Terminating lanes leave before SER;
+            // one reorder groups the remaining hits for their next NEE/scatter.
+            const uint nextDepth = (uint)depth + 1u;
+            if (nextDepth >= maxBounces) break;
+            SamplingP spNext = CalculateStrategyProbabilities(ctx.matID, -rayDir, ctx.hitNormal,
+                ctx.iors.x, ctx.iors.y, ctx.hitLocalKd, ctx.hitLocalPm);
+            bool nextCacheSurface;
+            vertexAlive = PtPrepareVertex(ctx, geometricNormal, rayDir, sssEntered,
+                pathSeed, nextDepth, maxBounces, pathSpread, spNext, nextCacheSurface, diffuseCached, throughput,
+#if SHARC_UPDATE_PASS
+                training
+#else
+                nextDepth == 2u && liteVertex, liteVertex, total, liteL, liteSuffix
+#endif
+            );
+            if (!vertexAlive) break;
+            const uint hint = 0x40u | (ctx.instID & 0x3Fu);
+#if SHARC_UPDATE_PASS
+            dx::MaybeReorderThread(hitObj, (hint << 1u) | traceSuffixHint, 8u);
+#else
+            dx::MaybeReorderThread(hitObj, hint, 7u);
 #endif
         }
 #if SHARC_UPDATE_PASS

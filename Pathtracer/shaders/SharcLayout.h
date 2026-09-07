@@ -35,10 +35,7 @@
 // deprecated reservoir pipeline tests (Includes_v8.hlsli RS_FLAG_*) and are
 // only raised by the host while the regular path tracer owns the frame.
 #define LITE_FLAG_ENABLED 0x1u
-#define LITE_FLAG_TEMPORAL 0x4u
 #define LITE_FLAG_SPATIAL 0x20u
-#define LITE_FLAG_PERMUTE 0x80u
-#define LITE_FLAG_DUPMAP 0x400u
 #define LITE_FLAG_UNSHADOWED 0x8000u
 #define LITE_FLAG_DEBUG 0x10000u
 // Per-frame transform of each reuse table, packed into root constant slots

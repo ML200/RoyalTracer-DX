@@ -472,11 +472,14 @@ struct LT_LightSampleResult
     uint   objID;
 };
 
-LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
+//Point sample on a triangle the light tree has already chosen (tree pdf in
+//treeSample.pdf). The two triangle draws come from rng AFTER the descent's
+//draws, so a descent run elsewhere (Pass_pt_nee_v8's prefetch for the primary
+//vertex) hands its post-descent stream state here and the sample is the one
+//the inline descent would have produced.
+LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSample, inout uint rng)
 {
     LT_LightSampleResult result;
-
-    LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
     result.triIndex = treeSample.id;
 
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
@@ -520,4 +523,10 @@ LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inou
     }
 
     return result;
+}
+
+LT_LightSampleResult LT_SamplePointOnLight(float3 refPos, float3 refNormal, inout uint rng)
+{
+    const LT_Sample treeSample = LT_SampleLight(refPos, refNormal, rng);
+    return LT_SamplePointOnLightTree(refPos, treeSample, rng);
 }

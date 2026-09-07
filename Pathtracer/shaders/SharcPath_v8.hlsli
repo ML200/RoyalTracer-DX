@@ -3,6 +3,18 @@
 #include "Sharc_v8.hlsli"
 
 #ifndef SHARC_TEST
+// Footprint growth follows the sampled distribution, not just its lobe ID.
+// GGX and coat below the sampler's smooth cutoff are delta events; otherwise
+// their directional PDF controls the spread, including rough transmission.
+// The Charlie sheen sampler is continuous (it has no delta branch).
+bool SharcScatterHasSpread(uint strategy, uint matID, half roughness)
+{
+    if (strategy == 0u || strategy == 3u) return true;
+    if (strategy == 1u) return roughness >= SMOOTH_SPECULAR_THRESHOLD;
+    if (strategy == 2u) return LoadPcr(matID) >= SMOOTH_SPECULAR_THRESHOLD;
+    return false;
+}
+
 // Material eligibility shared by training deposits, the inspector and the
 // rendering query. The cache holds the DIFFUSE lobe only; sheen, coat and GGX
 // are always traced, so roughness plays no part. What matters is that a

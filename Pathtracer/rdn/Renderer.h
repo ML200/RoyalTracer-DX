@@ -160,7 +160,6 @@ private:
     int                m_previousIntegratorMode = -1;
     // ReSTIR lite (shaders/RestirLite_v8.hlsli): reuse-table upload into the
     // SHaRC allocation, per-frame table transforms, history validity.
-    bool                   m_liteWasActive = false;
     bool                   m_liteReusePending = false;
     float                  m_liteReuseSigma = 0.0f;
     ComPtr<ID3D12Resource> m_liteReuseUpload;

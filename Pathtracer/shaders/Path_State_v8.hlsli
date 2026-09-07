@@ -157,6 +157,37 @@ void load_rg_primaryExtra(RWByteAddressBuffer buf, uint pixelIdx,
                              f16tof32(buf.Load(base + 12u) & 0xFFFFu));
 }
 
+//====================================
+//PT PRIMARY-VERTEX LIGHT-TREE PREFETCH (aliases HOT1)
+//====================================
+//Pass_pt_nee_v8 runs the light-tree descent of the primary vertex's NEE
+//sample (initial sample 0) in a lean compute pass and parks the chosen
+//triangle, its tree pdf and the NEE RNG stream state after the descent here;
+//Pass_pt continues that stream, so its sample is bit-identical to the inline
+//descent. HOT1 is raygen (ReSTIR) scratch, unused under PT, and the lite
+//shift pass reuses the bytes only after PT has consumed the record. The
+//per-frame tag makes PT descend inline for any pixel without a record (no
+//NEE at the primary, host skipped the pass, stale frame).
+static const uint PT_NEE_PREFETCH_SALT = 0x4e454531u;
+
+uint pt_neePrefetchTag() { return Hash32(asuint(time) ^ PT_NEE_PREFETCH_SALT); }
+
+void store_pt_neePrefetch(RWByteAddressBuffer buf, uint pixelIdx, uint tri, float pdf, uint rng)
+{
+    buf.Store4(ps_addr_hot1(pixelIdx), uint4(tri, asuint(pdf), rng, pt_neePrefetchTag()));
+}
+
+//rng is only replaced by the parked stream state when the record is valid
+bool load_pt_neePrefetch(RWByteAddressBuffer buf, uint pixelIdx, out uint tri, out float pdf, inout uint rng)
+{
+    const uint4 w = buf.Load4(ps_addr_hot1(pixelIdx));
+    tri = w.x;
+    pdf = asfloat(w.y);
+    if (w.w != pt_neePrefetchTag()) return false;
+    rng = w.z;
+    return true;
+}
+
 
 //====================================
 //FLAGS BIT LAYOUT

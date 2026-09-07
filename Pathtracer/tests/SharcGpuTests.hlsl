@@ -537,16 +537,11 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
                 sum += LiteMisPartner(Mi[j], pii[j], Mc, pcc, O, Msum);
             }
             worst = max(worst, abs(sum - 1.0f));
-            const float Ma = 1.0f + floor(RandomFloatPCG(seed) * 8.0f);
-            const float Mb = 1.0f + floor(RandomFloatPCG(seed) * 8.0f);
-            const float pa = RandomFloatPCG(seed);
-            const float pb = (RandomFloatPCG(seed) < 0.3f) ? 0.0f : RandomFloatPCG(seed);
-            worst = max(worst, abs(LiteBalance(Ma, pa, Mb, pb) + LiteBalance(Mb, pb, Ma, pa) - 1.0f));
         }
         results.Store(tid.x * 4u, asuint(worst));
         return;
     }
-    // Modes 2 and 3: Monte Carlo estimate of sum_k f_c(k) through the merges.
+    // Mode 2: Monte Carlo estimate of sum_k f_c(k) through the paired spatial merge.
     float exact = 0.0f;
     for (uint k = 0u; k < LITE_TEST_ITEMS; ++k) exact += LiteTestValue(0u, k);
     const float Mc = 1.0f, M1 = 3.0f, M2 = 2.0f;
@@ -559,34 +554,19 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
         const uint k2 = LiteTestDraw(2u, seed, p2);
         // one-candidate RIS per pixel: W = 1 / p
         const float W0 = 1.0f / p0, W1 = 1.0f / p1, W2 = 1.0f / p2;
-        float wsum, phatSel;
-        uint sel;
-        if (testMode == 2u)
-        {
-            const float Msum = Mc + M1 + M2, O = M1 + M2;
-            const float pcc = LiteTestValue(0u, k0);
-            const float pc1 = LiteTestValue(0u, k1), p1c = LiteTestValue(1u, k0), p11 = LiteTestValue(1u, k1);
-            const float pc2 = LiteTestValue(0u, k2), p2c = LiteTestValue(2u, k0), p22 = LiteTestValue(2u, k2);
-            const float mc = Mc / Msum + LiteMisCanonicalTerm(M1, pcc, Mc, p1c, O, Msum)
-                + LiteMisCanonicalTerm(M2, pcc, Mc, p2c, O, Msum);
-            const float m1 = LiteMisPartner(M1, p11, Mc, pc1, O, Msum);
-            const float m2 = LiteMisPartner(M2, p22, Mc, pc2, O, Msum);
-            const float w0 = mc * pcc * W0, w1 = m1 * pc1 * W1, w2 = m2 * pc2 * W2;
-            wsum = w0; sel = k0; phatSel = pcc;
-            wsum += w1; if (w1 > 0.0f && RandomFloatPCG(seed) * wsum < w1) { sel = k1; phatSel = pc1; }
-            wsum += w2; if (w2 > 0.0f && RandomFloatPCG(seed) * wsum < w2) { sel = k2; phatSel = pc2; }
-        }
-        else
-        {
-            // temporal: canonical against a history with pixel 2's density, target and support
-            const float Mt = M2;
-            const float pcc = LiteTestValue(0u, k0), ptc = LiteTestValue(2u, k0);
-            const float pct = LiteTestValue(0u, k2), ptt = LiteTestValue(2u, k2);
-            const float w0 = LiteBalance(Mc, pcc, Mt, ptc) * pcc * W0;
-            const float wt = LiteBalance(Mt, ptt, Mc, pct) * pct * W2;
-            wsum = w0 + wt; sel = k0; phatSel = pcc;
-            if (wt > 0.0f && RandomFloatPCG(seed) * wsum < wt) { sel = k2; phatSel = pct; }
-        }
+        const float Msum = Mc + M1 + M2, O = M1 + M2;
+        const float pcc = LiteTestValue(0u, k0);
+        const float pc1 = LiteTestValue(0u, k1), p1c = LiteTestValue(1u, k0), p11 = LiteTestValue(1u, k1);
+        const float pc2 = LiteTestValue(0u, k2), p2c = LiteTestValue(2u, k0), p22 = LiteTestValue(2u, k2);
+        const float mc = Mc / Msum + LiteMisCanonicalTerm(M1, pcc, Mc, p1c, O, Msum)
+            + LiteMisCanonicalTerm(M2, pcc, Mc, p2c, O, Msum);
+        const float m1 = LiteMisPartner(M1, p11, Mc, pc1, O, Msum);
+        const float m2 = LiteMisPartner(M2, p22, Mc, pc2, O, Msum);
+        const float w0 = mc * pcc * W0, w1 = m1 * pc1 * W1, w2 = m2 * pc2 * W2;
+        float wsum = w0, phatSel = pcc;
+        uint sel = k0;
+        wsum += w1; if (w1 > 0.0f && RandomFloatPCG(seed) * wsum < w1) { sel = k1; phatSel = pc1; }
+        wsum += w2; if (w2 > 0.0f && RandomFloatPCG(seed) * wsum < w2) { sel = k2; phatSel = pc2; }
         if (wsum > 0.0f && phatSel > 0.0f) estimate += LiteTestValue(0u, sel) * wsum / phatSel;
     }
     results.Store(tid.x * 4u, asuint(estimate / (float)LITE_TEST_TRIALS));
