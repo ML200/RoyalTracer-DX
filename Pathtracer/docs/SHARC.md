@@ -221,6 +221,16 @@ replaces corrupt persistent history on the next valid observation, rather than
 attempting a lerp through NaN. Query code skips invalid/rejected radiance before
 multiplication, so `NaN * 0` cannot contaminate another cell's result.
 
+## Diffuse spatial reuse
+
+Lite resamples the primary broad contribution within the current frame:
+`Pass_pt` -> paired spatial shift -> spatial merge/shading. It has no temporal
+reuse option, history writes or duplication pass. Legacy ReSTIR retains its
+own temporal reuse, permutation sampling and correlation reduction.
+
+The area-measure weight fix is retained: every positive finite contribution
+weight is preserved, avoiding the darkening from the legacy numeric weight clamp.
+
 ## Verification and scene checks
 
 Run `tests/run_sharc_tests.ps1` from a Visual Studio Developer PowerShell. It
@@ -233,6 +243,9 @@ analytic 20-bounce roulette-compensated transport case. It also checks stochasti
 reconstruction against a varying deterministic signal with partial coverage,
 one training observation per 60 frames, adaptive sparse-cell retention, repair of
 poisoned history and invalid-position rejection.
+The lite checks cover reservoir packing, spatial MIS and area-weight scale
+invariance. Legacy permutation, confidence reduction and the complete duplicate
+scan, including partial tiles, remain covered separately.
 
 Compile the normal PT, update, prepare and resolve shaders with the project's
 DXC options; rebuild `Pathtracer`. Shared shader changes also require compiling

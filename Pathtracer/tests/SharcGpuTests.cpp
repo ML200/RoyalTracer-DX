@@ -33,7 +33,7 @@ struct Runner {
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12Resource> cache, output, readback;
     ComPtr<ID3D12Fence> fence;
-    std::array<ComPtr<ID3D12PipelineState>, 11> psos;
+    std::array<ComPtr<ID3D12PipelineState>, 12> psos;
     std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
     uint64_t serial = 0;
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -70,8 +70,8 @@ struct Runner {
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
-        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck"};
-        for (int i = 0; i < 11; ++i) {
+        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck", "legacyDupCheck"};
+        for (int i = 0; i < 12; ++i) {
             std::ifstream file(std::string(directory) + "/" + names[i] + ".dxil", std::ios::binary);
             Require(bool(file), "Missing compiled test shader");
             std::vector<char> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -486,10 +486,36 @@ int main(int argc, char** argv) try {
             double mean = 0.0;
             for (int i = 0; i < 64; ++i) mean += merged[i];
             mean /= 64.0;
-            std::cout << "Lite paired spatial merge: estimate " << mean << " vs exact " << merged[64] << "\n";
+            std::cout << "Lite spatial merge: estimate " << mean << " vs exact " << merged[64] << "\n";
             Require(std::abs(mean / merged[64] - 1.0) < 0.01, "Lite resampling is biased");
         }
-        std::cout << "PASS: lite reservoir packing, pairwise MIS normalization, unbiased merge\n";
+        auto scale = r.Query(3, 10);
+        for (int i = 0; i < 64; ++i)
+            Require(std::abs(scale[i] - 1.0f) < 1e-5f,
+                "Lite area-measure weight lost energy when the scene scale changed");
+        auto temporal = r.Query(4, 10);
+        Require(temporal[0] == 8.0f && temporal[1] == 1.0f && temporal[2] == 8.0f && temporal[3] == 1.0f &&
+            temporal[8] == 0.0f && temporal[9] == 0.0f,
+            "Legacy confidence reduction or permutation failed");
+        for (uint32_t mode = 0; mode < 6; ++mode) {
+            auto duplicates = r.Query(mode, 11);
+            const int gx = mode == 1 ? 0 : (mode == 2 ? 3 : 1);
+            const int gy = mode == 1 ? 0 : (mode == 2 ? 2 : 1);
+            for (int i = 0; i < 256; ++i) {
+                const int x = gx * 16 + i % 16, y = gy * 16 + i / 16;
+                int count = 0;
+                if (x < 53 && y < 45 && mode != 3) {
+                    for (int dy = -8; dy <= 8; ++dy) for (int dx = -8; dx <= 8; ++dx) {
+                        if ((dx == 0 && dy == 0) || x + dx < 0 || x + dx >= 53 || y + dy < 0 || y + dy >= 45) continue;
+                        if (mode != 4 || (dx % 2) == 0) ++count;
+                    }
+                }
+                Require(std::abs(duplicates[i] - float(count) / 288.0f) < 1e-6f,
+                    "Legacy duplicate map counted the wrong identity or border pixel");
+            }
+        }
+        std::cout << "PASS: lite packing, spatial MIS and area-weight scale invariance\n";
+        std::cout << "PASS: legacy confidence, permutation and duplicate scan (interior, corner, partial tiles, identity, zero sentinel)\n";
     }
     return 0;
 } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

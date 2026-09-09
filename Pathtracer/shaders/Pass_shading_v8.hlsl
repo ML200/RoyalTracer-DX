@@ -26,17 +26,11 @@ inline float3 DlssReinhard(float3 c) {
 //LINEAR radiance; Pass_postprocess (DlssDecode) and Pass_autoexpose_reduce
 //skip their inverses in lockstep via the same flag.
 //
-//One failure mode remains on the unbounded linear path: a JITTERED BOUNDARY
-//pixel between radiances of very different magnitude (an emitter face vs its
-//housing, grazing specular streaks) flips by the full linear ratio every
-//frame — per-pixel convergence never settles a pixel that alternates
-//surfaces, and preset F visibly loses temporal stability exactly there (sky
-//edges stay fine: modest ratio + hard depth separation). So the linear input
-//gets an EXPOSURE-RELATIVE luminance cap: cap_linear = CAP / exposure, i.e. a
-//fixed display brightness that tracks auto-exposure across day/night. Below
-//the cap the path is exactly linear (no Jensen loss); above it is range AgX
-//crushes to white anyway. Deliberately lossy — postprocess applies NO inverse
-//for it, and the GT slice reads pre-DLSS radiance so it stays unbiased.
+//Directly visible emitter faces can destabilize DLSS at jittered boundaries
+//with their housing. Cap only those primary emitter pixels, in exposed units,
+//at the emitter call site below. Reflected/indirect lighting must stay linear:
+//rare high-energy Monte Carlo samples carry real illumination even when an
+//individual sample would tonemap to white. Sky/sun pixels also bypass this cap.
 #define DLSS_PT_INPUT_LUMA_CAP 64.0f
 
 //MUST match Pass_postprocess_v8::ReadExposure (same AE state, same key).
@@ -72,11 +66,9 @@ inline float3 DlssEncode(float3 c) {
         //game's feed (linear scale — no Jensen energy loss);
         //Pass_postprocess::DlssDecode divides it back out and
         //Pass_autoexpose_reduce compensates its measurement, so the display
-        //and the AE fixed point are unchanged. The luma cap then lives in
-        //EXPOSED units — a fixed display brightness by construction.
-        c = max(c, 0.0f) * ReadExposureForCap();
-        const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
-        return (lum > DLSS_PT_INPUT_LUMA_CAP) ? c * (DLSS_PT_INPUT_LUMA_CAP / lum) : c;
+        //and the AE fixed point are unchanged. Emitter-only clamping happens
+        //at the call site, after this shared linear encoding.
+        return max(c, 0.0f) * ReadExposureForCap();
     }
     return DlssReinhard(c);
 }
@@ -382,15 +374,19 @@ void main(uint3 DTid : SV_DispatchThreadID)
         //Separate fp16 distance cap; the guide camera now spans planetary distances.
         g_dlssSpecHitDist[DTid.xy] = hasPosition ? 0.0f : DLSS_SPEC_HIT_MAX;
         g_dlssSpecMVec[DTid.xy] = float2(0.0f, 0.0f);
-        //Reinhard pre-tonemap (reversed in postprocess) so emitters survive AgX.
-        //Optionally clamp the emitter spike first so DLSS RR / the inverse don't
-        //amplify denoiser error off the [0,1] rail (RS_FLAG_CLAMP_EMITTERS). Gate
-        //on hasPosition so only emitter SURFACES (lamps) are clamped, not sky/sun
-        //(this branch also handles sky). Drop `&& hasPosition` to include sky.
+        //The optional scene-radiance clamp protects the Reinhard inverse.
+        //PT additionally caps the exposed input of directly visible emitter
+        //surfaces. Sky shares this branch but has no surface position.
         float3 emitterRadiance = (CLAMP_EMITTERS_MODE && hasPosition)
                                     ? ClampEmitterLum(accumulation)
                                     : accumulation;
-        g_dlssInput[DTid.xy] = float4(DlssEncode(emitterRadiance), 1.0f);
+        float3 emitterInput = DlssEncode(emitterRadiance);
+        if (PT_ONLY_MODE && hasPosition) {
+            const float lum = dot(emitterInput, float3(0.2126f, 0.7152f, 0.0722f));
+            if (lum > DLSS_PT_INPUT_LUMA_CAP)
+                emitterInput *= DLSS_PT_INPUT_LUMA_CAP / lum;
+        }
+        g_dlssInput[DTid.xy] = float4(emitterInput, 1.0f);
 #if SHADING_DEBUG_SLICES
         gOutput[uint3(DTid.xy, 5)] = float4(1.0f, 1.0f, 1.0f, 1.0f);
 #endif
@@ -523,8 +519,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         g_dlssSpecMVec[DTid.xy] = specMV;
 
-        //same Reinhard pre-tonemap as the emitter path so DLSS RR sees a
-        //uniformly bounded input and the postprocess inversion is consistent
+        //Shared encoding, with no emitter clamp on reflected/indirect light.
 #if ATM_DEBUG_RING == 4
         //TEMP DEBUG: planet shading normal as RGB (n_s*0.5+0.5). A correct
         //sphere is a smooth gradient; a flat patch or hard ring in the
@@ -615,7 +610,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
             gAutoExpose.InterlockedCompareStore(SENT_OFFS_FIRSTBAD, 0u,
                                                 ((DTid.y + 1u) << 16) | (DTid.x + 1u));
 
-        const bool  nearCap = PT_ONLY_MODE && (sLum >= DLSS_PT_INPUT_LUMA_CAP * 0.999f);
+        const bool  nearCap = PT_ONLY_MODE && isEmitterSurface &&
+                              (sLum >= DLSS_PT_INPUT_LUMA_CAP * 0.999f);
         const uint  wMask   = WaveActiveBitOr(bad);
         const float wLum    = WaveActiveMax(max(sLum, 0.0f));
         const float wMv     = WaveActiveMax(sMvMag);

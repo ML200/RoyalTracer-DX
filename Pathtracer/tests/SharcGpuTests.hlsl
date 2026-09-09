@@ -26,8 +26,11 @@ float Luma(float3 c) { return dot(c, float3(0.2126f, 0.7152f, 0.0722f)); }
 #define PI 3.1415926535
 #endif
 #define RAY_TMAX_PLANET 1e9f
-#define ucw_clampMax 0.0f
+// Exercise lite weights with the legacy renderer's nonzero default clamp.
+#define ucw_clampMax 10000.0f
 #include "RestirLite_v8.hlsli"
+// Legacy ReSTIR sampling checks remain independent of Lite.
+#include "Temporal_ReuseMath_v8.hlsli"
 #define main prepare
 #include "Pass_sharc_prepare_v8.hlsl"
 #undef main
@@ -443,16 +446,17 @@ void guideQuery(uint3 tid : SV_DispatchThreadID)
 //RESTIR LITE (RestirLite_v8.hlsli): PACKING AND RESAMPLING MIS
 //====================================
 // Mode 0: reservoir pack/unpack round trip.
-// Mode 1: pairwise (spatial) and balance (temporal) MIS weights sum to one
+// Mode 1: pairwise spatial MIS weights sum to one
 //         for random targets and confidences, including partners that
 //         cannot produce the sample.
 // Mode 2: end-to-end resampling on a discrete domain, three pixels with
 //         different generation densities, targets and supports through the
-//         paired merge; mode 3 the same through the two-strategy temporal
-//         merge. The mean of f(y) * W over many trials must equal the
+//         paired merge. The mean of f(y) * W over many trials must equal the
 //         exact sum: the merges are unbiased for any target proxy as long
 //         as every strategy's target vanishes exactly where it cannot
 //         produce a sample.
+// Mode 3: area-measure weights preserve a constant-radiance Lambertian
+//         estimate across scene scales, including weights above legacy's cap.
 static const uint LITE_TEST_ITEMS = 8u;
 static const uint LITE_TEST_TRIALS = 4096u;
 
@@ -513,6 +517,39 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
         results.Store4(16u, asuint(float4(q.W, (float)q.M, (float)q.s.kind, length(q.tint - r.tint))));
         return;
     }
+    if (testMode == 4u)
+    {
+        if (tid.x != 0u) return;
+        results.Store4(0u, asuint(float4(
+            TemporalConfidenceCap(8u, 0.0f, 0.025f, false),
+            TemporalConfidenceCap(8u, 1.0f, 0.025f, false),
+            TemporalConfidenceCap(8u, 1.0f, 0.025f, true),
+            TemporalConfidenceCap(0u, 0.0f, 0.025f, false))));
+        float error = 0.0f;
+        uint lastCap = 8u;
+        for (uint i = 0u; i <= 288u; ++i)
+        {
+            const uint cap = TemporalConfidenceCap(8u, (float)i / 288.0f, 0.025f, false);
+            if (cap > lastCap || cap < 1u) error += 1.0f;
+            lastCap = cap;
+        }
+        results.Store(32u, asuint(error));
+        // The actual legacy permutation remains bijective/self-inverting,
+        // including negative/off-screen coordinates before candidate rejection.
+        for (uint permutation = 0u; permutation < 16u; ++permutation)
+        {
+            for (int x = -4; x < 20; ++x)
+            {
+                const int2 original = int2(x, 17 - x);
+                int2 mapped = original;
+                ApplyPermutationSampling(mapped, permutation);
+                ApplyPermutationSampling(mapped, permutation);
+                if (any(mapped != original)) error += 1.0f;
+            }
+        }
+        results.Store(36u, asuint(error));
+        return;
+    }
     if (testMode == 1u)
     {
         float worst = 0.0f;
@@ -540,6 +577,27 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
             worst = max(worst, abs(sum - 1.0f));
         }
         results.Store(tid.x * 4u, asuint(worst));
+        return;
+    }
+    if (testMode == 3u)
+    {
+        // Scaling the sampled surface preserves its solid angle and radiance.
+        // Its area PDF changes by scale^-2, which W must cancel in shading.
+        const float dist = exp2((float)(tid.x % 16u));
+        const float cosX = 0.2f + 0.1f * (float)(tid.x % 8u);
+        const float cosY = 0.2f + 0.1f * (float)(tid.x / 8u);
+        const float pdf = cosX * LITE_INV_PI;
+        const LiteLink link = LiteLinkFrom(dist, cosX, cosY, false);
+        LiteSample sample = LiteEmpty(1u).s;
+        sample.instance = 0u;
+        sample.kind = LITE_KIND_SURFACE;
+        sample.radiance = float3(2.0f, 3.0f, 4.0f);
+        const float3 albedo = float3(0.25f, 0.5f, 0.75f);
+        const float phat = LiteTarget(albedo, sample, link, 0.0f, 1.0f);
+        const float expected = Luma(albedo * sample.radiance);
+        const float wsum = expected * LITE_INV_PI * cosX / pdf;
+        const float W = LiteSanitizeWeight(wsum / phat);
+        results.Store(tid.x * 4u, asuint(phat * W / expected));
         return;
     }
     // Mode 2: Monte Carlo estimate of sum_k f_c(k) through the paired spatial merge.
@@ -572,4 +630,34 @@ void liteCheck(uint3 tid : SV_DispatchThreadID)
     }
     results.Store(tid.x * 4u, asuint(estimate / (float)LITE_TEST_TRIALS));
     if (tid.x == 0u) results.Store(64u * 4u, asuint(exact));
+}
+
+// Run the production shared-memory duplicate scan on interior, corner and
+// partial edge tiles, using the legacy reservoir's packed V2 identity.
+#define IMG_W 53u
+#define IMG_H 45u
+#define DUP_KEY uint
+#include "Duplication_Map_v8.hlsli"
+[numthreads(16, 16, 1)]
+void legacyDupCheck(uint3 local : SV_GroupThreadID)
+{
+    const uint2 group = testMode == 1u ? uint2(0u, 0u)
+        : (testMode == 2u ? uint2(3u, 2u) : uint2(1u, 1u));
+    const uint2 pixel = group * 16u + local.xy;
+    const uint tlin = local.y * TILE_W + local.x;
+    for (uint i = 0u; i < LOADS_PER_THREAD; ++i)
+    {
+        const uint index = tlin * LOADS_PER_THREAD + i;
+        const int2 p = int2(group * 16u) - int2(WIN_R, WIN_R) + int2(index % CACHE_W, index / CACHE_W);
+        uint key = 7u;
+        if (testMode == 3u) key = (uint)(p.y * (int)IMG_W + p.x); // every identity unique
+        if (testMode == 4u) key = (uint)p.x & 1u; // alternating identities
+        if (testMode == 5u) key = 0u; // legacy zero sentinel, borders must still be excluded
+        if (any(p < 0) || any(p >= int2(IMG_W, IMG_H))) key = 0u;
+        s_V2[index / CACHE_W][index % CACHE_W] = key;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    const float D = any(pixel >= uint2(IMG_W, IMG_H)) ? 0.0f
+        : DuplicationFraction(uint3(pixel, 0u), uint3(group, 0u), local);
+    results.Store(tlin * 4u, asuint(D));
 }

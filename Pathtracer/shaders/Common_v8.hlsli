@@ -69,16 +69,7 @@ inline int2 UnmapPixelID(uint pixelID, uint2 dims)
     return int2(globalX, globalY);
 }
 
-void ApplyPermutationSampling(inout int2 prevPixelPos, uint uniformRandomNumber)
-{
-    int2 offset = int2(uniformRandomNumber & 3, (uniformRandomNumber >> 2) & 3);
-    prevPixelPos += offset;
-
-    prevPixelPos.x ^= 3;
-    prevPixelPos.y ^= 3;
-
-    prevPixelPos -= offset;
-}
+#include "Temporal_ReuseMath_v8.hlsli"
 
 //====================================
 //ENV BRDF APPROXIMATION

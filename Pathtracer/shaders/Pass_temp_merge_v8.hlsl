@@ -1,6 +1,7 @@
 #define COMPUTE_PASS
 #define SPMIS_GRID_NONCOHERENT   // read-only grid/scratch -> L1-cached (see Includes_v8.hlsli)
 #include "Includes_v8.hlsli"
+#include "Temporal_ReuseMath_v8.hlsli"
 
 //====================================
 //TEMPORAL GI  (pass 3/3: MIS combine + reservoir update, NO rays)
@@ -127,12 +128,9 @@ void main(uint3 tid : SV_DispatchThreadID)
 
     //correlation reduction cCap, dup count D refreshes the chain (2026 paper).
     const float D        = saturate(gScratchPing[uint3(uint2(cand), 6)].x);
-    const float effMcapF = (CORR_REDUCTION_OFF || rdi_r.matID == MATID_ENV_MISS)
-                           ? (float)rs_tempMcap
-                           : lerp((float)rs_tempMcap, 1.0f, pow(D, rs_corrReductionPow));
-
     const uint mcapU   = max(1u, rs_tempMcap);
-    const uint effMcap = (uint)clamp(round(effMcapF), 1.0f, (float)mcapU);
+    const uint effMcap = TemporalConfidenceCap(rs_tempMcap, D, rs_corrReductionPow,
+        CORR_REDUCTION_OFF || rdi_r.matID == MATID_ENV_MISS);
 
     //Roughness-dependent neighbour mcap: LEGACY ONLY — it papered over the old
     //shift's specular temporal lag; the hybrid shift replays exactly that

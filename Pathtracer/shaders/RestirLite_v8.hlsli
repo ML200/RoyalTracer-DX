@@ -38,9 +38,8 @@
 // Kettunen, Wyman 2026): a partner's partner is the pixel itself, so each
 // pixel evaluates and stores its own target of every partner's sample once,
 // and the merge reads both directions of every pair. Defensive pairwise MIS
-// with confidence weights (Bitterli 2022). There is no temporal reuse:
-// spatial reuse alone gives the denoiser enough, and reprojected history
-// left artifacts after denoising, so nothing lite outlives the frame.
+// with confidence weights (Bitterli 2022). Reuse is spatial only; no compact
+// reservoir or resampled radiance is carried into the next frame.
 //
 // Buffers. g_Reservoirs_current holds this frame's candidate reservoir
 // (written by Pass_pt, read by the spatial passes). Partner evaluations
@@ -336,10 +335,15 @@ float LiteMisCanonicalTerm(float Mi, float pcc, float Mc, float pic, float O, fl
     return den > 0.0f ? (Mi / Msum) * (num / den) : 0.0f;
 }
 
-float LiteClampW(float W)
+// Point reservoirs use area measure: W contains the inverse area PDF and
+// grows with distance squared / receiver-facing cosine. The legacy PSS
+// reuse clamp is in a different measure and would darken valid distant or
+// grazing samples, even when reuse is off. Preserve every positive finite
+// contribution weight.
+float LiteSanitizeWeight(float W)
 {
     if (!(W > 0.0f) || isinf(W)) return 0.0f;
-    return ucw_clampMax > 0.0f ? min(W, ucw_clampMax) : W;
+    return W;
 }
 
 //====================================

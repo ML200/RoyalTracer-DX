@@ -1968,8 +1968,7 @@ void Renderer::PopulateCommandList() {
     if (useSharc) m_sharcResetPending = false;
     if (usePtKernel) baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
     // ReSTIR lite (LITE_FLAG_*, SharcLayout.h): regular path tracer only.
-    // Spatial reuse only: nothing lite outlives the frame, so no history
-    // validity tracking is needed.
+    // Spatial reuse only: compact reservoirs are regenerated each frame.
     const bool liteActive = usePtKernel && rs.liteEnabled;
     if (liteActive) {
         baseFlags |= LITE_FLAG_ENABLED

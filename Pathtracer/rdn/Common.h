@@ -226,8 +226,7 @@ struct ReSTIRSettings {
     // Candidates are its NEE samples and whatever its scatter ray finds (an
     // emitter, the sky, or the secondary vertex with its cached or path-traced
     // outgoing radiance, ReSTIR GI style); paired spatial reuse follows,
-    // with visibility in every target. No temporal reuse: spatial alone is
-    // enough, and reprojected history left artifacts after denoising.
+    // with visibility in every target. Lite reservoirs last only this frame.
     bool  liteEnabled = true;
     bool  liteSpatial = true;
     bool  liteUnshadowedTargets = false; // off: every reuse target traces its own ray, exact (A/B on: winner only, ~0.2 ms cheaper, over-credits at shadow edges)

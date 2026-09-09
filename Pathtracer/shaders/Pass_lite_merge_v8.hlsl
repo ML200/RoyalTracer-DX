@@ -8,7 +8,7 @@
 //====================================
 // Defensive pairwise MIS over the pixel's partners (both directions of each
 // pair come from the shift pass), one resampling step and exact shading of
-// the winner into the radiance estimate. Nothing lite outlives the frame.
+// the winner into the radiance estimate. Lite reservoirs last only this frame.
 [numthreads(16, 16, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
@@ -110,7 +110,7 @@ void main(uint3 tid : SV_DispatchThreadID)
         nySel = LiteWorldNormal(ri.s);
         lSel = LiteConnect(rcv, ri.s, ySel, nySel);
     }
-    outR.W = (wsum > 0.0f && phatSel > 0.0f) ? LiteClampW(wsum / phatSel) : 0.0f;
+    outR.W = (wsum > 0.0f && phatSel > 0.0f) ? LiteSanitizeWeight(wsum / phatSel) : 0.0f;
     const bool shade = outR.W > 0.0f && LiteHasSample(outR.s) && LiteLinkValid(lSel);
     // Unshadowed targets (A/B): the winner's visibility is traced exactly once here.
     if (shade && LITE_UNSHADOWED) visSel = LiteVisibility(rcv, outR.s, lSel, ySel, nySel);
