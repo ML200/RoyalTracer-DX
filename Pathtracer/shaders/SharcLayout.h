@@ -54,7 +54,7 @@
 #define SHARC_DEBUG_LIGHTING 2u
 #define SHARC_DEBUG_GUIDING 3u
 #define SHARC_DEBUG_OTHER_LEVEL_BIT 8u
-#define SHARC_DEBUG_SCRATCH 14u
+#define SHARC_DEBUG_SCRATCH 12u
 // guide_params root constant (slot 56). Bit 0 enables guiding, bits 1-8 hold
 // the guided-fraction cap x255, bits 9-11 the receiver level offset, bits
 // 12-19 the candidate lifetime / 8 frames, bit 20 guides training paths,

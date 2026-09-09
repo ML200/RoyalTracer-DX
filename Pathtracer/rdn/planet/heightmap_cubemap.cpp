@@ -116,14 +116,6 @@ bool HeightmapCubemap::load(const std::filesystem::path& terrain_dir) {
     m_resolution = 0;
     m_faces.clear();
 
-    //----- resolution lookup -----
-    //Resolution is derived from the on-disk size of elevation_face0.r32:
-    //a square float32 face is res^2 * 4 bytes, so res = sqrt(filesize / 4).
-    //We deliberately ignore the manifest's "resolution" field even when
-    //present - the v8 manifest carries one resolution PER LAYER (elevation
-    //at 8192, cloud_offset at 256, etc), and a naive substring search will
-    //hit cloud_offset first (alphabetical) and silently bind a tiny grid
-    //to the heightmap pipeline.
     uint32_t res = 0;
     {
         const auto probe_path = terrain_dir / "elevation_face0.r32";
@@ -197,16 +189,6 @@ bool HeightmapCubemap::load(const std::filesystem::path& terrain_dir) {
     std::fprintf(stdout, "[planet] heightmap: loaded %u^2 x 6 faces from %s\n",
                  res, terrain_dir.string().c_str());
 
-    //(No global-min calibration shift. An earlier version subtracted the
-    //heightmap's global minimum from every cell so the deepest point sat
-    //exactly on the analytic surface, but once impact craters joined the
-    //bake the global min became dominated by crater-basin floors - a
-    //single deep basin could pull the WHOLE planet up by 6-10 km. The
-    //atmosphere / cloud / sun-shadow "clamp to ATMOS_BOTTOM_RADIUS"
-    //comments in Clouds_v8.hlsli still describe a 2%-transmittance error
-    //where the mesh dips below Rb, which is a much smaller defect than
-    //inflating every continent by basin depth. So we feed raw signed
-    //elevation through to both the CPU mesh path and the GPU upload.)
 
     //Optional vertical exaggeration. Scales every cell uniformly so peaks
     //and valleys grow / shrink in lockstep, signed values preserved. Useful
@@ -328,45 +310,6 @@ bool HeightmapCubemap::load(const std::filesystem::path& terrain_dir) {
                  m_normal_faces, m_normal_resolution,
                  "normal");
 
-    //Cloud offset: raw float32 km, fixed 256x256 in the v8 bake (manifest
-    //carries the resolution; we read it from the file size for resilience).
-    {
-        m_cloud_offset_faces.assign(6, std::vector<float>{});
-        bool ok = true;
-        uint32_t cloud_res = 0;
-        for (int f = 0; f < 6 && ok; ++f) {
-            char fname[64];
-            std::snprintf(fname, sizeof(fname), "cloud_offset_face%d.r32", f);
-            const auto fp = terrain_dir / fname;
-            std::ifstream ifs(fp, std::ios::binary | std::ios::ate);
-            if (!ifs) { ok = false; break; }
-            const std::streamsize bytes = ifs.tellg();
-            if (bytes <= 0 || bytes % sizeof(float) != 0) { ok = false; break; }
-            const size_t total = static_cast<size_t>(bytes) / sizeof(float);
-            //Square: side length = sqrt(total).
-            uint32_t side = 0;
-            for (uint32_t s = 1; s <= 8192; ++s) {
-                if (static_cast<size_t>(s) * s == total) { side = s; break; }
-            }
-            if (side == 0) { ok = false; break; }
-            if (f == 0) cloud_res = side;
-            else if (side != cloud_res) { ok = false; break; }
-            ifs.seekg(0);
-            m_cloud_offset_faces[f].resize(total);
-            ifs.read(reinterpret_cast<char*>(m_cloud_offset_faces[f].data()),
-                     static_cast<std::streamsize>(bytes));
-            if (ifs.gcount() != bytes) { ok = false; break; }
-        }
-        if (ok) {
-            m_cloud_offset_resolution = cloud_res;
-            std::fprintf(stdout,
-                "[planet] cloud_offset: loaded %u^2 x 6 faces (float32 km) from %s\n",
-                cloud_res, terrain_dir.string().c_str());
-        } else {
-            m_cloud_offset_faces.clear();
-        }
-    }
-
     return true;
 }
 
@@ -455,14 +398,6 @@ bool HeightmapCubemap::normal_face(uint8_t face_idx,
     //negligible - the renormalise in the shader brings everything back to
     //the unit sphere. Cheaper than full quaternion / vector averaging.
     downsample_rgba8(src, m_normal_resolution, out, dst_resolution);
-    return true;
-}
-
-bool HeightmapCubemap::cloud_offset_face(uint8_t face_idx, float* out) const {
-    if (face_idx >= 6 || !out) return false;
-    if (m_cloud_offset_resolution == 0) return false;
-    const auto& face = m_cloud_offset_faces[face_idx];
-    std::memcpy(out, face.data(), face.size() * sizeof(float));
     return true;
 }
 

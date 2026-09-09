@@ -52,8 +52,7 @@ private:
     void DrawReSTIRPanel(ReSTIRSettings& restir, const FrameStats& stats);
     void DrawInitialSamplingPanel(ReSTIRSettings& restir);
     void DrawNRCPanel(nrc::Settings& nrc);
-    void DrawSunPanel(Camera& camera);
-    void DrawCloudPanel(Camera& camera);
+    void DrawSunPanel(Camera& camera, const FrameStats& stats);
     void DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps,
                              const FrameStats& fs, float fps);
 
@@ -68,7 +67,6 @@ private:
     bool m_showNRC        = false;
     bool m_showInitialSampling = false;
     bool m_showSun        = false;
-    bool m_showClouds     = false;
     bool m_showMaterials  = false;
     bool m_showPlanetPerf = false;
     int  m_selectedModel  = -1;

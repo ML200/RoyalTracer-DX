@@ -26,6 +26,10 @@ public:
     //pixels rendered from the pre-reset pose.
     void ForceReset() { m_forceReset = true; }
 
+    // Downstream temporal effects must follow RR resets and skip failed frames.
+    bool LastEvaluationSucceeded() const { return m_lastEvaluationSucceeded; }
+    bool LastEvaluationReset() const { return m_lastEvaluationReset; }
+
     void Evaluate(
         ID3D12GraphicsCommandList* cmdList,
         ID3D12Device* device,
@@ -74,20 +78,12 @@ public:
     //DLSSDOptions carries one preset slot per quality mode and the plugin reads
     //the slot matching the active DLSSMode, so all six travel together.
     //
-    //The letter -> model mapping lives in the runtime DLLs (sl.dlss_d.dll /
-    //nvngx_dlssd.dll), not in these headers: we compile against the SL 2.12.0
-    //headers but ship SL 2.12.129 / NGX 310.7.129 binaries, so the "reverts to
-    //default" comments in sl_dlss_d.h understate what the runtime actually
-    //supports. The enum is a plain uint32 handed straight to the plugin, so the
-    //whole A..O range is selectable and a letter the runtime doesn't know falls
-    //back to the default model rather than failing.
+    //SL 2.14.1 documents F as the latest/default RR transformer. The editor
+    //retains the numeric A..O range for diagnostics; removed/unsupported letters
+    //are not distinct models and may revert to the runtime default or fail.
     //
-    //Specifically: sl_dlss_d.h still documents ePresetF as "reverts to default",
-    //but on NGX 310.7.128 and later F IS the DLSS 4.5 / transformer-2 RR model,
-    //and it is what eDefault resolves to there (310.7.0 defaulted to D). F is
-    //pinned explicitly below rather than left at eDefault so the model stays put
-    //if the shipped DLLs are ever rolled back; against an older runtime F falls
-    //back to that runtime's default rather than failing, per the paragraph above.
+    //Pin preset F explicitly for all quality modes so runtime updates do not
+    //change the selected model. Other presets remain available in the editor.
     enum PresetSlot {
         kPresetDLAA = 0,
         kPresetQuality,
@@ -104,12 +100,15 @@ public:
     //UI convenience: when set, picking a letter writes it into every slot.
     bool rrLinkPresets = true;
 
+    //Uniform signed responsivity mask; zero leaves the optional guide untagged.
+    float rrResponsivity = -1.0f;
+
     //RCAS sharpening strength applied to the DLSS output, [0,1]; 0 = off.
     //NOT DLSSDOptions::sharpness — DLSS-RR ignores that field outright (NVIDIA's
     //DLSS-RR Programming Guide: "DLSS-RR will ignore DLSS options sharpness and
     //useAutoExposure"), so a slider bound to it would be a dead control. This
     //rides root constant 43 into Pass_postprocess_v8, which sharpens after AgX.
-    float sharpness = 0.5f;
+    float sharpness = 0.7f;
 
     //Scales ONLY the value reported to sl::Constants::jitterOffset. The raygen
     //keeps sampling at the camera's actual offset regardless (full Halton
@@ -174,7 +173,7 @@ public:
     //error into artefacts. Only the emitter's DLSS colour input changes; the rest
     //of the pipeline (guides, decode, post-process) is untouched, so it is immune
     //to DLSS sub-pixel jitter. Off = unclamped (classic) DLSS input.
-    bool clampEmitterSpikes = false;
+    bool clampEmitterSpikes = true;
 
     //====================================
     //GUIDE SENTINEL + EVALUATE-WINDOW DX MESSAGES (diagnostics)
@@ -215,6 +214,8 @@ private:
     ComPtr<ID3D12Resource> m_specAlbedo, m_roughness, m_specMvec, m_specHitDist;
     ComPtr<ID3D12Resource> m_transparency, m_colorBeforeTrans;
     ComPtr<ID3D12Resource> m_biasHint;
+    ComPtr<ID3D12Resource> m_responsivityMask;
+    ComPtr<ID3D12DescriptorHeap> m_responsivityGpuHeap, m_responsivityCpuHeap;
 
     ResourceStateTracker m_state;
 
@@ -222,20 +223,22 @@ private:
     UINT m_renderWidth   = 0, m_renderHeight  = 0;
     sl::DLSSMode m_activeMode = sl::DLSSMode::eOff;
     bool m_forceReset = false;
+    bool m_lastEvaluationSucceeded = false;
+    bool m_lastEvaluationReset = true;
 
     //Mirror of rrPresets as last handed to slDLSSDSetOptions. Swapping preset makes
     //the plugin rebuild the feature around a different model, so the history that
     //accumulated under the old one has to be dropped along with it.
     sl::DLSSDPreset m_activePresets[kPresetSlotCount] = {
-        sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF,
-        sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF
+        sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE,
+        sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE
     };
     //Last letter that completed a frame, and whether the one in flight still has to
     //prove itself. See RevertPresetIfPending — NGX has no "is this preset supported"
     //query, so a bad letter can only be detected by trying it.
     sl::DLSSDPreset m_lastGoodPresets[kPresetSlotCount] = {
-        sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF,
-        sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF, sl::DLSSDPreset::ePresetF
+        sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE,
+        sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE, sl::DLSSDPreset::ePresetE
     };
     bool m_presetChangePending = false;
 

@@ -29,27 +29,10 @@
 //====================================
 //DLSS GUIDE DEPTH RANGE
 //====================================
-//The camera range ADVERTISED to DLSS-RR and the range of every depth-like
-//guide write. The renderer's real far plane is planet-scale (1e9, see
-//farPlane / RAY_TMAX_PLANET) — advertising THAT degenerates the depth guide
-//(the whole playable scene sits in <1e-5 of the declared range; any internal
-//fp16 pass quantizes it into visible depth STRIPES, and the fp32 projection's
-//far/(near-far) rounds to exactly -1). Sky also wrote cameraFar into the
-//R16F spec-hit-dist guide = +INF at every silhouette-against-sky pixel.
-//
-//The depth guide itself is REVERSE-Z DEVICE DEPTH in [0,1] built from this
-//near/far pair (DLSS_GuideDepthFromWorldPos: near -> 1, far -> 0, tagged
-//kBufferTypeDepth with depthInverted=true) — the convention shipping DLSS
-//titles use and the preset networks are trained on; linear metres fed as
-//"depth" produced preset-dependent striping. Spec hit distance stays LINEAR
-//METRES (it is a distance, not a depth), clamped to the far plane.
-//
-//This pair is deliberately FIXED (not the editor-adjustable camera planes) so
-//the shader-side depth encode always matches the matrices/constants
-//DLSSManager hands Streamline. MUST match DLSSManager.cpp's kGuideDepthNear /
-//kGuideDepthFar.
-#define DLSS_GUIDE_DEPTH_NEAR 0.01f
-#define DLSS_GUIDE_DEPTH_FAR  10000.0f
+// R32F reverse-Z device depth, matching Streamline's guide projection. A 10 km
+// far plane clipped horizon clouds to the sky sentinel; the shared range covers
+// planetary views. Linear R16F specular hit distances have their own finite cap.
+#include "DlssGuideLayout.h"
 
 //====================================
 //RAY TMAX
@@ -63,17 +46,8 @@
 //than the sky in the DLSS RR depth buffer.
 #define RAY_TMAX_PLANET 1e9f
 
-//====================================
-//ATMOSPHERE RING DEBUG (temporary)
-//====================================
-//Localises the nadir-centred ring artifact. Set non-zero, rebuild, observe,
-//report. Ship as 0. Remove the #if blocks in Pass_clouds_primary_v8,
-//Pass_shading_v8 and Inline_RT_v8 once the cause is found.
-//  1 = cloud-pass false colour: R=combinedTr, G=unifiedInscatter
-//  2 = shading false colour:    R=indirect/GI, G=reflection, B=direct
-//  3 = sky fully OFF: EvaluateSky / EvaluateSkyBackground / *Behind and the
-//      atmosphere march all return black. Tests whether the ring is the sky.
-//  4 = planet shading normal (sv.n_s) shown as RGB. Tests for bad normals.
+//Atmosphere diagnostics: 0 = normal, 1 = transmittance/scatter, 2 = path
+//contributions, 3 = sky disabled, 4 = surface normals.
 #define ATM_DEBUG_RING 0
 
 

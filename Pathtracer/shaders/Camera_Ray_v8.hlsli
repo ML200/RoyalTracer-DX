@@ -154,14 +154,6 @@ inline float2 GetLastFramePixelCoordinates_Unclamped(
     return uv * resolution - 0.5f;
 }
 
-//====================================
-//STATIC WORLD REPROJECTION
-//====================================
-//Variants of the above for points that have NO instance — e.g., volumetric
-//cloud sample positions. Skips the instanceProps[objID] lookup and treats
-//the position as world-static (no animation). Same camera-relative
-//view-space step as the instance versions to avoid the big-minus-big
-//cancellation at large world coords.
 inline float2 GetLastFramePixelCoordinates_World(
     float3 worldPos,
     float4x4 prevView,

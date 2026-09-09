@@ -168,8 +168,8 @@ inline float3 CandidateGeoNormalW(uint instID, uint primID)
     const float3 p0 = BTriVertex[i0].vertex;
     const float3 p1 = BTriVertex[i1].vertex;
     const float3 p2 = BTriVertex[i2].vertex;
-    const float3x3 R = (float3x3)instanceProps[instID].objectToWorld;
-    float3 nW = mul(R, cross(p1 - p0, p2 - p0));
+    const float3x3 N = (float3x3)instanceProps[instID].objectToWorldNormal;
+    float3 nW = mul(N, cross(p1 - p0, p2 - p0));
     return nW * rsqrt(max(dot(nW, nW), 1e-20f));
 }
 
@@ -417,15 +417,6 @@ inline dx::HitObject TraceRay_Custom(
     //RayContribution=0, MultiplierForGeometry=1 (opaque vs alpha hit group per geometry), MissIndex=0
     dx::HitObject hitObj = dx::HitObject::TraceRay(SceneBVH, rayFlags, instanceMask, 0, 1, 0, ray, payload);
 
-    //7-bit coherence hint (was 1 bit hit/miss). Top bit keeps the hit/miss split —
-    //misses go straight to the fat sky/cloud eval — and the low 6 bits sort hits by
-    //instance ID so a warp shades same-instance hits together: EvalSurfaceState's
-    //index/vertex/transform gathers and RefetchMaterial's texture fetches become
-    //warp-coherent instead of taking the hit population's random instance mix.
-    //InstanceID comes off the hit record (no memory fetch before the reorder), and
-    //reordering is execution-order only, so the output is bit-identical.
-    //Callers may append lower-priority bits below the instance sort (SHaRC
-    //training groups lanes by expected remaining path life within an instance).
     const uint hint = ((hitObj.IsHit() ? (0x40u | (hitObj.GetInstanceID() & 0x3Fu)) : 0u) << lowHintBits) | lowHint;
     dx::MaybeReorderThread(hitObj, hint, 7u + lowHintBits);
     return hitObj;
@@ -541,16 +532,18 @@ HitInfo EvalSurfaceStateImpl(
     float3 normW;
     float3 geoNormW;
     float3 tangentW_geom;
+    float3 bitangentW_geom;
 
     {
         const float3x4 M = instanceProps[instID].objectToWorld;
         const float3x3 R = (float3x3)M;
+        const float3x3 N = (float3x3)instanceProps[instID].objectToWorldNormal;
 
         posW     = mul(M, float4(p_local, 1.0f));
-        normW    = mul(R, n_local);
+        normW    = mul(N, n_local);
         normW   *= rsqrt(max(dot(normW, normW), 1e-20f));
 
-        geoNormW = mul(R, flatN_obj);
+        geoNormW = mul(N, flatN_obj);
         geoNormW *= rsqrt(max(dot(geoNormW, geoNormW), 1e-20f));
 
         //tangent from edges + UV deltas
@@ -561,9 +554,11 @@ HitInfo EvalSurfaceStateImpl(
         const float invDet = (abs(det) > 1e-8f) ? rcp(det) : 0.0f;
 
         const float3 tanO = (e1_local * dUV2.y - e2_local * dUV1.y) * invDet;
+        const float3 bitanO = (e2_local * dUV1.x - e1_local * dUV2.x) * invDet;
 
         tangentW_geom = mul(R, tanO);
         tangentW_geom *= rsqrt(max(dot(tangentW_geom, tangentW_geom), 1e-20f));
+        bitangentW_geom = mul(R, bitanO);
     }
 
     //material and texturing
@@ -581,7 +576,9 @@ HitInfo EvalSurfaceStateImpl(
         float3 tangentW = tangentW_geom - dot(tangentW_geom, normW) * normW;
         tangentW *= rsqrt(max(dot(tangentW, tangentW), 1e-20f));
 
-        const float3 bitangentW = cross(normW, tangentW);
+        float3 bitangentW = cross(normW, tangentW);
+        // Preserve UV/instance handedness, including negative instance scales.
+        if (dot(bitangentW, bitangentW_geom) < 0.0f) bitangentW = -bitangentW;
 
         Texture2D<float4> nTex = ResourceDescriptorHeap[normalTexID];
         const float3 n_tan =

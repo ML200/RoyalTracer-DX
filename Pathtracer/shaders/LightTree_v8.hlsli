@@ -1,9 +1,11 @@
 //====================================
 //LIGHT TREE LOOKUP BUFFERS
 //====================================
+#include "LightTreeTrail.h"
+
 Buffer<uint> gLT_TriToBLAS       : register(t16);
-Buffer<uint> gLT_TriBitTrail     : register(t17);  // 2-bits-per-level BLAS descent path per emissive triangle
-Buffer<uint> gLT_BLASBitTrail    : register(t18);  // 2-bits-per-level TLAS descent path per BLAS
+Buffer<uint2> gLT_TriBitTrail    : register(t17);  // 64-bit BLAS descent path per emissive triangle
+Buffer<uint2> gLT_BLASBitTrail   : register(t18);  // 64-bit TLAS descent path per BLAS
 
 //====================================
 //CONSTANTS AND HELPERS
@@ -162,11 +164,12 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
     }
 
     //depth cap, malformed tree could hang GPU, zero pdf invalidates sample
-    [loop] for (uint iter = 0u; iter < 64u; ++iter)
+    [loop] for (uint iter = 0u; iter <= LT_TRAIL_MAX_DEPTH; ++iter)
     {
         if (childCount == 0) {
             return blasIndex;
         }
+        if (iter == LT_TRAIL_MAX_DEPTH) break;
 
         float w[4];
         uint3 ctopo[4];
@@ -223,12 +226,13 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     }
 
     //depth cap, zero pdf on overflow, zero-count leaf is safe since LeafTriangle clamps
-    [loop] for (uint iter = 0u; iter < 64u; ++iter)
+    [loop] for (uint iter = 0u; iter <= LT_TRAIL_MAX_DEPTH; ++iter)
     {
         if (childCount == 0) {
             LTLeaf L; L.triFirst = triFirst; L.triCount = triCount; L.nodeIndex = node;
             return L;
         }
+        if (iter == LT_TRAIL_MAX_DEPTH) break;
 
         float w[4];
         uint4 ctopo[4];
@@ -331,30 +335,31 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 //====================================
 //bit trails record which child to descend into at each level (2 bits per level).
 //build emits one trail per BLAS (TLAS descent) and one per emissive triangle (BLAS descent),
-//so the PDF skips the per-child range-check for free and just pulls the right child terrain of the trail.
+//so the PDF selects the child directly from the trail.
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {
     uint blas = gLT_TriToBLAS[triIndex];
     if (blas == LT_SENTINEL) return 0.0f;
 
-    uint blasTrail = gLT_BLASBitTrail[blas];
-    uint triTrail  = gLT_TriBitTrail[triIndex];
+    uint2 blasTrail = gLT_BLASBitTrail[blas];
+    uint2 triTrail  = gLT_TriBitTrail[triIndex];
 
     //TLAS path probability — chosen-child topology carried in registers (same
     //no-dependent-reload rework as the stochastic descents above)
     float pdfTLAS = 1.0f;
-    uint  tdepth  = 0;
     uint  tFirstChild, tChildCount;
     {
         const LightTLASNodeGpu Nroot = gLT_TLAS[0];
         tFirstChild = Nroot.firstChild; tChildCount = Nroot.childCount;
     }
 
-    [loop] for (uint iterT = 0u; iterT < 64u; ++iterT)
+    [loop] for (uint iterT = 0u; iterT <= LT_TRAIL_MAX_DEPTH; ++iterT)
     {
         if (tChildCount == 0) break;
+        if (iterT == LT_TRAIL_MAX_DEPTH) return 0.0f;
 
-        const uint childIdx = (blasTrail >> (2u * tdepth)) & 3u;
+        const uint childIdx = LT_TrailChild(blasTrail, iterT);
+        if (childIdx >= tChildCount) return 0.0f;
 
         float w[4]; float sum = 0.0;
         uint2 ctopo[4];
@@ -375,8 +380,8 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         pdfTLAS *= p;
         tFirstChild = ctopo[childIdx].x;
         tChildCount = ctopo[childIdx].y;
-        tdepth++;
     }
+    if (tChildCount != 0) return 0.0f;
 
     //BLAS path probability - same object-space mapping as the descent above,
     //so the pdf stays consistent with selection (unbiased) post origin-snap.
@@ -384,7 +389,6 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     const float3 xL  = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
     const float3 nL  = normalize(mul((float3x3)Rng.worldToLocal, n));
     float pdfBLAS    = 1.0f;
-    uint  bdepth     = 0;
     uint  bFirstChild, bChildCount, bTriFirst, bTriCount;
     {
         const LightBLASNodeGpu Nroot = gLT_BLAS[Rng.nodeOffset];
@@ -392,7 +396,7 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         bTriFirst   = Nroot.triFirst;   bTriCount   = Nroot.triCount;
     }
 
-    [loop] for (uint iterB = 0u; iterB < 64u; ++iterB)
+    [loop] for (uint iterB = 0u; iterB <= LT_TRAIL_MAX_DEPTH; ++iterB)
     {
         if (bChildCount == 0)
         {
@@ -416,7 +420,9 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
             return pdfTLAS * pdfBLAS * pdfLeaf;
         }
 
-        const uint childIdx = (triTrail >> (2u * bdepth)) & 3u;
+        if (iterB == LT_TRAIL_MAX_DEPTH) return 0.0f;
+        const uint childIdx = LT_TrailChild(triTrail, iterB);
+        if (childIdx >= bChildCount) return 0.0f;
 
         float w[4]; float sum = 0.0;
         uint4 ctopo[4];
@@ -438,7 +444,6 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
         bChildCount = ctopo[childIdx].y;
         bTriFirst   = ctopo[childIdx].z;
         bTriCount   = ctopo[childIdx].w;
-        bdepth++;
     }
 
     return 0.0f;
@@ -504,7 +509,11 @@ LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSamp
     float3 e2 = v2 - v0;
     float3 crossP = cross(e1, e2);
     float area2 = length(crossP);
-    result.normal = crossP / area2;
+    // A reflection flips the world-edge cross product. Transform the local
+    // outward normal just like surface shading and the light-tree cones do.
+    float3 normalW = mul((float3x3)instanceProps[result.objID].objectToWorldNormal,
+                        cross(triData.y - triData.x, triData.z - triData.x));
+    result.normal = normalW * rsqrt(max(dot(normalW, normalW), 1e-20f));
     float area = 0.5f * area2;
 
     //PDF_SA = PDF_Area * dist^2 / cosTheta_Light

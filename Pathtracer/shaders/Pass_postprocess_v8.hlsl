@@ -405,7 +405,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     albedo = ApplyOutputDither(albedo, DTid.xy, frameSeed);
 
     gOutput[uint3(DTid.xy, 0)] = float4(noisy, 0.0f);
-    gOutput[uint3(DTid.xy, 1)] = float4(clean, 0.0f);
+    // DLSS Neural Rendering consumes this display-referred scene before UI.
+    // It requires an opaque color input, even though presentation ignores alpha.
+    gOutput[uint3(DTid.xy, 1)] = float4(clean, 1.0f);
     gOutput[uint3(DTid.xy, 2)] = float4(gt, 0.0f);
     //slice 3: retired NRC slot, now the DLSS guide-buffer inspector when a
     //layer is selected in the editor's "DLSS Inputs" window. Written raw

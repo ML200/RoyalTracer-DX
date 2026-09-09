@@ -115,19 +115,6 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
     m_ctx    = ctx;
     m_cfg    = cfg;
 
-    //Load the baked cubemap heightmap from the runtime include/terrain/ copy.
-    //Failure leaves the heightmap empty - the tessellator will see all zeros,
-    //which renders a perfect sphere instead of crashing.
-    // PLANET DISABLED 2026-06-10: skip the terrain-data load entirely when the
-    // planet is off. The baked terrain set (include/terrain/: elevation_face*.r32,
-    // surface_color/normal PNGs, cloud_offset_face*.r32, manifest.json) is too
-    // large to commit, so it is no longer shipped. With the planet disabled
-    // nothing consumes the heightmap anyway — generation is gated off and the
-    // InitTerrain* GPU uploads are commented out in Renderer — so gating the
-    // load on cfg.enabled keeps the runtime free of any ./terrain dependency
-    // (no disk probe, no "load failed" log). Re-enabling the planet restores
-    // this load, which still degrades gracefully to a flat sphere if the data
-    // files happen to be absent.
     if (cfg.enabled) {
         if (!m_heightmap.load(cfg.heightmap_dir)) {
             std::wcout << L"[planet] heightmap load failed; planet will render flat"
@@ -136,7 +123,8 @@ void StreamOrchestrator::init(ID3D12Device5* device, DeviceContext* ctx,
     }
 
     //unified TLAS: every terrain cell + the scene-instance allowance.
-    m_tlas.init(device, MAX_TERRAIN_CELLS + cfg.max_scene_instances + MAX_ROCK_INSTANCES);
+    m_tlas.init(device, cfg.max_scene_instances +
+        (cfg.enabled ? MAX_TERRAIN_CELLS + MAX_ROCK_INSTANCES : 0));
 
     //terrain table: one TerrainSlotGPU per stable id, persistently-mapped upload heap.
     m_terrainTable = create_buffer(device, (uint64_t)MAX_TERRAIN_CELLS * sizeof(TerrainSlotGPU),
@@ -472,10 +460,21 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
 //====================================
 //RECORD TLAS - scene meshes + every LIVE terrain cell
 //====================================
+void StreamOrchestrator::reserve_scene_instances(uint32_t count) {
+    if (m_cfg.enabled && count > m_cfg.max_scene_instances) {
+        if (m_instanceProps)
+            throw std::runtime_error("Scene instances exceed the fixed terrain instance range");
+        m_cfg.max_scene_instances = count;
+    }
+    m_tlas.reserve(count + (m_cfg.enabled ? MAX_TERRAIN_CELLS + MAX_ROCK_INSTANCES : 0));
+}
+
 void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t scene_count,
                                      uint32_t terrain_hit_group,
                                      ID3D12GraphicsCommandList4* compute_cl) {
-    m_tlas.begin();
+    if (m_cfg.enabled && scene_count > m_cfg.max_scene_instances)
+        throw std::runtime_error("Scene instances overlap the reserved terrain instance range");
+    m_tlas.begin(scene_count + (uint32_t)m_live.cells.size() + (uint32_t)m_rockInstances.size());
 
     //scene mesh instances - transforms already scene-origin-relative
     for (uint32_t i = 0; i < scene_count; ++i) {
@@ -549,7 +548,9 @@ void StreamOrchestrator::record_tlas(const SceneInstanceDesc* scene, uint32_t sc
     if (props) m_instanceProps->Unmap(0, nullptr);
     m_stats.cells_dropped = dropped;
 
-    m_tlas.build(compute_cl);
+    //Terrain generations can replace BLAS contents at a reused address. Keep
+    //their full rebuild policy; static imported scenes can reuse the last TLAS.
+    m_tlas.build(compute_cl, m_cfg.enabled);
 }
 
 //====================================

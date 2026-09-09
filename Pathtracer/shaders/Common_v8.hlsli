@@ -192,18 +192,12 @@ bool BoilingFilter(
 }
 
 //====================================
-//DLSS LINEAR DEPTH
+//DLSS REVERSE-Z DEVICE DEPTH
 //====================================
 float DLSS_GuideDepthFromWorldPos(float3 worldPos)
 {
-    //REVERSE-Z DEVICE DEPTH for the DLSS-RR guide (near -> 1, far -> 0),
-    //built from the FIXED guide near/far pair so it always matches the
-    //matrices/constants DLSSManager advertises (depthInverted = true,
-    //kBufferTypeDepth). Identical to running the point through the guide's
-    //reversed projection: d = n(f - z) / ((f - n) z). Distant terrain/clouds
-    //saturate onto the far plane (0) instead of stretching the guide range
-    //out to planet scale. RH view space, forward is negative Z.
-    float3 viewPos = mul(view, float4(worldPos, 1.0f)).xyz;
+    float3 camera=mul(viewI,float4(0,0,0,1)).xyz;
+    float3 viewPos = mul((float3x3)view, worldPos-camera);
     const float z = max(-viewPos.z, DLSS_GUIDE_DEPTH_NEAR);
     const float n = DLSS_GUIDE_DEPTH_NEAR;
     const float f = DLSS_GUIDE_DEPTH_FAR;

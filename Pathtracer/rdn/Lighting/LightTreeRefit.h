@@ -28,7 +28,7 @@ struct BLASRootLocal {
 // ── Result of an async TLAS rebuild ──────────────────────────────
 struct TLASRefitResult {
     std::vector<LightTLASNodeGpu> nodes;
-    std::vector<uint32_t>         blasBitTrails;    // 2-bits-per-level TLAS descent path per BLAS
+    std::vector<LightTreeTrail>   blasBitTrails;    // 2-bits-per-level TLAS descent path per BLAS
     std::vector<XMFLOAT4X4>      blasWorldToLocal;  // updated inverse transforms
 };
 
@@ -209,12 +209,11 @@ private:
     }
 
     std::vector<LightTLASNodeGpu> m_tlas;
-    std::vector<uint32_t>         m_blasBitTrails;  // populated as TLAS leaves are reached
+    std::vector<LightTreeTrail>   m_blasBitTrails;  // populated as TLAS leaves are reached
     uint32_t m_bins = 64;
-    static constexpr uint32_t LT_TRAIL_MAX_DEPTH = 16; // 32 bits / 2 bits per level
 
     uint32_t buildRecursive(std::vector<TItem>& it, uint32_t begin, uint32_t end,
-                            uint32_t bitTrail, uint32_t depth) {
+                            LightTreeTrail bitTrail, uint32_t depth) {
         const uint32_t nodeIdx = (uint32_t)m_tlas.size();
         m_tlas.push_back({});
 
@@ -246,6 +245,14 @@ private:
             AggT parentL{}; for (uint32_t i = b0; i < e0; ++i) aggAdd(parentL, it[i]);
             const Aabb     aabb     = parentL.a;
             const XMFLOAT3 ext      = aabbExtent(aabb);
+            if (LightTreeNeedsBalancedSplit(e0 - b0, depth)) {
+                axisOut = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x ? 2 : 0);
+                midOut = b0 + (e0 - b0) / 2u;
+                std::nth_element(it.begin() + b0, it.begin() + midOut, it.begin() + e0,
+                    [&](const TItem& a, const TItem& b) { return (&a.c.x)[axisOut] < (&b.c.x)[axisOut]; });
+                posOut = (&it[midOut].c.x)[axisOut];
+                return true;
+            }
             const float    lenX     = ext.x, lenY = ext.y, lenZ = ext.z;
             const float    lenMax   = (std::fmax)(lenX, (std::fmax)(lenY, lenZ));
             const float    parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
@@ -340,10 +347,8 @@ private:
         m_tlas[nodeIdx].childCount = bucketCount;
         for (uint32_t i = 0; i < bucketCount; ++i) m_tlas.push_back({});
 
-        const bool   depthOverflow = (depth >= LT_TRAIL_MAX_DEPTH);
-        const uint32_t shift       = 2u * depth;
         for (uint32_t c = 0; c < bucketCount; ++c) {
-            const uint32_t childTrail = depthOverflow ? bitTrail : (bitTrail | (c << shift));
+            const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
             uint32_t built   = buildRecursive(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
             uint32_t desired = m_tlas[nodeIdx].firstChild + c;
             if (built != desired) std::swap(m_tlas[built], m_tlas[desired]);

@@ -1,0 +1,33 @@
+#ifndef CUMULUS_LAYOUT_H
+#define CUMULUS_LAYOUT_H
+#define CUMULUS_NOISE_SIZE 256u
+#if CUMULUS_REFERENCE
+#define CUMULUS_LIGHT_CASCADES 1u
+#define CUMULUS_ENV_LAYERS 2u
+#else
+#define CUMULUS_LIGHT_CASCADES 2u
+#define CUMULUS_ENV_LAYERS 1u
+#endif
+#define CUMULUS_LIGHT_XZ 128u
+#define CUMULUS_LIGHT_Y 32u
+#define CUMULUS_FAR_LIGHT_XZ 64u
+#define CUMULUS_FAR_LIGHT_Y 16u
+#define CUMULUS_LIGHT_SPAN_KM 48.0f
+#define CUMULUS_ENV_W 512u
+#define CUMULUS_ENV_H 256u
+#define CUMULUS_AMBIENT_W 128u
+#define CUMULUS_AMBIENT_H 16u
+#define CUMULUS_QUERY_BYTES 64u
+#define CUMULUS_NORMAL_SLOT 13u
+#define CUMULUS_DEPTH_SLOT 14u
+// Each brick owns eight cells and nine vertices per axis, including its border.
+// Duplicated borders allow a filtered lookup without sampling another brick.
+#define CUMULUS_DENSITY_BRICKS_XZ 48u
+#define CUMULUS_DENSITY_BRICKS_Y 24u
+#define CUMULUS_DENSITY_BRICK_CELLS 8u
+#define CUMULUS_DENSITY_BRICK_VERTICES 9u
+#define CUMULUS_DENSITY_BRICK_COUNT 55296u
+#define CUMULUS_DENSITY_BATCH 2048u
+#define CUMULUS_DENSITY_PHASES 27u
+#define CUMULUS_DENSITY_VOXEL_KM .024f
+#endif

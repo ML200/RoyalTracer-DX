@@ -41,14 +41,11 @@ void Camera::Init(ID3D12Device* device, UINT width, UINT height) {
     nv_helpers_dx12::CameraManip.setMode(nv_helpers_dx12::Manipulator::Fly);
     nv_helpers_dx12::CameraManip.setSpeed(moveSpeed);
 
-    //GPU CB, 6 matrices + 8 extras (frameIdx, jitter.xy, cameraFar, walltime, pad*3)
-    //+ SunSettings + CloudSettings + 16 planet-terrain floats appended at the
-    //tail (6 base: centre xyz, radius, amp, freq; +10 camera-local noise
-    //frame: noiseOrigin xyz, noiseFrac xyz, camDir xyz, radialScale).
+    //Camera matrices, eight scalar extras, SunSettings, and six terrain scalars.
     uint32_t matCount = 6;
     m_bufferSize = matCount * sizeof(XMMATRIX) + sizeof(float) * 8
-                 + sizeof(SunSettings) + sizeof(CloudSettings)
-                 + sizeof(float) * 16;
+                 + sizeof(SunSettings)
+                 + sizeof(float) * 6 + sizeof(CumulusSettings) + sizeof(float) * 3;
     m_bufferSize = (m_bufferSize + 255) & ~255;
 
     m_buffer = nv_helpers_dx12::CreateBuffer(
@@ -215,21 +212,33 @@ void Camera::UploadGPUBuffer(float aspectRatio) {
     sunSettings.dofApertureRadius = apertureRadius;
     sunSettings.dofFocusDistance  = focusDistance;
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra), &sunSettings, sizeof(SunSettings));
-    //CloudSettings follows SunSettings; both packed as scalar floats so the
-    //HLSL CB packing rules concatenate them cleanly across register slots.
-    memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra) + sizeof(SunSettings),
-           &cloudSettings, sizeof(CloudSettings));
-    //Procedural-terrain tail: 6 scalar floats following CloudSettings - planet
+    //Procedural-terrain tail: 6 scalar floats following SunSettings - planet
     //centre xyz, radius, and the (vestigial) heightmap amplitude/frequency.
-    //planetCentre/radius feed the cloud + atmosphere code (TerrainHeight, planet
+    //planetCentre/radius feed the atmosphere code (TerrainHeight, planet
     //sphere). Must match the cbuffer tail in Includes_v8.hlsli exactly.
     const float planetTail[6] = {
         planetCenter.x, planetCenter.y, planetCenter.z,
         planetRadius, terrainHeightAmplitude, terrainHeightFrequency
     };
     memcpy(pData + 6 * sizeof(XMMATRIX) + sizeof(extra)
-                 + sizeof(SunSettings) + sizeof(CloudSettings),
+                 + sizeof(SunSettings),
            planetTail, sizeof(planetTail));
+    const size_t cloudOffset = 6 * sizeof(XMMATRIX) + sizeof(extra)
+        + sizeof(SunSettings) + sizeof(planetTail);
+    memcpy(pData + cloudOffset, &cumulusSettings, sizeof(cumulusSettings));
+    const float cloudDt = std::max(m_wallTimeSec - cumulusPreviousUploadTime, 0.0f);
+    memcpy(pData + cloudOffset + sizeof(cumulusSettings), &cloudDt, sizeof(cloudDt));
+    const auto& c = cumulusSettings;
+    const std::array<float,9> densityKey{c.coverage,c.baseKm,c.thicknessKm,c.scale,c.detail,
+        c.windX,c.windZ,c.seed,c.fineDetail};
+    if (m_cumulusDensityEpoch == 0 || densityKey != m_cumulusDensityKey) {
+        m_cumulusDensityKey = densityKey;
+        if (++m_cumulusDensityEpoch == 0) ++m_cumulusDensityEpoch;
+    }
+    const float densityCacheEnabled = cumulusDensityCache ? 1.0f : 0.0f;
+    memcpy(pData + cloudOffset + sizeof(cumulusSettings) + sizeof(float), &densityCacheEnabled, sizeof(float));
+    memcpy(pData + cloudOffset + sizeof(cumulusSettings) + sizeof(float) * 2, &m_cumulusDensityEpoch, sizeof(uint32_t));
+    cumulusPreviousUploadTime = m_wallTimeSec;
     m_buffer->Unmap(0, nullptr);
 
     m_viewMatrix           = matrices[0];

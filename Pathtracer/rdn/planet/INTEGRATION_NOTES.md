@@ -45,10 +45,10 @@ that pattern, but with real separate queues.
 `D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE` and never transitioned (correct).
 TLAS SRV sits at descriptor-heap index 2. All TLAS work runs on the DIRECT queue.
 
-### 4. Atmosphere / clouds — NOT in the TLAS
-Atmosphere + volumetric clouds are a **screen-space compute pass**,
-`Pass_clouds_primary_v8.hlsl`, registered in the `m_passes.Build({...})` list in the
-`Renderer` constructor. It marches unified atmosphere + cloud scatter and writes sky
+### 4. Atmosphere — NOT in the TLAS
+Atmosphere is a **screen-space compute pass**,
+`Pass_atmosphere_primary_v8.hlsl`, registered in the `m_passes.Build({...})` list in the
+`Renderer` constructor. It marches atmospheric scattering and writes sky
 colour + combined transmittance into scratch slots; `Pass_shading_v8.hlsl` composites.
 The renderer is triangle-geometry-only (procedural-primitive / AABB support was removed).
 There are **no procedural-primitive instances** for Phase 5 to append.
@@ -83,10 +83,10 @@ becomes redundant once terrain streams (the instance set changes most frames any
 A ~600-instance TLAS rebuild is well under the 1 ms budget on a 5090. *This changes
 static-scene behaviour — confirm acceptable.*
 
-**B. No atmosphere/cloud instances to append.** Phase 5's "append atmosphere/cloud
+**B. No atmosphere instances to append.** Phase 5's "append atmosphere
 procedural-primitive instances" step is moot — they are screen-space. Terrain hits feed
-the cloud composite like any other geometry; the only work is a Phase 5 visual check
-that terrain interacts correctly with the atmosphere/cloud composite.
+the atmosphere composite like any other geometry; the only work is a Phase 5 visual check
+that terrain interacts correctly with the atmosphere composite.
 
 **C. The closest-hit shader is a stub.** The plan's "terrain material branch in the
 closest-hit shader" actually belongs in `Pass_raygen_v8.hlsl`'s HIT block (and the GI
@@ -131,7 +131,7 @@ So the plan's "camera-relative TLAS" partly already exists. Reconciliation:
 
 - `rdn/Core/DeviceContext.h` — struct that owns device/queue/fence/frames-in-flight
 - `rdn/Core/DeviceContext.cpp` — command queue creation
-- `rdn/Renderer.cpp` — per-frame TLAS update site; the clouds compute pass entry
+- `rdn/Renderer.cpp` — per-frame TLAS update site; the atmosphere compute pass entry
 - `rdn/Renderer_Pipeline.cpp` — `CreateTopLevelAS`; hit-group declaration
 - `rdn/Scene/Scene.cpp` — `RebuildTLASInstanceList`
 - `shaders/Pass_raygen_v8.hlsl` — HIT block (terrain material branch goes here)

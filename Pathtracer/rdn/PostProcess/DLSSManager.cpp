@@ -4,6 +4,7 @@
 
 #include "../stdafx.h"
 #include "DLSSManager.h"
+#include "../../shaders/DlssGuideLayout.h"
 #include "../DXRHelper.h"
 #include "../glm/gtc/type_ptr.hpp"
 #include "../manipulator.h"
@@ -94,6 +95,25 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
     createRenderTex(m_colorBeforeTrans, DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_ColorPreTrans");
     createRenderTex(m_biasHint,         DXGI_FORMAT_R8_UNORM,           L"DLSS_BiasHint");
 
+    //A signed, render-resolution mask filled without a shader dispatch.
+    createRenderTex(m_responsivityMask, DXGI_FORMAT_R16_FLOAT, L"DLSS_ResponsivityMask");
+    if (!m_responsivityGpuHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+        heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        heapDesc.NumDescriptors = 1;
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_responsivityGpuHeap)));
+        heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        ThrowIfFailed(device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_responsivityCpuHeap)));
+    }
+    D3D12_UNORDERED_ACCESS_VIEW_DESC maskUav = {};
+    maskUav.Format = DXGI_FORMAT_R16_FLOAT;
+    maskUav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    device->CreateUnorderedAccessView(m_responsivityMask.Get(), nullptr, &maskUav,
+        m_responsivityGpuHeap->GetCPUDescriptorHandleForHeapStart());
+    device->CreateUnorderedAccessView(m_responsivityMask.Get(), nullptr, &maskUav,
+        m_responsivityCpuHeap->GetCPUDescriptorHandleForHeapStart());
+
     // Output (at display resolution — DLSS upscales to this)
     createDisplayTex(m_output,          DXGI_FORMAT_R16G16B16A16_FLOAT, L"DLSS_Output");
 
@@ -102,7 +122,7 @@ void DLSSManager::CreateInputTextures(ID3D12Device* device) {
         m_depth.Get(), m_mvec.Get(), m_normals.Get(), m_diffuseAlbedo.Get(),
         m_output.Get(), m_specAlbedo.Get(), m_roughness.Get(), m_specMvec.Get(),
         m_specHitDist.Get(), m_transparency.Get(), m_colorBeforeTrans.Get(),
-        m_biasHint.Get()
+        m_biasHint.Get(), m_responsivityMask.Get()
     };
     for (auto* r : allRes)
         m_state.SetInitialState(r, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -170,8 +190,11 @@ void DLSSManager::Evaluate(
     uint32_t jitterFrameIndex,
     float fovDegrees, float nearPlane, float farPlane)
 {
+    m_lastEvaluationSucceeded = false;
+    m_lastEvaluationReset = true;
     if (!cmdList || !m_output || !m_depth || !m_mvec || !m_normals ||
-        !m_diffuseAlbedo || !m_specAlbedo || !m_roughness || !m_specHitDist)
+        !m_diffuseAlbedo || !m_specAlbedo || !m_roughness || !m_specHitDist || !m_biasHint ||
+        !m_responsivityMask || !m_responsivityGpuHeap || !m_responsivityCpuHeap)
         return;
 
     // A preset swap rebuilds DLSS-RR around a different model. Checked before the
@@ -188,11 +211,26 @@ void DLSSManager::Evaluate(
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
+    const float responsivity = std::clamp(rrResponsivity, -1.0f, 1.0f);
+    const bool useResponsivityMask = responsivity != 0.0f;
+    if (useResponsivityMask) {
+        const float clearColor[4] = { responsivity, 0.0f, 0.0f, 0.0f };
+        //The caller already rebinds its heaps after Evaluate for Streamline.
+        ID3D12DescriptorHeap* heaps[] = { m_responsivityGpuHeap.Get() };
+        cmdList->SetDescriptorHeaps(1, heaps);
+        cmdList->ClearUnorderedAccessViewFloat(
+            m_responsivityGpuHeap->GetGPUDescriptorHandleForHeapStart(),
+            m_responsivityCpuHeap->GetCPUDescriptorHandleForHeapStart(),
+            m_responsivityMask.Get(), clearColor, 0, nullptr);
+        auto ready = CD3DX12_RESOURCE_BARRIER::UAV(m_responsivityMask.Get());
+        cmdList->ResourceBarrier(1, &ready);
+    }
+
     // Transition inputs UAV → SRV
     ID3D12Resource* dlssInputs[] = {
         m_depth.Get(), m_mvec.Get(), m_normals.Get(), m_diffuseAlbedo.Get(),
         m_specAlbedo.Get(), m_roughness.Get(), m_specHitDist.Get(), m_input.Get(),
-        m_biasHint.Get(), m_specMvec.Get()
+        m_biasHint.Get(), m_specMvec.Get(), useResponsivityMask ? m_responsivityMask.Get() : nullptr
     };
     std::vector<D3D12_RESOURCE_BARRIER> preB;
     for (auto* r : dlssInputs)
@@ -218,20 +256,12 @@ void DLSSManager::Evaluate(
             CD3DX12_RESOURCE_BARRIER::Transition(r, stateSRV, stateUAV));
 
     // ── Build Streamline constants ────────────────────────────────
-    // DLSS gets its own GUIDE camera range and depth convention, decoupled
-    // from the renderer's planet-scale camera (near 0.01 / far 1e9 —
-    // near:far = 1e11 degenerates everything depth-related: the fp32
-    // projection's far/(near-far) rounds to exactly -1, and any internal
-    // fp16 pass over metre-scale linear depth quantizes it into visible
-    // depth stripes; preset F proved most sensitive). The guide is
-    // REVERSE-Z DEVICE DEPTH in [0,1] over this FIXED near/far pair —
-    // near -> 1, far -> 0, tagged kBufferTypeDepth with depthInverted=true —
-    // the convention shipping DLSS titles use. Pass_shading encodes depth
-    // with the same pair (DLSS_GUIDE_DEPTH_NEAR/FAR in Constants_v8.hlsli —
-    // MUST match), which is also why the caller's editor-adjustable
-    // nearPlane is deliberately NOT used here.
-    constexpr float kGuideDepthNear = 0.01f;
-    constexpr float kGuideDepthFar  = 10000.0f;
+    // R32F reverse-Z, with a shared planet-scale range: a 10 km guide far plane
+    // aliases finite horizon clouds with infinite sky. This projection avoids
+    // forward-Z's far/(near-far) cancellation. Specular hit-distance storage is
+    // separately capped to fp16; it does not define the camera's far plane.
+    constexpr float kGuideDepthNear = DLSS_GUIDE_DEPTH_NEAR;
+    constexpr float kGuideDepthFar  = DLSS_GUIDE_DEPTH_FAR;
     (void)nearPlane; (void)farPlane;
 
     // Use render resolution for aspect ratio in the projection. Swapped
@@ -289,6 +319,7 @@ void DLSSManager::Evaluate(
     //history accumulates against the misplaced reference.
     constants.cameraPinholeOffset       = { 0.0f, 0.0f };
     constants.reset = (jitterFrameIndex <= 1 || m_forceReset) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    m_lastEvaluationReset = constants.reset == sl::Boolean::eTrue;
     m_forceReset = false;
 
     {
@@ -344,6 +375,9 @@ void DLSSManager::Evaluate(
     sl::Resource slSpecMV  (sl::ResourceType::eTex2d, m_specMvec.Get(),     (uint32_t)stateSRV);
     sl::Resource slOutput  (sl::ResourceType::eTex2d, m_output.Get(),        (uint32_t)stateUAV);
 
+    sl::Resource slBiasHint(sl::ResourceType::eTex2d, m_biasHint.Get(), (uint32_t)stateSRV);
+    sl::Resource slResponsivity(sl::ResourceType::eTex2d, m_responsivityMask.Get(), (uint32_t)stateSRV);
+
     // Inputs use render extent, output uses display extent
     sl::Extent renderExtent { 0, 0, m_renderWidth,  m_renderHeight  };
     sl::Extent displayExtent{ 0, 0, m_displayWidth, m_displayHeight };
@@ -378,6 +412,11 @@ void DLSSManager::Evaluate(
         //specular tracking. See DLSSManager.h.
         { untagSpecMV ? nullptr : &slSpecMV,
                       sl::kBufferTypeSpecularMotionVectors, life, &renderExtent },
+        //Binary visible-emitter mask: 1 favors current color on emitters, 0 elsewhere.
+        { &slBiasHint, sl::kBufferTypeBiasCurrentColorHint, life, &renderExtent },
+        //Zero disables the override and clears any tag from the previous frame.
+        { useResponsivityMask ? &slResponsivity : nullptr,
+                      sl::kBufferTypeResponsivityMask, life, &renderExtent },
         { &slOutput,  sl::kBufferTypeScalingOutputColor,   life, &displayExtent },
     };
     SL_CHECK(slSetTagForFrame(frameToken, viewport, tags.data(), (uint32_t)tags.size(), cmdList));
@@ -433,4 +472,5 @@ void DLSSManager::Evaluate(
 
     m_dlssPrevView = viewMatrix;
     m_dlssPrevProj = xmProj;
+    m_lastEvaluationSucceeded = true;
 }

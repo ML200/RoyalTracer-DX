@@ -39,6 +39,10 @@ struct MeshGPU {
     ComPtr<ID3D12Resource> ommArray;
     ComPtr<ID3D12Resource> ommIndexBuffer;
     bool                   hasOmm = false;
+
+    // Allocate upload inputs only immediately before a BLAS build. CPU data
+    // remains available for global shading buffers, OMM baking and edits.
+    void CreateBlasBuildInputs(ID3D12Device* device);
 };
 
 //====================================
@@ -178,6 +182,8 @@ struct Scene {
     //emissive / light data
     std::vector<LightTriangle>  emissiveTriangles;
     ComPtr<ID3D12Resource>      emissiveTrianglesBuffer;
+    // Copy sources must live until the command list has completed on the GPU.
+    std::vector<ComPtr<ID3D12Resource>> pendingLightUploads;
     std::vector<uint32_t>       instTriOffset;
     std::vector<uint32_t>       triToLightId;
     ComPtr<ID3D12Resource>      triToLightIdBuffer;
@@ -264,6 +270,7 @@ struct Scene {
     void CollectEmissiveTriangles();
     void CreateEmissiveTrianglesBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12CommandQueue* queue, ID3D12CommandAllocator* alloc);
     void CreateTriToLightIdBuffer(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList);
+    void ReleaseLightUploadStaging() { pendingLightUploads.clear(); } // GPU fence must be complete
     void UploadMaterials(ID3D12Device* device);
     void UpdateMaterialBuffer();
 

@@ -7,6 +7,21 @@
 #include "Scene.h"
 #include "../DXRHelper.h"
 
+void MeshGPU::CreateBlasBuildInputs(ID3D12Device* device) {
+    auto upload = [&](const void* data, size_t bytes, ComPtr<ID3D12Resource>& resource) {
+        if (resource) return;
+        resource = nv_helpers_dx12::CreateBuffer(device, bytes, D3D12_RESOURCE_FLAG_NONE,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+        void* mapped = nullptr;
+        CD3DX12_RANGE noRead(0, 0);
+        ThrowIfFailed(resource->Map(0, &noRead, &mapped));
+        if (bytes) memcpy(mapped, data, bytes);
+        resource->Unmap(0, nullptr);
+    };
+    upload(cpuVertices.data(), cpuVertices.size() * sizeof(Vertex), vertexBuffer);
+    upload(cpuIndices.data(), cpuIndices.size() * sizeof(UINT), indexBuffer);
+}
+
 // ─────────────────────────────────────────────────────────────────
 void Scene::PropagateModelTransforms() {
     for (auto& model : models) {
@@ -332,8 +347,7 @@ void Scene::PrepareInstanceProperties() {
         dst.materialBase   = mesh.materialIDBase;
         dst.triToLightBase = instTriOffset.empty() ? 0 : instTriOffset[idx];
 
-        // Keep TLAS in sync (shifted transform; the TopLevelASGenerator holds
-        // a reference to this XMMATRIX so the next refit picks up the shift).
+        // Keep the descriptor source in sync for the active unified TLAS.
         if (idx < tlasInstances.size())
             tlasInstances[idx].transform = M;
     }
@@ -391,7 +405,7 @@ void Scene::RebuildTLASInstanceList() {
     tlasInstances.reserve(instances.size());
     //Floating origin shift: subtract sceneOriginWorld from each transform
     //so the TLAS is built in camera local space. See PrepareInstanceProperties
-    //for the per-frame refit equivalent.
+    //for updates to existing instances.
     const XMVECTOR shift = XMVectorSet(sceneOriginWorld.x,
                                         sceneOriginWorld.y,
                                         sceneOriginWorld.z, 0.0f);
@@ -557,6 +571,7 @@ void Scene::CreateTriToLightIdBuffer(ID3D12Device* device, ID3D12GraphicsCommand
         triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &br);
+    pendingLightUploads.push_back(std::move(upload));
 }
 
 void Scene::CreateEmissiveTrianglesBuffer(
@@ -581,4 +596,5 @@ void Scene::CreateEmissiveTrianglesBuffer(
         emissiveTrianglesBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
         D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &barrier);
+    pendingLightUploads.push_back(std::move(upload));
 }

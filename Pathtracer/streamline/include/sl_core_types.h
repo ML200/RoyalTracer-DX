@@ -206,12 +206,13 @@ constexpr BufferType kBufferTypeResponsivityMask = 68;
 //! A 1 channel resource containing the alpha value of on-screen elements, between 0.0f and 1.0f inclusive.
 //!  Similar to kBufferTypeUIColorAndAlpha, but only the alpha channel for optimized run-time performance.
 constexpr BufferType kBufferTypeUIAlpha = 69;
-//! Reserved for future use, do not use
-constexpr BufferType kBufferTypeReserved70 = 70;
-//! Reserved for future use, do not use
-constexpr BufferType kBufferTypeReserved71 = 71;
-//! Reserved for future use, do not use
-constexpr BufferType kBufferTypeReserved72 = 72;
+//! Input color for neural-net "uplift" passes
+constexpr BufferType kBufferTypeUpliftInputColor = 70;
+//! Output color for neural-net "uplift" passes
+//! May alias kBufferTypeUpliftInputColor (in-place uplift); the feature transitions appropriately.
+constexpr BufferType kBufferTypeUpliftOutputColor = 71;
+//! Optional - 4-channel control mask consumed by uplift passes
+constexpr BufferType kBufferTypeUpliftControlMask = 72;
 
 //! Features supported with this SDK
 //! 
@@ -249,6 +250,7 @@ constexpr Feature kFeatureNvPerf = 1002;
 
 constexpr Feature kFeatureDirectSR = 1003;
 
+constexpr Feature kFeatureDLSS_NR = 1004;
 
 // ImGUI 
 constexpr Feature kFeatureImGUI = 9999;
@@ -371,8 +373,17 @@ SL_STRUCT_BEGIN(Resource, StructType({ 0x3a9d70cf, 0x2418, 0x4b72, { 0x83, 0x91,
     uint32_t flags;
     //! VkImageUsageFlags
     uint32_t usage{};
-    //! Reserved for internal use
-    uint32_t reserved{};
+    //! Internal flags (bitfield) - do not modify
+    enum InternalFlags : uint16_t
+    {
+        eNone = 0,
+        //! Resource wraps a Vulkan swapchain image not allocated by SL or the host callback.
+        //! The release callback must not be invoked for such resources.
+        eVulkanSwapChainImage = 1 << 0,
+    };
+    uint16_t internalFlags{};
+    //! Reserved for future use
+    uint16_t reserved{};
 
     //! IMPORTANT: New members go here or if optional can be chained in a new struct, see sl_struct.h for details
 SL_STRUCT_END()

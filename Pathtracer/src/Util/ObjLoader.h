@@ -6,6 +6,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
+#include <limits>
 
 #include <cmath>
 #include <random>
@@ -549,18 +550,13 @@ private:
     {
         if (accessorIdx < 0 || accessorIdx >= (int)model.accessors_count) return {};
         const tg3_accessor& acc = model.accessors[accessorIdx];
-        if (acc.buffer_view < 0 || acc.buffer_view >= (int)model.buffer_views_count) return {};
-        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
-        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers_count) return {};
-        const tg3_buffer& buf = model.buffers[bv.buffer];
-
         uint32_t componentCount = 1;
         switch (acc.type) {
             case TG3_TYPE_SCALAR: componentCount = 1; break;
             case TG3_TYPE_VEC2:   componentCount = 2; break;
             case TG3_TYPE_VEC3:   componentCount = 3; break;
             case TG3_TYPE_VEC4:   componentCount = 4; break;
-            default: break;
+            default: return {};
         }
 
         size_t compSize = 0;
@@ -572,63 +568,174 @@ private:
             case TG3_COMPONENT_TYPE_INT:
             case TG3_COMPONENT_TYPE_UNSIGNED_INT:
             case TG3_COMPONENT_TYPE_FLOAT:          compSize = 4; break;
-            default: break;
+            default: return {};
         }
 
-        size_t stride = bv.byte_stride;
-        if (stride == 0) stride = compSize * componentCount;
+        // Validate every span before pointer arithmetic, including strided and
+        // sparse data. A missing base bufferView means zero-initialized values.
+        auto span = [&](int viewIdx, uint64_t offset, uint64_t count,
+                        size_t elementSize, bool packed, size_t& stride) -> const uint8_t* {
+            if (viewIdx < 0 || viewIdx >= (int)model.buffer_views_count || count == 0) return nullptr;
+            const auto& bv = model.buffer_views[viewIdx];
+            if (bv.buffer < 0 || bv.buffer >= (int)model.buffers_count) return nullptr;
+            const auto& buf = model.buffers[bv.buffer];
+            stride = packed || bv.byte_stride == 0 ? elementSize : bv.byte_stride;
+            if (!buf.data.data || stride < elementSize ||
+                bv.byte_offset > buf.data.count || bv.byte_length > buf.data.count - bv.byte_offset ||
+                offset > bv.byte_length || elementSize > bv.byte_length - offset ||
+                count - 1 > (bv.byte_length - offset - elementSize) / stride) return nullptr;
+            return buf.data.data + bv.byte_offset + offset;
+        };
+        const size_t elementSize = compSize * componentCount;
+        if (acc.count == 0 || acc.count > std::vector<T>().max_size() / componentCount) return {};
+        size_t stride = elementSize;
+        const uint8_t* base = nullptr;
+        if (acc.buffer_view >= 0) {
+            base = span(acc.buffer_view, acc.byte_offset, acc.count, elementSize, false, stride);
+            if (!base) return {};
+        }
+        std::vector<T> result((size_t)acc.count * componentCount, T{});
 
-        std::vector<T> result;
-        result.reserve((size_t)acc.count * componentCount);
-        const uint8_t* base = buf.data.data + bv.byte_offset + acc.byte_offset;
-
-        for (uint64_t i = 0; i < acc.count; ++i) {
-            const uint8_t* elem = base + i * stride;
+        auto readElement = [&](const uint8_t* elem, size_t index) {
             for (uint32_t c = 0; c < componentCount; ++c) {
-                T value{};
+                double value = 0;
                 switch (acc.component_type) {
                     case TG3_COMPONENT_TYPE_FLOAT: {
                         float f; memcpy(&f, elem + c * sizeof(float), sizeof(float));
-                        value = static_cast<T>(f); break;
+                        value = f; break;
                     }
                     case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: {
                         uint16_t u; memcpy(&u, elem + c * sizeof(uint16_t), sizeof(uint16_t));
-                        value = static_cast<T>(u); break;
+                        value = acc.normalized ? u / 65535.0 : u; break;
                     }
                     case TG3_COMPONENT_TYPE_UNSIGNED_INT: {
                         uint32_t u; memcpy(&u, elem + c * sizeof(uint32_t), sizeof(uint32_t));
-                        value = static_cast<T>(u); break;
+                        value = u; break;
+                    }
+                    case TG3_COMPONENT_TYPE_INT: {
+                        int32_t s; memcpy(&s, elem + c * sizeof(int32_t), sizeof(int32_t));
+                        value = s; break;
                     }
                     case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: {
-                        value = static_cast<T>(elem[c]); break;
+                        value = acc.normalized ? elem[c] / 255.0 : elem[c]; break;
                     }
                     case TG3_COMPONENT_TYPE_SHORT: {
                         int16_t s; memcpy(&s, elem + c * sizeof(int16_t), sizeof(int16_t));
-                        value = static_cast<T>(s); break;
+                        value = acc.normalized ? std::max(s / 32767.0, -1.0) : s; break;
                     }
                     case TG3_COMPONENT_TYPE_BYTE: {
-                        value = static_cast<T>(reinterpret_cast<const int8_t*>(elem)[c]); break;
+                        const int8_t s = reinterpret_cast<const int8_t*>(elem)[c];
+                        value = acc.normalized ? std::max(s / 127.0, -1.0) : s; break;
                     }
                     default: break;
                 }
-                result.push_back(value);
+                result[index * componentCount + c] = static_cast<T>(value);
+            }
+        };
+        if (base) {
+            for (size_t i = 0; i < (size_t)acc.count; ++i) readElement(base + i * stride, i);
+        }
+        if (acc.sparse.is_sparse) {
+            const auto& sparse = acc.sparse;
+            if (sparse.count <= 0 || (uint64_t)sparse.count > acc.count) return {};
+            size_t indexSize = 0;
+            switch (sparse.indices.component_type) {
+                case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: indexSize = 1; break;
+                case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: indexSize = 2; break;
+                case TG3_COMPONENT_TYPE_UNSIGNED_INT: indexSize = 4; break;
+                default: return {};
+            }
+            size_t indexStride, valueStride;
+            const uint8_t* indices = span(sparse.indices.buffer_view, sparse.indices.byte_offset,
+                sparse.count, indexSize, true, indexStride);
+            const uint8_t* values = span(sparse.values.buffer_view, sparse.values.byte_offset,
+                sparse.count, elementSize, true, valueStride);
+            if (!indices || !values) return {};
+            uint32_t previous = 0;
+            for (int i = 0; i < sparse.count; ++i) {
+                uint32_t index = 0;
+                memcpy(&index, indices + i * indexStride, indexSize);
+                if (index >= acc.count || (i > 0 && index <= previous)) return {};
+                readElement(values + i * valueStride, index);
+                previous = index;
             }
         }
         return result;
+    }
+
+    // The extension replaces the node's ordinary mesh placement; its instance
+    // TRS is applied before the node's accumulated transform (row vectors).
+    static bool CollectGltfMeshInstancesV3(const tg3_model& model, const tg3_node& node,
+        const XMMATRIX& world, std::vector<std::pair<int, XMMATRIX>>& outMeshes)
+    {
+        const auto* ext = tg3_find_extension(node.ext, "EXT_mesh_gpu_instancing");
+        if (!ext) {
+            outMeshes.push_back({ node.mesh, world });
+            return true;
+        }
+        const tg3_value* attributes = nullptr;
+        if (ext->type != TG3_VALUE_OBJECT) return false;
+        for (uint32_t i = 0; i < ext->object_count; ++i)
+            if (tg3_str_eq(ext->object_data[i].key, "attributes")) attributes = &ext->object_data[i].value;
+        if (!attributes || attributes->type != TG3_VALUE_OBJECT || attributes->object_count == 0) return false;
+
+        uint64_t count = 0;
+        std::vector<float> translations, rotations, scales;
+        for (uint32_t i = 0; i < attributes->object_count; ++i) {
+            const auto& attr = attributes->object_data[i];
+            if (attr.value.type != TG3_VALUE_INT || attr.value.int_val < 0 ||
+                (uint64_t)attr.value.int_val >= model.accessors_count) return false;
+            const int accessorIdx = (int)attr.value.int_val;
+            const auto& acc = model.accessors[accessorIdx];
+            if (acc.count == 0 || (i > 0 && acc.count != count)) return false;
+            count = acc.count;
+            const bool translation = tg3_str_eq(attr.key, "TRANSLATION");
+            const bool rotation = tg3_str_eq(attr.key, "ROTATION");
+            const bool scale = tg3_str_eq(attr.key, "SCALE");
+            // Custom attributes can supply the count even when all TRS are absent.
+            if (!translation && !rotation && !scale) {
+                if (attr.key.len == 0 || attr.key.data[0] != '_') return false;
+                continue;
+            }
+            if (acc.type != (rotation ? TG3_TYPE_VEC4 : TG3_TYPE_VEC3)) return false;
+            const bool floatType = acc.component_type == TG3_COMPONENT_TYPE_FLOAT && !acc.normalized;
+            const bool packedRotation = rotation && acc.normalized &&
+                (acc.component_type == TG3_COMPONENT_TYPE_BYTE || acc.component_type == TG3_COMPONENT_TYPE_SHORT);
+            if (!floatType && !packedRotation) return false;
+            auto values = ReadGltfAccessorV3<float>(model, accessorIdx);
+            if (values.empty() || !std::all_of(values.begin(), values.end(), [](float v) { return std::isfinite(v); }))
+                return false;
+            (translation ? translations : (rotation ? rotations : scales)) = std::move(values);
+        }
+        if (count > outMeshes.max_size() - outMeshes.size()) return false;
+        for (size_t i = 0; i < (size_t)count; ++i) {
+            const XMMATRIX T = translations.empty() ? XMMatrixIdentity() :
+                XMMatrixTranslation(translations[3*i], translations[3*i+1], translations[3*i+2]);
+            const XMMATRIX S = scales.empty() ? XMMatrixIdentity() :
+                XMMatrixScaling(scales[3*i], scales[3*i+1], scales[3*i+2]);
+            XMMATRIX R = XMMatrixIdentity();
+            if (!rotations.empty()) {
+                XMVECTOR q = XMVectorSet(rotations[4*i], rotations[4*i+1], rotations[4*i+2], rotations[4*i+3]);
+                if (XMVectorGetX(XMVector4LengthSq(q)) < 1e-12f) return false;
+                R = XMMatrixRotationQuaternion(XMQuaternionNormalize(q));
+            }
+            outMeshes.push_back({ node.mesh, S * R * T * world });
+        }
+        return true;
     }
 
     // Recursively collect mesh instances with accumulated transforms.
     // IMPORTANT: Stores the node transform — vertices stay in mesh-local space.
     // Uses a visited set to prevent double-traversal when a node appears as
     // both a scene root and a child of another node.
-    static void CollectGltfNodesV3(
+    static bool CollectGltfNodesV3(
         const tg3_model& model, int nodeIdx,
         const XMMATRIX& parentTransform,
         std::vector<std::pair<int, XMMATRIX>>& outMeshes,
         std::unordered_set<int>& visited)
     {
-        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count) return;
-        if (!visited.insert(nodeIdx).second) return; // already visited
+        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count) return false;
+        if (!visited.insert(nodeIdx).second) return true; // already visited
 
         const tg3_node& node = model.nodes[nodeIdx];
         XMMATRIX local = XMMatrixIdentity();
@@ -637,7 +744,9 @@ private:
             XMFLOAT4X4 m;
             for (int r = 0; r < 4; ++r)
                 for (int c = 0; c < 4; ++c)
-                    m.m[r][c] = (float)node.matrix[c * 4 + r];
+                    // glTF's column-major array already has the memory order
+                    // of the transposed, row-vector DirectXMath matrix.
+                    m.m[r][c] = (float)node.matrix[r * 4 + c];
             local = XMLoadFloat4x4(&m);
         } else {
             XMMATRIX T = XMMatrixTranslation((float)node.translation[0], (float)node.translation[1], (float)node.translation[2]);
@@ -647,9 +756,11 @@ private:
         }
 
         XMMATRIX world = local * parentTransform;
-        if (node.mesh >= 0) outMeshes.push_back({ node.mesh, world });
+        if (node.mesh >= 0 && (node.mesh >= (int)model.meshes_count ||
+            !CollectGltfMeshInstancesV3(model, node, world, outMeshes))) return false;
         for (uint32_t i = 0; i < node.children_count; ++i)
-            CollectGltfNodesV3(model, node.children[i], world, outMeshes, visited);
+            if (!CollectGltfNodesV3(model, node.children[i], world, outMeshes, visited)) return false;
+        return true;
     }
 
     static int tg3_find_attribute(const tg3_primitive& prim, const char* name) {
@@ -1182,6 +1293,43 @@ public:
             return scene;
         }
 
+        // tinygltf3 owns its parsed strings and buffer payloads in its arena.
+        // The original GLB bytes can be as large as the geometry itself.
+        std::vector<uint8_t>().swap(fileData);
+
+        // Resolve only the selected scene. With no scenes array, import root
+        // nodes as a forest; never treat a child as another identity-root copy.
+        std::vector<std::pair<int, XMMATRIX>> meshInstances;
+        std::unordered_set<int> visited;
+        bool validInstances = true;
+        if (model.scenes_count > 0) {
+            const int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
+            validInstances = sceneIdx < (int)model.scenes_count;
+            if (validInstances) {
+                const auto& sc = model.scenes[sceneIdx];
+                for (uint32_t i = 0; i < sc.nodes_count && validInstances; ++i)
+                    validInstances = CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances, visited);
+            }
+        } else {
+            std::vector<bool> isChild(model.nodes_count, false);
+            for (uint32_t i = 0; i < model.nodes_count; ++i) {
+                const auto& node = model.nodes[i];
+                for (uint32_t j = 0; j < node.children_count; ++j) {
+                    const int child = node.children[j];
+                    if (child < 0 || child >= (int)model.nodes_count) validInstances = false;
+                    else isChild[child] = true;
+                }
+            }
+            for (uint32_t i = 0; i < model.nodes_count && validInstances; ++i)
+                if (!isChild[i]) validInstances = CollectGltfNodesV3(model, (int)i, XMMatrixIdentity(), meshInstances, visited);
+        }
+        if (!validInstances) {
+            std::cerr << "[GlbLoader] Invalid scene graph or EXT_mesh_gpu_instancing attributes in " << inputfile << std::endl;
+            tg3_model_free(&model);
+            tg3_error_stack_free(&errors);
+            return {};
+        }
+
         // Decode images
         struct DecodedImage { std::vector<uint8_t> pixels; int width, height, channels; };
         std::vector<DecodedImage> decodedImages(model.images_count);
@@ -1495,21 +1643,14 @@ public:
             scene.materialNames.push_back(tg3_to_string(gmat.name));
         }
 
-        // ---- 5. Collect mesh instances via scene graph --------------------------
-        std::vector<std::pair<int, XMMATRIX>> meshInstances;
-        int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
-        if (sceneIdx < (int)model.scenes_count) {
-            const tg3_scene& sc = model.scenes[sceneIdx];
-            std::unordered_set<int> visited;
-            for (uint32_t i = 0; i < sc.nodes_count; ++i)
-                CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances, visited);
-        }
-
         // ---- 6. Build one LoadedMesh per unique glTF mesh -----------------------
         // Map from glTF mesh index -> LoadedScene mesh index
         std::unordered_map<int, UINT> gltfMeshToLoaded;
+        std::unordered_set<int> referencedMeshes;
+        for (const auto& instance : meshInstances) referencedMeshes.insert(instance.first);
 
         for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
+            if (!referencedMeshes.count((int)mi)) continue;
             const tg3_mesh& mesh = model.meshes[mi];
             LoadedMesh lm;
             std::unordered_map<Vertex, uint32_t> uniqueVerts;
@@ -1530,6 +1671,8 @@ public:
                 if (uvAccessor >= 0) texcoords = ReadGltfAccessorV3<float>(model, uvAccessor);
 
                 size_t vertexCount = positions.size() / 3;
+                if (vertexCount == 0 || (!normals.empty() && normals.size() != vertexCount * 3) ||
+                    (!texcoords.empty() && texcoords.size() != vertexCount * 2)) continue;
 
                 std::vector<uint32_t> primIndices;
                 if (prim.indices >= 0) {
@@ -1541,6 +1684,9 @@ public:
 
                 // Material ID: local to scene.materials (default=0, glTF mats start at 1)
                 uint32_t matID = (prim.material >= 0) ? (uint32_t)(prim.material + 1) : 0u;
+                if (matID >= scene.materials.size() ||
+                    std::any_of(primIndices.begin(), primIndices.end(),
+                        [vertexCount](uint32_t i) { return i >= vertexCount; })) continue;
 
                 for (size_t t = 0; t + 2 < primIndices.size(); t += 3) {
                     lm.perTriMaterialIDs.push_back(matID);
@@ -1590,6 +1736,7 @@ public:
                 }
             }
 
+            if (lm.indices.empty()) continue; // no triangle geometry to build a BLAS from
             UINT loadedIdx = (UINT)scene.meshes.size();
             gltfMeshToLoaded[(int)mi] = loadedIdx;
             scene.meshes.push_back(std::move(lm));

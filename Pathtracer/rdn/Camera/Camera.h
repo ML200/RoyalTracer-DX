@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 //====================================
 //CAMERA STATE GPU BUFFER JITTER INPUT
 //====================================
@@ -113,15 +114,14 @@ public:
     float   jitterScale = 1.0f;
 
     SunSettings   sunSettings;
-    //Volumetric cloud knobs, appended to the camera cbuffer tail after
-    //SunSettings. Driven from the editor's Clouds panel.
-    CloudSettings cloudSettings;
-
+    CumulusSettings cumulusSettings;
+    bool cumulusDensityCache = true;
+    float cumulusPreviousUploadTime = 0.0f;
     //====================================
     //PLANET TERRAIN (Phase 5)
     //====================================
     //Procedural cube-sphere terrain params, appended to the camera cbuffer tail
-    //after CloudSettings (6 scalar floats). planetCenter is ABSOLUTE world
+    //after SunSettings (6 scalar floats). planetCenter is ABSOLUTE world
     //coords. Set by the renderer from the planet StreamConfig at init so the
     //HLSL terrain shader samples the same surface the CPU tessellator built.
     glm::vec3 planetCenter           = glm::vec3(0.0f);
@@ -130,6 +130,8 @@ public:
     float     terrainHeightFrequency = 0.0f;   // vestigial
 
 private:
+    std::array<float,9> m_cumulusDensityKey{};
+    uint32_t m_cumulusDensityEpoch = 0;
     ComPtr<ID3D12Resource>         m_buffer;
     ComPtr<ID3D12DescriptorHeap>   m_constHeap;
     UINT                           m_bufferSize = 0;

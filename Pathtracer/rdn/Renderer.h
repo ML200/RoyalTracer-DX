@@ -25,6 +25,7 @@
 #include "CameraRecorder.h"
 #include "CameraPathSimulator.h"
 #include <random>
+#include <array>
 
 #include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 #include "nv_helpers_dx12/TopLevelASGenerator.h"
@@ -140,6 +141,8 @@ private:
     //DLSS-NR: optional NGX neural post-process on the final composited frame.
     //Fully isolated from the Streamline DLSS-RR path above.
     DLSSNRManager       m_dlssNR;
+    // Actual pre-UI display color, including NR when active, for frame generation.
+    ComPtr<ID3D12Resource> m_dlssHudlessColor;
     Editor              m_editor;
     planet::StreamOrchestrator m_planet;   // Phase 4/5 BVH stream pipeline
     //MONOTONIC frame counter for the planet streaming system. m_ctx.FrameIndex()
@@ -170,7 +173,7 @@ private:
     lt::LightTreeRefitManager m_lightTreeRefit;
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;
     std::vector<lt::LightTLASNodeGpu> m_pendingTLASUpload;
-    std::vector<uint32_t> m_pendingBLASBitTrail;
+    std::vector<lt::LightTreeTrail> m_pendingBLASBitTrail;
     std::vector<lt::BlasRangeGpu> m_pendingBLASRanges;
     ComPtr<ID3D12Resource> m_tlasUploadStaging;
     ComPtr<ID3D12Resource> m_blasBitTrailUploadStaging;
@@ -292,7 +295,6 @@ private:
     int                          m_sharcTextureFilter = 0;
     bool                         m_sharcLightingValid = false;
     SunSettings                  m_sharcSunSettings{};
-    CloudSettings                m_sharcCloudSettings{};
     struct SharcInstanceState { XMMATRIX transform; UINT meshIndex; };
     std::vector<SharcInstanceState> m_sharcInstanceState;
     ComPtr<ID3D12Resource>         m_raysIndirectArgs;
@@ -301,9 +303,6 @@ private:
     //in place as role threads — neither uses an indirect dispatch / queue.)
     ComPtr<ID3D12Resource>         m_raysArgsTemplate;
     ComPtr<ID3D12CommandSignature> m_raysCommandSignature;
-    //SBT slot of the lite raygen variant (cloud surface shadows compiled out),
-    //appended after the token-derived raygen records in CreateShaderBindingTable.
-    uint32_t                       m_raygenLiteSbtSlot = UINT32_MAX;
     void WriteRaysIndirectTemplate();
     ComPtr<ID3D12PipelineState>    m_psoSetupIndirect, m_psoSetupIndirectNoClear;
     ComPtr<ID3D12RootSignature>    m_rsSetupIndirect;
@@ -332,114 +331,37 @@ private:
     ComPtr<ID3D12Resource> m_skyStarsUploadHeap;
     void InitSkyStarsTexture();
 
-    //Volumetric cloud noise — 256³ RGBA8 3D texture baked once at startup by
-    //Pass_cloudnoise_bake_v8.hlsl (compute pass). The runtime cloud shader
-    //(Clouds_v8.hlsli) samples this instead of evaluating Perlin/Worley
-    //analytically per density tap, dropping the per-sample cost from
-    //~80-200 ALU ops to a single Texture3D.SampleLevel(). NSight showed
-    //the analytical path as the dominant cloud-frame cost (compute-bound,
-    //not bandwidth-bound), so this is the single biggest perf lever.
-    //Channel layout: R=Perlin-Worley, G=WorleyFBM, B=value (HF), A=Worley.
-    //
-    //The bake uses a private 1-UAV heap, root signature, and PSO because
-    //it runs ONCE before CreateShaderResourceHeap; allocating a UAV slot
-    //in m_srvUavHeap (which is built later, and only carries an SRV view
-    //of this texture at runtime) would have required reordering init.
-    ComPtr<ID3D12Resource>       m_cloudNoiseTexture;
-    ComPtr<ID3D12DescriptorHeap> m_cloudNoiseBakeHeap;
-    ComPtr<ID3D12RootSignature>  m_cloudNoiseBakeSig;
-    ComPtr<ID3D12PipelineState>  m_cloudNoiseBakePSO;
-    void BakeCloudNoiseTexture();
-
-    //Planet-scale cloud coverage map — NASA Blue Marble "cloud_combined_8192.tif"
-    //(8192×4096 equirectangular). Loaded once at startup from
-    //include/cloud_coverage.tif (downloaded by CMake), converted to single-
-    //channel R8 luminance, and uploaded as DXGI_FORMAT_R8_UNORM. Sampled by
-    //Clouds_v8.hlsli (g_cloudCoverage at register t43) to gate the procedural
-    //noise body with real-world climatology — gives continental-scale weather
-    //fronts instead of uniform global coverage. Hardware bilinear filtering
-    //produces the gradient between map pixels (no hard coverage edges).
-    ComPtr<ID3D12Resource> m_cloudCoverageTexture;
-    ComPtr<ID3D12Resource> m_cloudCoverageUploadHeap;
-    void InitCloudCoverageTexture();
-
-    //Terrain heightmap cubemap — 6-layer Texture2DArray<R32F> downsampled
-    //from the baker output (CPU side keeps full bake resolution; this is
-    //the GPU-friendly version the shader samples for shadows + normal
-    //finite-diff + cloud bottom). Uploaded once at startup from the
-    //planet::StreamOrchestrator's HeightmapCubemap (which loads from
-    //./terrain/). Sampled by Includes_v8.hlsli's TerrainHeight at register
-    //t45 via equiangular cubed-sphere projection.
     ComPtr<ID3D12Resource> m_terrainHeightmapTexture;
     ComPtr<ID3D12Resource> m_terrainHeightmapUploadHeap;
     void InitTerrainHeightmapTexture();
 
-    //Baker v8 companion textures. Each is a Texture2DArray with 6 layers
-    //(one per cube face). Surface_color (RGBA8) is the Mars-tint albedo
-    //at t46; normal (RGBA8) is the tangent-space normal map at t47; both
-    //at the same resolution as the heightmap (downsampled to GPU res from
-    //the CPU bake). Cloud_offset (R32F km, 256^2) at t48 is a heavily-
-    //smoothed elevation reference the cloud renderer uses to set local
-    //cloud base. Uploaded once at startup from the planet::HeightmapCubemap
-    //companion arrays. A missing layer leaves the resource null and the
-    //SRV becomes a null fallback, keeping the legacy look intact.
     ComPtr<ID3D12Resource> m_terrainSurfaceColorTexture;
     ComPtr<ID3D12Resource> m_terrainNormalTexture;
-    ComPtr<ID3D12Resource> m_terrainCloudOffsetTexture;
     ComPtr<ID3D12Resource> m_terrainCompanionUploadHeap;
     void InitTerrainSurfaceColorTexture();
     void InitTerrainNormalTexture();
-    void InitTerrainCloudOffsetTexture();
 
-    //Spatiotemporal blue noise array — 128x128x64 RGBA8 Texture2DArray
-    //filled once by Pass_stbn_bake_v8.hlsl. The cloud shader's CloudRand4
-    //samples this instead of evaluating a white noise hash, so the cone
-    //shadow taps and per pixel step jitter carry a blue noise spatial
-    //spectrum that DLSS RR's spatial filter cleanly removes. Wired up the
-    //same way as the cloud noise bake (private 1 UAV heap, root sig, PSO)
-    //because it runs before CreateShaderResourceHeap.
-    ComPtr<ID3D12Resource>       m_cloudSTBNTexture;
-    ComPtr<ID3D12DescriptorHeap> m_cloudSTBNBakeHeap;
-    ComPtr<ID3D12RootSignature>  m_cloudSTBNBakeSig;
-    ComPtr<ID3D12PipelineState>  m_cloudSTBNBakePSO;
-    void BakeCloudSTBNTexture();
-
-    //Per-frame sky LUTs (Pass_skylut_bake_v8.hlsl):
-    //  - sun transmittance over (r, mu), 256x64 RGBA16F → t49. Replaces the
-    //    per-call inner march in TransmittanceToSun.
-    //  - cloud ambient probe scatter over sun-zenith cosine, 128x2 RGBA16F
-    //    → t50. Replaces the two per-pixel IntegrateScattering probes in
-    //    EvaluateAtmosphereAndClouds.
-    //  - Hillaire 2020 multiple-scattering transfer Psi_ms over (sun-zenith
-    //    cosine, altitude), 32x32 RGBA16F → t51. Real 2nd+ order air
-    //    scattering; the ambient bake reads its UAV, so RecordSkyLUTBake
-    //    dispatches it before mainAmbient with a UAV barrier between.
-    //InitSkyLUTBake creates the textures + private root sig/heap/PSOs at
-    //startup; RecordSkyLUTBake records the three dispatches at the top of
-    //every PopulateCommandList, before any consumer pass. Rebaked per frame
-    //because the integrals depend on live cbuffer params (turbidity, cloud
-    //layer sliders); the whole bake is ~18K texels.
+    //Atmospheric transmittance and multiple-scattering LUTs, baked each frame.
     ComPtr<ID3D12Resource>       m_skyTransmittanceLUT;
-    ComPtr<ID3D12Resource>       m_cloudAmbientLUT;
     ComPtr<ID3D12Resource>       m_skyMultiScatterLUT;
-    //Cloud->sun optical-depth shell map (Texture2DArray<R16F>, 384x384x6).
-    //Baked by the mainCloudSunOD kernel; read at t52 (g_cloudSunOD) to collapse
-    //the per-sample cloud self-shadow march. Unlike the sky LUTs the bake also
-    //samples the cloud noise/coverage SRVs (see InitSkyLUTBake).
-    ComPtr<ID3D12Resource>       m_cloudSunODLUT;
     ComPtr<ID3D12DescriptorHeap> m_skyLutBakeHeap;
     ComPtr<ID3D12RootSignature>  m_skyLutBakeSig;
     ComPtr<ID3D12PipelineState>  m_skyLutTransmittancePSO;
-    ComPtr<ID3D12PipelineState>  m_skyLutAmbientPSO;
     ComPtr<ID3D12PipelineState>  m_skyLutMultiScatterPSO;
-    ComPtr<ID3D12PipelineState>  m_skyLutCloudSunODPSO;
+    bool m_skyLutsReady = false;
+    float m_skyLutTurbidity = -1.0f;
     void InitSkyLUTBake();
     void RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd);
-    //Bind a 1×1 R8 fallback when the TIFF is missing or fails to load —
-    //the shader formula `saturate(base * map * 2)` collapses to `base`
-    //when `map = 0.5`, so a grey fallback restores the pre-coverage-map
-    //behaviour visually while keeping the descriptor table populated.
-    void CreateCloudCoverageFallback(uint8_t value);
+    ComPtr<ID3D12Resource> m_cumulusNoise, m_cumulusLight, m_cumulusEnvironment, m_cumulusAmbient, m_cumulusQueries;
+    ComPtr<ID3D12Resource> m_cumulusNoiseBA; // B/A plane; R/G stays at t52.
+    ComPtr<ID3D12Resource> m_cumulusDensity, m_cumulusDensityTags;
+    bool m_previousDensityCacheEnabled = true;
+    bool m_cumulusNoiseReady = false;
+    bool m_cumulusAmbientReady = false;
+    std::array<float,5> m_cumulusAmbientKey{};
+    bool m_cumulusSettingsValid = false;
+    CumulusSettings m_previousCumulusSettings;
+    void InitCumulusResources();
 
     UINT m_currentDisplayLevel = 0;
     std::vector<UINT> m_displayLevels = { 0, 1, 2, 3, 4,5 };

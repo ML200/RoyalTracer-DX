@@ -19,7 +19,7 @@ class BistroScene : public SceneDefinition {
 public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-        { "./bistro2/bistro2.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
+        { "./studio2.glb", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         //{ "./car/car.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         //{ "./car/car.obj", XMMatrixIdentity()*XMMatrixScaling(1,1,1) },
         };
@@ -37,7 +37,7 @@ public:
         p.spawnMin         = { -20.0f, 0.3f, -20.0f };
         p.spawnMax         = {  20.0f, 20.0f,  20.0f };
         p.seed             = 42u;
-        m_cubes.Init(p, sm, r);
+        //m_cubes.Init(p, sm, r);
     }
     void Update(float dt, SceneManager& sm, FlyCamController& flyCam) override {
         flyCam.Update(dt);

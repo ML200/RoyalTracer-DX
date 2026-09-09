@@ -270,8 +270,8 @@ void AssetLoader::LoadModels(
 
         // ── Finalize one MeshGPU from opaque-first geometry ──────────
         // Shared by both the kept-instanced path and the merged-blob path:
-        // takes vertices + opaque-first index/material arrays, builds the
-        // upload buffers, records the global materialID base, and pushes the
+        // takes vertices + opaque-first index/material arrays, records the
+        // global materialID base, and pushes the
         // mesh. Returns the new scene.meshes index.
         auto finalizeMesh = [&](std::vector<Vertex> verts,
                                 std::vector<UINT>   idxOpaqueFirst,
@@ -302,25 +302,8 @@ void AssetLoader::LoadModels(
             scene.materialIDs.insert(scene.materialIDs.end(),
                 gpu.cpuMaterialIDs.begin(), gpu.cpuMaterialIDs.end());
 
-            const UINT vbSize = gpu.vertexCount * sizeof(Vertex);
-            auto vbDesc = CD3DX12_RESOURCE_DESC::Buffer(vbSize);
-            ThrowIfFailed(device->CreateCommittedResource(
-                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-                &vbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu.vertexBuffer)));
-            { UINT8* p; gpu.vertexBuffer->Map(0, nullptr, (void**)&p);
-              memcpy(p, gpu.cpuVertices.data(), vbSize);
-              gpu.vertexBuffer->Unmap(0, nullptr); }
-
-            const UINT ibSize = gpu.indexCount * sizeof(UINT);
-            auto ibDesc = CD3DX12_RESOURCE_DESC::Buffer(ibSize);
-            ThrowIfFailed(device->CreateCommittedResource(
-                &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-                &ibDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&gpu.indexBuffer)));
-            { UINT8* p; gpu.indexBuffer->Map(0, nullptr, (void**)&p);
-              memcpy(p, gpu.cpuIndices.data(), ibSize);
-              gpu.indexBuffer->Unmap(0, nullptr); }
+            // Build inputs are created one mesh at a time by the renderer.
+            // Allocating them here duplicated the entire scene in upload heaps.
 
             const UINT idx = (UINT)scene.meshes.size();
             scene.meshes.push_back(std::move(gpu));
@@ -328,18 +311,14 @@ void AssetLoader::LoadModels(
         };
 
         // ── Classify sub-objects: instance count per loaded mesh ─────
-        // Keep a mesh as a real instanced BLAS only when instancing pays off
-        // (referenced by many nodes, or individually large). Single-use meshes
-        // (any size) and small few-instanced meshes are merged into a shared
-        // per-model BLAS — see AssetLoader::MERGE_MAX_* for the rationale.
+        // Preserve every repeated mesh as shared geometry, including small
+        // glTF meshes and EXT_mesh_gpu_instancing batches. Only single-use
+        // geometry is baked into the per-model merged BLAS.
         std::vector<UINT> instCount(loaded.meshes.size(), 0);
         for (const auto& [meshIdx, xform] : loaded.instances) instCount[meshIdx]++;
 
         auto isMergeCandidate = [&](size_t mi) -> bool {
-            const UINT tris = (UINT)loaded.meshes[mi].indices.size() / 3;
-            const UINT c    = instCount[mi];
-            if (c <= 1) return true;                                  // single-use, any size
-            return (tris < MERGE_MAX_TRIS && c < MERGE_MAX_INSTANCES); // small & few-instanced
+            return instCount[mi] <= 1;
         };
 
         int subIdx = 0;
@@ -355,10 +334,11 @@ void AssetLoader::LoadModels(
 
             auto split = SplitOpaqueAlpha(srcMesh.indices, globalMatIDs, scene.materials);
             keptSceneMesh[mi] = (int)finalizeMesh(
-                srcMesh.vertices,
+                std::move(srcMesh.vertices),
                 std::move(split.reorderedIndices),
                 std::move(split.reorderedMaterialIDs),
                 split.opaqueTriCount, split.alphaTriCount);
+            srcMesh = LoadedMesh{};
         }
         for (const auto& [meshIdx, xform] : loaded.instances) {
             if (isMergeCandidate(meshIdx)) continue;
@@ -411,7 +391,7 @@ void AssetLoader::LoadModels(
 
         for (const auto& [meshIdx, localXform] : loaded.instances) {
             if (!isMergeCandidate(meshIdx)) continue;
-            const auto& srcMesh = loaded.meshes[meshIdx];
+            auto& srcMesh = loaded.meshes[meshIdx];
             const UINT  thisTris = (UINT)srcMesh.indices.size() / 3;
             const UINT  curTris  = (UINT)(mOpaqueIdx.size() + mAlphaIdx.size()) / 3;
 
@@ -426,6 +406,7 @@ void AssetLoader::LoadModels(
             const UINT vbase = (UINT)mVerts.size();
             XMVECTOR det;
             const XMMATRIX nrmMat = XMMatrixTranspose(XMMatrixInverse(&det, localXform));
+            const bool mirrored = XMVectorGetX(det) < 0.0f;
             mVerts.reserve(mVerts.size() + srcMesh.vertices.size());
             for (const auto& sv : srcMesh.vertices) {
                 Vertex v = sv;
@@ -455,10 +436,15 @@ void AssetLoader::LoadModels(
                 auto& dstIdx = isAlpha ? mAlphaIdx : mOpaqueIdx;
                 auto& dstMat = isAlpha ? mAlphaMat : mOpaqueMat;
                 dstIdx.push_back(srcMesh.indices[3*t+0] + vbase);
-                dstIdx.push_back(srcMesh.indices[3*t+1] + vbase);
-                dstIdx.push_back(srcMesh.indices[3*t+2] + vbase);
+                // Baking a reflection reverses winding; keep it aligned with
+                // inverse-transpose normals, as in the shared-instance path.
+                dstIdx.push_back(srcMesh.indices[3*t+(mirrored ? 2 : 1)] + vbase);
+                dstIdx.push_back(srcMesh.indices[3*t+(mirrored ? 1 : 2)] + vbase);
                 dstMat.push_back(gMat);
             }
+            // This path contains only single-use meshes. Drop the source once
+            // baked so later meshes do not overlap it in peak working memory.
+            srcMesh = LoadedMesh{};
         }
         flushMerged();
 

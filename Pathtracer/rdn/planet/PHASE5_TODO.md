@@ -156,7 +156,7 @@ states exactly what is left.
 - Path tracer renders the cube-sphere with procedural bumps.
 - Camera flythrough shows chunks streaming in (LOD pops at boundaries are fine).
 - Fallback layer always visible underneath — no holes during streaming.
-- Atmosphere + clouds still work (they are a separate screen-space pass,
+- Atmosphere still works (it is a separate screen-space pass,
   unaffected by the TLAS).
 - Build target: `Pathtracer`. (`PlanetTests` is unaffected by Phase 5.)
 - Nsight: BLAS + TLAS builds on the compute queue; total BLAS+TLAS < 1 ms.

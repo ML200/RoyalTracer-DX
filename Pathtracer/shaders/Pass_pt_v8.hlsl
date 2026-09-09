@@ -5,14 +5,8 @@
 // ComputeSunState and the bounce-miss atmosphere read them instead of marching
 // the atmosphere per call. Every miss and sun sample here uses the camera observer.
 #define SKYBAKE_CONSUMER 1
-// Rebuild the cloud ENU basis at each cloud entry (Clouds_v8.hlsli): the
-// guarded thread-local init would ride every trace and reorder as 40 bytes.
-#define CLOUD_ENU_EAGER 1
 #ifndef PT_NO_DEBUG
 #define PT_NO_DEBUG 0
-#endif
-#ifndef PT_NO_CLOUD_SURFACE_SHADOW
-#define PT_NO_CLOUD_SURFACE_SHADOW 0
 #endif
 #include "Includes_v8.hlsli"
 // The host selects this specialization only with cache debug views off.
@@ -37,47 +31,6 @@
 #include "RestirLite_v8.hlsli"
 #endif
 
-//====================================
-//CLEAN PATH-TRACING KERNEL (RIS-FREE)
-//====================================
-//Plain unidirectional path tracer with NEE — the reservoir-free alternative
-//to the ReSTIR pipeline (selected by integratorMode; the host skips every
-//reservoir pass and dispatches this instead of Pass_raygen_v8). The transport
-//math mirrors Pass_raygen exactly — same light-tree NEE + sun NEE with
-//balance-heuristic MIS against the BSDF technique, same SSS enter/walk, same
-//diffuse-bounce budget, RR and medium/absorption handling — but contributions
-//accumulate directly into radiance instead of feeding reservoir candidates,
-//so with SHaRC disabled this doubles as the reference for the ReSTIR target
-//functions (same estimators, no resampling).
-//SHaRC's sparse update specialization includes this file with SHARC_UPDATE_PASS.
-//The render specialization keeps the primary vertex exact and may replace the
-//outgoing radiance of a broad, diffuse secondary vertex (its own direct light
-//included, so a terminating vertex skips NEE). See docs/SHARC.md.
-//
-//Frame integration: reads the primary vertex from the camera pass G-buffer
-//(full-screen dispatch, SD_FLAG_NOBOUNCE early-out), writes the estimate to
-//scratch slot 2 (the slot the ReSTIR spatial resolve used to write); the
-//DLSS-RR guides all come from the camera/shading passes, so shading /
-//clouds / postprocess run unchanged and this kernel touches no reservoir.
-//
-//Two helper passes feed it (both PT-only, skipped under ReSTIR):
-//Pass_pt_skybake_v8 bakes the frame's sun state and sky-view LUT, and
-//Pass_pt_nee_v8 runs the primary vertex's light-tree descent, so neither
-//is part of this kernel's instruction footprint (see those files).
-//
-//SER: the scatter trace and its next vertex's cache decision precede one
-//HitObject reorder, grouping the surviving shading work by instance.
-//Live state across the trace and the reorder is kept to the path itself:
-//the ray is never read back from the HitObject (the compiler would fold that
-//to the pre-trace registers), the direction is its packed loop copy and the
-//hit position comes from the triangle; the vertex crosses the reorder with
-//packed normals and one medium flag (loop tail); the sample index, the
-//depth, the diffuse count and the path flags share one packed register; the
-//loops know the pixel only by its swizzled index (every DispatchRaysIndex
-//read folds into one value, so a sample rebuilds the 2D pixel from the
-//index where it needs it); the training vertices accumulate in memory; and
-//the primary G-buffer record is reloaded per sample instead of surviving
-//the bounce loop.
 
 uint2 PtPixel()
 {
@@ -512,7 +465,7 @@ void PT_ENTRY_NAME()
                     else
                     {
                         const float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                        SunSampleResult sun = SampleSun(rSun);
+                        SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
                         L = sun.direction;
 
                         cosSurf = dot(ctx.hitNormal, L);
@@ -531,20 +484,6 @@ void PT_ENTRY_NAME()
                     if (!any(visT > 0.0f))
                         continue;
 
-#if !PT_NO_CLOUD_SURFACE_SHADOW
-                    // Compiled out only when surface shadows are disabled or
-                    // clouds themselves are disabled (visibility is exactly one).
-                    //sun-only cloud shadow (same block as raygen, runtime-gated)
-                    if (tech == 1u && cloud_cloudShadowOnSurfaces > 0.5f)
-                    {
-                        float2 rCone = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                        float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
-                        float3 Lj = SampleConeAroundDir(L, cosCone, rCone);
-                        float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj,
-                                                        RandomFloatSingle(sNee));
-                        radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
-                    }
-#endif
 
                     // One traversal yields the full BSDF and the broad share
                     // (LOBE_BROAD): training labels fresh records with the share,
@@ -830,18 +769,20 @@ void PT_ENTRY_NAME()
             //----- MISS: sky (only technique, weight 1) + MIS'd sun disc -----
             if (!hitObj.IsHit())
             {
-                SetSkyObserver(InitOrigin() + sceneOriginWorld);
+                SetSkyObserver(cloudEnabled > .5f ? ctx.hitPos + sceneOriginWorld : InitOrigin() + sceneOriginWorld);
 
                 const float  sunSAPdf   = GetSunPdf(rayDir);
                 const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
                 const float  sunMisBsdf = (sunSAPdf > 0.0f)
                     ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
-                float3 cloudTr;
-                //the cheap cloud march jitters from the path's stream: the
-                //per-pixel seed would fold with the pixel and ride the loops
-                const float3 sky  = EvaluateSky(rayDir, RcBounceSeed(pathSeed, depth, RC_STREAM_SKY), cloudTr);
-                const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
+                const float3 sky = EvaluateSky(rayDir);
+                const float3 envL = sky + sunRad * sunMisBsdf;
 #if !SHARC_UPDATE_PASS
+                // Diffuse/sheen samples stay broad even on a smooth material;
+                // clearcoat uses its own roughness, not the base GGX roughness.
+                const float cloudRoughness = sampledStrategy==0u || sampledStrategy==3u ? 1.0f
+                    : sampledStrategy==2u ? (float)LoadPcr(ctx.matID) : (float)ctx.hitLocalPr;
+                const uint cloudGuide = depth==1u && cloudRoughness<.25f && dot(ctx.hitNormal,rayDir)>0 ? 1u:0u;
                 if (liteGen)
                 {
                     // Candidate: the direction with its full radiance; the MIS
@@ -849,17 +790,26 @@ void PT_ENTRY_NAME()
                     const uint litePx = sampleIdx;
                     float3 liteBroad; float litePdf;
                     LiteParkLoad(litePx, liteBroad, litePdf);
-                    PtAccumulate((throughput - liteBroad) * envL);
+                    float3 mainWeight=max(throughput-liteBroad,0.0f);
+                    if(cloudEnabled>.5f) {
+                        CumulusQueueMiss(samplePixel,ctx.hitPos,rayDir,mainWeight,
+                            cloudGuide,RcBounceSeed(pathSeed,depth,0x434C4F55u),cloudRoughness);
+                        PtAccumulate(mainWeight*sunRad*sunMisBsdf);
+                    } else PtAccumulate(mainWeight*envL);
                     const float liteCosX = max(dot(UnpackNormal(prevNormalPk), rayDir), 0.0f);
                     uint sLite = RcBounceSeed(pathSeed, (uint)depth, 0x4c495447u);
                     LiteCandidate(litePx, load_kd(g_sample_current, litePx),
-                        LiteSampleDirection(rayDir, sky + sunRad * cloudTr), rayDir,
+                        LiteSampleDirection(rayDir, sky + sunRad), rayDir,
                         LiteLinkFrom(RAY_TMAX_PLANET, liteCosX, 1.0f, true), (float3)1.0f,
                         sunSAPdf > 0.0f ? sunMisBsdf : 1.0f, litePdf, rcp((float)N), sLite);
                 }
                 else
                 {
-                    PtAccumulate(throughput * envL);
+                    if(cloudEnabled>.5f) {
+                        CumulusQueueMiss(samplePixel,ctx.hitPos,rayDir,throughput,
+                            cloudGuide,RcBounceSeed(pathSeed,depth,0x434C4F55u),cloudRoughness);
+                        PtAccumulate(throughput*sunRad*sunMisBsdf);
+                    } else PtAccumulate(throughput * envL);
                     if (litePath) liteL += (float3)liteSuffix * envL;
                 }
 #else
@@ -1075,10 +1025,6 @@ void PT_ENTRY_NAME()
     total /= (float)N;
     if (any(isnan(total)) || any(isinf(total))) total = float3(0, 0, 0);
 
-    //radiance -> the slot the ReSTIR spatial resolve used to write; shading /
-    //clouds / DLSS pick it up unchanged. (No reservoir writes: the spec-hit-
-    //dist guide now comes from the camera pass's slot-4 reflection probe in
-    //Pass_shading, so this kernel touches no reservoir plane at all.)
 #if !SHARC_UPDATE_PASS
     gScratchPing[uint3((uint2)UnmapPixelID(pixelIdx, imgSize), 2)] = float4(total, 0.0f);
 #endif

@@ -6,6 +6,7 @@
 
 #include "stdafx.h"
 #include "Renderer.h"
+#include "../shaders/CumulusLayout.h"
 #include "Scene/OmmBuilder.h"
 #include "nv_helpers_dx12/BottomLevelASGenerator.h"
 #include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
@@ -225,6 +226,10 @@ void Renderer::CreateAccelerationStructures() {
     std::wcout << L"[AS] CreateAccelerationStructures ENTER: meshes=" << m_scene.meshes.size()
                << L" instances=" << m_scene.instances.size() << std::endl;
 
+    // Each compact copy is recorded after the build's readback fence. Keep its
+    // source until the NEXT build's fence (or the final flush), not just until
+    // the current loop iteration ends. Only one previous source stays resident.
+    ComPtr<ID3D12Resource> pendingCompactionSource;
     // One BLAS per unique mesh (skip if already built, e.g. procedural meshes)
     for (size_t m = 0; m < m_scene.meshes.size(); ++m) {
         auto& mesh = m_scene.meshes[m];
@@ -239,6 +244,7 @@ void Renderer::CreateAccelerationStructures() {
             std::wcout << L"[AS]   already has BLAS, skipping" << std::endl;
             continue;
         }
+        mesh.CreateBlasBuildInputs(m_ctx.Device());
 
         // Build OMM array on GPU if bake data exists.
         // ommGpu must outlive CreateBottomLevelAS (which flushes the cmd list).
@@ -258,16 +264,24 @@ void Renderer::CreateAccelerationStructures() {
             {{ mesh.vertexBuffer.Get(), mesh.vertexCount }},
             {{ mesh.indexBuffer.Get(),  mesh.indexCount  }},
             mesh.opaqueTriCount, mesh.alphaTriCount, ommPtr);
+        if constexpr (kUseBlasCompaction) {
+            pendingCompactionSource = std::move(buffers.pResultUncompacted);
+        } else {
+            m_ctx.FlushAndReset(); // scratch/source lifetime for the non-compacted path
+        }
         mesh.blas = buffers.pResult;
+        // The build's fence has consumed its inputs. Shading uses the global
+        // buffers, so avoid keeping every per-mesh upload alive until the end.
+        mesh.vertexBuffer.Reset();
+        mesh.indexBuffer.Reset();
         std::wcout << L"[AS]   mesh[" << m << L"] BLAS=" << mesh.blas.Get() << std::endl;
     }
     std::wcout << L"[AS] All BLAS built. Rebuilding TLAS instance list..." << std::endl;
 
     // TLAS from scene instances
     m_scene.RebuildTLASInstanceList();
-    std::wcout << L"[AS] tlasInstances.size()=" << m_scene.tlasInstances.size() << std::endl;
-    CreateTopLevelAS(m_scene.tlasInstances);
-    std::wcout << L"[AS] TLAS built" << std::endl;
+    // Rendering uses the orchestrator's unified TLAS. Building a second,
+    // unreferenced scene TLAS here only consumed startup time and GPU memory.
 
     // Emissive triangles & light tree
     m_scene.CollectEmissiveTriangles();
@@ -303,6 +317,8 @@ void Renderer::CreateAccelerationStructures() {
       m_scene.CreateTriToLightIdBuffer(m_ctx.Device(), m_ctx.CmdList()); }
 
     m_ctx.FlushAndReset();
+    pendingCompactionSource.Reset();
+    m_scene.ReleaseLightUploadStaging();
     m_lightTree.ReleaseStaging();
 
     // The mesh.vertexBuffer/indexBuffer pair is only consumed by BLAS construction.
@@ -370,56 +386,29 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 24, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Star / Milky Way skybox texture (t40, Includes_v8.hlsli) at heap slot 64
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 40, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // Volumetric cloud noise 3D texture (t42, g_cloudNoise in Includes_v8.hlsli)
-    // at heap slot CLOUD_NOISE_HEAP_SLOT (65). Baked once by BakeCloudNoiseTexture
-    // — see Pass_cloudnoise_bake_v8.hlsl.
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 42, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // Planet-scale cloud coverage 2D texture (t43, g_cloudCoverage in
-    // Includes_v8.hlsli) at heap slot CLOUD_COVERAGE_HEAP_SLOT (66). NASA
-    // Blue Marble equirectangular 8192×4096 luminance map, loaded once by
-    // InitCloudCoverageTexture.
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 43, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // Spatiotemporal blue noise Texture2DArray (t41, g_cloudSTBN in
-    // Clouds_v8.hlsli) at heap slot CLOUD_STBN_HEAP_SLOT (67). 128×128×64
-    // RGBA8 baked once by BakeCloudSTBNTexture (Pass_stbn_bake_v8.hlsl).
-    // Placed last in the descriptor table because t41 was added after
-    // t42 / t43 were already wired up; the register binding is what the
-    // shader sees, the heap order doesn't matter.
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 41, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // PLANET_INTEGRATION: terrain instance table StructuredBuffer (t44,
     // g_terrainTable in Includes_v8.hlsli) at heap slot TERRAIN_TABLE_HEAP_SLOT
-    // (68). Refilled each frame by the planet StreamOrchestrator; the terrain
+    // (65). Refilled each frame by the planet StreamOrchestrator; the terrain
     // shader reads it to reconstruct chunk vertices and drop stale GI samples.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 44, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     // Planet heightmap cubemap Texture2DArray<R32F> (t45, g_terrainHeightmap
-    // in Includes_v8.hlsli) at heap slot TERRAIN_HEIGHTMAP_HEAP_SLOT (69).
+    // in Includes_v8.hlsli) at heap slot TERRAIN_HEIGHTMAP_HEAP_SLOT (66).
     // Uploaded once by InitTerrainHeightmapTexture from the baker output;
     // sampled by Includes_v8.hlsli::TerrainHeight via equiangular cubed-sphere
     // projection.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 45, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // PLANET v8 companion textures. Each is a Texture2DArray with 6 layers.
-    //   t46 (g_terrainSurfaceColor, RGBA8): Mars-style albedo, heap 70.
-    //   t47 (g_terrainNormalMap,    RGBA8): tangent-space normal, heap 71.
-    //   t48 (g_terrainCloudOffset,  R32F): smoothed elevation for cloud
-    //                                      base lookup, heap 72.
-    // Uploaded once at startup by Renderer::InitTerrainSurfaceColorTexture /
-    // InitTerrainNormalTexture / InitTerrainCloudOffsetTexture. Null SRVs
-    // are bound when the bake didn't produce the layer; the shader handles
-    // that via alpha-channel sentinels.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 46, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 47, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 48, 0, STATIC,   D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    // Per-frame sky LUTs (RecordSkyLUTBake / Pass_skylut_bake_v8.hlsl):
-    //   t49 (g_skyTransmittanceLUT) at heap SKY_TRANSMITTANCE_LUT_HEAP_SLOT (73)
-    //   t50 (g_cloudAmbientLUT)     at heap CLOUD_AMBIENT_LUT_HEAP_SLOT (74)
-    //   t51 (g_skyMultiScatterLUT)  at heap SKY_MULTISCATTER_LUT_HEAP_SLOT (75)
-    //   t52 (g_cloudSunOD)          at heap CLOUD_SUNOD_LUT_HEAP_SLOT (76)
-    // VOLATILE: the underlying texture contents change every frame (the
-    // bake's UAV writes), unlike the bake-once textures above.
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 49, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 50, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
     ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 51, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 52, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 52, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 28, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 55, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 31, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 56, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 33, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 57, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
+    ranges.emplace_back().Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 2, 45, 0, VOLATILE, D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
 
     rootParameters[0].InitAsDescriptorTable((UINT)ranges.size(), ranges.data(), D3D12_SHADER_VISIBILITY_ALL);
     // 24 ReSTIR constants [0..23] + 8 NRC control constants [24..31] +
@@ -446,7 +435,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     rootParameters[3].InitAsUnorderedAccessView(26, 0);
     rootParameters[4].InitAsUnorderedAccessView(27, 0); // persistent SHaRC
 
-    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[4];
+    CD3DX12_STATIC_SAMPLER_DESC staticSamplers[3];
     staticSamplers[0].Init(0, D3D12_FILTER_ANISOTROPIC,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP);
@@ -454,24 +443,12 @@ ComPtr<ID3D12RootSignature> Renderer::CreateRayGenSignature() {
     staticSamplers[1].Init(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR,
         D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
         D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
-    // s2: plain bilinear + WRAP, no anisotropy. Used for the cloud
-    // coverage equirectangular map (Includes_v8.hlsli → g_samplerLinearWrap).
-    // The atan2-derived U produces large UV derivatives at the
-    // longitude=±180° meridian — an anisotropic filter sees that as a
-    // huge footprint and selects a coarse mip / mis-computes the
-    // sample footprint, producing a visible seam streak. A pure
-    // bilinear sampler computes only the in-mip 4-tap bilinear
-    // average, so the seam disappears (WRAP addressing handles the
-    // texel-level wrap correctly without aniso confusion).
-    staticSamplers[2].Init(2, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-        D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-        D3D12_TEXTURE_ADDRESS_MODE_WRAP);
     // s3: nearest-texel point sampler (WRAP) for material textures when the
     // editor's "disable texture interpolation" toggle is on (g_samplerPoint,
     // Includes_v8.hlsli → SampleMaterialTex). MIN_MAG point drops the bilinear
     // blur that softens pixel-art / Minecraft assets; MIP linear keeps distant
     // surfaces from aliasing/flickering.
-    staticSamplers[3].Init(3, D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
+    staticSamplers[2].Init(3, D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         D3D12_TEXTURE_ADDRESS_MODE_WRAP);
 
@@ -515,6 +492,8 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 //====================================
 
 void Renderer::CreateRaytracingPipeline() {
+    m_cumulusNoiseReady = m_cumulusAmbientReady = false;
+    m_skyLutsReady = false;
     m_sharcResetPending = true; // shader reload can change the transport estimator
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_ctx.Device());
 
@@ -635,24 +614,12 @@ void Renderer::CreateRaytracingPipeline() {
         m_passes.RegisterPassIndex(p.file, rgSlot);
         rgSlot++;
 
-        // Lite bounce-pass variant: the sun-NEE cloud-surface-shadow block compiled
-        // OUT (-D). The indirect-dispatch template points at its SBT record whenever
-        // the editor toggle is off — the exact condition under which the block is
-        // inert — so output is bit-identical while the dispatched shader sheds the
-        // block's I$ footprint + register pressure. Its SBT record is appended AFTER
-        // the token-derived raygen entries (CreateShaderBindingTable).
-        if (base == L"Pass_raygen_v8") {
-            ComPtr<IDxcBlob> lite = nv_helpers_dx12::CompileShaderLibrary(p.file.c_str(),
-                { L"RAYGEN_ENTRY=Pass_raygen_v8_lite", L"RAYGEN_NO_CLOUD_SURF_SHADOW=1" });
-            pipeline.AddLibrary(lite.Get(), { L"Pass_raygen_v8_lite" });
-            rayGenNames.push_back(L"Pass_raygen_v8_lite");
-        }
         if (base == L"Pass_pt_v8" || base == L"Pass_sharc_update_v8") {
             const bool training = base == L"Pass_sharc_update_v8";
             const std::wstring fastName = base + L"_fast";
             ComPtr<IDxcBlob> fast = nv_helpers_dx12::CompileShaderLibrary(L"Pass_pt_v8.hlsl",
                 { L"PT_ENTRY_NAME=" + fastName, L"PT_NO_DEBUG=1",
-                  L"PT_NO_CLOUD_SURFACE_SHADOW=1", L"SHARC_COMPACT_QUERY=1",
+                  L"SHARC_COMPACT_QUERY=1",
                   training ? L"SHARC_UPDATE_PASS=1" : L"SHARC_UPDATE_PASS=0" });
             pipeline.AddLibrary(fast.Get(), { fastName.c_str() });
             rayGenNames.push_back(fastName);
@@ -736,14 +703,15 @@ void Renderer::CreateRaytracingOutputBuffer() {
 
     // Permanent data (R32G32B32A32_FLOAT 2D)
     ResourceFactory rf(dev);
+    m_cumulusQueries = rf.CreateUAVBuffer(UINT64(w)*h*CUMULUS_QUERY_BYTES, L"Cumulus deferred miss reservoir");
     m_permanentDataTexture = rf.CreateTexture2D(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, 1,
         D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"PermanentData");
 
-    // Scratch ping (16-layer float4)
+    // Scratch radiance, atmosphere composite, and SHaRC guide layers.
     D3D12_RESOURCE_DESC sd = {};
     sd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     sd.Width = w; sd.Height = h;
-    sd.DepthOrArraySize = 16; sd.MipLevels = 1;
+    sd.DepthOrArraySize = SCRATCH_LAYER_COUNT; sd.MipLevels = 1;
     sd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     sd.SampleDesc.Count = 1;
     sd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -768,10 +736,10 @@ void Renderer::CreatePathStateBuffer() {
     if (!m_sharcTimingHeap) {
         D3D12_QUERY_HEAP_DESC queries{};
         queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        queries.Count = 16; // 8 timed-pass slots: SHaRC prepare/train/resolve, PT (with its NEE prefetch), lite shift/merge, two spare
+        queries.Count = 18; // Separate cloud cache, primary and secondary timings.
         ThrowIfFailed(m_ctx.Device()->CreateQueryHeap(&queries, IID_PPV_ARGS(&m_sharcTimingHeap)));
         auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
-        auto desc = CD3DX12_RESOURCE_DESC::Buffer(16u * sizeof(UINT64));
+        auto desc = CD3DX12_RESOURCE_DESC::Buffer(18u * sizeof(UINT64));
         ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
             &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_sharcTimingReadback)));
         ThrowIfFailed(m_ctx.CmdQueue()->GetTimestampFrequency(&m_sharcTimestampFrequency));
@@ -823,10 +791,7 @@ void Renderer::CreatePathStateBuffer() {
     //indirect dispatch / queue involved for either.)
     if (!m_raysArgsTemplate) {
         auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        //TWO template slots: [0] = full raygen variant, [1] = lite variant
-        //(cloud surface shadows compiled out). The record paths copy the
-        //matching slot.
-        auto bd = CD3DX12_RESOURCE_DESC::Buffer(2 * sizeof(D3D12_DISPATCH_RAYS_DESC));
+        auto bd = CD3DX12_RESOURCE_DESC::Buffer(sizeof(D3D12_DISPATCH_RAYS_DESC));
         ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_raysArgsTemplate)));
         m_raysArgsTemplate->SetName(L"RaysArgsTemplate");
@@ -861,6 +826,33 @@ void Renderer::CreatePathStateBuffer() {
 //====================================
 //SHADER RESOURCE HEAP DESCRIPTOR LAYOUT
 //====================================
+
+void Renderer::InitCumulusResources() {
+    auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+    auto create = [&](ComPtr<ID3D12Resource>& dst, D3D12_RESOURCE_DESC desc, const wchar_t* name) {
+        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(&dst)));
+        dst->SetName(name);
+    };
+    create(m_cumulusNoise, CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R8G8_UNORM,
+        CUMULUS_NOISE_SIZE,CUMULUS_NOISE_SIZE,CUMULUS_NOISE_SIZE,1,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus procedural detail");
+    create(m_cumulusNoiseBA, CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R8G8_UNORM,
+            CUMULUS_NOISE_SIZE,CUMULUS_NOISE_SIZE,CUMULUS_NOISE_SIZE,1,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus value and seam noise");
+    create(m_cumulusLight, CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R16G16_FLOAT,
+        CUMULUS_LIGHT_XZ,CUMULUS_LIGHT_Y,CUMULUS_LIGHT_XZ*CUMULUS_LIGHT_CASCADES,1,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus near and distant lighting");
+    create(m_cumulusEnvironment, CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,
+        CUMULUS_ENV_W,CUMULUS_ENV_H,CUMULUS_ENV_LAYERS,1,1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus broad environment radiance");
+    create(m_cumulusAmbient, CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R16G16B16A16_FLOAT,
+        CUMULUS_AMBIENT_W,CUMULUS_AMBIENT_H,1,1,1,0,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus atmospheric ambient");
+    create(m_cumulusDensity, CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R16_FLOAT,
+        CUMULUS_DENSITY_BRICKS_XZ*CUMULUS_DENSITY_BRICK_VERTICES,
+        CUMULUS_DENSITY_BRICKS_Y*CUMULUS_DENSITY_BRICK_VERTICES,
+        CUMULUS_DENSITY_BRICKS_XZ*CUMULUS_DENSITY_BRICK_VERTICES,1,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus density bricks");
+    create(m_cumulusDensityTags, CD3DX12_RESOURCE_DESC::Tex3D(DXGI_FORMAT_R32G32B32A32_SINT,
+        CUMULUS_DENSITY_BRICKS_XZ,CUMULUS_DENSITY_BRICKS_Y,CUMULUS_DENSITY_BRICKS_XZ,
+        1,D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),L"Cumulus density brick identities");
+    m_cumulusNoiseReady = m_cumulusAmbientReady = false;
+}
 
 void Renderer::CreateShaderResourceHeap() {
     auto* dev = m_ctx.Device();
@@ -933,9 +925,9 @@ void Renderer::CreateShaderResourceHeap() {
 
     // Slot 2: SRV t0 — TLAS
     // PLANET_INTEGRATION: points at the planet StreamOrchestrator's unified TLAS
-    // (scene meshes + terrain chunks + fallback), rebuilt every frame on the
-    // compute queue. The result buffer is preallocated once at orchestrator init,
-    // so this SRV is created once here and never re-pointed.
+    // (scene meshes + terrain chunks + fallback). Unchanged scene-only TLASes
+    // are reused. RenderFrame rebinds this SRV if capacity growth replaces the
+    // result buffer.
     { D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
       sd.Format = DXGI_FORMAT_UNKNOWN;
       sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
@@ -1048,7 +1040,7 @@ void Renderer::CreateShaderResourceHeap() {
     { D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
       ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
       ud.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-      ud.Texture2DArray.ArraySize = 16;
+      ud.Texture2DArray.ArraySize = SCRATCH_LAYER_COUNT;
       dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, handle); next(); }
 
     // Slot 19 maps to root-sig u9, which no shader binds. Null UAV keeps
@@ -1233,56 +1225,7 @@ void Renderer::CreateShaderResourceHeap() {
         nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
     }
 
-    // Slot 65: volumetric cloud noise 3D texture SRV (t42, g_cloudNoise in
-    // Includes_v8.hlsli). Filled at startup by BakeCloudNoiseTexture (compute
-    // pass dispatching Pass_cloudnoise_bake_v8.hlsl). Null fallback keeps the
-    // descriptor table valid if the bake somehow failed to produce a texture.
-    if (m_cloudNoiseTexture) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format                  = m_cloudNoiseTexture->GetDesc().Format;
-        d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE3D;
-        d.Texture3D.MipLevels     = m_cloudNoiseTexture->GetDesc().MipLevels;
-        dev->CreateShaderResourceView(m_cloudNoiseTexture.Get(), &d, handle); next();
-    } else {
-        nullSRV(D3D12_SRV_DIMENSION_TEXTURE3D);
-    }
-
-    // Slot 66: planet-scale cloud coverage 2D texture SRV (t43, g_cloudCoverage
-    // in Includes_v8.hlsli). NASA Blue Marble cloud_combined_8192.tif loaded
-    // by InitCloudCoverageTexture. Null fallback so missing file (download
-    // failed, user removed) doesn't break the descriptor table — shader reads
-    // 0 and falls back to pure procedural coverage.
-    if (m_cloudCoverageTexture) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format                  = m_cloudCoverageTexture->GetDesc().Format;
-        d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-        d.Texture2D.MipLevels     = m_cloudCoverageTexture->GetDesc().MipLevels;
-        dev->CreateShaderResourceView(m_cloudCoverageTexture.Get(), &d, handle); next();
-    } else {
-        nullSRV(D3D12_SRV_DIMENSION_TEXTURE2D);
-    }
-
-    // Slot 67: spatiotemporal blue noise Texture2DArray SRV (t41, g_cloudSTBN
-    // in Clouds_v8.hlsli). 128x128x64 RGBA8 filled at startup by
-    // BakeCloudSTBNTexture (Pass_stbn_bake_v8.hlsl). Cloud shader's CloudRand4
-    // samples this via .Load(uint4(px, slice, 0)) to drive cone shadow taps,
-    // step jitter, and atmospheric cloud shadow cone with a blue noise spatial
-    // spectrum that DLSS RR cleanly removes.
-    if (m_cloudSTBNTexture) {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Shader4ComponentMapping       = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format                        = m_cloudSTBNTexture->GetDesc().Format;
-        d.ViewDimension                 = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        d.Texture2DArray.MipLevels      = m_cloudSTBNTexture->GetDesc().MipLevels;
-        d.Texture2DArray.ArraySize      = m_cloudSTBNTexture->GetDesc().DepthOrArraySize;
-        dev->CreateShaderResourceView(m_cloudSTBNTexture.Get(), &d, handle); next();
-    } else {
-        nullSRV(D3D12_SRV_DIMENSION_TEXTURE2DARRAY);
-    }
-
-    // Slot 68 (TERRAIN_TABLE_HEAP_SLOT): planet terrain instance table SRV
+    // Slot 65 (TERRAIN_TABLE_HEAP_SLOT): planet terrain instance table SRV
     // (t44, g_terrainTable in Includes_v8.hlsli). StructuredBuffer<uint3>, one
     // entry per BLAS slot, refilled each frame by the planet StreamOrchestrator
     // (created in StreamOrchestrator::init, so always present).
@@ -1296,7 +1239,7 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateShaderResourceView(m_planet.terrain_table(), &d, handle); next();
     }
 
-    // Slot 69 (TERRAIN_HEIGHTMAP_HEAP_SLOT): baked planet heightmap cubemap
+    // Slot 66 (TERRAIN_HEIGHTMAP_HEAP_SLOT): baked planet heightmap cubemap
     // (t45, g_terrainHeightmap in Includes_v8.hlsli). Texture2DArray<R32F>
     // with 6 layers, one per cube face, uploaded once by
     // InitTerrainHeightmapTexture. Bind a null SRV if the upload failed so
@@ -1322,7 +1265,7 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateShaderResourceView(nullptr, &d, handle); next();
     }
 
-    // Slot 70 (TERRAIN_SURFACE_COLOR_HEAP_SLOT): baked Mars-tint surface
+    // Slot 67 (TERRAIN_SURFACE_COLOR_HEAP_SLOT): baked Mars-tint surface
     // colour cubemap (t46, g_terrainSurfaceColor in Includes_v8.hlsli).
     // Texture2DArray<RGBA8> with 6 layers. Null SRV when the bake didn't
     // produce the layer; the shader then falls back to the TERRAIN_ALBEDO
@@ -1339,7 +1282,7 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateShaderResourceView(m_terrainSurfaceColorTexture.Get(), &d, handle); next();
     }
 
-    // Slot 71 (TERRAIN_NORMAL_HEAP_SLOT): baked tangent-space normal map
+    // Slot 68 (TERRAIN_NORMAL_HEAP_SLOT): baked tangent-space normal map
     // cubemap (t47, g_terrainNormalMap in Includes_v8.hlsli). Null SRV
     // when the bake didn't produce the layer; the shader's TerrainNormal
     // path falls back to the analytic finite-difference normal alone.
@@ -1353,26 +1296,6 @@ void Renderer::CreateShaderResourceHeap() {
         dev->CreateShaderResourceView(m_terrainNormalTexture.Get(), &d, handle); next();
     }
 
-    // Slot 72 (TERRAIN_CLOUD_OFFSET_HEAP_SLOT): baked smoothed-elevation
-    // cubemap for cloud base lookup (t48, g_terrainCloudOffset in
-    // Includes_v8.hlsli). Texture2DArray<R32F> typically 256^2. Null SRV
-    // when the bake didn't produce the layer; the cloud shader then uses
-    // CLOUD_LAYER_BOT_KM unmodified (flat spherical cloud shell).
-    {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Shader4ComponentMapping     = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format                      = DXGI_FORMAT_R32_FLOAT;
-        d.ViewDimension               = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        d.Texture2DArray.ArraySize    = 6;
-        d.Texture2DArray.MipLevels    = 1;
-        dev->CreateShaderResourceView(m_terrainCloudOffsetTexture.Get(), &d, handle); next();
-    }
-
-    // Slots 73/74/75 (SKY_TRANSMITTANCE_LUT / CLOUD_AMBIENT_LUT /
-    // SKY_MULTISCATTER_LUT heap slots): per-frame sky LUTs (t49
-    // g_skyTransmittanceLUT, t50 g_cloudAmbientLUT, t51
-    // g_skyMultiScatterLUT). Created by InitSkyLUTBake (runs before this),
-    // so the resources always exist; null fallbacks only guard a failed init.
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
         d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1380,22 +1303,62 @@ void Renderer::CreateShaderResourceHeap() {
         d.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
         d.Texture2D.MipLevels     = 1;
         dev->CreateShaderResourceView(m_skyTransmittanceLUT.Get(), &d, handle); next();
-        dev->CreateShaderResourceView(m_cloudAmbientLUT.Get(),     &d, handle); next();
         dev->CreateShaderResourceView(m_skyMultiScatterLUT.Get(),  &d, handle); next();
     }
 
-    // Slot 76 (CLOUD_SUNOD_LUT_HEAP_SLOT): per-frame cloud->sun optical-depth
-    // shell map (t52 g_cloudSunOD, Texture2DArray<R16F> 384x384x6). Created by
-    // InitSkyLUTBake (runs before this); null fallback only guards a failed
-    // init (the shader then reads 0 OD = unshadowed clouds).
+    // Cumulus uses independent resources in both integrators, before the bindless range.
+    for (int i = 0; i < 3; ++i) {
+        ID3D12Resource* res = i == 0 ? m_cumulusNoise.Get() : i == 1 ? m_cumulusLight.Get() : m_cumulusEnvironment.Get();
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{};
+        d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.Format = res->GetDesc().Format;
+        if (i < 2) { d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D; d.Texture3D.MipLevels = 1; }
+        else { d.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY; d.Texture2DArray.MipLevels = 1; d.Texture2DArray.ArraySize = CUMULUS_ENV_LAYERS; }
+        dev->CreateShaderResourceView(res, &d, handle); next();
+    }
+    for (int i = 0; i < 3; ++i) {
+        ID3D12Resource* res = i == 0 ? m_cumulusNoise.Get() : i == 1 ? m_cumulusLight.Get() : m_cumulusEnvironment.Get();
+        D3D12_UNORDERED_ACCESS_VIEW_DESC d{}; d.Format = res->GetDesc().Format;
+        if (i < 2) { d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE3D; d.Texture3D.WSize = res->GetDesc().DepthOrArraySize; }
+        else { d.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY; d.Texture2DArray.ArraySize = CUMULUS_ENV_LAYERS; }
+        dev->CreateUnorderedAccessView(res, nullptr, &d, handle); next();
+    }
+
     {
-        D3D12_SHADER_RESOURCE_VIEW_DESC d = {};
-        d.Shader4ComponentMapping        = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        d.Format                         = DXGI_FORMAT_R16_FLOAT;
-        d.ViewDimension                  = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-        d.Texture2DArray.ArraySize       = 6;
-        d.Texture2DArray.MipLevels       = 1;
-        dev->CreateShaderResourceView(m_cloudSunODLUT.Get(), &d, handle); next();
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{}; d.Format=DXGI_FORMAT_R16G16B16A16_FLOAT;
+        d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE2D; d.Texture2D.MipLevels=1;
+        dev->CreateShaderResourceView(m_cumulusAmbient.Get(),&d,handle); next();
+        D3D12_UNORDERED_ACCESS_VIEW_DESC u{}; u.Format=d.Format; u.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE2D;
+        dev->CreateUnorderedAccessView(m_cumulusAmbient.Get(),nullptr,&u,handle); next();
+        u={};u.ViewDimension=D3D12_UAV_DIMENSION_BUFFER;u.Format=DXGI_FORMAT_R32_TYPELESS;
+        u.Buffer.NumElements=UINT(m_cumulusQueries->GetDesc().Width/4);u.Buffer.Flags=D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(m_cumulusQueries.Get(),nullptr,&u,handle); next();
+
+    }
+
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{}; d.Format=DXGI_FORMAT_R8G8_UNORM;
+        d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D; d.Texture3D.MipLevels=1;
+        dev->CreateShaderResourceView(m_cumulusNoiseBA.Get(),&d,handle); next();
+    }
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC d{}; d.Format=DXGI_FORMAT_R8G8_UNORM;
+        d.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE3D; d.Texture3D.WSize=CUMULUS_NOISE_SIZE;
+        dev->CreateUnorderedAccessView(m_cumulusNoiseBA.Get(),nullptr,&d,handle); next();
+    }
+
+    for (auto* resource : {m_cumulusDensity.Get(), m_cumulusDensityTags.Get()}) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC d{};d.Format=resource->GetDesc().Format;
+        d.Shader4ComponentMapping=D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        d.ViewDimension=D3D12_SRV_DIMENSION_TEXTURE3D;d.Texture3D.MipLevels=1;
+        dev->CreateShaderResourceView(resource,&d,handle);next();
+    }
+    for (auto* resource : {m_cumulusDensity.Get(), m_cumulusDensityTags.Get()}) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC d{};d.Format=resource->GetDesc().Format;
+        d.ViewDimension=D3D12_UAV_DIMENSION_TEXTURE3D;d.Texture3D.WSize=resource->GetDesc().DepthOrArraySize;
+        dev->CreateUnorderedAccessView(resource,nullptr,&d,handle);next();
     }
 
     // Bindless textures
@@ -1463,18 +1426,6 @@ void Renderer::CreateShaderBindingTable() {
         std::wstring base = entry.substr(entry.find_last_of(L"/\\") + 1);
         base = base.substr(0, base.rfind(L'.'));
         m_sbtHelper.AddRayGenerationProgram(base.c_str(), { heapPointer });
-        rgEntryCount++;
-    }
-
-    // Lite bounce-pass variant record, appended AFTER the token-derived entries so
-    // their pass-index -> SBT-slot mapping stays untouched. The indirect template
-    // (WriteRaysIndirectTemplate) points at it when cloud surface shadows are off.
-    // Only present when the pass list actually contains the bounce pass (the lite
-    // library is compiled alongside it in CreateRaytracingPipeline).
-    m_raygenLiteSbtSlot = UINT32_MAX;
-    if (m_passes.PassIndexByFile(L"Pass_raygen_v8.hlsl") != UINT32_MAX) {
-        m_raygenLiteSbtSlot = rgEntryCount;
-        m_sbtHelper.AddRayGenerationProgram(L"Pass_raygen_v8_lite", { heapPointer });
         rgEntryCount++;
     }
 
@@ -1643,26 +1594,10 @@ void Renderer::WriteRaysIndirectTemplate() {
     }
     d.Width = 0; d.Height = 1; d.Depth = 1;
 
-    //slot 1: identical desc pointed at the LITE variant's record (falls back to
-    //the full record if the variant is absent; the record path never selects
-    //slot 1 in that case anyway)
-    D3D12_DISPATCH_RAYS_DESC dLite = d;
-    if (m_raygenLiteSbtSlot != UINT32_MAX)
-        dLite.RayGenerationShaderRecord.StartAddress =
-            sbtStart + m_raygenLiteSbtSlot * m_sbtHelper.GetRayGenEntrySize();
-
-    //(Slots 2/3 — the old temporal/spatial replay-queue templates — are gone.
-    //Pass_temp_replay and Pass_spmis_shift are both plain full-screen
-    //DispatchRays calls now (role dimension via raysDesc.Depth in the RayGen
-    //dispatch case, see Renderer.cpp), self-selecting per pixel/role from
-    //parked PENDING sentinels instead of consuming an indirect-dispatch
-    //queue — no per-pass args buffer or template slot needed for either.)
-
     void* p = nullptr;
     CD3DX12_RANGE noRead(0, 0);
     ThrowIfFailed(m_raysArgsTemplate->Map(0, &noRead, &p));
     memcpy(p, &d, sizeof(d));
-    memcpy(static_cast<uint8_t*>(p) + 1 * sizeof(D3D12_DISPATCH_RAYS_DESC), &dLite, sizeof(dLite));
     m_raysArgsTemplate->Unmap(0, nullptr);
 }
 
@@ -1925,276 +1860,16 @@ void Renderer::InitSkyStarsTexture() {
     m_ctx.CmdList()->ResourceBarrier(1, &bar);
 }
 
-//====================================
-//VOLUMETRIC CLOUD NOISE BAKE
-//====================================
-//Bakes the runtime cloud-noise 3D texture once at startup. The compute
-//shader (Pass_cloudnoise_bake_v8.hlsl) evaluates the analytical
-//Perlin/Worley/value noises with tiling hashes and writes the result
-//into a 256³ RGBA8 texture. From that point on the cloud integrator
-//replaces every Perlin/Worley evaluation with one Texture3D sample
-//(~50-200× fewer ALU ops per density tap, which is the dominant cost
-//in the volumetric march on the current shader).
-//
-//Why a private root sig / heap / PSO rather than reusing the global
-//compute infrastructure: this runs BEFORE CreateShaderResourceHeap, so
-//m_srvUavHeap doesn't exist yet. Allocating a UAV inside the persistent
-//heap (which only ever needs an SRV view of the texture at runtime)
-//would have meant either reordering init or wasting a heap slot. A
-//throwaway 1-UAV heap with its own minimal root sig is simpler and
-//keeps the bake completely decoupled from the rest of the pipeline.
-void Renderer::BakeCloudNoiseTexture() {
-    auto* dev = m_ctx.Device();
-    constexpr UINT kRes = 256;
-    const auto t_start = std::chrono::high_resolution_clock::now();
-    const size_t bytes = (size_t)kRes * kRes * kRes * 4;
-    LOG(L"[CloudNoise] Baking " << kRes << L"³ RGBA8 noise texture ("
-        << (bytes / (1024 * 1024)) << L" MB, periods R/G/B/A = 32/8/48/16)...");
-
-    //--- 1. Create the destination 3D texture (UAV-capable, default heap).
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
-    td.Width              = kRes;
-    td.Height             = kRes;
-    td.DepthOrArraySize   = kRes;
-    td.MipLevels          = 1;
-    td.Format             = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count   = 1;
-    td.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    td.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-        &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-        IID_PPV_ARGS(&m_cloudNoiseTexture)));
-    m_cloudNoiseTexture->SetName(L"CloudNoiseTexture");
-
-    //--- 2. Private shader-visible heap for the bake's UAV (1 descriptor).
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 1;
-        hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        ThrowIfFailed(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_cloudNoiseBakeHeap)));
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension     = D3D12_UAV_DIMENSION_TEXTURE3D;
-        ud.Format            = DXGI_FORMAT_R8G8B8A8_UNORM;
-        ud.Texture3D.WSize   = kRes;
-        dev->CreateUnorderedAccessView(m_cloudNoiseTexture.Get(), nullptr, &ud,
-            m_cloudNoiseBakeHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
-    //--- 3. Minimal root signature: one descriptor table holding one UAV
-    //       at register(u0) — matches Pass_cloudnoise_bake_v8.hlsl.
-    {
-        CD3DX12_DESCRIPTOR_RANGE1 range;
-        range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0,
-                   D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
-        CD3DX12_ROOT_PARAMETER1 param;
-        param.InitAsDescriptorTable(1, &range);
-
-        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
-        desc.Init_1_1(1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
-
-        ComPtr<ID3DBlob> sig, err;
-        HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &sig, &err);
-        if (FAILED(hr)) {
-            if (err) OutputDebugStringA((char*)err->GetBufferPointer());
-            ThrowIfFailed(hr);
-        }
-        ThrowIfFailed(dev->CreateRootSignature(0,
-            sig->GetBufferPointer(), sig->GetBufferSize(),
-            IID_PPV_ARGS(&m_cloudNoiseBakeSig)));
-    }
-
-    //--- 4. Compile the CS and build the compute PSO.
-    {
-        // Filename only — the codebase's shader-loader finds Pass_*.hlsl
-        // files relative to the runtime working directory (matches the
-        // PassSystem convention in Renderer.cpp).
-        ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(
-            L"Pass_cloudnoise_bake_v8.hlsl", L"main");
-        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
-        pd.pRootSignature = m_cloudNoiseBakeSig.Get();
-        pd.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
-            IID_PPV_ARGS(&m_cloudNoiseBakePSO)));
-    }
-
-    //--- 5. Dispatch on the init cmd list.
-    auto* cmd = m_ctx.CmdList();
-    ID3D12DescriptorHeap* heaps[] = { m_cloudNoiseBakeHeap.Get() };
-    cmd->SetDescriptorHeaps(1, heaps);
-    cmd->SetComputeRootSignature(m_cloudNoiseBakeSig.Get());
-    cmd->SetPipelineState(m_cloudNoiseBakePSO.Get());
-    cmd->SetComputeRootDescriptorTable(0,
-        m_cloudNoiseBakeHeap->GetGPUDescriptorHandleForHeapStart());
-    cmd->Dispatch(kRes / 8, kRes / 8, kRes / 8);
-
-    //--- 6. UAV barrier + transition to SRV state. After this the texture
-    //       is read-only for the rest of the renderer's lifetime, and the
-    //       runtime SRV view created in CreateShaderResourceHeap sees the
-    //       baked contents.
-    D3D12_RESOURCE_BARRIER bars[2] = {};
-    bars[0].Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    bars[0].UAV.pResource = m_cloudNoiseTexture.Get();
-    bars[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_cloudNoiseTexture.Get(),
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV);
-    cmd->ResourceBarrier(2, bars);
-
-    const auto t_end = std::chrono::high_resolution_clock::now();
-    const auto cpu_ms = std::chrono::duration_cast<std::chrono::microseconds>(
-                            t_end - t_start).count() / 1000.0;
-    LOG(L"[CloudNoise] Recorded bake dispatch in " << cpu_ms
-        << L" ms CPU (GPU work completes at init cmd list flush)");
-}
-
-//====================================
-//SPATIOTEMPORAL BLUE NOISE ARRAY (CloudRand4 source)
-//====================================
-//Bakes a 128x128x64 RGBA8 Texture2DArray of spatiotemporal blue noise. The
-//runtime cloud shader's CloudRand4 fetches from this array at register t41
-//instead of evaluating a white noise hash, so the cone shadow taps and per
-//pixel step jitter carry a blue noise spatial spectrum. DLSS RR's spatial
-//filter cleanly removes blue noise (energy lives in the high frequencies
-//the filter passes) but leaves visible per pixel grain on white noise.
-//
-//Single dispatch — see Pass_stbn_bake_v8.hlsl for the bake algorithm and
-//its limitations vs true void and cluster STBN.
-//
-//Mirrors the BakeCloudNoiseTexture structure: private 1 UAV heap, root
-//signature, and PSO, because the bake runs before CreateShaderResourceHeap.
-void Renderer::BakeCloudSTBNTexture() {
-    SCOPE_TIMER("BakeCloudSTBNTexture");
-    auto* dev = m_ctx.Device();
-
-    constexpr UINT kW      = 128;
-    constexpr UINT kH      = 128;
-    constexpr UINT kSlices = 64;
-
-    const auto t_start = std::chrono::high_resolution_clock::now();
-    LOG(L"[CloudSTBN] Baking " << kW << L"x" << kH << L"x" << kSlices
-        << L" RGBA8 spatiotemporal blue noise array ("
-        << ((size_t)kW * kH * kSlices * 4u / 1024u) << L" KB)...");
-
-    //--- 1. Create the destination Texture2DArray (UAV-capable).
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width              = kW;
-    td.Height             = kH;
-    td.DepthOrArraySize   = (UINT16)kSlices;
-    td.MipLevels          = 1;
-    td.Format             = DXGI_FORMAT_R8G8B8A8_UNORM;
-    td.SampleDesc.Count   = 1;
-    td.Layout             = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    td.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-        &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-        IID_PPV_ARGS(&m_cloudSTBNTexture)));
-    m_cloudSTBNTexture->SetName(L"CloudSTBNTexture");
-
-    //--- 2. Private shader-visible heap for the bake's UAV (1 descriptor).
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 1;
-        hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        ThrowIfFailed(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_cloudSTBNBakeHeap)));
-
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-        ud.ViewDimension                  = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-        ud.Format                         = DXGI_FORMAT_R8G8B8A8_UNORM;
-        ud.Texture2DArray.ArraySize       = kSlices;
-        dev->CreateUnorderedAccessView(m_cloudSTBNTexture.Get(), nullptr, &ud,
-            m_cloudSTBNBakeHeap->GetCPUDescriptorHandleForHeapStart());
-    }
-
-    //--- 3. Minimal root signature: one descriptor table holding one UAV at
-    //       register(u0) — matches Pass_stbn_bake_v8.hlsl.
-    {
-        CD3DX12_DESCRIPTOR_RANGE1 range;
-        range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0,
-                   D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE);
-        CD3DX12_ROOT_PARAMETER1 param;
-        param.InitAsDescriptorTable(1, &range);
-
-        CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
-        desc.Init_1_1(1, &param, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
-
-        ComPtr<ID3DBlob> sig, err;
-        HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &sig, &err);
-        if (FAILED(hr)) {
-            if (err) OutputDebugStringA((char*)err->GetBufferPointer());
-            ThrowIfFailed(hr);
-        }
-        ThrowIfFailed(dev->CreateRootSignature(0,
-            sig->GetBufferPointer(), sig->GetBufferSize(),
-            IID_PPV_ARGS(&m_cloudSTBNBakeSig)));
-    }
-
-    //--- 4. Compile the CS and build the compute PSO.
-    {
-        ComPtr<IDxcBlob> cs = nv_helpers_dx12::CompileCS(
-            L"Pass_stbn_bake_v8.hlsl", L"main");
-        D3D12_COMPUTE_PIPELINE_STATE_DESC pd = {};
-        pd.pRootSignature = m_cloudSTBNBakeSig.Get();
-        pd.CS             = { cs->GetBufferPointer(), cs->GetBufferSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
-            IID_PPV_ARGS(&m_cloudSTBNBakePSO)));
-    }
-
-    //--- 5. Dispatch on the init cmd list.
-    auto* cmd = m_ctx.CmdList();
-    ID3D12DescriptorHeap* heaps[] = { m_cloudSTBNBakeHeap.Get() };
-    cmd->SetDescriptorHeaps(1, heaps);
-    cmd->SetComputeRootSignature(m_cloudSTBNBakeSig.Get());
-    cmd->SetPipelineState(m_cloudSTBNBakePSO.Get());
-    cmd->SetComputeRootDescriptorTable(0,
-        m_cloudSTBNBakeHeap->GetGPUDescriptorHandleForHeapStart());
-    cmd->Dispatch(kW / 8, kH / 8, kSlices);
-
-    //--- 6. UAV barrier + transition to SRV state.
-    D3D12_RESOURCE_BARRIER bars[2] = {};
-    bars[0].Type          = D3D12_RESOURCE_BARRIER_TYPE_UAV;
-    bars[0].UAV.pResource = m_cloudSTBNTexture.Get();
-    bars[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_cloudSTBNTexture.Get(),
-        D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV);
-    cmd->ResourceBarrier(2, bars);
-
-    const auto t_end = std::chrono::high_resolution_clock::now();
-    const auto cpu_ms = std::chrono::duration_cast<std::chrono::microseconds>(
-                            t_end - t_start).count() / 1000.0;
-    LOG(L"[CloudSTBN] Recorded bake dispatch in " << cpu_ms
-        << L" ms CPU (GPU work completes at init cmd list flush)");
-}
-
-//====================================
-//PER-FRAME SKY LUTS (sun transmittance + cloud ambient + multi-scatter)
-//====================================
-//Creates the three LUT textures plus the private root signature / heap /
-//PSOs for Pass_skylut_bake_v8.hlsl. Unlike the bake-once textures above,
-//these are re-dispatched EVERY frame by RecordSkyLUTBake — the integrals
-//depend on live cbuffer values (turbidity, multi-scatter, cloud layer
-//sliders), and at ~18K texels a rebake is cheaper than any invalidation
-//tracking.
-//
-//Private root signature (CBV b0 + UAV table u25..u27) because the bake
-//records before the main descriptor heap is bound and must not disturb the
-//global table layout. The shader includes the full Includes_v8.hlsli chain
-//but only touches cbuffer constants + its three UAVs, so nothing else needs
-//a binding.
+//Create the two atmospheric LUTs with a private UAV table (u25, u27) and CBV b0.
 void Renderer::InitSkyLUTBake() {
+    m_skyLutsReady = false;
     SCOPE_TIMER("InitSkyLUTBake");
     auto* dev = m_ctx.Device();
 
     constexpr UINT kTransW = 256, kTransH = 64;   // SKY_TRANSMITTANCE_LUT_W/H
-    constexpr UINT kAmbW   = 128, kAmbH   = 2;    // CLOUD_AMBIENT_LUT_SIZE x 2 rows
     constexpr UINT kMsDim  = 32;                  // SKY_MS_LUT_DIM (Psi_ms)
-    // CLOUD_SUNOD_MAP_W/H/SLICES in Clouds_v8.hlsli (keep in lockstep).
-    constexpr UINT kSunODW = 384, kSunODH = 384, kSunODSlices = 6;
 
-    //--- 1. The three LUT textures (UAV-capable, default heap).
+    //--- 1. The two atmospheric LUT textures (UAV-capable, default heap).
     auto makeLut = [&](UINT w, UINT h, ComPtr<ID3D12Resource>& out, LPCWSTR name) {
         D3D12_RESOURCE_DESC td = {};
         td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -2213,37 +1888,11 @@ void Renderer::InitSkyLUTBake() {
         out->SetName(name);
     };
     makeLut(kTransW, kTransH, m_skyTransmittanceLUT, L"SkyTransmittanceLUT");
-    makeLut(kAmbW,   kAmbH,   m_cloudAmbientLUT,     L"CloudAmbientLUT");
     makeLut(kMsDim,  kMsDim,  m_skyMultiScatterLUT,  L"SkyMultiScatterLUT");
 
-    //--- 1b. Cloud->sun OD shell map: a Texture2DArray<R16F>, one slice per
-    //        altitude plane. Created in UAV state like the LUTs.
-    {
-        D3D12_RESOURCE_DESC td = {};
-        td.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        td.Width            = kSunODW;
-        td.Height           = kSunODH;
-        td.DepthOrArraySize = (UINT16)kSunODSlices;
-        td.MipLevels        = 1;
-        td.Format           = DXGI_FORMAT_R16_FLOAT;
-        td.SampleDesc.Count = 1;
-        td.Layout           = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-        td.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-        ThrowIfFailed(dev->CreateCommittedResource(
-            &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-            &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-            IID_PPV_ARGS(&m_cloudSunODLUT)));
-        m_cloudSunODLUT->SetName(L"CloudSunODLUT");
-    }
-
-    //--- 2. Private shader-visible heap. Layout (sequential, order matters —
-    //       the bake root sig's descriptor table appends ranges in this order):
-    //         [0] u25 transmittance UAV   [1] u26 ambient UAV
-    //         [2] u27 multiscatter UAV    [3] u28 cloud sun-OD array UAV
-    //         [4] t42 cloud noise SRV     [5] t43 coverage SRV
     {
         D3D12_DESCRIPTOR_HEAP_DESC hd = {};
-        hd.NumDescriptors = 6;
+        hd.NumDescriptors = 2;
         hd.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ThrowIfFailed(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&m_skyLutBakeHeap)));
@@ -2258,72 +1907,25 @@ void Renderer::InitSkyLUTBake() {
         ud.Format        = DXGI_FORMAT_R16G16B16A16_FLOAT;
         dev->CreateUnorderedAccessView(m_skyTransmittanceLUT.Get(), nullptr, &ud, h);
         h.Offset(1, inc);
-        dev->CreateUnorderedAccessView(m_cloudAmbientLUT.Get(),     nullptr, &ud, h);
-        h.Offset(1, inc);
         dev->CreateUnorderedAccessView(m_skyMultiScatterLUT.Get(),  nullptr, &ud, h);
-        h.Offset(1, inc);
 
-        // [3] u28: cloud sun-OD shell map (array UAV over all slices).
-        D3D12_UNORDERED_ACCESS_VIEW_DESC ad = {};
-        ad.ViewDimension                 = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
-        ad.Format                        = DXGI_FORMAT_R16_FLOAT;
-        ad.Texture2DArray.ArraySize      = kSunODSlices;
-        ad.Texture2DArray.FirstArraySlice= 0;
-        ad.Texture2DArray.MipSlice       = 0;
-        dev->CreateUnorderedAccessView(m_cloudSunODLUT.Get(), nullptr, &ad, h);
-        h.Offset(1, inc);
-
-        // [4] t42: cloud noise (Texture3D). Mirror the runtime SRV desc.
-        if (m_cloudNoiseTexture) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.Format                  = m_cloudNoiseTexture->GetDesc().Format;
-            sd.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE3D;
-            sd.Texture3D.MipLevels     = m_cloudNoiseTexture->GetDesc().MipLevels;
-            dev->CreateShaderResourceView(m_cloudNoiseTexture.Get(), &sd, h);
-        }
-        h.Offset(1, inc);
-
-        // [5] t43: cloud coverage (Texture2D). Mirror the runtime SRV desc.
-        if (m_cloudCoverageTexture) {
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.Format                  = m_cloudCoverageTexture->GetDesc().Format;
-            sd.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-            sd.Texture2D.MipLevels     = m_cloudCoverageTexture->GetDesc().MipLevels;
-            dev->CreateShaderResourceView(m_cloudCoverageTexture.Get(), &sd, h);
-        }
     }
 
-    //--- 3. Root signature: one table [u25..u28 UAV][t42..t43 SRV] + root CBV
-    //       b0 (camera cbuffer — carries all the atmosphere/cloud params). The
-    //       cloud sun-OD kernel samples the noise/coverage SRVs, so unlike the
-    //       pure-ALU sky LUTs the bake also needs static samplers s0 (cloud
-    //       noise, aniso wrap) and s2 (coverage, bilinear wrap) — mirrored from
-    //       the global root sig (CreateRayGenSignature).
+    //Private UAV table plus the camera constants.
     {
         CD3DX12_DESCRIPTOR_RANGE1 ranges[2];
-        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 4, 25, 0,
+        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 25, 0,
                        D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
                        D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
-        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 42, 0,
+        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 27, 0,
                        D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE,
                        D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND);
         CD3DX12_ROOT_PARAMETER1 params[2];
         params[0].InitAsDescriptorTable(2, ranges);
         params[1].InitAsConstantBufferView(0);
 
-        CD3DX12_STATIC_SAMPLER_DESC samps[2];
-        samps[0].Init(0, D3D12_FILTER_ANISOTROPIC,
-            D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-            D3D12_TEXTURE_ADDRESS_MODE_WRAP);
-        samps[0].MaxAnisotropy = 16;
-        samps[1].Init(2, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-            D3D12_TEXTURE_ADDRESS_MODE_WRAP, D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-            D3D12_TEXTURE_ADDRESS_MODE_WRAP);
-
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC desc;
-        desc.Init_1_1(2, params, 2, samps, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+        desc.Init_1_1(2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
         ComPtr<ID3DBlob> sig, err;
         HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &sig, &err);
@@ -2346,65 +1948,45 @@ void Renderer::InitSkyLUTBake() {
         ThrowIfFailed(dev->CreateComputePipelineState(&pd,
             IID_PPV_ARGS(&m_skyLutTransmittancePSO)));
 
-        ComPtr<IDxcBlob> csA = nv_helpers_dx12::CompileCS(
-            L"Pass_skylut_bake_v8.hlsl", L"mainAmbient");
-        pd.CS = { csA->GetBufferPointer(), csA->GetBufferSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
-            IID_PPV_ARGS(&m_skyLutAmbientPSO)));
-
         ComPtr<IDxcBlob> csM = nv_helpers_dx12::CompileCS(
             L"Pass_skylut_bake_v8.hlsl", L"mainMultiScatter");
         pd.CS = { csM->GetBufferPointer(), csM->GetBufferSize() };
         ThrowIfFailed(dev->CreateComputePipelineState(&pd,
             IID_PPV_ARGS(&m_skyLutMultiScatterPSO)));
 
-        ComPtr<IDxcBlob> csS = nv_helpers_dx12::CompileCS(
-            L"Pass_skylut_bake_v8.hlsl", L"mainCloudSunOD");
-        pd.CS = { csS->GetBufferPointer(), csS->GetBufferSize() };
-        ThrowIfFailed(dev->CreateComputePipelineState(&pd,
-            IID_PPV_ARGS(&m_skyLutCloudSunODPSO)));
     }
 
-    //--- 5. Park all three textures in SRV state on the init cmd list so the
+    //--- 5. Park both textures in SRV state on the init cmd list so the
     //       per-frame record can uniformly do SRV -> UAV -> dispatch -> SRV.
     //       First-frame contents are garbage but the first RecordSkyLUTBake
     //       fills them before any consumer pass runs.
-    D3D12_RESOURCE_BARRIER bars[4] = {
+    D3D12_RESOURCE_BARRIER bars[2] = {
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyMultiScatterLUT.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudSunODLUT.Get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
     };
-    m_ctx.CmdList()->ResourceBarrier(4, bars);
+    m_ctx.CmdList()->ResourceBarrier(2, bars);
 
-    LOG(L"[SkyLUT] Created " << kTransW << L"x" << kTransH
-        << L" transmittance + " << kAmbW << L"x" << kAmbH
-        << L" ambient + " << kMsDim << L"x" << kMsDim
-        << L" multi-scatter + " << kSunODW << L"x" << kSunODH << L"x"
-        << kSunODSlices << L" cloud sun-OD LUTs (rebaked per frame)");
+    LOG(L"[SkyLUT] Created atmospheric transmittance and multiple-scattering LUTs");
 }
 
-//Records the per-frame LUT bake. Called at the top of PopulateCommandList,
+//Records a dependency-invalidated LUT bake. Called at the top of PopulateCommandList,
 //before the main descriptor heap is bound and before any consumer pass.
 //Leaves both textures in kSRV for the rest of the frame.
 void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     if (!m_skyLutTransmittancePSO) return;
+    // Both tables parameterize all sun angles/altitudes. Only turbidity is a
+    // runtime medium parameter; shader/resource recreation invalidates the rest.
+    if (m_skyLutsReady && m_skyLutTurbidity == m_camera.sunSettings.turbidity) return;
 
-    D3D12_RESOURCE_BARRIER toUav[4] = {
+    D3D12_RESOURCE_BARRIER toUav[2] = {
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
-            kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
             kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyMultiScatterLUT.Get(),
             kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudSunODLUT.Get(),
-            kSRV, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
     };
-    cmd->ResourceBarrier(4, toUav);
+    cmd->ResourceBarrier(2, toUav);
 
     ID3D12DescriptorHeap* heaps[] = { m_skyLutBakeHeap.Get() };
     cmd->SetDescriptorHeaps(1, heaps);
@@ -2414,18 +1996,7 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     cmd->SetComputeRootConstantBufferView(1,
         m_camera.GPUBuffer()->GetGPUVirtualAddress());
 
-    // 256x64 over numthreads(8,8,1), 32x32 over numthreads(8,8,1) and
-    // 128x2 over numthreads(64,1,1) — dims match the
-    // SKY_TRANSMITTANCE_LUT_* / SKY_MS_LUT_DIM / CLOUD_AMBIENT_LUT_SIZE
-    // defines on the shader side.
-    //
-    // Order matters twice: BakeSunTransmittance (used by BOTH the
-    // multi-scatter and ambient kernels) READS the transmittance UAV
-    // (u25), and mainAmbient additionally READS the multi-scatter UAV
-    // (u27) — hence a UAV barrier after each producer. Reading the LUT
-    // instead of re-integrating transmittance inline (plus the multi-scatter
-    // bake's group-per-texel layout, see its Dispatch below) keeps it at tens
-    // of µs.
+    //The multiple-scattering bake reads the transmittance UAV from this frame.
     cmd->SetPipelineState(m_skyLutTransmittancePSO.Get());
     cmd->Dispatch(256 / 8, 64 / 8, 1);
     {
@@ -2438,226 +2009,17 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     // directions in parallel + groupshared reduce). 1024 groups → full occupancy,
     // vs the old 16-group (1024-thread) layout that left the GPU idle.
     cmd->Dispatch(32, 32, 1);
-    {
-        D3D12_RESOURCE_BARRIER msDone =
-            CD3DX12_RESOURCE_BARRIER::UAV(m_skyMultiScatterLUT.Get());
-        cmd->ResourceBarrier(1, &msDone);
-    }
-    cmd->SetPipelineState(m_skyLutAmbientPSO.Get());
-    cmd->Dispatch(128 / 64, 2, 1);
-
-    // Cloud->sun OD shell map. Independent of the three sky-LUT UAVs (reads
-    // the cloud noise/coverage SRVs + cbuffer, writes only u28), so it needs
-    // no UAV barrier against them. 384x384x6 over numthreads(8,8,1). Heavier
-    // than the sky LUTs (it marches the cloud density field) but still a single
-    // per-frame dispatch vs the per-pixel-per-step march it replaces.
-    cmd->SetPipelineState(m_skyLutCloudSunODPSO.Get());
-    cmd->Dispatch(384 / 8, 384 / 8, 6);
-
-    D3D12_RESOURCE_BARRIER toSrv[4] = {
+    D3D12_RESOURCE_BARRIER toSrv[2] = {
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudAmbientLUT.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyMultiScatterLUT.Get(),
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
-        CD3DX12_RESOURCE_BARRIER::Transition(m_cloudSunODLUT.Get(),
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
     };
-    cmd->ResourceBarrier(4, toSrv);
+    cmd->ResourceBarrier(2, toSrv);
+    m_skyLutTurbidity = m_camera.sunSettings.turbidity;
+    m_skyLutsReady = true;
 }
 
-//====================================
-//PLANET-SCALE CLOUD COVERAGE MAP (NASA Blue Marble)
-//====================================
-//Loads the NASA Blue Marble "cloud_combined_8192.tif" equirectangular cloud
-//cover image. The TIFF is RGB color (clouds rendered as white/grey opacity
-//over dark Earth), so we collapse to single-channel R8 luminance during the
-//upload — gives us a 33 MB texture instead of 134 MB and matches the
-//"coverage scalar" semantic the shader needs. The shader samples this with
-//hardware bilinear filtering, so coverage transitions between source texels
-//appear as smooth gradients rather than blocky steps.
-//
-//Path is fixed at include/cloud_coverage.tif (CMake downloads on configure).
-//On failure the texture stays null and CreateShaderResourceHeap binds a null
-//SRV — the shader treats that as "no coverage map" and falls back to pure
-//procedural coverage so the missing-file path is non-fatal.
-
-static constexpr const wchar_t* CLOUD_COVERAGE_TIF_PATH = L"./cloud_coverage.tif";
-
-//Bind-a-fallback helper: when the TIFF is missing or fails to decode we
-//still need *some* texture in the SRV slot so the shader sample evaluates
-//to a useful constant (rather than 0, which would mean "no clouds anywhere").
-//A 1×1 mid-grey (0.5) makes `saturate(base * map * 2.0)` collapse to the
-//user's `base` coverage — i.e., the map has no effect and the renderer
-//behaves as if the map system wasn't there. Identical visual outcome to
-//pre-coverage-map behaviour.
-void Renderer::CreateCloudCoverageFallback(uint8_t value) {
-    auto* dev = m_ctx.Device();
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width              = 1;
-    td.Height             = 1;
-    td.DepthOrArraySize   = 1;
-    td.MipLevels          = 1;
-    td.Format             = DXGI_FORMAT_R8_UNORM;
-    td.SampleDesc.Count   = 1;
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-        IID_PPV_ARGS(&m_cloudCoverageTexture)));
-    m_cloudCoverageTexture->SetName(L"CloudCoverageTexture(Fallback)");
-
-    UINT64 uploadSize = GetRequiredIntermediateSize(
-        m_cloudCoverageTexture.Get(), 0, 1);
-    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&m_cloudCoverageUploadHeap)));
-
-    D3D12_SUBRESOURCE_DATA sr = {};
-    sr.pData      = &value;
-    sr.RowPitch   = 1;
-    sr.SlicePitch = 1;
-    UpdateSubresources(m_ctx.CmdList(), m_cloudCoverageTexture.Get(),
-                       m_cloudCoverageUploadHeap.Get(), 0, 0, 1, &sr);
-    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_cloudCoverageTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
-    m_ctx.CmdList()->ResourceBarrier(1, &bar);
-}
-
-void Renderer::InitCloudCoverageTexture() {
-    SCOPE_TIMER("InitCloudCoverageTexture");
-    const auto t_start = std::chrono::high_resolution_clock::now();
-
-    if (!std::filesystem::exists(CLOUD_COVERAGE_TIF_PATH)) {
-        LOG(L"[CloudCoverage] TIFF not found at " << CLOUD_COVERAGE_TIF_PATH
-            << L" — binding 1×1 grey fallback (clouds use procedural coverage only)");
-        CreateCloudCoverageFallback(128);
-        return;
-    }
-
-    //Decode via DirectXTex's WIC backend (handles TIFF, JPG, PNG, etc.).
-    //WIC_FLAGS_NONE lets WIC pick the best in-memory format from the source;
-    //we'll convert to RGBA8 below if it doesn't land there directly.
-    DirectX::TexMetadata meta = {};
-    DirectX::ScratchImage scratch;
-    HRESULT hr = DirectX::LoadFromWICFile(CLOUD_COVERAGE_TIF_PATH,
-        DirectX::WIC_FLAGS_NONE, &meta, scratch);
-    if (FAILED(hr)) {
-        LOG(L"[CloudCoverage] LoadFromWICFile failed (HRESULT 0x"
-            << std::hex << hr << std::dec
-            << L") — binding 1×1 grey fallback");
-        CreateCloudCoverageFallback(128);
-        return;
-    }
-
-    //Convert to RGBA8 if WIC handed us anything else (TIFF can be 24bpp RGB
-    //which DXGI doesn't have a direct format for, so WIC may give us 32bpp
-    //BGRA or even something exotic). RGBA8 is the lowest common denominator.
-    if (meta.format != DXGI_FORMAT_R8G8B8A8_UNORM) {
-        DirectX::ScratchImage rgba;
-        hr = DirectX::Convert(*scratch.GetImage(0, 0, 0),
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            DirectX::TEX_FILTER_DEFAULT, DirectX::TEX_THRESHOLD_DEFAULT, rgba);
-        if (FAILED(hr)) {
-            LOG(L"[CloudCoverage] DirectX::Convert to RGBA8 failed (HRESULT 0x"
-                << std::hex << hr << std::dec
-                << L") — binding 1×1 grey fallback");
-            CreateCloudCoverageFallback(128);
-            return;
-        }
-        scratch = std::move(rgba);
-        meta    = scratch.GetMetadata();
-    }
-
-    const UINT width  = (UINT)meta.width;
-    const UINT height = (UINT)meta.height;
-    LOG(L"[CloudCoverage] Loaded " << width << L"x" << height
-        << L" TIFF (" << (scratch.GetPixelsSize() / (1024 * 1024))
-        << L" MB RGBA8 on CPU)");
-
-    //Collapse RGBA → R8 luminance on the CPU. Rec. 709 luminance weights
-    //(0.2126/0.7152/0.0722) so cloud highlights map to ~1 and dark Earth
-    //maps to ~0. The output is a flat 8 MB → 33 MB R8 buffer ready for
-    //upload as DXGI_FORMAT_R8_UNORM.
-    const uint8_t* src = scratch.GetImage(0, 0, 0)->pixels;
-    const size_t srcRowPitch = scratch.GetImage(0, 0, 0)->rowPitch;
-    std::vector<uint8_t> r8(width * height);
-    for (UINT y = 0; y < height; ++y) {
-        const uint8_t* srow = src + y * srcRowPitch;
-        uint8_t*       drow = r8.data() + y * width;
-        for (UINT x = 0; x < width; ++x) {
-            const float r = srow[x * 4 + 0] / 255.0f;
-            const float g = srow[x * 4 + 1] / 255.0f;
-            const float b = srow[x * 4 + 2] / 255.0f;
-            const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-            drow[x] = (uint8_t)(std::clamp(lum, 0.0f, 1.0f) * 255.0f + 0.5f);
-        }
-    }
-
-    //Create the GPU texture (R8_UNORM, no mips — the shader samples this at
-    //fairly low frequency relative to the source, and the path tracer's TAA
-    //hides any residual minification aliasing).
-    auto* dev = m_ctx.Device();
-    D3D12_RESOURCE_DESC td = {};
-    td.Dimension          = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    td.Width              = width;
-    td.Height             = height;
-    td.DepthOrArraySize   = 1;
-    td.MipLevels          = 1;
-    td.Format             = DXGI_FORMAT_R8_UNORM;
-    td.SampleDesc.Count   = 1;
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kDefaultHeapProps, D3D12_HEAP_FLAG_NONE,
-        &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-        IID_PPV_ARGS(&m_cloudCoverageTexture)));
-    m_cloudCoverageTexture->SetName(L"CloudCoverageTexture");
-
-    UINT64 uploadSize = GetRequiredIntermediateSize(
-        m_cloudCoverageTexture.Get(), 0, 1);
-    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&m_cloudCoverageUploadHeap)));
-    m_cloudCoverageUploadHeap->SetName(L"CloudCoverageUploadHeap");
-
-    D3D12_SUBRESOURCE_DATA sr = {};
-    sr.pData      = r8.data();
-    sr.RowPitch   = (LONG_PTR)width;        // R8: one byte per texel
-    sr.SlicePitch = sr.RowPitch * height;
-    UpdateSubresources(m_ctx.CmdList(), m_cloudCoverageTexture.Get(),
-                       m_cloudCoverageUploadHeap.Get(), 0, 0, 1, &sr);
-
-    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_cloudCoverageTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
-    m_ctx.CmdList()->ResourceBarrier(1, &bar);
-
-    const auto t_end = std::chrono::high_resolution_clock::now();
-    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
-                        t_end - t_start).count() / 1000.0;
-    LOG(L"[CloudCoverage] Uploaded " << width << L"x" << height
-        << L" R8 luminance ("
-        << ((size_t)width * height / (1024 * 1024))
-        << L" MB) in " << ms << L" ms");
-}
-
-//====================================
-//TERRAIN HEIGHTMAP CUBEMAP
-//====================================
-//Reads the CPU heightmap loaded by planet::StreamOrchestrator (which decodes
-//./terrain/manifest.json + the 6 elevation_face<N>.r32 files from the baker),
-//downsamples each face to TERRAIN_HEIGHTMAP_GPU_RESOLUTION, and uploads as a
-//6-layer Texture2DArray<R32F>. The shader's TerrainHeight() samples this via
-//equiangular cubed-sphere projection (matching the baker's projection in
-//tools/planetbaker/src/core/cubed_sphere.h::face_uv_to_sphere).
-//
-//4k per face was picked over the bake's native 16k to keep VRAM at ~384 MB
-//(R32F * 4096^2 * 6) instead of 6 GB. That's enough for shadow rays / cloud
-//bottom checks / ReSTIR reconnection - the CPU mesh tessellator still uses
-//full bake resolution so the actual triangle geometry retains detail.
 
 //Per-face dimension of the GPU heightmap Texture2DArray. Must divide the
 //bake's resolution evenly (downsample_face_km in heightmap_cubemap.cpp
@@ -2780,14 +2142,6 @@ void Renderer::InitTerrainHeightmapTexture() {
         << src.resolution() << L"); upload heap released");
 }
 
-//====================================
-//TERRAIN COMPANION TEXTURES (baker v8)
-//====================================
-//surface_color, normal, cloud_offset. Same per-face upload pattern as
-//InitTerrainHeightmapTexture - allocate one upload buffer sized for the
-//largest face, reuse it across faces, flush between copies. Each Init is
-//independent so a partial bake (e.g. color present but normal missing)
-//still uploads what it can.
 
 namespace {
 
@@ -3018,65 +2372,6 @@ void Renderer::InitTerrainNormalTexture() {
         << (total_bytes / (1024 * 1024)) << L" MB, mip 0 = "
         << (6 * mip0_bytes / (1024 * 1024)) << L" MB) in "
         << ms << L" ms (from " << src.normal_resolution() << L" bake)");
-}
-
-void Renderer::InitTerrainCloudOffsetTexture() {
-    SCOPE_TIMER("InitTerrainCloudOffsetTexture");
-    const auto t_start = std::chrono::high_resolution_clock::now();
-
-    const planet::HeightmapCubemap& src = m_planet.heightmap();
-    if (!src.cloud_offset_loaded()) {
-        LOG(L"[TerrainCloudOffset] not present in bake - leaving null SRV "
-            L"(shader falls back to flat cloud shell at CLOUD_LAYER_BOT_KM)");
-        return;
-    }
-
-    //cloud_offset is uploaded at its native resolution (typically 256). It's
-    //already aggressively smoothed - no need to downsample further.
-    const UINT dstN = src.cloud_offset_resolution();
-    auto* dev = m_ctx.Device();
-    m_terrainCloudOffsetTexture = create_terrain_array_texture(
-        dev, dstN, DXGI_FORMAT_R32_FLOAT, L"TerrainCloudOffsetCubemap");
-
-    const size_t face_floats = static_cast<size_t>(dstN) * dstN;
-    std::vector<float> face_buf(face_floats);
-
-    const UINT64 uploadSizeOne = GetRequiredIntermediateSize(
-        m_terrainCloudOffsetTexture.Get(), 0, 1);
-    auto ub = CD3DX12_RESOURCE_DESC::Buffer(uploadSizeOne);
-    ThrowIfFailed(dev->CreateCommittedResource(
-        &nv_helpers_dx12::kUploadHeapProps, D3D12_HEAP_FLAG_NONE,
-        &ub, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&m_terrainCompanionUploadHeap)));
-    m_terrainCompanionUploadHeap->SetName(L"TerrainCompanionUploadHeap");
-
-    for (UINT f = 0; f < 6; ++f) {
-        if (!src.cloud_offset_face(static_cast<uint8_t>(f), face_buf.data())) {
-            LOG(L"[TerrainCloudOffset] face " << f << L" read failed");
-            m_terrainCloudOffsetTexture.Reset();
-            m_terrainCompanionUploadHeap.Reset();
-            return;
-        }
-        D3D12_SUBRESOURCE_DATA sr = {};
-        sr.pData      = face_buf.data();
-        sr.RowPitch   = (LONG_PTR)dstN * sizeof(float);
-        sr.SlicePitch = sr.RowPitch * (LONG_PTR)dstN;
-        UpdateSubresources(m_ctx.CmdList(), m_terrainCloudOffsetTexture.Get(),
-                           m_terrainCompanionUploadHeap.Get(), 0, f, 1, &sr);
-        m_ctx.FlushAndReset();
-    }
-
-    auto bar = CD3DX12_RESOURCE_BARRIER::Transition(
-        m_terrainCloudOffsetTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, kSRV);
-    m_ctx.CmdList()->ResourceBarrier(1, &bar);
-
-    m_terrainCompanionUploadHeap.Reset();
-
-    const auto ms = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::high_resolution_clock::now() - t_start).count() / 1000.0;
-    LOG(L"[TerrainCloudOffset] Uploaded 6 x " << dstN << L"x" << dstN
-        << L" R32F faces (" << (6 * face_floats * sizeof(float) / 1024) << L" KB) in "
-        << ms << L" ms");
 }
 
 //====================================

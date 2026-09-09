@@ -34,6 +34,11 @@ Renderer::Renderer(UINT width, UINT height)
     m_passes.Build({
         //L"cuda:nrc_frame_begin",                        L"barrier",
         L"Pass_spmis_reset_v8.hlsl|cs:16x16",           L"barrier",
+        L"Pass_cumulus_noise_v8.hlsl|fx:32768",          L"barrier",
+        L"Pass_cumulus_density_v8.hlsl|fx:2048",         L"barrier",
+        L"Pass_cumulus_ambient_v8.hlsl|fx:32",           L"barrier",
+        L"Pass_cumulus_light_v8.hlsl|fx:9216",           L"barrier",
+        L"Pass_cumulus_environment_v8.hlsl|fx:2048",      L"barrier",
         L"Pass_camera_v8.hlsl|rg",                      L"barrier",
         //Regular path tracer only (skipped under ReSTIR): the frame's sun
         //state + sky-view LUT for the training and bounce kernels' misses and
@@ -54,7 +59,9 @@ Renderer::Renderer(UINT width, UINT height)
         //resampled. PT only; the pass loop skips them otherwise.
         L"Pass_lite_shift_v8.hlsl|cs:16x16",            L"barrier",
         L"Pass_lite_merge_v8.hlsl|cs:16x16",            L"barrier",
-        L"Pass_clouds_primary_v8.hlsl|cs:16x16",        L"barrier",
+        L"Pass_cumulus_secondary_v8.hlsl|cs:8x8",        L"barrier",
+        L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",        L"barrier",
+        L"Pass_cumulus_guides_v8.hlsl|cs:8x8",           L"barrier",
         //L"cuda:nrc_inference",                          L"barrier",
         //L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
         L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
@@ -338,48 +345,9 @@ void Renderer::InitDevice() {
         }
         GenerateLutTextures();
         InitSkyStarsTexture();
-        //Bake the 256³ cloud noise texture before CreateShaderResourceHeap
-        //runs, so the heap can pick up the resulting SRV at heap slot
-        //CLOUD_NOISE_HEAP_SLOT. One-time GPU work on the init cmd list.
-        BakeCloudNoiseTexture();
-        //Load the NASA Blue Marble cloud coverage map (8192×4096 → R8 lum).
-        //SRV will land at CLOUD_COVERAGE_HEAP_SLOT (register t43).
-        //MUST precede InitSkyLUTBake: the cloud sun-OD bake heap binds SRVs to
-        //the cloud noise + coverage textures, so both resources must exist.
-        InitCloudCoverageTexture();
-        //Create the per-frame sky LUT textures (sun transmittance t49 +
-        //cloud ambient probes t50 + cloud sun-OD shell map t52) before
-        //CreateShaderResourceHeap so their SRVs land at heap slots 73/74/76.
-        //The actual bake dispatches run every frame from PopulateCommandList
-        //(RecordSkyLUTBake).
+        //Create atmospheric LUTs before their scene SRVs.
         InitSkyLUTBake();
-        //Upload the baked planet heightmap cubemap (downsample to 4k per
-        //face). SRV at TERRAIN_HEIGHTMAP_HEAP_SLOT (register t45). Requires
-        //m_planet.init to have run already so its HeightmapCubemap is loaded.
-        // PLANET DISABLED 2026-06-10: skip the terrain texture uploads. The
-        // orchestrator still loads the heightmap from disk at init(), so these
-        // would otherwise upload regardless of cfg.enabled and keep perturbing
-        // the sky. With them commented out, m_terrain*Texture stay null and the
-        // SRV heap binds NULL descriptors at slots 69-72 (t45-t48) — the
-        // shaders already treat a null/zero sample as "no terrain":
-        // TerrainHeight()/TerrainCloudBaseHeight() return 0 (flat sphere, so
-        // clouds/atmosphere/sun get no terrain relief) and TerrainTintFromUV()
-        // returns false. Also avoids the large 8192^2 x6 cubemap uploads.
-        // Re-enable alongside cfg.enabled above.
-        //InitTerrainHeightmapTexture();
-        //Companion textures from the baker v8 output: surface_color (Mars
-        //tint, t46), normal map (t47), and cloud_offset (smoothed elevation
-        //for cloud base lookup, t48). Each Init is a no-op if the bake
-        //didn't produce that layer; the shaders fall back to the legacy
-        //constants in that case.
-        //InitTerrainSurfaceColorTexture();
-        //InitTerrainNormalTexture();
-        //InitTerrainCloudOffsetTexture();
-        //Bake the 128x128x64 spatiotemporal blue noise array. SRV lands at
-        //CLOUD_STBN_HEAP_SLOT (register t41). Drives CloudRand4 so the
-        //cloud march's per pixel jitter has blue noise spatial spectrum.
-        BakeCloudSTBNTexture();
-
+        InitCumulusResources();
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
         ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
             D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
@@ -473,6 +441,7 @@ void Renderer::InitSceneGPU() {
                 m_rockMeshIndices.push_back(CreateProceduralMesh(rvtx, rm.indices, rockMat));
             }
         }
+        m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
         CreateAccelerationStructures();
         //PLANET: reserve the terrain region in the combined scene buffers (and
         //append the flat terrain material) BEFORE the buffers are built. No-op
@@ -674,12 +643,11 @@ void Renderer::UpdateRenderer(float dt) {
     // ── Floating origin sync ─────────────────────────────────────
     // Snap the scene origin to a 1 km grid following the camera. If it
     // moved this frame, every instance transform needs re-shifting and
-    // the TLAS BVH has to be rebuilt (refit can't handle the big jump).
+    // the active TLAS is rebuilt with the shifted descriptors.
     // Done BEFORE PrepareInstanceProperties so the new origin is in
     // effect when transforms get shifted.
     // Compare absolute source transforms, not dirtyInstanceList: that list also
-    // carries origin rebases and motion-guide settle frames. tlasFullRebuild is
-    // a legacy sticky flag after adding geometry and cannot be a reset trigger.
+    // carries origin rebases and motion-guide settle frames.
     const bool sharcStructureChanged = m_sharcInstanceState.size() != m_scene.instances.size();
     if (sharcStructureChanged) m_sharcInstanceState.resize(m_scene.instances.size());
     if (m_scene.materialsDirty || sharcStructureChanged) m_sharcResetPending = true;
@@ -703,12 +671,8 @@ void Renderer::UpdateRenderer(float dt) {
         //PrepareInstanceProperties picks these up via the dirty list and
         //rewrites cpuInstanceProps + tlasInstances.transform.
         m_scene.MarkAllInstancesDirty();
-        //tlasDirty + non-empty dirtyInstanceList sends the TLAS through
-        //UpdateAndRefit (microseconds for any reasonable instance count)
-        //instead of tlasFullRebuild which re-allocates GPU buffers + the
-        //instance descriptor heap and costs ~ms regardless of count. The
-        //BVH may be slightly suboptimal after a big shift but the existing
-        //periodic RebuildInPlace (every 120 frames) recovers structure.
+        //The unified TLAS builder detects these descriptor changes and rebuilds
+        //in its existing allocation. Unchanged frames reuse the last result.
         m_scene.tlasDirty       = true;
         //Light tree triangle positions are computed from xforms shifted by
         //sceneOriginWorld (see BuildXformsFromScene). Re-refit so NEE
@@ -735,6 +699,7 @@ void Renderer::UpdateRenderer(float dt) {
     // Wait for previous frame, then write all shared upload-heap buffers.
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
+    m_dlssNR.PrepareFrameGPUIdle();
     m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
     // The existing previous-frame fence makes this read safe without adding a
     // stall. These are actual dispatch timestamps, unlike the CPU wait above.
@@ -742,10 +707,10 @@ void Renderer::UpdateRenderer(float dt) {
     for (float& ms : m_frameStats.cachePassMs) ms = 0.0f;
     if (m_sharcTimingMask != 0u && m_sharcTimestampFrequency != 0u) {
         void* mappedTicks = nullptr;
-        D3D12_RANGE range{0, 16u * sizeof(UINT64)};
+        D3D12_RANGE range{0, 18u * sizeof(UINT64)};
         ThrowIfFailed(m_sharcTimingReadback->Map(0, &range, &mappedTicks));
         const auto* ticks = static_cast<const UINT64*>(mappedTicks);
-        for (UINT pass = 0; pass < 8; ++pass)
+        for (UINT pass = 0; pass < 9; ++pass)
             if ((m_sharcTimingMask & (1u << pass)) != 0u && ticks[pass * 2 + 1] >= ticks[pass * 2])
                 m_frameStats.cachePassMs[pass] = float(double(ticks[pass * 2 + 1] - ticks[pass * 2]) *
                     1000.0 / double(m_sharcTimestampFrequency));
@@ -808,7 +773,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     const UINT nodeCount = (UINT)m_pendingTLASUpload.size();
     const UINT nodeBytes = nodeCount * sizeof(lt::LightTLASNodeGpu);
     const UINT itemCount = (UINT)m_pendingBLASBitTrail.size();
-    const UINT itemBytes = itemCount * sizeof(uint32_t);
+    const UINT itemBytes = itemCount * sizeof(lt::LightTreeTrail);
     CD3DX12_RANGE readRange(0, 0);
 
     // ── Helper: grow a default-heap buffer + update its SRV ──────
@@ -816,7 +781,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
                          UINT& capacity, UINT needed, UINT stride,
                          DXGI_FORMAT fmt, UINT srvSlot, const wchar_t* name)
     {
-        const UINT elemSize = stride ? stride : 4;
+        const UINT elemSize = stride ? stride : (fmt == DXGI_FORMAT_R32G32_UINT ? 8u : 4u);
         const UINT byteCount = needed * elemSize;
 
         // Grow GPU buffer if needed
@@ -885,7 +850,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     // ── BLAS bit trails (per-BLAS TLAS descent path used by the PDF) ─
     if (itemCount > 0) {
         growBuffer(m_ltBlasBitTrailGpu, m_blasBitTrailUploadStaging, m_ltBlasBitTrailGpuCapacity,
-                  itemCount, 0, DXGI_FORMAT_R32_UINT,
+                  itemCount, 0, DXGI_FORMAT_R32G32_UINT,
                   LT_BLASBITTRAIL_SRV_SLOT, L"LT_BLASBitTrail_Refit");
 
         { void* p = nullptr;
@@ -1303,7 +1268,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         ud.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        ud.Texture2DArray.ArraySize = 16;
+        ud.Texture2DArray.ArraySize = m_scratchPing->GetDesc().DepthOrArraySize;
         dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, h);
     });
 
@@ -1321,6 +1286,7 @@ void Renderer::RebuildResolutionDependentDescriptors() {
 
     // Slot 32: path state UAV
     rawUAVAt(32, m_pathStateBuffer, px * kPathStateBytesPerPx);
+    rawUAVAt(CUMULUS_QUERY_HEAP_SLOT, m_cumulusQueries, UINT(m_cumulusQueries->GetDesc().Width));
 
     // Slots 33 (global counters), 34 (indirect args), 52-54 (sort buffers) are
     // bound to non-resolution-dependent buffers and are NOT recreated on resize
@@ -1409,12 +1375,13 @@ planet::CameraView Renderer::MakePlanetCamera() const {
 //PLANET SCENE INSTANCES (unified TLAS)
 //====================================
 //Convert m_scene.tlasInstances (XMMATRIX, sceneOrigin-relative) into the planet
-//module's D3D12-only SceneInstanceDesc layout. Rebuilt every frame; the scene
-//is small enough that the loop is well under the TLAS-build budget.
+//module's D3D12-only SceneInstanceDesc layout. Refresh only moved instances;
+//structural edits replace the whole table.
 void Renderer::BuildPlanetSceneInstances() {
     const auto& src = m_scene.tlasInstances;
+    const bool all = m_scene.tlasFullRebuild || m_planetSceneInstances.size() != src.size();
     m_planetSceneInstances.resize(src.size());
-    for (size_t i = 0; i < src.size(); ++i) {
+    auto update = [&](size_t i) {
         planet::SceneInstanceDesc& d = m_planetSceneInstances[i];
         d.blas = src[i].blas ? src[i].blas->GetGPUVirtualAddress() : 0;
         //XMMATRIX (row-vector) -> DXR row-major 3x4: transpose, take the first
@@ -1425,6 +1392,11 @@ void Renderer::BuildPlanetSceneInstances() {
         d.instance_id     = (uint32_t)i;            // scene InstanceID == TLAS index
         d.hit_group_index = src[i].hitGroupContribution;
         d.flags           = (uint32_t)src[i].flags;
+    };
+    if (all) {
+        for (size_t i = 0; i < src.size(); ++i) update(i);
+    } else {
+        for (uint32_t i : m_scene.dirtyInstanceList) if (i < src.size()) update(i);
     }
 }
 
@@ -1470,7 +1442,8 @@ void Renderer::RenderFrame() {
         // the build first makes planetComputeAtSlot[frameIndex] current for the
         // splits. submit_work targets the compute queue + CPU-side instance data
         // only, so it has no dependency on PopulateCommandList's graphics recording.
-        m_scene.RebuildTLASInstanceList();
+        if (m_scene.tlasFullRebuild || m_scene.tlasInstances.size() != m_scene.instances.size())
+            m_scene.RebuildTLASInstanceList();
         BuildPlanetSceneInstances();
         //PLANET ROCKS: refresh the camera-following live set (hysteresis-gated
         //inside update) and hand it to the orchestrator for this frame's TLAS.
@@ -1488,9 +1461,23 @@ void Renderer::RenderFrame() {
                                         (uint32_t)m_rockScatter.live().size());
         }
         const uint32_t terrainHitGroup = (uint32_t)m_scene.instances.size() * 2u;
+        const auto previousTlasAddress = m_planet.tlas_address();
         m_planet.submit_work(m_planetSceneInstances.data(),
                              (uint32_t)m_planetSceneInstances.size(),
                              terrainHitGroup);
+        if (previousTlasAddress != m_planet.tlas_address()) {
+            // Capacity growth replaces the result buffer. The previous-frame
+            // fence has completed, so update its SRV before recording any rays.
+            D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+            sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            sd.RaytracingAccelerationStructure.Location = m_planet.tlas_address();
+            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
+            m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, h);
+        }
+        m_scene.tlasDirty = false;
+        m_scene.tlasFullRebuild = false;
 
         auto t_popStart = hrc::now();
         PopulateCommandList();
@@ -1580,6 +1567,8 @@ void Renderer::RenderFrame() {
 //DESTROY
 //====================================
 void Renderer::DestroyRenderer() {
+    // Includes Present: FG tags and the NR model may still refer to this frame.
+    m_ctx.WaitForGPU();
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOff;
@@ -1588,10 +1577,9 @@ void Renderer::DestroyRenderer() {
         m_dlssG.enabled = false;
     }
     m_editor.Shutdown();
-    //full NGX teardown (release feature, destroy parameters, shutdown) —
-    //needs the GPU idle and must precede device destruction in ctx.Shutdown
-    m_ctx.WaitForGPU();
+    // Release the independent NR runtime before Streamline/device shutdown.
     m_dlssNR.Shutdown(m_ctx.Device());
+    m_dlssHudlessColor.Reset();
     m_ctx.Shutdown();
 }
 
@@ -1604,6 +1592,7 @@ UINT Renderer::CreateProceduralMesh(
 {
     UINT matIdx = (UINT)m_scene.materials.size();
     UINT triCount = (UINT)indices.size() / 3;
+    const UINT materialIDBase = (UINT)m_scene.materialIDs.size();
     m_scene.materials.push_back(material);
     for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
 
@@ -1611,7 +1600,15 @@ UINT Renderer::CreateProceduralMesh(
     mesh.cpuVertices = vertices; mesh.cpuIndices = indices;
     mesh.cpuMaterialIDs = std::vector<UINT>(triCount, matIdx);
     mesh.vertexCount = (UINT)vertices.size(); mesh.indexCount = (UINT)indices.size();
-    mesh.opaqueTriCount = triCount; mesh.alphaTriCount = 0; mesh.materialIDBase = matIdx;
+    mesh.opaqueTriCount = triCount; mesh.alphaTriCount = 0; mesh.materialIDBase = materialIDBase;
+    for (const auto& v : vertices) {
+        mesh.localAabbMin.x = std::min(mesh.localAabbMin.x, v.position.x);
+        mesh.localAabbMin.y = std::min(mesh.localAabbMin.y, v.position.y);
+        mesh.localAabbMin.z = std::min(mesh.localAabbMin.z, v.position.z);
+        mesh.localAabbMax.x = std::max(mesh.localAabbMax.x, v.position.x);
+        mesh.localAabbMax.y = std::max(mesh.localAabbMax.y, v.position.y);
+        mesh.localAabbMax.z = std::max(mesh.localAabbMax.z, v.position.z);
+    }
 
     { UINT bytes = mesh.vertexCount * sizeof(Vertex);
       mesh.vertexBuffer = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes,
@@ -1648,6 +1645,7 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     const auto& src = m_scene.meshes[sourceMeshIndex];
     UINT matIdx   = (UINT)m_scene.materials.size();
     UINT triCount = src.indexCount / 3;
+    const UINT materialIDBase = (UINT)m_scene.materialIDs.size();
 
     m_scene.materials.push_back(material);
     for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
@@ -1660,7 +1658,9 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
     mesh.indexCount     = src.indexCount;
     mesh.opaqueTriCount = src.opaqueTriCount;
     mesh.alphaTriCount  = src.alphaTriCount;
-    mesh.materialIDBase = matIdx;
+    mesh.materialIDBase = materialIDBase;
+    mesh.localAabbMin   = src.localAabbMin;
+    mesh.localAabbMax   = src.localAabbMax;
 
     // Share geometry buffers and BLAS — no GPU work needed
     mesh.vertexBuffer = src.vertexBuffer;
@@ -1676,6 +1676,11 @@ UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material
 //SCENE STRUCTURAL CHANGE
 //====================================
 void Renderer::HandleSceneStructuralChange() {
+    if (m_scene.terrainInstanceSlots && m_scene.instances.size() > m_scene.terrainPropsBase)
+        throw std::runtime_error("Scene instances exceed the reserved terrain instance range");
+    // This entry point runs before the normal frame wait. Retire GPU users
+    // before replacing instance buffers, SRVs or the shader binding table.
+    m_ctx.WaitForGPU();
     m_scene.RebuildTLASInstanceList();
     m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
@@ -1761,10 +1766,6 @@ void Renderer::PopulateCommandList() {
     m_frameStats.tlasWasRebuilt = false;
     m_frameStats.tlasMs         = 0.0f;
 
-    // Per-frame sky LUT bake (sun transmittance + cloud ambient probes).
-    // Recorded BEFORE the main heap bind — it uses its own private heap and
-    // root signature, and every consumer pass below reads the results as
-    // SRVs at t49/t50.
     RecordSkyLUTBake(cmdList);
 
     // Bind main descriptor heap (+ the dynamic sampler heap for
@@ -1903,14 +1904,21 @@ void Renderer::PopulateCommandList() {
     // below also skips every reservoir pass in this mode.
     const bool usePtKernel = (rs.integratorMode == 0);
     const bool useSharc = usePtKernel && rs.sharcEnabled;
+    if (!m_cumulusSettingsValid || std::memcmp(&m_previousCumulusSettings,
+        &m_camera.cumulusSettings, sizeof(CumulusSettings)) != 0 ||
+        m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
+        m_previousDensityCacheEnabled = m_camera.cumulusDensityCache;
+        m_previousCumulusSettings = m_camera.cumulusSettings;
+        m_cumulusSettingsValid = true;
+        m_sharcResetPending = true;
+        m_dlss.ForceReset();
+    }
     const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 3) : 0u;
     if (!m_sharcLightingValid ||
-        std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0 ||
-        std::memcmp(&m_sharcCloudSettings, &m_camera.cloudSettings, sizeof(CloudSettings)) != 0)
+        std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0)
     {
         m_sharcResetPending = true;
         m_sharcSunSettings = m_camera.sunSettings;
-        m_sharcCloudSettings = m_camera.cloudSettings;
         m_sharcLightingValid = true;
     }
     rs.sharcCellSizeExponent = std::clamp(rs.sharcCellSizeExponent, -6, 4);
@@ -2333,6 +2341,13 @@ void Renderer::PopulateCommandList() {
 
     m_sharcTimingMask = 0u;
     bool ptTimerOpen = false;
+    bool cloudTimerOpen = false;
+    const auto& cloudSun = m_camera.sunSettings;
+    const auto& cloudSettings = m_camera.cumulusSettings;
+    const std::array<float,5> ambientKey{cloudSun.turbidity,cloudSun.sunIntensity,
+        cloudSun.skyIntensity,cloudSettings.baseKm,cloudSettings.thicknessKm};
+    if (ambientKey != m_cumulusAmbientKey) m_cumulusAmbientReady = false;
+    bool dlssEvaluatedThisFrame = false;
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
 
@@ -2348,6 +2363,16 @@ void Renderer::PopulateCommandList() {
                     ++i;
             };
             if (!useSharc && p.file.rfind(L"Pass_sharc_", 0) == 0) { skipPass(); continue; }
+            if (p.file.rfind(L"Pass_cumulus_", 0) == 0) {
+                if (m_camera.cumulusSettings.enabled < 0.5f ||
+                    (p.file == L"Pass_cumulus_secondary_v8.hlsl" && !usePtKernel) ||
+                    (p.file == L"Pass_cumulus_noise_v8.hlsl" && m_cumulusNoiseReady) ||
+                    (p.file == L"Pass_cumulus_density_v8.hlsl" && (!m_camera.cumulusDensityCache ||
+                        cloudSettings.windX != 0 || cloudSettings.windZ != 0 || cloudSettings.coverage <= 0)) ||
+                    (p.file == L"Pass_cumulus_ambient_v8.hlsl" && m_cumulusAmbientReady)) {
+                    skipPass(); continue;
+                }
+            }
             if (usePtKernel) {
                 static const std::unordered_set<std::wstring> kRestirOnly = {
                     L"Pass_raygen_v8.hlsl",
@@ -2387,6 +2412,15 @@ void Renderer::PopulateCommandList() {
         else if (p.file == L"Pass_pt_v8.hlsl") { cacheTimer = 3; timerBegin = !ptTimerOpen; }
         else if (p.file == L"Pass_lite_shift_v8.hlsl") cacheTimer = 4;
         else if (p.file == L"Pass_lite_merge_v8.hlsl") cacheTimer = 5;
+        else if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl" || p.file == L"Pass_cumulus_ambient_v8.hlsl" || p.file == L"Pass_cumulus_light_v8.hlsl") {
+            cacheTimer = 6; timerBegin = !cloudTimerOpen; timerEnd = false; cloudTimerOpen = true;
+        }
+        else if (p.file == L"Pass_cumulus_environment_v8.hlsl") { cacheTimer = 6; timerBegin = !cloudTimerOpen; }
+        else if (p.file == L"Pass_cumulus_secondary_v8.hlsl") { cacheTimer = 8; }
+        else if (p.file == L"Pass_atmosphere_primary_v8.hlsl") {
+            cacheTimer = 7; timerEnd = cloudSettings.enabled < 0.5f;
+        }
+        else if (p.file == L"Pass_cumulus_guides_v8.hlsl") { cacheTimer = 7; timerBegin = false; }
         if (cacheTimer >= 0 && timerBegin)
             cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
 
@@ -2440,14 +2474,9 @@ void Renderer::PopulateCommandList() {
                 { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
                   cmdList->ResourceBarrier(1, &b); }
-                //template slot 1 = lite variant (cloud-surface-shadow block compiled
-                //out) — dispatched exactly when the editor toggle makes the block
-                //inert, so the output is bit-identical to the full variant.
-                const bool useLite = (m_camera.cloudSettings.cloudShadowOnSurfaces < 0.5f)
-                                     && (m_raygenLiteSbtSlot != UINT32_MAX);
                 cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), 0,
                     m_raysArgsTemplate.Get(),
-                    useLite ? sizeof(D3D12_DISPATCH_RAYS_DESC) : 0,
+                    0,
                     sizeof(D3D12_DISPATCH_RAYS_DESC));
                 cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(),
                     offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
@@ -2464,12 +2493,8 @@ void Renderer::PopulateCommandList() {
             }
 
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
-            // The surface-shadow call returns one with clouds disabled. Its RNG
-            // stream ends at sun NEE, so omitting that inactive block does not
-            // change any subsequent sample. Debug views use the full kernel.
-            const bool noSurfaceCloudShadow = m_camera.cloudSettings.enabled < 0.5f ||
-                m_camera.cloudSettings.cloudShadowOnSurfaces <= 0.5f;
-            if (noSurfaceCloudShadow && sharcDebugMode == 0u) {
+            //Debug views use the full kernel.
+            if (sharcDebugMode == 0u) {
                 const wchar_t* fastName = p.file == L"Pass_pt_v8.hlsl" ? L"Pass_pt_v8_fast" :
                     p.file == L"Pass_sharc_update_v8.hlsl" ? L"Pass_sharc_update_v8_fast" : nullptr;
                 if (fastName) {
@@ -2539,13 +2564,46 @@ void Renderer::PopulateCommandList() {
 
         case Stage::FixedCompute:
         {
+            ID3D12Resource* cloudTarget = nullptr;
+            if (p.file == L"Pass_cumulus_noise_v8.hlsl") cloudTarget = m_cumulusNoise.Get();
+            if (p.file == L"Pass_cumulus_density_v8.hlsl") cloudTarget = m_cumulusDensity.Get();
+            auto transitionNoiseChannels = [&](D3D12_RESOURCE_STATES before,D3D12_RESOURCE_STATES after) {
+                if (p.file == L"Pass_cumulus_noise_v8.hlsl") {
+                    auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusNoiseBA.Get(),before,after);
+                    cmdList->ResourceBarrier(1,&barrier);
+                }
+                if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl") {
+                    auto barrier=CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusDensityTags.Get(),before,after);
+                    cmdList->ResourceBarrier(1,&barrier);
+                }
+            };
+            transitionNoiseChannels(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (p.file == L"Pass_cumulus_light_v8.hlsl") cloudTarget = m_cumulusLight.Get();
+            if (p.file == L"Pass_cumulus_ambient_v8.hlsl") cloudTarget = m_cumulusAmbient.Get();
+            if (p.file == L"Pass_cumulus_environment_v8.hlsl") cloudTarget = m_cumulusEnvironment.Get();
+            if (cloudTarget) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(cloudTarget,
+                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &b);
+            }
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, currentStack, nextStack);
             const UINT groups = p.file == L"Pass_sharc_resolve_v8.hlsl" ? SHARC_RESOLVE_GROUPS
-                : p.file == L"Pass_sharc_prepare_v8.hlsl" ? SHARC_CAPACITY / SHARC_GROUP_SIZE : p.groupX;
+                : p.file == L"Pass_sharc_prepare_v8.hlsl" ? SHARC_CAPACITY / SHARC_GROUP_SIZE
+                : p.file == L"Pass_pt_skybake_v8.hlsl" && m_camera.cumulusSettings.enabled>.5f ? 1u : p.groupX;
             cmdList->Dispatch(groups, p.groupY, 1);
+            transitionNoiseChannels(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (cloudTarget) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(cloudTarget,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                cmdList->ResourceBarrier(1, &b);
+                if (cloudTarget == m_cumulusNoise.Get()) m_cumulusNoiseReady = true;
+                if (cloudTarget == m_cumulusAmbient.Get()) {
+                    m_cumulusAmbientReady = true; m_cumulusAmbientKey = ambientKey;
+                }
+            }
             break;
         }
 
@@ -2658,6 +2716,8 @@ void Renderer::PopulateCommandList() {
                 m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(),
                 m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame(),
                 m_camera.fovDegrees, m_camera.nearPlane, m_camera.farPlane);
+            dlssEvaluatedThisFrame = m_dlss.LastEvaluationSucceeded();
+            if (!dlssEvaluatedThisFrame || m_dlss.LastEvaluationReset()) m_dlssNR.ForceReset();
 
             // DLSS Frame Generation: set options every frame
             if (m_dlssG.available && m_dlssG.enabled) {
@@ -2751,7 +2811,9 @@ void Renderer::PopulateCommandList() {
     // falls through to presenting m_outputResource untouched.
     ID3D12Resource* presentSrc = m_outputResource.Get();
     UINT            presentSub = sub;
-    if (sharcDebugMode == 0u && m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub,
+    const bool nrSceneView = dlssEvaluatedThisFrame && sharcDebugMode == 0u && layer == 1u;
+    if (!nrSceneView) m_dlssNR.ForceReset();
+    if (nrSceneView && m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub,
                           m_dlss.Depth(), m_dlss.MVec(),
                           m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
         presentSrc = m_dlssNR.Output();   //left in COPY_SOURCE by the manager
@@ -2761,6 +2823,31 @@ void Renderer::PopulateCommandList() {
     // ours unconditionally (harmless when DLSS-NR did not run).
     { ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get(), m_samplerHeap.Get() };
       cmdList->SetDescriptorHeaps(2, h); }
+
+    if (m_dlssG.enabled) {
+        // Keep a real HUD-less image alive through Present. The back buffer
+        // receives ImGui below and cannot serve as both UI and HUD-less color.
+        bool fresh = !m_dlssHudlessColor || m_dlssHudlessColor->GetDesc().Width != GetWidth() ||
+                     m_dlssHudlessColor->GetDesc().Height != GetHeight();
+        if (fresh) {
+            // Previous-frame fence completed before this command list began.
+            m_dlssHudlessColor.Reset();
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, GetWidth(), GetHeight(), 1, 1);
+            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_dlssHudlessColor)));
+            m_dlssHudlessColor->SetName(L"DLSSG_HUDLessColor");
+        } else {
+            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dlssHudlessColor.Get(),
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+            cmdList->ResourceBarrier(1, &barrier);
+        }
+        CD3DX12_TEXTURE_COPY_LOCATION hudSrc(presentSrc, presentSub), hudDst(m_dlssHudlessColor.Get(), 0);
+        cmdList->CopyTextureRegion(&hudDst, 0, 0, 0, &hudSrc, nullptr);
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dlssHudlessColor.Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &barrier);
+    }
 
     { auto toDst = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
           D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
@@ -2803,9 +2890,9 @@ void Renderer::PopulateCommandList() {
         constexpr D3D12_RESOURCE_STATES statePresent  = D3D12_RESOURCE_STATE_PRESENT;
         sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(),       (uint32_t)stateUAV);
         sl::Resource slFgMVec (sl::ResourceType::eTex2d, m_dlss.MVec(),        (uint32_t)stateUAV);
-        // HUDLessColor = back buffer (final tonemapped frame, not pre-postprocess DLSS output)
-        // so optical flow runs on the clean displayed image, not raw HDR/noisy data
-        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
+        // Contains the displayed scene (including NR), captured before ImGui.
+        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_dlssHudlessColor.Get(),
+                              (uint32_t)D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         sl::Resource slFgBB   (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
 
         sl::Extent renderExt { 0, 0, m_dlss.RenderWidth(),  m_dlss.RenderHeight()  };

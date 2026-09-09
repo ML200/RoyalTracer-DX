@@ -235,6 +235,10 @@ public:
         return r;
     }
 
+    //Call before binding terrain instance properties. Loaded scenes may exceed
+    //the default scene allowance; reserve their range before terrain IDs freeze.
+    void reserve_scene_instances(uint32_t count);
+
     //unified TLAS - the renderer points the SceneBVH SRV here once, after init.
     ID3D12Resource*           tlas_result()  const { return m_tlas.result(); }
     D3D12_GPU_VIRTUAL_ADDRESS tlas_address() const { return m_tlas.tlas_address(); }

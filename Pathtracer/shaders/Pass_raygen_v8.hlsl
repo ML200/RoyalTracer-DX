@@ -1,26 +1,6 @@
 #include "Includes_v8.hlsli"
 #include "Raygen_Common_v8.hlsli"
 
-//====================================
-//VARIANT SPECIALIZATION
-//====================================
-//The library is compiled TWICE (Renderer::CreateRaytracingPipeline): the default
-//entry, and a "lite" variant (-D RAYGEN_ENTRY=Pass_raygen_v8_lite
-//-D RAYGEN_NO_CLOUD_SURF_SHADOW=1) with the sun-NEE cloud-shadow block compiled
-//OUT. The host's indirect-dispatch template selects the lite SBT record whenever
-//the editor's cloud_cloudShadowOnSurfaces toggle is off — exactly the condition
-//under which the block is inert — so the render is bit-identical while the hot
-//variant sheds ~1.5k instructions of I$ footprint + the block's register
-//pressure. Extend with more -D axes (e.g. RAYGEN_NO_SSS for SSS-free scenes) by
-//adding records the same way.
-#ifndef RAYGEN_ENTRY
-#define RAYGEN_ENTRY Pass_raygen_v8
-#endif
-#ifndef RAYGEN_NO_CLOUD_SURF_SHADOW
-#define RAYGEN_NO_CLOUD_SURF_SHADOW 0
-#endif
-
-
 //One reservoir: emissive-tri DI (d==1), first-bounce DI (d==2), GI (d>=3).
 //d==1 direct sky+sun -> scratch slot 3; cold state in g_pathStateBuffer.
 //
@@ -61,7 +41,7 @@
 #define RC_PK_TPOSTPDF 2u
 
 [shader("raygeneration")]
-void RAYGEN_ENTRY()
+void Pass_raygen_v8()
 {
     //COMPACTED 1D dispatch: Pass_camera queued only the non-terminal pixels and
     //the host launches exactly that count via ExecuteIndirect, so there is no
@@ -204,9 +184,6 @@ void RAYGEN_ENTRY()
     {
         float3 rayDir = UnpackNormal(rayDirPk);
 
-        //per-bounce RNG streams: replay re-derives sBsdf/sSss for bounces < k
-        //from the stored pathSeed alone; sNee/sRr consumption can never shift
-        //them (variable light-tree / cloud-shadow / RR draw counts).
         uint sNee  = RcBounceSeed(pathSeed, (uint)depth, RC_STREAM_NEE);
         uint sBsdf = RcBounceSeed(pathSeed, (uint)depth, RC_STREAM_BSDF);
         uint sSss  = RcBounceSeed(pathSeed, (uint)depth, RC_STREAM_SSS);
@@ -264,7 +241,7 @@ void RAYGEN_ENTRY()
                 else
                 {
                     const float2 rSun = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                    SunSampleResult sun = SampleSun(rSun);
+                    SunSampleResult sun = SampleSun(rSun, ctx.hitPos + sceneOriginWorld);
                     L = sun.direction;
 
                     cosSurf = dot(ctx.hitNormal, L);   //== NdotL
@@ -283,21 +260,6 @@ void RAYGEN_ENTRY()
                 const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
                 if (!any(visT > 0.0f))
                     continue;
-
-                //sun-only cloud shadow (draw order preserved: after the vis test, as
-                //before). Compiled out of the lite variant — the host dispatches that
-                //variant only when the toggle is off, i.e. when this block is inert.
-#if !RAYGEN_NO_CLOUD_SURF_SHADOW
-                if (tech == 1u && cloud_cloudShadowOnSurfaces > 0.5f)
-                {
-                    float2 rCone = float2(RandomFloatSingle(sNee), RandomFloatSingle(sNee));
-                    float  cosCone = cos(SURFACE_CLOUD_SHADOW_CONE_DEG * DEG2RAD);
-                    float3 Lj = SampleConeAroundDir(L, cosCone, rCone);
-                    float  vis = CloudSunVisibility(ctx.hitPos + sceneOriginWorld, Lj,
-                                                    RandomFloatSingle(sNee));
-                    radiance *= pow(max(vis, 1e-6f), SURFACE_CLOUD_SHADOW_SOFTNESS);
-                }
-#endif
 
                 const float3 throughput = UnpackRGB9E5(throughputPk);
 
@@ -341,11 +303,6 @@ void RAYGEN_ENTRY()
                     }
                     else
                     {
-                        //primary direct SUN — now a reservoir candidate (§6.1
-                        //unification; directAtX1 removed). Direction payload
-                        //with the globally position-INVARIANT sun cone pdf:
-                        //RC_F_PAREA copy, gBase = 1. L2 carries the (frozen)
-                        //cloud-shadowed radiance; visibility re-traces at reuse.
                         AddInitialCandidate(wsum, g_Reservoirs_current, pixelIdx, wi,
                             L, -L,
                             radiance, diMarkerFor(pixelIdx, time),
@@ -731,9 +688,8 @@ void RAYGEN_ENTRY()
             const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(rayDir) : float3(0, 0, 0);
             const float  sunMisBsdf = (sunSAPdf > 0.0f)
                 ? prev_pdf / max(prev_pdf + sunSAPdf, EPSILON) : 0.0f;
-            float3 cloudTr;
-            const float3 sky        = EvaluateSky(rayDir, cloudTr);
-            const float3 envL       = sky + sunRad * sunMisBsdf * cloudTr;
+            const float3 sky        = EvaluateSky(rayDir);
+            const float3 envL       = sky + sunRad * sunMisBsdf;
 
             const float3 Fp      = throughputCur * envL;
             const float  wi      = GetPHat(Fp);

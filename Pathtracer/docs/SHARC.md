@@ -72,7 +72,7 @@ planet-scale floating-point origin to a tiny local position before quantization.
 The minimum usable level also increases if necessary to retain signed-coordinate
 headroom. A camera origin rebase preserves history; geometry/material edits,
 lighting-setting changes, mode re-entry, grid-spacing changes, and training-depth
-changes reset it. Continuous sky/cloud motion is handled by rolling history. History decays on
+changes reset it. Continuous sky motion is handled by rolling history. History decays on
 frames that provide new observations to a cell, not on every elapsed frame.
 Otherwise a fine cell visited once every 60 frames could never collect enough
 effective observations to become useful. Base unused lifetime defaults to 512

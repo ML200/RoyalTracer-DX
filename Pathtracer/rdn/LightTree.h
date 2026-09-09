@@ -16,6 +16,7 @@
 #include <iostream>
 #include <chrono>
 #include <cmath>
+#include "../shaders/LightTreeTrail.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -286,9 +287,8 @@ private:
     struct TItem { // TLAS items over BLAS roots
         uint32_t idx; Aabb a; XMFLOAT3 c; float p; Cone cone; uint32_t primCount; float sumP, sumP2;
     };
-    std::vector<uint32_t> m_triBitTrails;   // BLAS descent path per emissive triangle
-    std::vector<uint32_t> m_blasBitTrails;  // TLAS descent path per BLAS
-    static constexpr uint32_t LT_TRAIL_MAX_DEPTH = 16; // 32 bits / 2 bits per level
+    std::vector<LightTreeTrail> m_triBitTrails;   // BLAS descent path per emissive triangle
+    std::vector<LightTreeTrail> m_blasBitTrails;  // TLAS descent path per BLAS
 
 public:
     struct Settings {
@@ -542,19 +542,19 @@ public:
         }
         dst.ptr += inc;
 
-        // TriBitTrail (R32_UINT), count = #tris -- BLAS descent path per triangle
+        // TriBitTrail (R32G32_UINT), count = #tris -- BLAS descent path per triangle
         if (m_gpu.TriBitTrail) {
-            UINT n = static_cast<UINT>(m_gpu.TriBitTrail->GetDesc().Width / 4);
+            UINT n = static_cast<UINT>(m_gpu.TriBitTrail->GetDesc().Width / sizeof(LightTreeTrail));
             LT_LOG(L"WriteLookupSrvs: TriBitTrail count=" << n);
-            makeTyped(m_gpu.TriBitTrail.Get(), DXGI_FORMAT_R32_UINT, n, dst);
+            makeTyped(m_gpu.TriBitTrail.Get(), DXGI_FORMAT_R32G32_UINT, n, dst);
         }
         dst.ptr += inc;
 
-        // BLASBitTrail (R32_UINT), count = #BLASes -- TLAS descent path per BLAS
+        // BLASBitTrail (R32G32_UINT), count = #BLASes -- TLAS descent path per BLAS
         if (m_gpu.BLASBitTrail) {
-            UINT n = static_cast<UINT>(m_gpu.BLASBitTrail->GetDesc().Width / 4);
+            UINT n = static_cast<UINT>(m_gpu.BLASBitTrail->GetDesc().Width / sizeof(LightTreeTrail));
             LT_LOG(L"WriteLookupSrvs: BLASBitTrail count=" << n);
-            makeTyped(m_gpu.BLASBitTrail.Get(), DXGI_FORMAT_R32_UINT, n, dst);
+            makeTyped(m_gpu.BLASBitTrail.Get(), DXGI_FORMAT_R32G32_UINT, n, dst);
         }
     }
 
@@ -782,7 +782,7 @@ private:
 
     uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out,
                                  uint32_t begin, uint32_t end,
-                                 uint32_t bitTrail, uint32_t depth)
+                                 LightTreeTrail bitTrail, uint32_t depth)
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size());
         out.nodes.emplace_back();
@@ -823,6 +823,14 @@ private:
             Agg parentL{}; for (uint32_t i=b0;i<e0;++i) aggAdd(parentL, tmp[i]);
             const Aabb   aabb = parentL.a;
             const XMFLOAT3 ext = aabbExtent(aabb);
+            if (LightTreeNeedsBalancedSplit(e0 - b0, depth)) {
+                axisOut = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x ? 2 : 0);
+                midOut = b0 + (e0 - b0) / 2u;
+                std::nth_element(tmp.begin() + b0, tmp.begin() + midOut, tmp.begin() + e0,
+                    [&](const TmpTri& a, const TmpTri& b) { return (&a.centroid.x)[axisOut] < (&b.centroid.x)[axisOut]; });
+                splitPosOut = (&tmp[midOut].centroid.x)[axisOut];
+                return true;
+            }
             const float lenX = ext.x, lenY = ext.y, lenZ = ext.z, lenMax = (std::fmax)(lenX,(std::fmax)(lenY,lenZ));
             const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
             const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parentL.cone));
@@ -909,8 +917,7 @@ private:
             // leaf collapses to the power CDF with zero spatial
             // discrimination). Force a plain index split instead; recursion
             // bottoms out at count==1 exactly like the TLAS builders. Extra
-            // depth on big coincident stacks is bounded by the trail-depth
-            // warning below.
+            // depth on big coincident stacks is logarithmic.
             mid = (begin + end) / 2;   // count >= 2 here -> strictly interior
         }
 
@@ -959,14 +966,8 @@ private:
 
         // Build each child into its slot
         // child index c is encoded into 2 bits at position (2*depth) for the bit trail
-        const bool depthOverflow = (depth >= LT_TRAIL_MAX_DEPTH);
-        if (depthOverflow) {
-            LT_WARN(L"BLAS bit trail exceeded depth " << LT_TRAIL_MAX_DEPTH << L"; PDF will be incorrect for deeper subtrees");
-        }
-        const uint32_t shift = 2u * depth;
         for (uint32_t c = 0; c < bucketCount; ++c) {
-            //guard against UB when shift >= 32; trail is intentionally unchanged past the cap
-            const uint32_t childTrail = depthOverflow ? bitTrail : (bitTrail | (c << shift));
+            const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
             uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
             uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(out.nodes[built], out.nodes[desired]);
@@ -1014,7 +1015,7 @@ private:
     static void aggTMerge(AggT& A, const AggT& B){ if (!B.valid) return; if (!A.valid){ A=B; return; } A.a=unionAabb(A.a,B.a); A.E+=B.E; A.cone=coneUnion(A.cone,B.cone); A.N+=B.N; A.sumP+=B.sumP; A.sumP2+=B.sumP2; }
 
     uint32_t buildTLASRecursive_SAOH(std::vector<TItem>& it, uint32_t begin, uint32_t end,
-                                     uint32_t bitTrail, uint32_t depth)
+                                     LightTreeTrail bitTrail, uint32_t depth)
     {
         const uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
         m_tlas.push_back({});
@@ -1050,6 +1051,14 @@ private:
 
             const Aabb aabb = parentL.a;
             const XMFLOAT3 ext = aabbExtent(aabb);
+            if (LightTreeNeedsBalancedSplit(e0 - b0, depth)) {
+                axisOut = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x ? 2 : 0);
+                midOut = b0 + (e0 - b0) / 2u;
+                std::nth_element(it.begin() + b0, it.begin() + midOut, it.begin() + e0,
+                    [&](const TItem& a, const TItem& b) { return (&a.c.x)[axisOut] < (&b.c.x)[axisOut]; });
+                splitPosOut = (&it[midOut].c.x)[axisOut];
+                return true;
+            }
             const float lenX=ext.x, lenY=ext.y, lenZ=ext.z, lenMax=(std::fmax)(lenX,(std::fmax)(lenY,lenZ));
             const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
             const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parentL.cone));
@@ -1158,13 +1167,8 @@ private:
         nodeAt(nodeIdx).childCount = bucketCount;
         for (uint32_t i=0;i<bucketCount;i++) m_tlas.push_back({});
 
-        const bool depthOverflow = (depth >= LT_TRAIL_MAX_DEPTH);
-        if (depthOverflow) {
-            LT_WARN(L"TLAS bit trail exceeded depth " << LT_TRAIL_MAX_DEPTH << L"; PDF will be incorrect for deeper subtrees");
-        }
-        const uint32_t shift = 2u * depth;
         for (uint32_t c=0;c<bucketCount;c++){
-            const uint32_t childTrail = depthOverflow ? bitTrail : (bitTrail | (c << shift));
+            const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
             uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
             uint32_t desired = nodeAt(nodeIdx).firstChild + c;
             if (built != desired) std::swap(m_tlas[built], m_tlas[desired]);

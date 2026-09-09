@@ -103,6 +103,7 @@ constexpr uint32_t kStructVersion3 = 3;
 constexpr uint32_t kStructVersion4 = 4;
 constexpr uint32_t kStructVersion5 = 5;
 constexpr uint32_t kStructVersion6 = 6;
+constexpr uint32_t kStructVersion7 = 7;
 
 struct BaseStructure
 {

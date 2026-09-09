@@ -58,21 +58,6 @@
 #define SUN_LIMB_DARKENING 1
 #endif
 
-// Atmosphere defaults (Bruneton 2017). Lengths in km, coefficients in 1/km.
-//
-// ATMOS_BOTTOM_RADIUS is the planet radius in km. It MUST stay equal to
-// FlyCamController::kPlanetRadiusM divided by WORLD_UNITS_PER_KM — the fly
-// camera clamps to the analytic planet surface at that radius, so a mismatch
-// puts the camera below (or floating above) the atmosphere's ground sphere.
-// The atmosphere shader treats the planet as a sphere of exactly this radius
-// centred at the planet space origin: WorldToPlanet maps world Y=0 onto it,
-// and the EvaluateAtmosphereAndClouds planet clip, the cosHorizon earth
-// shadow, the cloud shell anchor and the density altitude all derive from it.
-//
-// The sunset horizon sun block softening is a separate, local concern: a view
-// sample sitting on the ground surface must not be hard zeroed the instant the
-// sun touches the geometric horizon. That is handled by ATMOS_SUN_BLOCK_BIAS_KM
-// in TransmittanceToSun. Do NOT solve it by shrinking ATMOS_BOTTOM_RADIUS.
 #ifndef ATMOS_BOTTOM_RADIUS
 #define ATMOS_BOTTOM_RADIUS     6360.0f
 #endif
@@ -203,12 +188,6 @@
 
 #define SKY_STAR_LOD_BIAS       skyStarLodBias
 
-// EvaluatePlanetBody is NO LONGER RENDERED (2026-06-11): the analytic
-// Lambertian Rb sphere is gone from EvaluateSkyBackground /
-// EvaluateSkyBackgroundBehind — the scene's own geometry provides any
-// ground, and the stand-in leaked gray light into GI bounce misses. The
-// function + albedo stay for debugging. Cloud ground bounce keeps its own
-// CLOUD_GROUND_ALBEDO.
 #ifndef ATMOS_GROUND_ALBEDO
 #define ATMOS_GROUND_ALBEDO     float3(0.4f, 0.4f, 0.4f)
 #endif
@@ -230,14 +209,6 @@ static const float SKY_OBSERVER_MIN_RADIUS = ATMOS_BOTTOM_RADIUS + 0.0002f;
 // the top; default = surface tangent point for callers that skip the set.
 static float3 g_skyObserverPlanet = float3(0.0f, SKY_OBSERVER_MIN_RADIUS, 0.0f);
 
-//Set by SetSkyObserver when the observer sits below the analytic planet
-//surface by more than this tolerance. Sky evaluators and the unified
-//march early-out to BLACK on it: inside the planet body no sky, cloud,
-//sun disc or aerial perspective is geometrically visible, and the old
-//clamp-to-surface behavior lit underground scenes with a sky that isn't
-//there. Default false, so passes that never set an observer keep legacy
-//behavior. 1 m tolerance: world Y = 0 maps exactly onto the surface, so
-//ground-level cameras must not trip the flag through float slop.
 #define SKY_UNDERGROUND_EPS_KM 0.001f
 static bool g_skyObserverUnderground = false;
 
@@ -506,106 +477,11 @@ inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0,
 // decoupled softness slider).
 inline float SunDiskFractionAboveHorizon(float sunCosZ, float cosHorizon)
 {
-    const float kSinSunRadius = sin(SUN_ANGULAR_DEG * 0.5f * DEG2RAD);
+    float kSinSunRadius = sin(SUN_ANGULAR_DEG * 0.5f * DEG2RAD)*sqrt(max(0.0f,1-cosHorizon*cosHorizon));
     return smoothstep(cosHorizon - kSinSunRadius,
                       cosHorizon + kSinSunRadius, sunCosZ);
 }
 
-//====================================
-//THROUGH-DECK DIFFUSE SKYLIGHT (cloud-shadowed air)
-//====================================
-//Air under an overcast deck is lit almost entirely by white DIFFUSE
-//transmission through the deck, not by attenuated direct sun. The old model
-//had no such source: it pushed directional sun through pow(vis, 0.3) + a
-//0.04 floor, so shadowed air kept the clear-sky spectral signature
-//(Rayleigh blue away from the sun, forward-Mie orange toward it) and the
-//horizon integral under wide overcast degenerated into "floored blue near
-//air + red-shifted sunlit far air" — the off-color band this replaces.
-//
-//Returns the isotropic through-deck source per unit sun irradiance for a
-//sample whose sun shadow optical depth is tauSlant, given the local
-//overhead cloud cover fraction (CloudGlobalCoverage at the sample):
-//  (1 - exp(-tau))           gate to actually-shadowed air; clear sky = 0
-//  deckT                     conservative-slab two-stream diffuse
-//                            transmittance 1/(1 + 0.75*(1-g)*tau_v) with
-//                            droplet asymmetry g ~ 0.85; tau_v un-slants
-//                            the shadow OD by the sun-zenith cosine
-//  saturate(sunCosZ)         flux projection onto the deck top
-//  cov                       hemispheric source fraction — the slab model
-//                            assumes the whole upper hemisphere is deck,
-//                            only true under genuine overcast
-//  1/(8*PI)                  Lambertian 1/(2*pi) x 1/4 CALIBRATION to the
-//                            radiance the engine actually renders for a
-//                            deck interior/base (CloudComputeLighting's
-//                            OD-capped ambient + MS octaves sit ~4x below
-//                            an ideal transmitting slab). The uncalibrated
-//                            value saturated long under-deck paths ~6-10x
-//                            brighter than the deck itself, so any few-%
-//                            transmissive sightline through cloud showed a
-//                            glowing horizon slot with DLSS parallax smear
-//                            ("can see into thick clouds"). Raise toward
-//                            1/(2*pi) only if the cloud interior lighting
-//                            is ever brightened to match the slab.
-//
-//msGateOut: survival fraction for AMBIENT (Psi_ms) skylight under the same
-//deck — the MS LUT integrates a cloudless atmosphere, so under a deck its
-//light must be attenuated like any other skylight: the clear fraction of
-//the dome passes fully, the covered fraction passes deckT, blended by how
-//shadowed this sample actually is. 1 in clear sky (no change), ~deckT
-//under full overcast.
-//
-//Consumers multiply the returned source by sigma_s (per-channel) and the
-//usual earthShadow * sunTr chain; NO phase function — the source is
-//isotropic, which is what turns the under-deck horizon gray instead of
-//blue/orange.
-// Conservative-slab two-stream diffuse transmittance of the deck blocking
-// a sun ray of optical depth tauSlant; sunCosZ un-slants to vertical.
-inline float CloudDeckDiffuseT(float tauSlant, float sunCosZ)
-{
-    float tauVert = tauSlant * clamp(sunCosZ, 0.15f, 1.0f);
-    return 1.0f / (1.0f + 0.1125f * tauVert);
-}
-
-inline float CloudShadowAmbientTermsOD(float tauSlant, float sunCosZ,
-                                       float cov, out float msGateOut)
-{
-    float vis   = exp(-tauSlant);
-    float deckT = CloudDeckDiffuseT(tauSlant, sunCosZ);
-
-    msGateOut = lerp(1.0f, 1.0f - cov + cov * deckT, 1.0f - vis);
-
-    return (1.0f - vis) * deckT * saturate(sunCosZ) * cov
-         * (1.0f / (8.0f * PI));
-}
-
-// Visibility-based wrapper. 1e-20 keeps the log finite while letting thick
-// decks register their real optical depth (tau ~ 46 at the clamp): a 1e-6
-// clamp would cap tau at ~13.8 and floor deckT at ~0.39 — very thick
-// clouds would glow as if they transmitted 40% no matter how dense.
-inline float CloudShadowAmbientTerms(float visRaw, float sunCosZ,
-                                     float cov, out float msGateOut)
-{
-    return CloudShadowAmbientTermsOD(-log(max(visRaw, 1e-20f)), sunCosZ,
-                                     cov, msGateOut);
-}
-
-//====================================
-//SUN TRANSMITTANCE — PER-FRAME 2D LUT
-//====================================
-//The atmosphere is spherically symmetric, so the to-space transmittance
-//integral depends only on (r, mu) = (sample radius, cosine of the ray vs
-//local zenith). It used to be marched per call (ATMOS_LIGHT_STEPS x
-//SampleMedium) — and TransmittanceToSun is called per STEP of every outer
-//march (cloud phase-2 strides, atmosphere segments, IntegrateScattering,
-//aerial perspective), i.e. hundreds of inner marches per pixel.
-//Pass_skylut_bake_v8.hlsl now integrates it once per frame into a 256x64
-//LUT (g_skyTransmittanceLUT, t49) with the Bruneton 2017 parameterization,
-//and the runtime call is one bilinear fetch. The geometric planet/terrain
-//block checks stay at the call — they depend on the actual 3D position,
-//not on (r, mu).
-//
-//ATMOS_LIGHT_STEPS no longer drives a per-call cost; the bake uses a fixed
-//64-step integral (16K texels, negligible).
 
 #define SKY_TRANSMITTANCE_LUT_W 256.0f
 #define SKY_TRANSMITTANCE_LUT_H 64.0f
@@ -737,24 +613,67 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 //the single-scatter term only (default now 1.0 = physical).
 #define SKY_MS_LUT_SIZE 32.0f
 
+// Spend the existing 32x32 table on the lower atmosphere and terminator.
+// Linear mu put sunset between samples almost four degrees apart.
+inline float2 MultiScatterLutUnitFromRMu(float r,float mu)
+{
+    return float2(.5f+.5f*sign(mu)*sqrt(abs(mu)),
+        sqrt(saturate((r-ATMOS_BOTTOM_RADIUS)/(ATMOS_TOP_RADIUS-ATMOS_BOTTOM_RADIUS))));
+}
+
+// Use the centroid of the visible solar disk for a single shadow/transmission
+// direction. Multiplying a planet-blocked centre ray by a nonzero disk fraction
+// still traces through the ground at sunset. This small-disk approximation
+// stays continuous as the centre sets, and does not change the disk's energy.
+inline float3 VisibleSunDirection(float3 P,float3 L)
+{
+    float3 up=normalize(P);float mu=dot(up,L);
+    float cosH=-sqrt(max(0.0f,1-ATMOS_BOTTOM_RADIUS*ATMOS_BOTTOM_RADIUS/dot(P,P)));
+    float radius=sin(SUN_ANGULAR_DEG*.5f*DEG2RAD);
+    float x=(cosH-mu)/max(radius*sqrt(max(0.0f,1-cosH*cosH)),1e-7f);
+    if(x<=-1)return L;
+    float diskCentroid;
+    if(x>=.99f)diskCentroid=lerp(.994f,1.0f,saturate((x-.99f)*100));
+    else {
+        float root=sqrt(max(0.0f,1-x*x));
+        diskCentroid=(2.0f/3.0f)*root*root*root/max(acos(x)-x*root,1e-7f);
+    }
+    float3 lift=up-L*mu;
+    lift*=rsqrt(max(dot(lift,lift),1e-12f));
+    return normalize(L+lift*(radius*diskCentroid));
+}
+inline void MultiScatterLutRMuFromUnit(float2 unit,out float r,out float mu)
+{
+    float x=unit.x*2-1;
+    mu=x*abs(x);
+    r=ATMOS_BOTTOM_RADIUS+unit.y*unit.y*(ATMOS_TOP_RADIUS-ATMOS_BOTTOM_RADIUS);
+}
 inline float3 MultiScatterPsi(float r, float sunCosZ)
 {
-    float xR  = saturate((r - ATMOS_BOTTOM_RADIUS)
-                       / (ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
-    float xMu = saturate(sunCosZ * 0.5f + 0.5f);
-    float2 uv = float2(LutCoordFromUnitRange(xMu, SKY_MS_LUT_SIZE),
-                       LutCoordFromUnitRange(xR,  SKY_MS_LUT_SIZE));
+    float2 unit=MultiScatterLutUnitFromRMu(r,clamp(sunCosZ,-1.0f,1.0f));
+    float2 uv = float2(LutCoordFromUnitRange(unit.x, SKY_MS_LUT_SIZE),
+                       LutCoordFromUnitRange(unit.y, SKY_MS_LUT_SIZE));
     return g_skyMultiScatterLUT.SampleLevel(g_sampler_LUT, uv, 0).rgb;
 }
 
-// Forward decls — defined in Clouds_v8.hlsli (included after this file).
-// CloudGlobalCoverage is safe to call here only AFTER a CloudSunVisibility*
-// call has run on this thread (it initializes the ENU basis statics).
-float CloudSunVisibilityPlanet(float3 Pplanet, float3 sunDirWS);
-float CloudGlobalCoverage(float3 P);
-
+// Implemented after CumulusCache is included. Only runtime volume transport
+// enables this; clear-sky LUT bakes must not read their dependent cloud cache.
+float CumulusAtmosphereSunVisibility(float3 P,float3 L);
+// Sample a source point using the least-extinguished RGB channel. The shared
+// proposal has support for all channels, and the RGB correction integrates a
+// constant source exactly in expectation for the cell's fixed extinction.
+void AtmosphereSourceQuadrature(float3 extinction,float ds,float u,out float distance,out float3 weight)
+{
+    float proposal=max(0.0f,min(extinction.x,min(extinction.y,extinction.z)));
+    float tau=proposal*ds;
+    float mass=tau<.001f ? ds*(1-.5f*tau+tau*tau/6) : (1-exp(-tau))/max(proposal,1e-20f);
+    distance=tau<.001f ? ds*(u+.5f*tau*u*(u-1)) : -log(max(1e-20f,1-u*proposal*mass))/proposal;
+    weight=mass*exp(-(extinction-proposal)*distance);
+}
 float3 IntegrateScattering(float3 viewDir, float3 sunDir,
-                           out float3 transmittanceOut, out bool hitPlanetOut)
+                           out float3 transmittanceOut, out bool hitPlanetOut,
+                           float maxDistanceKm = -1.0f,uint stepCount = ATMOS_VIEW_STEPS,
+                           bool cloudShadows=false,float sampleJitter=-1.0f)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
     float Rt = ATMOS_TOP_RADIUS;
@@ -773,7 +692,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
     }
 
     float tMin = max(0.0f, tV0);
-    float tMax = tV1;
+    float tMax = maxDistanceKm >= 0.0f ? min(tV1, maxDistanceKm) : tV1;
 
     // Planet body terminates the ray; throughput is reused by EvaluatePlanetBody.
     float tG0, tG1;
@@ -798,11 +717,12 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);
 
-    for (int i = 0; i < ATMOS_VIEW_STEPS; i++)
+    stepCount=clamp(stepCount,2u,64u);
+    for (uint i = 0; i < stepCount; i++)
     {
         // sqrt spacing — clusters samples near the start of the ray.
-        float u0 = (float)i / (float)ATMOS_VIEW_STEPS;
-        float u1 = (float)(i + 1) / (float)ATMOS_VIEW_STEPS;
+        float u0 = (float)i / (float)stepCount;
+        float u1 = (float)(i + 1) / (float)stepCount;
         float s0 = u0 * u0;
         float s1 = u1 * u1;
         float tMid = tMin + (s0 + s1) * 0.5f * totalDist;
@@ -814,53 +734,34 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
 
         MediumSample med = SampleMedium(alt);
         float3 segTr = exp(-med.extinction * ds);
-        float3 sunTr = TransmittanceToSun(P, L, Rb, Rt);
+        float3 sourceWeight=0;
+        MediumSample sourceMed=med;
+        if(sampleJitter>=0.0f) {
+            float distance;
+            AtmosphereSourceQuadrature(med.extinction,ds,frac(sampleJitter+float(i)*.61803398875f),distance,sourceWeight);
+            P=O+V*(tMin+s0*totalDist+distance);
+            rP=length(P);
+            sourceMed=SampleMedium(max(0.0f,rP-Rb));
+        }
+        float3 visibleL=VisibleSunDirection(P,L);
+        float3 sunTr = TransmittanceToSun(P, visibleL, Rb, Rt);
 
         float3 Pnorm = SafeNormalize(P);
         float sunCosZ = dot(Pnorm, L);
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
         float earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
 
-        // earthShadow gate: every term cloudVis/cloudAmb feed is multiplied
-        // by earthShadow anyway, so on the night side of the terminator the
-        // whole tap (1-5 density/coverage fetches) is wasted work — and
-        // since the geometric shadow reach landed, low-sun taps actually
-        // sample instead of early-rejecting, making the skip worth real
-        // time at sunset. msGate stays 1 there; psiMS already carries the
-        // earth shadow inside the LUT and is ~0 on that side.
-        float cloudVis = 1.0f;
-        float cloudAmb = 0.0f;
-        float msGate   = 1.0f;
-        if (cloud_cloudShadowOnSurfaces > 0.5f && earthShadow > 1e-4f)
-        {
-            float visRaw = CloudSunVisibilityPlanet(P, L);
-            // Coverage fetch + ambient terms only where actually shadowed
-            // (clear sky skips both and msGate stays 1).
-            if (visRaw < 0.999f)
-            {
-                float cov = CloudGlobalCoverage(P);
-                cloudAmb  = CloudShadowAmbientTerms(visRaw, sunCosZ, cov,
-                                                    msGate);
-            }
-            cloudVis = pow(max(visRaw, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
-            cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
-        }
+        float3 scatterPhase = sourceMed.scatterR * phR + sourceMed.scatterM * phM;
+        float3 scatterIso   = sourceMed.scatterR + sourceMed.scatterM;
 
-        float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
-        float3 scatterIso   = med.scatterR + med.scatterM;
-
-        // Directional single scatter (multi-scatter slider = artistic boost
-        // on this term only) + isotropic through-deck skylight for the
-        // cloud-shadowed fraction + Hillaire 2nd+ order air scattering
-        // (phase / sun transmittance / earth shadow live inside the LUT;
-        // msGate attenuates it under cloud decks).
+        // Directional single scattering plus isotropic atmospheric multiple scattering.
         float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr
                         * ATMOS_MULTI_SCATTER_FACTOR;
-        float3 psiMS    = MultiScatterPsi(rP, sunCosZ);
-        float3 rate     = scatterPhase * sunIllum * cloudVis
-                        + scatterIso * (sunIllum * cloudAmb
-                                        + psiMS * ATMOS_SOLAR_IRRADIANCE
-                                                * msGate);
+        if(cloudShadows && earthShadow>0.0f)
+            sunIllum*=CumulusAtmosphereSunVisibility(P,visibleL);
+        float3 psiMS = MultiScatterPsi(rP, sunCosZ);
+        float3 rate = scatterPhase * sunIllum
+                    + scatterIso * psiMS * ATMOS_SOLAR_IRRADIANCE;
 
         float3 scatterInteg;
         scatterInteg.x = (med.extinction.x > 1e-10f)
@@ -870,6 +771,7 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
         scatterInteg.z = (med.extinction.z > 1e-10f)
             ? rate.z * (1.0f - segTr.z) / med.extinction.z : rate.z * ds;
 
+        if(sampleJitter>=0.0f)scatterInteg=sourceWeight*rate;
         totalInScatter += throughput * scatterInteg;
 
         throughput *= segTr;
@@ -883,10 +785,6 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir,
     return totalInScatter;
 }
 
-// Aerial perspective: bounded scattering between observer and a scene hit.
-// Composite as: finalRadiance = sceneRadiance * Tr + inScatter * SKY_INTENSITY.
-// Per-step cloud shadow tap is stratified-jittered so the sharp silhouette
-// becomes per-pixel noise that DLSS RR resolves.
 #ifndef ATMOS_AERIAL_VIEW_STEPS
 #define ATMOS_AERIAL_VIEW_STEPS  4
 #endif
@@ -902,14 +800,6 @@ inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
     return TransmittanceToSun(P, L, Rb, Rt);
 }
 
-//Returns in-scatter in units of ATMOS_SOLAR_IRRADIANCE; caller scales by
-//SKY_INTENSITY (sunSunIntensity * sunSkyIntensity) to match scene exposure.
-//
-//`pixel` seeds the stratified jitter applied to each integration segment.
-//Required because the cloud shadow tap inside the loop is discontinuous at
-//cloud silhouettes; midpoint sampling aliases that discontinuity to the four
-//step boundaries and reads as a soft contour. Jitter turns the contour into
-//per pixel noise that DLSS RR resolves.
 float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
                                 uint2 pixel,
                                 out float3 transmittanceOut)
@@ -945,7 +835,6 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);
 
-    // Salt 91u — distinct from cloud (71u) and shadow (73u) seeds.
     uint seed = initRandomData(pixel, uint2(0, 0), (uint)time, 91u);
 
     // Uniform spacing — scene segments are short and roughly homogeneous.
@@ -973,14 +862,6 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
 
         float3 sunTr = TransmittanceToSunCheap(P, L, Rb, Rt);
 
-        float cloudVis = 1.0f;
-        if (cloud_cloudShadowOnSurfaces > 0.5f)
-        {
-            cloudVis = CloudSunVisibilityPlanet(P, L);
-            cloudVis = pow(max(cloudVis, 1e-6f), ATMOS_CLOUD_SHADOW_SOFTNESS);
-            cloudVis = max(cloudVis, ATMOS_CLOUD_SHADOW_FLOOR);
-        }
-
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
         float3 scatterInteg;
         scatterInteg.x = (med.extinction.x > 1e-10f)
@@ -990,7 +871,7 @@ float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
         scatterInteg.z = (med.extinction.z > 1e-10f)
             ? scatterPhase.z * (1.0f - segTr.z) / med.extinction.z : scatterPhase.z * ds;
 
-        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr * cloudVis;
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr;
         totalInScatter += throughput * sunIllum * scatterInteg;
         throughput *= segTr;
     }
@@ -1112,6 +993,8 @@ inline SunState ComputeSunStateInline()
 
 // Pass_pt (SKYBAKE_CONSUMER): every caller there shares the camera observer,
 // so the state comes from the per-frame bake instead of a march per call.
+#include "CumulusCache_v8.hlsli"
+
 inline SunState ComputeSunState()
 {
 #if SKYBAKE_CONSUMER
@@ -1121,7 +1004,7 @@ inline SunState ComputeSunState()
 #endif
 }
 
-SunSampleResult SampleSun(float2 u)
+SunSampleResult SampleSun(float2 u, float3 receiverWorld)
 {
     SunState S = ComputeSunState();
 
@@ -1158,6 +1041,7 @@ SunSampleResult SampleSun(float2 u)
     r.radiance = S.radiance;
 #endif
 
+    r.radiance *= CumulusSunVisibility(WorldToPlanet(receiverWorld), r.direction);
     return r;
 }
 
@@ -1172,6 +1056,7 @@ float GetSunPdf(float3 rayDir)
 
 float3 EvaluateSun(float3 rayDir)
 {
+    if (SkyObserverIsUnderground()) return 0.0f;
     SunState S = ComputeSunState();
     if (S.pdf <= 0.0f) return float3(0, 0, 0);
 
@@ -1184,9 +1069,9 @@ float3 EvaluateSun(float3 rayDir)
     float mu = saturate((cosAngle - S.cosThetaMax) / max(1e-6f, 1.0f - S.cosThetaMax));
     mu = sqrt(mu);
     float3 ld = LimbDarkening(mu);
-    return S.radiance * ld / 0.85f;
+    return S.radiance * ld / 0.85f * CumulusSunVisibility(g_skyObserverPlanet,d);
 #else
-    return S.radiance;
+    return S.radiance * CumulusSunVisibility(g_skyObserverPlanet,d);
 #endif
 }
 
@@ -1260,20 +1145,6 @@ float3 EvaluateStars(float3 rayDir)
     return c * SKY_STAR_INTENSITY * SKY_STAR_SCALE;
 }
 
-// Pulled in after the atmosphere helpers and before EvaluateSky.
-#include "Clouds_v8.hlsli"
-
-// Three sky evaluators, cheapest first:
-//   EvaluateSkyBackground(v)   — atmosphere + stars + planet body, no clouds.
-//                                Primary miss; clouds come from the dedicated
-//                                compute pass.
-//   EvaluateSky(v, cloudTr)    — background + cheap clouds for bounce/inline-RT
-//                                miss. cloudTr lets the caller attenuate the
-//                                MIS-sun radiance consistently.
-//   EvaluateSky(v)             — convenience overload.
-// Full atmosphere+cloud march lives in EvaluateAtmosphereAndClouds and is
-// only called from Pass_clouds_primary_v8.
-
 // Atmosphere along v from the observer: in-scatter (solar-irradiance units),
 // the view transmittance and whether the ray ends on the planet (0 or 1; the
 // LUT path blends the two across the horizon). Marched per call, or read from
@@ -1314,10 +1185,6 @@ float3 EvaluateSkyBackground(float3 rayDir)
     SkyAtmosphere(v, S.dirWS, scatter, viewTr, hitPlanet);
 
     float3 daySky = scatter * SKY_INTENSITY;
-
-    // No observer-shadow proxy on daySky — that dimmed the entire sky when
-    // the camera entered any cloud shadow. Per-pixel cloudTr from the
-    // dedicated cloud pass handles this correctly.
 
     // NO analytic planet body: below-horizon rays return aerial in-scatter
     // only, fading to black. The scene's own geometry provides any visible
@@ -1375,7 +1242,6 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
     // NO analytic planet body (see EvaluateSkyBackground) — hitPlanet only
     // gates stars/airglow here.
 
-    // Sunlit clouds contribute to the shield too — they hide stars behind them.
     float3 stars = float3(0, 0, 0);
     if (!hitPlanet)
     {
@@ -1387,45 +1253,11 @@ float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
     return nightBase + stars;
 }
 
-// Background + cheap clouds for bounce/inline-RT miss. cloudTrOut lets
-// the caller attenuate sun-disc / MIS-sun radiance consistently.
-// cloudSeed jitters the cheap cloud march (see EvaluateCloudsCheap).
-float3 EvaluateSky(float3 rayDir, uint cloudSeed, out float3 cloudTrOut)
-{
-    cloudTrOut = float3(1.0f, 1.0f, 1.0f);
-#if ATM_DEBUG_RING == 3
-    return float3(0.0f, 0.0f, 0.0f);   //sky disabled — ATM_DEBUG_RING
-#endif
-    //Underground observer: black sky, and cloudTr = 0 so the caller's
-    //MIS-sun radiance is extinguished with it.
-    if (SkyObserverIsUnderground())
-    {
-        cloudTrOut = float3(0.0f, 0.0f, 0.0f);
-        return float3(0.0f, 0.0f, 0.0f);
-    }
-    float3 v          = SafeNormalize(rayDir);
-    float3 background = EvaluateSkyBackground(v);
-
-    SunState S = ComputeSunState();
-
-    float3 cloudL = EvaluateCloudsCheap(v, S.dirWS,
-                                        ATMOS_SOLAR_IRRADIANCE * SKY_INTENSITY,
-                                        cloudSeed, cloudTrOut);
-    return background * cloudTrOut + cloudL;
-}
-
-// Per-pixel, per-frame cloud jitter for callers without a path RNG stream.
-float3 EvaluateSky(float3 rayDir, out float3 cloudTrOut)
-{
-    return EvaluateSky(rayDir,
-        initRandomData(DispatchRaysIndex().xy, uint2(0, 0), (uint)time, 73u), cloudTrOut);
-}
-
-// Single-arg overload for legacy call sites.
 float3 EvaluateSky(float3 rayDir)
 {
-    float3 cloudTrIgnored;
-    return EvaluateSky(rayDir, cloudTrIgnored);
+    if (cloudEnabled > .5f && !SkyObserverIsUnderground())
+        return CumulusEnvironment(rayDir,0u).rgb;
+    return EvaluateSkyBackground(rayDir);
 }
 
 //Deferred RC_F_ENV_REPLAY finish (merge side of EnvReplayTailPartial — see
@@ -1442,9 +1274,8 @@ float3 EnvTailFinish(float3 cPartial, float3 s, float misPdf)
     const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(s) : float3(0, 0, 0);
     const float  sunMisBsdf = (sunSAPdf > 0.0f)
         ? misPdf / max(misPdf + sunSAPdf, EPSILON) : 0.0f;
-    float3 cloudTr;
-    const float3 sky  = EvaluateSky(s, cloudTr);
-    const float3 envL = sky + sunRad * sunMisBsdf * cloudTr;
+    const float3 sky  = EvaluateSky(s);
+    const float3 envL = sky + sunRad * sunMisBsdf;
 
     float3 c = cPartial * envL;
     return (any(isnan(c)) || any(isinf(c))) ? (float3)0.0f : max(c, 0.0f);

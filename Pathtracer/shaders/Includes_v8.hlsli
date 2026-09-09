@@ -359,15 +359,6 @@ cbuffer Push : register(b1)
 //====================================
 SamplerState   g_sampler           : register(s0);
 SamplerState   g_sampler_LUT       : register(s1);
-//Plain bilinear + WRAP (no anisotropy). Used for samples whose UV
-//derivatives become enormous at wrap boundaries — anisotropic filtering
-//would otherwise see the huge derivative as a giant footprint and
-//pick a coarse mip / mis-orient the aniso kernel, producing a visible
-//streak across the seam. The equirectangular cloud coverage map
-//(g_cloudCoverage) is the prototypical case: atan2(z,x) wraps ±π at
-//the longitude=180° meridian, and any anisotropic sampler shows a
-//banded artifact there. This sampler avoids that entirely.
-SamplerState   g_samplerLinearWrap : register(s2);
 //Nearest-texel point sampler (WRAP). Used for material textures when
 //pt_pointFilter is set so pixel-art / Minecraft assets keep crisp texel
 //edges instead of bilinear blur. MIP filter stays LINEAR so distant
@@ -415,26 +406,6 @@ float4 SampleMaterialTex(Texture2D<float4> tex, float2 uv, float level)
 //  6. If stars appear mirrored east/west, set SKY_STAR_TEXTURE_FLIP_U=1.
 Texture2D<float4> gSkyStars   : register(t40);
 
-//Volumetric cloud noise — 256³ RGBA8 3D texture baked once at startup by
-//Pass_cloudnoise_bake_v8.hlsl. The runtime cloud integrator
-//(Clouds_v8.hlsli) samples this instead of evaluating Perlin/Worley
-//analytically, dropping per-density-tap cost from ~80-200 ALU ops to one
-//texture fetch. t41 is intentionally skipped to leave room for the
-//optional STBN array used by CLOUD_STBN_AVAILABLE in Clouds_v8.hlsli.
-//Channel layout: R = Perlin-Worley FBM (low-freq cloud body),
-//G = Worley FBM (alt low-freq), B = value noise (HF erosion),
-//A = single-octave Worley (mid-freq cauliflower).
-Texture3D<float4> g_cloudNoise : register(t42);
-
-//Planet-scale cloud coverage map (NASA Blue Marble, equirectangular 8192×4096
-//R8 luminance). Loaded once by Renderer::InitCloudCoverageTexture. The cloud
-//integrator (Clouds_v8.hlsli) samples this via planet-radial direction to gate
-//the procedural noise body with real-world climatology — gives continental-
-//scale weather patterns instead of uniform global coverage. Hardware bilinear
-//filtering interpolates between source texels so coverage transitions read as
-//smooth gradients (no blocky pixel boundaries).
-Texture2D<float> g_cloudCoverage : register(t43);
-
 //PLANET: baked surface elevation cubemap. 6 layers, one per cube face,
 //R32F, values in KILOMETRES. Sampled via equiangular cubed-sphere
 //projection (see TerrainHeight below); face order matches the baker
@@ -444,46 +415,10 @@ Texture2D<float> g_cloudCoverage : register(t43);
 //so it's visible to TerrainHeight() lower down - HLSL is single-pass.
 Texture2DArray<float> g_terrainHeightmap : register(t45);
 
-//PLANET: baker v8 companion layers. All 6-face Texture2DArrays, equiangular
-//cubed-sphere projection identical to the heightmap so a single
-//SphereToEquiangularFaceUV() lookup feeds all four samples.
-//
-//  surface_color (t46): Mars-style RGB tint baked by SurfaceColorPass.
-//    Alpha channel forced to 1.0 by the baker; a 0 alpha indicates a null
-//    SRV (the bake didn't produce the layer) so the shader should fall
-//    back to the legacy TERRAIN_ALBEDO constant.
-//  normal (t47): tangent-space normal map (-gx, -gy, +1 normalised, packed
-//    [-1,1] -> [0,1]). Alpha = 1.0 sentinel as above. Same resolution as
-//    the heightmap so a sample picks up bake-resolution gradient detail
-//    finer than the runtime central-difference eps would resolve.
-//  cloud_offset (t48): block-averaged surface elevation in KILOMETRES,
-//    much smaller (typically 256^2 per face). Used by Clouds_v8.hlsli to
-//    shift the cloud layer with general terrain so sharp peaks poke through
-//    clouds while gentle plateaus do not.
 Texture2DArray<float4> g_terrainSurfaceColor : register(t46);
 Texture2DArray<float4> g_terrainNormalMap    : register(t47);
-Texture2DArray<float>  g_terrainCloudOffset  : register(t48);
 
-//Per-frame sky LUTs, baked by Pass_skylut_bake_v8.hlsl (dedicated dispatch
-//recorded at the top of PopulateCommandList, before any consumer pass).
-//
-//  t49 g_skyTransmittanceLUT: 256x64 RGBA16F. rgb = atmosphere transmittance
-//    to space, Bruneton (r, mu) parameterization — see
-//    TransmittanceLutUvFromRMu in SunSampler_v8.hlsli. Replaces the old
-//    per-call ATMOS_LIGHT_STEPS inner march in TransmittanceToSun.
-//  t50 g_cloudAmbientLUT: 128x2 RGBA16F. Cloud ambient probe scatter over
-//    sun-zenith cosine at the cloud-top probe radius; row 0 = zenith probe,
-//    row 1 = horizon probe — see CloudAmbientLutU in Clouds_v8.hlsli.
-//    Replaces the two per-pixel IntegrateScattering probe marches in
-//    EvaluateAtmosphereAndClouds.
-//  t51 g_skyMultiScatterLUT: 32x32 RGBA16F. Hillaire 2020 multiple-
-//    scattering transfer Psi_ms over (sun-zenith cosine, normalized
-//    altitude) — see MultiScatterPsi in SunSampler_v8.hlsli. Supplies the
-//    isotropic 2nd+ order air scattering the flat multi-scatter factor
-//    used to stand in for.
-//All sampled with g_sampler_LUT (s1, bilinear clamp), SampleLevel 0.
 Texture2D<float4> g_skyTransmittanceLUT : register(t49);
-Texture2D<float4> g_cloudAmbientLUT     : register(t50);
 Texture2D<float4> g_skyMultiScatterLUT  : register(t51);
 
 //====================================
@@ -534,150 +469,34 @@ cbuffer CameraParams : register(b0)
     float atmos_aerialViewSteps;
     float atmos_aerialLightSteps;
     float atmos_multiScatterFactor;
-    float atmos_cloudShadowConeDeg;
-    float atmos_cloudShadowFloor;
     float atmos_earthShadowSoftness;
-    //volumetric cloud knobs, mirror CloudSettings in Common.h (same order!)
-    //Scalar packing concatenates these into the existing cbuffer register
-    //layout — no padding needed because every field is float.
-    float cloud_enabled;
-    float cloud_coverage;
-    float cloud_layerBotKm;
-    float cloud_layerTopKm;
-    float cloud_horizonFadeKm;
-    float cloud_extinction;
-    float cloud_baseFrequency;
-    float cloud_hfFrequency;
-    float cloud_hfAmount;
-    //Nubis-3 silver lining: amplitude + spread of the narrow forward
-    //HG lobe max-blended into the primary phase. Replaces the old
-    //J&D droplet diameter knobs.
-    float cloud_silverIntensity;
-    float cloud_silverSpread;
-    //Defocus cone half angle for cone traced sun shadows (degrees).
-    //0 = strict sun direction.
-    float cloud_shadowConeDeg;
-    //Nubis-3 secondary multi-scatter phase: strength of the broader
-    //HG term and its eccentricity. Replaces the Wrenninge octave
-    //triple (a, b, c) which is no longer used.
-    float cloud_secondaryStrength;
-    float cloud_secondaryG;
-    float cloud_windX;
-    float cloud_windZ;
-    float cloud_trEps;
-    //indirect lighting on cloud samples
-    float cloud_skyAmbient;
-    float cloud_groundBounce;
-    float cloud_groundAlbedo;
-    float cloud_skyAmbientScale;
-    float cloud_groundScale;
-    //surface shadowing and termination
-    float cloud_cloudShadowOnSurfaces;
-    float cloud_rrThreshold;
-    //Sun shadow ray count per scattering event (1 = strict sun dir,
-    //3..5 = soft self shadows when shadowConeDeg > 0) and the upward
-    //density step count for the sky ambient occlusion estimate.
-    float cloud_shadowConeSamples;
-    float cloud_ambientSteps;
-    //Adaptive march loop bound (main path) + base step size. The
-    //big perf levers for the primary view march.
-    float cloud_viewStepsMax;
-    float cloud_targetStepKm;
-    //Surface shadow march sample count. 1 = fast single-sample
-    //sphere-intersect path, 2..6 = multi-tap shell march.
-    float cloud_shadowSteps;
-    //Bounce-ray cheap path: step count and max march length (km).
-    float cloud_cheapSteps;
-    float cloud_cheapMaxLenKm;
-    //Cloud-eval distance window (fade start / hard clamp).
-    float cloud_fadeDistanceKm;
-    float cloud_renderDistanceKm;
-    //Aerial-perspective haze multiplier in front of clouds.
-    float cloud_hazeStrength;
-    //Per-cloud top altitude jitter — noise amplitude (km) and
-    //horizontal noise frequency (1/km). Controls towering cumulus.
-    float cloud_topVariationKm;
-    float cloud_topFrequency;
-    //Coverage modulation soft edge width + low-frequency domain warp
-    //amplitude (km). Filter width sharpens / softens silhouettes;
-    //warp amp breaks up the noise grid pattern.
-    float cloud_covModFilterWidth;
-    float cloud_warpAmpKm;
-    //Per-channel single-scattering albedo (white cloud ≈ 0.995).
-    float cloud_albedoR;
-    float cloud_albedoG;
-    float cloud_albedoB;
-    //Nubis Evolved multi-scatter: global amplitude + base floor that
-    //keeps cumulus bottoms from going black at h=0.
-    float cloud_msStrength;
-    float cloud_msHeightFloor;
-    //Multi-scatter model selector (cast to int at the use site).
-    //0 = Nubis sqrt(Tdir) shortcut, 1 = 2 octave Wrenninge, 2 = 3 octave.
-    float cloud_msMode;
-    //Sky ambient probe: brightness, AO scale on the column density
-    //above the sample, and max optical depth cap so dense overcast
-    //columns can actually shut the sky term down.
-    float cloud_ambientIntensity;
-    float cloud_ambientAOScale;
-    float cloud_ambientODMax;
-    //Multiplier on the sun shadow optical depth (>1 darker self
-    //shadow, <1 brighter).
-    float cloud_sunTauMult;
-    //Distance LOD blend band — full quality below near, simplified
-    //above far.
-    float cloud_lodNearKm;
-    float cloud_lodFarKm;
-    //Adaptive march bounds: small step cap, geometric growth factor,
-    //zero-density floor, big empty-space step cap + distance growth,
-    //fine step ceiling.
-    float cloud_maxStepKm;
-    float cloud_stepGrowth;
-    float cloud_effectiveZeroDensity;
-    float cloud_maxEmptyStepKm;
-    float cloud_emptyStepGrowthPerKm;
-    float cloud_maxFineStepKm;
-    //Nubis-3 light-energy shape (exposed 2026-06-13; were CLOUD_N3_* defines).
-    //Forward phase eccentricity, MS extinction scale (surface/glow), engine
-    //MS brightness gain, and the inner-glow sun-dot + in-cloud-depth drivers.
-    float cloud_n3PhaseG;
-    float cloud_n3MsBase;
-    float cloud_n3MsGlow;
-    float cloud_n3MsBrightness;
-    float cloud_n3GlowSunDot;
-    float cloud_n3GlowDepthKm;
-    //Cauliflower shape detail (exposed 2026-06-13; were CLOUD_LOBE_*/BILLOW_*).
-    //Lobe signed amplitude + freq (×base), billow seam carve / centre bulge /
-    //seam sharpness + freq (×base). Vertical height ramps stay compile-time.
-    float cloud_lobeAmount;
-    float cloud_lobeFreqMult;
-    float cloud_billowAmount;
-    float cloud_billowBulge;
-    float cloud_billowSharp;
-    float cloud_billowFreqMult;
-    //Wisps: thin wind-sheared filaments beyond the body (pre-coverage additive
-    //octave). amount = reach, freqMult = filament fineness (×base), stretch =
-    //wind-shear elongation. Vertical band + additive bias stay compile-time.
-    float cloud_wispAmount;
-    float cloud_wispFreqMult;
-    float cloud_wispStretch;
-    //====================================
-    //PLANET TERRAIN (Phase 5)
-    //====================================
-    //Procedural cube-sphere terrain parameters. planetCenter* is ABSOLUTE world
-    //space - subtract sceneOriginWorld for camera-local (shifted) math. Six
-    //scalar floats, matching the Camera::UploadGPUBuffer tail exactly (scalar
-    //packing avoids the float3 16-byte-straddle padding the compiler would
-    //otherwise insert and which the C++ side does not write).
-    //planetCenter/Radius are read by the cloud + atmosphere code (TerrainHeight,
-    //planet sphere intersection). amplitude/frequency are vestigial (the terrain
-    //is now a baked heightmap + real mesh), kept as zero to preserve the tail
-    //layout that Camera::UploadGPUBuffer writes.
     float planetCenterX;
     float planetCenterY;
     float planetCenterZ;
     float planetRadius;
     float terrainHeightAmplitude;
     float terrainHeightFrequency;
+    float cloudEnabled;
+    float cloudCoverage;
+    float cloudBaseKm;
+    float cloudThicknessKm;
+    float cloudScale;
+    float cloudExtinction;
+    float cloudDetail;
+    float cloudWindX;
+    float cloudWindZ;
+    float cloudMultipleScattering;
+    float cloudAmbient;
+    float cloudViewSteps;
+    float cloudReflectionSteps;
+    float cloudSeed;
+    float cloudDebugView;
+    float cloudGuideThreshold;
+    float cloudLightingSamples;
+    float cloudFineDetail;
+    float cloudDeltaSeconds;
+    float cloudDensityCache;
+    uint cloudDensityEpoch;
 }
 
 #define SUN_LATITUDE_DEG    sunLatitude
@@ -707,136 +526,8 @@ cbuffer CameraParams : register(b0)
 #define ATMOS_AERIAL_VIEW_STEPS       ((int)atmos_aerialViewSteps)
 #define ATMOS_AERIAL_LIGHT_STEPS      ((int)atmos_aerialLightSteps)
 #define ATMOS_MULTI_SCATTER_FACTOR    atmos_multiScatterFactor
-//Atmosphere look knobs not used inside SunSampler_v8.hlsli — read directly
-//by Clouds_v8.hlsli (cloud shadow tap on atmospheric samples, earth shadow
-//smoothstep band). The macros below give the cloud integrator a stable
-//name in case the cbuffer field is renamed later.
-#define ATMOS_CLOUD_SHADOW_CONE_DEG   atmos_cloudShadowConeDeg
-#define ATMOS_CLOUD_SHADOW_FLOOR      atmos_cloudShadowFloor
-// Exponent applied to cloud visibility when shadowing atmospheric in-scatter.
-// 1.0 = the real single-scatter shadow. The old 0.3 softening stood in for
-// multi-scattered fill light, but it brightened the DIRECTIONAL term — air
-// under an opaque deck kept scattering 10-30% of full sun with the clear-sky
-// phase/spectrum (blue band away from the sun, orange Mie glow toward it).
-// That fill role moved to the explicit isotropic through-deck source
-// (CloudShadowAmbientTerms) + the Hillaire MS LUT, so the directional term
-// now takes the physical shadow.
-#define ATMOS_CLOUD_SHADOW_SOFTNESS   1.0f
 #define ATMOS_EARTH_SHADOW_SOFTNESS   atmos_earthShadowSoftness
-// Surface cloud shadow: softness exponent and cone half-angle in degrees
-// for spatial blur (0 = sharp point sample). Softness 1.0 = the physical
-// single-scatter shadow: a tau-8 deck passes exp(-8) ~ 0.03% direct sun,
-// not the 9% the old 0.3 exponent leaked (same band-aid class as the
-// retired atmosphere softness — the diffuse light on ground under cloud
-// comes from path-traced sky GI off the bright deck, not from softened
-// direct sun).
-#define SURFACE_CLOUD_SHADOW_SOFTNESS 1.0f
-#define SURFACE_CLOUD_SHADOW_CONE_DEG 3.0f
 
-//Volumetric cloud knob redirects. Clouds_v8.hlsli wraps each constant in
-//#ifndef so defining them here overrides the static fallbacks and binds
-//the cloud integrator to the editor-driven CB fields. Loop bounds are
-//cast to int at the use site because the CB exposes them as float for
-//uniform packing.
-#define CLOUD_COVERAGE_BASE     cloud_coverage
-#define CLOUD_LAYER_BOT_KM      cloud_layerBotKm
-#define CLOUD_LAYER_TOP_KM      cloud_layerTopKm
-// (cloud_horizonFadeKm has no consumer — INERT field kept for cbuffer
-// layout, no macro so dead usage can't silently come back.)
-#define CLOUD_EXTINCTION        cloud_extinction
-#define CLOUD_BASE_FREQ              cloud_baseFrequency
-#define CLOUD_HF_FREQ                cloud_hfFrequency
-#define CLOUD_HF_AMOUNT              cloud_hfAmount
-#define CLOUD_SILVER_INTENSITY       cloud_silverIntensity
-#define CLOUD_SILVER_SPREAD          cloud_silverSpread
-#define CLOUD_SHADOW_CONE_DEG        cloud_shadowConeDeg
-#define CLOUD_SECONDARY_STRENGTH     cloud_secondaryStrength
-#define CLOUD_SECONDARY_G            cloud_secondaryG
-#define CLOUD_WIND_X                 cloud_windX
-#define CLOUD_WIND_Z                 cloud_windZ
-#define CLOUD_TR_EPS                 cloud_trEps
-#define CLOUD_SKY_AMBIENT            cloud_skyAmbient
-#define CLOUD_GROUND_BOUNCE          cloud_groundBounce
-#define CLOUD_GROUND_ALBEDO          cloud_groundAlbedo
-#define CLOUD_SKY_AMBIENT_SCALE      cloud_skyAmbientScale
-#define CLOUD_GROUND_SCALE           cloud_groundScale
-#define CLOUD_RR_THRESHOLD           cloud_rrThreshold
-#define CLOUD_SHADOW_CONE_SAMPLES    cloud_shadowConeSamples
-#define CLOUD_AMBIENT_STEPS          ((int)cloud_ambientSteps)
-//Adaptive march bounds + step (override the static fallbacks in
-//Clouds_v8.hlsli so the editor drives them at runtime).
-#define CLOUD_VIEW_STEPS_MAX         ((int)cloud_viewStepsMax)
-#define CLOUD_TARGET_STEP_KM         cloud_targetStepKm
-//Surface shadow march sample count — drives CloudOpticalDepthAlongRay
-//(surface NEE shadow). Set to 1 to take the fast sphere-intersect path.
-#define CLOUD_SHADOW_STEPS           ((int)cloud_shadowSteps)
-//Bounce-ray cheap path knobs — drive EvaluateCloudsCheap so bounce
-//rays respect the editor's quality/perf trade-off.
-#define CLOUD_CHEAP_STEPS            ((int)cloud_cheapSteps)
-#define CLOUD_CHEAP_MAX_LEN_KM       cloud_cheapMaxLenKm
-//Cloud-eval distance window (fade + hard clamp).
-#define CLOUD_FADE_DISTANCE_KM       cloud_fadeDistanceKm
-#define CLOUD_RENDER_DISTANCE_KM     cloud_renderDistanceKm
-// (cloud_hazeStrength has no consumer since the unified march — INERT
-// field kept for cbuffer layout, macro removed.)
-//Top altitude variability (per-cloud tops).
-#define CLOUD_TOP_VARIATION_KM       cloud_topVariationKm
-#define CLOUD_TOP_FREQ               cloud_topFrequency
-//Density shaping.
-#define CLOUD_COVMOD_FILTER_WIDTH    cloud_covModFilterWidth
-#define CLOUD_WARP_AMP_KM            cloud_warpAmpKm
-//Cloud albedo as a packed float3 from three scalar cbuffer slots
-//(scalar packing keeps the surrounding fields aligned without
-//manual padding).
-#define CLOUD_ALBEDO                 float3(cloud_albedoR, cloud_albedoG, cloud_albedoB)
-//Multi-scatter.
-#define CLOUD_MS_STRENGTH            cloud_msStrength
-#define CLOUD_MS_HEIGHT_FLOOR        cloud_msHeightFloor
-//Multi-scatter mode selector (0 = shortcut, 1 = 2-octave, 2 = 3-octave).
-//Cast at the use site because the cbuffer exposes it as float for uniform
-//packing — matches the same pattern as CLOUD_VIEW_STEPS_MAX et al.
-#define CLOUD_MS_MODE                ((int)cloud_msMode)
-//Sky ambient.
-#define CLOUD_AMBIENT_INTENSITY      cloud_ambientIntensity
-#define CLOUD_AMBIENT_AO_SCALE       cloud_ambientAOScale
-#define CLOUD_AMBIENT_OD_MAX         cloud_ambientODMax
-//Sun shadow tau multiplier.
-#define CLOUD_SUN_TAU_MULT           cloud_sunTauMult
-//Distance LOD.
-#define CLOUD_LOD_NEAR_KM            cloud_lodNearKm
-#define CLOUD_LOD_FAR_KM             cloud_lodFarKm
-//Adaptive march step bounds.
-#define CLOUD_MAX_STEP_KM            cloud_maxStepKm
-#define CLOUD_STEP_GROWTH            cloud_stepGrowth
-#define CLOUD_EFFECTIVE_ZERO_DENSITY cloud_effectiveZeroDensity
-#define CLOUD_MAX_EMPTY_STEP_KM      cloud_maxEmptyStepKm
-#define CLOUD_EMPTY_STEP_GROWTH_PER_KM cloud_emptyStepGrowthPerKm
-#define CLOUD_MAX_FINE_STEP_KM       cloud_maxFineStepKm
-//Nubis-3 light-energy shape (exposed 2026-06-13). Override the Clouds_v8.hlsli
-//#ifndef fallbacks with the editor-driven CB fields.
-#define CLOUD_N3_PHASE_G             cloud_n3PhaseG
-#define CLOUD_N3_MS_BASE             cloud_n3MsBase
-#define CLOUD_N3_MS_GLOW             cloud_n3MsGlow
-#define CLOUD_N3_MS_BRIGHTNESS       cloud_n3MsBrightness
-#define CLOUD_N3_GLOW_SUNDOT         cloud_n3GlowSunDot
-#define CLOUD_N3_GLOW_DEPTH_KM       cloud_n3GlowDepthKm
-//Cauliflower shape detail. The two FREQ macros are multiples of the base
-//frequency, matching the Clouds_v8.hlsli fallback form.
-#define CLOUD_LOBE_AMOUNT            cloud_lobeAmount
-#define CLOUD_LOBE_FREQ              (CLOUD_BASE_FREQ * cloud_lobeFreqMult)
-#define CLOUD_BILLOW_AMOUNT          cloud_billowAmount
-#define CLOUD_BILLOW_BULGE           cloud_billowBulge
-#define CLOUD_BILLOW_SHARP           cloud_billowSharp
-#define CLOUD_BILLOW_FREQ            (CLOUD_BASE_FREQ * cloud_billowFreqMult)
-//Wisps: thin wind-sheared filaments beyond the body (pre-coverage additive).
-#define CLOUD_WISP_AMOUNT            cloud_wispAmount
-#define CLOUD_WISP_FREQ              (CLOUD_BASE_FREQ * cloud_wispFreqMult)
-#define CLOUD_WISP_STRETCH           cloud_wispStretch
-
-//PLANET: equiangular cubed-sphere lookup. Used by every per-direction
-//terrain sample (heightmap, surface_color, normal, cloud_offset). Mirror
-//of tools/planetbaker/src/core/cubed_sphere.h::sphere_to_face_uv so the
-//baker's pixel layout lines up with this lookup texel-for-texel.
 inline void SphereToEquiangularFaceUV(float3 dir, out int face, out float2 uv)
 {
     float3 a = abs(dir);
@@ -858,12 +549,6 @@ inline void SphereToEquiangularFaceUV(float3 dir, out int face, out float2 uv)
     uv = float2(atan(ut), atan(vt)) * kInv * 0.5f + 0.5f;
 }
 
-//PLANET: surface elevation (metres) along a unit direction. Samples the
-//baker cubemap via equiangular cubed-sphere projection.
-//Used by Inline_RT_v8.hlsli (normal finite-difference + ReSTIR reconnect),
-//Clouds_v8.hlsli (terrain shadow occluder), SunSampler_v8.hlsli (terrain
-//shadow at closest approach). Adding to planetRadius gives the surface
-//point along `dir`.
 inline float TerrainHeight(float3 dir)
 {
     int    face;
@@ -876,20 +561,7 @@ inline float TerrainHeight(float3 dir)
     return km * 1000.0f;
 }
 
-//PLANET: smoothed surface elevation (metres) used as the local cloud-base
-//reference. Same projection as TerrainHeight but reads the much smaller
-//cloud_offset cubemap (typically 256^2 per face) so individual mountain
-//peaks don't perturb the cloud base. Clouds_v8.hlsli adds this to
-//CLOUD_LAYER_BOT_KM to get the per-direction cloud bottom altitude.
-inline float TerrainCloudBaseHeight(float3 dir)
-{
-    int    face;
-    float2 uv;
-    SphereToEquiangularFaceUV(dir, face, uv);
-    float km = g_terrainCloudOffset.SampleLevel(g_sampler_LUT,
-                                                 float3(uv, (float)face), 0.0f);
-    return km * 1000.0f;
-}
+
 
 //====================================
 //CORE UTILITY HEADERS
@@ -995,9 +667,6 @@ StructuredBuffer<MatPacked>          g_mat               : register(t5);
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-//(g_terrainHeightmap at t45 is declared earlier, with the other SRVs, so
-// the TerrainHeight() function - used by the cloud/atmosphere code - can see
-// it. HLSL is single-pass.)
 
 //====================================
 //LIGHT TREE

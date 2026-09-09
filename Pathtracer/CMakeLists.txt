@@ -28,7 +28,7 @@ set(D3D12_AGILITY_INCLUDE "${D3D12_AGILITY_ROOT}/include")
 set(D3D12_AGILITY_LIB "${D3D12_AGILITY_ROOT}/bin/x64")
 
 # ───────────────────────────── Streamline paths ──────────────────────────────
-set(SL_ROOT        "${CMAKE_SOURCE_DIR}/streamline")
+set(SL_ROOT "${CMAKE_SOURCE_DIR}/streamline" CACHE PATH "NVIDIA Streamline SDK root")
 set(SL_INCLUDE_DIR "${SL_ROOT}/include")
 set(SL_LIB_PATH    "${SL_ROOT}/lib/x64/sl.interposer.lib")
 set(SL_BIN_DIR     "${SL_ROOT}/bin/x64")
@@ -120,48 +120,6 @@ if(NOT EXISTS "${SKY_STARS_FILE}" AND SKY_STARS_URL)
     else()
         file(SIZE "${SKY_STARS_FILE}" _skystars_size)
         message(STATUS "[SkyStars] Downloaded ${_skystars_size} bytes")
-    endif()
-endif()
-
-
-# ──────────────── Planet-scale cloud coverage (NASA BMNG) ──────────────────
-# Equirectangular 8192×4096 TIFF from NASA's "Blue Marble: Clouds" composite
-# (Visible Earth ID 57747). Sampled by the cloud integrator (Clouds_v8.hlsli
-# → g_cloudCoverage at register t43) to gate the procedural noise body with
-# real-world cloud climatology — gives proper continental-scale weather
-# patterns instead of uniform global coverage. ~34 MB, one-time download.
-#
-# Override at configure time if NASA reorganises or a mirror is preferred:
-#   cmake -DCLOUD_COVERAGE_URL=https://my.mirror/cloud_combined_8192.tif ...
-# Setting URL to empty disables the download entirely and the runtime
-# falls back to procedural-only coverage.
-set(CLOUD_COVERAGE_URL
-    "https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57747/cloud_combined_8192.tif"
-    CACHE STRING "URL to fetch Pathtracer/include/cloud_coverage.tif from if missing")
-set(CLOUD_COVERAGE_FILE "${INCLUDES_DIR}/cloud_coverage.tif")
-
-if(NOT EXISTS "${CLOUD_COVERAGE_FILE}" AND CLOUD_COVERAGE_URL)
-    message(STATUS "[CloudCoverage] ${CLOUD_COVERAGE_FILE} not found")
-    message(STATUS "[CloudCoverage] Downloading from ${CLOUD_COVERAGE_URL} (~34 MB, one time)")
-    file(DOWNLOAD
-        "${CLOUD_COVERAGE_URL}"
-        "${CLOUD_COVERAGE_FILE}"
-        SHOW_PROGRESS
-        TIMEOUT 600
-        TLS_VERIFY ON
-        STATUS _cloudcov_status)
-    list(GET _cloudcov_status 0 _cloudcov_code)
-    if(NOT _cloudcov_code EQUAL 0)
-        list(GET _cloudcov_status 1 _cloudcov_msg)
-        message(WARNING
-            "[CloudCoverage] Download failed (code ${_cloudcov_code}): ${_cloudcov_msg}\n"
-            "  Build will continue; clouds will use procedural-only coverage at runtime.\n"
-            "  Set -DCLOUD_COVERAGE_URL=<url> at configure if the default is broken,\n"
-            "  or drop the file into Pathtracer/include/cloud_coverage.tif manually.")
-        file(REMOVE "${CLOUD_COVERAGE_FILE}")
-    else()
-        file(SIZE "${CLOUD_COVERAGE_FILE}" _cloudcov_size)
-        message(STATUS "[CloudCoverage] Downloaded ${_cloudcov_size} bytes (8192×4096 TIFF)")
     endif()
 endif()
 
@@ -364,50 +322,37 @@ target_link_libraries(Pathtracer PRIVATE
 
 target_link_options(Pathtracer PRIVATE /FORCE:MULTIPLE)
 
-# ───────────────────── DLSS-NR (optional, official NVIDIA NGX SDK) ──────────
-# DLSSNRManager builds in one of two modes:
-#   - Real NGX backend when NVIDIA's public DLSS SDK (github.com/NVIDIA/DLSS)
-#     is found via DLSS_NGX_SDK_ROOT (cache variable or environment variable).
-#   - Status-only stub otherwise: the app still compiles and runs, and the
-#     editor panel reports that the backend is not compiled in.
-# The build NEVER downloads the SDK and never copies any nvngx_dlssnr.dll —
-# the runtime DLL stays outside the tree and is only discovered at runtime.
-option(PATHTRACER_ENABLE_DLSSNR "Compile the DLSS-NR NGX backend when the official DLSS SDK is available" ON)
-set(DLSS_NGX_SDK_ROOT "" CACHE PATH "Root of an NVIDIA DLSS SDK checkout (github.com/NVIDIA/DLSS) for the DLSS-NR backend")
-
-set(_dlssnr_backend OFF)
+# Experimental native DLSS 5 bridge. Public SDK parameter headers are vendored;
+# this does not initialize/shut down the NGX core shared with Streamline.
+option(PATHTRACER_ENABLE_DLSSNR "Build the native experimental DLSS 5 bridge" ON)
+set(DLSSNR_RUNTIME_FILE "" CACHE FILEPATH "User-supplied signed DLSS-NR 310.8.0 DLL (not downloaded or redistributed)")
+target_compile_definitions(Pathtracer PRIVATE PATHTRACER_DLSSNR_NATIVE=$<BOOL:${PATHTRACER_ENABLE_DLSSNR}>)
 if(PATHTRACER_ENABLE_DLSSNR)
-    set(_dlssnr_root "${DLSS_NGX_SDK_ROOT}")
-    if(NOT _dlssnr_root AND DEFINED ENV{DLSS_NGX_SDK_ROOT})
-        set(_dlssnr_root "$ENV{DLSS_NGX_SDK_ROOT}")
+    add_library(DLSSNRBridge SHARED rdn/PostProcess/DLSSNRBridge.cpp rdn/PostProcess/DLSSNRBridge.h)
+    target_compile_features(DLSSNRBridge PRIVATE cxx_std_17)
+    target_compile_definitions(DLSSNRBridge PRIVATE DLSSNR_BRIDGE_BUILD)
+    target_include_directories(DLSSNRBridge PRIVATE "${CMAKE_SOURCE_DIR}/third_party/dlss-ngx/include")
+    target_link_libraries(DLSSNRBridge PRIVATE bcrypt.lib)
+    # Runtime requires this caller name. Keep the actual call in this DLL.
+    set_target_properties(DLSSNRBridge PROPERTIES OUTPUT_NAME "nvngx.dll_royaltracer_nr")
+    target_link_libraries(Pathtracer PRIVATE DLSSNRBridge)
+    if(DLSSNR_RUNTIME_FILE)
+        if(NOT EXISTS "${DLSSNR_RUNTIME_FILE}")
+            message(FATAL_ERROR "DLSSNR_RUNTIME_FILE does not exist: ${DLSSNR_RUNTIME_FILE}")
+        endif()
+        file(SHA256 "${DLSSNR_RUNTIME_FILE}" _nr_hash)
+        if(NOT _nr_hash STREQUAL "e16bcf15e16e13f527491cdf7845b2fe6521a738d8f7c9c721866a8496e1fc8e")
+            message(FATAL_ERROR "Unrecognized DLSS-NR binary. This experimental bridge is pinned to the tested signed 310.8.0 runtime; see docs/DLSS5.md.")
+        endif()
+        add_custom_target(copy_dlssnr_runtime ALL
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pathtracer>/dlssnr"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${DLSSNR_RUNTIME_FILE}"
+                "$<TARGET_FILE_DIR:Pathtracer>/dlssnr/nvngx_dlssnr.dll"
+            COMMENT "Staging the user-supplied DLSS-NR runtime")
+        add_dependencies(Pathtracer copy_dlssnr_runtime)
     endif()
-    if(_dlssnr_root)
-        file(TO_CMAKE_PATH "${_dlssnr_root}" _dlssnr_root)
-    endif()
-    # nvsdk_ngx_d*.lib = dynamic-CRT variants, matching this project's default
-    # MSVC runtime (/MD, /MDd in Debug — the _dbg lib pairs with /MDd).
-    if(_dlssnr_root
-       AND EXISTS "${_dlssnr_root}/include/nvsdk_ngx.h"
-       AND EXISTS "${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib"
-       AND EXISTS "${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib")
-        set(_dlssnr_backend ON)
-        target_compile_definitions(Pathtracer PRIVATE PATHTRACER_DLSSNR_WITH_NGX=1)
-        target_include_directories(Pathtracer PRIVATE "${_dlssnr_root}/include")
-        # advapi32/user32: the NGX static lib pulls Reg* and
-        # GetWindowThreadProcessId and neither resolves out of windowsapp.lib
-        target_link_libraries(Pathtracer PRIVATE
-            "$<IF:$<CONFIG:Debug>,${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib,${_dlssnr_root}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib>"
-            advapi32.lib user32.lib)
-    elseif(_dlssnr_root)
-        message(WARNING "DLSS_NGX_SDK_ROOT set but headers/libs not found under ${_dlssnr_root} — building DLSS-NR stub")
-    endif()
+    message(STATUS "DLSS 5 backend: native experimental bridge (signed 310.8.0)")
 endif()
-if(_dlssnr_backend)
-    message(STATUS "DLSS-NR backend   : NGX SDK at ${_dlssnr_root}")
-else()
-    message(STATUS "DLSS-NR backend   : stub (set DLSS_NGX_SDK_ROOT to an official DLSS SDK checkout to enable)")
-endif()
-# Runtime discovery (Authenticode verify + version query) runs in both modes.
 target_link_libraries(Pathtracer PRIVATE wintrust.lib version.lib)
 
 
@@ -436,6 +381,16 @@ message(STATUS "Streamline lib    : ${SL_LIB_PATH}")
 message(STATUS "Streamline bin    : ${SL_BIN_DIR}")
 message(STATUS "Includes dir      : ${INCLUDES_DIR}")
 
+# Stage one coherent SDK set AFTER include/, which contains legacy DLSS DLLs.
+# Without this ordering the new headers run against old interposer/plugins.
+file(GLOB SL_RUNTIME_FILES CONFIGURE_DEPENDS "${SL_BIN_DIR}/*.dll" "${SL_BIN_DIR}/*.license.txt")
+if(NOT EXISTS "${SL_BIN_DIR}/sl.interposer.dll" OR NOT EXISTS "${SL_BIN_DIR}/nvngx_dlssd.dll")
+    message(FATAL_ERROR "Incomplete Streamline runtime at ${SL_BIN_DIR}")
+endif()
+add_custom_command(TARGET Pathtracer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SL_RUNTIME_FILES} "$<TARGET_FILE_DIR:Pathtracer>"
+    COMMENT "Staging the selected Streamline SDK and DLSS runtimes")
+
 # ────────────── copy‐assets target ──────────────
 add_custom_target(copy_assets ALL
         COMMENT "Copying include/ and shaders/ to runtime directory"
@@ -445,6 +400,7 @@ add_custom_target(copy_assets ALL
         COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${SHADERS_DIR}"
         "$<TARGET_FILE_DIR:Pathtracer>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SL_RUNTIME_FILES} "$<TARGET_FILE_DIR:Pathtracer>"
 )
 
 add_dependencies(Pathtracer copy_assets)

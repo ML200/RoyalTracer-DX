@@ -29,17 +29,13 @@ inline bool TraceCameraRay(
     ray.TMax      = RAY_TMAX_PLANET;
     dx::HitObject hitObj = TraceRay_Custom(SceneBVH, ray, RAY_FLAG_NONE, 0xFF);
 
-    //MISS: sun disc only. Pass_clouds_primary writes the full sky (slot 10) +
-    //combined transmittance (slot 11); the shading composite does sun*combinedTr.
-    //EvaluateSunUnattenuated (NOT EvaluateSun): the latter bakes transmittance
-    //the composite already applies, double-attenuating.
     if (!hitObj.IsHit())
     {
         const float3 sun = EvaluateSunUnattenuated(rayDir);
         float3 skyL1     = (length(sun) > 0.0f) ? sun : float3(0, 0, 0);
 
         gScratchPing[uint3(pixel, 1)] = float4(skyL1, 0);
-        gScratchPing[uint3(pixel, 2)] = float4(skyL1, 0);
+        gScratchPing[uint3(pixel, 2)] = 0.0f;
         store_sky(g_sample_current, pixelIdx);
         return false;
     }
@@ -96,7 +92,7 @@ inline bool TraceCameraRay(
     if (isEmitter)
     {
         gScratchPing[uint3(pixel, 1)] = float4(emission, 0);
-        gScratchPing[uint3(pixel, 2)] = float4(emission, 0);
+        gScratchPing[uint3(pixel, 2)] = 0.0f;
     }
 
     //Specular-MV probe: virtualPos -> scratch slot 4 (RayQuery scoped here).
@@ -191,6 +187,7 @@ void Pass_camera_v8()
     const uint2 pixel    = DispatchRaysIndex().xy;
     const uint2 imgSize  = DispatchRaysDimensions().xy;
     const uint  pixelIdx = MapPixelID(imgSize, pixel);
+    if(cloudEnabled>.5f) g_cumulusQueries.Store4(CumulusQueryAddress(pixel),0u);
 
     //DLSS guide sentinel accumulators (SENT_OFFS_* in Includes_v8.hlsli) —
     //zeroed at the top of the frame by this first pass. Pass_shading fills

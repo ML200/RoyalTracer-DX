@@ -59,13 +59,12 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
             ImGui::MenuItem("Camera",          nullptr, &m_showCamera);
             ImGui::MenuItem("Pass Pipeline",   nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS",            nullptr, &m_showDLSS);
-            ImGui::MenuItem("DLSS Neural Rendering", nullptr, &m_showDLSSNR);
+            ImGui::MenuItem("DLSS 5 Neural Rendering", nullptr, &m_showDLSSNR);
             ImGui::MenuItem("DLSS Inputs",     nullptr, &m_showDlssInputs);
             ImGui::MenuItem("ReSTIR",          nullptr, &m_showReSTIR);
             ImGui::MenuItem("Initial Sampling", nullptr, &m_showInitialSampling);
             //ImGui::MenuItem("NRC",             nullptr, &m_showNRC); // NRC removed — UI panel disabled; restore for NIRC
             ImGui::MenuItem("Sun / Time of Day", nullptr, &m_showSun);
-            ImGui::MenuItem("Clouds",          nullptr, &m_showClouds);
             ImGui::MenuItem("Materials",       nullptr, &m_showMaterials);
             ImGui::MenuItem("Planet Perf",     nullptr, &m_showPlanetPerf);
             ImGui::EndMenu();
@@ -101,8 +100,7 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
     if (m_showReSTIR)    DrawReSTIRPanel(restir, stats);
     if (m_showInitialSampling) DrawInitialSamplingPanel(restir);
     if (m_showNRC)       DrawNRCPanel(nrc);
-    if (m_showSun)       DrawSunPanel(camera);
-    if (m_showClouds)    DrawCloudPanel(camera);
+    if (m_showSun)       DrawSunPanel(camera, stats);
     if (m_showMaterials) DrawMaterialInspector(scene, camera, restir);
     if (m_showPlanetPerf) DrawPlanetPerfPanel(planetStats, stats, fps);
 
@@ -312,9 +310,8 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
 
     // ── RR model preset ─────────────────────────────────────────
     // sl::DLSSDPreset is a dense uint32: eDefault=0, then A=1 .. O=15, so the
-    // combo index IS the enum value. The full range is offered because which
-    // letters resolve to a real model is decided by the runtime DLLs, not by the
-    // (older) headers we compile against — see DLSSManager.h.
+    // combo index IS the enum value. Retain the full range for diagnostics;
+    // SL 2.14.1 documents D/E/F models, with F the latest/default.
     static const char* kPresetLabels[] = {
         "Default (OTA)", "A", "B", "C", "D", "E", "F", "G",
         "H", "I", "J", "K", "L", "M", "N", "O"
@@ -336,10 +333,9 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "DLSS-RR denoiser/upscaler model.\n"
-                "F is DLSS 4.5 (transformer 2) on the shipped NGX 310.7.129 and is the\n"
-                "default here; D and E are the older transformer models the headers\n"
-                "document (E is the one required for the DoF guide). Letters the\n"
-                "runtime does not implement fall back to its default model.\n"
+                "The bundled Streamline 2.14.1 SDK documents F as its latest/default\n"
+                "RR transformer; D and E are earlier transformer models. Removed\n"
+                "or unsupported letters may fall back to the default or fail.\n"
                 "Switching preset drops temporal history for one frame.");
     };
 
@@ -362,6 +358,16 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
         presetCombo("Ultra Perf",    DLSSManager::kPresetUltraPerformance);
         presetCombo("Ultra Quality", DLSSManager::kPresetUltraQuality);
     }
+
+    ImGui::SliderFloat("RR Responsivity", &dlss.rrResponsivity, -1.0f, 1.0f,
+        "%.3f", ImGuiSliderFlags_AlwaysClamp);
+    if (ImGui::IsItemDeactivatedAfterEdit())
+        dlss.ForceReset();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Adjusts temporal response across the whole image.\n"
+            "0 disables the override. Intended for RR preset F.\n"
+            "Updates live; history resets once after you finish adjusting.");
 
     // One-frame RR history flush. The creeping-instability diagnostic: if an
     // established creep clears INSTANTLY on press and then slowly rebuilds,
@@ -514,100 +520,47 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
 //NGX call happens inside the manager on the render thread.
 void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
     ImGui::SetNextWindowPos(ImVec2(380, 60), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(430, 480), ImGuiCond_FirstUseEver);
-
-    if (!ImGui::Begin("DLSS Neural Rendering")) { ImGui::End(); return; }
-
-    const auto& st = nr.GetStatus();
-    using Sig = DLSSNRManager::SignatureState;
-    using Bk  = DLSSNRManager::BackendState;
-
-    // ── Runtime / trust status ──────────────────────────────────
-    ImGui::SeparatorText("Runtime");
-    ImGui::TextWrapped("Path: %s", st.runtimePath.c_str());
-    if (ImGui::IsItemHovered() && !st.runtimeSearched.empty())
-        ImGui::SetTooltip("Search order:\n%s\n(override with DLSSNR_RUNTIME_PATH)",
-                          st.runtimeSearched.c_str());
-    ImGui::Text("Version: %s", st.runtimeVersion.c_str());
-
-    const bool sigValid = (st.signature == Sig::eSignedValid);
-    const bool sigFound = (st.signature != Sig::eNotFound);
-    ImVec4 sigCol = sigValid          ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f)
-                  : sigFound          ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
-                                      : ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
-    ImGui::TextColored(sigCol, "%s", st.signatureText.c_str());
-    ImGui::TextWrapped("Backend: %s", st.backendText.c_str());
-    if (!st.driverProbe.empty())
-        ImGui::TextDisabled("%s", st.driverProbe.c_str());
-
-    // ── Modified-runtime opt-in (session only) ──────────────────
-    if (sigFound && !sigValid) {
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.2f, 1.0f));
-        ImGui::TextWrapped(
-            "WARNING: this runtime FAILED signature validation — its content does "
-            "not match its NVIDIA signature. Enabling hands its folder to the NGX "
-            "loader, which applies its own validation. Consent lasts this session "
-            "only and is never saved.");
-        ImGui::PopStyleColor();
-        ImGui::Checkbox("Allow modified runtime (this session only)",
-                        &nr.settings.allowModifiedRuntime);
-    }
-
-    // ── Enable + processing controls ────────────────────────────
-    ImGui::SeparatorText("Processing");
-    const bool backendPresent = (st.backend != Bk::eStubNoSdk &&
-                                 st.backend != Bk::eRuntimeMissing);
-    const bool canEnable = backendPresent && (sigValid || nr.settings.allowModifiedRuntime);
-    if (!canEnable) nr.settings.enabled = false;
-
-    ImGui::BeginDisabled(!canEnable);
+    ImGui::SetNextWindowSize(ImVec2(450, 470), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("DLSS 5 Neural Rendering", &m_showDLSSNR)) { ImGui::End(); return; }
+    const auto& status = nr.GetStatus();
+    ImGui::TextWrapped("Experimental native integration using the signed 310.8.0 runtime.");
+    ImGui::TextWrapped("%s", status.backendText.c_str());
+    const bool available = status.backend != DLSSNRManager::BackendState::eStubNoSdk &&
+                           status.backend != DLSSNRManager::BackendState::eRuntimeMissing;
+    ImGui::BeginDisabled(!available);
     ImGui::Checkbox("Enable", &nr.settings.enabled);
+    static const char* modelStyles[] = { "Default", "Natural", "Cinematic" };
+    static const char* renderPresets[] = { "Default", "Preset 1", "Preset 2", "Preset 3" };
+    static_assert(IM_ARRAYSIZE(modelStyles) == dlssnr::kModelStyleCount);
+    static_assert(IM_ARRAYSIZE(renderPresets) == dlssnr::kRenderPresetCount);
+    ImGui::Combo("Model style", &nr.settings.modelStyle, modelStyles, IM_ARRAYSIZE(modelStyles));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Selects the NR rendering style. Changing it restarts NR and clears its history.");
+    ImGui::Combo("Render preset", &nr.settings.renderPreset, renderPresets, IM_ARRAYSIZE(renderPresets));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Requests an embedded NR model preset. A preset absent from the runtime may use its default model.");
     ImGui::EndDisabled();
-    if (!backendPresent && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", st.backendText.c_str());
-
+    ImGui::TextWrapped("Applies to the reconstructed scene view, after tone mapping and before the editor.");
     ImGui::BeginDisabled(!nr.settings.enabled);
-    ImGui::SliderFloat("Intensity",       &nr.settings.intensity,              0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Local Tone",      &nr.settings.localToneStrength,      0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Intensity", &nr.settings.intensity, 0.0f, 1.0f, "%.2f");
+    ImGui::SliderFloat("Local Tone", &nr.settings.localToneStrength, 0.0f, 1.0f, "%.2f");
     ImGui::SliderFloat("Local Structure", &nr.settings.localStructureStrength, 0.0f, 1.0f, "%.2f");
-    ImGui::SliderFloat("Skin Structure",  &nr.settings.skinStructureStrength, -1.0f, 1.0f, "%.2f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("-1 = runtime default (as shipped); positive values force a strength");
+    ImGui::SliderFloat("Skin Structure", &nr.settings.skinStructureStrength, -1.0f, 1.0f, "%.2f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("-1 uses the model default.");
     ImGui::Checkbox("Auto Skin Mask", &nr.settings.useAutoMask);
-    //Style stays hidden: its valid value range is unverified (no public docs
-    //for this feature) — plumbed through DLSSNRSettings::style only.
-    ImGui::TextDisabled("Style: hidden until its valid range is verified");
-    if (ImGui::Button("Reset temporal history"))
-        nr.ForceReset();
+    if (ImGui::Button("Reset history")) nr.ForceReset();
     ImGui::EndDisabled();
-
-    // ── Diagnostics ─────────────────────────────────────────────
-    ImGui::SeparatorText("Diagnostics");
-    ImGui::TextWrapped("Last NGX result: %s", st.lastResult.c_str());
-    //An OutOfDate here is NGX not exposing feature 18 to this application, not
-    //a stale driver — the installed runtime carries no dlssnr provisioning for
-    //an unregistered app. Spell that out so the raw result isn't misread.
-    if (st.lastResult.find("OutOfDate") != std::string::npos) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.8f, 0.8f, 0.55f, 1.0f));
-        ImGui::TextWrapped(
-            "OutOfDate = the installed NGX runtime does not expose feature 18 to "
-            "this (unregistered) application. It is not necessarily a driver-age "
-            "problem: the feature snippet is located and the deny-list allows it, "
-            "but the runtime has no DLSS-NR provisioning for this app identity.");
-        ImGui::PopStyleColor();
-    }
-    ImGui::Text("Successful evaluations: %llu",
-                (unsigned long long)st.evalCount);
-    auto log = nr.NgxLogTail();
-    if (!log.empty() && ImGui::TreeNode("NGX log tail")) {
-        for (const auto& line : log)
-            ImGui::TextWrapped("%s", line.c_str());
+    ImGui::TextDisabled("Control changes restart the model on the next frame.");
+    ImGui::Text("Successful evaluations: %llu", (unsigned long long)status.evalCount);
+    if (!status.lastResult.empty()) ImGui::TextWrapped("%s", status.lastResult.c_str());
+    if (ImGui::TreeNode("Runtime details")) {
+        ImGui::TextWrapped("Path: %s", status.runtimePath.c_str());
+        ImGui::Text("Version: %s", status.runtimeVersion.c_str());
+        ImGui::TextWrapped("%s", status.signatureText.c_str());
+        ImGui::TextWrapped("The native bridge accepts only the exact tested runtime hash.");
         ImGui::TreePop();
     }
-
     ImGui::End();
 }
+
 
 //====================================
 //MATERIAL INSPECTOR
@@ -1413,11 +1366,59 @@ void Editor::DrawNRCPanel(nrc::Settings& n) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-void Editor::DrawSunPanel(Camera& camera) {
+void Editor::DrawSunPanel(Camera& camera, const FrameStats& stats) {
     ImGui::SetNextWindowSize(ImVec2(320, 300), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Sun / Time of Day")) { ImGui::End(); return; }
 
     auto& s = camera.sunSettings;
+
+    if (ImGui::CollapsingHeader("Cumulus", ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto& c = camera.cumulusSettings;
+        bool enabled = c.enabled > 0.5f;
+        if (ImGui::Checkbox("Enable cumulus", &enabled)) c.enabled = enabled ? 1.0f : 0.0f;
+        ImGui::Checkbox("Cache cloud density (experimental)", &camera.cumulusDensityCache);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reuses nearby cloud density in world-space blocks. Builds gradually over 27 frames.\nFiltered detail, missing blocks and animated wind use procedural density.\nTurn off to compare with the original cloud shape; normals retain the procedural gradient.");
+        if ((stats.cacheTimingMask & 0x1C0u) != 0u) {
+            ImGui::Text("Cloud cache %.2f ms | Cloud rays %.2f ms | Sum %.2f ms",
+                stats.cachePassMs[6], stats.cachePassMs[7]+stats.cachePassMs[8], stats.cachePassMs[6] + stats.cachePassMs[7]+stats.cachePassMs[8]);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("GPU time from the previous frame. Includes the one-time noise bake on startup.\nCloud rays includes primary sky, secondary misses and clear atmosphere. Final shading and RR are outside these timers.");
+        }
+        ImGui::Text("Sky / air %.2f ms | Reflections / diffuse %.2f ms", stats.cachePassMs[7], stats.cachePassMs[8]);
+        if (ImGui::Button("Daylight cumulus scene")) {
+            c = CumulusSettings{};
+            const SunSettings daylight{};
+            s.latitude = daylight.latitude; s.longitude = daylight.longitude; s.dayOfYear = daylight.dayOfYear;
+            s.sunIntensity = daylight.sunIntensity; s.skyIntensity = daylight.skyIntensity; s.turbidity = daylight.turbidity;
+            s.simSpeed = 0.0f; s.startUTCHours = 11.0f;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Tall towers")) {
+            c = CumulusSettings{}; c.coverage = 0.48f; c.thicknessKm = 4.5f; c.scale = 1.0f; c.extinction = 12.0f;
+        }
+        ImGui::SliderFloat("Cloud coverage", &c.coverage, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Cloud base", &c.baseKm, 0.2f, 8.0f, "%.2f km");
+        ImGui::SliderFloat("Cloud height", &c.thicknessKm, 0.3f, 8.0f, "%.2f km");
+        ImGui::SliderFloat("Cloud size", &c.scale, 0.25f, 3.0f, "%.2fx");
+        ImGui::SliderFloat("Cloud density", &c.extinction, 1.0f, 40.0f, "%.1f");
+        ImGui::SliderFloat("Lobe and edge detail", &c.detail, 0.0f, 1.5f, "%.2f");
+        ImGui::SliderFloat("Billow distortion", &c.fineDetail, 0.0f, 2.0f, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Wind shear and bending of the whole cloud outline and its billows.\nKeeps billow sizes; reflections and shadows follow the distorted shape.\nUses Wind X/Z for direction, with a fixed direction when wind is zero.\n0 disables distortion and uses the original local shadow sampling.");
+        ImGui::SliderFloat("Internal scattering", &c.multipleScattering, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Cloud ambient light", &c.ambient, 0.0f, 3.0f, "%.2f");
+        ImGui::SliderFloat("Wind X", &c.windX, -40.0f, 40.0f, "%.1f m/s");
+        ImGui::SliderFloat("Wind Z", &c.windZ, -40.0f, 40.0f, "%.1f m/s");
+        ImGui::SliderFloat("Cloud seed", &c.seed, 0.0f, 100.0f, "%.0f");
+        int steps = (int)c.viewSteps, reflectionSteps = (int)c.reflectionSteps;
+        if (ImGui::SliderInt("Sky samples", &steps, 16, 160)) c.viewSteps = (float)steps;
+        int lightingSamples = (int)c.lightingSamples;
+        if (ImGui::SliderInt("Cloud lighting samples", &lightingSamples, 0, 4)) c.lightingSamples = (float)lightingSamples;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Lighting, shadowing and internal scattering samples per cloud crossing.\n0 evaluates every occupied sky sample for comparison.\n1-4 use weighted stochastic samples for RR; density and guides keep their full detail.");
+        if (ImGui::SliderInt("Reflection samples", &reflectionSteps, 4, 32)) c.reflectionSteps = (float)reflectionSteps;
+        int debug = (int)c.debugView;
+        if (ImGui::Combo("Cloud view", &debug, "Rendered\0Opacity\0Cloud normals\0Cloud depth\0Cloud motion\0Depth spread\0")) c.debugView = (float)debug;
+        ImGui::SliderFloat("Cloud guide threshold", &c.guideThreshold, 0.15f, 0.9f, "%.2f");
+        ImGui::TextWrapped("RR reconstructs the fresh cloud samples. Cloud depth is an extinction-weighted distance; normals follow the density gradient. PT misses trace clouds from their bounce positions; reused diffuse lighting uses a coarser cache.");
+    }
 
     if (ImGui::CollapsingHeader("Location / Date", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderFloat("Latitude",    &s.latitude,  -90.0f, 90.0f, "%.2f deg");
@@ -1485,11 +1486,6 @@ void Editor::DrawSunPanel(Camera& camera) {
     }
 
     if (ImGui::CollapsingHeader("Atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
-        //Bruneton atmosphere march quality. View / light steps drive the
-        //dominant cost of every sky / cloud pixel (each cloud shell phase
-        //integrates ATMOS_VIEW_STEPS atmospheric samples + ATMOS_LIGHT_STEPS
-        //sun ray taps per sample). Aerial perspective is a separate cheap
-        //march for the haze in front of meshes.
         int v;
 
         v = (int)s.atmosViewSteps;
@@ -1497,7 +1493,7 @@ void Editor::DrawSunPanel(Camera& camera) {
             s.atmosViewSteps = (float)v;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Per ray atmosphere sample count. Dominant cost of\n"
-                              "the sky / unified cloud march. 12 = Bruneton\n"
+                              "the atmosphere march. 12 = Bruneton\n"
                               "baseline; raise for smoother gradients on long\n"
                               "horizon rays, drop to 6..8 for cheap previews.");
 
@@ -1536,27 +1532,6 @@ void Editor::DrawSunPanel(Camera& camera) {
                               "default was the flat stand-in for that term).\n"
                               "1.0 = physical, 1.2..1.5 = stylized brighter sky.");
 
-        ImGui::SliderFloat("Cloud Shadow Cone (deg)", &s.atmosCloudShadowConeDeg, 0.0f, 15.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Half angle of the cone the atmospheric cloud\n"
-                              "shadow tap samples. Wider = softer shafts of\n"
-                              "light through cloud gaps, more bleed across\n"
-                              "cloud edges; narrower = sharper shafts but more\n"
-                              "visible per pixel stepping until DLSS RR resolves\n"
-                              "the cone jitter. 5 degrees was the previous hard\n"
-                              "coded default.");
-
-        ImGui::SliderFloat("Cloud Shadow Floor", &s.atmosCloudShadowFloor, 0.0f, 0.5f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Safety floor on the cloud shadow tap for\n"
-                              "atmospheric samples. Shadowed air is now lit by\n"
-                              "the physically based through deck diffuse source,\n"
-                              "so this only guards numeric corner cases (0.01).\n"
-                              "Raising it re-tints under deck air with the\n"
-                              "clear sky spectrum - the old sunset-at-noon\n"
-                              "band - so treat values above ~0.05 as a look,\n"
-                              "not a fix.");
-
         ImGui::SliderFloat("Earth Shadow Softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Half width (cosine units) of the planet shadow\n"
@@ -1571,8 +1546,6 @@ void Editor::DrawSunPanel(Camera& camera) {
             s.atmosAerialViewSteps        = 4.0f;
             s.atmosAerialLightSteps       = 4.0f;
             s.atmosMultiScatterFactor     = 1.0f;
-            s.atmosCloudShadowConeDeg     = 5.0f;
-            s.atmosCloudShadowFloor       = 0.01f;
             s.atmosEarthShadowSoftness    = 0.005f;
         }
     }
@@ -1580,557 +1553,7 @@ void Editor::DrawSunPanel(Camera& camera) {
     ImGui::End();
 }
 
-// ─────────────────────────────────────────────────────────────────
-//CLOUD PANEL
-//Live controls for the volumetric cloud system in Clouds_v8.hlsli.
-//Every field maps 1:1 onto a CloudSettings member which Camera uploads
-//into the camera cbuffer tail; the shader macros in Includes_v8.hlsli
-//redirect the Clouds_v8 CLOUD_* identifiers to those cbuffer fields so
-//edits take effect on the next frame without a recompile.
-void Editor::DrawCloudPanel(Camera& camera) {
-    ImGui::SetNextWindowSize(ImVec2(360, 520), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Clouds")) { ImGui::End(); return; }
 
-    auto& c = camera.cloudSettings;
-
-    //----- Master toggle (mirrors cloud_enabled, sampled as <0.5/>=0.5)
-    bool enabled = c.enabled >= 0.5f;
-    if (ImGui::Checkbox("Enabled", &enabled)) c.enabled = enabled ? 1.0f : 0.0f;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Runtime master switch. The shader takes an\n"
-                          "early-terrain path when off, so the cost is\n"
-                          "essentially free. ENABLE_CLOUDS in\n"
-                          "Clouds_v8.hlsli is the compile-time kill\n"
-                          "switch that dead-codes the integrator.");
-
-    if (ImGui::CollapsingHeader("Coverage", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Coverage##amount",    &c.coverage,           0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Fraction of sky filled with cumulus. 0 = clear,\n"
-                              "~0.5 = scattered, 1.0 = overcast. Uses\n"
-                              "Schneider's coverage-threshold remap so the\n"
-                              "field stays sharp instead of fading uniformly.");
-    }
-
-    if (ImGui::CollapsingHeader("Shell Geometry", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Layer Bottom",   &c.layerBotKm,    0.0f, 20.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Altitude of the cloud base above the planet\n"
-                              "surface. Real cumulus base sits at 1..2 km in\n"
-                              "fair weather, 0.5..1 km in maritime air.");
-
-        ImGui::SliderFloat("Layer Top",      &c.layerTopKm,    0.0f, 30.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Top of the cloud layer. Cumulus tops vary from\n"
-                              "3 km (small) to 12 km (cumulonimbus). Must be\n"
-                              "above Layer Bottom or the shell is empty.");
-
-        // (Horizon Fade slider removed 2026-06-11 — cloud_horizonFadeKm has
-        // had no shader consumer since the unified-march refactor. The
-        // struct field stays for cbuffer layout; see Common.h.)
-
-        ImGui::SliderFloat("Top Variation",  &c.topVariationKm, 0.0f, 10.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Per cloud top altitude jitter. Each column's\n"
-                              "effective top is Layer Top + variation * noise,\n"
-                              "so 0 collapses to a flat slab top and larger\n"
-                              "values produce towering cumulus reaching well\n"
-                              "above Layer Top.");
-
-        ImGui::SliderFloat("Top Frequency",  &c.topFrequency,   0.0f, 0.5f, "%.3f /km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Horizontal frequency of the per cloud top altitude\n"
-                              "noise. Lower = neighbouring cumulus share top\n"
-                              "altitudes (long thunderstorm fronts), higher =\n"
-                              "tall and short cumulus alternate cloud to cloud.");
-    }
-
-    if (ImGui::CollapsingHeader("Density Field", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Extinction",     &c.extinction,    1.0f, 200.0f, "%.1f /km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Sigma_t at unit density (per km). Real water\n"
-                              "cumulus runs 25..60 /km. Higher = more opaque,\n"
-                              "lower = wispier and more translucent.");
-
-        ImGui::SliderFloat("Base Frequency", &c.baseFrequency, 0.05f, 5.0f, "%.3f /km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Frequency of the low-frequency Worley field that\n"
-                              "defines cumulus blob spacing. Lower = bigger\n"
-                              "clouds, higher = smaller more numerous puffs.");
-
-        ImGui::SliderFloat("HF Frequency",   &c.hfFrequency,   0.5f, 30.0f, "%.2f /km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Fine cauliflower detail scale (feature ~ 1/freq km).\n"
-                              "Per frame it resolves only where the march step is\n"
-                              "finer than ~half a feature. WITH DLSS RR the march\n"
-                              "jitters temporally, so detail resolves OVER frames —\n"
-                              "push to 8..20+ for fine crinkle (some motion shimmer\n"
-                              "is the noise RR cleans). No RR: keep ~3..6 at 0.5km.");
-
-        ImGui::SliderFloat("HF Amount",      &c.hfAmount,      0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Depth of the signed cauliflower displacement —\n"
-                              "bulges cell centers out, carves seams in, on the\n"
-                              "surface band (volume-neutral, not an eraser). 0 =\n"
-                              "smooth faces, 0.25 = subtle crinkle, 0.55 = chunky.\n"
-                              "Cores stay solid; reads in shading via the MS gate.");
-
-        ImGui::SliderFloat("Coverage Edge Width", &c.covModFilterWidth, 0.01f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Schneider coverage threshold remap edge width.\n"
-                              "Smaller = sharper cloud silhouettes (hard edged\n"
-                              "cumulus), larger = softer transition between cloud\n"
-                              "and clear sky.");
-
-        ImGui::SliderFloat("Domain Warp",    &c.warpAmpKm,     0.0f, 3.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Low frequency domain warp amplitude. Pushes the\n"
-                              "base shape around so cumulus don't look like\n"
-                              "stamps on a grid. 0 disables warp (slightly\n"
-                              "faster, more obvious tiling). Auto attenuated\n"
-                              "with distance via the LOD blend.");
-    }
-
-    if (ImGui::CollapsingHeader("Cauliflower Detail", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Lobe Amount", &c.lobeAmount, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Signed mid-frequency octave (inverted-Worley FBM)\n"
-                              "folded into the base pre-coverage. Bulges cumulus\n"
-                              "lobes out and carves the seams in — the primary\n"
-                              "cauliflower silhouette + shading driver. 0 = none.");
-
-        ImGui::SliderFloat("Lobe Frequency", &c.lobeFreqMult, 2.0f, 16.0f, "%.1f x base");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Lobe frequency as a multiple of Base Frequency.\n"
-                              "Higher = smaller, more numerous lobes; lower =\n"
-                              "bigger lobes. 6.5x base ~ 0.7 km lobes at default.");
-
-        ImGui::SliderFloat("Billow Carve", &c.billowAmount, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Depth of the Worley-seam carve that separates the\n"
-                              "convex billow cells (the bubble look). Higher =\n"
-                              "deeper creases between cauliflower bubbles.");
-
-        ImGui::SliderFloat("Billow Bulge", &c.billowBulge, 0.0f, 0.5f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How far the billow cell centres push out past the\n"
-                              "nominal silhouette. Higher = rounder, more\n"
-                              "pronounced bubbles.");
-
-        ImGui::SliderFloat("Billow Sharpness", &c.billowSharp, 0.5f, 4.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Falloff of the seam carve. Higher = thinner,\n"
-                              "sharper seams between bubbles; lower = broader,\n"
-                              "softer creases.");
-
-        ImGui::SliderFloat("Billow Frequency", &c.billowFreqMult, 1.0f, 8.0f, "%.1f x base");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Billow cell frequency as a multiple of Base\n"
-                              "Frequency. 3x base ~ 1 km cells at default.\n"
-                              "Higher = smaller bubbles.");
-    }
-
-    if (ImGui::CollapsingHeader("Wisps", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Wisp Amount", &c.wispAmount, 0.0f, 1.5f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Thin wind-sheared filaments reaching OUT past the\n"
-                              "dense body (tops, trailing edges, detached shreds).\n"
-                              "Pre-coverage additive octave — the only term that\n"
-                              "makes NEW translucent material beyond the silhouette\n"
-                              "(lobe/billow/HF only sculpt existing cloud). 0 =\n"
-                              "hard silhouette, no wisps.");
-
-        ImGui::SliderFloat("Wisp Frequency", &c.wispFreqMult, 4.0f, 60.0f, "%.1f x base",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Filament fineness as a multiple of Base Frequency.\n"
-                              "30x base ~ 150 m cells (pre-stretch) at default.\n"
-                              "Higher = finer, more delicate wisps (resolves over\n"
-                              "frames under DLSS RR).");
-
-        ImGui::SliderFloat("Wisp Stretch", &c.wispStretch, 1.0f, 8.0f, "%.1f x");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Wind-shear elongation: compresses the noise along\n"
-                              "the wind so cells stretch INTO filaments. 1 = round\n"
-                              "puffy bits, 3 = 3x longer along wind, high = long\n"
-                              "streaky tendrils. Uses Wind X/Z direction (falls\n"
-                              "back to +X if wind is zero).");
-    }
-
-    if (ImGui::CollapsingHeader("Phase Function (Nubis-3)", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat("Forward Phase G", &c.n3PhaseG, 0.0f, 0.95f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Henyey-Greenstein eccentricity of the primary\n"
-                              "forward lobe (Nubis3). Higher = sharper forward\n"
-                              "scattering and stronger sun-side brightening,\n"
-                              "lower = flatter. 0.6 = Nubis baseline.");
-
-        ImGui::SliderFloat("Silver Intensity", &c.silverIntensity, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Amplitude of the narrow 'silver lining' lobe\n"
-                              "max-blended into the primary phase (Nubis3 dual\n"
-                              "lobe). Drives the bright rim when looking toward\n"
-                              "the sun. 0 = no silver lining.");
-
-        ImGui::SliderFloat("Silver Spread", &c.silverSpread, 0.01f, 0.3f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Angular width of the silver lining lobe (its HG g\n"
-                              "is 0.99 - spread). Smaller = a tighter, brighter\n"
-                              "halo hugging the sun; larger = a broader, softer\n"
-                              "glow.");
-
-        ImGui::SliderFloat("Shadow Cone (deg)", &c.shadowConeDeg,  0.0f, 15.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Half angle of the sun shadow defocus cone (deg).\n"
-                              "0 = strict sun direction (cheapest single ray).\n"
-                              "2..6 = visibly softer self shadow when paired\n"
-                              "with Shadow Cone Samples > 1.");
-
-        // Albedo is stored as three consecutive scalar floats in the cbuffer
-        // (HLSL scalar packing). C++ guarantees no padding between consecutive
-        // float members, so &albedoR is a valid float[3] for ColorEdit3.
-        ImGui::ColorEdit3("Single Scatter Albedo", &c.albedoR);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Per channel single scattering albedo. 0.995\n"
-                              "white = real water cumulus (almost lossless).\n"
-                              "Drop all three for pollution / dust loaded\n"
-                              "clouds, tint asymmetric for sunset rim experiments.");
-
-        ImGui::SliderFloat("Sun Tau Multiplier", &c.sunTauMult, 0.0f, 5.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Multiplier on the optical depth accumulated along\n"
-                              "the sun shadow ray. >1 deepens self shadow,\n"
-                              "<1 lifts the shadow side of cumulus. 1.0 keeps\n"
-                              "the integrator physically calibrated.");
-    }
-
-    if (ImGui::CollapsingHeader("Multi-Scatter (Nubis-3)")) {
-        ImGui::SliderFloat("MS Strength",   &c.msStrength,   0.0f, 20.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Global multiplier on the Nubis3 multi-scatter\n"
-                              "(ms_volume) term. 4.0 = exact published scale.\n"
-                              "0 disables MS and cores / shadow sides go dark.");
-
-        ImGui::SliderFloat("MS Brightness", &c.n3MsBrightness, 0.0f, 6.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Engine calibration gain on the MS term only (the\n"
-                              "direct silver term is already calibrated). 2.5\n"
-                              "restores a white frontlit body; lower greys the\n"
-                              "bodies, higher blows them out.");
-
-        ImGui::SliderFloat("Secondary G",   &c.secondaryG,   0.0f, 0.6f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("HG eccentricity of the secondary (MS) phase lobe.\n"
-                              "Smaller = more isotropic fill across the volume,\n"
-                              "larger = more forward biased like the primary.");
-
-        ImGui::SliderFloat("MS Extinction Scale", &c.n3MsBase, 0.0f, 1.0f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Baseline multi-scatter extinction scale exp(-DL*s)\n"
-                              "for surface / frontlit samples. 0.25 = Nubis\n"
-                              "baseline. Lower = MS reaches deeper (brighter).");
-
-        ImGui::SliderFloat("MS Glow Scale", &c.n3MsGlow, 0.0f, 1.0f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Multi-scatter extinction scale for deep backlit\n"
-                              "cores — the inner-glow floor the MS Extinction\n"
-                              "Scale->this remap reaches. 0.05 lets light flood\n"
-                              "thick cores around the sun. Keep <= MS Ext Scale.");
-
-        ImGui::SliderFloat("Glow Sun Dot",  &c.n3GlowSunDot, 0.1f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("dot(view, sun) at which the inner glow fully\n"
-                              "engages (1 = looking straight at the sun). 0.9 =\n"
-                              "Nubis baseline; lower spreads the glow to wider\n"
-                              "back-lit angles.");
-
-        ImGui::SliderFloat("Glow Depth",    &c.n3GlowDepthKm, 0.1f, 5.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("In-cloud view-path length at which the glow scale\n"
-                              "reaches MS Glow Scale. 1.0 km = Nubis baseline.\n"
-                              "Larger = only the deepest cores glow.");
-    }
-
-    if (ImGui::CollapsingHeader("Animation")) {
-        ImGui::SliderFloat("Wind X", &c.windX, -1.0f, 1.0f, "%.3f km/s");
-        ImGui::SliderFloat("Wind Z", &c.windZ, -1.0f, 1.0f, "%.3f km/s");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Horizontal drift of the cloud field over time.\n"
-                              "Driven by walltime, so paused sim freezes the\n"
-                              "field. ±0.05 km/s is a gentle breeze.");
-    }
-
-    if (ImGui::CollapsingHeader("Indirect Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
-        bool skyAmb = c.skyAmbient >= 0.5f;
-        if (ImGui::Checkbox("Sky Ambient", &skyAmb))
-            c.skyAmbient = skyAmb ? 1.0f : 0.0f;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hemispherical sky-dome illumination on cloud\n"
-                              "samples. Single zenith probe per pixel, biased\n"
-                              "but cheap. Lifts cloud shadow sides from inky\n"
-                              "to natural blue-gray, the dominant fix for\n"
-                              "the dim-looking underside complaint.");
-
-        ImGui::SliderFloat("Sky Ambient Scale", &c.skyAmbientScale, 0.0f, 4.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Artistic multiplier on the sky ambient term.\n"
-                              "1.0 is physically scaled to the Bruneton sky.");
-
-        ImGui::SliderFloat("Sky Ambient Intensity", &c.ambientIntensity, 0.0f, 4.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Brightness multiplier on the sky dome contribution\n"
-                              "applied at every cloud sample. Stacks with Sky\n"
-                              "Ambient Scale (this controls per sample weight,\n"
-                              "the scale controls overall mix).");
-
-        ImGui::SliderFloat("Sky AO Scale",       &c.ambientAOScale,    0.0f, 2.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Scales how much the column density above a sample\n"
-                              "occludes the sky probe. 0 = sky reaches every\n"
-                              "sample regardless of overhead cloud, 1.0 = full\n"
-                              "physical attenuation through the overhead column.");
-
-        ImGui::SliderFloat("Sky AO Max OD",      &c.ambientODMax,      0.5f, 50.0f, "%.2f",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Optical depth cap on the sky AO term. Default 8\n"
-                              "lets dense overhead columns actually shut the sky\n"
-                              "term down (exp(-8) ~ 0.03%%). Lowering it floors\n"
-                              "the leakage — at 2 every thick base kept ~13%%\n"
-                              "sky light, a thickness-independent brightness\n"
-                              "floor.");
-
-        bool gnd = c.groundBounce >= 0.5f;
-        if (ImGui::Checkbox("Ground Bounce", &gnd))
-            c.groundBounce = gnd ? 1.0f : 0.0f;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Reflected sun off the ground proxy lighting\n"
-                              "cloud bases from below. Snow / desert / ocean\n"
-                              "scenes need this for cloud bottoms to read\n"
-                              "as bright instead of gray-flat.");
-
-        ImGui::SliderFloat("Ground Albedo", &c.groundAlbedo, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Gray Lambertian reflectance of the terrain.\n"
-                              "0.18 grass/forest, 0.30 desert, 0.06 ocean,\n"
-                              "0.85 fresh snow. Biased single scalar until a\n"
-                              "ground irradiance map is wired in.");
-
-        ImGui::SliderFloat("Ground Scale", &c.groundScale, 0.0f, 4.0f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Artistic multiplier on the ground bounce term.");
-    }
-
-    if (ImGui::CollapsingHeader("Surface Interaction")) {
-        bool surf = c.cloudShadowOnSurfaces >= 0.5f;
-        if (ImGui::Checkbox("Shadow On Surfaces", &surf))
-            c.cloudShadowOnSurfaces = surf ? 1.0f : 0.0f;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Cloud transmittance applied to the sun NEE on\n"
-                              "scene surfaces, producing live cloud shadows on\n"
-                              "terrain and props. Each surface NEE pays for a\n"
-                              "short cloud march, expensive without a shadow\n"
-                              "map. Off by default until the shadow map pass\n"
-                              "lands.");
-    }
-
-    if (ImGui::CollapsingHeader("Quality / Performance")) {
-        int viewMax = (int)c.viewStepsMax;
-        if (ImGui::SliderInt("View Steps Max", &viewMax, 16, 256))
-            c.viewStepsMax = (float)viewMax;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hard upper loop bound on the main view march.\n"
-                              "The adaptive stepper usually exits early via\n"
-                              "t >= tFar — this is the runaway guard. 128 =\n"
-                              "Nubis baseline; 64 buys ~30%% on grazing orbital\n"
-                              "views; 32 for cheap previews.");
-
-        ImGui::SliderFloat("Target Step Size", &c.targetStepKm, 0.1f, 3.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("In-cloud fine step — and the MASTER lever for how\n"
-                              "fine the HF cauliflower can resolve: detail smaller\n"
-                              "than ~half this just aliases to a flat thinning.\n"
-                              "0.5 km resolves ~1 km cells; drop to ~0.15..0.2 for\n"
-                              "crisp sub-km crinkle (costs in-cloud samples, near\n"
-                              "field only). Raise to 1.0+ to halve the count.");
-
-        int shadowSteps = (int)c.shadowSteps;
-        if (ImGui::SliderInt("Surface Shadow Steps", &shadowSteps, 1, 6))
-            c.shadowSteps = (float)shadowSteps;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Sample count for the surface-shadow march (cloud\n"
-                              "shadows on terrain via CloudSunVisibility).\n"
-                              "1 = fast single-sample sphere-intersect path,\n"
-                              "~4-5x cheaper than multi-tap and visually\n"
-                              "indistinguishable for overhead cumulus.\n"
-                              "2..6 = multi-tap shell march for softer edges /\n"
-                              "low sun angles at proportional cost. This is\n"
-                              "called per-pixel per-bounce when 'Shadow On\n"
-                              "Surfaces' is on, so it's the biggest single knob\n"
-                              "for that feature's cost.");
-
-        int cheapSteps = (int)c.cheapSteps;
-        if (ImGui::SliderInt("Bounce Cheap Steps", &cheapSteps, 4, 32))
-            c.cheapSteps = (float)cheapSteps;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Step count for the cheap volume march used on\n"
-                              "indirect bounces (specular / transmission).\n"
-                              "10 = Nubis baseline; drop to 6 if bounce-ray\n"
-                              "clouds are an indirect-illumination niche.");
-
-        ImGui::SliderFloat("Bounce Cheap Max Length", &c.cheapMaxLenKm,
-                           10.0f, 500.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Maximum march length along the bounce ray (km).\n"
-                              "Clamps the cheap path so bounce rays don't pay\n"
-                              "for orbital-distance clouds.");
-
-        int shadowK = (int)c.shadowConeSamples;
-        if (ImGui::SliderInt("Shadow Cone Samples", &shadowK, 1, 5))
-            c.shadowConeSamples = (float)shadowK;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Number of jittered shadow rays inside the sun\n"
-                              "defocus cone per scattering event. 1 = single\n"
-                              "jittered sample (cheapest), 3..5 = visibly softer\n"
-                              "self shadow at proportional cost.");
-
-        int ambientK = (int)c.ambientSteps;
-        if (ImGui::SliderInt("Ambient Occlusion Steps", &ambientK, 1, 6))
-            c.ambientSteps = (float)ambientK;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Upward density march sample count per scattering\n"
-                              "event, used to estimate sky ambient occlusion\n"
-                              "from cloud overhead. 2 = Nubis baseline (cheap).\n"
-                              "4..6 = smoother but proportional cost. Two sky\n"
-                              "anchor colours (zenith + horizon) are sampled\n"
-                              "once per pixel regardless of this setting.");
-
-        ImGui::SliderFloat("Tr Cutoff", &c.trEps, 1e-4f, 0.1f, "%.4f",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("View transmittance threshold below which the\n"
-                              "march exits early. Lower = more accurate (less\n"
-                              "early exit), higher = faster but slight banding\n"
-                              "behind dense clouds.");
-
-        ImGui::SliderFloat("RR Threshold", &c.rrThreshold, 0.01f, 0.5f, "%.2f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Russian roulette termination boundary on view\n"
-                              "throughput. Samples above this never terminate,\n"
-                              "samples below survive with probability\n"
-                              "throughput/threshold. Lower = less variance,\n"
-                              "higher = faster.");
-
-        ImGui::SliderFloat("Max Step",         &c.maxStepKm,    0.01f, 5.0f, "%.3f km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Cap on a single empty space step before adaptive\n"
-                              "growth kicks in. Smaller = more sample density in\n"
-                              "near empty regions but more steps wasted; larger\n"
-                              "= fewer wasted steps but risk of missing thin\n"
-                              "clouds at the start of the march.");
-
-        ImGui::SliderFloat("Step Growth",      &c.stepGrowth,   1.0f, 1.5f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Geometric growth factor on the in cloud step.\n"
-                              "Each fine step multiplies stride by this until\n"
-                              "the Max Fine Step ceiling. 1.0 = constant step,\n"
-                              "1.1 = aggressive growth (cheap, banding at edges).");
-
-        ImGui::SliderFloat("Zero Density",     &c.effectiveZeroDensity,
-                           1e-5f, 0.1f, "%.5f", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Density floor below which a sample is treated as\n"
-                              "empty (no in scatter, no transmittance update).\n"
-                              "Higher = skip more thin cloud edges (faster, more\n"
-                              "visible silhouette steps); lower = capture every\n"
-                              "wisp.");
-
-        ImGui::SliderFloat("Max Empty Step",   &c.maxEmptyStepKm,
-                           1.0f, 500.0f, "%.1f km", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Absolute cap on the big empty space step. The\n"
-                              "march takes huge strides through distant clear\n"
-                              "sky; this clamps the stride so even at long\n"
-                              "distances we don't skip an entire cloud field\n"
-                              "in one step.");
-
-        ImGui::SliderFloat("Empty Growth/Km",  &c.emptyStepGrowthPerKm,
-                           0.0f, 2.0f, "%.3f");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Empty step grows as (1 + t * this) with view ray\n"
-                              "distance. 0 = empty step never grows, 0.1 = ~10x\n"
-                              "growth per 100 km, 1.0 = aggressive (great for\n"
-                              "orbital views over deserts).");
-
-        ImGui::SliderFloat("Max Fine Step",    &c.maxFineStepKm, 0.1f, 10.0f, "%.2f km");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Ceiling on the in cloud step after geometric\n"
-                              "growth. Smaller = denser sampling deep in thick\n"
-                              "clouds, larger = lets the step balloon for cheap\n"
-                              "interiors at the cost of banding.");
-    }
-
-    if (ImGui::CollapsingHeader("Distance / LOD")) {
-        ImGui::SliderFloat("Fade Distance", &c.fadeDistanceKm,
-                           50.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Distance along the view ray at which clouds\n"
-                              "start fading terrain. Must be < Render Distance.\n"
-                              "Drop to ~200 km for ground-level scenes where\n"
-                              "the horizon hides anything beyond.");
-
-        ImGui::SliderFloat("Render Distance", &c.renderDistanceKm,
-                           100.0f, 10000.0f, "%.0f km", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hard clamp on the view march distance (km).\n"
-                              "Beyond this the march exits early. 3000 km\n"
-                              "= orbital baseline; 300 km for ground level\n"
-                              "gives a big perf win because the march stops\n"
-                              "at the horizon instead of integrating\n"
-                              "through dead pixels.");
-
-        // Keep fade < render so the smoothstep doesn't invert
-        if (c.fadeDistanceKm >= c.renderDistanceKm)
-            c.fadeDistanceKm = c.renderDistanceKm * 0.9f;
-
-        // (Haze Strength slider removed 2026-06-11 — cloud_hazeStrength has
-        // had no shader consumer since the unified-march refactor folded
-        // atmosphere and cloud into one integral. The struct field stays
-        // for cbuffer layout; see Common.h.)
-
-        ImGui::SliderFloat("LOD Near",  &c.lodNearKm, 0.0f, 100.0f, "%.1f km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Below this distance the cloud noise runs at full\n"
-                              "quality (full domain warp, both HF erosion taps,\n"
-                              "cauliflower mid-frequency). Above LOD Far the noise\n"
-                              "drops to the simplified far-field path.");
-
-        ImGui::SliderFloat("LOD Far",   &c.lodFarKm,  1.0f, 500.0f, "%.1f km",
-                           ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Distance at which the cloud noise reaches its\n"
-                              "simplified far-field state. Smaller band (Near→Far)\n"
-                              "= sharper LOD step, larger = smoother quality\n"
-                              "transition.");
-
-        // Keep LOD near <= far so the saturate( (d-near)/(far-near) ) blend
-        // doesn't divide by zero or invert.
-        if (c.lodNearKm >= c.lodFarKm)
-            c.lodNearKm = c.lodFarKm * 0.5f;
-    }
-
-    if (ImGui::Button("Reset Cloud Defaults")) {
-        c = CloudSettings{};
-    }
-
-    ImGui::End();
-}
 
 //====================================
 //PLANET PERFORMANCE
