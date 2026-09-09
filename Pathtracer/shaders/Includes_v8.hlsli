@@ -6,6 +6,7 @@
 #ifndef INCLUDES_V8_HLSLI
 #define INCLUDES_V8_HLSLI
 #include "SharcLayout.h"
+#include "RenderFlags.h"
 #define SHARC_DEBUG_MODE ((sharc_enabled >> SHARC_DEBUG_MODE_SHIFT) & SHARC_DEBUG_MODE_MASK)
 
 //====================================
@@ -150,7 +151,7 @@ cbuffer Push : register(b1)
 //====================================
 //High bit of rs_flags, clear of the ReSTIR bits (0x2 tempGI, 0x8 spatGI,
 //0x10 native-spatial) and the reuse fields. Set by the Renderer from the
-//editor toggle, NOT by ReSTIRSettings::Flags(). The ReSTIR passes only test the
+//editor toggle, NOT by IntegratorSettings::Flags(). The ReSTIR passes only test the
 //low bits, so it is inert for them.
 //
 //RS_FLAG_CLAMP_EMITTERS — Pass_shading luminance-clamps emitter radiance before
@@ -191,10 +192,7 @@ cbuffer Push : register(b1)
 #define RS_FLAG_DISABLE_CORR_REDUCTION  0x40u
 #define CORR_REDUCTION_OFF  ((rs_flags & RS_FLAG_DISABLE_CORR_REDUCTION) != 0u)
 
-//(flag bit 0x80 RETIRED — was RS_FLAG_DISABLE_X1_DIRECT. §6.1 unification removed
-//directAtX1 entirely: x1 sun-NEE and BSDF-miss env are reservoir candidates now,
-//so the diagnostic had nothing left to zero. Scratch slice 3 is retired with it —
-//allocated but untouched; renumbering the scratch array is a separate change.)
+// Bit 0x80 now skips mesh-light sampling in sun/sky-only scenes (RenderFlags.h).
 
 //RS_FLAG_FORCE_DIFFUSE — materials debug: every material decodes as OPAQUE
 //LAMBERTIAN, albedo + emission kept. Kd.w=1 (no transmission, no medium), Ni=1

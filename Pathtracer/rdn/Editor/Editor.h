@@ -9,7 +9,6 @@
 #include "../Raytracing/PassSystem.h"
 #include "../PostProcess/DLSSManager.h"
 #include "../PostProcess/DLSSNRManager.h"
-#include "../NRC/NrcLayout.h"
 #include "../planet/stream_orchestrator.h"
 #include "../../engine/Camera/FlyCamController.h"
 
@@ -28,7 +27,7 @@ public:
     void Draw(Scene& scene, Camera& camera, FlyCamController& flyCam,
               PassSystem& passes, DLSSManager& dlss, DLSSNRManager& dlssNR,
               DLSSGSettings& dlssG,
-              ReSTIRSettings& restir, nrc::Settings& nrc,
+              IntegratorSettings& integrator,
               float fps, const FrameStats& stats,
               const planet::StreamOrchestrator::Stats& planetStats);
     void Render(ID3D12GraphicsCommandList* cmdList);
@@ -47,11 +46,9 @@ private:
     void DrawDLSSNRPanel(DLSSNRManager& nr);
     //guide-buffer inspector: picks the DLSS input layer Pass_postprocess_v8
     //renders into gOutput slice 3 (the 4th 'C' stop)
-    void DrawDlssInputsPanel(ReSTIRSettings& restir, DLSSManager& dlss);
-    void DrawMaterialInspector(Scene& scene, Camera& camera, ReSTIRSettings& restir);
-    void DrawReSTIRPanel(ReSTIRSettings& restir, const FrameStats& stats);
-    void DrawInitialSamplingPanel(ReSTIRSettings& restir);
-    void DrawNRCPanel(nrc::Settings& nrc);
+    void DrawDlssInputsPanel(IntegratorSettings& restir, DLSSManager& dlss);
+    void DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir);
+    void DrawIntegratorPanel(IntegratorSettings& restir, const FrameStats& stats);
     void DrawSunPanel(Camera& camera, const FrameStats& stats);
     void DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps,
                              const FrameStats& fs, float fps);
@@ -63,9 +60,8 @@ private:
     bool m_showDLSS       = false;
     bool m_showDLSSNR     = false;
     bool m_showDlssInputs = false;
-    bool m_showReSTIR     = false;
-    bool m_showNRC        = false;
-    bool m_showInitialSampling = false;
+    bool m_showIntegrator     = false;
+    bool m_showInactivePasses = false;
     bool m_showSun        = false;
     bool m_showMaterials  = false;
     bool m_showPlanetPerf = false;
@@ -97,7 +93,7 @@ public:
         bool     paused = false;              // freeze the rings for inspection
 
         float frame_total_ms     [N] = {};   // FrameStats::cpuFrameMs
-        float frame_gpu_ms       [N] = {};   // FrameStats::gpuMs
+        float frame_gpu_wait_ms       [N] = {};   // FrameStats::gpuWaitMs
         float planet_cpu_ms      [N] = {};   // Stats::blas_record_cpu_ms
         float planet_plan_ms     [N] = {};   // Stats::plan_ms (one shot per rebuild)
         float planet_blas_gpu_ms [N] = {};   // Stats::blas_gpu_ms

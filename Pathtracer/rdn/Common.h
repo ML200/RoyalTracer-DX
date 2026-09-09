@@ -19,11 +19,13 @@
 #include <stdexcept>
 #include <chrono>
 #include <algorithm>
+#include <tuple>
 
 #include "glm/gtc/matrix_transform.hpp"
 #include "../src/Components/Vertex.h"
 #include "d3dx12.h"
 #include "../shaders/SharcLayout.h"
+#include "../shaders/RenderFlags.h"
 #include "../shaders/SkyBakeLayout.h"
 
 using Microsoft::WRL::ComPtr;
@@ -170,10 +172,10 @@ struct GeometryOffsets {
 };
 
 //====================================
-//RESTIR RUNTIME SETTINGS
+//INTEGRATOR RUNTIME SETTINGS
 //====================================
 //DI+GI unified, DI knobs removed
-struct ReSTIRSettings {
+struct IntegratorSettings {
     //====================================
     //INTEGRATOR SELECT
     //====================================
@@ -369,6 +371,17 @@ struct ReSTIRSettings {
     //at 8 while set (the rcInfo mask covers 8 vertices).
     bool  lobeIndexedPss = true;
 
+    // Image semantics that must not blend with the previous reconstruction.
+    // Cache inspection/timing controls do not change the underlying image.
+    auto ReconstructionKey() const {
+        const bool pt = integratorMode == 0;
+        const bool lite = pt && liteEnabled;
+        return std::make_tuple(integratorMode, maxBounces, maxDiffuseBounces,
+            texturePointFilter, forceDiffuseMats, pt && sharcEnabled, lite,
+            lite && liteDebugView, lite && liteUnshadowedTargets, ucwClampMax,
+            pt ? 0u : Flags());
+    }
+
     UINT Flags() const {
         //bits 0 (tempDI) and 2 (spatDI) stay zero, DI pipeline gone
         return (enableTempGI ? 2u : 0u) | (enableSpatGI ? 8u : 0u)
@@ -420,6 +433,12 @@ struct CumulusSettings {
     float guideThreshold = 0.5f;
     float lightingSamples = 2.0f; // 0 shades every occupied step; 1-4 use RR lighting reservoirs.
     float fineDetail = 1.0f; // Wind deformation of existing billows and detailed local shadows.
+
+    auto LightingKey() const {
+        return std::make_tuple(enabled, coverage, baseKm, thicknessKm, scale,
+            extinction, detail, windX, windZ, multipleScattering, ambient,
+            viewSteps, reflectionSteps, seed, lightingSamples, fineDetail);
+    }
 };
 static_assert(sizeof(CumulusSettings) == 72);
 
@@ -501,7 +520,7 @@ struct FrameStats {
     float cpuInstanceMs   = 0;
     float cpuPopulateMs   = 0;
     float tlasMs          = 0;
-    float gpuMs           = 0;
+    float gpuWaitMs       = 0; // CPU fence wait, not a GPU timestamp
     float cachePassMs[9]   = {}; // prepare/train/resolve, PT + NEE, lite shift/merge, cloud caches, primary sky/air, secondary clouds
     UINT  cacheTimingMask  = 0;
     UINT  instanceCount   = 0;

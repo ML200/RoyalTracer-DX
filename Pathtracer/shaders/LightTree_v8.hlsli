@@ -313,6 +313,10 @@ uint LT_SampleLeafTriangle_Stratified(uint blasIndex, LTLeaf leaf, float xi, out
 //====================================
 LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 {
+    if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) {
+        LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
+        return empty;
+    }
     //one random per stratum, reused/rescaled down TLAS -> BLAS -> Leaf
     float xiT = RandomFloatSingle(rng);
     float xiB = RandomFloatSingle(rng);
@@ -320,7 +324,15 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
     float pdfT, pdfB, pdfL;
 
     uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xiT, pdfT);
+    if (blas == LT_SENTINEL || !(pdfT > 0.0f)) {
+        LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
+        return empty;
+    }
     LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xiB, pdfB);
+    if (!(pdfB > 0.0f) || leaf.triCount == 0u) {
+        LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
+        return empty;
+    }
     //leaf-level xi only consumed for the rare multi-tri leaf fallback
     float xiL = (leaf.triCount > 1u) ? RandomFloatSingle(rng) : 0.0f;
     uint  tri = LT_SampleLeafTriangle_Stratified(blas, leaf, xiL, pdfL);
@@ -338,6 +350,7 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 //so the PDF selects the child directly from the trail.
 float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 {
+    if (triIndex == LT_SENTINEL) return 0.0f;
     uint blas = gLT_TriToBLAS[triIndex];
     if (blas == LT_SENTINEL) return 0.0f;
 
@@ -484,8 +497,9 @@ struct LT_LightSampleResult
 //the inline descent would have produced.
 LT_LightSampleResult LT_SamplePointOnLightTree(float3 refPos, LT_Sample treeSample, inout uint rng)
 {
-    LT_LightSampleResult result;
+    LT_LightSampleResult result = (LT_LightSampleResult)0;
     result.triIndex = treeSample.id;
+    if (treeSample.id == LT_SENTINEL || !(treeSample.pdf > 0.0f)) return result;
 
     LightTriangle triData = g_EmissiveTriangles[result.triIndex];
     result.objID    = triData.instanceID;

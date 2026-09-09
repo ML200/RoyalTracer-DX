@@ -635,8 +635,19 @@ void Renderer::UpdateRenderer(float dt) {
     // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_dlssNR, m_dlssG, m_restirSettings, m_nrcSettings,
+                  m_passes, m_dlss, m_dlssNR, m_dlssG, m_integratorSettings,
                   m_fps, m_frameStats, m_planet.stats());
+    const auto& settings = m_integratorSettings;
+    if (!m_integratorHistoryValid ||
+        settings.ReconstructionKey() != m_previousIntegratorSettings.ReconstructionKey() ||
+        m_scene.materialsDirty) {
+        m_dlss.ForceReset();
+        m_dlssNR.ForceReset();
+    }
+    if (settings.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
+        m_sharcResetPending = true;
+    m_previousIntegratorSettings = settings;
+    m_integratorHistoryValid = true;
     // Debug-view checkbox only enables the calculation into slice 3.
     // Cycle to it with 'C' when you want to look at it.
 
@@ -650,7 +661,9 @@ void Renderer::UpdateRenderer(float dt) {
     // carries origin rebases and motion-guide settle frames.
     const bool sharcStructureChanged = m_sharcInstanceState.size() != m_scene.instances.size();
     if (sharcStructureChanged) m_sharcInstanceState.resize(m_scene.instances.size());
-    if (m_scene.materialsDirty || sharcStructureChanged) m_sharcResetPending = true;
+    if (m_scene.materialsDirty || sharcStructureChanged) {
+        m_sharcResetPending = true;
+    }
     for (size_t i = 0; i < m_scene.instances.size(); ++i) {
         if (!sharcStructureChanged && i < m_scene.instanceDirty.size() && !m_scene.instanceDirty[i]) continue;
         const auto& instance = m_scene.instances[i];
@@ -660,8 +673,9 @@ void Renderer::UpdateRenderer(float dt) {
         // frame's (both are in the instance table). Resetting the whole cache
         // here made any animated instance stop the cache from ever converging.
         // A mesh swap changes what the instance id means, so that still resets.
-        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex)
+        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex) {
             m_sharcResetPending = true;
+        }
         previous.transform = instance.worldTransform;
         previous.meshIndex = instance.meshIndex;
     }
@@ -700,7 +714,7 @@ void Renderer::UpdateRenderer(float dt) {
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
     m_dlssNR.PrepareFrameGPUIdle();
-    m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+    m_frameStats.gpuWaitMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
     // The existing previous-frame fence makes this read safe without adding a
     // stall. These are actual dispatch timestamps, unlike the CPU wait above.
     m_frameStats.cacheTimingMask = m_sharcTimingMask;
@@ -1824,7 +1838,7 @@ void Renderer::PopulateCommandList() {
     // consuming an indirect-dispatch queue). The entry region from byte 16 is
     // reused once per frame (camera -> raygen consumed it before temp_gi
     // runs; temp_gi no longer writes it).
-    if (m_restirSettings.integratorMode != 0) {
+    if (m_integratorSettings.integratorMode != 0) {
       auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
       cmdList->ResourceBarrier(1, &b);
@@ -1836,8 +1850,8 @@ void Renderer::PopulateCommandList() {
     // ── Execute pass pipeline ────────────────────────────────────
     // ReSTIR lite reuse tables: (re)generated on the host when their sigma
     // changes and copied once into the SHaRC allocation (LITE_REUSE_OFFSET).
-    if (m_restirSettings.liteReuseSigma != m_liteReuseSigma) {
-        m_liteReuseSigma = m_restirSettings.liteReuseSigma;
+    if (m_integratorSettings.liteReuseSigma != m_liteReuseSigma) {
+        m_liteReuseSigma = m_integratorSettings.liteReuseSigma;
         BuildLiteReuseTables(m_liteReuseSigma);
     }
     if (m_liteReusePending && m_liteReuseUpload && m_sharcBuffer) {
@@ -1861,7 +1875,7 @@ void Renderer::PopulateCommandList() {
     UINT dispW = renderW, dispH = renderH;
 
     // Precompute ReSTIR root constants.
-    auto& rs = m_restirSettings;
+    auto& rs = m_integratorSettings;
     rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
     rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
     rs.spatCountMinGI = rs.spatCountMaxGI;
@@ -1893,6 +1907,7 @@ void Renderer::PopulateCommandList() {
     const bool integratorChanged = rs.integratorMode != m_previousIntegratorMode;
     m_previousIntegratorMode = rs.integratorMode;
     uint32_t baseFlags = (dlssResChanged || integratorChanged) ? (rs.Flags() & ~3u) : rs.Flags();
+    if (m_scene.emissiveTriangles.empty()) baseFlags |= RS_FLAG_NO_MESH_LIGHTS;
     if (m_dlss.clampEmitterSpikes) baseFlags |= RS_FLAG_CLAMP_EMITTERS;
     // DLSS guide kill-switches (RS_FLAG_GUIDE_OFF_* high bits, must match
     // Includes_v8.hlsli): Pass_shading neutralizes the flagged guides at its
@@ -1907,10 +1922,16 @@ void Renderer::PopulateCommandList() {
     if (!m_cumulusSettingsValid || std::memcmp(&m_previousCumulusSettings,
         &m_camera.cumulusSettings, sizeof(CumulusSettings)) != 0 ||
         m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
+        // Debug views and denoiser guide thresholds change presentation, not
+        // cached transport. Keep the learned lighting when inspecting clouds.
+        if (!m_cumulusSettingsValid ||
+            m_previousCumulusSettings.LightingKey() != m_camera.cumulusSettings.LightingKey() ||
+            m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
+            m_sharcResetPending = true;
+        }
         m_previousDensityCacheEnabled = m_camera.cumulusDensityCache;
         m_previousCumulusSettings = m_camera.cumulusSettings;
         m_cumulusSettingsValid = true;
-        m_sharcResetPending = true;
         m_dlss.ForceReset();
     }
     const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 3) : 0u;
@@ -2346,60 +2367,27 @@ void Renderer::PopulateCommandList() {
     const std::array<float,5> ambientKey{cloudSun.turbidity,cloudSun.sunIntensity,
         cloudSun.skyIntensity,cloudSettings.baseKm,cloudSettings.thicknessKm};
     if (ambientKey != m_cumulusAmbientKey) m_cumulusAmbientReady = false;
+    uint32_t activeFeatures = usePtKernel ? pass_feature::PathTracer : pass_feature::LegacyReSTIR;
+    if (useSharc) activeFeatures |= pass_feature::Sharc;
+    if (liteActive) activeFeatures |= pass_feature::DiffuseReuse;
+    if (rs.liteSpatial) activeFeatures |= pass_feature::SpatialReuse;
+    if (!m_scene.emissiveTriangles.empty()) activeFeatures |= pass_feature::MeshLights;
+    if (cloudSettings.enabled >= 0.5f) activeFeatures |= pass_feature::Clouds;
+    if (!m_cumulusNoiseReady) activeFeatures |= pass_feature::CloudNoise;
+    if (!m_cumulusAmbientReady) activeFeatures |= pass_feature::CloudAmbient;
+    if (m_camera.cumulusDensityCache && cloudSettings.windX == 0 && cloudSettings.windZ == 0 && cloudSettings.coverage > 0)
+        activeFeatures |= pass_feature::CloudDensity;
+    for (auto& pass : m_passes.Passes()) pass.executedLastFrame = false;
     bool dlssEvaluatedThisFrame = false;
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
 
-        // Integrator select: exactly one of Pass_raygen (ReSTIR/RIS, deprecated)
-        // and Pass_pt runs per frame; under PT the whole reservoir pipeline
-        // (temporal, shift, SPMIS, dup, merge) is skipped at dispatch time. Only
-        // file-bearing passes are tested. A skipped pass's immediately trailing
-        // barrier has no producer, so skip it too; loop/ping tokens still execute.
-        // Skipping is safe: SBT slots and PSO indices are static.
-        if (!p.file.empty()) {
-            auto skipPass = [&]() {
-                if (i + 1 < m_passes.Passes().size() && m_passes.Passes()[i + 1].stage == Stage::Barrier)
-                    ++i;
-            };
-            if (!useSharc && p.file.rfind(L"Pass_sharc_", 0) == 0) { skipPass(); continue; }
-            if (p.file.rfind(L"Pass_cumulus_", 0) == 0) {
-                if (m_camera.cumulusSettings.enabled < 0.5f ||
-                    (p.file == L"Pass_cumulus_secondary_v8.hlsl" && !usePtKernel) ||
-                    (p.file == L"Pass_cumulus_noise_v8.hlsl" && m_cumulusNoiseReady) ||
-                    (p.file == L"Pass_cumulus_density_v8.hlsl" && (!m_camera.cumulusDensityCache ||
-                        cloudSettings.windX != 0 || cloudSettings.windZ != 0 || cloudSettings.coverage <= 0)) ||
-                    (p.file == L"Pass_cumulus_ambient_v8.hlsl" && m_cumulusAmbientReady)) {
-                    skipPass(); continue;
-                }
-            }
-            if (usePtKernel) {
-                static const std::unordered_set<std::wstring> kRestirOnly = {
-                    L"Pass_raygen_v8.hlsl",
-                    L"Pass_spmis_reset_v8.hlsl",
-                    L"Pass_temp_gi_v8.hlsl",
-                    L"Pass_shift_v8.hlsl",
-                    L"Pass_temp_merge_v8.hlsl",
-                    L"Pass_spmis_count_v8.hlsl",
-                    L"Pass_spmis_offsets_v8.hlsl",
-                    L"Pass_spmis_sort_v8.hlsl",
-                    L"Pass_spmis_select_v8.hlsl",
-                    L"Pass_spmis_passthrough_v8.hlsl",
-                    L"Pass_spmis_merge_v8.hlsl",
-                    L"Pass_dup_gi_v8.hlsl",
-                };
-                if (kRestirOnly.count(p.file)) { skipPass(); continue; }
-            } else {
-                if (p.file == L"Pass_pt_v8.hlsl" || p.file == L"Pass_pt_nee_v8.hlsl" ||
-                    p.file == L"Pass_pt_skybake_v8.hlsl") { skipPass(); continue; }
-            }
-            // ReSTIR lite passes run only under the regular tracer with lite on;
-            // the shift only with spatial reuse.
-            if (p.file.rfind(L"Pass_lite_", 0) == 0) {
-                const bool run = liteActive && (p.file != L"Pass_lite_shift_v8.hlsl" || rs.liteSpatial);
-                if (!run) { skipPass(); continue; }
-            }
+        if (!p.IsEnabled(activeFeatures)) {
+            // A skipped producer's trailing UAV barrier has no work to order.
+            if (i + 1 < m_passes.Passes().size() && m_passes.Passes()[i + 1].stage == Stage::Barrier) ++i;
+            continue;
         }
-
+        p.executedLastFrame = true;
         int cacheTimer = -1;
         // The PT timer spans the primary-vertex NEE prefetch and the bounce
         // kernel: the prefetch opens it, Pass_pt closes it.
@@ -2704,10 +2692,11 @@ void Renderer::PopulateCommandList() {
                 m_dlss.Roughness(), m_dlss.SpecMVec(), m_dlss.SpecHitDist(),
                 m_dlss.Transparency(), m_dlss.ColorBeforeTrans(), m_dlss.Input()
             };
-            for (auto* r : uavs) {
-                if (r) { auto b = CD3DX12_RESOURCE_BARRIER::UAV(r);
-                         cmdList->ResourceBarrier(1, &b); }
-            }
+            D3D12_RESOURCE_BARRIER guideBarriers[std::size(uavs)];
+            UINT guideBarrierCount = 0;
+            for (auto* resource : uavs)
+                if (resource) guideBarriers[guideBarrierCount++] = CD3DX12_RESOURCE_BARRIER::UAV(resource);
+            if (guideBarrierCount) cmdList->ResourceBarrier(guideBarrierCount, guideBarriers);
 
             m_dlss.Evaluate(cmdList, m_ctx.Device(),
                 *m_ctx.frameToken, m_ctx.viewportHandle,
@@ -2716,6 +2705,7 @@ void Renderer::PopulateCommandList() {
                 m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame(),
                 m_camera.fovDegrees, m_camera.nearPlane, m_camera.farPlane);
             dlssEvaluatedThisFrame = m_dlss.LastEvaluationSucceeded();
+            p.executedLastFrame = dlssEvaluatedThisFrame;
             if (!dlssEvaluatedThisFrame || m_dlss.LastEvaluationReset()) m_dlssNR.ForceReset();
 
             // DLSS Frame Generation: set options every frame
@@ -2799,7 +2789,10 @@ void Renderer::PopulateCommandList() {
           D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
       cmdList->ResourceBarrier(1, &toSrc); }
 
-    UINT layer = sharcDebugMode != 0u ? 3u : m_displayLevels[m_currentDisplayLevel];
+    // Inspectors take over presentation while selected; Off restores the
+    // user's previous output view without requiring keyboard cycling.
+    const bool inspectBuffers = sharcDebugMode != 0u || rs.dlssDebugLayer != 0;
+    UINT layer = inspectBuffers ? 3u : m_displayLevels[m_currentDisplayLevel];
     UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
 
     // ── DLSS-NR: optional neural post-process on the composited frame ──

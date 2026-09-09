@@ -2,7 +2,7 @@
 
 SHaRC is enabled by default in the **Path tracer** integrator. Its controls are
 in the integrator panel. ReSTIR skips all three cache passes and does not query
-or update the cache. Disable **Enable radiance cache** for the original uncached
+or update the cache. Disable **Radiance cache** for the original uncached
 path tracer and its original bounce limits.
 
 ## Research and design
@@ -162,7 +162,7 @@ visibility ray between every interpolation sample and query point.
 
 ## Cache debug views
 
-In the path tracer's **SHaRC indirect lighting** controls, set **Cache debug view**
+In **Integrator > SHARC > Cache inspection**, set **View**
 to **Cells** or **Cell lighting**. The view automatically takes over presentation;
 **Off** restores the previous display slice. Disabling SHaRC or selecting ReSTIR
 also disables the inspector. Toggling the view does not reset the cache.

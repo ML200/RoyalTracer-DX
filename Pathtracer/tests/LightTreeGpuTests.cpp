@@ -42,11 +42,12 @@ struct Runner {
 
         CD3DX12_DESCRIPTOR_RANGE range;
         range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 19, 0);
-        CD3DX12_ROOT_PARAMETER params[3];
+        CD3DX12_ROOT_PARAMETER params[4];
         params[0].InitAsDescriptorTable(1, &range);
         params[1].InitAsUnorderedAccessView(0, 1);
         params[2].InitAsConstants(1, 0, 1);
-        CD3DX12_ROOT_SIGNATURE_DESC desc(3, params);
+        params[3].InitAsConstants(10, 1);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(4, params);
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
@@ -122,7 +123,7 @@ struct Runner {
         device->CreateShaderResourceView(resource, &d, Handle(slot));
     }
 
-    void VerifyPdf(const std::vector<float>& expected, bool invalidTree = false) {
+    void VerifyPdf(const std::vector<float>& expected, bool invalidTree = false, bool noLights = false) {
         auto output = Buffer(expected.size() * sizeof(XMFLOAT4), D3D12_HEAP_TYPE_DEFAULT,
             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         ID3D12DescriptorHeap* heaps[] = {heap.Get()};
@@ -132,6 +133,9 @@ struct Runner {
         commands->SetComputeRootDescriptorTable(0, heap->GetGPUDescriptorHandleForHeapStart());
         commands->SetComputeRootUnorderedAccessView(1, output->GetGPUVirtualAddress());
         commands->SetComputeRoot32BitConstant(2, UINT(expected.size()), 0);
+        UINT push[10] = {};
+        if (noLights) push[9] = RS_FLAG_NO_MESH_LIGHTS;
+        commands->SetComputeRoot32BitConstants(3, 10, push, 0);
         commands->Dispatch((UINT(expected.size()) + 63u) / 64u, 1, 1);
         auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(output.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_GENERIC_READ);
         commands->ResourceBarrier(1, &barrier);
@@ -139,10 +143,11 @@ struct Runner {
         for (size_t i = 0; i < expected.size(); ++i) {
             Require(std::isfinite(results[i].x) && std::abs(results[i].x - expected[i]) <= expected[i] * 2e-5f,
                 "PDF does not match independently traversed tree");
-            Require(invalidTree ? (results[i].y == 0 && results[i].z == 0) :
+            Require((invalidTree || noLights) ? (results[i].y == 0 && results[i].z == 0) :
                 (results[i].y > 0 && std::abs(results[i].y - results[i].z) <= results[i].y * 2e-5f),
                 "Sampling and PDF evaluation disagree");
-            Require(results[i].w >= 0 && results[i].w < float(expected.size()), "Sampled triangle out of range");
+            Require((invalidTree || noLights) ? results[i].w == -1.0f :
+                results[i].w >= 0 && results[i].w < float(expected.size()), "Sampled triangle out of range");
         }
     }
 };
@@ -280,6 +285,16 @@ int main(int argc, char** argv) {
         try { lt::AppendLightTreeTrail(0, 1, 32); } catch (const std::logic_error&) { rejected = true; }
         Require(rejected, "Overflow must not silently truncate");
         Runner runner(argv[1]);
+        // Empty scenes must not dereference even a light-tree root. Bind null
+        // descriptors and query the production sampler/PDF sentinel path.
+        D3D12_SHADER_RESOURCE_VIEW_DESC nullSrv{};
+        nullSrv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        nullSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        nullSrv.Buffer.NumElements = 1;
+        nullSrv.Buffer.StructureByteStride = 16;
+        for (UINT i = 0; i < 19; ++i) runner.device->CreateShaderResourceView(nullptr, &nullSrv, runner.Handle(i));
+        runner.VerifyPdf({0.0f}, false, true);
+        std::cout << "Empty mesh-light sampling with null resources passed\n";
         for (uint32_t d : {0u, 16u, 17u, 31u, 32u, 33u})
             for (bool tlas : {false, true}) VerifyBoundaryTree(runner, d, tlas);
 

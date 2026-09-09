@@ -14,6 +14,19 @@ enum class Stage {
     CudaOp
 };
 
+namespace pass_feature {
+    constexpr uint32_t PathTracer = 1u << 0;
+    constexpr uint32_t LegacyReSTIR = 1u << 1;
+    constexpr uint32_t Sharc = 1u << 2;
+    constexpr uint32_t DiffuseReuse = 1u << 3;
+    constexpr uint32_t SpatialReuse = 1u << 4;
+    constexpr uint32_t Clouds = 1u << 5;
+    constexpr uint32_t CloudNoise = 1u << 6;
+    constexpr uint32_t CloudDensity = 1u << 7;
+    constexpr uint32_t CloudAmbient = 1u << 8;
+    constexpr uint32_t MeshLights = 1u << 9;
+}
+
 struct PassDesc {
     std::wstring  file;
     Stage         stage      = Stage::RayGen;
@@ -29,6 +42,12 @@ struct PassDesc {
     //different per-dispatch Depth in Stage::RayGen (e.g. shift's temporal vs
     //spatial role count). Empty for every ordinary RayGen entry.
     std::wstring  dispatchTag;
+    uint32_t      requiredFeatures = 0;
+    bool          executedLastFrame = false;
+
+    bool IsEnabled(uint32_t features) const {
+        return (features & requiredFeatures) == requiredFeatures;
+    }
 };
 
 class PassSystem {
@@ -54,6 +73,7 @@ public:
     void Rebuild(const std::vector<std::wstring>& newTokens) { Build(newTokens); }
 
 private:
+    static uint32_t RequiredFeatures(const std::wstring& file);
     static PassDesc ParseToken(const std::wstring& token);
     void LinkLoops();
 

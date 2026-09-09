@@ -159,7 +159,9 @@ private:
     planet::RockScatter   m_rockScatter;
     std::vector<UINT>     m_rockMeshIndices;
     FlyCamController*   m_flyCam = nullptr;
-    ReSTIRSettings      m_restirSettings;
+    IntegratorSettings      m_integratorSettings;
+    IntegratorSettings      m_previousIntegratorSettings;
+    bool                    m_integratorHistoryValid = false;
     int                m_previousIntegratorMode = -1;
     // ReSTIR lite (shaders/RestirLite_v8.hlsli): reuse-table upload into the
     // SHaRC allocation, per-frame table transforms, history validity.

@@ -14,6 +14,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     const float3 n = float3(0, 0, -1);
     uint rng = tid.x + 1u;
     const LT_Sample sample = LT_SampleLight(x, n, rng);
-    results[tid.x] = float4(LT_PdfSelectTriangle(x, n, tid.x), sample.pdf,
-        LT_PdfSelectTriangle(x, n, sample.id), float(sample.id));
+    const float pdf = (rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u ? 0.0f : LT_PdfSelectTriangle(x, n, tid.x);
+    results[tid.x] = float4(pdf, sample.pdf,
+        LT_PdfSelectTriangle(x, n, sample.id), sample.id == LT_SENTINEL ? -1.0f : float(sample.id));
 }

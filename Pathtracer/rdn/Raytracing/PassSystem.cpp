@@ -9,10 +9,36 @@ void PassSystem::Build(const std::vector<std::wstring>& tokens) {
     m_passes.clear();
     m_passIndex.clear();
 
-    for (auto& t : tokens)
-        m_passes.push_back(ParseToken(t));
+    for (auto& t : tokens) {
+        auto pass = ParseToken(t);
+        pass.requiredFeatures = RequiredFeatures(pass.file);
+        m_passes.push_back(std::move(pass));
+    }
 
     LinkLoops();
+}
+
+// Classify once at pipeline creation, rather than hashing shader names each frame.
+uint32_t PassSystem::RequiredFeatures(const std::wstring& file) {
+    using namespace pass_feature;
+    if (file.rfind(L"Pass_sharc_", 0) == 0) return PathTracer | Sharc;
+    if (file.rfind(L"Pass_lite_", 0) == 0)
+        return PathTracer | DiffuseReuse | (file == L"Pass_lite_shift_v8.hlsl" ? SpatialReuse : 0u);
+    if (file.rfind(L"Pass_cumulus_", 0) == 0) {
+        uint32_t features = Clouds;
+        if (file == L"Pass_cumulus_secondary_v8.hlsl") features |= PathTracer;
+        if (file == L"Pass_cumulus_noise_v8.hlsl") features |= CloudNoise;
+        if (file == L"Pass_cumulus_density_v8.hlsl") features |= CloudDensity;
+        if (file == L"Pass_cumulus_ambient_v8.hlsl") features |= CloudAmbient;
+        return features;
+    }
+    if (file == L"Pass_pt_nee_v8.hlsl") return PathTracer | MeshLights;
+    if (file == L"Pass_pt_v8.hlsl" || file == L"Pass_pt_skybake_v8.hlsl") return PathTracer;
+    if (file == L"Pass_raygen_v8.hlsl" || file == L"Pass_temp_gi_v8.hlsl" ||
+        file == L"Pass_shift_v8.hlsl" || file == L"Pass_temp_merge_v8.hlsl" ||
+        file == L"Pass_dup_gi_v8.hlsl" || file.rfind(L"Pass_spmis_", 0) == 0)
+        return LegacyReSTIR;
+    return 0;
 }
 
 //====================================

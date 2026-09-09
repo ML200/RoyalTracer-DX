@@ -428,6 +428,7 @@ void PT_ENTRY_NAME()
 #endif
                     if (tech == 0u)
                     {
+                        if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) continue;
                         // Initial sample 0 of the primary vertex: the descent ran in
                         // Pass_pt_nee_v8; continue its NEE stream from the record
                         // (Path_State_v8.hlsli). Deeper vertices, further initial
