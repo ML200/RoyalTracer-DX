@@ -51,11 +51,7 @@ struct LTLeaf { uint triFirst; uint triCount; uint nodeIndex; };
 //====================================
 //TRIG-FREE NODE IMPORTANCE
 //====================================
-//importance bound from the ATS light-tree reference
-//deliberately matches the reference quirks: theta_u=PI inside the bbox (not just the sphere),
-//cos_theta clamped to [0,1] so back-facing clusters get the horizon-grazing factor instead of zero,
-//distance² clamped to max(d², 2R) (units are mismatched in the reference but we copy as-is for parity),
-//and no theta_e clip in the importance bound (theta_e only appears in the SAOH M_Omega build cost).
+// Conservative cone/AABB proposal with a dimensionally consistent distance scale.
 //sinTheta_o is precomputed at build time and passed in to skip a sqrt per call.
 inline float LT_NodeImportance_Common(
     float3 x, float3 n,
@@ -75,34 +71,18 @@ inline float LT_NodeImportance_Common(
     const float  R        = sqrt(dot(e, e));
     const float3 toCenter = c - x;
     const float  d2       = dot(toCenter, toCenter);
-    const float  distSq   = max(max(d2, 2.0 * R), 1e-12);
+    const float  distSq   = max(max(d2, R * R), 1e-12);
 
-    //inside-AABB short-circuits both factors to 1: theta_u=PI forces sinThetaU=0, cosThetaU=-1,
-    //which makes cos_T=-cosTheta_o, sin_T=-sinTheta_o<=0, so cos_theta_prime collapses to 1.
-    //skips a normalize, two dot products, and the entire orientation chain.
-    if (x.x >= bmin.x && x.x <= bmax.x &&
-        x.y >= bmin.y && x.y <= bmax.y &&
-        x.z >= bmin.z && x.z <= bmax.z)
-    {
-        return power / distSq;
-    }
-
-    const float  d         = sqrt(d2);
-    const float3 toCenterN = toCenter / d;
-
-    //inside-sphere -> theta_u = PI/2; else arcsin(R/d)
-    float sinThetaU, cosThetaU;
-    const float ratio = R / d;
-    if (ratio >= 1.0f) {
-        sinThetaU = 1.0f;
-        cosThetaU = 0.0f;
-    } else {
-        sinThetaU = ratio;
-        cosThetaU = sqrt(max(1.0f - sinThetaU * sinThetaU, 0.0f));
-    }
+    // Inside the bounding sphere the directional uncertainty covers the
+    // sphere. Keep a finite, conservative prior after the exact horizon test.
+    if(d2<=R*R) return max(0.0f,power)/distSq;
+    const float d=sqrt(d2);
+    const float3 toCenterN=toCenter/max(d,1e-20f);
+    const float sinThetaU=min(R/d,1.0f);
+    const float cosThetaU=sqrt(max(1.0f-sinThetaU*sinThetaU,0.0f));
 
     //receiver: cos(max(0, theta_i - theta_u))
-    //reference does NOT clamp the result to >=0; the bbox-vs-normal early reject above is supposed to mask that
+    // The AABB horizon test above rejects a completely hidden receiver hemisphere.
     const float ci = dot(n, toCenterN);
     float cos_i_prime;
     if (ci >= cosThetaU) {
@@ -112,8 +92,8 @@ inline float LT_NodeImportance_Common(
         cos_i_prime = ci * cosThetaU + si * sinThetaU;
     }
 
-    //orientation: cos_theta clamped to [0,1] so back-facing clusters land on the horizon
-    const float cosTheta = clamp(dot(axis, -toCenterN), 0.0f, 1.0f);
+    // Preserve the sign so a back-facing emission cone can be rejected.
+    const float cosTheta = clamp(dot(axis, -toCenterN), -1.0f, 1.0f);
     const float sinTheta = sqrt(max(1.0f - cosTheta * cosTheta, 0.0f));
 
     //T = theta_o + theta_u
@@ -132,22 +112,27 @@ inline float LT_NodeImportance_Common(
         cos_theta_prime = max(cosTheta * cos_T + sinTheta * sin_T, 0.0f);
     }
 
-    return cos_i_prime * power * cos_theta_prime / distSq;
+    return max(0.0f,cos_i_prime) * max(0.0f,power) * cos_theta_prime / distSq;
 }
 
-inline float LT_NodeImportance_TLAS(LightTLASNodeGpu n, float3 x, float3 norm)
+#include "LightTreeSG_v8.hlsli"
+inline float LT_NodeImportance_TLAS(LightTLASNodeGpu node, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.cosTheta_o, n.sinTheta_o, n.power);
+    float bound=LT_NodeImportance_Common(x,norm,node.bmin,node.bmax,node.axis,node.cosTheta_o,node.sinTheta_o,node.power);
+    if (!(bound>0.0f) || (rs_flags & LT_FLAG_SG)==0u) return bound;
+    return 0.05f*bound+0.95f*LT_SGImportance(x,norm,node.sgMean,node.sgVariance,node.sgAxis,node.sgSharpness,node.power);
 }
-inline float LT_NodeImportance_BLAS(LightBLASNodeGpu n, float3 x, float3 norm)
+inline float LT_NodeImportance_BLAS(LightBLASNodeGpu node, float3 x, float3 norm)
 {
-    return LT_NodeImportance_Common(x, norm, n.bmin, n.bmax, n.axis, n.cosTheta_o, n.sinTheta_o, n.power);
+    float bound=LT_NodeImportance_Common(x,norm,node.bmin,node.bmax,node.axis,node.cosTheta_o,node.sinTheta_o,node.power);
+    if (!(bound>0.0f) || (rs_flags & LT_FLAG_SG)==0u) return bound;
+    return 0.05f*bound+0.95f*LT_SGImportance(x,norm,node.sgMean,node.sgVariance,node.sgAxis,node.sgSharpness,node.power);
 }
 
 //====================================
 //STOCHASTIC DESCENT
 //====================================
-uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS)
+uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdfTLAS, uint startNode = 0u)
 {
     pdfTLAS = 1.0;
 
@@ -155,11 +140,11 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
     //children-importance loop and carried in registers, so the loop never re-loads
     //gLT_TLAS[node] at the top. The importance fields already touch both 32B sectors
     //of the 64B node, so grabbing the tail words is traffic-FREE — this removes one
-    //dependent 64B fetch per level from the descent's serial chain. Only the root's
+    //dependent node fetch per level from the descent's serial chain. Only the root's
     //topology needs an explicit load.
     uint firstChild, childCount, blasIndex;
     {
-        const LightTLASNodeGpu Nroot = gLT_TLAS[0];
+        const LightTLASNodeGpu Nroot = gLT_TLAS[startNode];
         firstChild = Nroot.firstChild; childCount = Nroot.childCount; blasIndex = Nroot.blasIndex;
     }
 
@@ -197,7 +182,7 @@ uint LT_DescendTLAS_Stratified(float3 x, float3 n, inout float xi, out float pdf
     return 0u;
 }
 
-LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float xi, out float pdfBLAS)
+LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float xi, out float pdfBLAS, uint startNode = 0u)
 {
     pdfBLAS = 1.0;
     BlasRangeGpu R = gLT_Range[blasIndex];
@@ -211,16 +196,16 @@ LTLeaf LT_DescendBLAS_Stratified(float3 x, float3 n, uint blasIndex, inout float
     //same distribution as the old world-space build (the per-BLAS scale cancels
     //in the PickAndRescale normalization).
     const float3 xL = mul(R.worldToLocal, float4(x, 1.0)).xyz;
-    const float3 nL = normalize(mul((float3x3)R.worldToLocal, n));
+    const float3 nL = LT_LocalReceiverNormal(R.worldToLocal,n);
 
-    uint node = 0;
+    uint node = startNode;
 
     //chosen-child topology carried in registers — same rework as the TLAS descent
     //above (no dependent per-level node reload; tail words ride the sectors the
     //importance fields already touch).
     uint firstChild, childCount, triFirst, triCount;
     {
-        const LightBLASNodeGpu Nroot = gLT_BLAS[R.nodeOffset];
+        const LightBLASNodeGpu Nroot = gLT_BLAS[R.nodeOffset+startNode];
         firstChild = Nroot.firstChild; childCount = Nroot.childCount;
         triFirst   = Nroot.triFirst;   triCount   = Nroot.triCount;
     }
@@ -311,7 +296,7 @@ uint LT_SampleLeafTriangle_Stratified(uint blasIndex, LTLeaf leaf, float xi, out
 //====================================
 //TOP-LEVEL SAMPLER
 //====================================
-LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
+LT_Sample LT_SampleSubtree(float3 worldPos, float3 worldNormal, inout uint rng, uint startNode=0u, uint startBlas=LT_SENTINEL)
 {
     if ((rs_flags & RS_FLAG_NO_MESH_LIGHTS) != 0u) {
         LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
@@ -323,12 +308,14 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 
     float pdfT, pdfB, pdfL;
 
-    uint   blas = LT_DescendTLAS_Stratified(worldPos, worldNormal, xiT, pdfT);
+    pdfT=1.0f;
+    uint blas=startBlas;
+    if(blas==LT_SENTINEL) blas=LT_DescendTLAS_Stratified(worldPos,worldNormal,xiT,pdfT,startNode);
     if (blas == LT_SENTINEL || !(pdfT > 0.0f)) {
         LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
         return empty;
     }
-    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xiB, pdfB);
+    LTLeaf leaf = LT_DescendBLAS_Stratified(worldPos, worldNormal, blas, xiB, pdfB,startBlas==LT_SENTINEL?0u:startNode);
     if (!(pdfB > 0.0f) || leaf.triCount == 0u) {
         LT_Sample empty; empty.id = LT_SENTINEL; empty.pdf = 0.0f;
         return empty;
@@ -348,7 +335,7 @@ LT_Sample LT_SampleLight(float3 worldPos, float3 worldNormal, inout uint rng)
 //bit trails record which child to descend into at each level (2 bits per level).
 //build emits one trail per BLAS (TLAS descent) and one per emissive triangle (BLAS descent),
 //so the PDF selects the child directly from the trail.
-float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
+float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint startNode=0u, uint startBlas=LT_SENTINEL, uint startDepth=0u)
 {
     if (triIndex == LT_SENTINEL) return 0.0f;
     uint blas = gLT_TriToBLAS[triIndex];
@@ -362,11 +349,11 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     float pdfTLAS = 1.0f;
     uint  tFirstChild, tChildCount;
     {
-        const LightTLASNodeGpu Nroot = gLT_TLAS[0];
-        tFirstChild = Nroot.firstChild; tChildCount = Nroot.childCount;
+        const LightTLASNodeGpu Nroot = gLT_TLAS[startBlas==LT_SENTINEL?startNode:0u];
+        tFirstChild=Nroot.firstChild; tChildCount=startBlas==LT_SENTINEL?Nroot.childCount:0u;
     }
 
-    [loop] for (uint iterT = 0u; iterT <= LT_TRAIL_MAX_DEPTH; ++iterT)
+    [loop] for (uint iterT = startBlas==LT_SENTINEL?startDepth:0u; iterT <= LT_TRAIL_MAX_DEPTH; ++iterT)
     {
         if (tChildCount == 0) break;
         if (iterT == LT_TRAIL_MAX_DEPTH) return 0.0f;
@@ -400,16 +387,16 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
     //so the pdf stays consistent with selection (unbiased) post origin-snap.
     BlasRangeGpu Rng = gLT_Range[blas];
     const float3 xL  = mul(Rng.worldToLocal, float4(x, 1.0)).xyz;
-    const float3 nL  = normalize(mul((float3x3)Rng.worldToLocal, n));
+    const float3 nL  = LT_LocalReceiverNormal(Rng.worldToLocal,n);
     float pdfBLAS    = 1.0f;
     uint  bFirstChild, bChildCount, bTriFirst, bTriCount;
     {
-        const LightBLASNodeGpu Nroot = gLT_BLAS[Rng.nodeOffset];
+        const LightBLASNodeGpu Nroot = gLT_BLAS[Rng.nodeOffset+(startBlas==LT_SENTINEL?0u:startNode)];
         bFirstChild = Nroot.firstChild; bChildCount = Nroot.childCount;
         bTriFirst   = Nroot.triFirst;   bTriCount   = Nroot.triCount;
     }
 
-    [loop] for (uint iterB = 0u; iterB <= LT_TRAIL_MAX_DEPTH; ++iterB)
+    [loop] for (uint iterB = startBlas==LT_SENTINEL?0u:startDepth; iterB <= LT_TRAIL_MAX_DEPTH; ++iterB)
     {
         if (bChildCount == 0)
         {
@@ -461,6 +448,8 @@ float LT_PdfSelectTriangle(float3 x, float3 n, uint triIndex)
 
     return 0.0f;
 }
+
+#include "LightTreeLearning_v8.hlsli"
 
 inline float LT_TriangleArea(uint tri, uint objID)
 {

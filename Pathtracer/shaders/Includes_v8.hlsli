@@ -75,7 +75,7 @@ cbuffer Push : register(b1)
     //took five of the eight former NRC-padding slots; 29-31 stay reserved for
     //the NIRC rewrite. SPMIS (32..37) and path-trace (38..41) keep their
     //register positions.
-    float spmis_normalFuzz;   // slot 24: SP_screen_hash tangent-plane normal jitter amplitude (0 = hard buckets)
+    float spmis_normalFuzz;   // slot 24: SPMIS normal jitter in legacy; learned-light cell size in PT
     uint  spmis_normalBits;   // slot 25: SP_quantize_normal bits per component (host-clamped 1..4)
     float spmis_searchR0;     // slot 26: cell-search initial probe radius (px)
     float spmis_searchGrow;   // slot 27: cell-search radius growth per probe
@@ -130,7 +130,7 @@ cbuffer Push : register(b1)
     float pp_sharpness;
     // SHaRC, regular PT only. Slots 44..56; total root cost is 64 DWORDs.
     uint  sharc_enabled; // bit 0: enabled; debug mode/level: SharcLayout.h
-    uint  sharc_reset;
+    uint  sharc_reset; // bit 0: SHaRC reset, bit 1: learned-light reset
     uint  sharc_frame;
     uint  sharc_updateStride;
     float sharc_cellSize;

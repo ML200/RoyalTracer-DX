@@ -22,7 +22,7 @@ bool SharcInstanceMoved(uint instance)
 [numthreads(SHARC_GROUP_SIZE, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID)
 {
-    if (sharc_reset != 0u && tid.x < SHARC_DIRTY_WORDS)
+    if ((sharc_reset & 1u) != 0u && tid.x < SHARC_DIRTY_WORDS)
         g_sharc.Store(SharcDirtyAddress(tid.x), 0u);
     // The guide table is smaller than the cache; its first threads maintain
     // one receiver entry each before their cache entry (no extra dispatch).
@@ -30,7 +30,7 @@ void main(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= SHARC_CAPACITY) return;
     uint stateAddress = SharcStateAddress(tid.x);
     uint e = SharcEntryAddress(tid.x);
-    bool evict = sharc_reset != 0u;
+    bool evict = (sharc_reset & 1u) != 0u;
     if (!evict && g_sharc.Load(stateAddress) != 0u)
     {
         uint4 key = g_sharc.Load4(e + SHARC_NODE); // node.xyz, meta

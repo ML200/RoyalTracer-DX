@@ -77,7 +77,7 @@ struct MatPacked {
 //====================================
 //LIGHT TREE NODES
 //====================================
-//64B, 4x Load4 per node. Build-stat fields (primCount, sumPower, sumPowerSq,
+//96B including two SG moment vectors. Build-stat fields (primCount, sumPower, sumPowerSq,
 //itemFirst, itemCount) were never read by any shader and only inflated
 //descent register pressure, so they were removed. C++ struct in LightTree.h
 //mirrors this layout.
@@ -85,7 +85,9 @@ struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float sinTheta_o;   //precomputed at build, saves one sqrt per importance call
+    float3 axis;     float sinTheta_o;
+    float3 sgMean;   float sgVariance;
+    float3 sgAxis;   float sgSharpness;
 
     uint   firstChild;
     uint   childCount;
@@ -93,12 +95,14 @@ struct LightTLASNodeGpu
     uint   _pad;                         //keeps struct stride 16B aligned
 };
 
-//64B, same motivation as the TLAS variant
+//96B, same motivation as the TLAS variant
 struct LightBLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float sinTheta_o;   //precomputed at build, saves one sqrt per importance call
+    float3 axis;     float sinTheta_o;
+    float3 sgMean;   float sgVariance;
+    float3 sgAxis;   float sgSharpness;
 
     uint   firstChild;
     uint   childCount;

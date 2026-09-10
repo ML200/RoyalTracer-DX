@@ -171,6 +171,10 @@ private:
     std::vector<ComPtr<ID3D12Resource>> m_liteReuseRetired; // uploads possibly still in flight
     std::mt19937           m_liteRng{ 0x4c495445u };
     void BuildLiteReuseTables(float sigma);
+    bool m_lightLearningResetPending = true;
+    bool m_lightLearningWasEnabled = false;
+    bool m_lightLearningSG = true;
+    int m_lightLearningCellExponent = 0;
     lt::LightTreeBuilder m_lightTree;
     lt::LightTreeRefitManager m_lightTreeRefit;
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;

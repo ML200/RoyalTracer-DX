@@ -16,6 +16,7 @@ namespace lt {
 
 // ── Data computed per BLAS for fast TLAS refit ───────────────────
 struct BLASRootLocal {
+    SGMoments sg;
     Aabb   localAabb;        // object-space AABB of all tris in this BLAS
     float  power    = 0.f;
     Cone   localCone;        // object-space orientation cone
@@ -41,7 +42,7 @@ inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(
     const std::vector<LightTriangle>& tris)
 {
     // Group by instanceID (same as LightTreeBuilder::buildBLASes_SAOH)
-    std::unordered_map<UINT, std::vector<uint32_t>> groups;
+    std::map<UINT, std::vector<uint32_t>> groups; // same ordered instance IDs as the initial builder
     for (uint32_t i = 0; i < (uint32_t)tris.size(); ++i)
         groups[tris[i].instanceID].push_back(i);
 
@@ -80,7 +81,8 @@ inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(
             } else {
                 tc.axis = normalize3(n); tc.theta_o = 0.f; tc.theta_e = LT_HALF_PI;
             }
-            root.localCone = coneUnion(root.localCone, tc);
+            root.localCone = root.primCount == 1 ? tc : coneUnion(root.localCone, tc);
+            root.sg=mergeSG(root.sg,triangleSG(t));
         }
 
         roots.push_back(root);
@@ -147,7 +149,7 @@ public:
 
             Cone worldCone;
             worldCone.axis    = worldAxis;
-            worldCone.theta_o = root.localCone.theta_o;
+            worldCone.theta_o = similarityTransform(world) ? root.localCone.theta_o : LT_PI;
             worldCone.theta_e = root.localCone.theta_e;
 
             TItem it;
@@ -156,6 +158,7 @@ public:
             it.c         = aabbCenter(worldAabb);
             it.p         = root.power;
             it.cone      = worldCone;
+            it.sg        = transformSG(root.sg,world);
             it.primCount = root.primCount;
             it.sumP      = root.sumPower;
             it.sumP2     = root.sumPowerSq;
@@ -187,7 +190,7 @@ public:
 private:
     struct TItem {
         uint32_t idx; Aabb a; XMFLOAT3 c; float p;
-        Cone cone; uint32_t primCount; float sumP, sumP2;
+        Cone cone; uint32_t primCount; float sumP, sumP2; SGMoments sg;
     };
 
     struct AggT {
@@ -230,6 +233,8 @@ private:
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
         N0.blasIndex = UINT32_MAX;
         N0._pad      = 0;
+        SGMoments sg; for(uint32_t i=begin;i<end;++i) sg=mergeSG(sg,it[i].sg);
+        storeSG(N0,sg);
 
         const uint32_t count = end - begin;
         if (count == 1) {
@@ -390,6 +395,11 @@ public:
         return true;
     }
 
+    // Emissive membership changes rebuild both levels synchronously. An older
+    // TLAS result must never overwrite the new BLAS numbering afterwards.
+    void DiscardPending() {
+        if (m_pending.exchange(false)) m_future.get();
+    }
     bool IsPending() const { return m_pending.load(); }
 
 private:

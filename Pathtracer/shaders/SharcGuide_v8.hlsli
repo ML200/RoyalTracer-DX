@@ -690,7 +690,7 @@ void GuidePrepareEntry(uint index)
 {
     uint stateAddress = GuideStateAddress(index);
     uint e = GuideEntryAddress(index);
-    bool evict = sharc_reset != 0u;
+    bool evict = (sharc_reset & 1u) != 0u;
     if (!evict && g_sharc.Load(stateAddress) != 0u)
     {
         uint4 header = g_sharc.Load4(e + GUIDE_IRRADIANCE);

@@ -417,6 +417,7 @@ void PT_ENTRY_NAME()
                     float3 radiance;
                     float  lightPdf;
                     float  cosSurf;
+                    uint trainingTri=LT_SENTINEL;
 
 #if !SHARC_UPDATE_PASS
                     // light-tree sample fields the lite candidate needs after the shadow ray
@@ -440,6 +441,7 @@ void PT_ENTRY_NAME()
                             load_pt_neePrefetch(g_pathStateBuffer, sampleIdx, treeSample.id, treeSample.pdf, sNee);
 #endif
                         if (!prefetched) treeSample = LT_SampleLight(ctx.hitPos, ctx.hitNormal, sNee);
+                        trainingTri=treeSample.id;
                         LT_LightSampleResult light = LT_SamplePointOnLightTree(ctx.hitPos, treeSample, sNee);
 
                         const float3 toLight = light.position - ctx.hitPos;
@@ -448,8 +450,9 @@ void PT_ENTRY_NAME()
 
                         cosSurf = dot(ctx.hitNormal, L);
                         const float cosLightS = dot(light.normal, -L);
-                        if (!(cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f))
-                            continue;
+                        if (!(cosSurf > 1e-6f && cosLightS > 1e-6f && light.pdfSolidAngle > 1e-20f)) {
+                            LT_Train(ctx.hitPos,ctx.hitNormal,trainingTri,0.0f);continue;
+                        }
 
                         visTarget  = light.position;
                         visTargetN = light.normal;
@@ -482,8 +485,9 @@ void PT_ENTRY_NAME()
                     //visibility first (keeps the BSDF eval out of the occluded
                     //lanes); thin glass attenuates instead of blocking
                     const float3 visT = VisibilityTransmittance(ctx.hitPos, ctx.hitNormal, visTarget, visTargetN);
-                    if (!any(visT > 0.0f))
-                        continue;
+                    if (!any(visT > 0.0f)) {
+                        LT_Train(ctx.hitPos,ctx.hitNormal,trainingTri,0.0f);continue;
+                    }
 
 
                     // One traversal yields the full BSDF and the broad share
@@ -492,8 +496,11 @@ void PT_ENTRY_NAME()
                     float3 broadNEE; float broadNeePdf;
                     BrdfData bdataNEE = EvaluateAndPdf_COMBINED_L(spPath, LOBE_BROAD, ctx.matID, ctx.hitNormal, ctx.hitNormal, L, -rayDir,
                         ctx.hitLocalKd, ctx.hitLocalPr, ctx.hitLocalPm, ctx.iors.x, ctx.iors.y, false, broadNEE, broadNeePdf);
-                    if (!(bdataNEE.pdf > 0.0f))
-                        continue;
+                    if (!(bdataNEE.pdf > 0.0f)) {
+                        LT_Train(ctx.hitPos,ctx.hitNormal,trainingTri,0.0f);continue;
+                    }
+                    LT_Train(ctx.hitPos,ctx.hitNormal,trainingTri,
+                        dot(radiance*cosSurf*visT*bdataNEE.val/lightPdf,float3(0.2126f,0.7152f,0.0722f)));
 
                     // MIS partner: the DECLARED continuation pdf, i.e. the plain
                     // BSDF pdf even with guiding on. Guiding only changes the
@@ -844,7 +851,9 @@ void PT_ENTRY_NAME()
             }
             HitInfo hinfo_n = EvalSurfaceStateDir(instID_n, primID_n, bary_n, rayDir, (uint)depth);
             const float3 hitPos_n   = hinfo_n.hitPos;
-            const float3 rayOriginR = hitPos_n - rayDir * hitT_n; // previous vertex, for the light-tree pdf
+            // Use the identical receiver used by NEE. Reconstructing it from hit T
+            // (or quantizing its normal) can cross a learned-cell boundary.
+            const float3 rayOriginR = ctx.hitPos;
 
             //----- Emitter hit: BSDF-technique direct emission, MIS vs NEE -----
             const float3 emission_n = (hinfo_n.lightID != 0xFFFFFFFFu)
@@ -854,7 +863,7 @@ void PT_ENTRY_NAME()
             {
                 //the NEE pdf this hit competes against: the light tree referenced
                 //from the vertex we scattered at (same call as raygen)
-                const float3 prevNormalCur = UnpackNormal(prevNormalPk);
+                const float3 prevNormalCur = ctx.hitNormal;
                 const float  lightPdfArea  = LT_Pdf_LightTree_Area(rayOriginR, prevNormalCur, hinfo_n.lightID, instID_n);
                 const float  cosLight      = max(dot(hinfo_n.hitNormal, -rayDir), 0.0f);
                 const float  dist2         = max(hitT_n * hitT_n, EPSILON);

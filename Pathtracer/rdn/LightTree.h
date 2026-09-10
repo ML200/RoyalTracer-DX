@@ -13,6 +13,7 @@
 #include <limits>
 #include <DirectXMath.h>
 #include <unordered_map>
+#include <map>
 #include <iostream>
 #include <chrono>
 #include <cmath>
@@ -73,7 +74,7 @@ struct InstanceXformCPU {
 namespace lt
 {
 #pragma pack(push, 1)
-    // 64B, mirrors HLSL Data_v8.hlsli. Build-stat fields
+    // 96B, mirrors HLSL Data_v8.hlsli. Build-stat fields
     // (primCount/sumPower/sumPowerSq/itemFirst/itemCount) were dropped
     // because no shader read them and they were inflating descent register
     // pressure. Builder still tracks them internally (Node, TItem) for the
@@ -81,7 +82,9 @@ namespace lt
     struct LightTLASNodeGpu {
         XMFLOAT3 bmin; float power;
         XMFLOAT3 bmax; float cosTheta_o;
-        XMFLOAT3 axis; float sinTheta_o;  // precomputed sqrt(1 - cosTheta_o^2)
+        XMFLOAT3 axis; float sinTheta_o;  // conservative orientation cone
+        XMFLOAT3 sgMean; float sgVariance;
+        XMFLOAT3 sgAxis; float sgSharpness;
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -92,7 +95,9 @@ namespace lt
     struct LightBLASNodeGpu {
         XMFLOAT3 bmin; float power;
         XMFLOAT3 bmax; float cosTheta_o;
-        XMFLOAT3 axis; float sinTheta_o;  // precomputed sqrt(1 - cosTheta_o^2)
+        XMFLOAT3 axis; float sinTheta_o;  // conservative orientation cone
+        XMFLOAT3 sgMean; float sgVariance;
+        XMFLOAT3 sgAxis; float sgSharpness;
 
         uint32_t firstChild;
         uint32_t childCount;
@@ -109,6 +114,8 @@ namespace lt
     };
 #pragma pack(pop)
 
+
+static_assert(sizeof(LightTLASNodeGpu)==96 && sizeof(LightBLASNodeGpu)==96);
 
 static constexpr float LT_PI = 3.14159265358979323846f;
 static constexpr float LT_HALF_PI = 1.57079632679489661923f;
@@ -176,7 +183,9 @@ static Cone coneUnion(const Cone& A, const Cone& B){
     } else if (LT_PI - theta_d < 1e-7f) {
         // nearly anti-parallel: choose any perpendicular axis
         XMFLOAT3 t = (std::fabs(a.axis.x) < 0.9f) ? XMFLOAT3{1,0,0} : XMFLOAT3{0,1,0};
-        out.axis = normalize3(cross3(a.axis, t));
+        const auto perpendicular=normalize3(cross3(a.axis,t));
+        const float angle=theta_o-a.theta_o;
+        out.axis=normalize3(add3(mul3(a.axis,std::cos(angle)),mul3(perpendicular,std::sin(angle))));
     } else {
         // regular case
         float t = clampf((theta_o - a.theta_o) / theta_d, 0.f, 1.f);
@@ -258,10 +267,94 @@ static Aabb triAabbWorld(const ::LightTriangle& t, const XMFLOAT4X4& world)
     return a;
 }
 
+// Power-weighted spatial and directional moments. Double precision and centered
+// covariance avoid cancellation for small emitters far from the origin.
+struct SGMoments {
+    double weight = 0, mean[3]{}, covariance[3][3]{}, direction[3]{};
+};
+static SGMoments mergeSG(const SGMoments& a, const SGMoments& b) {
+    if (a.weight <= 0) return b;
+    if (b.weight <= 0) return a;
+    SGMoments r; r.weight = a.weight + b.weight;
+    const double t = b.weight / r.weight;
+    for (int i=0;i<3;++i) {
+        r.mean[i] = a.mean[i] + t * (b.mean[i]-a.mean[i]);
+        r.direction[i] = a.direction[i] + t * (b.direction[i]-a.direction[i]);
+        for (int j=0;j<3;++j)
+            r.covariance[i][j] = (1-t)*a.covariance[i][j] + t*b.covariance[i][j]
+                + t*(1-t)*(b.mean[i]-a.mean[i])*(b.mean[j]-a.mean[j]);
+    }
+    return r;
+}
+static SGMoments triangleSG(const ::LightTriangle& tri) {
+    SGMoments r; r.weight = (std::max)(0.0, double(tri.weight));
+    const XMFLOAT3 vertices[] = {tri.x,tri.y,tri.z};
+    for (int i=0;i<3;++i) {
+        for (const auto& v: vertices) r.mean[i] += double((&v.x)[i])/3.0;
+    }
+    // Covariance of a uniform triangle: sum((vertex-centroid)^2)/12.
+    for (const auto& v: vertices)
+        for (int i=0;i<3;++i) for (int j=0;j<3;++j)
+            r.covariance[i][j] += (double((&v.x)[i])-r.mean[i])*(double((&v.x)[j])-r.mean[j])/12.0;
+    const auto cross = cross3(sub3(tri.y,tri.x),sub3(tri.z,tri.x));
+    if (length3(cross)>1e-12f) {
+        const auto n=normalize3(cross);
+        // First moment of a normalized Lambertian emission lobe is 2/3.
+        for (int i=0;i<3;++i) r.direction[i] = (2.0/3.0)*(&n.x)[i];
+    }
+    return r;
+}
+static bool similarityTransform(const XMFLOAT4X4& w) {
+    const XMFLOAT3 a{w._11,w._12,w._13}, b{w._21,w._22,w._23}, c{w._31,w._32,w._33};
+    const float scale=(std::max)({dot3(a,a),dot3(b,b),dot3(c,c),1e-20f});
+    return std::fabs(dot3(a,a)-dot3(b,b))<scale*1e-5f && std::fabs(dot3(a,a)-dot3(c,c))<scale*1e-5f
+        && std::fabs(dot3(a,b))<scale*1e-5f && std::fabs(dot3(a,c))<scale*1e-5f && std::fabs(dot3(b,c))<scale*1e-5f;
+}
+static SGMoments transformSG(const SGMoments& a, const XMFLOAT4X4& w) {
+    SGMoments r=a;
+    for(int i=0;i<3;++i) {
+        r.mean[i]=w.m[3][i];
+        for(int j=0;j<3;++j) r.mean[i]+=a.mean[j]*w.m[j][i];
+        for(int j=0;j<3;++j) {
+            r.covariance[i][j]=0;
+            for(int k=0;k<3;++k) for(int l=0;l<3;++l)
+                r.covariance[i][j]+=w.m[k][i]*a.covariance[k][l]*w.m[l][j];
+        }
+    }
+    // A nonuniform transform does not preserve a spherical directional lobe.
+    // Use an isotropic proposal there; the actual emitter remains unchanged.
+    for(double& d:r.direction) d=0;
+    if(similarityTransform(w)) {
+        XMFLOAT3 n{float(a.direction[0]),float(a.direction[1]),float(a.direction[2])};
+        const float len=length3(n);
+        if(len>0) { XMFLOAT3X3 normal; computeNormal33FromWorld(w,normal); n=transformNormalW(n,normal);
+            for(int i=0;i<3;++i) r.direction[i]=(&n.x)[i]*len; }
+    }
+    return r;
+}
+template<class Node> static void storeSG(Node& node, const SGMoments& s) {
+    node.sgMean={float(s.mean[0]),float(s.mean[1]),float(s.mean[2])};
+    // One-axis variance for an isotropic spatial Gaussian.
+    node.sgVariance=float((std::max)(0.0,(s.covariance[0][0]+s.covariance[1][1]+s.covariance[2][2])/3.0));
+    XMFLOAT3 mean{float(s.direction[0]),float(s.direction[1]),float(s.direction[2])};
+    const float r=(std::min)(length3(mean),0.999f);
+    node.sgAxis=r>1e-8f?normalize3(mean):XMFLOAT3{0,0,1};
+    node.sgSharpness=r>1e-8f?(3*r-r*r*r)/(1-r*r):0;
+}
+static Aabb transformBounds(const Aabb& a, const XMFLOAT4X4& w) {
+    Aabb r{};
+    for (int i=0;i<8;++i) {
+        const auto p=transformPointW({i&1?a.mx.x:a.mn.x,i&2?a.mx.y:a.mn.y,i&4?a.mx.z:a.mn.z},w);
+        if(i==0) r={p,p}; else { r.mn=min3(r.mn,p);r.mx=max3(r.mx,p); }
+    }
+    return r;
+}
+
 //====================================
 //CPU NODE
 //====================================
     struct BLASNode {
+    SGMoments sg;
     Aabb aabb{}; float power = 0.f;
     Cone cone{};
     uint32_t firstChild = 0xFFFFFFFF; // index of first child (contiguous)
@@ -285,7 +378,7 @@ struct BLASBuild {
 class LightTreeBuilder {
 private:
     struct TItem { // TLAS items over BLAS roots
-        uint32_t idx; Aabb a; XMFLOAT3 c; float p; Cone cone; uint32_t primCount; float sumP, sumP2;
+        uint32_t idx; Aabb a; XMFLOAT3 c; float p; Cone cone; uint32_t primCount; float sumP, sumP2; SGMoments sg;
     };
     std::vector<LightTreeTrail> m_triBitTrails;   // BLAS descent path per emissive triangle
     std::vector<LightTreeTrail> m_blasBitTrails;  // TLAS descent path per BLAS
@@ -714,7 +807,7 @@ private:
         LT_TIME_SCOPE(L"buildBLASes_SAOH()");
         LT_LOG(L"Grouping " << (m_tris ? m_tris->size() : 0) << L" emissive triangles by instanceID...");
         if (!m_tris){ LT_WARN(L"m_tris == nullptr"); return; }
-        std::unordered_map<UINT, std::vector<uint32_t>> groups; groups.reserve(m_tris->size());
+        std::map<UINT, std::vector<uint32_t>> groups; // stable BLAS indices, shared with the refitter
         for (uint32_t i=0;i<m_tris->size();++i) groups[(*m_tris)[i].instanceID].push_back(i);
         LT_LOG(L"buildBLASes: groups=" << groups.size());
         m_blas.clear(); m_blas.reserve(groups.size());
@@ -801,6 +894,7 @@ private:
         N0.primCount = parent.N;
         N0.sumPower = parent.sumP;
         N0.sumPowerSq = parent.sumP2;
+        for (uint32_t i=begin;i<end;++i) N0.sg=mergeSG(N0.sg,triangleSG((*m_tris)[tmp[i].triIndex]));
 
         const uint32_t count = end - begin;
         if (count <= m_cfg.maxLeafTris) {
@@ -996,7 +1090,11 @@ private:
         LT_LOG(L"buildTLAS: BLASes=" << m_blas.size());
         std::vector<TItem> items; items.reserve(m_blas.size());
         for (uint32_t i=0;i<m_blas.size();++i){ const auto& b = m_blas[i]; const auto& r = b.nodes[0];
-            TItem it; it.idx=i; it.a=r.aabb; it.c=aabbCenter(r.aabb); it.p=r.power; it.cone=r.cone; it.primCount=r.primCount; it.sumP=r.sumPower; it.sumP2=r.sumPowerSq; items.push_back(it);
+            const auto& world=worldXformFor((*m_tris)[b.triIndices[0]].instanceID);
+            TItem it; it.idx=i; it.a=transformBounds(r.aabb,world); it.c=aabbCenter(it.a); it.p=r.power; it.cone=r.cone;
+            it.cone.axis=transformNormalW(r.cone.axis,normalXformFor((*m_tris)[b.triIndices[0]].instanceID));
+            if(!similarityTransform(world)) it.cone.theta_o=LT_PI;
+            it.sg=transformSG(r.sg,world); it.primCount=r.primCount; it.sumP=r.sumPower; it.sumP2=r.sumPowerSq; items.push_back(it);
         }
         m_tlas.clear();
         if (items.empty()){ LT_WARN(L"buildTLAS: no items"); return; }
@@ -1035,6 +1133,8 @@ private:
         N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
         N0.blasIndex = UINT32_MAX;
         N0._pad      = 0;
+        SGMoments sg; for(uint32_t i=begin;i<end;++i) sg=mergeSG(sg,it[i].sg);
+        storeSG(N0,sg);
 
         const uint32_t count = end - begin;
         if (count == 1) {
@@ -1219,6 +1319,7 @@ private:
 
         g.triFirst = n.triFirst;
         g.triCount = n.triCount;
+        storeSG(g,n.sg);
 
         //primCount/sumPower/sumPowerSq dropped from the GPU struct, still
         //tracked on n for the SAOH build but never read by any shader

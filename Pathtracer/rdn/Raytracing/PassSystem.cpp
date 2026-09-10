@@ -21,6 +21,7 @@ void PassSystem::Build(const std::vector<std::wstring>& tokens) {
 // Classify once at pipeline creation, rather than hashing shader names each frame.
 uint32_t PassSystem::RequiredFeatures(const std::wstring& file) {
     using namespace pass_feature;
+    if (file == L"Pass_light_learning_v8.hlsl") return PathTracer | MeshLights | LightLearning;
     if (file.rfind(L"Pass_sharc_", 0) == 0) return PathTracer | Sharc;
     if (file.rfind(L"Pass_lite_", 0) == 0)
         return PathTracer | DiffuseReuse | (file == L"Pass_lite_shift_v8.hlsl" ? SpatialReuse : 0u);

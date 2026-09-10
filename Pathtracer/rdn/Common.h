@@ -191,6 +191,10 @@ struct IntegratorSettings {
     //SHaRC is exclusive to the regular path tracer. Disabling it restores the
     //uncached reference and its original bounce budgets. Grid size is a power
     //of two for floating-origin precision; cache memory is resolution-independent.
+    bool  lightTreeSG = true;
+    bool  lightTreeLearning = true;
+    bool  lightTreeReset = false;
+    int   lightTreeCellExponent = 0;
     bool  sharcEnabled = true;
     bool  sharcReset = false;
     int   sharcDebugMode = 0; // 0: off, 1: cells, 2: stored cell lighting, 3: guiding coverage
@@ -377,7 +381,7 @@ struct IntegratorSettings {
         const bool pt = integratorMode == 0;
         const bool lite = pt && liteEnabled;
         return std::make_tuple(integratorMode, maxBounces, maxDiffuseBounces,
-            texturePointFilter, forceDiffuseMats, pt && sharcEnabled, lite,
+            texturePointFilter, forceDiffuseMats, lightTreeSG, pt && lightTreeLearning, lightTreeCellExponent, pt && sharcEnabled, lite,
             lite && liteDebugView, lite && liteUnshadowedTargets, ucwClampMax,
             pt ? 0u : Flags());
     }

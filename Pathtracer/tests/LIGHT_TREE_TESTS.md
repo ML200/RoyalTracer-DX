@@ -16,3 +16,5 @@ The shared trail layout is `shaders/LightTreeTrail.h`: 64 bits per trail,
 uploaded as `R32G32_UINT` and read as `uint2`. Builders reserve enough remaining
 levels for binary median splits, so skewed SAOH choices cannot exceed 32 levels.
 Sampling and PDF traversal both allow a leaf at exactly depth 32.
+
+SG and learned-cut regressions are documented in docs/LIGHT_TREE_LEARNING.md. The test builds both the production sampler and frame-update shader. Learning tests bind a dedicated 34 MiB buffer at the production UAV slot and exercise actual GPU feedback, updates and refinement.

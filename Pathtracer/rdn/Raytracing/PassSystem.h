@@ -25,6 +25,7 @@ namespace pass_feature {
     constexpr uint32_t CloudDensity = 1u << 7;
     constexpr uint32_t CloudAmbient = 1u << 8;
     constexpr uint32_t MeshLights = 1u << 9;
+    constexpr uint32_t LightLearning = 1u << 10;
 }
 
 struct PassDesc {

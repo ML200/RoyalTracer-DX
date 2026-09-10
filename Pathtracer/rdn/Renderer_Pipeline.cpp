@@ -494,6 +494,7 @@ ComPtr<ID3D12RootSignature> Renderer::CreateMissSignature() {
 void Renderer::CreateRaytracingPipeline() {
     m_cumulusNoiseReady = m_cumulusAmbientReady = false;
     m_skyLutsReady = false;
+    m_lightLearningResetPending = true;
     m_sharcResetPending = true; // shader reload can change the transport estimator
     nv_helpers_dx12::RayTracingPipelineGenerator pipeline(m_ctx.Device());
 

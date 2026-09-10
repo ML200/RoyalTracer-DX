@@ -30,7 +30,11 @@
 #define LITE_REUSE_OFFSET (SHARC_DIRTY_OFFSET + SHARC_DIRTY_WORDS * 4u)
 #define LITE_REUSE_TEXELS (LITE_REUSE_SIZE0 * LITE_REUSE_SIZE0 + \
     LITE_REUSE_SIZE1 * LITE_REUSE_SIZE1 + LITE_REUSE_SIZE2 * LITE_REUSE_SIZE2)
-#define SHARC_BUFFER_BYTES (LITE_REUSE_OFFSET + LITE_REUSE_TEXELS * 4u)
+#include "LightTreeLearningLayout.h"
+#ifndef LT_BUFFER_OFFSET
+#define LT_BUFFER_OFFSET (LITE_REUSE_OFFSET + LITE_REUSE_TEXELS * 4u)
+#endif
+#define SHARC_BUFFER_BYTES (LT_BUFFER_OFFSET + LT_LEARNING_BYTES)
 // rs_flags bits owned by ReSTIR lite. They are clear of every bit the
 // deprecated reservoir pipeline tests (Includes_v8.hlsli RS_FLAG_*) and are
 // only raised by the host while the regular path tracer owns the frame.

@@ -44,6 +44,7 @@ Renderer::Renderer(UINT width, UINT height)
         //state + sky-view LUT for the training and bounce kernels' misses and
         //sun NEE (SkyBake_v8.hlsli; fx:512 = SKYBAKE_GROUPS).
         L"Pass_pt_skybake_v8.hlsl|fx:512",              L"barrier",
+        L"Pass_light_learning_v8.hlsl|fx:256",           L"barrier",
         L"Pass_sharc_prepare_v8.hlsl|fx:4096",           L"barrier",
         L"Pass_sharc_update_v8.hlsl|rg",                 L"barrier",
         L"Pass_sharc_resolve_v8.hlsl|fx:4096",           L"barrier",
@@ -638,6 +639,8 @@ void Renderer::UpdateRenderer(float dt) {
                   m_passes, m_dlss, m_dlssNR, m_dlssG, m_integratorSettings,
                   m_fps, m_frameStats, m_planet.stats());
     const auto& settings = m_integratorSettings;
+    if (!m_integratorHistoryValid || settings.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
+        m_lightLearningResetPending = true;
     if (!m_integratorHistoryValid ||
         settings.ReconstructionKey() != m_previousIntegratorSettings.ReconstructionKey() ||
         m_scene.materialsDirty) {
@@ -662,10 +665,12 @@ void Renderer::UpdateRenderer(float dt) {
     const bool sharcStructureChanged = m_sharcInstanceState.size() != m_scene.instances.size();
     if (sharcStructureChanged) m_sharcInstanceState.resize(m_scene.instances.size());
     if (m_scene.materialsDirty || sharcStructureChanged) {
+        m_lightLearningResetPending = true;
         m_sharcResetPending = true;
     }
     for (size_t i = 0; i < m_scene.instances.size(); ++i) {
         if (!sharcStructureChanged && i < m_scene.instanceDirty.size() && !m_scene.instanceDirty[i]) continue;
+        m_lightLearningResetPending = true;
         const auto& instance = m_scene.instances[i];
         auto& previous = m_sharcInstanceState[i];
         // A moved instance invalidates only its own records: Pass_sharc_prepare
@@ -781,6 +786,7 @@ void Renderer::KickLightTreeRefit() {
 
 void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     if (m_pendingTLASUpload.empty()) return;
+    m_lightLearningResetPending = true;
 
     auto* dev = m_ctx.Device();
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -916,6 +922,25 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
 
     const auto& tris = m_scene.emissiveTriangles;
     const auto& triMap = m_scene.triToLightId;
+
+    m_lightTreeRefit.DiscardPending();
+    m_pendingTLASUpload.clear();m_pendingBLASBitTrail.clear();m_pendingBLASRanges.clear();
+    m_lightLearningResetPending=true;
+    if(!tris.empty()) {
+        // Previous-frame GPU work has completed before PopulateCommandList.
+        // Refresh powers, SG moments, BLAS membership and both trail tables.
+        m_lightTree.ReleaseStaging();
+        m_lightTree.Build(tris,BuildXformsFromScene());
+        m_lightTree.UploadAll(dev,cmdList);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE treeHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),LT_TLAS_SRV_SLOT,inc);
+        m_lightTree.WriteSrvs(dev,treeHandle);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE lookupHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),25,inc);
+        m_lightTree.WriteLookupSrvs(dev,lookupHandle);
+        // Force the next asynchronous refit to rebind its owned buffers.
+        m_ltTlasGpu.Reset();m_ltBlasBitTrailGpu.Reset();m_ltRangesGpu.Reset();
+        m_ltTlasGpuCapacity=m_ltBlasBitTrailGpuCapacity=m_ltRangesGpuCapacity=0;
+    }
+
 
     // ── Emissive triangles buffer ────────────────────────────────
     if (!tris.empty()) {
@@ -1811,11 +1836,10 @@ void Renderer::PopulateCommandList() {
         raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
     }
 
-    // Upload async light tree TLAS refit data if available
-    UploadLightTreeTLAS(cmdList);
-
-    // Re-upload emissive triangle data if emission values changed
+    // Emission/topology edits rebuild both light-tree levels and discard
+    // obsolete async results before any TLAS copy commands are recorded.
     UploadEmissiveBuffers(cmdList);
+    UploadLightTreeTLAS(cmdList);
 
     // Output → UAV
     { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(),
@@ -1919,6 +1943,16 @@ void Renderer::PopulateCommandList() {
     // below also skips every reservoir pass in this mode.
     const bool usePtKernel = (rs.integratorMode == 0);
     const bool useSharc = usePtKernel && rs.sharcEnabled;
+    const bool useLightLearning=usePtKernel && rs.lightTreeLearning && !m_scene.emissiveTriangles.empty();
+    rs.lightTreeCellExponent=std::clamp(rs.lightTreeCellExponent,-4,8);
+    if(rs.lightTreeReset || (useLightLearning && !m_lightLearningWasEnabled) ||
+        rs.lightTreeCellExponent!=m_lightLearningCellExponent || rs.lightTreeSG!=m_lightLearningSG ||
+        rs.texturePointFilter!=m_sharcTextureFilter || rs.forceDiffuseMats!=m_previousIntegratorSettings.forceDiffuseMats)
+        m_lightLearningResetPending=true;
+    m_lightLearningWasEnabled=useLightLearning;m_lightLearningSG=rs.lightTreeSG;
+    m_lightLearningCellExponent=rs.lightTreeCellExponent;rs.lightTreeReset=false;
+    if(rs.lightTreeSG) baseFlags|=LT_FLAG_SG;
+    if(useLightLearning) baseFlags|=LT_FLAG_LEARNING;
     if (!m_cumulusSettingsValid || std::memcmp(&m_previousCumulusSettings,
         &m_camera.cumulusSettings, sizeof(CumulusSettings)) != 0 ||
         m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
@@ -1960,7 +1994,8 @@ void Renderer::PopulateCommandList() {
     rsConsts[44] = useSharc ? 1u : 0u;
     rsConsts[44] |= sharcDebugMode << SHARC_DEBUG_MODE_SHIFT;
     if (sharcDebugMode != 0u && rs.sharcDebugCoarse) rsConsts[44] |= SHARC_DEBUG_OTHER_LEVEL_BIT;
-    rsConsts[45] = m_sharcResetPending ? 1u : 0u;
+    rsConsts[45] = (m_sharcResetPending ? 1u : 0u) | (m_lightLearningResetPending ? LT_RESET_BIT : 0u);
+    if(useLightLearning) m_lightLearningResetPending=false;
     rsConsts[46] = ++m_sharcFrame; // monotonic; unsigned age works across wrap
     rsConsts[47] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
     const float sharcCellSize = std::exp2((float)rs.sharcCellSizeExponent);
@@ -2073,7 +2108,8 @@ void Renderer::PopulateCommandList() {
         const float nf  = std::clamp(rs.spmisNormalFuzz, 0.0f, 1.0f);
         const float sr0 = std::clamp(rs.spmisSearchR0,   1.0f, 512.0f);
         const float sg  = std::clamp(rs.spmisSearchGrow, 1.0f, 2.0f);
-        memcpy(&rsConsts[24], &nf, 4);
+        const float lightCellSize=std::exp2(float(rs.lightTreeCellExponent));
+        memcpy(&rsConsts[24], usePtKernel ? &lightCellSize : &nf, 4);
         rsConsts[25] = (UINT)std::clamp(rs.spmisNormalBits, 1, 4);
         memcpy(&rsConsts[26], &sr0, 4);
         memcpy(&rsConsts[27], &sg, 4);
@@ -2369,6 +2405,7 @@ void Renderer::PopulateCommandList() {
     if (ambientKey != m_cumulusAmbientKey) m_cumulusAmbientReady = false;
     uint32_t activeFeatures = usePtKernel ? pass_feature::PathTracer : pass_feature::LegacyReSTIR;
     if (useSharc) activeFeatures |= pass_feature::Sharc;
+    if (useLightLearning) activeFeatures |= pass_feature::LightLearning;
     if (liteActive) activeFeatures |= pass_feature::DiffuseReuse;
     if (rs.liteSpatial) activeFeatures |= pass_feature::SpatialReuse;
     if (!m_scene.emissiveTriangles.empty()) activeFeatures |= pass_feature::MeshLights;
@@ -2578,6 +2615,7 @@ void Renderer::PopulateCommandList() {
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, currentStack, nextStack);
             const UINT groups = p.file == L"Pass_sharc_resolve_v8.hlsl" ? SHARC_RESOLVE_GROUPS
+                : p.file == L"Pass_light_learning_v8.hlsl" ? LT_LEARNING_GROUPS
                 : p.file == L"Pass_sharc_prepare_v8.hlsl" ? SHARC_CAPACITY / SHARC_GROUP_SIZE
                 : p.file == L"Pass_pt_skybake_v8.hlsl" && m_camera.cumulusSettings.enabled>.5f ? 1u : p.groupX;
             cmdList->Dispatch(groups, p.groupY, 1);

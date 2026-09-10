@@ -651,7 +651,15 @@ void Editor::DrawIntegratorPanel(IntegratorSettings& rs, const FrameStats& stats
         ImGui::SetItemTooltip("Earlier termination saves rays but increases noise.");
     }
 
+    ImGui::SeparatorText("Light sampling");
+    ImGui::Checkbox("Spherical Gaussian light tree", &rs.lightTreeSG);
     if (rs.integratorMode == 0) {
+        ImGui::Checkbox("Learn light clusters", &rs.lightTreeLearning);
+        ImGui::SetItemTooltip("Learns visible contributions and refines noisy clusters between frames.");
+        if(rs.lightTreeLearning) {
+            ImGui::SliderInt("Lighting cell size (log2 m)", &rs.lightTreeCellExponent, -4, 8);
+            if(ImGui::Button("Reset learned lighting")) rs.lightTreeReset=true;
+        }
         ImGui::SeparatorText("SHARC");
         ImGui::Checkbox("Radiance cache", &rs.sharcEnabled);
         ImGui::BeginDisabled(!rs.sharcEnabled);

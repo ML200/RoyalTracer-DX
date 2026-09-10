@@ -13,11 +13,7 @@
 // passes. Per-frame sums are unsigned fixed point added with single-shot atomics.
 // Only concurrent update publication needs device-coherent loads. Rendering
 // reads an immutable snapshot behind the resolve UAV barrier and can use caches.
-#if SHARC_UPDATE_PASS && !defined(SHARC_READ_ONLY)
-globallycoherent RWByteAddressBuffer g_sharc : register(u27);
-#else
-RWByteAddressBuffer g_sharc : register(u27);
-#endif
+#include "PersistentSamplingBuffer_v8.hlsli"
 static const uint SHARC_LOCKED = 0xffffffffu;
 static const uint SHARC_INVALID = 0xffffffffu;
 
