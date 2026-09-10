@@ -21,13 +21,11 @@ inline float3 EvaluateBRDF_COAT(
 
     //GGX microfacet
     float3 H    = normalize(V + L);
-    float  NdotH = max(0.0f, dot(N, H));
-    float  VdotH = max(0.0f, dot(V, H));
 
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    float  D = D_GGX(NdotH, alpha);
+    float  D = D_GGX(N, H, alpha);
     float  G = G2_SmithGGX(NdotV, NdotL, alpha);
     float  denom = max(4.0f * NdotV * NdotL, EPSILON);
     float3 F = FresnelDielectricTIR(V, H, etai, etat);
@@ -120,12 +118,12 @@ inline CoatResult EvalCoatAll(
     const half pc = (half)saturate(LoadPc(matID));
     if (pc <= (half)0.0) return r;
 
-    const half Pr_coat = (half)LoadPcr(matID);
+    const float Pr_coat = LoadPcr(matID);
 
     //transmittance
     [branch] if (needTransmission && NdotV > 0.0f && NdotL > 0.0f)
     {
-        const half PrFactor = (half)1.0 - Pr_coat * (half)0.7;
+        const half PrFactor = (half)(1.0f - Pr_coat * 0.7f);
         const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
         const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
         r.t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
@@ -135,16 +133,14 @@ inline CoatResult EvalCoatAll(
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);
-    const half NdotH = (half)max(0.0f, dot(N, H));
-    //VdotH stays float, divides spec via 4*VdotH
-    const float VdotH = max(EPSILON, dot(V, H));
 
-    const half rough = saturate(Pr_coat);
-    //fp16 normal min is ~6.1e-5; 1e-4 is the lowest safe alpha clamp here
-    const half alpha = max((half)1e-4, rough * rough);
+    const float rough = saturate(Pr_coat);
+    // Match the sampler and standalone PDF. Narrow-lobe geometry and alpha
+    // need float precision even though material storage is quantized.
+    const float alpha = max(EPSILON, rough * rough);
 
     //D and G can blow past fp16 range for smooth coat, keep float
-    const float D   = D_GGX(NdotH, alpha);
+    const float D   = D_GGX(N, H, alpha);
     const float G1V = G1_SmithGGX(NdotV, alpha);
 
     {
@@ -218,12 +214,11 @@ inline float BRDF_PDF_COAT(
 
     float3 H     = normalize(V + L);
     float  VdotH = max(EPSILON, dot(V, H));
-    float  NdotH = max(EPSILON, dot(N, H));
 
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
     //VNDF -> reflection, p(wi) = p(H)/(4*V.H)
-    float pdf_H = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
+    float pdf_H = (D_GGX(N, H, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
     return pdf_H / (4.0f * VdotH);
 }

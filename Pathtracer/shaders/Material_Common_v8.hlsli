@@ -16,12 +16,15 @@ inline float GetEssLUT(float roughness, float NdotV)
 //====================================
 //GGX NDF AND MASKING
 //====================================
-inline float D_GGX(float NdotH, float alpha)
+inline float D_GGX(float3 N, float3 H, float alpha)
 {
-    float alpha2 = alpha * alpha;
-    float NdotH2 = NdotH * NdotH;
-
-    float denom = (NdotH2 * (alpha2 - 1.0f) + 1.0f);
+    const float alpha2 = alpha * alpha;
+    const float NdotH = dot(N, H);
+    const float3 NxH = cross(N, H);
+    // |N x H|^2 = 1-(N.H)^2 for unit vectors. Computing the small
+    // tangential component directly preserves narrow highlights, even when
+    // N.H rounds to one. Avoid subtracting alpha^2 from one as well.
+    const float denom = dot(NxH, NxH) + alpha2 * NdotH * NdotH;
     return alpha2 / (PI * denom * denom);
 }
 

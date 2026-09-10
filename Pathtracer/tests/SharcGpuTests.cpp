@@ -33,7 +33,7 @@ struct Runner {
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12Resource> cache, output, readback;
     ComPtr<ID3D12Fence> fence;
-    std::array<ComPtr<ID3D12PipelineState>, 12> psos;
+    std::array<ComPtr<ID3D12PipelineState>, 13> psos;
     std::array<uint32_t, 20> constants = {1, 0, 32, 64, 120, 0};
     uint64_t serial = 0;
     HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -70,8 +70,8 @@ struct Runner {
         ComPtr<ID3DBlob> blob, errors;
         Check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &errors));
         Check(device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&root)));
-        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck", "legacyDupCheck"};
-        for (int i = 0; i < 12; ++i) {
+        const char* names[] = {"prepare", "fill", "resolve", "query", "eraseTop", "benchmark", "guideFill", "guideQuery", "materialCheck", "materialBenchmark", "liteCheck", "legacyDupCheck", "materialSamplingCheck"};
+        for (int i = 0; i < 13; ++i) {
             std::ifstream file(std::string(directory) + "/" + names[i] + ".dxil", std::ios::binary);
             Require(bool(file), "Missing compiled test shader");
             std::vector<char> code((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -175,6 +175,40 @@ int main(int argc, char** argv) try {
     for (int i = 0; i < 64; ++i) maxMaterialError = std::max(maxMaterialError, materialErrors[i]);
     Require(maxMaterialError < 2e-5f, "Fused material/lobe evaluation changed the BSDF or PDF");
     std::cout << "PASS: 16,384 layered material cases, max relative error " << maxMaterialError << '\n';
+    auto materialSampling = r.Query(0, 12);
+    float accepted = 0.0f, furnace = 0.0f, coatError = 0.0f;
+    for (int i = 0; i < 64; ++i) {
+        accepted += materialSampling[i * 4] / 64.0f;
+        furnace += materialSampling[i * 4 + 1] / 64.0f;
+    }
+    const float expectedFurnace = (1.0f - std::log(2.0f)) / 0.725f;
+    for (uint32_t mode : {1u, 2u}) {
+        const auto precision = r.Query(mode, 12);
+        float error = 0.0f;
+        for (int i = 0; i < 64; ++i) error = std::max(error, precision[i * 4 + 2]);
+        std::cout << "Coat precision mode " << mode << ": max relative PDF error " << error << '\n';
+        coatError = std::max(coatError, error);
+    }
+    std::cout << "GGX furnace: acceptance " << accepted << " vs 0.5, energy " << furnace
+              << " vs " << expectedFurnace << '\n';
+    float floorError = 0.0f;
+    for (uint32_t mode : {3u, 4u, 5u}) {
+        const auto floor = r.Query(mode, 12);
+        float mixture = 0.0f, lobe = 0.0f, reference = 0.0f;
+        for (int i = 0; i < 64; ++i) {
+            mixture += floor[i * 4] / 64.0f;
+            lobe += floor[i * 4 + 1] / 64.0f;
+            reference += floor[i * 4 + 2] / 64.0f;
+        }
+        std::cout << "City floor mode " << mode << ": mixture " << mixture << ", lobe " << lobe
+                  << ", uniform integral " << reference << '\n';
+        floorError = std::max(floorError, std::max(std::abs(mixture - reference), std::abs(lobe - reference)) / reference);
+    }
+    Require(std::abs(accepted - 0.5f) < 0.005f, "GGX sampler folds null events into valid directions");
+    Require(std::abs(furnace - expectedFurnace) < 0.01f, "GGX sampler adds energy in a white furnace");
+    Require(coatError < 0.01f, "Smooth coat PDF loses precision near the highlight");
+    Require(floorError < 0.015f, "City floor BSDF sampling disagrees with independently integrated lighting");
+    std::cout << "PASS: GGX sampling distribution, furnace energy and smooth-coat precision\n";
     r.Reset(); Require(r.Query(0)[3] == 0, "Fresh cache must miss");
     r.Train({0}); auto top = r.Query(0);
     Require(top[3] > 0.95f && std::abs(top[0] - 100.0f) < 0.01f, "Concurrent HDR accumulation/resolve failed");

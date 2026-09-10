@@ -124,20 +124,13 @@ inline float3 SampleBRDF_WithStrategy(uint strategy, uint matID, float3 o, float
         sample = SampleBRDF_Lambertian(matID, o, n_s, n_g, seed);
     }
 
-    //reject below surface samples
-    float  Ng_wi  = dot(sample, n_g);
-
-    if (!refract) {
-        if (Ng_wi <= 0.0f) {
-            sample = reflect(sample, n_g);
-            Ng_wi  = -Ng_wi;
-        }
-    } else {
-        if (Ng_wi >= 0.0f) {
-            sample = reflect(sample, n_g);
-            Ng_wi  = -Ng_wi;
-        }
-    }
+    // Invalid microfacet directions are null events. Folding them across the
+    // surface adds a second preimage to the sampling density, while the lobe
+    // PDFs (including NEE and replay) describe the original VNDF distribution.
+    // Keep the RNG consumption unchanged; do not retry a rejected draw.
+    const float Ng_wi = dot(sample, n_g);
+    if ((!refract && Ng_wi <= 0.0f) || (refract && Ng_wi >= 0.0f))
+        return 0.0f;
 
     return sample;
 }

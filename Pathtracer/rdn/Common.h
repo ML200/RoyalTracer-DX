@@ -415,7 +415,7 @@ struct DLSSGSettings {
 //Scalar float layout matches CameraParams in Includes_v8.hlsli.
 // Scalar packing is shared with CameraParams. Distances in kilometres except wind (m/s).
 struct CumulusSettings {
-    float enabled = 1.0f;
+    float enabled = 0.0f;
     float coverage = 0.28f;
     float baseKm = 1.5f;
     float thicknessKm = 3.6f;

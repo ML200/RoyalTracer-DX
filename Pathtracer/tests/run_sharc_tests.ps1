@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $dxc = Join-Path $projectRoot 'include/dxc.exe'
-foreach ($entry in @('prepare', 'fill', 'resolve', 'query', 'eraseTop', 'benchmark', 'guideFill', 'guideQuery', 'materialCheck', 'materialBenchmark', 'liteCheck', 'legacyDupCheck')) {
+foreach ($entry in @('prepare', 'fill', 'resolve', 'query', 'eraseTop', 'benchmark', 'guideFill', 'guideQuery', 'materialCheck', 'materialBenchmark', 'liteCheck', 'legacyDupCheck', 'materialSamplingCheck')) {
     $readOnly = if ($entry -in @('query', 'benchmark')) { @('-D', 'SHARC_READ_ONLY=1') } else { @() }
     & $dxc @readOnly -I $ShaderDirectory -T cs_6_6 -E $entry -HV 2021 -enable-16bit-types -O3 -WX `
         (Join-Path $PSScriptRoot 'SharcGpuTests.hlsl') -Fo (Join-Path $OutputDirectory "$entry.dxil")

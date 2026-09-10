@@ -62,3 +62,6 @@ trulla.obj
 # Too large to vendor; CMake downloads on demand if missing. See the
 # `Sky star map` block in Pathtracer/CMakeLists.txt for the URL.
 /Pathtracer/include/sky_stars*.exr
+
+# Large local scene assets.
+/Pathtracer/include/zD1/zD1.obj

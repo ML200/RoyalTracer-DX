@@ -42,13 +42,16 @@ inline bool TraceCameraRay(
 
     //HIT: resolve the surface from instID + primID (closest-hit is a stub).
     const float  hitT   = hitObj.GetRayTCurrent();
-    const float3 hitPos = rayOrigin + rayDir * hitT;
     const uint   instID = hitObj.GetInstanceID();   // user InstanceID == instanceProps index
     const uint    primID   = FlatPrimID(instID, hitObj.GetGeometryIndex(), hitObj.GetPrimitiveIndex());
     const uint    matID    = GetMatIDFast(instID, primID);
     BuiltInTriangleIntersectionAttributes attr;
     hitObj.GetAttributes(attr);
     HitInfo hinfo = EvalSurfaceState(instID, primID, attr.barycentrics, rayOrigin, 0u);
+    // Spawn subsequent rays from the triangle, not from the rounded ray t.
+    // On large floor triangles origin+t*direction can land below the surface
+    // by more than offset_ray covers, producing patterned self-occlusion.
+    const float3 hitPos = hinfo.hitPos;
     const float3  emission = GetEmissionFast(instID, primID);
 
     const float  matNi        = LoadNi(matID);

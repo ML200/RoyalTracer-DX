@@ -299,7 +299,7 @@ inline ReplayResult ReplayWalk(HitContext ctx, float3 camToX1,
         const bool   transmissive = LoadKd_w(matID) < 1.0f - EPSILON;
         const bool   flipIOR      = hinfo.backface && transmissive && !LoadIsThinGlass(matID);
 
-        ctx.hitPos         = rayOrigin + s * hitT;
+        ctx.hitPos         = hinfo.hitPos;
         ctx.hitNormal      = hinfo.hitNormal;
         ctx.matID          = matID;
         ctx.instID         = instID;

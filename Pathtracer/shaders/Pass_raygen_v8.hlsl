@@ -758,13 +758,13 @@ void Pass_raygen_v8()
 
         //----- HIT: extract v_{depth+1} -----
         const float  hitT_n   = hitObjB.GetRayTCurrent();
-        const float3 hitPos_n = rayOriginR + rayDir * hitT_n;
         const uint   instID_n = hitObjB.GetInstanceID();
         const uint    primID_n = FlatPrimID(instID_n, hitObjB.GetGeometryIndex(), hitObjB.GetPrimitiveIndex());
         const uint    matID_n  = GetMatIDFast(instID_n, primID_n);
         BuiltInTriangleIntersectionAttributes attrB;
         hitObjB.GetAttributes(attrB);
         HitInfo hinfo_n = EvalSurfaceState(instID_n, primID_n, attrB.barycentrics, rayOriginR, (uint)depth);
+        const float3 hitPos_n = hinfo_n.hitPos;
 
         const float  matNi_n        = LoadNi(matID_n);
         const bool   transmissive_n = LoadKd_w(matID_n) < 1.0f - EPSILON;
