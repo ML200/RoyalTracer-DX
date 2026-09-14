@@ -607,7 +607,7 @@ HRESULT DirectX::PrepareUpload(
     subresources.clear();
     subresources.reserve(numberOfResources);
 
-    // Fill out subresource array
+    // Fill terrain subresource array
     if (metadata.IsVolumemap())
     {
         //--- Volume case -------------------------------------------------------------
@@ -641,7 +641,7 @@ HRESULT DirectX::PrepareUpload(
 
                 // Verify pixels in image 1 .. (depth-1) are exactly image->slicePitch apart
                 // For 3D textures, this relies on all slices of the same miplevel being continous in memory
-                // (this is how ScratchImage lays them out), which is why we just give the 0th slice to Direct3D 11
+                // (this is how ScratchImage lays them terrain), which is why we just give the 0th slice to Direct3D 11
                 const uint8_t* pSlice = img.pixels + img.slicePitch;
                 for (size_t slice = 1; slice < depth; ++slice)
                 {

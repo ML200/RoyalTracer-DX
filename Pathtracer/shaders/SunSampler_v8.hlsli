@@ -1,6 +1,3 @@
-//====================================
-//TIME AND ANGLE MACROS
-//====================================
 #define TAU     (2.0f * PI)
 #define DEG2RAD (PI / 180.0f)
 #define RAD2DEG (180.0f / PI)
@@ -9,9 +6,6 @@
 #define SUN_FRAMECOUNT time
 #endif
 
-//====================================
-//SUN DEFAULTS
-//====================================
 #ifndef SUN_LATITUDE_DEG
 #define SUN_LATITUDE_DEG   48.5200f
 #endif
@@ -64,17 +58,16 @@
 #define SUN_LIMB_DARKENING 1
 #endif
 
-//====================================
-//ATMOSPHERE BRUNETON 2017
-//====================================
-//lengths in km, coefficients in 1/km
-
 #ifndef ATMOS_BOTTOM_RADIUS
 #define ATMOS_BOTTOM_RADIUS     6360.0f
 #endif
 
 #ifndef ATMOS_TOP_RADIUS
 #define ATMOS_TOP_RADIUS        6420.0f
+#endif
+
+#ifndef ATMOS_SUN_BLOCK_BIAS_KM
+#define ATMOS_SUN_BLOCK_BIAS_KM 5.0f
 #endif
 
 #ifndef ATMOS_RAYLEIGH_SCATTER
@@ -97,7 +90,6 @@
 #define ATMOS_MIE_SCALE_H       1.2f
 #endif
 
-//two-lobe Mie, primary narrow halo, secondary soft glow
 #ifndef ATMOS_MIE_G_PRIMARY
 #define ATMOS_MIE_G_PRIMARY     0.76f
 #endif
@@ -106,12 +98,10 @@
 #define ATMOS_MIE_G_SECONDARY   0.35f
 #endif
 
-//secondary lobe weight, 0=single lobe, 1=all secondary
 #ifndef ATMOS_MIE_LOBE2_WEIGHT
 #define ATMOS_MIE_LOBE2_WEIGHT  0.15f
 #endif
 
-//turbidity on Mie, 1=very clear, 2-3=clear, 5+=hazy
 #ifndef SUN_TURBIDITY
 #define SUN_TURBIDITY           2.0f
 #endif
@@ -133,31 +123,20 @@
 #endif
 
 #ifndef ATMOS_MULTI_SCATTER_FACTOR
-#define ATMOS_MULTI_SCATTER_FACTOR  1.1f
+#define ATMOS_MULTI_SCATTER_FACTOR  1.0f
 #endif
 
 #ifndef SKY_INTENSITY
 #define SKY_INTENSITY           6.0f
 #endif
 
-//====================================
-//NIGHT SKY
-//====================================
 #ifndef SKY_TWILIGHT_DEG
 #define SKY_TWILIGHT_DEG        18.0f
 #endif
 
-#ifndef SKY_STAR_GRID
-#define SKY_STAR_GRID           900.0f
-#endif
-
-#ifndef SKY_STAR_DENSITY
-#define SKY_STAR_DENSITY        0.997f
-#endif
-
-#ifndef SKY_STAR_INTENSITY
-#define SKY_STAR_INTENSITY      3.0f
-#endif
+#define SKY_STAR_INTENSITY      skyStarIntensity
+#define SKY_STAR_GAMMA          skyStarGamma
+#define SKY_STAR_THRESHOLD      skyStarThreshold
 
 #ifndef SKY_STAR_SCALE
 #define SKY_STAR_SCALE          1.0f
@@ -175,30 +154,71 @@
 #define SKY_NIGHT_BASE          float3(0.00015f, 0.00020f, 0.00035f)
 #endif
 
-#ifndef SKY_STAR_LAYERS
-#define SKY_STAR_LAYERS         3
+#ifndef SKY_STAR_SCATTER_SHIELD
+#define SKY_STAR_SCATTER_SHIELD 1000.0f
 #endif
 
-#ifndef SKY_STAR_SCINTILLATION
-#define SKY_STAR_SCINTILLATION  0.04f
+#ifndef SKY_STAR_TEXTURE_SRGB
+#define SKY_STAR_TEXTURE_SRGB 0
 #endif
 
-#ifndef SKY_STAR_DAWN_LINGER
-#define SKY_STAR_DAWN_LINGER    10.0f
+#ifndef SKY_STAR_TEXTURE_FLIP_U
+#define SKY_STAR_TEXTURE_FLIP_U 0
 #endif
 
-//====================================
-//WORLD ORIENTATION
-//====================================
+#define SKY_STAR_LOD_BIAS       skyStarLodBias
+
+#ifndef ATMOS_GROUND_ALBEDO
+#define ATMOS_GROUND_ALBEDO     float3(0.4f, 0.4f, 0.4f)
+#endif
+
 #ifndef WORLD_NORTH
 #define WORLD_NORTH             normalize(float3(0, 0, 1))
 #endif
 
 static const float3 WORLD_UP = float3(0, 1, 0);
 
-//====================================
-//SUN STRUCTS
-//====================================
+#ifndef WORLD_UNITS_PER_KM
+#define WORLD_UNITS_PER_KM      1000.0f
+#endif
+
+#ifndef SKY_GROUND_Y
+#define SKY_GROUND_Y            0.0f
+#endif
+
+static const float SKY_OBSERVER_MIN_RADIUS = ATMOS_BOTTOM_RADIUS + 0.0002f;
+
+static float3 g_skyObserverPlanet = float3(0.0f, SKY_OBSERVER_MIN_RADIUS, 0.0f);
+
+#define SKY_UNDERGROUND_EPS_KM 0.001f
+static bool g_skyObserverUnderground = false;
+
+inline bool SkyObserverIsUnderground() { return g_skyObserverUnderground; }
+
+inline float3 WorldToPlanet(float3 worldPos)
+{
+    float scale = 1.0f / WORLD_UNITS_PER_KM;
+    return float3(worldPos.x * scale,
+                  ATMOS_BOTTOM_RADIUS + (worldPos.y - SKY_GROUND_Y) * scale,
+                  worldPos.z * scale);
+}
+
+inline bool WorldPosIsUnderground(float3 worldPos)
+{
+    return length(WorldToPlanet(worldPos)) < ATMOS_BOTTOM_RADIUS - SKY_UNDERGROUND_EPS_KM;
+}
+
+// Clamp the observer above the planet for atmospheric queries.
+inline void SetSkyObserver(float3 worldPos)
+{
+    float3 P = WorldToPlanet(worldPos);
+    float r = length(P);
+    g_skyObserverUnderground =
+        (r < ATMOS_BOTTOM_RADIUS - SKY_UNDERGROUND_EPS_KM);
+    if (r < SKY_OBSERVER_MIN_RADIUS) P *= SKY_OBSERVER_MIN_RADIUS / max(1e-6f, r);
+    g_skyObserverPlanet = P;
+}
+
 struct SunSampleResult
 {
     float3 direction;
@@ -226,9 +246,6 @@ struct MediumSample
     float3 extinction;
 };
 
-//====================================
-//UTILITY
-//====================================
 inline float3 SafeNormalize(float3 v)
 {
     return (dot(v, v) > 0.0f) ? normalize(v) : float3(0, 1, 0);
@@ -252,9 +269,6 @@ inline float Smooth01(float x)
     return x * x * (3.0f - 2.0f * x);
 }
 
-//====================================
-//HASHING
-//====================================
 inline float Hash12(float2 p)
 {
     float3 p3 = frac(float3(p.xyx) * float3(0.1031f, 0.1030f, 0.0973f));
@@ -262,16 +276,6 @@ inline float Hash12(float2 p)
     return frac((p3.x + p3.y) * p3.z);
 }
 
-inline float2 Hash22(float2 p)
-{
-    float3 p3 = frac(float3(p.xyx) * float3(0.1031f, 0.1030f, 0.0973f));
-    p3 += dot(p3, p3.yzx + 33.33f);
-    return frac(float2((p3.x + p3.y) * p3.z, (p3.x + p3.z) * p3.y));
-}
-
-//====================================
-//SOLAR POSITION
-//====================================
 inline float SolarDeclinationRad(float dayOfYear, float timeHours)
 {
     float gamma = TAU / 365.0f * (dayOfYear - 1.0f + (timeHours - 12.0f) / 24.0f);
@@ -319,6 +323,7 @@ inline float3 ENU_ToWorld(float east, float north, float up)
     return SafeNormalize(east * E + north * N + up * WORLD_UP);
 }
 
+// Map simulation time through local sunrise and sunset.
 inline float GetSolarTimeHours()
 {
     float tReal = (float)SUN_FRAMECOUNT / SUN_FPS;
@@ -353,9 +358,36 @@ inline void GetSunDirAndElev(out float3 dirWS, out float elevRad)
     elevRad = asin(clamp(up, -1.0f, 1.0f));
 }
 
-//====================================
-//ATMOSPHERE MEDIUM SAMPLING
-//====================================
+inline float GetLSTRad()
+{
+    return GetSolarTimeHours() * SKY_SIDEREAL_RATIO * (TAU / 24.0f)
+         + SUN_LONGITUDE_DEG * DEG2RAD;
+}
+
+float3 WorldToCelestial(float3 vWorld)
+{
+    float latRad = SUN_LATITUDE_DEG * DEG2RAD;
+    float cosL = cos(latRad), sinL = sin(latRad);
+
+    float3 Nw = SafeNormalize(float3(WORLD_NORTH.x, 0.0f, WORLD_NORTH.z));
+    float3 Ew = SafeNormalize(cross(WORLD_UP, Nw));
+    float east  = dot(vWorld, Ew);
+    float north = dot(vWorld, Nw);
+    float up    = dot(vWorld, WORLD_UP);
+
+    float X_i = east;
+    float Y_i = -sinL * north + cosL * up;
+    float Z_i =  cosL * north + sinL * up;
+
+    float lst = GetLSTRad();
+    float cl = cos(lst), sl = sin(lst);
+    float X_f =  sl * X_i + cl * Y_i;
+    float Y_f = -cl * X_i + sl * Y_i;
+    float Z_f =  Z_i;
+
+    return float3(X_f, Z_f, Y_f);
+}
+
 inline float DensityOzone(float altKm)
 {
     return (altKm < 25.0f)
@@ -363,6 +395,7 @@ inline float DensityOzone(float altKm)
         : max(0.0f, -altKm / 15.0f + 8.0f / 3.0f);
 }
 
+// Evaluate altitude-dependent Rayleigh, Mie, and ozone terms.
 inline MediumSample SampleMedium(float altKm)
 {
     MediumSample m;
@@ -385,15 +418,11 @@ inline MediumSample SampleMedium(float altKm)
     return m;
 }
 
-//====================================
-//PHASE FUNCTIONS
-//====================================
 inline float PhaseRayleigh(float cosTheta)
 {
     return (3.0f / (16.0f * PI)) * (1.0f + cosTheta * cosTheta);
 }
 
-//Cornette-Shanks
 inline float PhaseMieCS(float cosTheta, float g)
 {
     float g2 = g * g;
@@ -409,9 +438,6 @@ inline float PhaseMieTwoLobe(float cosTheta)
     return lerp(p1, p2, ATMOS_MIE_LOBE2_WEIGHT);
 }
 
-//====================================
-//RAY-SPHERE AND TRANSMITTANCE
-//====================================
 inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0, out float t1)
 {
     float b = dot(ro, rd);
@@ -424,6 +450,83 @@ inline bool RaySphereIntersect(float3 ro, float3 rd, float radius, out float t0,
     return true;
 }
 
+inline float SunDiskFractionAboveHorizon(float sunCosZ, float cosHorizon)
+{
+    float kSinSunRadius = sin(SUN_ANGULAR_DEG * 0.5f * DEG2RAD)*sqrt(max(0.0f,1-cosHorizon*cosHorizon));
+    return smoothstep(cosHorizon - kSinSunRadius,
+                      cosHorizon + kSinSunRadius, sunCosZ);
+}
+
+#define SKY_TRANSMITTANCE_LUT_W 256.0f
+#define SKY_TRANSMITTANCE_LUT_H 64.0f
+
+// Bruneton parameterization.
+inline float LutCoordFromUnitRange(float x, float texSize)
+{
+    return 0.5f / texSize + x * (1.0f - 1.0f / texSize);
+}
+
+inline float LutUnitRangeFromCoord(float u, float texSize)
+{
+    return saturate((u - 0.5f / texSize) / (1.0f - 1.0f / texSize));
+}
+
+// Bruneton mapping.
+
+inline float2 TransmittanceLutUvFromRMu(float r, float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    const float H  = sqrt(max(1e-3f, Rt * Rt - Rb * Rb));
+    float rho  = sqrt(max(0.0f, r * r - Rb * Rb));
+    float disc = max(0.0f, r * r * (mu * mu - 1.0f) + Rt * Rt);
+    float d    = max(0.0f, -r * mu + sqrt(disc));
+    float dMin = Rt - r;
+    float dMax = rho + H;
+    float xMu  = saturate((d - dMin) / max(1e-6f, dMax - dMin));
+    float xR   = saturate(rho / H);
+    return float2(LutCoordFromUnitRange(xMu, SKY_TRANSMITTANCE_LUT_W),
+                  LutCoordFromUnitRange(xR,  SKY_TRANSMITTANCE_LUT_H));
+}
+
+inline void TransmittanceLutRMuFromUv(float2 uv, out float r, out float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    const float H  = sqrt(max(1e-3f, Rt * Rt - Rb * Rb));
+    float xMu = LutUnitRangeFromCoord(uv.x, SKY_TRANSMITTANCE_LUT_W);
+    float xR  = LutUnitRangeFromCoord(uv.y, SKY_TRANSMITTANCE_LUT_H);
+    float rho = H * xR;
+    r = sqrt(rho * rho + Rb * Rb);
+    float dMin = Rt - r;
+    float dMax = rho + H;
+    float d    = dMin + xMu * (dMax - dMin);
+    mu = (d <= 1e-4f) ? 1.0f
+       : clamp((H * H - rho * rho - d * d) / (2.0f * r * d), -1.0f, 1.0f);
+}
+
+inline float3 ComputeTransmittanceToTopRMu(float r, float mu)
+{
+    const float Rb = ATMOS_BOTTOM_RADIUS;
+    const float Rt = ATMOS_TOP_RADIUS;
+    float disc = max(0.0f, r * r * (mu * mu - 1.0f) + Rt * Rt);
+    float dTop = max(0.0f, -r * mu + sqrt(disc));
+
+    const int N = 64;
+    float  ds = dTop / (float)N;
+    float3 od = float3(0, 0, 0);
+    [loop]
+    for (int i = 0; i < N; ++i)
+    {
+        float t  = ((float)i + 0.5f) * ds;
+        float rT = sqrt(max(Rb * Rb, r * r + t * t + 2.0f * r * t * mu));
+        MediumSample med = SampleMedium(max(0.0f, rT - Rb));
+        od += med.extinction * ds;
+    }
+    return exp(-od);
+}
+
+// Block ground intersections before sampling solar transmittance.
 inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 {
     float t0, t1;
@@ -431,52 +534,106 @@ inline float3 TransmittanceToSun(float3 P, float3 L, float Rb, float Rt)
 
     float tMax = t1;
     if (tMax <= 0.0f) return float3(1, 1, 1);
-    float tMin = max(0.0f, t0);
 
-    float ds = (tMax - tMin) / (float)ATMOS_LIGHT_STEPS;
-    float3 od = float3(0, 0, 0);
+    float tG0, tG1;
+    float RbBlock = Rb - ATMOS_SUN_BLOCK_BIAS_KM;
+    if (RaySphereIntersect(P, L, RbBlock, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
+        return float3(0, 0, 0);
 
-    for (int i = 0; i < ATMOS_LIGHT_STEPS; i++)
+    float r = length(P);
+    if (r > Rt && t0 > 0.0f)
     {
-        float t = tMin + ((float)i + 0.5f) * ds;
-        float3 Q = P + L * t;
-        float alt = length(Q) - Rb;
-
-        if (alt < 0.0f) return float3(0, 0, 0);
-
-        MediumSample med = SampleMedium(alt);
-        od += med.extinction * ds;
+        P += L * t0;
+        r  = Rt;
     }
+    r = clamp(r, Rb, Rt);
+    float mu = clamp(dot(P, L) / max(r, 1e-4f), -1.0f, 1.0f);
 
-    return exp(-od);
+    return g_skyTransmittanceLUT.SampleLevel(
+        g_sampler_LUT, TransmittanceLutUvFromRMu(r, mu), 0).rgb;
 }
 
-//====================================
-//SCATTERING INTEGRATION
-//====================================
-float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittanceOut)
+// Hillaire 2020 multiple-scattering LUT.
+
+#define SKY_MS_LUT_SIZE 32.0f
+
+inline float2 MultiScatterLutUnitFromRMu(float r,float mu)
+{
+    return float2(.5f+.5f*sign(mu)*sqrt(abs(mu)),
+        sqrt(saturate((r-ATMOS_BOTTOM_RADIUS)/(ATMOS_TOP_RADIUS-ATMOS_BOTTOM_RADIUS))));
+}
+
+inline float3 VisibleSunDirection(float3 P,float3 L)
+{
+    float3 up=normalize(P);float mu=dot(up,L);
+    float cosH=-sqrt(max(0.0f,1-ATMOS_BOTTOM_RADIUS*ATMOS_BOTTOM_RADIUS/dot(P,P)));
+    float radius=sin(SUN_ANGULAR_DEG*.5f*DEG2RAD);
+    float x=(cosH-mu)/max(radius*sqrt(max(0.0f,1-cosH*cosH)),1e-7f);
+    if(x<=-1)return L;
+    float diskCentroid;
+    if(x>=.99f)diskCentroid=lerp(.994f,1.0f,saturate((x-.99f)*100));
+    else {
+        float root=sqrt(max(0.0f,1-x*x));
+        diskCentroid=(2.0f/3.0f)*root*root*root/max(acos(x)-x*root,1e-7f);
+    }
+    float3 lift=up-L*mu;
+    lift*=rsqrt(max(dot(lift,lift),1e-12f));
+    return normalize(L+lift*(radius*diskCentroid));
+}
+inline void MultiScatterLutRMuFromUnit(float2 unit,out float r,out float mu)
+{
+    float x=unit.x*2-1;
+    mu=x*abs(x);
+    r=ATMOS_BOTTOM_RADIUS+unit.y*unit.y*(ATMOS_TOP_RADIUS-ATMOS_BOTTOM_RADIUS);
+}
+inline float3 MultiScatterPsi(float r, float sunCosZ)
+{
+    float2 unit=MultiScatterLutUnitFromRMu(r,clamp(sunCosZ,-1.0f,1.0f));
+    float2 uv = float2(LutCoordFromUnitRange(unit.x, SKY_MS_LUT_SIZE),
+                       LutCoordFromUnitRange(unit.y, SKY_MS_LUT_SIZE));
+    return g_skyMultiScatterLUT.SampleLevel(g_sampler_LUT, uv, 0).rgb;
+}
+
+float CumulusAtmosphereSunVisibility(float3 P,float3 L);
+
+void AtmosphereSourceQuadrature(float3 extinction,float ds,float u,out float distance,out float3 weight)
+{
+    float proposal=max(0.0f,min(extinction.x,min(extinction.y,extinction.z)));
+    float tau=proposal*ds;
+    float mass=tau<.001f ? ds*(1-.5f*tau+tau*tau/6) : (1-exp(-tau))/max(proposal,1e-20f);
+    distance=tau<.001f ? ds*(u+.5f*tau*u*(u-1)) : -log(max(1e-20f,1-u*proposal*mass))/proposal;
+    weight=mass*exp(-(extinction-proposal)*distance);
+}
+// Integrate in-scattering with squared-distance atmospheric segments.
+float3 IntegrateScattering(float3 viewDir, float3 sunDir,
+                           out float3 transmittanceOut, out bool hitPlanetOut,
+                           float maxDistanceKm = -1.0f,uint stepCount = ATMOS_VIEW_STEPS,
+                           bool cloudShadows=false,float sampleJitter=-1.0f)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
     float Rt = ATMOS_TOP_RADIUS;
 
-    float3 O = float3(0, Rb + 0.0002f, 0);
+    float3 O = g_skyObserverPlanet;
     float3 V = SafeNormalize(viewDir);
     float3 L = SafeNormalize(sunDir);
 
+    hitPlanetOut = false;
+
     float tV0, tV1;
-    if (!RaySphereIntersect(O, V, Rt, tV0, tV1))
+    if (!RaySphereIntersect(O, V, Rt, tV0, tV1) || tV1 <= 0.0f)
     {
         transmittanceOut = float3(1, 1, 1);
         return float3(0, 0, 0);
     }
 
     float tMin = max(0.0f, tV0);
-    float tMax = tV1;
+    float tMax = maxDistanceKm >= 0.0f ? min(tV1, maxDistanceKm) : tV1;
 
     float tG0, tG1;
-    if (RaySphereIntersect(O, V, Rb, tG0, tG1))
+    if (RaySphereIntersect(O, V, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
     {
-        if (tG0 > 0.0f) tMax = min(tMax, tG0);
+        tMax = tG0;
+        hitPlanetOut = true;
     }
 
     if (tMax <= tMin)
@@ -494,36 +651,143 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
     float3 totalInScatter = float3(0, 0, 0);
     float3 throughput     = float3(1, 1, 1);
 
-    for (int i = 0; i < ATMOS_VIEW_STEPS; i++)
+    stepCount=clamp(stepCount,2u,64u);
+    for (uint i = 0; i < stepCount; i++)
     {
-        //sqrt spacing, samples cluster near start of ray
-        float u0 = (float)i / (float)ATMOS_VIEW_STEPS;
-        float u1 = (float)(i + 1) / (float)ATMOS_VIEW_STEPS;
+
+        float u0 = (float)i / (float)stepCount;
+        float u1 = (float)(i + 1) / (float)stepCount;
         float s0 = u0 * u0;
         float s1 = u1 * u1;
         float tMid = tMin + (s0 + s1) * 0.5f * totalDist;
         float ds   = (s1 - s0) * totalDist;
 
         float3 P = O + V * tMid;
-        float alt = length(P) - Rb;
+        float  rP  = length(P);
+        float  alt = max(0.0f, rP - Rb);
 
-        if (alt < 0.0f) break;
+        MediumSample med = SampleMedium(alt);
+        float3 segTr = exp(-med.extinction * ds);
+        float3 sourceWeight=0;
+        MediumSample sourceMed=med;
+        if(sampleJitter>=0.0f) {
+            float distance;
+            AtmosphereSourceQuadrature(med.extinction,ds,frac(sampleJitter+float(i)*.61803398875f),distance,sourceWeight);
+            P=O+V*(tMin+s0*totalDist+distance);
+            rP=length(P);
+            sourceMed=SampleMedium(max(0.0f,rP-Rb));
+        }
+        float3 visibleL=VisibleSunDirection(P,L);
+        float3 sunTr = TransmittanceToSun(P, visibleL, Rb, Rt);
 
+        float3 Pnorm = SafeNormalize(P);
+        float sunCosZ = dot(Pnorm, L);
+        float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
+        float earthShadow = SunDiskFractionAboveHorizon(sunCosZ, cosHorizon);
+
+        float3 scatterPhase = sourceMed.scatterR * phR + sourceMed.scatterM * phM;
+        float3 scatterIso   = sourceMed.scatterR + sourceMed.scatterM;
+
+        float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr
+                        * ATMOS_MULTI_SCATTER_FACTOR;
+        if(cloudShadows && earthShadow>0.0f)
+            sunIllum*=CumulusAtmosphereSunVisibility(P,visibleL);
+        float3 psiMS = MultiScatterPsi(rP, sunCosZ);
+        float3 rate = scatterPhase * sunIllum
+                    + scatterIso * psiMS * ATMOS_SOLAR_IRRADIANCE;
+
+        float3 scatterInteg;
+        scatterInteg.x = (med.extinction.x > 1e-10f)
+            ? rate.x * (1.0f - segTr.x) / med.extinction.x : rate.x * ds;
+        scatterInteg.y = (med.extinction.y > 1e-10f)
+            ? rate.y * (1.0f - segTr.y) / med.extinction.y : rate.y * ds;
+        scatterInteg.z = (med.extinction.z > 1e-10f)
+            ? rate.z * (1.0f - segTr.z) / med.extinction.z : rate.z * ds;
+
+        if(sampleJitter>=0.0f)scatterInteg=sourceWeight*rate;
+        totalInScatter += throughput * scatterInteg;
+
+        throughput *= segTr;
+    }
+
+    transmittanceOut = throughput;
+    return totalInScatter;
+}
+
+#ifndef ATMOS_AERIAL_VIEW_STEPS
+#define ATMOS_AERIAL_VIEW_STEPS  4
+#endif
+#ifndef ATMOS_AERIAL_LIGHT_STEPS
+#define ATMOS_AERIAL_LIGHT_STEPS 4
+#endif
+
+inline float3 TransmittanceToSunCheap(float3 P, float3 L, float Rb, float Rt)
+{
+    return TransmittanceToSun(P, L, Rb, Rt);
+}
+
+// Use jittered coarse segments for surface aerial perspective.
+float3 ComputeAerialPerspective(float3 viewDir, float3 sunDir, float hitDistKm,
+                                uint2 pixel,
+                                out float3 transmittanceOut)
+{
+    float Rb = ATMOS_BOTTOM_RADIUS;
+    float Rt = ATMOS_TOP_RADIUS;
+    float3 O = g_skyObserverPlanet;
+    float3 V = SafeNormalize(viewDir);
+    float3 L = SafeNormalize(sunDir);
+
+    float tV0, tV1;
+    if (!RaySphereIntersect(O, V, Rt, tV0, tV1) || tV1 <= 0.0f)
+    {
+        transmittanceOut = float3(1, 1, 1);
+        return float3(0, 0, 0);
+    }
+
+    float tMin = max(0.0f, tV0);
+    float tMax = min(hitDistKm, tV1);
+
+    if (tMax <= tMin)
+    {
+        transmittanceOut = float3(1, 1, 1);
+        return float3(0, 0, 0);
+    }
+
+    float totalDist = tMax - tMin;
+
+    float cosTheta = dot(V, L);
+    float phR = PhaseRayleigh(cosTheta);
+    float phM = PhaseMieTwoLobe(cosTheta);
+
+    float3 totalInScatter = float3(0, 0, 0);
+    float3 throughput     = float3(1, 1, 1);
+
+    uint seed = initRandomData(pixel, uint2(0, 0), (uint)time, 91u);
+
+    [unroll]
+    for (int i = 0; i < ATMOS_AERIAL_VIEW_STEPS; i++)
+    {
+        float u0    = (float)i / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float u1    = (float)(i + 1) / (float)ATMOS_AERIAL_VIEW_STEPS;
+        float xi    = RandomFloatSingle(seed);
+        float tSamp = tMin + lerp(u0, u1, xi) * totalDist;
+        float ds    = (u1 - u0) * totalDist;
+
+        float3 P = O + V * tSamp;
+        float alt = max(0.0f, length(P) - Rb);
         MediumSample med = SampleMedium(alt);
 
         float3 segTr = exp(-med.extinction * ds);
 
-        float3 sunTr = TransmittanceToSun(P, L, Rb, Rt);
-
-        //earth shadow
         float3 Pnorm = SafeNormalize(P);
         float sunCosZ = dot(Pnorm, L);
         float cosHorizon = -sqrt(max(0.0f, 1.0f - (Rb * Rb) / dot(P, P)));
-        float earthShadow = (sunCosZ > cosHorizon) ? 1.0f : 0.0f;
+        float earthShadow = smoothstep(cosHorizon - 0.005f,
+                                       cosHorizon + 0.005f, sunCosZ);
+
+        float3 sunTr = TransmittanceToSunCheap(P, L, Rb, Rt);
 
         float3 scatterPhase = med.scatterR * phR + med.scatterM * phM;
-
-        //analytic in-scatter over segment
         float3 scatterInteg;
         scatterInteg.x = (med.extinction.x > 1e-10f)
             ? scatterPhase.x * (1.0f - segTr.x) / med.extinction.x : scatterPhase.x * ds;
@@ -534,7 +798,6 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
 
         float3 sunIllum = ATMOS_SOLAR_IRRADIANCE * earthShadow * sunTr;
         totalInScatter += throughput * sunIllum * scatterInteg;
-
         throughput *= segTr;
     }
 
@@ -544,23 +807,23 @@ float3 IntegrateScattering(float3 viewDir, float3 sunDir, out float3 transmittan
     return totalInScatter;
 }
 
-//====================================
-//ATMOSPHERIC TRANSMITTANCE
-//====================================
 float3 AtmosphericTransmittance(float3 dir)
 {
     float Rb = ATMOS_BOTTOM_RADIUS;
     float Rt = ATMOS_TOP_RADIUS;
 
-    float3 O = float3(0, Rb + 0.0002f, 0);
+    float3 O = g_skyObserverPlanet;
     float3 D = SafeNormalize(dir);
 
     float t0, t1;
-    if (!RaySphereIntersect(O, D, Rt, t0, t1)) return float3(1, 1, 1);
+    if (!RaySphereIntersect(O, D, Rt, t0, t1) || t1 <= 0.0f) return float3(1, 1, 1);
 
-    float tMax = t1;
-    if (tMax <= 0.0f) return float3(1, 1, 1);
     float tMin = max(0.0f, t0);
+    float tMax = t1;
+
+    float tG0, tG1;
+    if (RaySphereIntersect(O, D, Rb, tG0, tG1) && tG0 > 0.0f && tG0 < tMax)
+        return float3(0, 0, 0);
 
     float ds = (tMax - tMin) / (float)ATMOS_VIEW_STEPS;
     float3 od = float3(0, 0, 0);
@@ -569,8 +832,7 @@ float3 AtmosphericTransmittance(float3 dir)
     {
         float t = tMin + ((float)i + 0.5f) * ds;
         float3 Q = O + D * t;
-        float alt = length(Q) - Rb;
-        if (alt < 0.0f) return float3(0, 0, 0);
+        float alt = max(0.0f, length(Q) - Rb);
 
         MediumSample med = SampleMedium(alt);
         od += med.extinction * ds;
@@ -579,9 +841,22 @@ float3 AtmosphericTransmittance(float3 dir)
     return exp(-od);
 }
 
-//====================================
-//LIMB DARKENING
-//====================================
+inline float3 EvaluatePlanetBody(float3 O, float3 V, float3 L)
+{
+    float tG0, tG1;
+    if (!RaySphereIntersect(O, V, ATMOS_BOTTOM_RADIUS, tG0, tG1)) return float3(0, 0, 0);
+    if (tG0 <= 0.0f) return float3(0, 0, 0);
+
+    float3 P     = O + V * tG0;
+    float3 N     = SafeNormalize(P);
+    float  NdotL = saturate(dot(N, L));
+    if (NdotL <= 0.0f) return float3(0, 0, 0);
+
+    float3 sunTr = TransmittanceToSun(P, L, ATMOS_BOTTOM_RADIUS, ATMOS_TOP_RADIUS);
+
+    return (ATMOS_GROUND_ALBEDO / PI) * NdotL * sunTr * ATMOS_SOLAR_IRRADIANCE * SUN_INTENSITY_VAL;
+}
+
 inline float3 LimbDarkening(float mu)
 {
     float u = 1.0f - mu;
@@ -593,10 +868,7 @@ inline float3 LimbDarkening(float mu)
     return max(ld, 0.0f);
 }
 
-//====================================
-//SUN STATE
-//====================================
-inline SunState ComputeSunState()
+inline SunState ComputeSunStateInline()
 {
     SunState S;
 
@@ -611,29 +883,50 @@ inline SunState ComputeSunState()
     S.cosThetaMax = cos(thetaMax);
     S.omega       = GetSunSolidAngle(thetaMax);
 
-    float horizonRad = SUN_HORIZON_DEG * DEG2RAD;
-    S.visible = (S.elevRad > horizonRad) ? 1.0f : 0.0f;
+    float  obsR2          = max(1e-6f, dot(g_skyObserverPlanet, g_skyObserverPlanet));
+    float  obsR           = sqrt(obsR2);
+    float  cosGeoHorizon  = -sqrt(max(0.0f, 1.0f - (ATMOS_BOTTOM_RADIUS * ATMOS_BOTTOM_RADIUS) / obsR2));
+    float  cosGroundLift  = sin(SUN_HORIZON_DEG * DEG2RAD);
+    float  altFade        = saturate((obsR - ATMOS_BOTTOM_RADIUS) / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float  cosEffHorizon  = lerp(cosGroundLift, cosGeoHorizon, altFade);
+    float3 observerUp     = g_skyObserverPlanet / obsR;
+    float  sunCosFromUp   = dot(d, observerUp);
+
+    const float kHorizonFadeDeg = 1.0f;
+    const float visEdge         = sin(kHorizonFadeDeg * DEG2RAD);
+    S.visible = smoothstep(-visEdge, +visEdge, sunCosFromUp - cosEffHorizon);
 
     float3 Tr = AtmosphericTransmittance(S.dirWS);
     S.tint    = SUN_COLOR_VAL * Tr;
 
-    S.pdf      = (S.visible > 0.0f) ? (1.0f / S.omega) : 0.0f;
-    S.radiance = (S.visible > 0.0f) ? (S.tint * SUN_INTENSITY_VAL / S.omega) : float3(0, 0, 0);
+    S.pdf      = (S.visible > 0.001f) ? (1.0f / S.omega) : 0.0f;
+    S.radiance = S.tint * SUN_INTENSITY_VAL * S.visible / S.omega;
 
     return S;
 }
 
-//====================================
-//PUBLIC SUN API
-//====================================
-SunSampleResult SampleSun(float2 u)
+#include "SkyBake_v8.hlsli"
+
+#include "CumulusCache_v8.hlsli"
+
+inline SunState ComputeSunState()
+{
+#if SKYBAKE_CONSUMER
+    return SkyBakeLoadSunState();
+#else
+    return ComputeSunStateInline();
+#endif
+}
+
+// Sample the finite solar disk with its uniform solid-angle PDF.
+SunSampleResult SampleSun(float2 u, float3 receiverWorld)
 {
     SunState S = ComputeSunState();
 
     SunSampleResult r;
     r.dist = SUN_DIST_INF;
 
-    if (S.pdf <= 0.0f)
+    if (S.pdf <= 0.0f || WorldPosIsUnderground(receiverWorld))
     {
         r.direction = S.dirWS;
         r.radiance  = float3(0, 0, 0);
@@ -663,6 +956,7 @@ SunSampleResult SampleSun(float2 u)
     r.radiance = S.radiance;
 #endif
 
+    r.radiance *= CumulusSunVisibility(WorldToPlanet(receiverWorld), r.direction);
     return r;
 }
 
@@ -677,6 +971,7 @@ float GetSunPdf(float3 rayDir)
 
 float3 EvaluateSun(float3 rayDir)
 {
+    if (SkyObserverIsUnderground()) return 0.0f;
     SunState S = ComputeSunState();
     if (S.pdf <= 0.0f) return float3(0, 0, 0);
 
@@ -689,184 +984,167 @@ float3 EvaluateSun(float3 rayDir)
     float mu = saturate((cosAngle - S.cosThetaMax) / max(1e-6f, 1.0f - S.cosThetaMax));
     mu = sqrt(mu);
     float3 ld = LimbDarkening(mu);
-    return S.radiance * ld / 0.85f;
+    return S.radiance * ld / 0.85f * CumulusSunVisibility(g_skyObserverPlanet,d);
 #else
-    return S.radiance;
+    return S.radiance * CumulusSunVisibility(g_skyObserverPlanet,d);
 #endif
 }
 
-//====================================
-//STARS
-//====================================
-inline float3 RotateAroundAxis(float3 v, float3 axis, float angle)
-{
-    float s = sin(angle), c = cos(angle);
-    return v * c + cross(axis, v) * s + axis * dot(axis, v) * (1.0f - c);
-}
-
-//color from approximate B-V index
-inline float3 StarColor(float rand01)
-{
-    float bv = lerp(-0.2f, 1.4f, rand01);
-
-    float3 col;
-    float t;
-    if (bv < 0.0f)
-    {
-        t = saturate((bv + 0.3f) / 0.3f);
-        col = lerp(float3(0.65f, 0.75f, 1.0f), float3(0.80f, 0.85f, 1.0f), t);
-    }
-    else if (bv < 0.4f)
-    {
-        t = bv / 0.4f;
-        col = lerp(float3(0.95f, 0.95f, 1.0f), float3(1.0f, 0.96f, 0.88f), t);
-    }
-    else if (bv < 0.8f)
-    {
-        t = (bv - 0.4f) / 0.4f;
-        col = lerp(float3(1.0f, 0.96f, 0.88f), float3(1.0f, 0.86f, 0.65f), t);
-    }
-    else
-    {
-        t = saturate((bv - 0.8f) / 0.6f);
-        col = lerp(float3(1.0f, 0.86f, 0.65f), float3(1.0f, 0.70f, 0.45f), t);
-    }
-
-    return col;
-}
-
-inline float Scintillation(float seed, float elevFactor, float frameCount)
-{
-    float strength = SKY_STAR_SCINTILLATION * (1.0f - elevFactor * elevFactor);
-
-    float phase = seed * 100.0f;
-    float t = frameCount * 0.002f;
-    float flicker = sin(t * 1.7f + phase)
-                  * sin(t * 2.9f + phase * 0.7f)
-                  * sin(t * 0.5f + phase * 1.3f);
-
-    return 1.0f - strength * 0.5f * (flicker + 1.0f);
-}
-
-//single star layer
-float3 EvaluateStarLayer(float3 vStar, float gridScale, float density,
-                         float brightnessScale, float sunElevDeg)
-{
-    float2 uv;
-    uv.x = atan2(vStar.z, vStar.x) / TAU + 0.5f;
-    uv.y = acos(clamp(vStar.y, -1.0f, 1.0f)) / PI;
-
-    float sinTheta = sqrt(max(1e-6f, 1.0f - vStar.y * vStar.y));
-    float poleCompensation = saturate(sinTheta);
-
-    if (poleCompensation < 0.08f) return float3(0, 0, 0);
-
-    float2 g    = uv * float2(gridScale, gridScale * 0.5f);
-    float2 cell = floor(g);
-    float2 f    = frac(g);
-
-    float r0 = Hash12(cell);
-    float adjustedDensity = 1.0f - (1.0f - density) * poleCompensation;
-    float present = step(adjustedDensity, r0);
-    if (present < 0.5f) return float3(0, 0, 0);
-
-    float2 starPos = Hash22(cell + 5.0f);
-    starPos = lerp(0.15f, 0.85f, starPos);
-    float2 delta = f - starPos;
-    delta.x *= max(0.15f, poleCompensation);
-    float dist = length(delta);
-
-    float magRand = Hash12(cell + 13.0f);
-    float magnitude = pow(magRand, 2.5f);
-
-    float dimThreshold    = -SKY_TWILIGHT_DEG;
-    float brightThreshold = -6.0f + SKY_STAR_DAWN_LINGER;
-    float starThreshold   = lerp(dimThreshold, brightThreshold, magnitude);
-    float fadeRange        = max(1.0f, abs(starThreshold - dimThreshold) * 0.4f + 2.0f);
-    float starTwilight    = Smooth01(saturate((starThreshold - sunElevDeg) / fadeRange));
-
-    if (starTwilight <= 0.0f) return float3(0, 0, 0);
-
-    float baseRadius = lerp(0.05f, 0.08f, magnitude);
-
-    //gaussian core + soft halo
-    float core = exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.08f));
-    float halo = magnitude * exp(-dist * dist / max(1e-6f, baseRadius * baseRadius * 0.5f)) * 0.3f;
-    float brightness = saturate(core + halo);
-
-    float3 col = StarColor(Hash12(cell + 29.0f));
-
-    float elevFactor = saturate(dot(vStar, WORLD_UP));
-    float scint = Scintillation(Hash12(cell + 37.0f), elevFactor, (float)SUN_FRAMECOUNT);
-
-    return brightness * magnitude * col * brightnessScale * scint * starTwilight;
-}
-
-//multi-layer star field
-float3 EvaluateStars(float3 rayDir, float elevDeg)
-{
-    float3 v = SafeNormalize(rayDir);
-    float solarH = GetSolarTimeHours();
-    float sidFrac = frac((solarH / 24.0f) * SKY_SIDEREAL_RATIO);
-    float3 vStar = RotateAroundAxis(v, WORLD_UP, -TAU * sidFrac);
-
-    float upDot = dot(v, WORLD_UP);
-    float horizonW = Smooth01(saturate(upDot / 0.02f));
-
-    if (horizonW <= 0.0f) return float3(0, 0, 0);
-
-    float3 stars = float3(0, 0, 0);
-
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 0.5f,
-                               0.985f, 1.6f, elevDeg);
-
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 1.0f,
-                               SKY_STAR_DENSITY, 1.0f, elevDeg);
-
-#if SKY_STAR_LAYERS >= 3
-    stars += EvaluateStarLayer(vStar, SKY_STAR_GRID * 2.2f,
-                               0.994f, 0.35f, elevDeg);
-#endif
-
-    return stars * SKY_STAR_INTENSITY * SKY_STAR_SCALE * horizonW;
-}
-
-//====================================
-//PUBLIC SKY API
-//====================================
-float3 EvaluateSky(float3 rayDir)
+float3 EvaluateSunUnattenuated(float3 rayDir)
 {
     SunState S = ComputeSunState();
+    if (S.pdf <= 0.0f) return float3(0, 0, 0);
 
+    float3 d = SafeNormalize(rayDir);
+    float cosAngle = dot(d, S.dirWS);
+
+    if (cosAngle < S.cosThetaMax) return float3(0, 0, 0);
+
+    float3 radiance = SUN_COLOR_VAL * SUN_INTENSITY_VAL * S.visible / S.omega;
+
+#if SUN_LIMB_DARKENING
+    float mu = saturate((cosAngle - S.cosThetaMax) / max(1e-6f, 1.0f - S.cosThetaMax));
+    mu = sqrt(mu);
+    float3 ld = LimbDarkening(mu);
+    return radiance * ld / 0.85f;
+#else
+    return radiance;
+#endif
+}
+
+float3 EvaluateStars(float3 rayDir)
+{
     float3 v     = SafeNormalize(rayDir);
-    float  upDot = dot(v, WORLD_UP);
+    float3 vStar = WorldToCelestial(v);
+
+    float dec = asin(clamp(vStar.y, -1.0f, 1.0f));
+    float ra  = atan2(vStar.z, vStar.x);
+    float2 uv = float2(ra * (1.0f / TAU) + 0.5f,
+                       0.5f - dec * (1.0f / PI));
+
+#if SKY_STAR_TEXTURE_FLIP_U
+    uv.x = 1.0f - uv.x;
+#endif
+
+    float texW, texH, texMips;
+    gSkyStars.GetDimensions(0, texW, texH, texMips);
+    float pixelAngular = 2.0f / (projection._m11 * float(gImageSize.y));
+    float texelAngular = PI / texH;
+    float lod = log2(pixelAngular / texelAngular) + SKY_STAR_LOD_BIAS;
+    lod = clamp(lod, 0.0f, texMips - 1.0f);
+
+    float3 c = gSkyStars.SampleLevel(g_sampler, uv, lod).rgb;
+    c = max(c, 0.0f);
+
+#if SKY_STAR_TEXTURE_SRGB
+
+    c = c * (c * (c * 0.305306011f + 0.682171111f) + 0.012522878f);
+#endif
+
+    c = max(c - SKY_STAR_THRESHOLD, 0.0f);
+
+    const float lum    = max(dot(c, float3(0.2126f, 0.7152f, 0.0722f)), 1e-6f);
+    const float factor = pow(lum, SKY_STAR_GAMMA - 1.0f);
+    c *= factor;
+
+    return c * SKY_STAR_INTENSITY * SKY_STAR_SCALE;
+}
+
+inline void SkyAtmosphere(float3 v, float3 sunDir,
+                          out float3 scatter, out float3 viewTr, out float hitPlanet)
+{
+#if SKYBAKE_CONSUMER
+    SkyBakeLoadView(v, scatter, viewTr, hitPlanet);
+#else
+    bool hit;
+    scatter   = IntegrateScattering(v, sunDir, viewTr, hit);
+    hitPlanet = hit ? 1.0f : 0.0f;
+#endif
+}
+
+float3 EvaluateSkyBackground(float3 rayDir)
+{
+#if ATM_DEBUG_RING == 3
+    return float3(0.0f, 0.0f, 0.0f);
+#endif
+
+    if (SkyObserverIsUnderground()) return float3(0.0f, 0.0f, 0.0f);
+
+    SunState S = ComputeSunState();
+
+    float3 v       = SafeNormalize(rayDir);
     float  elevDeg = S.elevRad * RAD2DEG;
+    float3 O       = g_skyObserverPlanet;
 
-    bool isGround = (upDot <= 0.0f);
-    float3 vEval = isGround ? SafeNormalize(float3(v.x, 1e-4f, v.z)) : v;
-
-    //physical scattering
-    float3 viewTr;
-    float3 scatter = IntegrateScattering(vEval, S.dirWS, viewTr);
+    float3 scatter, viewTr;
+    float  hitPlanet;
+    SkyAtmosphere(v, S.dirWS, scatter, viewTr, hitPlanet);
 
     float3 daySky = scatter * SKY_INTENSITY;
 
-    //night
-    float tw = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    float observerR     = length(O);
+    float atmosResidual = saturate((ATMOS_TOP_RADIUS - observerR)
+                                   / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float tw            = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    float mu            = saturate(dot(v, WORLD_UP));
+    float3 nightBase    = SKY_NIGHT_BASE * skyNightBaseIntensity
+                                         * lerp(1.6f, 1.0f, pow(mu, 0.7f));
+    nightBase          *= atmosResidual * (1.0f - hitPlanet);
 
-    float mu = saturate(dot(vEval, WORLD_UP));
-    float3 nightBase = SKY_NIGHT_BASE * lerp(1.6f, 1.0f, pow(mu, 0.7f));
-    nightBase *= SKY_INTENSITY;
+    float3 starShield = exp(-scatter * SKY_STAR_SCATTER_SHIELD);
+    float3 stars      = (hitPlanet < 1.0f)
+                      ? (EvaluateStars(v) * viewTr * starShield * (1.0f - hitPlanet))
+                      : float3(0, 0, 0);
 
-    float3 stars = EvaluateStars(v, elevDeg);
+    return lerp(nightBase, daySky, tw) + stars;
+}
 
-    float3 sky = lerp(nightBase, daySky, tw) + stars;
+float3 EvaluateSkyBackgroundBehind(float3 rayDir, SunState S,
+                                   bool hitPlanet, float3 unifiedInscatter)
+{
+#if ATM_DEBUG_RING == 3
+    return float3(0.0f, 0.0f, 0.0f);
+#endif
+    float3 v = SafeNormalize(rayDir);
+    float3 O = g_skyObserverPlanet;
+    float elevDeg = S.elevRad * RAD2DEG;
 
-    if (isGround)
+    float observerR     = length(O);
+    float atmosResidual = saturate((ATMOS_TOP_RADIUS - observerR)
+                                   / max(1e-6f, ATMOS_TOP_RADIUS - ATMOS_BOTTOM_RADIUS));
+    float tw            = Smooth01(saturate((elevDeg + SKY_TWILIGHT_DEG) / SKY_TWILIGHT_DEG));
+    float mu            = saturate(dot(v, WORLD_UP));
+    float3 nightBase    = SKY_NIGHT_BASE * skyNightBaseIntensity
+                                         * lerp(1.6f, 1.0f, pow(mu, 0.7f));
+    nightBase          *= atmosResidual * (hitPlanet ? 0.0f : 1.0f) * (1.0f - tw);
+
+    float3 stars = float3(0, 0, 0);
+    if (!hitPlanet)
     {
-        float t = Smooth01(saturate((-upDot) / 0.35f));
-        return lerp(sky, sky * SKY_GROUND_DARKEN, t);
+        float3 shieldInput = unifiedInscatter / max(SKY_INTENSITY, 1e-6f);
+        float3 starShield  = exp(-shieldInput * SKY_STAR_SCATTER_SHIELD);
+        stars = EvaluateStars(v) * starShield;
     }
 
-    return sky;
+    return nightBase + stars;
+}
+
+float3 EvaluateSky(float3 rayDir)
+{
+    if (cloudEnabled > .5f && !SkyObserverIsUnderground())
+        return CumulusEnvironment(rayDir,0u).rgb;
+    return EvaluateSkyBackground(rayDir);
+}
+
+float3 EnvTailFinish(float3 cPartial, float3 s, float misPdf)
+{
+    const float  sunSAPdf   = GetSunPdf(s);
+    const float3 sunRad     = (sunSAPdf > 0.0f) ? EvaluateSun(s) : float3(0, 0, 0);
+    const float  sunMisBsdf = (sunSAPdf > 0.0f)
+        ? misPdf / max(misPdf + sunSAPdf, EPSILON) : 0.0f;
+    const float3 sky  = EvaluateSky(s);
+    const float3 envL = sky + sunRad * sunMisBsdf;
+
+    float3 c = cPartial * envL;
+    return (any(isnan(c)) || any(isinf(c))) ? (float3)0.0f : max(c, 0.0f);
 }

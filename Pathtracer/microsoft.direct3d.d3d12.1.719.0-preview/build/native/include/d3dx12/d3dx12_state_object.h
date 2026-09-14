@@ -18,7 +18,7 @@
 //================================================================================================
 // D3DX12 State Object Creation Helpers
 //
-// Helper classes for creating new style state objects out of an arbitrary set of subobjects.
+// Helper classes for creating new style state objects terrain of an arbitrary set of subobjects.
 // Uses STL
 //
 // Start by instantiating CD3DX12_STATE_OBJECT_DESC (see its public methods).
@@ -204,7 +204,7 @@ private:
                                                         // for repointing pointers in subobjects
     } SUBOBJECT_WRAPPER;
     D3D12_STATE_OBJECT_DESC m_Desc;
-    std::list<SUBOBJECT_WRAPPER>   m_SubobjectList; // Pointers to list nodes handed out so
+    std::list<SUBOBJECT_WRAPPER>   m_SubobjectList; // Pointers to list nodes handed terrain so
                                                     // these can be edited live
     std::vector<D3D12_STATE_SUBOBJECT> m_SubobjectArray; // Built at the end, copying list contents
 

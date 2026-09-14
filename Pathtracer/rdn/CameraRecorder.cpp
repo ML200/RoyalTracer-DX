@@ -5,12 +5,11 @@
 #include <ctime>
 #include <cstdio>
 
-CameraRecorder::CameraRecorder() {
-}
+CameraRecorder::CameraRecorder() = default;
 
+// Discard the placeholder file if no keyframe was successfully written.
 CameraRecorder::~CameraRecorder() {
     if (!m_hasRecorded && !m_filePath.empty()) {
-        //delete empty file
         if (std::remove(m_filePath.c_str()) == 0) {
             std::cout << "[CameraRecorder] Deleted empty recording file: " << m_filePath << std::endl;
         }
@@ -21,16 +20,13 @@ void CameraRecorder::Initialize() {
     m_hasRecorded = false;
     m_startTime = std::chrono::high_resolution_clock::now();
 
-    //unique filename
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm;
     localtime_s(&now_tm, &now_c);
 
     std::stringstream ss;
-    ss << "camera_path_"
-       << std::put_time(&now_tm, "%Y-%m-%d_%H-%M-%S")
-       << ".txt";
+    ss << "camera_path_" << std::put_time(&now_tm, "%Y-%m-%d_%H-%M-%S") << ".txt";
 
     m_filePath = ss.str();
 
@@ -43,8 +39,6 @@ void CameraRecorder::Initialize() {
 }
 
 void CameraRecorder::CaptureKeyframe(nv_helpers_dx12::Manipulator& camera) {
-    m_hasRecorded = true;
-
     auto now = std::chrono::high_resolution_clock::now();
     float timestamp = std::chrono::duration<float>(now - m_startTime).count();
 
@@ -53,12 +47,12 @@ void CameraRecorder::CaptureKeyframe(nv_helpers_dx12::Manipulator& camera) {
 
     std::ofstream file(m_filePath, std::ios::app);
     if (file.is_open()) {
-        file << std::fixed << std::setprecision(4)
-             << timestamp << " "
-             << eye.x << " " << eye.y << " " << eye.z << " "
-             << center.x << " " << center.y << " " << center.z << " "
-             << up.x << " " << up.y << " " << up.z << "\n";
-
-        std::cout << "[CameraRecorder] Keyframe saved at " << timestamp << "s" << std::endl;
+        file << std::fixed << std::setprecision(4) << timestamp << " " << eye.x << " " << eye.y << " " << eye.z << " "
+             << center.x << " " << center.y << " " << center.z << " " << up.x << " " << up.y << " " << up.z << "\n";
+        file.flush();
+        if (file) {
+            m_hasRecorded = true;
+            std::cout << "[CameraRecorder] Keyframe saved at " << timestamp << "s" << std::endl;
+        }
     }
 }

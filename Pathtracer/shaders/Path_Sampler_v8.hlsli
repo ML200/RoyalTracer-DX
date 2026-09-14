@@ -1,6 +1,3 @@
-//====================================
-//BEER-LAMBERT ABSORPTION
-//====================================
 inline float3 CalculateAbsorptionThroughput(
     float3 tintColor,
     float distanceTraveled)

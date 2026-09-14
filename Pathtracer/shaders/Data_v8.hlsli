@@ -1,6 +1,3 @@
-//====================================
-//VERTEX AND ATTRIBUTES
-//====================================
 struct STriVertex {
     float3 vertex;
     uint   packedNormal;
@@ -11,33 +8,27 @@ struct Attributes {
     float2 bary;
 };
 
-//====================================
-//INSTANCE PROPERTIES
-//====================================
+// Must match the host-side instance layout.
 struct InstanceProperties
 {
-    float4x4 objectToWorld;
-    float4x4 objectToWorldInverse;
-    float4x4 prevObjectToWorld;
-    float4x4 prevObjectToWorldInverse;
-    float4x4 objectToWorldNormal;
-    float4x4 prevObjectToWorldNormal;
+    float3x4 objectToWorld;
+    float3x4 objectToWorldInverse;
+    float3x4 objectToWorldNormal;
     uint  indexBase;
     uint  vertexBase;
     uint  materialBase;
-    uint triToLightBase;
-    uint opaqueTriCount;
-    uint _pad[3];
+    uint  triToLightBase;
+    uint  opaqueTriCount;
+    uint  _pad[2];
+    uint  lightSlot;
+    float3x4 prevObjectToWorld;
 };
 
-//====================================
-//LIGHT TRIANGLE
-//====================================
 struct LightTriangle {
     float3 x;
     float cdf;
     float3 y;
-    uint instanceID;
+    uint meshID;
     float3 z;
     float weight;
     float3 emission;
@@ -46,10 +37,6 @@ struct LightTriangle {
     float3 pad0;
 };
 
-//====================================
-//PACKED MATERIAL
-//====================================
-//40B AoS, one material per cache line, layout in src/Components/Vertex.h
 struct MatPacked {
     uint Kd_rgb;
     uint w_Ni;
@@ -61,42 +48,32 @@ struct MatPacked {
     uint uv_albedo;
     uint uv_normal;
     uint uv_rma;
+    uint sss_albedo;
+    uint sss_radius_g;
 };
 
-//====================================
-//LIGHT TREE NODES
-//====================================
 struct LightTLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float cosTheta_e;
+    float3 axis;     float sinTheta_o;
 
     uint   firstChild;
     uint   childCount;
-    uint   blasIndex;
-    uint   primCount;
-
-    float  sumPower;
-    float  sumPowerSq;
-
-    uint   itemFirst;
-    uint   itemCount;
+    uint   slot;
+    uint   _pad;
 };
 
 struct LightBLASNodeGpu
 {
     float3 bmin;     float power;
     float3 bmax;     float cosTheta_o;
-    float3 axis;     float cosTheta_e;
+    float3 axis;     float sinTheta_o;
 
     uint   firstChild;
     uint   childCount;
     uint   triFirst;
     uint   triCount;
-
-    uint   primCount;     uint _pad0;
-    float  sumPower;      float sumPowerSq;
 };
 
 struct BlasRangeGpu {
@@ -104,9 +81,15 @@ struct BlasRangeGpu {
     uint nodeCount;
     uint triIndexOffset;
     uint triIndexCount;
-    float4x4 worldToLocal;
 };
 
+struct LightSlotGpu {
+    float3x4 worldToLocal;
+    uint  instanceID;
+    uint  nodeOffset;
+    float powerScale;
+    uint  _pad;
+};
 
-struct LT_Sample { uint id; float pdf; };
+struct LT_Sample { uint id; uint inst; float pdf; uint2 learningToken; };
 struct LT_Path_Sample { float3 dir; float pdf; uint tri;};

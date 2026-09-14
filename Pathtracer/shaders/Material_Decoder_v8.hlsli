@@ -1,14 +1,6 @@
-//====================================
-//MATERIAL DECODER
-//====================================
-//accessors over compressed AoS g_mat, HLSL CSEs same material fetches
-
 #ifndef MATERIAL_DECODER_V8_HLSLI
 #define MATERIAL_DECODER_V8_HLSLI
 
-//====================================
-//CORE KD NI PBR
-//====================================
 inline float3 LoadKd_rgb(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Kd_rgb);
@@ -16,22 +8,26 @@ inline float3 LoadKd_rgb(uint matID)
 
 inline float LoadKd_w(uint matID)
 {
-    return f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
+    return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni & 0xFFFFu);
 }
 
+// Decode base color and material flags from packed storage.
 inline float4 LoadKd(uint matID)
 {
     const MatPacked m = g_mat[matID];
-    return float4(UnpackRGB9E5(m.Kd_rgb), f16tof32(m.w_Ni & 0xFFFFu));
+    return float4(UnpackRGB9E5(m.Kd_rgb),
+                  FORCE_DIFFUSE ? 1.0f : f16tof32(m.w_Ni & 0xFFFFu));
 }
 
 inline float LoadNi(uint matID)
 {
-    return f16tof32(g_mat[matID].w_Ni >> 16);
+    return FORCE_DIFFUSE ? 1.0f : f16tof32(g_mat[matID].w_Ni >> 16);
 }
 
+// Decode roughness, metalness, sheen, and coat parameters.
 inline float4 LoadPrPmPsPc(uint matID)
 {
+    if (FORCE_DIFFUSE) return float4(1.0f, 0.0f, 0.0f, 0.0f);
     const uint p = g_mat[matID].PrPmPsPc;
     return float4(
         float((p >>  0) & 0xFFu) * (1.0f / 255.0f),
@@ -42,38 +38,35 @@ inline float4 LoadPrPmPsPc(uint matID)
 
 inline float LoadPr(uint matID)
 {
-    return float(g_mat[matID].PrPmPsPc & 0xFFu) * (1.0f / 255.0f);
+    return FORCE_DIFFUSE ? 1.0f : float(g_mat[matID].PrPmPsPc & 0xFFu) * (1.0f / 255.0f);
 }
 
 inline float LoadPm(uint matID)
 {
-    return float((g_mat[matID].PrPmPsPc >> 8) & 0xFFu) * (1.0f / 255.0f);
+    return FORCE_DIFFUSE ? 0.0f : float((g_mat[matID].PrPmPsPc >> 8) & 0xFFu) * (1.0f / 255.0f);
 }
 
 inline float LoadPs(uint matID)
 {
-    return float((g_mat[matID].PrPmPsPc >> 16) & 0xFFu) * (1.0f / 255.0f);
+    return FORCE_DIFFUSE ? 0.0f : float((g_mat[matID].PrPmPsPc >> 16) & 0xFFu) * (1.0f / 255.0f);
 }
 
 inline float LoadPc(uint matID)
 {
-    return float((g_mat[matID].PrPmPsPc >> 24) & 0xFFu) * (1.0f / 255.0f);
+    return FORCE_DIFFUSE ? 0.0f : float((g_mat[matID].PrPmPsPc >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
-//====================================
-//TRANSMISSION COAT ANISO ALPHA
-//====================================
 inline float3 LoadTf(uint matID)
 {
     return UnpackRGB9E5(g_mat[matID].Tf_rgb);
 }
 
+static float g_regularizeRoughness = 0.0f;
 inline float LoadPcr(uint matID)
 {
-    return float(g_mat[matID].Pcr_Aniso_Rot_AlphaTh & 0xFFu) * (1.0f / 255.0f);
+    return max(float(g_mat[matID].Pcr_Aniso_Rot_AlphaTh & 0xFFu) * (1.0f / 255.0f), g_regularizeRoughness);
 }
 
-//int8 in [-127,127] mapped to [-1,1]
 inline float LoadAniso(uint matID)
 {
     const uint raw = (g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 8) & 0xFFu;
@@ -102,9 +95,6 @@ inline float LoadAlphaThreshold(uint matID)
     return float((g_mat[matID].Pcr_Aniso_Rot_AlphaTh >> 24) & 0xFFu) * (1.0f / 255.0f);
 }
 
-//====================================
-//TEXTURE IDS AND UV SCALES
-//====================================
 inline int LoadAlbedoTexID(uint matID)
 {
     const uint lo = g_mat[matID].texIDs_01 & 0xFFFFu;
@@ -123,6 +113,16 @@ inline int LoadRmaTexID(uint matID)
     return (int)(lo << 16) >> 16;
 }
 
+inline bool LoadInvertAlpha(uint matID)
+{
+    return (g_mat[matID].texIDs_2 & (1u << 16)) != 0u;
+}
+
+inline bool LoadIsThinGlass(uint matID)
+{
+    return !FORCE_DIFFUSE && (g_mat[matID].texIDs_2 & (1u << 18)) != 0u;
+}
+
 inline float2 LoadAlbedoUVScale(uint matID)
 {
     const uint p = g_mat[matID].uv_albedo;
@@ -139,6 +139,42 @@ inline float2 LoadRmaUVScale(uint matID)
 {
     const uint p = g_mat[matID].uv_rma;
     return float2(f16tof32(p & 0xFFFFu), f16tof32(p >> 16));
+}
+
+inline bool LoadIsSSS(uint matID)
+{
+    return !FORCE_DIFFUSE && (g_mat[matID].texIDs_2 & (1u << 17)) != 0u;
+}
+
+inline float3 LoadSSSAlbedo(uint matID)
+{
+    return UnpackRGB9E5(g_mat[matID].sss_albedo);
+}
+
+inline float LoadSSSRadius(uint matID)
+{
+    return f16tof32(g_mat[matID].sss_radius_g & 0xFFFFu);
+}
+
+inline float LoadPhaseG(uint matID)
+{
+    return f16tof32(g_mat[matID].sss_radius_g >> 16);
+}
+
+inline float LoadSSSWeight(uint matID)
+{
+    return float((g_mat[matID].texIDs_2 >> 24) & 0xFFu) * (1.0f / 255.0f);
+}
+
+inline bool MaterialIsFreeBounce(uint matID)
+{
+
+    if (LoadKd_w(matID) >= 1e-3f) return false;
+
+    const bool isGlass      = (LoadPm(matID) < 0.5f) &&
+                              (any(LoadTf(matID) > 0.0f) || LoadIsThinGlass(matID));
+    const bool isTranslucent = LoadIsSSS(matID);
+    return isGlass || isTranslucent;
 }
 
 #endif

@@ -23,49 +23,6 @@ OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -----------------------------------------------------------------------*/
 
-/*
-Contacts for feedback:
-- pgautron@nvidia.com (Pascal Gautron)
-- mlefrancois@nvidia.com (Martin-Karl Lefrancois)
-
-The top-level hierarchy is used to store a set of instances represented by
-bottom-level hierarchies in a way suitable for fast intersection at runtime. To
-be built, this data structure requires some scratch space which has to be
-allocated by the application. Similarly, the resulting data structure is stored
-in an application-controlled buffer.
-
-To be used, the application must first add all the instances to be contained in
-the final structure, using AddInstance. After all instances have been added,
-ComputeASBufferSizes will prepare the build, and provide the required sizes for
-the scratch data and the final result. The Build call will finally compute the
-acceleration structure and store it in the result buffer.
-
-Note that the build is enqueued in the command list, meaning that the scratch
-buffer needs to be kept until the command list execution is finished.
-
-
-
-Example:
-
-TopLevelASGenerator topLevelAS;
-topLevelAS.AddInstance(instances1, matrix1, instanceId1, hitGroupIndex1);
-topLevelAS.AddInstance(instances2, matrix2, instanceId2, hitGroupIndex2);
-...
-UINT64 scratchSize, resultSize, instanceDescsSize;
-topLevelAS.ComputeASBufferSizes(GetRTDevice(), true, &scratchSize, &resultSize,
-&instanceDescsSize); AccelerationStructureBuffers buffers; buffers.pScratch =
-nv_helpers_dx12::CreateBuffer(..., scratchSizeInBytes, ...); buffers.pResult =
-nv_helpers_dx12::CreateBuffer(..., resultSizeInBytes, ...);
-buffers.pInstanceDesc = nv_helpers_dx12::CreateBuffer(..., resultSizeInBytes,
-...); topLevelAS.Generate(m_commandList.Get(), rtCmdList,
-m_topLevelAS.pScratch.Get(), m_topLevelAS.pResult.Get(),
-m_topLevelAS.pInstanceDesc.Get(), updateOnly, updateOnly ?
-m_topLevelAS.pResult.Get() : nullptr);
-
-return buffers;
-
-*/
-
 #pragma once
 
 #include "d3d12.h"
@@ -74,112 +31,70 @@ return buffers;
 
 #include <vector>
 
-namespace nv_helpers_dx12
-{
+namespace nv_helpers_dx12 {
 
-/// Helper class to generate top-level acceleration structures for raytracing
-class TopLevelASGenerator
-{
-public:
-  /// Add an instance to the top-level acceleration structure. The instance is
-  /// represented by a bottom-level AS, a transform, an instance ID and the
-  /// index of the hit group indicating which shaders are executed upon hitting
-  /// any geometry within the instance
-  void
-  AddInstance(ID3D12Resource* bottomLevelAS, /// Bottom-level acceleration structure containing the
-                                             /// actual geometric data of the instance
-              const DirectX::XMMATRIX& transform, /// Transform matrix to apply to the instance,
-                                                  /// allowing the same bottom-level AS to be used
-                                                  /// at several world-space positions
-              UINT instanceID,   /// Instance ID, which can be used in the shaders to
-                                 /// identify this specific instance
-              UINT hitGroupIndex, /// Hit group index, corresponding the the index of the
-                                  /// hit group in the Shader Binding Table that will be
-                                  /// invocated upon hitting the geometry
-              D3D12_RAYTRACING_INSTANCE_FLAGS flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE
-  );
+class TopLevelASGenerator {
+  public:
+    void AddInstance(ID3D12Resource* bottomLevelAS,
 
-  /// Compute the size of the scratch space required to build the acceleration
-  /// structure, as well as the size of the resulting structure. The allocation
-  /// of the buffers is then left to the application
-  void ComputeASBufferSizes(
-      ID3D12Device5* device, /// Device on which the build will be performed
-      bool allowUpdate,              /// If true, the resulting acceleration structure will
-                                     /// allow iterative updates
-      UINT64* scratchSizeInBytes,    /// Required scratch memory on the GPU to
-                                     /// build the acceleration structure
-      UINT64* resultSizeInBytes,     /// Required GPU memory to store the
-                                     /// acceleration structure
-      UINT64* descriptorsSizeInBytes /// Required GPU memory to store instance
-                                     /// descriptors, containing the matrices,
-                                     /// indices etc.
-  );
+                     const DirectX::XMMATRIX& transform,
 
-  /// Enqueue the construction of the acceleration structure on a command list,
-  /// using application-provided buffers and possibly a pointer to the previous
-  /// acceleration structure in case of iterative updates. Note that the update
-  /// can be done in place: the result and previousResult pointers can be the
-  /// same.
-  void Generate(
-      ID3D12GraphicsCommandList4* commandList, /// Command list on which the build will be enqueued
-      ID3D12Resource* scratchBuffer,     /// Scratch buffer used by the builder to
-                                         /// store temporary data
-      ID3D12Resource* resultBuffer,      /// Result buffer storing the acceleration structure
-      ID3D12Resource* descriptorsBuffer, /// Auxiliary result buffer containing the instance
-                                         /// descriptors, has to be in upload heap
-      bool updateOnly = false, /// If true, simply refit the existing acceleration structure
-      ID3D12Resource* previousResult = nullptr /// Optional previous acceleration structure, used
-                                               /// if an iterative update is requested
-  );
+                     UINT instanceID,
 
-  /// Update only the transforms of specific instances in the descriptor buffer,
-  /// then perform a TLAS refit. Much faster than Generate() when few instances moved.
-  void UpdateAndRefit(
-      ID3D12GraphicsCommandList4* commandList,
-      ID3D12Resource* scratchBuffer,
-      ID3D12Resource* resultBuffer,
-      ID3D12Resource* descriptorsBuffer,
-      const std::vector<uint32_t>& dirtyIndices /// Indices of instances whose transforms changed
-  );
+                     UINT hitGroupIndex,
 
-  /// Full rebuild using existing buffers — updates all dirty descriptors then
-  /// builds (not refits) the TLAS.  Reuses allocations so no GPU heap churn.
-  void RebuildInPlace(
-      ID3D12GraphicsCommandList4* commandList,
-      ID3D12Resource* scratchBuffer,
-      ID3D12Resource* resultBuffer,
-      ID3D12Resource* descriptorsBuffer,
-      const std::vector<uint32_t>& dirtyIndices
-  );
+                     D3D12_RAYTRACING_INSTANCE_FLAGS flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE);
 
-private:
-  /// Helper struct storing the instance data
-  struct Instance
-  {
-    Instance(ID3D12Resource* blAS, const DirectX::XMMATRIX& tr, UINT iID, UINT hgId,
-             D3D12_RAYTRACING_INSTANCE_FLAGS f);
-    /// Bottom-level AS
-    ID3D12Resource* bottomLevelAS;
-    /// Transform matrix
-    const DirectX::XMMATRIX& transform;
-    /// Instance ID visible in the shader
-    UINT instanceID;
-    /// Hit group index used to fetch the shaders from the SBT
-    UINT hitGroupIndex;
-    /// Per-instance flags (FORCE_OPAQUE, etc.)
-    D3D12_RAYTRACING_INSTANCE_FLAGS flags;
-  };
+    void ComputeASBufferSizes(ID3D12Device5* device, bool allowUpdate,
 
-  /// Construction flags, indicating whether the AS supports iterative updates
-  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS m_flags;
-  /// Instances contained in the top-level AS
-  std::vector<Instance> m_instances;
+                              UINT64* scratchSizeInBytes,
 
-  /// Size of the temporary memory used by the TLAS builder
-  UINT64 m_scratchSizeInBytes;
-  /// Size of the buffer containing the instance descriptors
-  UINT64 m_instanceDescsSizeInBytes;
-  /// Size of the buffer containing the TLAS
-  UINT64 m_resultSizeInBytes;
+                              UINT64* resultSizeInBytes,
+
+                              UINT64* descriptorsSizeInBytes
+
+    );
+
+    void Generate(ID3D12GraphicsCommandList4* commandList, ID3D12Resource* scratchBuffer,
+
+                  ID3D12Resource* resultBuffer, ID3D12Resource* descriptorsBuffer,
+
+                  bool updateOnly = false, ID3D12Resource* previousResult = nullptr
+
+    );
+
+    void UpdateAndRefit(ID3D12GraphicsCommandList4* commandList, ID3D12Resource* scratchBuffer,
+                        ID3D12Resource* resultBuffer, ID3D12Resource* descriptorsBuffer,
+                        const std::vector<uint32_t>& dirtyIndices);
+
+    void RebuildInPlace(ID3D12GraphicsCommandList4* commandList, ID3D12Resource* scratchBuffer,
+                        ID3D12Resource* resultBuffer, ID3D12Resource* descriptorsBuffer,
+                        const std::vector<uint32_t>& dirtyIndices);
+
+  private:
+    struct Instance {
+        Instance(ID3D12Resource* blAS, const DirectX::XMMATRIX& tr, UINT iID, UINT hgId,
+                 D3D12_RAYTRACING_INSTANCE_FLAGS f);
+
+        ID3D12Resource* bottomLevelAS;
+
+        const DirectX::XMMATRIX& transform;
+
+        UINT instanceID;
+
+        UINT hitGroupIndex;
+
+        D3D12_RAYTRACING_INSTANCE_FLAGS flags;
+    };
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS m_flags;
+
+    std::vector<Instance> m_instances;
+
+    UINT64 m_scratchSizeInBytes;
+
+    UINT64 m_instanceDescsSizeInBytes;
+
+    UINT64 m_resultSizeInBytes;
 };
 } // namespace nv_helpers_dx12

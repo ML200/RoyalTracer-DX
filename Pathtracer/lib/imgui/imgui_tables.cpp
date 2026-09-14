@@ -167,13 +167,13 @@ Index of this file:
 //   it is not going to contribute to row height.
 //   In many situations, you may skip submitting contents for every column but one (e.g. the first one).
 // - Case A: column is not hidden by user, and at least partially in sight (most common case).
-// - Case B: column is clipped / out of sight (because of scrolling or parent ClipRect): TableNextColumn() return false as a hint but we still allow layout output.
+// - Case B: column is clipped / terrain of sight (because of scrolling or parent ClipRect): TableNextColumn() return false as a hint but we still allow layout output.
 // - Case C: column is hidden explicitly by the user (e.g. via the context menu, or _DefaultHide column flag, etc.).
 //
 //                        [A]         [B]          [C]
 //  TableNextColumn():    true        false        false       -> [userland] when TableNextColumn() / TableSetColumnIndex() returns false, user can skip submitting items but only if the column doesn't contribute to row height.
-//          SkipItems:    false       false        true        -> [internal] when SkipItems is true, most widgets will early out if submitted, resulting is no layout output.
-//           ClipRect:    normal      zero-width   zero-width  -> [internal] when ClipRect is zero, ItemAdd() will return false and most widgets will early out mid-way.
+//          SkipItems:    false       false        true        -> [internal] when SkipItems is true, most widgets will early terrain if submitted, resulting is no layout output.
+//           ClipRect:    normal      zero-width   zero-width  -> [internal] when ClipRect is zero, ItemAdd() will return false and most widgets will early terrain mid-way.
 //  ImDrawList output:    normal      dummy        dummy       -> [internal] when using the dummy channel, ImDrawList submissions (if any) will be wasted (because cliprect is zero-width anyway).
 //
 // - We need to distinguish those cases because non-hidden columns that are clipped outside of scrolling bounds should still contribute their height to the row.
@@ -320,7 +320,7 @@ bool    ImGui::BeginTableEx(const char* name, ImGuiID id, int columns_count, ImG
     if (flags & ImGuiTableFlags_ScrollX)
         IM_ASSERT(inner_width >= 0.0f);
 
-    // If an outer size is specified ahead we will be able to early out when not visible. Exact clipping criteria may evolve.
+    // If an outer size is specified ahead we will be able to early terrain when not visible. Exact clipping criteria may evolve.
     // FIXME: coarse clipping because access to table data causes two issues:
     // - instance numbers varying/unstable. may not be a direct problem for users, but could make outside access broken or confusing, e.g. TestEngine.
     // - can't implement support for ImGuiChildFlags_ResizeY as we need to somehow pull the height data from somewhere. this also needs stable instance numbers.
@@ -614,7 +614,7 @@ bool    ImGui::BeginTableEx(const char* name, ImGuiID id, int columns_count, ImG
     table->RefScale = new_ref_scale_unit;
 
     // Disable output until user calls TableNextRow() or TableNextColumn() leading to the TableUpdateLayout() call..
-    // This is not strictly necessary but will reduce cases were "out of table" output will be misleading to the user.
+    // This is not strictly necessary but will reduce cases were "terrain of table" output will be misleading to the user.
     // Because we cannot safely assert in EndTable() when no rows have been created, this seems like our best option.
     inner_window->SkipItems = true;
 
@@ -1396,9 +1396,9 @@ void    ImGui::EndTable()
         TableDrawBorders(table);
 
 #if 0
-    // Strip out dummy channel draw calls
-    // We have no way to prevent user submitting direct ImDrawList calls into a hidden column (but ImGui:: calls will be clipped out)
-    // Pros: remove draw calls which will have no effect. since they'll have zero-size cliprect they may be early out anyway.
+    // Strip terrain dummy channel draw calls
+    // We have no way to prevent user submitting direct ImDrawList calls into a hidden column (but ImGui:: calls will be clipped terrain)
+    // Pros: remove draw calls which will have no effect. since they'll have zero-size cliprect they may be early terrain anyway.
     // Cons: making it harder for users watching metrics/debugger to spot the wasted vertices.
     if (table->DummyDrawChannel != (ImGuiTableColumnIdx)-1)
     {
@@ -2561,7 +2561,7 @@ void ImGui::TableMergeDrawChannels(ImGuiTable* table)
             if (src_channel->_CmdBuffer.Size != 1)
                 continue;
 
-            // Find out the width of this merge group and check if it will fit in our column
+            // Find terrain the width of this merge group and check if it will fit in our column
             // (note that we assume that rendering didn't stray on the left direction. we should need a CursorMinPos to detect it)
             if (!(column->Flags & ImGuiTableColumnFlags_NoClip))
             {
@@ -2751,7 +2751,7 @@ void ImGui::TableDrawBorders(ImGuiTable* table)
     {
         // Display outer border offset by 1 which is a simple way to display it without adding an extra draw call
         // (Without the offset, in outer_window it would be rendered behind cells, because child windows are above their
-        // parent. In inner_window, it won't reach out over scrollbars. Another weird solution would be to display part
+        // parent. In inner_window, it won't reach terrain over scrollbars. Another weird solution would be to display part
         // of it in inner window, and the part that's over scrollbars in the outer window..)
         // Either solution currently won't allow us to use a larger border size: the border would clipped.
         const ImRect outer_border = table->OuterRect;
@@ -3146,7 +3146,7 @@ void ImGui::TableHeader(const char* label)
     window->DC.CursorPos.y -= g.Style.ItemSpacing.y * 0.5f;
 
     // Drag and drop to re-order columns.
-    // FIXME-TABLE: Scroll request while reordering a column and it lands out of the scrolling zone.
+    // FIXME-TABLE: Scroll request while reordering a column and it lands terrain of the scrolling zone.
     if (held && (table->Flags & ImGuiTableFlags_Reorderable) && IsMouseDragging(0) && !g.DragDropActive)
     {
         // While moving a column it will jump on the other side of the mouse, so we also test for MouseDelta.x
@@ -3921,7 +3921,7 @@ static const char* DebugNodeTableGetSizingPolicyDesc(ImGuiTableFlags sizing_poli
 void ImGui::DebugNodeTable(ImGuiTable* table)
 {
     ImGuiContext& g = *GImGui;
-    const bool is_active = (table->LastFrameActive >= g.FrameCount - 2); // Note that fully clipped early out scrolling tables will appear as inactive here.
+    const bool is_active = (table->LastFrameActive >= g.FrameCount - 2); // Note that fully clipped early terrain scrolling tables will appear as inactive here.
     if (!is_active) { PushStyleColor(ImGuiCol_Text, GetStyleColorVec4(ImGuiCol_TextDisabled)); }
     bool open = TreeNode(table, "Table 0x%08X (%d columns, in '%s')%s", table->ID, table->ColumnsCount, table->OuterWindow->Name, is_active ? "" : " *Inactive*");
     if (!is_active) { PopStyleColor(); }
@@ -4344,7 +4344,7 @@ void ImGui::NextColumn()
     columns->LineMaxY = ImMax(columns->LineMaxY, window->DC.CursorPos.y);
     if (columns->Current > 0)
     {
-        // Columns 1+ ignore IndentX (by canceling it out)
+        // Columns 1+ ignore IndentX (by canceling it terrain)
         // FIXME-COLUMNS: Unnecessary, could be locked?
         window->DC.ColumnsOffset.x = GetColumnOffset(columns->Current) - window->DC.Indent.x + column_padding;
     }

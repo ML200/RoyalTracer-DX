@@ -1,203 +1,143 @@
-//====================================
-//RENDERER ORCHESTRATOR
-//====================================
-//init, update, render, destroy, heavy logic in modules
-
 #include "stdafx.h"
 #include "Renderer.h"
-#include "Windowsx.h"
 #include "ReuseTextureGen.h"
-#include "NRC/NrcNetwork.h"
+#include "Diagnostics.h"
+#include "Windowsx.h"
 #include <random>
+#include <unordered_set>
+#include <DirectXPackedVector.h>
 
 #undef SL_CHECK
-#define SL_CHECK(x) do { sl::Result r = (x); if (r != sl::Result::eOk) { \
-    std::wcout << L"[SL] " << L#x << L" failed: " << (int)r << std::endl; } \
-} while(0)
+#define SL_CHECK(x)                                                                                                    \
+    do {                                                                                                               \
+        sl::Result r = (x);                                                                                            \
+        if (r != sl::Result::eOk) {                                                                                    \
+            std::wcout << L"[SL] " << L#x << L" failed: " << (int)r << std::endl;                                      \
+        }                                                                                                              \
+    } while (0)
 
-// ─────────────────────────────────────────────────────────────────
 Renderer::Renderer(UINT width, UINT height)
-    : m_width(width), m_height(height),
-      m_aspectRatio(static_cast<float>(width) / static_cast<float>(height))
-{
-    // Define the rendering pass pipeline (data-driven).
-    // NRC integration. Main chain always runs — debug view is purely
-    // additive, a W×H per-pixel inference tacked on after training.
-    //   cuda:nrc_frame_begin   — zero counters, invalidate PendingGI
-    //   <raygen>               — append cache-term + training records
-    //   cuda:nrc_inference     — tcnn inference on raygen's records
-    //                            (class-0 cache-term + class-1 tail seeds)
-    //   Pass_nrc_resolve_v8    — stitch L̂_s into the reservoir via RIS
-    //   cuda:nrc_train         — backward tail pass + 4× training step
-    //   (debug view only, scheduled regardless — shaders self-gate:)
-    //     Pass_nrc_debug_query   — write per-pixel x1 features into the
-    //                              now-consumed inference buffer
-    //     cuda:nrc_debug_inference — one additional inference for the
-    //                                per-pixel camera-hit queries
-    //     Pass_nrc_debug_present — copy L̂_s into gOutput slice 3
+    : m_width(width), m_height(height), m_aspectRatio(static_cast<float>(width) / static_cast<float>(height)) {
     m_passes.Build({
-        L"cuda:nrc_frame_begin",                        L"barrier",
-        L"Pass_raygen_v8.hlsl|rg",                      L"barrier",
-        L"cuda:nrc_inference",                          L"barrier",
-        L"Pass_nrc_resolve_v8.hlsl|cs:8x8",             L"barrier",
-        L"cuda:nrc_train",                              L"barrier",
-        L"Pass_nrc_debug_query_v8.hlsl|cs:8x8",         L"barrier",
-        L"cuda:nrc_debug_inference",                    L"barrier",
-        L"Pass_nrc_debug_present_v8.hlsl|cs:8x8",       L"barrier",
-        L"Pass_temp_gi_v8.hlsl|rg",                     L"barrier",
-        L"Pass_boil_gi_v8.hlsl|cs:16x16",               L"barrier",
-        L"Pass_spat_gi_select_v8.hlsl|cs:16x16",        L"barrier",
-        L"Pass_spat_gi_shift_v8.hlsl|rg",               L"barrier",
-        L"Pass_spat_gi_v8_1.hlsl|cs:16x16",             L"barrier",
-        L"Pass_dup_gi_v8.hlsl|cs:16x16",                L"barrier",
-        L"Pass_shading_v8.hlsl|cs:16x16",               L"barrier",
-        L"dlss",                                        L"barrier",
-        L"Pass_postprocess_v8.hlsl|cs:8x4",             L"barrier",
+        L"Pass_spmis_reset_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_cumulus_noise_v8.hlsl|fx:32768",
+        L"barrier",
+        L"Pass_cumulus_density_v8.hlsl|fx:2048",
+        L"barrier",
+        L"Pass_cumulus_ambient_v8.hlsl|fx:32",
+        L"barrier",
+        L"Pass_cumulus_light_v8.hlsl|fx:9216",
+        L"barrier",
+        L"Pass_cumulus_environment_v8.hlsl|fx:2048",
+        L"barrier",
+        L"Pass_camera_v8.hlsl|rg",
+        L"barrier",
+
+        L"Pass_pt_skybake_v8.hlsl|fx:512",
+        L"barrier",
+        L"Pass_light_learning_v8.hlsl|fx:256",
+        L"barrier",
+        L"Pass_sharc_prepare_v8.hlsl|fx:4096",
+        L"barrier",
+        L"Pass_sharc_update_v8.hlsl|rg",
+        L"barrier",
+        L"Pass_sharc_resolve_v8.hlsl|fx:4096",
+        L"barrier",
+        L"Pass_raygen_v8.hlsl|rg",
+        L"barrier",
+
+        L"Pass_pt_nee_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_pt_v8.hlsl|rg",
+        L"barrier",
+
+        L"Pass_lite_shift_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_lite_merge_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_cumulus_secondary_v8.hlsl|cs:8x8",
+        L"barrier",
+        L"Pass_atmosphere_primary_v8.hlsl|cs:8x8",
+        L"barrier",
+        L"Pass_cumulus_guides_v8.hlsl|cs:8x8",
+        L"barrier",
+
+        L"Pass_temp_gi_v8.hlsl|rg",
+        L"barrier",
+        L"Pass_shift_v8.hlsl|rg:temporal_shift",
+        L"barrier",
+        L"Pass_temp_merge_v8.hlsl|cs:16x16",
+        L"barrier",
+
+        L"Pass_spmis_count_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_spmis_offsets_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_spmis_sort_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_spmis_select_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_spmis_passthrough_v8.hlsl|rg",
+        L"barrier",
+        L"Pass_shift_v8.hlsl|rg:spatial_shift",
+        L"barrier",
+        L"Pass_spmis_merge_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"Pass_dup_gi_v8.hlsl|cs:16x16",
+        L"barrier",
+
+        L"Pass_shading_v8.hlsl|cs:16x16",
+        L"barrier",
+        L"dlss",
+        L"barrier",
+        L"Pass_autoexpose_reduce_v8.hlsl|cs:8x8",
+        L"barrier",
+        L"Pass_autoexpose_finalize_v8.hlsl|fx:1",
+        L"barrier",
+        L"Pass_postprocess_v8.hlsl|cs:8x4",
+        L"barrier",
     });
 }
 
-//====================================
-//INIT
-//====================================
 void Renderer::InitDevice() {
     try {
         m_ctx.Init(Win32Application::GetHwnd(), GetWidth(), GetHeight());
 
-        // CUDA/D3D12 interop. Optional — if this fails (no CUDA device, LUID
-        // mismatch, etc.) the renderer runs fine; cuda:* passes become no-ops.
-        if (m_cudaInterop.Init(m_ctx.Device())) {
-            m_cudaFence = m_cudaInterop.CreateFence(L"Cuda_Interop_Fence");
-            LOG(L"[CUDA] Interop ready");
+        {
+            planet::StreamConfig cfg;
 
-            // Smoke test callback: exercises the fence split + tcnn once on first
-            // frame, then no-ops but still round-trips the fence every frame so
-            // the D3D12<->CUDA sync path stays live and exercised.
-            RegisterCudaOp(L"nrc_smoke", [this]{
-                static bool s_ranOnce = false;
-                if (s_ranOnce) return;
-                s_ranOnce = true;
-                const bool ok = nrc::SmokeTest(m_cudaInterop.Stream());
-                LOG(L"[NRC] SmokeTest " << (ok ? L"OK" : L"FAILED"));
-            });
+            cfg.enabled = false;
+            cfg.planet.radius = 6371000.0;
 
-            // ── NRC setup ─────────────────────────────────────────
-            // Cap inference capacity at 2 × W*H so each pixel can fit a
-            // cache-termination record AND a depth-0 sharp-reflection record
-            // (raygen splits the BSDF on smooth dielectric x1 hits and queries
-            // NRC at the perfect-mirror reflection's hit point). Round up to
-            // tcnn's batch granularity. The debug view's inference reuses
-            // these buffers — it runs after the main chain has already
-            // consumed them.
-            const uint32_t pixelCount = GetWidth() * GetHeight();
-            m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
+            cfg.planet.center = {0.0, -cfg.planet.radius, 0.0};
+            cfg.max_lod = 16;
+            cfg.max_triangles = 3000000u;
 
-            m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
-            m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
-            m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
-            m_nrcTrainRecords = m_cudaInterop.CreateBuffer(nrc::TrainingBytes       (),                       L"NRC_TrainRecords");
-            m_nrcCounters     = m_cudaInterop.CreateBuffer(nrc::CountersBytes       (),                       L"NRC_Counters");
+            m_planet.init(m_ctx.Device(), &m_ctx, cfg);
 
-            const bool allocOK = m_nrcInferenceIn.resource && m_nrcInferenceOut.resource
-                              && m_nrcPendingGI.resource   && m_nrcTrainRecords.resource
-                              && m_nrcCounters.resource;
-            if (!allocOK) {
-                LOG(L"[NRC] Shared buffer allocation failed — NRC disabled");
-            } else if (!m_nrcNetwork.Init()) {
-                LOG(L"[NRC] tcnn network init failed — NRC disabled");
-            } else {
-                m_nrcReady = true;
-                LOG(L"[NRC] Ready: infCapacity=" << m_nrcInferenceCapacity
-                    << L" trainingPaths="       << nrc::kMaxTrainingPaths);
-            }
+            m_camera.planetCenter =
+                glm::vec3((float)cfg.planet.center.x, (float)cfg.planet.center.y, (float)cfg.planet.center.z);
+            m_camera.planetRadius = (float)cfg.planet.radius;
 
-            // Frame start: zero the counters, invalidate every PendingGI
-            // record, and clear the training path-meta section (leaves
-            // last frame's stale numVertices=0 so the backward-fill
-            // kernel skips unused paths).
-            RegisterCudaOp(L"nrc_frame_begin", [this]{
-                if (!m_nrcReady) return;
-                void* s = m_cudaInterop.Stream();
-                nrc::Memzero(s, m_nrcCounters.cudaPtr,    m_nrcCounters.sizeBytes);
-                nrc::Memfill(s, m_nrcPendingGI.cudaPtr,   0xFF, m_nrcPendingGI.sizeBytes);
-                // Only clear the meta header — per-vertex payload is
-                // overwritten by raygen for freshly-allocated path ids.
-                nrc::Memzero(s, m_nrcTrainRecords.cudaPtr, nrc::kPathMetaTotalBytes);
-            });
-
-            // Main-chain inference. Size the batch by inference capacity rather
-            // than the device-side counter. ReadU32 used to do a host
-            // cudaStreamSynchronize every frame, which turned any main-stream
-            // backlog (raygen, interop fence waits, driver preemption) into a
-            // CPU stall on the hot path -- the classic source of random
-            // multi-ms frame drops. Slots past the actual raygen write count
-            // have stale features, but nothing downstream reads their outputs:
-            // resolve only touches slots referenced by PendingGI (all < count),
-            // debug_query overwrites its own slots before its own inference.
-            // Extra compute cost is deterministic (cap - actual) samples, worth
-            // the zero-stall guarantee.
-            RegisterCudaOp(L"nrc_inference", [this]{
-                if (!m_nrcReady) return;
-                void* s = m_cudaInterop.Stream();
-                const uint32_t padded = nrc::AlignBatch(m_nrcInferenceCapacity);
-                m_nrcNetwork.Inference(
-                    s,
-                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
-                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
-                    padded);
-            });
-
-            // Additional inference for the debug view only. Runs AFTER
-            // training, so main inferenceOut has already been consumed
-            // by resolve + train — we're free to overwrite the buffers
-            // with per-pixel predictions for Pass_nrc_debug_present.
-            // Debug_query wrote one query per pixel at slot = pixelIdx,
-            // so count is W*H.
-            RegisterCudaOp(L"nrc_debug_inference", [this]{
-                if (!m_nrcReady || !m_nrcSettings.debugView) return;
-                void* s = m_cudaInterop.Stream();
-                const uint32_t count   = GetWidth() * GetHeight();
-                const uint32_t clamped = (count < m_nrcInferenceCapacity) ? count : m_nrcInferenceCapacity;
-                const uint32_t padded  = nrc::AlignBatch(clamped);
-                m_nrcNetwork.Inference(
-                    s,
-                    static_cast<const float*>(m_nrcInferenceIn.cudaPtr),
-                    static_cast<float*>      (m_nrcInferenceOut.cudaPtr),
-                    padded);
-            });
-
-            // Backward-fill the training targets from the per-path meta,
-            // walk each path's bucket in reverse, emit (features, target)
-            // rows into tcnn-ready scratch, then run the four SGD steps.
-            RegisterCudaOp(L"nrc_train", [this]{
-                if (!m_nrcReady) return;
-                m_nrcNetwork.TrainFrame(
-                    m_cudaInterop.Stream(),
-                    m_nrcTrainRecords.cudaPtr,
-                    m_nrcInferenceOut.cudaPtr);
-            });
-        } else {
-            LOG(L"[CUDA] Interop disabled (no matching CUDA device)");
+            m_camera.terrainHeightFrequency = 0.0f;
         }
 
         m_simulator.PromptUserConfiguration();
         m_recorder.Initialize();
         m_camera.Init(m_ctx.Device(), GetWidth(), GetHeight());
 
-        if (!m_ctx.viewportHandle) {
-            sl::Result r = slAllocateResources(m_ctx.CmdList(), sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
-            if (r != sl::Result::eOk)
-                std::wcout << L"[SL] slAllocateResources failed: " << (int)r << std::endl;
-        }
         GenerateLutTextures();
-        InitReuseTextures();
-
+        InitSkyStarsTexture();
+        InitBlueNoiseTexture();
+        // Create atmospheric LUTs before their scene SRVs.
+        InitSkyLUTBake();
+        InitCumulusResources();
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 opts5 = {};
-        ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
+        ThrowIfFailed(m_ctx.Device()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &opts5, sizeof(opts5)));
         if (opts5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
             throw std::runtime_error("Raytracing not supported on device");
 
-        // Initialize Reflex
         {
             sl::ReflexState state{};
             sl::Result rr = slReflexGetState(state);
@@ -212,7 +152,6 @@ void Renderer::InitDevice() {
             SL_CHECK(slReflexSetOptions(options));
         }
 
-        // Initialize DLSS Frame Generation
         {
             LUID luid = m_ctx.Device()->GetAdapterLuid();
             sl::AdapterInfo ai;
@@ -221,7 +160,7 @@ void Renderer::InitDevice() {
             sl::Result sr = slIsFeatureSupported(sl::kFeatureDLSS_G, ai);
             if (sr == sl::Result::eOk) {
                 m_dlssG.available = true;
-                // Query max generated frames from hardware
+
                 sl::DLSSGState gState{};
                 sl::DLSSGOptions gOpts{};
                 gOpts.mode = sl::DLSSGMode::eOff;
@@ -256,10 +195,76 @@ void Renderer::LoadScene(const std::vector<ModelEntry>& models) {
 
 void Renderer::InitSceneGPU() {
     try {
+        m_rockMeshIndices.clear();
+        if (m_planet.enabled()) {
+            const auto rockVariants = planet::generate_rock_variants(6, 2, 0xB0DECA11u);
+            Material rockMat;
+            rockMat.Kd = DirectX::XMFLOAT4(0.30f, 0.27f, 0.24f, 1.0f);
+            rockMat.Ke = DirectX::XMFLOAT3(0.0f, 0.0f, 0.0f);
+            rockMat.Ni = 1.0f;
+            rockMat.Pr_Pm_Ps_Pc = DirectX::XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
+            rockMat.albedoTexID = -1;
+            rockMat.normalTexID = -1;
+            rockMat.rmaTexID = -1;
+            rockMat.alphaThreshold = 1.0f;
+            for (const auto& rm : rockVariants) {
+                std::vector<Vertex> rvtx;
+                rvtx.reserve(rm.vertices.size());
+                for (const auto& rv : rm.vertices)
+                    rvtx.emplace_back(DirectX::XMFLOAT3(rv.position.x, rv.position.y, rv.position.z),
+                                      DirectX::XMFLOAT4(rv.normal.x, rv.normal.y, rv.normal.z, 0.0f),
+                                      DirectX::XMFLOAT2(rv.u, rv.v));
+                m_rockMeshIndices.push_back(CreateProceduralMesh(rvtx, rm.indices, rockMat));
+            }
+        }
+        // MINECRAFT: attach the voxel streamer before the unified TLAS is sized.
+        m_planet.set_external(m_voxels.enabled() ? &m_voxels : nullptr);
+        m_planet.reserve_scene_instances((uint32_t)m_scene.instances.size());
         CreateAccelerationStructures();
+
+        {
+            const auto tr = m_planet.terrain_reservation();
+            m_scene.ReserveTerrain(tr.vertexElems, tr.indexElems, tr.matIDElems, tr.triLightElems, tr.instanceSlots,
+                                   tr.propsBase);
+        }
+
+        if (m_planet.enabled())
+            m_scene.ReserveRocks(planet::MAX_ROCK_INSTANCES);
+
+        if (m_voxels.enabled()) {
+            if (m_scene.instances.size() > 4096)
+                throw std::runtime_error(
+                    "Minecraft world: more than 4096 scene instances are not supported alongside it");
+            const mc::StreamerConfig& sc = m_voxels.config();
+            m_scene.ReserveVoxels(sc.vertexCapacity, sc.indexCapacity, sc.matIdCapacity, sc.maxInstances, 4096u);
+        }
         m_scene.BuildGlobalMeshBuffers(m_ctx.Device(), m_ctx.CmdList());
         m_ctx.FlushAndReset();
+
+        m_scene.vertexGlobalUpload.Reset();
+        m_scene.indexGlobalUpload.Reset();
+
+        if (m_planet.enabled() && !m_rockMeshIndices.empty()) {
+            std::vector<planet::StreamOrchestrator::RockVariantGPU> rockDescs;
+            rockDescs.reserve(m_rockMeshIndices.size());
+            for (UINT mi : m_rockMeshIndices) {
+                const auto& rmesh = m_scene.meshes[mi];
+                planet::StreamOrchestrator::RockVariantGPU d;
+                d.blas_va = rmesh.blas ? rmesh.blas->GetGPUVirtualAddress() : 0;
+                d.vertexBase = rmesh.globalVertexBase;
+                d.indexBase = rmesh.globalIndexBase;
+                d.triCount = rmesh.opaqueTriCount;
+                rockDescs.push_back(d);
+            }
+            m_planet.set_rock_variants(m_scene.rockPropsBase, rockDescs);
+
+            planet::RockScatterConfig rc;
+            rc.planet = m_planet.planet_geometry();
+            rc.max_rocks = planet::MAX_ROCK_INSTANCES;
+            m_rockScatter.configure(rc, (int)m_rockMeshIndices.size());
+        }
         m_lutUploadHeaps.clear();
+        m_skyStarsUploadHeap.Reset();
 
         CreateRaytracingPipeline();
         CreateStreamingCompactionBuffers();
@@ -271,31 +276,59 @@ void Renderer::InitSceneGPU() {
 
         m_scene.UploadMaterials(m_ctx.Device());
         m_dlss.CreateResources(m_ctx.Device(), GetWidth(), GetHeight());
+
+        m_dlssNR.Initialize(GetWidth(), GetHeight());
         CreateShaderResourceHeap();
         CreateShaderBindingTable();
 
-        m_scene.tlasDirty       = false;
+        if (m_voxels.enabled()) {
+            BindVoxelLights(m_ctx.CmdList());
+            m_ctx.FlushAndReset();
+        }
+
+        if (m_planet.enabled()) {
+            const auto tr = m_planet.terrain_reservation();
+            m_planet.bind_geometry(m_scene.vertexGlobal.Get(), m_scene.vertexGlobalMapped, m_scene.indexGlobal.Get(),
+                                   m_scene.indexGlobalMapped, m_scene.instanceProperties.Get(),
+                                   m_scene.totalVertexCount, m_scene.totalIndexCount, m_scene.combinedVertexCount(),
+                                   tr.propsBase, tr.leafSlots, m_scene.terrainMatIDBase, m_scene.terrainTriLightBase);
+        }
+
+        if (m_voxels.enabled()) {
+            m_voxels.bind_geometry(m_scene.vertexGlobal.Get(), m_scene.indexGlobal.Get(), m_scene.combinedVertexCount(),
+                                   m_scene.voxelVertexBase, m_scene.voxelIndexBase, m_scene.materialIndexBuffer.Get(),
+                                   m_scene.voxelMatIDBase, m_scene.voxelPropsBase);
+            if (m_vxOmm.valid && m_vxOmm.ommArray && m_vxOmmIndices)
+                m_voxels.bind_omm(m_vxOmmIndices.Get(), m_vxOmm.ommArray->GetGPUVirtualAddress(), &m_vxOmmTable);
+            m_planet.bind_instance_properties(m_scene.instanceProperties.Get());
+
+            glm::vec3 eye, center, up;
+            nv_helpers_dx12::CameraManip.getLookat(eye, center, up);
+            const glm::vec3 origin = m_camera.getSceneOriginWorld();
+            const double camPos[3] = {(double)eye.x + origin.x, (double)eye.y + origin.y, (double)eye.z + origin.z};
+            m_voxels.warm_up(camPos);
+        }
+
+        m_scene.tlasDirty = false;
         m_scene.tlasFullRebuild = false;
-        m_scene.lightTreeDirty  = false;
-        m_scene.materialsDirty  = false;
+        m_scene.lightTreeDirty = false;
+        m_scene.materialsDirty = false;
 
         m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
 
         {
-            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            CD3DX12_CPU_DESCRIPTOR_HANDLE fontCpu(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), IMGUI_FONT_HEAP_SLOT, inc);
-            CD3DX12_GPU_DESCRIPTOR_HANDLE fontGpu(
-                m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(), IMGUI_FONT_HEAP_SLOT, inc);
-            m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), m_ctx.BufferCount(),
-                m_srvUavHeap.Get(), fontCpu, fontGpu);
+            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE fontCpu(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                                  IMGUI_FONT_HEAP_SLOT, inc);
+            CD3DX12_GPU_DESCRIPTOR_HANDLE fontGpu(m_srvUavHeap->GetGPUDescriptorHandleForHeapStart(),
+                                                  IMGUI_FONT_HEAP_SLOT, inc);
+            m_editor.Init(Win32Application::GetHwnd(), m_ctx.Device(), m_ctx.BufferCount(), m_srvUavHeap.Get(), fontCpu,
+                          fontGpu);
         }
-        // DLSS-G resources will be allocated on the first frame (after slSetConstants)
-        // because slAllocateResources requires constants to be set first.
 
-        // Command list left open — EngineApp closes it.
+        dxdiag::DumpNewMessages();
     } catch (const std::exception& e) {
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
         wchar_t wMsg[4096];
         MultiByteToWideChar(CP_UTF8, 0, e.what(), -1, wMsg, 4096);
         MessageBoxW(NULL, wMsg, L"Fatal Init Error", MB_OK | MB_ICONERROR);
@@ -303,48 +336,76 @@ void Renderer::InitSceneGPU() {
     }
 }
 
-//====================================
-//UPDATE
-//====================================
+// Apply scene edits and synchronize resources before recording the next frame.
 void Renderer::UpdateRenderer(float dt) {
     using hrc = std::chrono::high_resolution_clock;
 
     // Reflex sleep — must be called every frame regardless of mode
     slReflexSleep(*m_ctx.frameToken);
 
-    // PCL: simulation start
     slPCLSetMarker(sl::PCLMarker::eSimulationStart, *m_ctx.frameToken);
 
-    // Simulation path
     if (m_simulator.IsActive()) {
         bool shouldCapture = false;
         bool finished = m_simulator.Update(dt, m_camera.Manipulator(), shouldCapture);
-        if (shouldCapture) SaveSimulationData(m_simulator.GetLastCaptureIndex());
-        if (finished) { LOG(L"\n[Sim] Data Generation Complete."); PostQuitMessage(0); return; }
+        if (shouldCapture)
+            SaveSimulationData(m_simulator.GetLastCaptureIndex());
+        if (finished) {
+            LOG(L"\n[Sim] Data Generation Complete.");
+            PostQuitMessage(0);
+            return;
+        }
     }
 
     auto t_updateStart = hrc::now();
     m_time++;
 
-    // Check for DLSS mode change — flag for reallocation in PopulateCommandList
     if (m_dlss.mode != m_dlss.ActiveMode()) {
-        m_ctx.WaitForGPU();  // drain all in-flight GPU work BEFORE releasing old textures
+        m_ctx.WaitForGPU(); // drain all in-flight GPU work BEFORE releasing old textures
         if (m_dlss.UpdateMode(m_ctx.Device())) {
-            m_dlssModeChangedFrames = 2;  // skip temporal reuse for 2 frames
-            m_camera.ResetJitter();       // force DLSS temporal reset (fixes blur)
+            m_dlssModeChangedFrames = 2;
+            m_camera.ResetJitter();
+
+            m_dlssNR.ForceReset();
             RebuildDLSSDescriptors();
-            LOG(L"[DLSS] Mode changed → render res: "
-                << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
+            LOG(L"[DLSS] Mode changed → render res: " << m_dlss.RenderWidth() << L"x" << m_dlss.RenderHeight());
         }
     }
 
-    // Kick async light tree TLAS refit when dirty and no refit in flight
-    if (m_scene.lightTreeDirty && !m_lightTreeRefit.IsPending()) {
-        // If emission values changed, recompute everything from CPU data
+    if (m_dlss.clampEmitterSpikes != m_dlssClampEmitterSpikesPrev) {
+        m_dlssClampEmitterSpikesPrev = m_dlss.clampEmitterSpikes;
+        m_dlss.ForceReset();
+        LOG(L"[DLSS] Emitter-spike clamp " << (m_dlss.clampEmitterSpikes ? L"ON" : L"OFF"));
+    }
+
+    for (int c = 0; c < (int)Scene::LightClassCount; ++c) {
+        if (m_lightClassApplied[c] == m_scene.lightClassEnabled[c])
+            continue;
+        m_lightClassApplied[c] = m_scene.lightClassEnabled[c];
+        m_scene.MarkAllInstancesDirty();
+        m_scene.lightTreeDirty = true;
+    }
+
+    bool voxelLightsDue = false;
+    if (m_voxels.enabled() && m_voxels.lights_bound()) {
+        const double nowS = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        voxelLightsDue = m_voxels.light_version() != m_voxelLightKickedVersion && nowS - m_lastVoxelLightKick >= 0.1;
+    }
+    // Keep old light buffers alive while earlier frames may reference them.
+    for (size_t i = 0; i < m_vxLightRetired.size();) {
+        if (m_time > m_vxLightRetired[i].frame + 4) {
+            m_vxLightRetired[i] = m_vxLightRetired.back();
+            m_vxLightRetired.pop_back();
+        } else
+            ++i;
+    }
+    if ((m_scene.lightTreeDirty || voxelLightsDue) && !m_lightTreeRefit.IsPending()) {
         if (m_scene.emissivesDirty) {
             m_scene.CollectEmissiveTriangles();
             m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
-            m_emissiveGpuDirty = true;  // GPU buffers need re-upload
+            m_emissiveGpuDirty = true;
+
+            m_scene.MarkAllInstancesDirty();
             m_scene.emissivesDirty = false;
             LOG(L"[LightTree] Recomputed emissives + BLAS roots (emission change)");
         }
@@ -352,52 +413,114 @@ void Renderer::UpdateRenderer(float dt) {
         m_scene.lightTreeDirty = false;
     }
 
-    // Poll for completed async refit — stage data for GPU upload
     lt::TLASRefitResult refitResult;
     if (m_lightTreeRefit.PollResult(refitResult)) {
-        m_pendingTLASUpload  = std::move(refitResult.nodes);
-        m_pendingBLASToItem  = std::move(refitResult.blasToItem);
+        m_pendingTLASUpload = std::move(refitResult.nodes);
+        m_pendingBLASBitTrail = std::move(refitResult.blasBitTrails);
 
-        // Update worldToLocal in BLASRanges from refit result
-        auto& cpuRanges = m_lightTree.GetCpuBLASRanges();
-        if (!refitResult.blasWorldToLocal.empty() && !cpuRanges.empty()) {
-            m_pendingBLASRanges = cpuRanges;  // copy static fields
-            for (size_t i = 0; i < m_pendingBLASRanges.size() && i < refitResult.blasWorldToLocal.size(); ++i)
-                m_pendingBLASRanges[i].worldToLocal = refitResult.blasWorldToLocal[i];
-        }
+        m_pendingSlotRecords = std::move(refitResult.slots);
+        m_pendingVoxelLightVersion = refitResult.extraVersion;
+        m_pendingVoxelLeafCount = refitResult.extraLeafCount;
+        m_pendingTlasIncremental = refitResult.incremental;
 
-        LOG(L"[LightTree] Async TLAS refit ready: " << m_pendingTLASUpload.size() << L" nodes");
+        LOG(L"[LightTree] Async TLAS refit ready: "
+            << m_pendingTLASUpload.size() << L" nodes" << (m_pendingTlasIncremental ? L" (incremental)" : L" (rebuilt)")
+            << (m_voxels.enabled() ? L", voxel light chunks " + std::to_wstring(m_pendingVoxelLeafCount) : L""));
     }
 
-    // Build editor UI — must run before UpdateInstanceProperties so
-    // MarkModelMoved() changes are picked up in the same frame
     static FlyCamController dummyFlyCam;
-    m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam,
-                  m_passes, m_dlss, m_dlssG, m_restirSettings, m_nrcSettings,
-                  m_fps, m_frameStats);
-    // Debug-view checkbox only enables the calculation into slice 3.
-    // Cycle to it with 'C' when you want to look at it.
+    m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
+                  m_integratorSettings, m_fps, m_frameStats, m_planet.stats(),
+                  m_voxels.enabled() ? &m_voxels : nullptr);
+    // Transport changes invalidate accumulated reconstruction and learning history.
+    const auto& settings = m_integratorSettings;
+    if (!m_integratorHistoryValid || settings.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
+        m_lightLearningResetPending = true;
+    if (!m_integratorHistoryValid || settings.ReconstructionKey() != m_previousIntegratorSettings.ReconstructionKey() ||
+        m_scene.materialsDirty) {
+        m_dlss.ForceReset();
+        m_dlssNR.ForceReset();
+    }
+    if (settings.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
+        m_sharcResetPending = true;
+    m_previousIntegratorSettings = settings;
+    m_integratorHistoryValid = true;
 
-    // Prepare instance data on CPU shadow buffer (overlaps with GPU)
+    const bool sharcStructureChanged = m_sharcInstanceState.size() != m_scene.instances.size();
+    if (sharcStructureChanged)
+        m_sharcInstanceState.resize(m_scene.instances.size());
+    if (m_scene.materialsDirty || sharcStructureChanged) {
+        m_lightLearningResetPending = true;
+        m_sharcResetPending = true;
+    }
+    for (size_t i = 0; i < m_scene.instances.size(); ++i) {
+        if (!sharcStructureChanged && i < m_scene.instanceDirty.size() && !m_scene.instanceDirty[i])
+            continue;
+        const auto& instance = m_scene.instances[i];
+        auto& previous = m_sharcInstanceState[i];
+
+        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex)
+            m_lightLearningResetPending = true;
+
+        if (sharcStructureChanged || previous.meshIndex != instance.meshIndex) {
+            m_sharcResetPending = true;
+        }
+        previous.transform = instance.worldTransform;
+        previous.meshIndex = instance.meshIndex;
+    }
+    m_camera.PollSceneOrigin();
+    // Rebasing changes GPU transforms even when scene objects stay still.
+    if (m_camera.consumeOriginShifted()) {
+        m_scene.MarkAllInstancesDirty();
+
+        m_scene.tlasDirty = true;
+
+        m_scene.lightTreeDirty = true;
+    }
+    const auto camOrigin = m_camera.getSceneOriginWorld();
+    m_scene.sceneOriginWorld = {camOrigin.x, camOrigin.y, camOrigin.z};
+
     auto t_instStart = hrc::now();
     m_scene.PrepareInstanceProperties();
     auto t_instEnd = hrc::now();
 
     m_frameStats.cpuInstanceMs = std::chrono::duration<float, std::milli>(t_instEnd - t_instStart).count();
-    m_frameStats.cpuUpdateMs   = std::chrono::duration<float, std::milli>(t_instEnd - t_updateStart).count();
+    m_frameStats.cpuUpdateMs = std::chrono::duration<float, std::milli>(t_instEnd - t_updateStart).count();
     m_frameStats.instanceCount = (UINT)m_scene.instances.size();
-    m_frameStats.meshCount     = (UINT)m_scene.meshes.size();
+    m_frameStats.meshCount = (UINT)m_scene.meshes.size();
 
-    // PCL: simulation end
     slPCLSetMarker(sl::PCLMarker::eSimulationEnd, *m_ctx.frameToken);
 
-    // ── GPU sync + upload ────────────────────────────────────────
-    // Wait for previous frame, then write all shared upload-heap buffers.
+    // Reuse upload buffers and read timestamps only after the frame fence.
     auto t_waitStart = hrc::now();
     m_ctx.WaitForPreviousFrame();
-    m_frameStats.gpuMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+    m_dlssNR.PrepareFrameGPUIdle();
+    m_frameStats.gpuWaitMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
+
+    m_frameStats.cacheTimingMask = m_sharcTimingMask;
+    for (float& ms : m_frameStats.cachePassMs)
+        ms = 0.0f;
+    if (m_sharcTimingMask != 0u && m_sharcTimestampFrequency != 0u) {
+        void* mappedTicks = nullptr;
+        D3D12_RANGE range{0, 2u * FrameStats::GpuTimingCount * sizeof(UINT64)};
+        ThrowIfFailed(m_sharcTimingReadback->Map(0, &range, &mappedTicks));
+        const auto* ticks = static_cast<const UINT64*>(mappedTicks);
+        for (UINT pass = 0; pass < FrameStats::GpuTimingCount; ++pass)
+            if ((m_sharcTimingMask & (1u << pass)) != 0u && ticks[pass * 2 + 1] >= ticks[pass * 2])
+                m_frameStats.cachePassMs[pass] =
+                    float(double(ticks[pass * 2 + 1] - ticks[pass * 2]) * 1000.0 / double(m_sharcTimestampFrequency));
+        D3D12_RANGE written{0, 0};
+        m_sharcTimingReadback->Unmap(0, &written);
+    }
+
+    SwapSampleBuffers();
 
     m_camera.UploadGPUBuffer(m_aspectRatio);
+
+    if (m_camera.ConsumeResetPending()) {
+        m_dlss.ForceReset();
+        m_dlssNR.ForceReset();
+    }
     m_scene.UploadInstanceProperties();
     if (m_scene.materialsDirty) {
         m_scene.UpdateMaterialBuffer();
@@ -405,59 +528,86 @@ void Renderer::UpdateRenderer(float dt) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────
+// Express light instances relative to the current GPU scene origin.
 std::vector<InstanceXformCPU> Renderer::BuildXformsFromScene() const {
     std::vector<InstanceXformCPU> xf;
     xf.reserve(m_scene.instances.size());
+
+    const XMVECTOR shift =
+        XMVectorSet(m_scene.sceneOriginWorld.x, m_scene.sceneOriginWorld.y, m_scene.sceneOriginWorld.z, 0.0f);
     for (const auto& si : m_scene.instances) {
         InstanceXformCPU x{};
-        XMStoreFloat4x4(&x.objectToWorld, si.worldTransform);
+        XMMATRIX shifted = si.worldTransform;
+        shifted.r[3] = XMVectorSubtract(shifted.r[3], shift);
+        XMStoreFloat4x4(&x.objectToWorld, shifted);
         xf.push_back(x);
     }
     return xf;
 }
 
 void Renderer::KickLightTreeRefit() {
-    // Copy data for the background thread (must be self-contained)
+    // The worker owns a snapshot independent of later scene edits.
     auto xforms = BuildXformsFromScene();
-    auto roots  = m_blasLocalRoots;  // copy — thread safety
-    m_lightTreeRefit.RequestRefit(std::move(roots), std::move(xforms));
+    auto roots = m_blasLocalRoots;
+    auto slots = m_scene.lightInstances;
+
+    for (lt::LightInstanceRef& s : slots)
+        if (!m_scene.InstanceLightsEnabled(s.instanceID))
+            s.meshID = 0xFFFFFFFFu;
+
+    std::vector<lt::TLASExtraLeaf> extra;
+    uint32_t extraVersion = 0, slotCount = 0;
+    if (m_voxels.enabled() && m_voxels.lights_bound()) {
+        const planet::DVec3 origin{m_scene.sceneOriginWorld.x, m_scene.sceneOriginWorld.y, m_scene.sceneOriginWorld.z};
+        m_voxels.light_snapshot(origin, extra, extraVersion, slotCount);
+        m_voxelLightKickedVersion = extraVersion;
+        m_lastVoxelLightKick =
+            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    lt::RequestIncrementalRefit(m_lightTreeRefit, std::move(roots), std::move(slots), m_lightTree.SlotRecords(),
+                                std::move(xforms), std::move(extra), slotCount, extraVersion, &m_liveLightTlas,
+                                m_lightTlasForceRebuild);
+    m_lightTlasForceRebuild = false;
 }
 
+// Publish tree nodes, traversal trails, and instance slots from one refit.
 void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
-    if (m_pendingTLASUpload.empty()) return;
+    if (m_pendingTLASUpload.empty())
+        return;
+    // Topology changes can invalidate learned branch identities.
+    if (!lt::SameLightTreeTopology(m_publishedLightTLAS, m_pendingTLASUpload)) {
+        if (m_pendingTlasIncremental)
+            m_lightLearningRevalidatePending = true;
+        else
+            m_lightLearningResetPending = true;
+    }
+    m_publishedLightTLAS = m_pendingTLASUpload;
 
     auto* dev = m_ctx.Device();
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const UINT nodeCount = (UINT)m_pendingTLASUpload.size();
-    const UINT nodeBytes = nodeCount * sizeof(lt::LightTLASNodeGpu);
-    const UINT itemCount = (UINT)m_pendingBLASToItem.size();
-    const UINT itemBytes = itemCount * sizeof(uint32_t);
+    const UINT64 nodeBytes = (UINT64)nodeCount * sizeof(lt::LightTLASNodeGpu);
+    const UINT itemCount = (UINT)m_pendingBLASBitTrail.size();
+    const UINT64 itemBytes = (UINT64)itemCount * sizeof(lt::LightTreeTrail);
     CD3DX12_RANGE readRange(0, 0);
 
-    // ── Helper: grow a default-heap buffer + update its SRV ──────
-    auto growBuffer = [&](ComPtr<ID3D12Resource>& gpu, ComPtr<ID3D12Resource>& upload,
-                         UINT& capacity, UINT needed, UINT stride,
-                         DXGI_FORMAT fmt, UINT srvSlot, const wchar_t* name)
-    {
-        const UINT elemSize = stride ? stride : 4;
-        const UINT byteCount = needed * elemSize;
+    auto growBuffer = [&](ComPtr<ID3D12Resource>& gpu, ComPtr<ID3D12Resource>& upload, UINT& capacity, UINT needed,
+                          UINT stride, DXGI_FORMAT fmt, UINT srvSlot, const wchar_t* name) {
+        const UINT elemSize = stride ? stride : (fmt == DXGI_FORMAT_R32G32_UINT ? 8u : 4u);
+        const UINT64 byteCount = (UINT64)needed * elemSize;
 
-        // Grow GPU buffer if needed
         if (needed > capacity) {
-            capacity = needed * 2;  // 2x headroom
-            const UINT allocBytes = capacity * elemSize;
+            capacity = needed * 2;
+            const UINT64 allocBytes = (UINT64)capacity * elemSize;
 
             auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             auto desc = CD3DX12_RESOURCE_DESC::Buffer(allocBytes);
-            ThrowIfFailed(dev->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &desc,
-                D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&gpu)));
+            ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       nullptr, IID_PPV_ARGS(&gpu)));
             gpu->SetName(name);
 
-            // Update SRV descriptor in the heap
-            CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), srvSlot, inc);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE srvHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), srvSlot, inc);
 
             D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
             sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -474,85 +624,82 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
 
             LOG(L"[LightTree] Grew " << name << L": " << capacity << L" elements");
         } else {
-            // Transition existing buffer to COPY_DEST
-            auto b = CD3DX12_RESOURCE_BARRIER::Transition(gpu.Get(),
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto b = CD3DX12_RESOURCE_BARRIER::Transition(gpu.Get(), D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                          D3D12_RESOURCE_STATE_COPY_DEST);
             cmdList->ResourceBarrier(1, &b);
         }
 
-        // Grow upload staging if needed
         if (!upload || byteCount > upload->GetDesc().Width) {
             auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            auto desc = CD3DX12_RESOURCE_DESC::Buffer(capacity * elemSize);
+            auto desc = CD3DX12_RESOURCE_DESC::Buffer((UINT64)capacity * elemSize);
             ThrowIfFailed(dev->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
+                &hp, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&upload)));
         }
     };
 
-    // ── TLAS nodes ───────────────────────────────────────────────
-    growBuffer(m_ltTlasGpu, m_tlasUploadStaging, m_ltTlasGpuCapacity,
-              nodeCount, sizeof(lt::LightTLASNodeGpu), DXGI_FORMAT_UNKNOWN,
-              LT_TLAS_SRV_SLOT, L"LT_TLAS_Refit");
+    growBuffer(m_ltTlasGpu, m_tlasUploadStaging, m_ltTlasGpuCapacity, nodeCount, sizeof(lt::LightTLASNodeGpu),
+               DXGI_FORMAT_UNKNOWN, LT_TLAS_SRV_SLOT, L"LT_TLAS_Refit");
 
-    { void* p = nullptr;
-      ThrowIfFailed(m_tlasUploadStaging->Map(0, &readRange, &p));
-      memcpy(p, m_pendingTLASUpload.data(), nodeBytes);
-      m_tlasUploadStaging->Unmap(0, nullptr); }
+    {
+        void* p = nullptr;
+        ThrowIfFailed(m_tlasUploadStaging->Map(0, &readRange, &p));
+        memcpy(p, m_pendingTLASUpload.data(), nodeBytes);
+        m_tlasUploadStaging->Unmap(0, nullptr);
+    }
 
     cmdList->CopyBufferRegion(m_ltTlasGpu.Get(), 0, m_tlasUploadStaging.Get(), 0, nodeBytes);
 
-    auto b1 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltTlasGpu.Get(),
-        D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+    auto b1 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltTlasGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   D3D12_RESOURCE_STATE_GENERIC_READ);
     cmdList->ResourceBarrier(1, &b1);
 
-    // ── BLASToItem ───────────────────────────────────────────────
     if (itemCount > 0) {
-        growBuffer(m_ltBtIGpu, m_blasToItemUploadStaging, m_ltBtIGpuCapacity,
-                  itemCount, 0, DXGI_FORMAT_R32_UINT,
-                  LT_BLASTOITEM_SRV_SLOT, L"LT_BLASToItem_Refit");
+        growBuffer(m_ltBlasBitTrailGpu, m_blasBitTrailUploadStaging, m_ltBlasBitTrailGpuCapacity, itemCount, 0,
+                   DXGI_FORMAT_R32G32_UINT, LT_BLASBITTRAIL_SRV_SLOT, L"LT_BLASBitTrail_Refit");
 
-        { void* p = nullptr;
-          ThrowIfFailed(m_blasToItemUploadStaging->Map(0, &readRange, &p));
-          memcpy(p, m_pendingBLASToItem.data(), itemBytes);
-          m_blasToItemUploadStaging->Unmap(0, nullptr); }
+        {
+            void* p = nullptr;
+            ThrowIfFailed(m_blasBitTrailUploadStaging->Map(0, &readRange, &p));
+            memcpy(p, m_pendingBLASBitTrail.data(), itemBytes);
+            m_blasBitTrailUploadStaging->Unmap(0, nullptr);
+        }
 
-        cmdList->CopyBufferRegion(m_ltBtIGpu.Get(), 0, m_blasToItemUploadStaging.Get(), 0, itemBytes);
+        cmdList->CopyBufferRegion(m_ltBlasBitTrailGpu.Get(), 0, m_blasBitTrailUploadStaging.Get(), 0, itemBytes);
 
-        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltBtIGpu.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltBlasBitTrailGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &b2);
     }
 
-    // ── BLASRanges (updated worldToLocal) ────────────────────────
-    const UINT rangeCount = (UINT)m_pendingBLASRanges.size();
-    if (rangeCount > 0) {
-        const UINT rangeBytes = rangeCount * sizeof(lt::BlasRangeGpu);
+    const UINT slotCount = (UINT)m_pendingSlotRecords.size();
+    if (slotCount > 0) {
+        const UINT64 slotBytes = (UINT64)slotCount * sizeof(lt::LightSlotGpu);
 
-        growBuffer(m_ltRangesGpu, m_rangesUploadStaging, m_ltRangesGpuCapacity,
-                  rangeCount, sizeof(lt::BlasRangeGpu), DXGI_FORMAT_UNKNOWN,
-                  LT_BLASRANGES_SRV_SLOT, L"LT_BLASRanges_Refit");
+        growBuffer(m_ltSlotGpu, m_slotUploadStaging, m_ltSlotGpuCapacity, slotCount, sizeof(lt::LightSlotGpu),
+                   DXGI_FORMAT_UNKNOWN, LT_SLOT_SRV_SLOT, L"LT_Slots_Refit");
 
-        { void* p = nullptr;
-          ThrowIfFailed(m_rangesUploadStaging->Map(0, &readRange, &p));
-          memcpy(p, m_pendingBLASRanges.data(), rangeBytes);
-          m_rangesUploadStaging->Unmap(0, nullptr); }
+        {
+            void* p = nullptr;
+            ThrowIfFailed(m_slotUploadStaging->Map(0, &readRange, &p));
+            memcpy(p, m_pendingSlotRecords.data(), slotBytes);
+            m_slotUploadStaging->Unmap(0, nullptr);
+        }
 
-        cmdList->CopyBufferRegion(m_ltRangesGpu.Get(), 0, m_rangesUploadStaging.Get(), 0, rangeBytes);
+        cmdList->CopyBufferRegion(m_ltSlotGpu.Get(), 0, m_slotUploadStaging.Get(), 0, slotBytes);
 
-        auto b3 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltRangesGpu.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        auto b3 = CD3DX12_RESOURCE_BARRIER::Transition(m_ltSlotGpu.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &b3);
     }
 
     m_pendingTLASUpload.clear();
-    m_pendingBLASToItem.clear();
-    m_pendingBLASRanges.clear();
+    m_pendingBLASBitTrail.clear();
+    m_pendingSlotRecords.clear();
 }
 
-// ─────────────────────────────────────────────────────────────────
 void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
-    if (!m_emissiveGpuDirty) return;
+    if (!m_emissiveGpuDirty)
+        return;
     m_emissiveGpuDirty = false;
 
     auto* dev = m_ctx.Device();
@@ -562,24 +709,47 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
     const auto& tris = m_scene.emissiveTriangles;
     const auto& triMap = m_scene.triToLightId;
 
-    // ── Emissive triangles buffer ────────────────────────────────
+    m_lightTreeRefit.DiscardPending();
+    m_pendingTLASUpload.clear();
+    m_pendingBLASBitTrail.clear();
+    m_pendingSlotRecords.clear();
+    m_lightLearningResetPending = true;
+    m_lightTlasForceRebuild = true;
+    if (!tris.empty()) {
+        m_lightTree.ReleaseStaging();
+        m_lightTree.Build(tris, m_scene.lightInstances, BuildXformsFromScene());
+        m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
+        m_lightTree.UploadAll(dev, cmdList);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE treeHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), LT_TLAS_SRV_SLOT,
+                                                 inc);
+        m_lightTree.WriteSrvs(dev, treeHandle);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE lookupHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 25, inc);
+        m_lightTree.WriteLookupSrvs(dev, lookupHandle);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE slotHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), LT_SLOT_SRV_SLOT,
+                                                 inc);
+        m_lightTree.WriteSlotSrv(dev, slotHandle);
+
+        m_ltTlasGpu.Reset();
+        m_ltBlasBitTrailGpu.Reset();
+        m_ltSlotGpu.Reset();
+        m_ltTlasGpuCapacity = m_ltBlasBitTrailGpuCapacity = m_ltSlotGpuCapacity = 0;
+    }
+
     if (!tris.empty()) {
         const UINT count = (UINT)tris.size();
-        const UINT bytes = count * sizeof(LightTriangle);
+        const UINT64 bytes = (UINT64)count * sizeof(LightTriangle);
 
-        // Grow GPU buffer if needed
         if (count > m_emissiveGpuCapacity) {
             m_emissiveGpuCapacity = count * 2;
-            const UINT allocBytes = m_emissiveGpuCapacity * sizeof(LightTriangle);
+            const UINT64 allocBytes = (UINT64)m_emissiveGpuCapacity * sizeof(LightTriangle);
 
-            m_ownedEmissiveGpu = nv_helpers_dx12::CreateBuffer(
-                dev, allocBytes, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+            m_ownedEmissiveGpu =
+                nv_helpers_dx12::CreateBuffer(dev, allocBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+                                              nv_helpers_dx12::kDefaultHeapProps);
             m_ownedEmissiveGpu->SetName(L"EmissiveTris_Refit");
 
-            // Update SRV at slot 9
-            CD3DX12_CPU_DESCRIPTOR_HANDLE srvH(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), EMISSIVE_TRI_SRV_SLOT, inc);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE srvH(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                               EMISSIVE_TRI_SRV_SLOT, inc);
             D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
             sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             sd.Format = DXGI_FORMAT_UNKNOWN;
@@ -590,56 +760,54 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
 
             LOG(L"[Emissive] Grew GPU buffer: " << m_emissiveGpuCapacity << L" tris");
         } else if (m_ownedEmissiveGpu) {
-            auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ownedEmissiveGpu.Get(),
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ownedEmissiveGpu.Get(), D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                          D3D12_RESOURCE_STATE_COPY_DEST);
             cmdList->ResourceBarrier(1, &b);
         } else {
-            // First time: transition the original scene buffer
-            auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_scene.emissiveTrianglesBuffer.Get(),
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto b =
+                CD3DX12_RESOURCE_BARRIER::Transition(m_scene.emissiveTrianglesBuffer.Get(),
+                                                     D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
             cmdList->ResourceBarrier(1, &b);
         }
 
-        // Grow upload staging
         if (!m_emissiveUploadStaging || bytes > m_emissiveUploadStaging->GetDesc().Width) {
             auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            auto desc = CD3DX12_RESOURCE_DESC::Buffer(m_emissiveGpuCapacity * sizeof(LightTriangle));
-            ThrowIfFailed(dev->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&m_emissiveUploadStaging)));
+            auto desc = CD3DX12_RESOURCE_DESC::Buffer((UINT64)m_emissiveGpuCapacity * sizeof(LightTriangle));
+            ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                       IID_PPV_ARGS(&m_emissiveUploadStaging)));
         }
 
-        { void* p = nullptr;
-          ThrowIfFailed(m_emissiveUploadStaging->Map(0, &readRange, &p));
-          memcpy(p, tris.data(), bytes);
-          m_emissiveUploadStaging->Unmap(0, nullptr); }
+        {
+            void* p = nullptr;
+            ThrowIfFailed(m_emissiveUploadStaging->Map(0, &readRange, &p));
+            memcpy(p, tris.data(), bytes);
+            m_emissiveUploadStaging->Unmap(0, nullptr);
+        }
 
         auto* dst = m_ownedEmissiveGpu ? m_ownedEmissiveGpu.Get() : m_scene.emissiveTrianglesBuffer.Get();
         cmdList->CopyBufferRegion(dst, 0, m_emissiveUploadStaging.Get(), 0, bytes);
 
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst,
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                      D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &b);
     }
 
-    // ── TriToLightId buffer ──────────────────────────────────────
     if (!triMap.empty()) {
         const UINT count = (UINT)triMap.size();
-        const UINT bytes = count * sizeof(uint32_t);
+        const UINT64 bytes = (UINT64)count * sizeof(uint32_t);
 
         if (count > m_triToLightIdGpuCapacity) {
             m_triToLightIdGpuCapacity = count * 2;
-            const UINT allocBytes = m_triToLightIdGpuCapacity * sizeof(uint32_t);
+            const UINT64 allocBytes = (UINT64)m_triToLightIdGpuCapacity * sizeof(uint32_t);
 
-            m_ownedTriToLightIdGpu = nv_helpers_dx12::CreateBuffer(
-                dev, allocBytes, D3D12_RESOURCE_FLAG_NONE,
-                D3D12_RESOURCE_STATE_COPY_DEST, nv_helpers_dx12::kDefaultHeapProps);
+            m_ownedTriToLightIdGpu =
+                nv_helpers_dx12::CreateBuffer(dev, allocBytes, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+                                              nv_helpers_dx12::kDefaultHeapProps);
             m_ownedTriToLightIdGpu->SetName(L"TriToLightId_Refit");
 
-            // Update SRV at slot 24
-            CD3DX12_CPU_DESCRIPTOR_HANDLE srvH(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), TRI_TO_LIGHTID_SRV_SLOT, inc);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE srvH(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(),
+                                               TRI_TO_LIGHTID_SRV_SLOT, inc);
             D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
             sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             sd.Format = DXGI_FORMAT_R32_UINT;
@@ -649,46 +817,50 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
 
             LOG(L"[Emissive] Grew TriToLightId: " << m_triToLightIdGpuCapacity);
         } else if (m_ownedTriToLightIdGpu) {
-            auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ownedTriToLightIdGpu.Get(),
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto b = CD3DX12_RESOURCE_BARRIER::Transition(
+                m_ownedTriToLightIdGpu.Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
             cmdList->ResourceBarrier(1, &b);
         } else {
-            auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_scene.triToLightIdBuffer.Get(),
-                D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
+            auto b = CD3DX12_RESOURCE_BARRIER::Transition(
+                m_scene.triToLightIdBuffer.Get(), D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATE_COPY_DEST);
             cmdList->ResourceBarrier(1, &b);
         }
 
         if (!m_triToLightIdUploadStaging || bytes > m_triToLightIdUploadStaging->GetDesc().Width) {
             auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-            auto desc = CD3DX12_RESOURCE_DESC::Buffer(m_triToLightIdGpuCapacity * sizeof(uint32_t));
-            ThrowIfFailed(dev->CreateCommittedResource(
-                &hp, D3D12_HEAP_FLAG_NONE, &desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&m_triToLightIdUploadStaging)));
+            auto desc = CD3DX12_RESOURCE_DESC::Buffer((UINT64)m_triToLightIdGpuCapacity * sizeof(uint32_t));
+            ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                       IID_PPV_ARGS(&m_triToLightIdUploadStaging)));
         }
 
-        { void* p = nullptr;
-          ThrowIfFailed(m_triToLightIdUploadStaging->Map(0, &readRange, &p));
-          memcpy(p, triMap.data(), bytes);
-          m_triToLightIdUploadStaging->Unmap(0, nullptr); }
+        {
+            void* p = nullptr;
+            ThrowIfFailed(m_triToLightIdUploadStaging->Map(0, &readRange, &p));
+            memcpy(p, triMap.data(), bytes);
+            m_triToLightIdUploadStaging->Unmap(0, nullptr);
+        }
 
         auto* dst = m_ownedTriToLightIdGpu ? m_ownedTriToLightIdGpu.Get() : m_scene.triToLightIdBuffer.Get();
         cmdList->CopyBufferRegion(dst, 0, m_triToLightIdUploadStaging.Get(), 0, bytes);
 
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst,
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_GENERIC_READ);
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(dst, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                      D3D12_RESOURCE_STATE_GENERIC_READ);
         cmdList->ResourceBarrier(1, &b);
     }
 
     LOG(L"[Emissive] GPU buffers updated: " << tris.size() << L" tris, " << triMap.size() << L" triToLightId");
+
+    if (m_voxels.enabled()) {
+        m_voxelLightKickedVersion = 0xFFFFFFFFu;
+        BindVoxelLights(cmdList);
+    }
 }
 
-// ─────────────────────────────────────────────────────────────────
 void Renderer::RebuildDLSSDescriptors() {
     auto* dev = m_ctx.Device();
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
-        m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), DLSS_UAV_HEAP_START, inc);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), DLSS_UAV_HEAP_START, inc);
 
     auto dlssUAV = [&](ID3D12Resource* res, DXGI_FORMAT fmt) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
@@ -699,27 +871,26 @@ void Renderer::RebuildDLSSDescriptors() {
     };
 
     // Must match order in CreateShaderResourceHeap (slots 39-51)
-    dlssUAV(m_dlss.Depth(),            DXGI_FORMAT_R32_FLOAT);
-    dlssUAV(m_dlss.MVec(),             DXGI_FORMAT_R16G16_FLOAT);
-    dlssUAV(m_dlss.Normals(),          DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.DiffuseAlbedo(),    DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.Output(),           DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.SpecularAlbedo(),   DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.Roughness(),        DXGI_FORMAT_R16_FLOAT);
-    dlssUAV(m_dlss.SpecMVec(),         DXGI_FORMAT_R16G16_FLOAT);
-    dlssUAV(m_dlss.SpecHitDist(),      DXGI_FORMAT_R16_FLOAT);
-    dlssUAV(m_dlss.Transparency(),     DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Depth(), DXGI_FORMAT_R32_FLOAT);
+    dlssUAV(m_dlss.MVec(), DXGI_FORMAT_R16G16_FLOAT);
+    dlssUAV(m_dlss.Normals(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.DiffuseAlbedo(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Output(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.SpecularAlbedo(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.Roughness(), DXGI_FORMAT_R16_FLOAT);
+    dlssUAV(m_dlss.SpecMVec(), DXGI_FORMAT_R16G16_FLOAT);
+    dlssUAV(m_dlss.SpecHitDist(), DXGI_FORMAT_R16_FLOAT);
+    dlssUAV(m_dlss.Transparency(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     dlssUAV(m_dlss.ColorBeforeTrans(), DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.Input(),            DXGI_FORMAT_R16G16B16A16_FLOAT);
-    dlssUAV(m_dlss.BiasHint(),         DXGI_FORMAT_R8_UNORM);
+    dlssUAV(m_dlss.Input(), DXGI_FORMAT_R16G16B16A16_FLOAT);
+    dlssUAV(m_dlss.BiasHint(), DXGI_FORMAT_R8_UNORM);
 }
 
-//====================================
-//RESIZE
-//====================================
 void Renderer::OnResize(UINT newWidth, UINT newHeight) {
-    if (newWidth == 0 || newHeight == 0) return;
-    if (newWidth == m_width && newHeight == m_height) return;
+    if (newWidth == 0 || newHeight == 0)
+        return;
+    if (newWidth == m_width && newHeight == m_height)
+        return;
 
     // Disable DLSS-G before resize to avoid deadlock with present hook
     if (m_dlssG.enabled) {
@@ -729,75 +900,35 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
     }
 
     m_ctx.WaitForGPU();
-    // The CUDA aux stream runs training in parallel with raygen and is
-    // not covered by WaitForGPU. We must drain it before reallocating
-    // any NRC buffers below — otherwise an in-flight training kernel
-    // could be reading inferenceOut / trainRecords while we free them.
-    if (m_nrcReady) m_nrcNetwork.WaitIdle();
 
-    m_width       = newWidth;
-    m_height      = newHeight;
+    m_width = newWidth;
+    m_height = newHeight;
     m_aspectRatio = static_cast<float>(newWidth) / static_cast<float>(newHeight);
 
-    // Resize swap chain, RTVs, depth stencil
     m_ctx.Resize(newWidth, newHeight);
 
-    // Recreate all display-resolution-dependent GPU resources
     m_outputResource.Reset();
     m_permanentDataTexture.Reset();
     m_scratchPing.Reset();
-    m_reservoirBuffer.Reset();
-    m_reservoirBuffer_2.Reset();
     m_reservoirBuffer_3.Reset();
     m_reservoirBuffer_4.Reset();
     m_sampleBuffer_current.Reset();
     m_sampleBuffer_last.Reset();
-    m_initialBSDFRayBuffer.Reset();
     m_pathStateBuffer.Reset();
+    m_spmisBuffer.Reset();
     for (int i = 0; i < MAX_STACKS; ++i)
         m_stackBuffers[i].Reset();
 
     CreateRaytracingOutputBuffer();
     CreateStreamingCompactionBuffers();
 
-    // Recreate the resolution-dependent NRC buffers. InferenceIn/Out are
-    // sized to 2·W·H (worst case: every pixel issues a cache-termination
-    // record AND a depth-0 sharp-reflection record), and PendingGI is one
-    // slot per pixel — both grow if the user enlarges the window and raygen
-    // would otherwise scribble past the end of the old buffer. TrainRecords
-    // and Counters are fixed-size and don't need recreation.
-    if (m_nrcReady) {
-        const uint32_t pixelCount = newWidth * newHeight;
-        m_nrcInferenceCapacity = nrc::AlignBatch(pixelCount * 2u);
-
-        // Reset old buffers FIRST so the cudaInterop allocator releases
-        // the backing D3D12 / CUDA imports before we ask it for new ones
-        // — avoids a momentary 2× VRAM peak on large windows.
-        m_nrcInferenceIn  = {};
-        m_nrcInferenceOut = {};
-        m_nrcPendingGI    = {};
-
-        m_nrcInferenceIn  = m_cudaInterop.CreateBuffer(nrc::InferenceInputBytes (m_nrcInferenceCapacity), L"NRC_InferenceIn");
-        m_nrcInferenceOut = m_cudaInterop.CreateBuffer(nrc::InferenceOutputBytes(m_nrcInferenceCapacity), L"NRC_InferenceOut");
-        m_nrcPendingGI    = m_cudaInterop.CreateBuffer(nrc::PendingGIBytes      (pixelCount),             L"NRC_PendingGI");
-
-        if (!m_nrcInferenceIn.resource || !m_nrcInferenceOut.resource || !m_nrcPendingGI.resource) {
-            LOG(L"[NRC] Resize realloc failed — disabling NRC");
-            m_nrcReady = false;
-        }
-    }
-
-    // Recreate DLSS resources at new display resolution
     m_dlss.CreateResources(m_ctx.Device(), newWidth, newHeight);
 
-    // Update descriptors for all resolution-dependent resources. Includes
-    // a re-bind of NRC slots 58-60 (the resolution-dependent NRC UAVs)
-    // so the descriptor table doesn't dangle on the freed resources.
+    m_dlssNR.OnDisplayResolution(newWidth, newHeight);
+
     RebuildResolutionDependentDescriptors();
     RebuildDLSSDescriptors();
-    RebuildNrcDescriptors();
 
-    // Disable temporal reuse for 2 frames (old reservoirs are stale)
     m_dlssModeChangedFrames = 2;
     m_camera.ResetJitter();
 
@@ -806,51 +937,15 @@ void Renderer::OnResize(UINT newWidth, UINT newHeight) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOn;
         gOpts.numFramesToGenerate = m_dlssG.framesToGenerate;
-        gOpts.numBackBuffers      = m_ctx.BufferCount();
-        gOpts.mvecDepthWidth      = m_dlss.RenderWidth();
-        gOpts.mvecDepthHeight     = m_dlss.RenderHeight();
-        gOpts.colorWidth          = newWidth;
-        gOpts.colorHeight         = newHeight;
+        gOpts.numBackBuffers = m_ctx.BufferCount();
+        gOpts.mvecDepthWidth = m_dlss.RenderWidth();
+        gOpts.mvecDepthHeight = m_dlss.RenderHeight();
+        gOpts.colorWidth = newWidth;
+        gOpts.colorHeight = newHeight;
         slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
     }
 
     LOG(L"[Resize] " << newWidth << L"x" << newHeight);
-}
-
-// Re-creates the UAV descriptors for the resolution-dependent NRC
-// buffers (slots 58, 59, 60). The fixed-size train records / counters
-// at slots 61-62 are unchanged so we leave their descriptors alone.
-// Mirrors the layout in CreateShaderResourceHeap (Renderer_Pipeline.cpp
-// slots 58..62).
-void Renderer::RebuildNrcDescriptors() {
-    auto* dev = m_ctx.Device();
-    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    auto writeRawUAVAt = [&](UINT slot, const CudaInterop::Buffer& b) {
-        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
-        if (b.resource) {
-            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
-            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
-            ud.Buffer.NumElements = (UINT)((b.sizeBytes + 3u) / 4u);
-            dev->CreateUnorderedAccessView(b.resource.Get(), nullptr, &ud, h);
-        } else {
-            // Null-UAV fallback so the table stays valid if interop init failed.
-            D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
-            ud.ViewDimension      = D3D12_UAV_DIMENSION_BUFFER;
-            ud.Format             = DXGI_FORMAT_R32_TYPELESS;
-            ud.Buffer.Flags       = D3D12_BUFFER_UAV_FLAG_RAW;
-            ud.Buffer.NumElements = 1;
-            dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
-        }
-    };
-
-    writeRawUAVAt(58, m_nrcInferenceIn);   // u40
-    writeRawUAVAt(59, m_nrcInferenceOut);  // u41
-    writeRawUAVAt(60, m_nrcPendingGI);     // u42
-    // Slots 61 (TrainRecords) and 62 (Counters) are fixed-size buffers
-    // whose descriptors set up at init are still valid after a resize.
 }
 
 void Renderer::RebuildResolutionDependentDescriptors() {
@@ -862,9 +957,8 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         writeFn(h);
     };
 
-    UINT px = GetWidth() * GetHeight();
+    UINT px = TileAlignedPx(GetWidth(), GetHeight());
 
-    // Slot 0: output array UAV
     writeUAVAt(0, m_outputResource, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
@@ -873,7 +967,6 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         dev->CreateUnorderedAccessView(m_outputResource.Get(), nullptr, &ud, h);
     });
 
-    // Slot 1: permanent data UAV
     writeUAVAt(1, m_permanentDataTexture, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -881,7 +974,6 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         dev->CreateUnorderedAccessView(m_permanentDataTexture.Get(), nullptr, &ud, h);
     });
 
-    // Slots 10-15: reservoir / sample raw UAVs
     auto rawUAVAt = [&](UINT slot, ComPtr<ID3D12Resource>& res, UINT bytes) {
         CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
@@ -891,29 +983,44 @@ void Renderer::RebuildResolutionDependentDescriptors() {
         ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
         dev->CreateUnorderedAccessView(res.Get(), nullptr, &ud, h);
     };
-    rawUAVAt(10, m_reservoirBuffer,      px * sizeof(Reservoir_DI));
-    rawUAVAt(11, m_reservoirBuffer_2,    px * sizeof(Reservoir_DI));
-    rawUAVAt(12, m_reservoirBuffer_3,    px * sizeof(Reservoir_GI));
-    rawUAVAt(13, m_reservoirBuffer_4,    px * sizeof(Reservoir_GI));
-    rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
-    rawUAVAt(15, m_sampleBuffer_last,    px * sizeof(SampleData));
 
-    // Slot 18: scratch ping UAV
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        for (UINT slot : {10u, 11u}) {
+            CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+            dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+        }
+    }
+    rawUAVAt(12, m_reservoirBuffer_3, px * sizeof(Reservoir_GI));
+    rawUAVAt(13, m_reservoirBuffer_4, px * sizeof(Reservoir_GI));
+    rawUAVAt(14, m_sampleBuffer_current, px * sizeof(SampleData));
+    rawUAVAt(15, m_sampleBuffer_last, px * sizeof(SampleData));
+
     writeUAVAt(18, m_scratchPing, [&](D3D12_CPU_DESCRIPTOR_HANDLE h) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
         ud.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
         ud.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        ud.Texture2DArray.ArraySize = 16;
+        ud.Texture2DArray.ArraySize = m_scratchPing->GetDesc().DepthOrArraySize;
         dev->CreateUnorderedAccessView(m_scratchPing.Get(), nullptr, &ud, h);
     });
 
-    // Slot 19: initial BSDF ray UAV
-    rawUAVAt(19, m_initialBSDFRayBuffer, px * sizeof(InitialBSDFRay));
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = 1;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 19, inc);
+        dev->CreateUnorderedAccessView(nullptr, nullptr, &ud, h);
+    }
 
-    // Slot 32: path state UAV
-    rawUAVAt(32, m_pathStateBuffer, px * 88);
+    rawUAVAt(32, m_pathStateBuffer, px * kPathStateBytesPerPx);
+    rawUAVAt(CUMULUS_QUERY_HEAP_SLOT, m_cumulusQueries, UINT(m_cumulusQueries->GetDesc().Width));
 
-    // Slots 35-38: stack buffers UAV
     for (int s = 0; s < 4; ++s) {
         CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 35 + s, inc);
         D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
@@ -925,9 +1032,78 @@ void Renderer::RebuildResolutionDependentDescriptors() {
     }
 }
 
-//====================================
-//RENDER
-//====================================
+// Swap reservoir history and repoint its fixed descriptor slots.
+void Renderer::SwapSampleBuffers() {
+    m_sampleBuffer_current.Swap(m_sampleBuffer_last);
+
+    auto* dev = m_ctx.Device();
+    const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const UINT bytes = TileAlignedPx(GetWidth(), GetHeight()) * sizeof(SampleData);
+
+    auto rawUAVAt = [&](UINT slot, ID3D12Resource* res) {
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), slot, inc);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC ud = {};
+        ud.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        ud.Format = DXGI_FORMAT_R32_TYPELESS;
+        ud.Buffer.NumElements = bytes / 4;
+        ud.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        dev->CreateUnorderedAccessView(res, nullptr, &ud, h);
+    };
+    rawUAVAt(14, m_sampleBuffer_current.Get());
+    rawUAVAt(15, m_sampleBuffer_last.Get());
+}
+
+// Recover world coordinates from the camera-relative rendering transform.
+planet::CameraView Renderer::MakePlanetCamera() const {
+    const XMMATRIX view = m_camera.ViewMatrix();
+    const XMMATRIX invView = XMMatrixInverse(nullptr, view);
+    XMFLOAT3 pos, fwd, up;
+    XMStoreFloat3(&pos, invView.r[3]);
+
+    XMStoreFloat3(&fwd, XMVector3Normalize(XMVectorNegate(invView.r[2])));
+    XMStoreFloat3(&up, XMVector3Normalize(invView.r[1]));
+    const glm::vec3 origin = m_camera.getSceneOriginWorld();
+
+    planet::CameraView cv;
+    cv.position_world = {(double)pos.x + origin.x, (double)pos.y + origin.y, (double)pos.z + origin.z};
+
+    cv.scene_origin = {origin.x, origin.y, origin.z};
+    cv.forward = {fwd.x, fwd.y, fwd.z};
+    cv.up = {up.x, up.y, up.z};
+    cv.fov_y = m_camera.fovDegrees * 0.01745329252f;
+    cv.aspect = m_aspectRatio;
+    cv.near_plane = m_camera.nearPlane;
+    cv.far_plane = m_camera.farPlane;
+    return cv;
+}
+
+// Mirror changed scene instances into the streamer's unified TLAS input.
+void Renderer::BuildPlanetSceneInstances() {
+    const auto& src = m_scene.tlasInstances;
+    const bool all = m_scene.tlasFullRebuild || m_planetSceneInstances.size() != src.size();
+    m_planetSceneInstances.resize(src.size());
+    auto update = [&](size_t i) {
+        planet::SceneInstanceDesc& d = m_planetSceneInstances[i];
+        d.blas = src[i].blas ? src[i].blas->GetGPUVirtualAddress() : 0;
+
+        XMFLOAT4X4 t;
+        XMStoreFloat4x4(&t, XMMatrixTranspose(src[i].transform));
+        memcpy(d.transform, &t, sizeof(float) * 12);
+        d.instance_id = (uint32_t)i;
+        d.hit_group_index = src[i].hitGroupContribution;
+        d.flags = (uint32_t)src[i].flags;
+    };
+    if (all) {
+        for (size_t i = 0; i < src.size(); ++i)
+            update(i);
+    } else {
+        for (uint32_t i : m_scene.dirtyInstanceList)
+            if (i < src.size())
+                update(i);
+    }
+}
+
+// Submit streamed geometry before the passes that trace against it.
 void Renderer::RenderFrame() {
     using hrc = std::chrono::high_resolution_clock;
     static auto s_lastTime = hrc::now();
@@ -936,27 +1112,76 @@ void Renderer::RenderFrame() {
 
     m_ctx.BeginFrame();
 
-    // PCL: render submit start
+    m_planet.begin_frame(m_planetFrame++, MakePlanetCamera());
+
     slPCLSetMarker(sl::PCLMarker::eRenderSubmitStart, *m_ctx.frameToken);
 
-    auto t_popStart = hrc::now();
-    PopulateCommandList();
-    auto t_popEnd = hrc::now();
-    m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+    try {
+        if (m_scene.tlasFullRebuild || m_scene.tlasInstances.size() != m_scene.instances.size())
+            m_scene.RebuildTLASInstanceList();
+        BuildPlanetSceneInstances();
 
-    // PCL: render submit end
-    slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
+        if (m_planet.enabled() && !m_rockMeshIndices.empty()) {
+            const planet::CameraView pcam = MakePlanetCamera();
+            struct RockHeightAdapter : planet::IRockHeight {
+                const planet::HeightmapCubemap* hm = nullptr;
+                float sample_height_m(const planet::DVec3& d) const override { return hm ? hm->sample(d, 0) : 0.0f; }
+            } adapter;
+            adapter.hm = &m_planet.heightmap();
+            m_rockScatter.update(pcam.position_world, adapter);
+            m_planet.set_rock_instances(m_rockScatter.live().data(), (uint32_t)m_rockScatter.live().size());
+        }
 
-    // PCL: present start
-    slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
-    m_ctx.ExecuteAndPresent();
-    // PCL: present end
-    slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
+        if (m_voxels.enabled()) {
+            if (m_emissiveGpuDirty) {
+                m_voxels.on_light_tlas_published(0u, false);
+                m_liveVoxelLightLeaves = 0;
+            } else if (!m_pendingTLASUpload.empty()) {
+                m_voxels.on_light_tlas_published(m_pendingVoxelLightVersion, m_pendingVoxelLeafCount > 0);
+                m_liveVoxelLightLeaves = m_pendingVoxelLeafCount;
+            }
+            const planet::CameraView pcam = MakePlanetCamera();
+            const double camPos[3] = {pcam.position_world.x, pcam.position_world.y, pcam.position_world.z};
+            m_voxels.begin_frame(camPos);
+        }
+        const uint32_t terrainHitGroup = (uint32_t)m_scene.instances.size() * 2u;
+        const uint32_t voxelHitGroup = terrainHitGroup + 1u; // [opaque, alpha] pair after the terrain entry
+        const auto previousTlasAddress = m_planet.tlas_address();
+        m_planet.submit_work(m_planetSceneInstances.data(), (uint32_t)m_planetSceneInstances.size(), terrainHitGroup,
+                             voxelHitGroup);
+        // TLAS growth can replace the allocation behind this descriptor.
+        if (previousTlasAddress != m_planet.tlas_address()) {
+            D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+            sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
+            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            sd.RaytracingAccelerationStructure.Location = m_planet.tlas_address();
+            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
+            m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, h);
+        }
+        m_scene.tlasDirty = false;
+        m_scene.tlasFullRebuild = false;
 
-    // CPU = total CPU work across UpdateRenderer + PopulateCommandList
+        auto t_popStart = hrc::now();
+        PopulateCommandList();
+        auto t_popEnd = hrc::now();
+        m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
+
+        slPCLSetMarker(sl::PCLMarker::eRenderSubmitEnd, *m_ctx.frameToken);
+
+        slPCLSetMarker(sl::PCLMarker::ePresentStart, *m_ctx.frameToken);
+        m_ctx.ExecuteAndPresent();
+
+        slPCLSetMarker(sl::PCLMarker::ePresentEnd, *m_ctx.frameToken);
+    } catch (...) {
+        dxdiag::CheckDeviceRemoved(m_ctx.Device(), 1000);
+        throw;
+    }
+
+    m_planet.end_frame();
+
     m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuPopulateMs;
 
-    // FPS display
     s_frameCount++;
     auto now = hrc::now();
     float elapsed = std::chrono::duration<float>(now - s_lastTime).count();
@@ -966,22 +1191,53 @@ void Renderer::RenderFrame() {
         ss << std::fixed << std::setprecision(2);
         if (m_dlssG.enabled && m_dlssG.framesToGenerate > 0) {
             float presentedFps = m_fps * (1 + m_dlssG.framesToGenerate);
-            ss << L"Frame Time: " << 1000.0f / m_fps << L" ms ("
-               << presentedFps << L" fps, " << m_fps << L" rendered + "
-               << (1 + m_dlssG.framesToGenerate) << L"x FG)";
+            ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << presentedFps << L" fps, " << m_fps
+               << L" rendered + " << (1 + m_dlssG.framesToGenerate) << L"x FG)";
         } else {
             ss << L"Frame Time: " << 1000.0f / m_fps << L" ms (" << m_fps << L" fps)";
         }
         SetWindowTextW(Win32Application::GetHwnd(), ss.str().c_str());
+
+        const auto& ps = m_planet.stats();
+        std::wcout << L"[planet] built=" << ps.built << L" leaves=" << ps.leaf_count << L" cells=" << ps.cell_count
+                   << L" tris=" << ps.triangle_count << L" tlas=" << ps.tlas_instances << L" rebuilding="
+                   << ps.rebuilding << L" dirty=" << ps.dirty_built << L"/" << ps.dirty_total << L" est="
+                   << ps.rebuild_frames_est << L"f" << L" rec=" << ps.cells_recorded << L" pipe[p=" << ps.cells_pending
+                   << L" r=" << ps.cells_ready << L" b=" << ps.cells_recorded_total << L" B=" << ps.dirty_built << L"]"
+                   << L" cpu_ms[blas_rec=" << ps.blas_record_cpu_ms << L" plan=" << ps.plan_ms << L"]"
+                   << L" gpu_ms[blas=" << ps.blas_gpu_ms << L" tlas=" << ps.tlas_gpu_ms << L"]" << L" DROPPED="
+                   << ps.cells_dropped << L" geo_free=" << ps.geo_free_leaves << L" id_peak=" << ps.stable_id_peak
+                   << std::endl;
+
+        if (m_voxels.enabled()) {
+            const auto& vs = m_voxels.stats();
+            const auto& vc = m_voxels.config();
+            std::printf(
+                "[mc] shown=%u/%u ready=%u empty=%u pend=%u mesh=%u meshed=%u upl=%u tris=%.2fM (est %.1fM/%.1fM lod "
+                "%.0f cut %.0f%% built)"
+                " builds=%u up=%.1fMB job=%.2fms sel=%.2fms (adopt %.2f resolve %.2f adapt %.2f, %u nodes) rec=%.2fms "
+                "vtx=%.1f/%uM idx=%.1f/%uM"
+                " blas=%llu/%lluMB (+%lluMB building) fail=%u evict=%u tracked=%u lights=%.2fM/%uk in %u chunks (res "
+                "%.2fM, dropped %u, v%u live%u%s)\n",
+                vs.rendered, vs.desired, vs.ready, vs.empty, vs.pending, vs.meshing, vs.meshed, vs.uploading,
+                (double)vs.trianglesRendered / 1.0e6, (double)vs.trianglesEstimated / 1.0e6,
+                (double)vs.triangleBudget / 1.0e6, vs.lodFactorNow, vs.cutReadyFraction * 100.0f, vs.buildsThisFrame,
+                (double)vs.uploadBytesThisFrame / 1048576.0, vs.meshMsAvg, vs.selectMs, vs.adoptMs, vs.resolveMs,
+                vs.adaptMs, vs.cutNodes, vs.recordMs, (double)vs.vertexUsed / 1048576.0, vc.vertexCapacity >> 20,
+                (double)vs.indexUsed / 1048576.0, vc.indexCapacity >> 20, (unsigned long long)(vs.blasUsed >> 20),
+                (unsigned long long)(vc.blasPoolBytes >> 20), (unsigned long long)(vs.blasBuildUsed >> 20),
+                vs.allocFailures, vs.evicted, vs.chunksTracked, (double)vs.lightTrisInTree / 1.0e6,
+                vc.maxLightTris / 1000u, vs.lightChunksInTree, (double)vs.lightTrisResident / 1.0e6,
+                vs.lightChunksDropped, vs.lightVersion, vs.lightLiveVersion, m_voxels.has_live_lights() ? "" : " none");
+        }
+
         s_frameCount = 0;
         s_lastTime = now;
     }
 }
 
-//====================================
-//DESTROY
-//====================================
 void Renderer::DestroyRenderer() {
+    m_ctx.WaitForGPU();
     if (m_dlssG.enabled) {
         sl::DLSSGOptions gOpts{};
         gOpts.mode = sl::DLSSGMode::eOff;
@@ -990,43 +1246,58 @@ void Renderer::DestroyRenderer() {
         m_dlssG.enabled = false;
     }
     m_editor.Shutdown();
+    // Release the independent NR runtime before Streamline/device shutdown.
+    m_dlssNR.Shutdown(m_ctx.Device());
+    m_dlssHudlessColor.Reset();
     m_ctx.Shutdown();
 }
 
-//====================================
-//PROCEDURAL MESH CREATION
-//====================================
-UINT Renderer::CreateProceduralMesh(
-    const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
-    const Material& material)
-{
+UINT Renderer::CreateProceduralMesh(const std::vector<Vertex>& vertices, const std::vector<UINT>& indices,
+                                    const Material& material) {
     UINT matIdx = (UINT)m_scene.materials.size();
     UINT triCount = (UINT)indices.size() / 3;
+    const UINT materialIDBase = (UINT)m_scene.materialIDs.size();
     m_scene.materials.push_back(material);
-    for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
+    for (UINT t = 0; t < triCount; ++t)
+        m_scene.materialIDs.push_back(matIdx);
 
     MeshGPU mesh;
-    mesh.cpuVertices = vertices; mesh.cpuIndices = indices;
+    mesh.cpuVertices = vertices;
+    mesh.cpuIndices = indices;
     mesh.cpuMaterialIDs = std::vector<UINT>(triCount, matIdx);
-    mesh.vertexCount = (UINT)vertices.size(); mesh.indexCount = (UINT)indices.size();
-    mesh.opaqueTriCount = triCount; mesh.alphaTriCount = 0; mesh.materialIDBase = matIdx;
+    mesh.vertexCount = (UINT)vertices.size();
+    mesh.indexCount = (UINT)indices.size();
+    mesh.opaqueTriCount = triCount;
+    mesh.alphaTriCount = 0;
+    mesh.materialIDBase = materialIDBase;
+    {
+        UINT bytes = mesh.vertexCount * sizeof(Vertex);
+        mesh.vertexBuffer =
+            nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes, D3D12_RESOURCE_FLAG_NONE,
+                                          D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+        void* p = nullptr;
+        mesh.vertexBuffer->Map(0, nullptr, &p);
+        memcpy(p, vertices.data(), bytes);
+        mesh.vertexBuffer->Unmap(0, nullptr);
+    }
+    {
+        UINT bytes = mesh.indexCount * sizeof(UINT);
+        mesh.indexBuffer =
+            nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes, D3D12_RESOURCE_FLAG_NONE,
+                                          D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
+        void* p = nullptr;
+        mesh.indexBuffer->Map(0, nullptr, &p);
+        memcpy(p, indices.data(), bytes);
+        mesh.indexBuffer->Unmap(0, nullptr);
+    }
 
-    { UINT bytes = mesh.vertexCount * sizeof(Vertex);
-      mesh.vertexBuffer = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes,
-          D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-      void* p = nullptr; mesh.vertexBuffer->Map(0, nullptr, &p);
-      memcpy(p, vertices.data(), bytes); mesh.vertexBuffer->Unmap(0, nullptr); }
-    { UINT bytes = mesh.indexCount * sizeof(UINT);
-      mesh.indexBuffer = nv_helpers_dx12::CreateBuffer(m_ctx.Device(), bytes,
-          D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, nv_helpers_dx12::kUploadHeapProps);
-      void* p = nullptr; mesh.indexBuffer->Map(0, nullptr, &p);
-      memcpy(p, indices.data(), bytes); mesh.indexBuffer->Unmap(0, nullptr); }
-
-    auto blasBuf = CreateBottomLevelAS(
-        {{ mesh.vertexBuffer, mesh.vertexCount }}, {{ mesh.indexBuffer, mesh.indexCount }},
-        mesh.opaqueTriCount, mesh.alphaTriCount);
+    auto blasBuf = CreateBottomLevelAS({{mesh.vertexBuffer, mesh.vertexCount}}, {{mesh.indexBuffer, mesh.indexCount}},
+                                       mesh.opaqueTriCount, mesh.alphaTriCount);
     mesh.blas = blasBuf.pResult;
     m_ctx.FlushAndReset();
+
+    mesh.vertexBuffer.Reset();
+    mesh.indexBuffer.Reset();
 
     UINT meshIndex = (UINT)m_scene.meshes.size();
     m_scene.meshes.push_back(std::move(mesh));
@@ -1034,397 +1305,531 @@ UINT Renderer::CreateProceduralMesh(
     return meshIndex;
 }
 
-//====================================
-//MESH INSTANCE CREATION
-//====================================
-UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material)
-{
+UINT Renderer::CreateMeshInstance(UINT sourceMeshIndex, const Material& material) {
     const auto& src = m_scene.meshes[sourceMeshIndex];
-    UINT matIdx   = (UINT)m_scene.materials.size();
+    UINT matIdx = (UINT)m_scene.materials.size();
     UINT triCount = src.indexCount / 3;
+    const UINT materialIDBase = (UINT)m_scene.materialIDs.size();
 
     m_scene.materials.push_back(material);
-    for (UINT t = 0; t < triCount; ++t) m_scene.materialIDs.push_back(matIdx);
+    for (UINT t = 0; t < triCount; ++t)
+        m_scene.materialIDs.push_back(matIdx);
 
     MeshGPU mesh;
-    mesh.cpuVertices    = src.cpuVertices;
-    mesh.cpuIndices     = src.cpuIndices;
+    mesh.cpuVertices = src.cpuVertices;
+    mesh.cpuIndices = src.cpuIndices;
     mesh.cpuMaterialIDs = std::vector<UINT>(triCount, matIdx);
-    mesh.vertexCount    = src.vertexCount;
-    mesh.indexCount     = src.indexCount;
+    mesh.vertexCount = src.vertexCount;
+    mesh.indexCount = src.indexCount;
     mesh.opaqueTriCount = src.opaqueTriCount;
-    mesh.alphaTriCount  = src.alphaTriCount;
-    mesh.materialIDBase = matIdx;
+    mesh.alphaTriCount = src.alphaTriCount;
+    mesh.materialIDBase = materialIDBase;
 
-    // Share geometry buffers and BLAS — no GPU work needed
     mesh.vertexBuffer = src.vertexBuffer;
-    mesh.indexBuffer  = src.indexBuffer;
-    mesh.blas         = src.blas;
+    mesh.indexBuffer = src.indexBuffer;
+    mesh.blas = src.blas;
 
     UINT meshIndex = (UINT)m_scene.meshes.size();
     m_scene.meshes.push_back(std::move(mesh));
     return meshIndex;
 }
 
-//====================================
-//SCENE STRUCTURAL CHANGE
-//====================================
+// Rebuild index-dependent bindings after instances are added or removed.
 void Renderer::HandleSceneStructuralChange() {
+    if (m_scene.sceneInstanceCap() && m_scene.instances.size() > m_scene.sceneInstanceCap())
+        throw std::runtime_error("Scene instances exceed the reserved streamed instance range");
+
+    m_ctx.WaitForGPU();
     m_scene.RebuildTLASInstanceList();
     m_scene.CreateInstancePropertiesBuffer(m_ctx.Device());
 
-    // Resize dirty tracking and mark all instances dirty (new layout)
     m_scene.instanceDirty.assign(m_scene.instances.size(), 1);
     m_scene.instanceInitialized.assign(m_scene.instances.size(), 0);
-    m_scene.cpuInstanceProps.clear();  // force re-init in UpdateInstanceProperties
+    m_scene.cpuInstanceProps.clear();
 
-    // Update SRV slot 6 → new instanceProperties buffer
-    { const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-      CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), INSTANCE_PROPS_SRV_SLOT, inc);
-      D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-      sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-      sd.Format = DXGI_FORMAT_UNKNOWN; sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-      sd.Buffer.NumElements = (UINT)m_scene.instances.size();
-      sd.Buffer.StructureByteStride = sizeof(InstanceProperties);
-      m_ctx.Device()->CreateShaderResourceView(m_scene.instanceProperties.Get(), &sd, h); }
+    {
+        const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE h(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), INSTANCE_PROPS_SRV_SLOT,
+                                        inc);
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.Format = DXGI_FORMAT_UNKNOWN;
+        sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+
+        sd.Buffer.NumElements = m_scene.instancePropsCount();
+        sd.Buffer.StructureByteStride = sizeof(InstanceProperties);
+        m_ctx.Device()->CreateShaderResourceView(m_scene.instanceProperties.Get(), &sd, h);
+    }
 
     CreateShaderBindingTable();
     m_scene.CollectEmissiveTriangles();
     m_blasLocalRoots = lt::ComputeBLASLocalRoots(m_scene.emissiveTriangles);
     m_emissiveGpuDirty = true;
-    m_scene.tlasDirty        = true;
-    m_scene.tlasFullRebuild  = true;
-    m_scene.lightTreeDirty   = true;
+    m_scene.tlasDirty = true;
+    m_scene.tlasFullRebuild = true;
+    m_sharcResetPending = true;
+    m_scene.lightTreeDirty = true;
 }
 
-//====================================
-//INPUT CAPTURE AND KEY HANDLERS
-//====================================
-bool Renderer::WantsKeyboard() const { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard; }
-bool Renderer::WantsMouse() const    { return m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse; }
+bool Renderer::WantsKeyboard() const {
+    return m_editor.IsVisible() && ImGui::GetIO().WantCaptureKeyboard;
+}
+bool Renderer::WantsMouse() const {
+    return m_editor.IsVisible() && ImGui::GetIO().WantCaptureMouse;
+}
 void Renderer::HandleKeyUp(UINT8 key) {
-    if (key == 'C') m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
-    if (key == 'K') m_recorder.CaptureKeyframe(m_camera.Manipulator());
-    if (key == VK_F1) m_editor.ToggleVisibility();
+    if (key == 'C')
+        m_currentDisplayLevel = (m_currentDisplayLevel + 1) % m_displayLevels.size();
+    if (key == 'K')
+        m_recorder.CaptureKeyframe(m_camera.Manipulator());
+    if (key == VK_F1)
+        m_editor.ToggleVisibility();
 }
 
-//====================================
-//POPULATE COMMAND LIST
-//====================================
-//the frame's GPU work
+// Execute the configured pass graph with shared queues and resource barriers.
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
 
-    // Reallocate Streamline DLSS feature if mode changed (needs open command list)
     bool dlssResChanged = (m_dlssModeChangedFrames > 0);
     if (m_dlssModeChangedFrames > 0) {
-        if (m_dlssModeChangedFrames == 2) {  // first frame after change: reallocate SL resources
+        if (m_dlssModeChangedFrames == 2) { // Evaluate recreates resources after setting the updated options.
             sl::Result fr = slFreeResources(sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
             if (fr != sl::Result::eOk)
                 std::wcout << L"[SL] slFreeResources failed: " << (int)fr << std::endl;
-            sl::Result ar = slAllocateResources(cmdList, sl::kFeatureDLSS_RR, m_ctx.viewportHandle);
-            if (ar != sl::Result::eOk)
-                std::wcout << L"[SL] slAllocateResources failed: " << (int)ar << std::endl;
         }
         m_dlssModeChangedFrames--;
     }
 
-    // Transition back buffer → render target
-    {   auto b = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_PRESENT,
-            D3D12_RESOURCE_STATE_RENDER_TARGET);
-        cmdList->ResourceBarrier(1, &b); }
+    {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_PRESENT,
+                                                      D3D12_RESOURCE_STATE_RENDER_TARGET);
+        cmdList->ResourceBarrier(1, &b);
+    }
 
     auto rtv = m_ctx.CurrentRTV();
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
 
-    // TLAS update: full rebuild on structural change, periodic in-place rebuild
-    // to prevent BVH degradation, or partial refit for transform-only changes.
-    static constexpr uint32_t TLAS_REBUILD_INTERVAL = 120;
-    bool periodicRebuild = m_scene.tlasDirty && !m_scene.tlasFullRebuild
-                        && (m_time % TLAS_REBUILD_INTERVAL) == 0;
-
-    auto t_tlasStart = std::chrono::high_resolution_clock::now();
     m_frameStats.tlasWasRefit = false;
     m_frameStats.tlasWasRebuilt = false;
-    if (m_scene.tlasDirty) {
-        if (m_scene.tlasFullRebuild) {
-            // Structural change: new buffers, new generator
-            m_topLevelASGenerator = nv_helpers_dx12::TopLevelASGenerator();
-            CreateTopLevelAS(m_scene.tlasInstances, false);
-            m_scene.tlasFullRebuild = false;
-            m_frameStats.tlasWasRebuilt = true;
+    m_frameStats.tlasMs = 0.0f;
 
-            // Full rebuild allocates a new pResult buffer → update SRV
-            const UINT inc = m_ctx.Device()->GetDescriptorHandleIncrementSize(
-                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-            CD3DX12_CPU_DESCRIPTOR_HANDLE tlasSrv(
-                m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), 2, inc);
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd = {};
-            sd.Format = DXGI_FORMAT_UNKNOWN;
-            sd.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-            sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            sd.RaytracingAccelerationStructure.Location =
-                m_topLevelASBuffers.pResult->GetGPUVirtualAddress();
-            m_ctx.Device()->CreateShaderResourceView(nullptr, &sd, tlasSrv);
-        } else if (!m_scene.dirtyInstanceList.empty()) {
-            if (periodicRebuild) {
-                // Periodic rebuild: reuse buffers, full BVH build (PREFER_FAST_BUILD)
-                m_topLevelASGenerator.RebuildInPlace(
-                    m_ctx.CmdList(),
-                    m_topLevelASBuffers.pScratch.Get(),
-                    m_topLevelASBuffers.pResult.Get(),
-                    m_topLevelASBuffers.pInstanceDesc.Get(),
-                    m_scene.dirtyInstanceList);
-                m_frameStats.tlasWasRebuilt = true;
-            } else {
-                // Transform-only: partial refit — only update dirty instance descriptors
-                m_topLevelASGenerator.UpdateAndRefit(
-                    m_ctx.CmdList(),
-                    m_topLevelASBuffers.pScratch.Get(),
-                    m_topLevelASBuffers.pResult.Get(),
-                    m_topLevelASBuffers.pInstanceDesc.Get(),
-                    m_scene.dirtyInstanceList);
-                m_frameStats.tlasWasRefit = true;
-            }
-        }
-        m_scene.tlasDirty = false;
-    }
-    m_frameStats.tlasMs = std::chrono::duration<float, std::milli>(
-        std::chrono::high_resolution_clock::now() - t_tlasStart).count();
-    { auto b = CD3DX12_RESOURCE_BARRIER::UAV(m_topLevelASBuffers.pResult.Get());
-      cmdList->ResourceBarrier(1, &b); }
+    RecordSkyLUTBake(cmdList);
 
-    // Bind main descriptor heap
-    ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
-    cmdList->SetDescriptorHeaps(1, heaps);
+    ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get(), m_samplerHeap.Get()};
+    cmdList->SetDescriptorHeaps(2, heaps);
 
-    // ── Build ray dispatch descriptor ────────────────────────────
-    // Pre-DLSS passes render at internal resolution; post-DLSS at display res
     const UINT renderW = m_dlss.RenderWidth();
     const UINT renderH = m_dlss.RenderHeight();
 
     D3D12_DISPATCH_RAYS_DESC raysDesc{};
-    raysDesc.Width = renderW; raysDesc.Height = renderH; raysDesc.Depth = 1;
+    raysDesc.Width = renderW;
+    raysDesc.Height = renderH;
+    raysDesc.Depth = 1;
     const uint64_t sbtStart = m_sbtStorage->GetGPUVirtualAddress();
-    const uint32_t rgSize   = m_sbtHelper.GetRayGenEntrySize();
+    const uint32_t rgSize = m_sbtHelper.GetRayGenEntrySize();
 
-    raysDesc.MissShaderTable.StartAddress  = sbtStart + m_sbtHelper.GetRayGenSectionSize();
-    raysDesc.MissShaderTable.SizeInBytes   = m_sbtHelper.GetMissSectionSize();
+    raysDesc.MissShaderTable.StartAddress = sbtStart + m_sbtHelper.GetRayGenSectionSize();
+    raysDesc.MissShaderTable.SizeInBytes = m_sbtHelper.GetMissSectionSize();
     raysDesc.MissShaderTable.StrideInBytes = m_sbtHelper.GetMissEntrySize();
 
-    raysDesc.HitGroupTable.StartAddress    = raysDesc.MissShaderTable.StartAddress + raysDesc.MissShaderTable.SizeInBytes;
-    raysDesc.HitGroupTable.SizeInBytes     = m_sbtHelper.GetHitGroupSectionSize();
-    raysDesc.HitGroupTable.StrideInBytes   = m_sbtHelper.GetHitGroupEntrySize();
+    raysDesc.HitGroupTable.StartAddress = raysDesc.MissShaderTable.StartAddress + raysDesc.MissShaderTable.SizeInBytes;
+    raysDesc.HitGroupTable.SizeInBytes = m_sbtHelper.GetHitGroupSectionSize();
+    raysDesc.HitGroupTable.StrideInBytes = m_sbtHelper.GetHitGroupEntrySize();
 
     if (m_sbtHelper.GetCallableSectionSize() > 0) {
-        raysDesc.CallableShaderTable.StartAddress  = raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
-        raysDesc.CallableShaderTable.SizeInBytes   = m_sbtHelper.GetCallableSectionSize();
+        raysDesc.CallableShaderTable.StartAddress =
+            raysDesc.HitGroupTable.StartAddress + raysDesc.HitGroupTable.SizeInBytes;
+        raysDesc.CallableShaderTable.SizeInBytes = m_sbtHelper.GetCallableSectionSize();
         raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
     }
 
-    // Upload async light tree TLAS refit data if available
+    UploadEmissiveBuffers(cmdList);
     UploadLightTreeTLAS(cmdList);
 
-    // Re-upload emissive triangle data if emission values changed
-    UploadEmissiveBuffers(cmdList);
+    {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                                      D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &b);
+    }
 
-    // Output → UAV
-    { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(),
-          D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-      cmdList->ResourceBarrier(1, &b); }
+    {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_globalCounterBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &b);
+        cmdList->CopyBufferRegion(m_globalCounterBuffer.Get(), 0, m_zeroBuffer.Get(), 0, MAX_STACKS * sizeof(uint32_t));
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &b2);
+    }
 
-    // Clear global counters
-    { auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(),
-          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
-      cmdList->ResourceBarrier(1, &b);
-      cmdList->CopyBufferRegion(m_globalCounterBuffer.Get(), 0, m_zeroBuffer.Get(), 0, MAX_STACKS * sizeof(uint32_t));
-      auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_globalCounterBuffer.Get(),
-          D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-      cmdList->ResourceBarrier(1, &b2); }
+    if (m_integratorSettings.integratorMode != 0) {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                      D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &b);
+        cmdList->CopyBufferRegion(m_raygenQueueBuffer.Get(), 0, m_zeroBuffer.Get(), 0, 4 * sizeof(uint32_t));
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &b2);
+    }
 
-    // ── Execute pass pipeline ────────────────────────────────────
+    if (m_integratorSettings.liteReuseSigma != m_liteReuseSigma) {
+        m_liteReuseSigma = m_integratorSettings.liteReuseSigma;
+        BuildLiteReuseTables(m_liteReuseSigma);
+    }
+    if (m_liteReusePending && m_liteReuseUpload && m_sharcBuffer) {
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_sharcBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                      D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &b);
+        cmdList->CopyBufferRegion(m_sharcBuffer.Get(), LITE_REUSE_OFFSET, m_liteReuseUpload.Get(), 0,
+                                  (UINT64)LITE_REUSE_TEXELS * 4u);
+        auto b2 = CD3DX12_RESOURCE_BARRIER::Transition(m_sharcBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmdList->ResourceBarrier(1, &b2);
+        m_liteReusePending = false;
+    }
+
     uint32_t currentStack = 0, nextStack = 1;
+
     std::vector<std::pair<int, uint32_t>> loopStack;
-    // Pre-DLSS: dispatch at render resolution. Post-DLSS: display resolution.
+
     UINT dispW = renderW, dispH = renderH;
 
-    // Precompute ReSTIR root constants.
-    auto& rs = m_restirSettings;
-    rs.tempMcapGI     = std::max(rs.tempMcapGI, 1);
+    auto& rs = m_integratorSettings;
+    rs.tempMcapGI = std::max(rs.tempMcapGI, 1);
     rs.spatCountMaxGI = std::clamp(rs.spatCountMaxGI, 1, 2);
     rs.spatCountMinGI = rs.spatCountMaxGI;
-    rs.spatRadMaxGI   = std::max(rs.spatRadMaxGI, 4);
-    rs.spatRadMinGI   = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
-    rs.spatTriesGI    = std::clamp(rs.spatTriesGI, 2, 16);
+    rs.spatRadMaxGI = std::max(rs.spatRadMaxGI, 4);
+    rs.spatRadMinGI = std::clamp(rs.spatRadMinGI, 4, rs.spatRadMaxGI);
+    rs.spatTriesGI = std::clamp(rs.spatTriesGI, 2, 16);
 
-    // Neighbor rejection thresholds
-    rs.rejNormalDot   = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
-    rs.rejDistance    = std::max(rs.rejDistance, 0.001f);
+    rs.rejNormalDot = std::clamp(rs.rejNormalDot, 0.0f, 1.0f);
+    rs.rejDistance = std::max(rs.rejDistance, 0.001f);
 
-    UINT rsConsts[32] = {};
-    rsConsts[4]  = (UINT)rs.tempMcapGI;
-    rsConsts[5]  = (UINT)rs.spatCountMaxGI;
-    rsConsts[6]  = (UINT)rs.spatCountMinGI;
-    rsConsts[7]  = (UINT)rs.spatRadMaxGI;
-    rsConsts[8]  = (UINT)rs.spatRadMinGI;
-    // When DLSS render resolution changes, the "last" reservoir/sample buffers
-    // use a different SoA layout (numPx changes). Reading them with the new
-    // layout yields garbage positions → NaN rays → GPU hang. Disable temporal
-    // reuse for 2 frames so those buffers are never read with stale layout.
-    // Flags() returns bit1=tempGI (0x2) and bit3=spatGI (0x8); mask off both
-    // lower bits on DLSS res change to drop the temporal pass.
-    rsConsts[9]  = dlssResChanged ? (rs.Flags() & ~3u) : rs.Flags();
+    // Slots and bit fields must match the shared shader root constants.
+    UINT rsConsts[SHARC_ROOT_CONSTANTS] = {};
+    rsConsts[4] = (UINT)rs.tempMcapGI;
+    rsConsts[5] = (UINT)rs.spatCountMaxGI;
+    rsConsts[6] = (UINT)rs.spatCountMinGI;
+    rsConsts[7] = (UINT)rs.spatRadMaxGI;
+    rsConsts[8] = (UINT)rs.spatRadMinGI;
+
+    constexpr uint32_t RS_FLAG_CLAMP_EMITTERS = 0x100u;
+
+    const bool integratorChanged = rs.integratorMode != m_previousIntegratorMode;
+    m_previousIntegratorMode = rs.integratorMode;
+    uint32_t baseFlags = (dlssResChanged || integratorChanged) ? (rs.Flags() & ~3u) : rs.Flags();
+    if (!MeshLightsActive())
+        baseFlags |= RS_FLAG_NO_MESH_LIGHTS;
+    if (m_dlss.clampEmitterSpikes)
+        baseFlags |= RS_FLAG_CLAMP_EMITTERS;
+
+    baseFlags |= m_dlss.GuideOffFlags();
+
+    const bool usePtKernel = (rs.integratorMode == 0);
+    const bool useSharc = usePtKernel && rs.sharcEnabled;
+    const bool useLightLearning = usePtKernel && rs.lightTreeLearning && MeshLightsActive();
+    rs.lightTreeCellExponent = std::clamp(rs.lightTreeCellExponent, -4, 8);
+    rs.lightTreeLodScale = std::clamp(rs.lightTreeLodScale, 0.001f, 0.25f);
+    if (rs.lightTreeReset || (useLightLearning && !m_lightLearningWasEnabled) ||
+        rs.lightTreeCellExponent != m_lightLearningCellExponent || rs.lightTreeLodScale != m_lightLearningLodScale ||
+        rs.texturePointFilter != m_sharcTextureFilter ||
+        rs.forceDiffuseMats != m_previousIntegratorSettings.forceDiffuseMats)
+        m_lightLearningResetPending = true;
+    m_lightLearningWasEnabled = useLightLearning;
+    m_lightLearningCellExponent = rs.lightTreeCellExponent;
+    rs.lightTreeReset = false;
+    m_lightLearningLodScale = rs.lightTreeLodScale;
+    if (useLightLearning)
+        baseFlags |= LT_FLAG_LEARNING;
+    if (useLightLearning && rs.lightTreeDebug)
+        baseFlags |= LT_FLAG_DEBUG;
+    if (!m_cumulusSettingsValid ||
+        std::memcmp(&m_previousCumulusSettings, &m_camera.cumulusSettings, sizeof(CumulusSettings)) != 0 ||
+        m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
+        if (!m_cumulusSettingsValid ||
+            m_previousCumulusSettings.LightingKey() != m_camera.cumulusSettings.LightingKey() ||
+            m_previousDensityCacheEnabled != m_camera.cumulusDensityCache) {
+            m_sharcResetPending = true;
+        }
+        m_previousDensityCacheEnabled = m_camera.cumulusDensityCache;
+        m_previousCumulusSettings = m_camera.cumulusSettings;
+        m_cumulusSettingsValid = true;
+        m_dlss.ForceReset();
+    }
+    const UINT sharcDebugMode = useSharc ? (UINT)std::clamp(rs.sharcDebugMode, 0, 3) : 0u;
+    if (!m_sharcLightingValid || std::memcmp(&m_sharcSunSettings, &m_camera.sunSettings, sizeof(SunSettings)) != 0) {
+        m_sharcResetPending = true;
+        m_sharcSunSettings = m_camera.sunSettings;
+        m_sharcLightingValid = true;
+    }
+    rs.sharcCellSizeExponent = std::clamp(rs.sharcCellSizeExponent, -6, 4);
+    rs.sharcTrainBounces = std::clamp(rs.sharcTrainBounces, 4, 64);
+    rs.sharcGuideLevelOffset = std::clamp(rs.sharcGuideLevelOffset, 0, 7);
+    if (rs.sharcCellSizeExponent != m_sharcCellExponent || rs.sharcTrainBounces != m_sharcBounceLimit ||
+        rs.sharcGuideLevelOffset != m_sharcGuideLevel || rs.texturePointFilter != m_sharcTextureFilter ||
+        rs.sharcReset || (useSharc && !m_sharcWasEnabled))
+        m_sharcResetPending = true;
+    m_sharcCellExponent = rs.sharcCellSizeExponent;
+    m_sharcGuideLevel = rs.sharcGuideLevelOffset;
+    m_sharcBounceLimit = rs.sharcTrainBounces;
+    m_sharcTextureFilter = rs.texturePointFilter;
+    m_sharcWasEnabled = useSharc;
+    rs.sharcReset = false;
+    rsConsts[44] = useSharc ? 1u : 0u;
+    rsConsts[44] |= sharcDebugMode << SHARC_DEBUG_MODE_SHIFT;
+    if (sharcDebugMode != 0u && rs.sharcDebugCoarse)
+        rsConsts[44] |= SHARC_DEBUG_OTHER_LEVEL_BIT;
+    rsConsts[45] = (m_sharcResetPending ? 1u : 0u) | (m_lightLearningResetPending ? LT_RESET_BIT : 0u) |
+                   (m_lightLearningRevalidatePending ? LT_REVALIDATE_BIT : 0u);
+    if (useLightLearning) {
+        m_lightLearningResetPending = false;
+        m_lightLearningRevalidatePending = false;
+    }
+    rsConsts[46] = ++m_sharcFrame; // monotonic; unsigned age works across wrap
+    rsConsts[47] = (UINT)std::clamp(rs.sharcUpdateStride, 2, 8);
+    const float sharcCellSize = std::exp2((float)rs.sharcCellSizeExponent);
+    const float sharcLodScale = std::clamp(rs.sharcLodScale, 0.001f, 0.1f);
+    const float sharcFootprint = std::clamp(rs.sharcQueryFootprint, 0.5f, 8.0f);
+    memcpy(&rsConsts[48], &sharcCellSize, 4);
+    memcpy(&rsConsts[49], &sharcLodScale, 4);
+    rsConsts[50] = (UINT)std::clamp(rs.sharcMinSamples, 8, 256);
+    rsConsts[51] = (UINT)std::clamp(rs.sharcHistoryFrames, 8, 256);
+    rsConsts[52] = (UINT)std::clamp(rs.sharcMaxAge, 32, 4096);
+    memcpy(&rsConsts[53], &sharcFootprint, 4);
+    rsConsts[54] = (UINT)rs.sharcTrainBounces;
+    rsConsts[55] = (UINT)std::clamp(rs.sharcTrainRrDepth, 2, rs.sharcTrainBounces);
+
+    const UINT guideQ = (UINT)std::lround(std::clamp(rs.sharcGuideMax, 0.0f, 0.9f) * 255.0f);
+    const UINT guideFreshness = (UINT)std::clamp(rs.sharcGuideFreshness / 8 - 1, 0, 255);
+    rs.sharcGuideDepth = std::clamp(rs.sharcGuideDepth, 1, 7);
+    rsConsts[56] =
+        (useSharc && rs.sharcGuideEnabled ? GUIDE_PARAM_ENABLED : 0u) | (guideQ << GUIDE_PARAM_QMAX_SHIFT) |
+        ((UINT)rs.sharcGuideLevelOffset << GUIDE_PARAM_LEVEL_SHIFT) | (guideFreshness << GUIDE_PARAM_FRESHNESS_SHIFT) |
+        (rs.sharcGuideTrain ? GUIDE_PARAM_TRAIN : 0u) |
+        ((UINT)std::lround(std::clamp(rs.regularizeRoughness, 0.0f, 0.63f) * 100.0f) << GUIDE_PARAM_REGULARIZE_SHIFT) |
+        ((UINT)rs.sharcGuideDepth << GUIDE_PARAM_DEPTH_SHIFT);
+    if (useSharc)
+        m_sharcResetPending = false;
+    if (usePtKernel)
+        baseFlags = (baseFlags & ~(0x2u | 0x8u | 0x10u | 0x2000u)) | 0x1000000u;
+
+    const bool liteActive = usePtKernel && rs.liteEnabled;
+    if (liteActive) {
+        baseFlags |= LITE_FLAG_ENABLED | (rs.liteSpatial ? LITE_FLAG_SPATIAL : 0u) |
+                     (rs.liteUnshadowedTargets ? LITE_FLAG_UNSHADOWED : 0u) | (rs.liteDebugView ? LITE_FLAG_DEBUG : 0u);
+    }
+    rsConsts[9] = baseFlags;
     memcpy(&rsConsts[10], &rs.reuseRoughnessMin, 4);
     memcpy(&rsConsts[11], &rs.reuseRoughnessMax, 4);
     rsConsts[12] = (UINT)rs.spatTriesGI;
 
-    // Per-frame reuse-texture transforms (offset.xy + flag bits, per slot).
-    // Sizes must match shaders' hardcoded values and InitReuseTextures.
-    {
-        const UINT kSizes[3] = { 254u, 230u, 210u };
-        std::mt19937 rng(static_cast<uint32_t>(m_time) * 0x9E3779B9u + 1u);
-        std::uniform_int_distribution<uint32_t> dist;
-        for (int i = 0; i < 3; ++i) {
-            rsConsts[13 + i * 3 + 0] = dist(rng) % kSizes[i];  // offset.x
-            rsConsts[13 + i * 3 + 1] = dist(rng) % kSizes[i];  // offset.y
-            rsConsts[13 + i * 3 + 2] = dist(rng) & 7u;         // flags (3 bits)
+    if (liteActive) {
+        rsConsts[5] = (UINT)std::clamp(rs.liteSpatMcap, 1, 255);
+        rsConsts[6] = (UINT)std::clamp(rs.liteSpatSlots, 0, (int)LITE_SLOTS_MAX);
+        const UINT sizes[3] = {LITE_REUSE_SIZE0, LITE_REUSE_SIZE1, LITE_REUSE_SIZE2};
+        const UINT slots[3] = {7u, 8u, 12u};
+        for (int t = 0; t < 3; ++t) {
+            const UINT ox = m_liteRng() % sizes[t];
+            const UINT oy = m_liteRng() % sizes[t];
+            const UINT flags = m_liteRng() & 7u;
+            rsConsts[slots[t]] = ox | (oy << 8) | (flags << LITE_REUSE_FLAGS_SHIFT);
         }
     }
 
-    // Neighbor rejection thresholds (slots 22-23)
-    memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
-    memcpy(&rsConsts[23], &rs.rejDistance,  4);
-
-    // NRC control constants (slots 24-27). NRC is only driving the
-    // pipeline when the interop + tcnn stack initialised successfully —
-    // we mask out enabled/training when m_nrcReady is false so the
-    // fallback path stays exactly like the pre-NRC pipeline.
-    //
-    // Scene AABB is auto-recomputed every frame from mesh localAabbs +
-    // live instance transforms. Cost is O(N_instances · 8) corner
-    // transforms, a handful of microseconds even for dense scenes, so
-    // dynamic content (moving instances, live-edited transforms) keeps
-    // NRC's position normalization in lockstep with the actual world.
     {
-        using namespace DirectX;
-        XMVECTOR bMin = XMVectorReplicate(+FLT_MAX);
-        XMVECTOR bMax = XMVectorReplicate(-FLT_MAX);
-        bool anyBounds = false;
-        for (const auto& inst : m_scene.instances) {
-            if (inst.meshIndex >= m_scene.meshes.size()) continue;
-            const MeshGPU& mesh = m_scene.meshes[inst.meshIndex];
-            // Skip unset / empty meshes.
-            if (mesh.localAabbMin.x > mesh.localAabbMax.x) continue;
-            const XMFLOAT3 lm = mesh.localAabbMin;
-            const XMFLOAT3 lM = mesh.localAabbMax;
-            const XMFLOAT3 corners[8] = {
-                {lm.x, lm.y, lm.z}, {lM.x, lm.y, lm.z},
-                {lm.x, lM.y, lm.z}, {lM.x, lM.y, lm.z},
-                {lm.x, lm.y, lM.z}, {lM.x, lm.y, lM.z},
-                {lm.x, lM.y, lM.z}, {lM.x, lM.y, lM.z},
-            };
-            const XMMATRIX& w = inst.worldTransform;
-            for (int k = 0; k < 8; ++k) {
-                XMVECTOR c = XMLoadFloat3(&corners[k]);
-                c = XMVector3Transform(c, w);
-                bMin = XMVectorMin(bMin, c);
-                bMax = XMVectorMax(bMax, c);
-            }
-            anyBounds = true;
-        }
+        const float rrm = std::clamp(rs.reconnectRoughnessMin, 0.0f, 1.0f);
+        memcpy(&rsConsts[17], &rrm, 4);
+    }
 
-        if (anyBounds) {
-            const XMVECTOR center  = XMVectorScale(XMVectorAdd(bMin, bMax), 0.5f);
-            const XMVECTOR halfExt = XMVectorScale(XMVectorSubtract(bMax, bMin), 0.5f);
-            const float ext = std::max({
-                XMVectorGetX(halfExt),
-                XMVectorGetY(halfExt),
-                XMVectorGetZ(halfExt)
-            });
-            XMFLOAT3 c3; XMStoreFloat3(&c3, center);
-            m_nrcSettings.sceneCenter = { c3.x, c3.y, c3.z };
-            // Floor at 1.0 so empty / single-point scenes don't divide
-            // by zero in the shader normalization.
-            m_nrcSettings.sceneExtent = std::max(ext, 1.0f);
-        }
+    {
+        const float rdm = std::clamp(rs.reconnectDistMin, 0.0f, 1.0f);
+        memcpy(&rsConsts[18], &rdm, 4);
+        rsConsts[19] = (UINT)std::clamp(rs.rcMaxK, 2, (rs.hybridShift && rs.lobeIndexedPss) ? 8 : 10);
+        const float fpk = std::clamp(rs.rcFpKappa, 0.0001f, 100.0f);
+        memcpy(&rsConsts[20], &fpk, 4);
+    }
 
-        // Consume editor-requested weight reinit before any NRC work fires
-        // on this frame. Network::ReinitWeights drains auxStream internally
-        // and the follow-up cudaMemset on EMA forces a global device sync,
-        // so the main interop stream's prior-frame work is also flushed by
-        // the time the new weights land. Keep this BEFORE the adaptive-tile
-        // block so the post-reset lastValidVertices=0 is the value the
-        // tile-size feedback reads.
-        if (m_nrcReady && m_nrcSettings.requestReinit) {
-            const bool ok = m_nrcNetwork.ReinitWeights();
-            LOG(L"[NRC] ReinitWeights " << (ok ? L"OK" : L"FAILED"));
-            m_nrcTrainTileSide = nrc::kInitialTrainingTileSide;
-            m_nrcSettings.requestReinit = false;
-        }
+    {
+        const float tnc = std::clamp(rs.tempNormalSimCos, -1.0f, 1.0f);
+        const float tpd = std::max(rs.tempPlaneDist, 0.0f);
+        const float tjc = std::max(rs.tempJacClamp, 1.0f);
+        const float ucw = std::max(rs.ucwClampMax, 0.0f);
+        memcpy(&rsConsts[13], &tnc, 4);
+        memcpy(&rsConsts[14], &tpd, 4);
+        memcpy(&rsConsts[15], &tjc, 4);
+        memcpy(&rsConsts[16], &ucw, 4);
+    }
 
-        // Adaptive tile side per paper §3.5. With T = target records,
-        // V = previous frame's actual records, and S = previous tile
-        // side, the new side is S · sqrt(V/T) — vertex count scales
-        // ~quadratically with 1/tile_side (training pixel density).
-        // Damp by averaging with the old side so transient variance
-        // (sky-dominant frames, big visibility changes) doesn't yank
-        // the size around. First frame uses the initial value because
-        // LastValidVertexCount returns 0 before TrainFrame ever ran.
-        if (m_nrcReady && m_nrcSettings.trainingEnabled) {
-            const uint32_t prev = m_nrcNetwork.LastValidVertexCount();
-            if (prev > 0u) {
-                const float target  = (float)nrc::kTrainingRecordsPerFrame;
-                const float ratio   = (float)prev / target;
-                const float scaled  = (float)m_nrcTrainTileSide * sqrtf(ratio);
-                const float blended = 0.5f * (float)m_nrcTrainTileSide + 0.5f * scaled;
-                int32_t s = (int32_t)(blended + 0.5f);
-                if (s < (int32_t)nrc::kMinTrainingTileSide) s = (int32_t)nrc::kMinTrainingTileSide;
-                if (s > (int32_t)nrc::kMaxTrainingTileSide) s = (int32_t)nrc::kMaxTrainingTileSide;
-                m_nrcTrainTileSide = (uint32_t)s;
-            }
-        }
+    {
+        const float crp = std::clamp(rs.corrReductionPow, 0.005f, 1.0f);
+        memcpy(&rsConsts[21], &crp, 4);
+    }
 
-        uint32_t nrcFlags = 0u;
-        if (m_nrcReady && m_nrcSettings.enabled)             nrcFlags |= nrc::flags::kEnabled;
-        if (m_nrcReady && m_nrcSettings.trainingEnabled)     nrcFlags |= nrc::flags::kTrain;
-        if (m_nrcReady && m_nrcSettings.debugView)           nrcFlags |= nrc::flags::kDebugView;
-        if (m_nrcReady && m_nrcSettings.sharpReflections)    nrcFlags |= nrc::flags::kSharpReflections;
-        nrcFlags |= (m_nrcTrainTileSide & nrc::flags::kTileMask) << nrc::flags::kTileShift;
-        rsConsts[24] = nrcFlags;
-        memcpy(&rsConsts[25], &m_nrcSettings.areaSpreadC,      4);
-        memcpy(&rsConsts[26], &m_nrcSettings.learningRateScale, 4);
-        // Slot 27 is explicit padding — the shader's float3
-        // nrc_scene_center starts at slot 28 (next 16-byte-aligned
-        // cbuffer register). Writing the center at 27 would be
-        // silently dropped by HLSL's cbuffer packing rules and the
-        // shader would read a shifted, zero-valued scale_inv.
-        rsConsts[27] = 0u;
-        // 0.5 / halfExtent maps the scene AABB to exactly [0, 1]³ via
-        // x_norm = (x - center) * scale_inv + 0.5. HashGrid's lookup
-        // table is indexed in [0, 1] — anything outside that range
-        // wraps via the hash function and produces nonsensical features.
-        // (Old factor was 1.0 / halfExtent for [-0.5, 1.5] which the
-        // periodic TriangleWave tolerated; HashGrid does not.)
-        const float sceneScaleInv = 0.5f / m_nrcSettings.sceneExtent;
-        memcpy(&rsConsts[28], &m_nrcSettings.sceneCenter.x, 4);
-        memcpy(&rsConsts[29], &m_nrcSettings.sceneCenter.y, 4);
-        memcpy(&rsConsts[30], &m_nrcSettings.sceneCenter.z, 4);
-        memcpy(&rsConsts[31], &sceneScaleInv, 4);
+    memcpy(&rsConsts[22], &rs.rejNormalDot, 4);
+    memcpy(&rsConsts[23], &rs.rejDistance, 4);
+
+    {
+        const float nf = std::clamp(rs.spmisNormalFuzz, 0.0f, 1.0f);
+        const float sr0 = std::clamp(rs.spmisSearchR0, 1.0f, 512.0f);
+        const float sg = std::clamp(rs.spmisSearchGrow, 1.0f, 2.0f);
+        const float lightCellSize = std::exp2(float(rs.lightTreeCellExponent));
+        memcpy(&rsConsts[24], usePtKernel ? &lightCellSize : &nf, 4);
+        rsConsts[25] = (UINT)std::clamp(rs.spmisNormalBits, 1, 4);
+        if (usePtKernel)
+            memcpy(&rsConsts[25], &rs.lightTreeLodScale, 4);
+        memcpy(&rsConsts[26], &sr0, 4);
+        if (usePtKernel)
+            rsConsts[26] = static_cast<UINT>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count());
+        memcpy(&rsConsts[27], &sg, 4);
+
+        if (usePtKernel) {
+            const float lr = std::clamp(rs.lightTreeLearnRoughness, 0.0f, 0.8f);
+            memcpy(&rsConsts[27], &lr, 4);
+        }
+        rsConsts[28] = (UINT)std::clamp(rs.spmisSearchIters, 4, 32);
+    }
+
+    rsConsts[29] = (UINT)std::clamp(rs.maxDiffuseBounces, 1, std::clamp(rs.maxBounces, 2, 32));
+
+    rsConsts[30] = (UINT)std::clamp(rs.dlssDebugLayer, 0, 13);
+    {
+        using DirectX::PackedVector::XMConvertFloatToHalf;
+        const float dn = std::clamp(rs.dlssDebugDepthNear, 0.0f, 60000.0f);
+        const float df = std::clamp(rs.dlssDebugDepthFar, dn + 0.01f, 65000.0f);
+        rsConsts[31] = (UINT)XMConvertFloatToHalf(dn) | ((UINT)XMConvertFloatToHalf(df) << 16);
+    }
+
+    rsConsts[32] = (UINT)std::clamp(rs.spmisReuseN, 1, 32);
+    rsConsts[33] = (UINT)std::clamp(rs.spmisRisN, 1, 32);
+    rsConsts[34] = (UINT)std::clamp(rs.spmisMcap, 0, 100000);
+    rsConsts[35] = (UINT)std::clamp(rs.spmisTileSize, 1, 256);
+    {
+        const float jac = std::clamp(rs.spmisJacThreshold, 1.0f, 1000.0f);
+        const float ns = std::clamp(rs.spmisNormalSimCos, -1.0f, 1.0f);
+        memcpy(&rsConsts[36], &jac, 4);
+        memcpy(&rsConsts[37], &ns, 4);
+    }
+
+    rsConsts[38] = (UINT)std::clamp(rs.maxBounces, 2, 32);
+    rsConsts[39] = (UINT)std::clamp(rs.rrStartDepth, 1, 32);
+    rsConsts[40] = (UINT)std::clamp(rs.initialSamples, 1, 8);
+
+    {
+        const float pd = std::max(rs.spmisPlaneDist, 0.0f);
+        memcpy(&rsConsts[41], &pd, 4);
+    }
+
+    rsConsts[42] = rs.texturePointFilter ? 1u : 0u;
+
+    {
+        const float sharp = std::clamp(m_dlss.sharpness, 0.0f, 1.0f);
+        memcpy(&rsConsts[43], &sharp, 4);
     }
 
     auto setConsts = [&](UINT w, UINT h, UINT stackIn, UINT stackOut) {
-        rsConsts[0] = w; rsConsts[1] = h; rsConsts[2] = stackIn; rsConsts[3] = stackOut;
-        cmdList->SetComputeRoot32BitConstants(1, 32, rsConsts, 0);
+        rsConsts[0] = w;
+        rsConsts[1] = h;
+        rsConsts[2] = stackIn;
+        rsConsts[3] = stackOut;
+        cmdList->SetComputeRoot32BitConstants(1, SHARC_ROOT_CONSTANTS, rsConsts, 0);
+
+        cmdList->SetComputeRootUnorderedAccessView(2, m_spmisBuffer->GetGPUVirtualAddress());
+
+        cmdList->SetComputeRootUnorderedAccessView(3, m_raygenQueueBuffer->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(4, m_sharcBuffer->GetGPUVirtualAddress());
     };
 
+    m_sharcTimingMask = 0u;
+    bool ptTimerOpen = false;
+    bool cloudTimerOpen = false;
+    const auto& cloudSun = m_camera.sunSettings;
+    const auto& cloudSettings = m_camera.cumulusSettings;
+    const std::array<float, 5> ambientKey{cloudSun.turbidity, cloudSun.sunIntensity, cloudSun.skyIntensity,
+                                          cloudSettings.baseKm, cloudSettings.thicknessKm};
+    if (ambientKey != m_cumulusAmbientKey)
+        m_cumulusAmbientReady = false;
+    uint32_t activeFeatures = usePtKernel ? pass_feature::PathTracer : pass_feature::LegacyReSTIR;
+    if (useSharc)
+        activeFeatures |= pass_feature::Sharc;
+    if (useLightLearning)
+        activeFeatures |= pass_feature::LightLearning;
+    if (liteActive)
+        activeFeatures |= pass_feature::DiffuseReuse;
+    if (rs.liteSpatial)
+        activeFeatures |= pass_feature::SpatialReuse;
+    if (MeshLightsActive())
+        activeFeatures |= pass_feature::MeshLights;
+    if (cloudSettings.enabled >= 0.5f)
+        activeFeatures |= pass_feature::Clouds;
+    if (!m_cumulusNoiseReady)
+        activeFeatures |= pass_feature::CloudNoise;
+    if (!m_cumulusAmbientReady)
+        activeFeatures |= pass_feature::CloudAmbient;
+    if (m_camera.cumulusDensityCache && cloudSettings.windX == 0 && cloudSettings.windZ == 0 &&
+        cloudSettings.coverage > 0)
+        activeFeatures |= pass_feature::CloudDensity;
+    for (auto& pass : m_passes.Passes())
+        pass.executedLastFrame = false;
+    bool dlssEvaluatedThisFrame = false;
     for (size_t i = 0; i < m_passes.Passes().size(); ++i) {
         auto& p = m_passes.Passes()[i];
 
+        if (!p.IsEnabled(activeFeatures)) {
+            if (i + 1 < m_passes.Passes().size() && m_passes.Passes()[i + 1].stage == Stage::Barrier)
+                ++i;
+            continue;
+        }
+        p.executedLastFrame = true;
+        int cacheTimer = -1;
+
+        bool timerBegin = true, timerEnd = true;
+        if (p.file == L"Pass_sharc_prepare_v8.hlsl")
+            cacheTimer = 0;
+        else if (p.file == L"Pass_sharc_update_v8.hlsl")
+            cacheTimer = 1;
+        else if (p.file == L"Pass_sharc_resolve_v8.hlsl")
+            cacheTimer = 2;
+        else if (p.file == L"Pass_light_learning_v8.hlsl")
+            cacheTimer = 9;
+        else if (p.file == L"Pass_pt_nee_v8.hlsl") {
+            cacheTimer = 3;
+            timerEnd = false;
+            ptTimerOpen = true;
+        } else if (p.file == L"Pass_pt_v8.hlsl") {
+            cacheTimer = 3;
+            timerBegin = !ptTimerOpen;
+        } else if (p.file == L"Pass_lite_shift_v8.hlsl")
+            cacheTimer = 4;
+        else if (p.file == L"Pass_lite_merge_v8.hlsl")
+            cacheTimer = 5;
+        else if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl" ||
+                 p.file == L"Pass_cumulus_ambient_v8.hlsl" || p.file == L"Pass_cumulus_light_v8.hlsl") {
+            cacheTimer = 6;
+            timerBegin = !cloudTimerOpen;
+            timerEnd = false;
+            cloudTimerOpen = true;
+        } else if (p.file == L"Pass_cumulus_environment_v8.hlsl") {
+            cacheTimer = 6;
+            timerBegin = !cloudTimerOpen;
+        } else if (p.file == L"Pass_cumulus_secondary_v8.hlsl") {
+            cacheTimer = 8;
+        } else if (p.file == L"Pass_atmosphere_primary_v8.hlsl") {
+            cacheTimer = 7;
+            timerEnd = cloudSettings.enabled < 0.5f;
+        } else if (p.file == L"Pass_cumulus_guides_v8.hlsl") {
+            cacheTimer = 7;
+            timerBegin = false;
+        }
+        if (cacheTimer >= 0 && timerBegin)
+            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
+
         switch (p.stage) {
         case Stage::LoopStart:
-            loopStack.push_back({ -1, p.loopCount });
+
+            loopStack.push_back({(int)p.loopCount, p.loopCount});
             break;
 
         case Stage::PingSwap:
@@ -1434,74 +1839,181 @@ void Renderer::PopulateCommandList() {
         case Stage::LoopEnd:
             if (!loopStack.empty()) {
                 loopStack.back().second--;
-                if (loopStack.back().second > 0) i = p.targetIdx;
-                else loopStack.pop_back();
+                if (loopStack.back().second > 0)
+                    i = p.targetIdx;
+                else
+                    loopStack.pop_back();
             }
             break;
 
-        case Stage::Barrier:
-            { auto u = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-              cmdList->ResourceBarrier(1, &u); }
-            break;
+        case Stage::Barrier: {
+            auto u = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+            cmdList->ResourceBarrier(1, &u);
+        } break;
 
         case Stage::ClearSort:
             ClearSortBuffers(cmdList);
             break;
 
-        case Stage::RayGen:
-        {
+        case Stage::RayGen: {
             cmdList->SetPipelineState1(m_rtStateObject.Get());
             cmdList->SetComputeRootSignature(m_rayGenSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, 0, 0);
 
+            if (p.file == L"Pass_raygen_v8.hlsl") {
+                {
+                    auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                                                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                                  D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    cmdList->ResourceBarrier(1, &b);
+                }
+                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), 0, m_raysArgsTemplate.Get(), 0,
+                                          sizeof(D3D12_DISPATCH_RAYS_DESC));
+                cmdList->CopyBufferRegion(m_raysIndirectArgs.Get(), offsetof(D3D12_DISPATCH_RAYS_DESC, Width),
+                                          m_raygenQueueBuffer.Get(), 0, sizeof(uint32_t));
+                {
+                    CD3DX12_RESOURCE_BARRIER post[] = {
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_raygenQueueBuffer.Get(),
+                                                             D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                        CD3DX12_RESOURCE_BARRIER::Transition(m_raysIndirectArgs.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
+                    cmdList->ResourceBarrier(2, post);
+                }
+                cmdList->ExecuteIndirect(m_raysCommandSignature.Get(), 1, m_raysIndirectArgs.Get(), 0, nullptr, 0);
+                break;
+            }
+
             uint32_t rgSlot = m_passes.PassIndexByFile(p.file);
+
+            if (sharcDebugMode == 0u) {
+                const wchar_t* fastName = p.file == L"Pass_pt_v8.hlsl"             ? L"Pass_pt_v8_fast"
+                                          : p.file == L"Pass_sharc_update_v8.hlsl" ? L"Pass_sharc_update_v8_fast"
+                                                                                   : nullptr;
+                if (fastName) {
+                    const uint32_t fastSlot = m_passes.PassIndexByFile(fastName);
+                    if (fastSlot != UINT32_MAX)
+                        rgSlot = fastSlot;
+                }
+            }
             raysDesc.RayGenerationShaderRecord.StartAddress = sbtStart + rgSlot * rgSize;
-            raysDesc.RayGenerationShaderRecord.SizeInBytes  = rgSize;
+            raysDesc.RayGenerationShaderRecord.SizeInBytes = rgSize;
+
+            UINT shiftDepth = 1;
+            if (p.dispatchTag == L"temporal_shift")
+                shiftDepth = 2;
+            else if (p.dispatchTag == L"spatial_shift")
+                shiftDepth = std::clamp((UINT)rs.spmisReuseN, 1u, kSpmisSplitMaxDraws) + 1;
+            raysDesc.Depth = shiftDepth;
+            if (p.file == L"Pass_sharc_update_v8.hlsl") {
+                raysDesc.Width = (dispW + rsConsts[47] - 1u) / rsConsts[47];
+                raysDesc.Height = (dispH + rsConsts[47] - 1u) / rsConsts[47];
+            } else {
+                raysDesc.Width = dispW;
+                raysDesc.Height = dispH;
+            }
             cmdList->DispatchRays(&raysDesc);
             break;
         }
 
-        case Stage::Compute:
-        {
+        case Stage::Compute: {
             if (p.isWorkGraph) {
                 const auto& rt = m_wgRuntime[p.wgIdx];
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
                 setConsts(dispW, dispH, currentStack, nextStack);
-                D3D12_SET_PROGRAM_DESC sp{}; sp.Type = D3D12_PROGRAM_TYPE_WORK_GRAPH;
-                sp.WorkGraph.ProgramIdentifier = rt.id; sp.WorkGraph.BackingMemory = rt.backing;
+                D3D12_SET_PROGRAM_DESC sp{};
+                sp.Type = D3D12_PROGRAM_TYPE_WORK_GRAPH;
+                sp.WorkGraph.ProgramIdentifier = rt.id;
+                sp.WorkGraph.BackingMemory = rt.backing;
                 static std::vector<bool> s_inited;
-                if (s_inited.size() <= p.wgIdx) s_inited.resize(p.wgIdx + 1, false);
-                sp.WorkGraph.Flags = s_inited[p.wgIdx] ? D3D12_SET_WORK_GRAPH_FLAG_NONE : D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
-                cmdList->SetProgram(&sp); s_inited[p.wgIdx] = true;
-                D3D12_DISPATCH_GRAPH_DESC dg{}; dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
-                dg.NodeCPUInput.EntrypointIndex = 0; dg.NodeCPUInput.NumRecords = 1;
+                if (s_inited.size() <= p.wgIdx)
+                    s_inited.resize(p.wgIdx + 1, false);
+                sp.WorkGraph.Flags =
+                    s_inited[p.wgIdx] ? D3D12_SET_WORK_GRAPH_FLAG_NONE : D3D12_SET_WORK_GRAPH_FLAG_INITIALIZE;
+                cmdList->SetProgram(&sp);
+                s_inited[p.wgIdx] = true;
+                D3D12_DISPATCH_GRAPH_DESC dg{};
+                dg.Mode = D3D12_DISPATCH_MODE_NODE_CPU_INPUT;
+                dg.NodeCPUInput.EntrypointIndex = 0;
+                dg.NodeCPUInput.NumRecords = 1;
                 cmdList->DispatchGraph(&dg);
             } else {
                 cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
                 cmdList->SetComputeRootSignature(m_computeSignature.Get());
                 cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
                 setConsts(dispW, dispH, currentStack, nextStack);
-                cmdList->Dispatch(
-                    (dispW + p.groupX - 1) / p.groupX,
-                    (dispH + p.groupY - 1) / p.groupY, 1);
+                cmdList->Dispatch((dispW + p.groupX - 1) / p.groupX, (dispH + p.groupY - 1) / p.groupY, 1);
             }
             break;
         }
 
-        case Stage::FixedCompute:
-        {
+        case Stage::FixedCompute: {
+            ID3D12Resource* cloudTarget = nullptr;
+            if (p.file == L"Pass_cumulus_noise_v8.hlsl")
+                cloudTarget = m_cumulusNoise.Get();
+            if (p.file == L"Pass_cumulus_density_v8.hlsl")
+                cloudTarget = m_cumulusDensity.Get();
+            auto transitionNoiseChannels = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+                if (p.file == L"Pass_cumulus_noise_v8.hlsl") {
+                    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusNoiseBA.Get(), before, after);
+                    cmdList->ResourceBarrier(1, &barrier);
+                }
+                if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl") {
+                    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_cumulusDensityTags.Get(), before, after);
+                    cmdList->ResourceBarrier(1, &barrier);
+                }
+            };
+            transitionNoiseChannels(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            if (p.file == L"Pass_cumulus_light_v8.hlsl")
+                cloudTarget = m_cumulusLight.Get();
+            if (p.file == L"Pass_cumulus_ambient_v8.hlsl")
+                cloudTarget = m_cumulusAmbient.Get();
+            if (p.file == L"Pass_cumulus_environment_v8.hlsl")
+                cloudTarget = m_cumulusEnvironment.Get();
+            if (cloudTarget) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(
+                    cloudTarget, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &b);
+            }
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
             cmdList->SetComputeRootSignature(m_computeSignature.Get());
             cmdList->SetComputeRootDescriptorTable(0, m_srvUavHeap->GetGPUDescriptorHandleForHeapStart());
             setConsts(dispW, dispH, currentStack, nextStack);
-            cmdList->Dispatch(p.groupX, p.groupY, 1);
+            const UINT groups = p.file == L"Pass_sharc_resolve_v8.hlsl"    ? SHARC_RESOLVE_GROUPS
+                                : p.file == L"Pass_light_learning_v8.hlsl" ? LT_LEARNING_GROUPS
+                                : p.file == L"Pass_sharc_prepare_v8.hlsl"  ? SHARC_CAPACITY / SHARC_GROUP_SIZE
+                                : p.file == L"Pass_pt_skybake_v8.hlsl" && m_camera.cumulusSettings.enabled > .5f
+                                    ? 1u
+                                    : p.groupX;
+            cmdList->Dispatch(groups, p.groupY, 1);
+            if (p.file == L"Pass_light_learning_v8.hlsl" && (rsConsts[45] & LT_RESET_BIT) == 0u) {
+                auto learningBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_sharcBuffer.Get());
+                cmdList->ResourceBarrier(1, &learningBarrier);
+                cmdList->SetComputeRoot32BitConstant(1, rsConsts[45] | LT_INITIALIZE_BIT, 45);
+                cmdList->Dispatch(groups, p.groupY, 1);
+                cmdList->SetComputeRoot32BitConstant(1, rsConsts[45], 45);
+            }
+            transitionNoiseChannels(D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            if (cloudTarget) {
+                auto b = CD3DX12_RESOURCE_BARRIER::Transition(cloudTarget, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                cmdList->ResourceBarrier(1, &b);
+                if (cloudTarget == m_cumulusNoise.Get())
+                    m_cumulusNoiseReady = true;
+                if (cloudTarget == m_cumulusAmbient.Get()) {
+                    m_cumulusAmbientReady = true;
+                    m_cumulusAmbientKey = ambientKey;
+                }
+            }
             break;
         }
 
-        case Stage::Wavefront:
-        {
+        case Stage::Wavefront: {
+            // Derive dispatch size from GPU queue counts without CPU readback.
             bool inPlace = (currentStack == nextStack);
             cmdList->SetPipelineState(inPlace ? m_psoSetupIndirectNoClear.Get() : m_psoSetupIndirect.Get());
             cmdList->SetComputeRootSignature(m_rsSetupIndirect.Get());
@@ -1509,14 +2021,14 @@ void Renderer::PopulateCommandList() {
             auto gpuH = m_srvUavHeap->GetGPUDescriptorHandleForHeapStart();
             gpuH.ptr += 33 * inc;
             cmdList->SetComputeRootDescriptorTable(0, gpuH);
-            UINT setupC[4] = { currentStack, 0, nextStack, p.groupX };
+            UINT setupC[4] = {currentStack, 0, nextStack, p.groupX};
             cmdList->SetComputeRoot32BitConstants(1, 4, setupC, 0);
             cmdList->Dispatch(1, 1, 1);
 
             CD3DX12_RESOURCE_BARRIER pre[] = {
                 CD3DX12_RESOURCE_BARRIER::UAV(m_indirectArgsBuffer.Get()),
-                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(),
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) };
+                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                     D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
             cmdList->ResourceBarrier(2, pre);
 
             cmdList->SetPipelineState(m_csPSOs[p.psoIdx].Get());
@@ -1526,45 +2038,100 @@ void Renderer::PopulateCommandList() {
             cmdList->ExecuteIndirect(m_commandSignature.Get(), 1, m_indirectArgsBuffer.Get(), 0, nullptr, 0);
 
             CD3DX12_RESOURCE_BARRIER post[] = {
-                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(),
-                    D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+                CD3DX12_RESOURCE_BARRIER::Transition(m_indirectArgsBuffer.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT,
+                                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
                 CD3DX12_RESOURCE_BARRIER::UAV(m_stackBuffers[nextStack].Get()),
-                CD3DX12_RESOURCE_BARRIER::UAV(m_globalCounterBuffer.Get()) };
+                CD3DX12_RESOURCE_BARRIER::UAV(m_globalCounterBuffer.Get())};
             cmdList->ResourceBarrier(3, post);
             break;
         }
 
-        case Stage::DLSS:
-        {
-            // UAV barriers on all DLSS inputs
-            ID3D12Resource* uavs[] = {
-                m_dlss.Depth(), m_dlss.MVec(), m_dlss.Normals(),
-                m_dlss.DiffuseAlbedo(), m_dlss.SpecularAlbedo(),
-                m_dlss.Roughness(), m_dlss.SpecMVec(), m_dlss.SpecHitDist(),
-                m_dlss.Transparency(), m_dlss.ColorBeforeTrans(), m_dlss.Input()
-            };
-            for (auto* r : uavs) {
-                if (r) { auto b = CD3DX12_RESOURCE_BARRIER::UAV(r);
-                         cmdList->ResourceBarrier(1, &b); }
+        case Stage::DLSS: {
+            if (!m_sentinelReadback[0]) {
+                for (int i = 0; i < 3; ++i) {
+                    auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+                    auto bd = CD3DX12_RESOURCE_DESC::Buffer(32);
+                    ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &bd,
+                                                                          D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                          IID_PPV_ARGS(&m_sentinelReadback[i])));
+                    m_sentinelReadback[i]->SetName(L"DlssSentinelReadback");
+                    void* p = nullptr;
+                    ThrowIfFailed(m_sentinelReadback[i]->Map(0, nullptr, &p));
+                    m_sentinelMapped[i] = static_cast<const uint32_t*>(p);
+                }
             }
+            // Read two frames behind to avoid stalling for diagnostics.
+            if (m_sentinelFrame >= 2) {
+                const uint32_t* s = m_sentinelMapped[(m_sentinelFrame + 1) % 3];
+                auto bitsToF = [](uint32_t u) {
+                    float x;
+                    std::memcpy(&x, &u, 4);
+                    return x;
+                };
+                auto& gs = m_dlss.sentinel;
+                gs.mask = s[0];
+                gs.maxLuma = bitsToF(s[1]);
+                gs.maxMV = bitsToF(s[2]);
+                gs.maxSpecMV = bitsToF(s[3]);
+                gs.capCount = s[4];
+                gs.badCount = s[5];
+                gs.firstBad = s[6];
+                gs.frame = m_sentinelFrame - 2;
+                if (gs.mask != 0) {
+                    gs.lastMask = gs.mask;
+                    gs.lastBad = gs.firstBad;
+                    gs.lastFrame = gs.frame;
+                    const uint32_t bx = gs.firstBad & 0xFFFFu, by = gs.firstBad >> 16;
+                    std::wcout << L"[DLSS-SENTINEL] frame " << gs.frame << L" mask 0x" << std::hex << gs.mask
+                               << std::dec << L" badPixels " << gs.badCount << L" first (" << (bx ? bx - 1 : 0) << L","
+                               << (by ? by - 1 : 0) << L")" << L" maxMV " << gs.maxMV << L" maxLuma " << gs.maxLuma
+                               << std::endl;
+                }
+            }
+            {
+                auto toCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+                    m_autoExposeBuffer.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                cmdList->ResourceBarrier(1, &toCopy);
+                cmdList->CopyBufferRegion(m_sentinelReadback[m_sentinelFrame % 3].Get(), 0, m_autoExposeBuffer.Get(),
+                                          32, 32);
+                auto backToUav = CD3DX12_RESOURCE_BARRIER::Transition(
+                    m_autoExposeBuffer.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                cmdList->ResourceBarrier(1, &backToUav);
+            }
+            ++m_sentinelFrame;
 
-            m_dlss.Evaluate(cmdList, m_ctx.Device(),
-                *m_ctx.frameToken, m_ctx.viewportHandle,
-                m_aspectRatio,
-                m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(),
-                m_camera.JitterX(), m_camera.JitterY(), m_camera.JitterFrame(),
-                m_camera.fovDegrees, m_camera.nearPlane, m_camera.farPlane);
+            ID3D12Resource* uavs[] = {m_dlss.Depth(),          m_dlss.MVec(),
+                                      m_dlss.Normals(),        m_dlss.DiffuseAlbedo(),
+                                      m_dlss.SpecularAlbedo(), m_dlss.Roughness(),
+                                      m_dlss.SpecMVec(),       m_dlss.SpecHitDist(),
+                                      m_dlss.Transparency(),   m_dlss.ColorBeforeTrans(),
+                                      m_dlss.Input()};
+            D3D12_RESOURCE_BARRIER guideBarriers[std::size(uavs)];
+            UINT guideBarrierCount = 0;
+            for (auto* resource : uavs)
+                if (resource)
+                    guideBarriers[guideBarrierCount++] = CD3DX12_RESOURCE_BARRIER::UAV(resource);
+            if (guideBarrierCount)
+                cmdList->ResourceBarrier(guideBarrierCount, guideBarriers);
 
-            // DLSS Frame Generation: set options every frame
+            m_dlss.Evaluate(cmdList, m_ctx.Device(), *m_ctx.frameToken, m_ctx.viewportHandle, m_aspectRatio,
+                            m_camera.ViewMatrix(), m_camera.PrevView(), m_camera.PrevProj(), m_camera.JitterX(),
+                            m_camera.JitterY(), m_camera.JitterFrame(), m_camera.fovDegrees, m_camera.nearPlane,
+                            m_camera.farPlane);
+            dlssEvaluatedThisFrame = m_dlss.LastEvaluationSucceeded();
+            p.executedLastFrame = dlssEvaluatedThisFrame;
+            if (!dlssEvaluatedThisFrame || m_dlss.LastEvaluationReset())
+                m_dlssNR.ForceReset();
+
             if (m_dlssG.available && m_dlssG.enabled) {
                 sl::DLSSGOptions gOpts{};
-                gOpts.mode                = sl::DLSSGMode::eOn;
+                gOpts.mode = sl::DLSSGMode::eOn;
                 gOpts.numFramesToGenerate = m_dlssG.framesToGenerate;
-                gOpts.numBackBuffers      = m_ctx.BufferCount();
-                gOpts.mvecDepthWidth      = m_dlss.RenderWidth();
-                gOpts.mvecDepthHeight     = m_dlss.RenderHeight();
-                gOpts.colorWidth          = GetWidth();
-                gOpts.colorHeight         = GetHeight();
+                gOpts.numBackBuffers = m_ctx.BufferCount();
+                gOpts.mvecDepthWidth = m_dlss.RenderWidth();
+                gOpts.mvecDepthHeight = m_dlss.RenderHeight();
+                gOpts.colorWidth = GetWidth();
+                gOpts.colorHeight = GetHeight();
                 SL_CHECK(slDLSSGSetOptions(m_ctx.viewportHandle, gOpts));
             } else if (m_dlssG.available && !m_dlssG.enabled) {
                 sl::DLSSGOptions gOpts{};
@@ -1572,116 +2139,162 @@ void Renderer::PopulateCommandList() {
                 slDLSSGSetOptions(m_ctx.viewportHandle, gOpts);
             }
 
-            // Now safe to advance prev matrices for next frame
             m_camera.AdvanceFrame();
 
             // After DLSS: post-process passes run at display resolution
             dispW = GetWidth();
             dispH = GetHeight();
 
-            // Rebind our heap (DLSS may have changed it)
-            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
-            cmdList->SetDescriptorHeaps(1, h);
+            ID3D12DescriptorHeap* h[] = {m_srvUavHeap.Get(), m_samplerHeap.Get()};
+            cmdList->SetDescriptorHeaps(2, h);
             break;
         }
 
-        case Stage::CudaOp:
-        {
-            if (!m_cudaInterop.IsReady() || !m_cudaFence.fence) break;
-            auto it = m_cudaOps.find(p.file);
-            if (it == m_cudaOps.end()) break;
-
-            // D3D12 -> CUDA: flush current list and signal fence at value N.
-            const UINT64 preVal  = ++m_cudaFenceValue;
-            m_ctx.CloseExecuteAndSignal(m_cudaFence.fence.Get(), preVal);
-            m_cudaInterop.CudaWait(m_cudaFence, preVal);
-
-            // CUDA work (tcnn kernels) enqueued on the interop stream.
-            it->second();
-
-            // CUDA -> D3D12: signal N+1 from CUDA, queue-wait, reopen list.
-            const UINT64 postVal = ++m_cudaFenceValue;
-            m_cudaInterop.CudaSignal(m_cudaFence, postVal);
-            m_ctx.WaitAndReopen(m_cudaFence.fence.Get(), postVal);
-
-            // cmdList was Reset — rebind the descriptor heap for subsequent passes.
-            ID3D12DescriptorHeap* h[] = { m_srvUavHeap.Get() };
-            cmdList->SetDescriptorHeaps(1, h);
+        default:
             break;
         }
+        if (cacheTimer >= 0 && timerEnd) {
+            UINT query = (UINT)cacheTimer * 2u;
+            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1u);
+            cmdList->ResolveQueryData(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2u,
+                                      m_sharcTimingReadback.Get(), query * sizeof(UINT64));
+            m_sharcTimingMask |= 1u << (UINT)cacheTimer;
+        }
+    }
 
-        default: break;
-        } // switch
-    } // for passes
+    {
+        auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                                          D3D12_RESOURCE_STATE_COPY_SOURCE);
+        cmdList->ResourceBarrier(1, &toSrc);
+    }
 
-    // ── Copy output → back buffer ────────────────────────────────
-    { auto toSrc = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(),
-          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-      cmdList->ResourceBarrier(1, &toSrc); }
+    const bool inspectBuffers =
+        sharcDebugMode != 0u || rs.dlssDebugLayer != 0 || (useLightLearning && rs.lightTreeDebug);
+    UINT layer = inspectBuffers ? 3u : m_displayLevels[m_currentDisplayLevel];
+    UINT sub = D3D12CalcSubresource(0, layer, 0, 1, 4);
 
-    { auto toDst = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
-          D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST);
-      cmdList->ResourceBarrier(1, &toDst); }
+    ID3D12Resource* presentSrc = m_outputResource.Get();
+    UINT presentSub = sub;
+    const bool nrSceneView = dlssEvaluatedThisFrame && sharcDebugMode == 0u && layer == 1u;
+    if (!nrSceneView)
+        m_dlssNR.ForceReset();
+    if (nrSceneView && m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub, m_dlss.Depth(),
+                                         m_dlss.MVec(), m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
+        presentSrc = m_dlssNR.Output();
+        presentSub = 0;
+    }
 
-    UINT layer = m_displayLevels[m_currentDisplayLevel];
-    UINT sub   = D3D12CalcSubresource(0, layer, 0, 1, 4);
-    CD3DX12_TEXTURE_COPY_LOCATION src(m_outputResource.Get(), sub);
+    {
+        ID3D12DescriptorHeap* h[] = {m_srvUavHeap.Get(), m_samplerHeap.Get()};
+        cmdList->SetDescriptorHeaps(2, h);
+    }
+
+    if (m_dlssG.enabled) {
+        bool fresh = !m_dlssHudlessColor || m_dlssHudlessColor->GetDesc().Width != GetWidth() ||
+                     m_dlssHudlessColor->GetDesc().Height != GetHeight();
+        if (fresh) {
+            // Previous-frame fence completed before this command list began.
+            m_dlssHudlessColor.Reset();
+            auto desc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, GetWidth(), GetHeight(), 1, 1);
+            auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+            ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                                  D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                                  IID_PPV_ARGS(&m_dlssHudlessColor)));
+            m_dlssHudlessColor->SetName(L"DLSSG_HUDLessColor");
+        } else {
+            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dlssHudlessColor.Get(),
+                                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                                D3D12_RESOURCE_STATE_COPY_DEST);
+            cmdList->ResourceBarrier(1, &barrier);
+        }
+        CD3DX12_TEXTURE_COPY_LOCATION hudSrc(presentSrc, presentSub), hudDst(m_dlssHudlessColor.Get(), 0);
+        cmdList->CopyTextureRegion(&hudDst, 0, 0, 0, &hudSrc, nullptr);
+        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(m_dlssHudlessColor.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        cmdList->ResourceBarrier(1, &barrier);
+    }
+
+    {
+        auto toDst = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                                          D3D12_RESOURCE_STATE_COPY_DEST);
+        cmdList->ResourceBarrier(1, &toDst);
+    }
+
+    CD3DX12_TEXTURE_COPY_LOCATION src(presentSrc, presentSub);
     CD3DX12_TEXTURE_COPY_LOCATION dst(m_ctx.BackBuffer(), 0);
-    D3D12_BOX box = { 0, 0, 0, GetWidth(), GetHeight(), 1 };
+    D3D12_BOX box = {0, 0, 0, GetWidth(), GetHeight(), 1};
     cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
 
-    // Editor overlay — render ImGui on top of the composited frame
     if (m_editor.IsVisible()) {
         // Back buffer is in COPY_DEST after the texture copy — transition to RT
-        auto toRT = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        auto toRT = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                         D3D12_RESOURCE_STATE_RENDER_TARGET);
         cmdList->ResourceBarrier(1, &toRT);
 
-        // ImGui needs the render target bound and the SRV heap active
         auto rtv = m_ctx.CurrentRTV();
         cmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-        ID3D12DescriptorHeap* heaps[] = { m_srvUavHeap.Get() };
+        ID3D12DescriptorHeap* heaps[] = {m_srvUavHeap.Get()};
         cmdList->SetDescriptorHeaps(1, heaps);
 
         m_editor.Render(cmdList);
 
-        // Present barrier (from RENDER_TARGET)
-        auto toPres = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
-            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        auto toPres = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                                           D3D12_RESOURCE_STATE_PRESENT);
         cmdList->ResourceBarrier(1, &toPres);
     } else {
-        // No editor — go straight from COPY_DEST to PRESENT
-        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(),
-            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PRESENT);
+        auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                      D3D12_RESOURCE_STATE_PRESENT);
         cmdList->ResourceBarrier(1, &b);
     }
 
     // ── DLSS-G: tag resources after back buffer has final content ──
     if (m_dlssG.enabled) {
-        constexpr D3D12_RESOURCE_STATES stateUAV     = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-        constexpr D3D12_RESOURCE_STATES statePresent  = D3D12_RESOURCE_STATE_PRESENT;
-        sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(),       (uint32_t)stateUAV);
-        sl::Resource slFgMVec (sl::ResourceType::eTex2d, m_dlss.MVec(),        (uint32_t)stateUAV);
-        // HUDLessColor = back buffer (final tonemapped frame, not pre-postprocess DLSS output)
-        // so optical flow runs on the clean displayed image, not raw HDR/noisy data
-        sl::Resource slFgHud  (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
-        sl::Resource slFgBB   (sl::ResourceType::eTex2d, m_ctx.BackBuffer(),   (uint32_t)statePresent);
+        constexpr D3D12_RESOURCE_STATES stateUAV = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        constexpr D3D12_RESOURCE_STATES statePresent = D3D12_RESOURCE_STATE_PRESENT;
+        sl::Resource slFgDepth(sl::ResourceType::eTex2d, m_dlss.Depth(), (uint32_t)stateUAV);
+        sl::Resource slFgMVec(sl::ResourceType::eTex2d, m_dlss.MVec(), (uint32_t)stateUAV);
+        // Contains the displayed scene (including NR), captured before ImGui.
+        sl::Resource slFgHud(sl::ResourceType::eTex2d, m_dlssHudlessColor.Get(),
+                             (uint32_t)D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        sl::Resource slFgBB(sl::ResourceType::eTex2d, m_ctx.BackBuffer(), (uint32_t)statePresent);
 
-        sl::Extent renderExt { 0, 0, m_dlss.RenderWidth(),  m_dlss.RenderHeight()  };
-        sl::Extent displayExt{ 0, 0, m_dlss.DisplayWidth(), m_dlss.DisplayHeight() };
+        sl::Extent renderExt{0, 0, m_dlss.RenderWidth(), m_dlss.RenderHeight()};
+        sl::Extent displayExt{0, 0, m_dlss.DisplayWidth(), m_dlss.DisplayHeight()};
         auto fgLife = sl::ResourceLifecycle::eValidUntilPresent;
 
         sl::ResourceTag fgTags[] = {
-            { &slFgDepth, sl::kBufferTypeDepth,            fgLife, &renderExt  },
-            { &slFgMVec,  sl::kBufferTypeMotionVectors,    fgLife, &renderExt  },
-            { &slFgHud,   sl::kBufferTypeHUDLessColor,     fgLife, &displayExt },
-            { &slFgBB,    sl::kBufferTypeBackbuffer,        fgLife, &displayExt },
-            { nullptr,    sl::kBufferTypeUIColorAndAlpha,   fgLife, &displayExt },
+            {&slFgDepth, sl::kBufferTypeDepth, fgLife, &renderExt},
+            {&slFgMVec, sl::kBufferTypeMotionVectors, fgLife, &renderExt},
+            {&slFgHud, sl::kBufferTypeHUDLessColor, fgLife, &displayExt},
+            {&slFgBB, sl::kBufferTypeBackbuffer, fgLife, &displayExt},
+            {nullptr, sl::kBufferTypeUIColorAndAlpha, fgLife, &displayExt},
         };
-        // nullptr for cmdBuffer: docs say OK when all tags are eValidUntilPresent
-        SL_CHECK(slSetTagForFrame(*m_ctx.frameToken, m_ctx.viewportHandle,
-            fgTags, _countof(fgTags), nullptr));
+
+        SL_CHECK(slSetTagForFrame(*m_ctx.frameToken, m_ctx.viewportHandle, fgTags, _countof(fgTags), nullptr));
     }
 }
 
-// Old input handlers removed — EngineApp handles input now.
+void Renderer::BuildLiteReuseTables(float sigma) {
+    const int sizes[3] = {(int)LITE_REUSE_SIZE0, (int)LITE_REUSE_SIZE1, (int)LITE_REUSE_SIZE2};
+    std::vector<uint32_t> words;
+    words.reserve(LITE_REUSE_TEXELS);
+    for (int t = 0; t < 3; ++t) {
+        std::vector<int16_t> rg;
+        GenerateReuseTexture(sizes[t], std::clamp(sigma, 1.0f, 64.0f), (uint32_t)(t + 1), rg);
+        int bad = -1;
+        if (!ValidateReuseTexture(sizes[t], rg, &bad)) {
+            LOG(L"[ReSTIR lite] reuse table " << sizes[t] << L" failed self-inversion at texel " << bad);
+            return;
+        }
+        for (size_t i = 0; i < rg.size(); i += 2)
+            words.push_back((uint32_t)(uint16_t)rg[i] | ((uint32_t)(uint16_t)rg[i + 1] << 16));
+    }
+
+    if (m_liteReuseUpload)
+        m_liteReuseRetired.push_back(m_liteReuseUpload);
+    if (m_liteReuseRetired.size() > 8)
+        m_liteReuseRetired.erase(m_liteReuseRetired.begin());
+    ResourceFactory rf(m_ctx.Device());
+    m_liteReuseUpload = rf.CreateUploadBufferWithData(words.data(), (UINT)(words.size() * sizeof(uint32_t)));
+    m_liteReusePending = true;
+}

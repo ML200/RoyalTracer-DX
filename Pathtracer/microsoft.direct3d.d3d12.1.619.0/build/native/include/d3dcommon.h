@@ -440,7 +440,7 @@ EXTERN_C const IID IID_ID3D10Blob;
         HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
             ID3D10Blob * This,
             /* [in] */ REFIID riid,
-            /* [annotation][iid_is][out] */ 
+            /* [annotation][iid_is][terrain] */
             _COM_Outptr_  void **ppvObject);
         
         DECLSPEC_XFGVIRT(IUnknown, AddRef)
@@ -555,7 +555,7 @@ EXTERN_C const IID IID_ID3DDestructionNotifier;
         HRESULT ( STDMETHODCALLTYPE *QueryInterface )( 
             ID3DDestructionNotifier * This,
             /* [in] */ REFIID riid,
-            /* [annotation][iid_is][out] */ 
+            /* [annotation][iid_is][terrain] */
             _COM_Outptr_  void **ppvObject);
         
         DECLSPEC_XFGVIRT(IUnknown, AddRef)

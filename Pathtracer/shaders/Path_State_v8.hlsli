@@ -1,25 +1,4 @@
-//====================================
-//PER-PIXEL PATH VERTEX STATE SCRATCH
-//====================================
-//wavefront, Pass_primary -> (Extend -> Classify -> MatEvalShade)* -> Pass_finalize
-//SoA, all cross-stage per-pixel state here, overwritten by spat_gi_select later
-//
-//plane 0  PACK1   16B  x2 + n2_pk                 depth-1 vertex
-//plane 1  PACK2   16B  uv + matID + objID + eta   depth-1 vertex
-//plane 2  V2       4B  v2_pk                      depth-2 direction
-//plane 3  HOT1    16B  throughput + prevNormal + prev_pdf + pdf_product
-//plane 4  HOT2    16B  tpost + wsum + flags + pad
-//plane 5  SEED     4B
-//plane 6  RAY_O   12B  rayOrigin
-//plane 7  RAY_D   12B  rayDir
-//plane 8  HP      16B  hitT + instID + primID + baryPk
-//plane 9  CLAS1   16B  hitNormal + matID + etaOut + uv
-//plane 10 CLAS2    4B  absTintPk
-//plane 11 CAND_WI 12B
-//plane 12 CAND_M  16B  L + lightPdf + meta + lightObjID
-//plane 13 CAND_LP 12B
-//plane 14 CAND_LN  4B
-//total 176B/pixel, tile-aligned via ps_numPx
+// Byte offsets are shared with the host path-state buffer.
 static const uint PS_SZ_PACK1    = 16u;
 static const uint PS_SZ_PACK2    = 16u;
 static const uint PS_SZ_V2       =  4u;
@@ -41,19 +20,18 @@ static const uint PS_PLANE_PACK2    =  16u;
 static const uint PS_PLANE_V2       =  32u;
 static const uint PS_PLANE_HOT1     =  36u;
 static const uint PS_PLANE_HOT2     =  52u;
-static const uint PS_PLANE_SEED     =  68u;
-static const uint PS_PLANE_RAY_O    =  72u;
-static const uint PS_PLANE_RAY_D    =  84u;
-static const uint PS_PLANE_HP       =  96u;
-static const uint PS_PLANE_CLAS1    = 112u;
-static const uint PS_PLANE_CLAS2    = 128u;
+static const uint PS_PLANE_CLAS2    =  68u;
+static const uint PS_PLANE_SEED     =  72u;
+static const uint PS_PLANE_RAY_O    =  76u;
+static const uint PS_PLANE_RAY_D    =  88u;
+static const uint PS_PLANE_HP       = 100u;
+static const uint PS_PLANE_CLAS1    = 116u;
 static const uint PS_PLANE_CAND_WI  = 132u;
 static const uint PS_PLANE_CAND_M   = 144u;
 static const uint PS_PLANE_CAND_LP  = 160u;
 static const uint PS_PLANE_CAND_LN  = 172u;
 
-//tile-aligned pixel count, matches MapPixelID 4x8 swizzle
-uint ps_numPx() { return ((IMG_W + 3u) / 4u) * ((IMG_H + 7u) / 8u) * 32u; }
+uint ps_numPx() { return ((IMG_W + 7u) / 8u) * ((IMG_H + 3u) / 4u) * 32u; }
 
 uint ps_addr_pack1   (uint px) { return px * PS_SZ_PACK1; }
 uint ps_addr_pack2   (uint px) { uint N = ps_numPx(); return N * PS_PLANE_PACK2    + px * PS_SZ_PACK2; }
@@ -71,19 +49,99 @@ uint ps_addr_cand_m  (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_M
 uint ps_addr_cand_lp (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_LP  + px * PS_SZ_CAND_LP; }
 uint ps_addr_cand_ln (uint px) { uint N = ps_numPx(); return N * PS_PLANE_CAND_LN  + px * PS_SZ_CAND_LN; }
 
+static const uint PS_RG_OFF_TPOST    =  0u;
+static const uint PS_RG_OFF_DIRECTX1 = 12u;
 
-//====================================
-//FLAGS BIT LAYOUT
-//====================================
-//bits 0-5   depth (0..63)
-//bits 6-9   dsBounces (0..15)
-//bit  10    TERMINATED
-//bit  11    PERFORM_NEE
-//bit  12    HAS_VALID_HIT
-//bit  13    IS_BACKFACE
-//bit  14    FLIP_IOR
-//bit  15    TRANSMISSIVE
-//bit  16    IS_EMITTER
+void store_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx, float3 tpost)
+{
+    buf.Store3(ps_addr_hot1(pixelIdx) + PS_RG_OFF_TPOST, asuint(tpost));
+}
+
+float3 load_rg_tpost(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return asfloat(buf.Load3(ps_addr_hot1(pixelIdx) + PS_RG_OFF_TPOST));
+}
+
+void store_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx, float3 v)
+{
+    buf.Store(ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1, PackRGB9E5(v));
+}
+
+float3 load_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx)
+{
+    return UnpackRGB9E5(buf.Load(ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1));
+}
+
+void add_rg_directX1(RWByteAddressBuffer buf, uint pixelIdx, float3 add)
+{
+    if (!any(add > 0.0f)) return;
+    const uint a = ps_addr_hot1(pixelIdx) + PS_RG_OFF_DIRECTX1;
+    buf.Store(a, PackRGB9E5(UnpackRGB9E5(buf.Load(a)) + add));
+}
+
+void store_rg_primaryExtra(RWByteAddressBuffer buf, uint pixelIdx,
+                           float2 iors, uint mediumMatID, float3 absorptionTint)
+{
+    const uint base = ps_addr_hot2(pixelIdx);
+    buf.Store(base +  0u, f32tof16(iors.x) | (f32tof16(iors.y) << 16));
+    buf.Store(base +  4u, mediumMatID);
+    buf.Store(base +  8u, f32tof16(absorptionTint.x) | (f32tof16(absorptionTint.y) << 16));
+    buf.Store(base + 12u, f32tof16(absorptionTint.z));
+}
+
+void load_rg_primaryExtra(RWByteAddressBuffer buf, uint pixelIdx,
+                          out float2 iors, out uint mediumMatID, out float3 absorptionTint)
+{
+    const uint base = ps_addr_hot2(pixelIdx);
+    const uint pk0  = buf.Load(base + 0u);
+    iors            = float2(f16tof32(pk0 & 0xFFFFu), f16tof32(pk0 >> 16));
+    mediumMatID     = buf.Load(base + 4u);
+    const uint pk1  = buf.Load(base + 8u);
+    absorptionTint  = float3(f16tof32(pk1 & 0xFFFFu), f16tof32(pk1 >> 16),
+                             f16tof32(buf.Load(base + 12u) & 0xFFFFu));
+}
+
+static const uint PT_NEE_PREFETCH_SALT = 0x4e454531u;
+
+uint pt_neePrefetchTag() { return Hash32(asuint(time) ^ PT_NEE_PREFETCH_SALT); }
+
+// Publish NEE samples with a frame tag and optional learning tokens.
+void store_pt_neePrefetch(RWByteAddressBuffer buf, uint pixelIdx, uint tri, uint inst, float pdf, uint rng, uint2 learningToken=0u)
+{
+    buf.Store4(ps_addr_hot1(pixelIdx), uint4(tri, asuint(pdf), rng, pt_neePrefetchTag()));
+
+    buf.Store(ps_addr_clas2(pixelIdx),learningToken.x);
+    buf.Store(ps_addr_ray_o(pixelIdx),learningToken.y);
+    buf.Store(ps_addr_ray_o(pixelIdx) + 4u, inst);
+}
+
+// Reject stale NEE data before restoring its random stream.
+bool load_pt_neePrefetch(RWByteAddressBuffer buf, uint pixelIdx, out uint tri, out uint inst, out float pdf, inout uint rng, out uint2 learningToken)
+{
+    const uint4 w = buf.Load4(ps_addr_hot1(pixelIdx));
+    tri = w.x;
+    inst = 0xFFFFFFFFu;
+    pdf = asfloat(w.y);
+    learningToken=0u;
+    if (w.w != pt_neePrefetchTag()) return false;
+    rng = w.z;
+    learningToken=uint2(buf.Load(ps_addr_clas2(pixelIdx)),buf.Load(ps_addr_ray_o(pixelIdx)));
+    inst = buf.Load(ps_addr_ray_o(pixelIdx) + 4u);
+    return true;
+}
+
+static const uint PS_GUIDE_ROOT_BASE  = 88u;
+static const uint PS_GUIDE_ROOT_BYTES = 32u;
+static const uint PS_GUIDE_ROOT_END   = 168u;
+uint ps_addr_guideRoot(uint lane, uint r)
+{
+    return ps_numPx() * PS_GUIDE_ROOT_BASE + (lane * 2u + r) * PS_GUIDE_ROOT_BYTES;
+}
+bool ps_guideRootBacked(uint lane)
+{
+    return (lane + 1u) * (2u * PS_GUIDE_ROOT_BYTES) <= ps_numPx() * (PS_GUIDE_ROOT_END - PS_GUIDE_ROOT_BASE);
+}
+
 #define PS_FLAG_TERMINATED     (1u << 10)
 #define PS_FLAG_PERFORM_NEE    (1u << 11)
 #define PS_FLAG_HAS_VALID_HIT  (1u << 12)
@@ -108,28 +166,26 @@ uint ps_set_dsBounces(uint flags, uint n)
     return (flags & ~(PS_DSBOUNCES_MASK << PS_DSBOUNCES_SHIFT)) | ((n & PS_DSBOUNCES_MASK) << PS_DSBOUNCES_SHIFT);
 }
 
-
-//====================================
-//PATH VERTEX STATE
-//====================================
 struct PathVertexState {
     float3 x2;
     float3 n2_s;
-    float2 uv;
     uint   matID;
     uint   objID;
     float  eta;
+    float3 Kd;
+    float  Pr;
+    float  Pm;
     float3 v2;
 };
 
-
 void store_ps_depth1(RWByteAddressBuffer buf, uint pixelIdx,
                      float3 x2_world, float3 n2_world,
-                     float2 uv, uint matID, uint objID, float eta)
+                     uint matID, uint objID, float eta,
+                     float3 Kd, float Pr, float Pm)
 {
     buf.Store4(ps_addr_pack1(pixelIdx), uint4(asuint(x2_world), PackNormal(n2_world)));
-    buf.Store4(ps_addr_pack2(pixelIdx), uint4(PackFloat2x16(uv.x, uv.y),
-                                              matID, objID, asuint(eta)));
+    buf.Store4(ps_addr_pack2(pixelIdx), uint4(matID, objID, asuint(eta), PackRGB9E5(Kd)));
+    buf.Store (ps_addr_clas2(pixelIdx), PackFloat2x16(Pr, Pm));
 }
 
 void store_ps_v2(RWByteAddressBuffer buf, uint pixelIdx, float3 v2_world)
@@ -137,7 +193,7 @@ void store_ps_v2(RWByteAddressBuffer buf, uint pixelIdx, float3 v2_world)
     buf.Store(ps_addr_v2(pixelIdx), PackNormal(v2_world));
 }
 
-
+// Decode the reconnectable vertex state from packed planes.
 PathVertexState load_ps(RWByteAddressBuffer buf, uint pixelIdx)
 {
     PathVertexState s;
@@ -147,34 +203,28 @@ PathVertexState load_ps(RWByteAddressBuffer buf, uint pixelIdx)
     s.n2_s = UnpackNormal(p1.w);
 
     const uint4 p2 = buf.Load4(ps_addr_pack2(pixelIdx));
-    UnpackFloat2x16(p2.x, s.uv.x, s.uv.y);
-    s.matID = p2.y;
-    s.objID = p2.z;
-    s.eta   = asfloat(p2.w);
+    s.matID = p2.x;
+    s.objID = p2.y;
+    s.eta   = asfloat(p2.z);
+    s.Kd    = UnpackRGB9E5(p2.w);
+
+    UnpackFloat2x16(buf.Load(ps_addr_clas2(pixelIdx)), s.Pr, s.Pm);
 
     s.v2 = UnpackNormal(buf.Load(ps_addr_v2(pixelIdx)));
     return s;
 }
 
-
-//====================================
-//PATH STATE INIT
-//====================================
-//MATID_ENV_MISS sentinel so Reconnect doesn't read stale prior-frame spat data
+// Clear the persistent path state before the first bounce.
 void init_ps(RWByteAddressBuffer buf, uint pixelIdx)
 {
     buf.Store4(ps_addr_pack1(pixelIdx),
                uint4(asuint(float3(0, 0, 0)), PackNormal(float3(0, 1, 0))));
     buf.Store4(ps_addr_pack2(pixelIdx),
-               uint4(PackFloat2x16(0.0f, 0.0f),
-                     MATID_ENV_MISS, MATID_ENV_MISS, asuint(1.0f)));
+               uint4(MATID_ENV_MISS, MATID_ENV_MISS, asuint(1.0f), 0u));
+    buf.Store(ps_addr_clas2(pixelIdx), 0u);
     buf.Store(ps_addr_v2(pixelIdx), PackNormal(float3(0, 1, 0)));
 }
 
-
-//====================================
-//HOT REGISTER PLANES
-//====================================
 struct HotState {
     uint   throughputPk;
     uint   prevNormalPk;
@@ -205,7 +255,6 @@ void store_seed(RWByteAddressBuffer buf, uint pixelIdx, uint seed)
     buf.Store(ps_addr_seed(pixelIdx), seed);
 }
 
-//HOT2 layout is [tpost, wsum, flags, pad], rewrite only flags word
 void store_flags(RWByteAddressBuffer buf, uint pixelIdx, uint flags)
 {
     buf.Store(ps_addr_hot2(pixelIdx) + 8u, flags);
@@ -232,11 +281,6 @@ void store_tpost_pk(RWByteAddressBuffer buf, uint pixelIdx, uint tpostPk)
     buf.Store(ps_addr_hot2(pixelIdx) + 0u, tpostPk);
 }
 
-void store_ps_wsum(RWByteAddressBuffer buf, uint pixelIdx, float wsum)
-{
-    buf.Store(ps_addr_hot2(pixelIdx) + 4u, asuint(wsum));
-}
-
 HotState load_hot(RWByteAddressBuffer buf, uint pixelIdx)
 {
     HotState h;
@@ -260,15 +304,6 @@ uint load_flags(RWByteAddressBuffer buf, uint pixelIdx)
     return buf.Load(ps_addr_hot2(pixelIdx) + 8u);
 }
 
-float load_wsum_ps(RWByteAddressBuffer buf, uint pixelIdx)
-{
-    return asfloat(buf.Load(ps_addr_hot2(pixelIdx) + 4u));
-}
-
-
-//====================================
-//RAY PLANES
-//====================================
 void store_ray(RWByteAddressBuffer buf, uint pixelIdx, float3 rayOrigin, float3 rayDir)
 {
     buf.Store3(ps_addr_ray_o(pixelIdx), asuint(rayOrigin));
@@ -290,10 +325,6 @@ float3 load_ray_dir(RWByteAddressBuffer buf, uint pixelIdx)
     return asfloat(buf.Load3(ps_addr_ray_d(pixelIdx)));
 }
 
-
-//====================================
-//HIT PACKET
-//====================================
 struct HitPacket {
     float  hitT;
     uint   instID;
@@ -310,7 +341,6 @@ void store_hp(RWByteAddressBuffer buf, uint pixelIdx,
                      PackFloat2x16(bary.x, bary.y)));
 }
 
-//miss sentinel, instID = 0xFFFFFFFF, other fields don't matter
 void store_hp_miss(RWByteAddressBuffer buf, uint pixelIdx)
 {
     buf.Store(ps_addr_hp(pixelIdx) + 4u, 0xFFFFFFFFu);
@@ -328,10 +358,6 @@ HitPacket load_hp(RWByteAddressBuffer buf, uint pixelIdx)
     return hp;
 }
 
-
-//====================================
-//CLASSIFY OUTPUT
-//====================================
 struct ClassifyState {
     uint   hitNormalPk;
     uint   matID;
@@ -360,11 +386,6 @@ ClassifyState load_clas(RWByteAddressBuffer buf, uint pixelIdx)
     return c;
 }
 
-
-//====================================
-//CANDIDATE DESCRIPTOR
-//====================================
-//meta bit 0 VALID, bits 1-2 KIND, invalid lanes early-return in MatEval
 #define CAND_META_VALID      (1u << 0)
 #define CAND_META_KIND_SHIFT 1u
 #define CAND_META_KIND_MASK  0x3u
@@ -383,7 +404,7 @@ struct CandidateDesc {
 
 void store_cand_invalid(RWByteAddressBuffer buf, uint pixelIdx)
 {
-    //only meta word matters, rest is don't-care
+
     buf.Store(ps_addr_cand_m(pixelIdx) + 8u, 0u);
 }
 
@@ -407,7 +428,7 @@ void store_cand_sun(RWByteAddressBuffer buf, uint pixelIdx,
     const uint meta = CAND_META_VALID | (CAND_KIND_SUN << CAND_META_KIND_SHIFT);
     buf.Store4(ps_addr_cand_m(pixelIdx),
                uint4(PackRGB9E5(radiance), asuint(lightPdf), meta, 0u));
-    //lightPos/lightN unused for sun
+
 }
 
 CandidateDesc load_cand(RWByteAddressBuffer buf, uint pixelIdx)
@@ -435,11 +456,6 @@ CandidateDesc load_cand(RWByteAddressBuffer buf, uint pixelIdx)
 bool cand_valid(uint meta) { return (meta & CAND_META_VALID) != 0u; }
 uint cand_kind (uint meta) { return (meta >> CAND_META_KIND_SHIFT) & CAND_META_KIND_MASK; }
 
-
-//====================================
-//DI MARKER
-//====================================
-//per-pixel unit vec for dup-map discrimination, closed-form hash, no storage
 inline float3 diMarkerFor(uint pixelIdx, float frameTime)
 {
     uint h = (pixelIdx * 0x9E3779B9u) ^ (asuint(frameTime) * 0x85EBCA6Bu);

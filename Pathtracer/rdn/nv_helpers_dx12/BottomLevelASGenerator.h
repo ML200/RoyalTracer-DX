@@ -23,172 +23,86 @@ OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -----------------------------------------------------------------------*/
 
-/*
-Contacts for feedback:
-- pgautron@nvidia.com (Pascal Gautron)
-- mlefrancois@nvidia.com (Martin-Karl Lefrancois)
-
-The bottom-level hierarchy is used to store the triangle data in a way suitable
-for fast ray-triangle intersection at runtime. To be built, this data structure
-requires some scratch space which has to be allocated by the application.
-Similarly, the resulting data structure is stored in an application-controlled
-buffer.
-
-To be used, the application must first add all the vertex buffers to be
-contained in the final structure, using AddVertexBuffer. After all buffers have
-been added, ComputeASBufferSizes will prepare the build, and provide the
-required sizes for the scratch data and the final result. The Build call will
-finally compute the acceleration structure and store it in the result buffer.
-
-Note that the build is enqueued in the command list, meaning that the scratch
-buffer needs to be kept until the command list execution is finished.
-
-
-Example:
-
-BottomLevelASGenerator bottomLevelAS;
-bottomLevelAS.AddVertexBuffer(vertexBuffer, 0, vertexCount, sizeof(Vertex),
-identityMat.Get(), 0); bottomLevelAS.AddVertexBuffer(vertexBuffer2, 0,
-vertexCount2, sizeof(Vertex), identityMat.Get(), 0);
-...
-UINT64 scratchSizeInBytes = 0;
-UINT64 resultSizeInBytes = 0;
-bottomLevelAS.ComputeASBufferSizes(GetRTDevice(), false, &scratchSizeInBytes,
-&resultSizeInBytes); AccelerationStructureBuffers buffers; buffers.pScratch =
-nv_helpers_dx12::CreateBuffer(..., scratchSizeInBytes, ...); buffers.pResult =
-nv_helpers_dx12::CreateBuffer(..., resultSizeInBytes, ...);
-
-bottomLevelAS.Generate(m_commandList.Get(), rtCmdList, buffers.pScratch.Get(),
-buffers.pResult.Get(), false, nullptr);
-
-return buffers;
-
-*/
-
 #pragma once
 
 #include "d3d12.h"
 
 #include <vector>
 
-namespace nv_helpers_dx12
-{
+namespace nv_helpers_dx12 {
 
-/// Helper class to generate bottom-level acceleration structures for raytracing
-class BottomLevelASGenerator
-{
-public:
-  /// Add a vertex buffer in GPU memory into the acceleration structure. The
-  /// vertices are supposed to be represented by 3 float32 value. Indices are
-  /// implicit.
-  void AddVertexBuffer(ID3D12Resource* vertexBuffer, /// Buffer containing the vertex coordinates,
-                                                     /// possibly interleaved with other vertex data
-                       UINT64 vertexOffsetInBytes,   /// Offset of the first vertex in the vertex
-                                                     /// buffer
-                       uint32_t vertexCount,         /// Number of vertices to consider
-                                                     /// in the buffer
-                       UINT vertexSizeInBytes,       /// Size of a vertex including all
-                                                     /// its other data, used to stride
-                                                     /// in the buffer
-                       ID3D12Resource* transformBuffer, /// Buffer containing a 4x4 transform
-                                                        /// matrix in GPU memory, to be applied
-                                                        /// to the vertices. This buffer cannot
-                                                        /// be nullptr
-                       UINT64 transformOffsetInBytes,   /// Offset of the transform matrix in the
-                                                        /// transform buffer
-                       bool isOpaque = true /// If true, the geometry is considered opaque,
-                                            /// optimizing the search for a closest hit
-  );
+class BottomLevelASGenerator {
+  public:
+    void AddVertexBuffer(ID3D12Resource* vertexBuffer,
 
-  /// Add a vertex buffer along with its index buffer in GPU memory into the acceleration structure.
-  /// The vertices are supposed to be represented by 3 float32 value, and the indices are 32-bit
-  /// unsigned ints
-  void AddVertexBuffer(ID3D12Resource* vertexBuffer, /// Buffer containing the vertex coordinates,
-                                                     /// possibly interleaved with other vertex data
-                       UINT64 vertexOffsetInBytes,   /// Offset of the first vertex in the vertex
-                                                     /// buffer
-                       uint32_t vertexCount,         /// Number of vertices to consider
-                                                     /// in the buffer
-                       UINT vertexSizeInBytes,       /// Size of a vertex including
-                                                     /// all its other data,
-                                                     /// used to stride in the buffer
-                       ID3D12Resource* indexBuffer,  /// Buffer containing the vertex indices
-                                                     /// describing the triangles
-                       UINT64 indexOffsetInBytes,    /// Offset of the first index in
-                                                     /// the index buffer
-                       uint32_t indexCount,          /// Number of indices to consider in the buffer
-                       ID3D12Resource* transformBuffer, /// Buffer containing a 4x4 transform
-                                                        /// matrix in GPU memory, to be applied
-                                                        /// to the vertices. This buffer cannot
-                                                        /// be nullptr
-                       UINT64 transformOffsetInBytes,   /// Offset of the transform matrix in the
-                                                        /// transform buffer
-                       bool isOpaque = true /// If true, the geometry is considered opaque,
-                                            /// optimizing the search for a closest hit
-  );
+                         UINT64 vertexOffsetInBytes,
 
-  /// Add a vertex buffer with Opacity Micro-Map linkage. The geometry type will
-  /// be D3D12_RAYTRACING_GEOMETRY_TYPE_OMM_TRIANGLES, allowing the hardware to
-  /// skip any-hit invocations for micro-triangles classified as opaque/transparent.
-  void AddVertexBufferWithOMM(
-      ID3D12Resource* vertexBuffer, UINT64 vertexOffsetInBytes,
-      uint32_t vertexCount, UINT vertexSizeInBytes,
-      ID3D12Resource* indexBuffer, UINT64 indexOffsetInBytes, uint32_t indexCount,
-      ID3D12Resource* transformBuffer, UINT64 transformOffsetInBytes,
-      D3D12_GPU_VIRTUAL_ADDRESS ommArray,        /// Built OMM array (0 if special-only)
-      D3D12_GPU_VIRTUAL_ADDRESS ommIndexBuffer,  /// Per-triangle OMM index buffer
-      uint32_t ommIndexCount                     /// Number of entries in OMM index buffer
-  );
+                         uint32_t vertexCount,
 
-  /// Compute the size of the scratch space required to build the acceleration structure, as well as
-  /// the size of the resulting structure. The allocation of the buffers is then left to the
-  /// application
-  void ComputeASBufferSizes(
-      ID3D12Device5 *device,
-      /// If true, the resulting acceleration structure will
-                                  /// allow iterative updates
-      D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags,
-      UINT64 *scratchSizeInBytes,
-      /// Required scratch memory on the GPU to
-                                  /// build the acceleration structure
-      UINT64 *resultSizeInBytes   /// Required GPU memory to store the
-                                  /// acceleration structure
-  );
+                         UINT vertexSizeInBytes,
 
-  /// Enqueue the construction of the acceleration structure on a command list, using
-  /// application-provided buffers and possibly a pointer to the previous acceleration structure in
-  /// case of iterative updates. Note that the update can be done in place: the result and
-  /// previousResult pointers can be the same.
-  void Generate(
-      ID3D12GraphicsCommandList4* commandList, /// Command list on which the build will be enqueued
-      ID3D12Resource* scratchBuffer, /// Scratch buffer used by the builder to
-                                     /// store temporary data
-      ID3D12Resource* resultBuffer,  /// Result buffer storing the acceleration structure
-      bool updateOnly = false,       /// If true, simply refit the existing acceleration structure
-      ID3D12Resource* previousResult = nullptr /// Optional previous acceleration structure, used
-                                               /// if an iterative update is requested
-  );
+                         ID3D12Resource* transformBuffer,
 
-private:
-  /// Vertex buffer descriptors used to generate the AS
-  std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> m_vertexBuffers = {};
+                         UINT64 transformOffsetInBytes,
 
-  /// Stable storage for OMM-linked geometry (the OmmTriangles union member
-  /// contains CPU pointers to these, so they must not be moved/invalidated).
-  struct OmmLinkageStorage {
-      D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC triangles;
-      D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC linkage;
-  };
-  std::vector<std::unique_ptr<OmmLinkageStorage>> m_ommStorage;
+                         bool isOpaque = true
 
-  /// Amount of temporary memory required by the builder
-  UINT64 m_scratchSizeInBytes = 0;
+    );
 
-  /// Amount of memory required to store the AS
-  UINT64 m_resultSizeInBytes = 0;
+    void AddVertexBuffer(ID3D12Resource* vertexBuffer,
 
-  /// Flags for the builder, specifying whether to allow iterative updates, or
-  /// when to perform an update
-  D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS m_flags;
+                         UINT64 vertexOffsetInBytes,
+
+                         uint32_t vertexCount,
+
+                         UINT vertexSizeInBytes,
+
+                         ID3D12Resource* indexBuffer,
+
+                         UINT64 indexOffsetInBytes,
+
+                         uint32_t indexCount, ID3D12Resource* transformBuffer,
+
+                         UINT64 transformOffsetInBytes,
+
+                         bool isOpaque = true
+
+    );
+
+    void AddVertexBufferWithOMM(ID3D12Resource* vertexBuffer, UINT64 vertexOffsetInBytes, uint32_t vertexCount,
+                                UINT vertexSizeInBytes, ID3D12Resource* indexBuffer, UINT64 indexOffsetInBytes,
+                                uint32_t indexCount, ID3D12Resource* transformBuffer, UINT64 transformOffsetInBytes,
+                                D3D12_GPU_VIRTUAL_ADDRESS ommArray, D3D12_GPU_VIRTUAL_ADDRESS ommIndexBuffer,
+                                uint32_t ommIndexCount);
+
+    void ComputeASBufferSizes(ID3D12Device5* device,
+
+                              D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS buildFlags,
+                              UINT64* scratchSizeInBytes,
+
+                              UINT64* resultSizeInBytes
+
+    );
+
+    void Generate(ID3D12GraphicsCommandList4* commandList, ID3D12Resource* scratchBuffer,
+
+                  ID3D12Resource* resultBuffer, bool updateOnly = false, ID3D12Resource* previousResult = nullptr
+
+    );
+
+  private:
+    std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> m_vertexBuffers = {};
+
+    struct OmmLinkageStorage {
+        D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC triangles;
+        D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC linkage;
+    };
+    std::vector<std::unique_ptr<OmmLinkageStorage>> m_ommStorage;
+
+    UINT64 m_scratchSizeInBytes = 0;
+
+    UINT64 m_resultSizeInBytes = 0;
+
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS m_flags;
 };
 } // namespace nv_helpers_dx12

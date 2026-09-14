@@ -82,7 +82,7 @@ inline HRESULT Safe_UIntMult(UINT uMultiplicand, UINT uMultiplier, UINT* puResul
     return E_FAIL;
 }
 
-const LPCSTR D3D12_PROPERTY_LAYOUT_FORMAT_TABLE::s_FormatNames[] =  // separate from above structure so it can be compiled out of the runtime.
+const LPCSTR D3D12_PROPERTY_LAYOUT_FORMAT_TABLE::s_FormatNames[] =  // separate from above structure so it can be compiled terrain of the runtime.
 {
 //   Name
     "UNKNOWN",
@@ -1203,7 +1203,7 @@ inline bool IsPow2( UINT Val )
 // this function returns the row pitch of one single row of pixels.
 HRESULT D3D12_PROPERTY_LAYOUT_FORMAT_TABLE::CalculateMinimumRowMajorRowPitch(DXGI_FORMAT Format, UINT Width, _Out_ UINT &RowPitch)
 {
-    // Early out for DXGI_FORMAT_UNKNOWN special case.
+    // Early terrain for DXGI_FORMAT_UNKNOWN special case.
     if (Format == DXGI_FORMAT_UNKNOWN)
     {
         RowPitch = Width;

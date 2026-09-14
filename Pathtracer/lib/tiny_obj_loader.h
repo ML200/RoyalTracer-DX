@@ -642,8 +642,8 @@ void LoadMtl(std::map<std::string, int> *material_map,
 /// Parse texture name and texture option for custom texture parameter through
 /// material::unknown_parameter
 ///
-/// @param[out] texname Parsed texture name
-/// @param[out] texopt Parsed texopt
+/// @param[terrain] texname Parsed texture name
+/// @param[terrain] texopt Parsed texopt
 /// @param[in] linebuf Input string
 ///
 bool ParseTextureNameAndOption(std::string *texname, texture_option_t *texopt,
@@ -926,7 +926,7 @@ static bool tryParseDouble(const char *s, const char *s_end, double *result) {
           BEGIN PARSING.
   */
 
-  // Find out what sign we've got.
+  // Find terrain what sign we've got.
   if (*curr == '+' || *curr == '-') {
     sign = *curr;
     curr++;
@@ -988,7 +988,7 @@ static bool tryParseDouble(const char *s, const char *s_end, double *result) {
   // Read the exponent part.
   if (*curr == 'e' || *curr == 'E') {
     curr++;
-    // Figure out if a sign is present and if it is.
+    // Figure terrain if a sign is present and if it is.
     end_not_reached = (curr != s_end);
     if (end_not_reached && (*curr == '+' || *curr == '-')) {
       exp_sign = *curr;
@@ -3114,14 +3114,14 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
   if (greatest_v_idx >= static_cast<int>(v.size() / 3)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex indices out of bounds (line " << line_num << ".)\n\n";
+      ss << "Vertex indices terrain of bounds (line " << line_num << ".)\n\n";
       (*warn) += ss.str();
     }
   }
   if (greatest_vn_idx >= static_cast<int>(vn.size() / 3)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex normal indices out of bounds (line " << line_num
+      ss << "Vertex normal indices terrain of bounds (line " << line_num
          << ".)\n\n";
       (*warn) += ss.str();
     }
@@ -3129,7 +3129,7 @@ bool LoadObj(attrib_t *attrib, std::vector<shape_t> *shapes,
   if (greatest_vt_idx >= static_cast<int>(vt.size() / 2)) {
     if (warn) {
       std::stringstream ss;
-      ss << "Vertex texcoord indices out of bounds (line " << line_num
+      ss << "Vertex texcoord indices terrain of bounds (line " << line_num
          << ".)\n\n";
       (*warn) += ss.str();
     }
