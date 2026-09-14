@@ -358,20 +358,35 @@ struct SunSettings {
     float atmosEarthShadowSoftness = 0.005f;
 };
 
+struct GpuPassTiming {
+    std::string name;
+    float gpuMs = 0;
+    UINT calls = 0;
+};
+
+struct LightBvhStats {
+    UINT nodes = 0, slots = 0, voxelLeaves = 0;
+    UINT64 nodeBytes = 0, slotBytes = 0, trailBytes = 0;
+    float buildCpuMs = 0;
+    bool buildMeasured = false, incremental = false, pending = false;
+};
+
 struct FrameStats {
     static constexpr UINT GpuTimingCount = 10;
     float cpuFrameMs = 0;
     float cpuUpdateMs = 0;
     float cpuInstanceMs = 0;
     float cpuPopulateMs = 0;
-    float tlasMs = 0;
+    float cpuStreamingMs = 0;
     float gpuWaitMs = 0; // CPU fence wait, not a GPU timestamp
+    float gpuFrameMs = 0;
+    bool gpuTimingsValid = false, gpuTimingsTruncated = false;
+    std::vector<GpuPassTiming> gpuPasses;
+    LightBvhStats lightBvh;
     float cachePassMs[GpuTimingCount] = {};
     UINT cacheTimingMask = 0;
     UINT instanceCount = 0;
     UINT meshCount = 0;
-    bool tlasWasRefit = false;
-    bool tlasWasRebuilt = false;
 };
 
 inline float Halton(uint32_t index, uint32_t base) {

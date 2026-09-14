@@ -29,6 +29,8 @@ public:
     ID3D12Resource* result()         const { return m_result.Get(); }
     uint32_t        instance_count() const { return m_count; }
     uint32_t        max_instances()  const { return m_max; }
+    uint64_t        result_bytes()   const { return m_result ? m_result->GetDesc().Width : 0; }
+    uint64_t        scratch_bytes()  const { return m_scratch ? m_scratch->GetDesc().Width : 0; }
 
 private:
     ComPtr<ID3D12Device5> m_device;

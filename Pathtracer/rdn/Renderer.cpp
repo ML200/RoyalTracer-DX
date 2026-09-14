@@ -422,11 +422,25 @@ void Renderer::UpdateRenderer(float dt) {
         m_pendingVoxelLightVersion = refitResult.extraVersion;
         m_pendingVoxelLeafCount = refitResult.extraLeafCount;
         m_pendingTlasIncremental = refitResult.incremental;
+        m_frameStats.lightBvh.buildCpuMs = refitResult.worker_cpu_ms;
+        m_frameStats.lightBvh.buildMeasured = true;
+        m_frameStats.lightBvh.incremental = refitResult.incremental;
 
         LOG(L"[LightTree] Async TLAS refit ready: "
             << m_pendingTLASUpload.size() << L" nodes" << (m_pendingTlasIncremental ? L" (incremental)" : L" (rebuilt)")
             << (m_voxels.enabled() ? L", voxel light chunks " + std::to_wstring(m_pendingVoxelLeafCount) : L""));
     }
+
+    auto& lightStats = m_frameStats.lightBvh;
+    lightStats.nodes = static_cast<UINT>(m_publishedLightTLAS.size());
+    lightStats.voxelLeaves = m_liveVoxelLightLeaves;
+    lightStats.pending = m_lightTreeRefit.IsPending() || !m_pendingTLASUpload.empty();
+    const auto bytes = [](ID3D12Resource* resource) -> UINT64 { return resource ? resource->GetDesc().Width : 0; };
+    const auto& baseLightBuffers = m_lightTree.GetGpu();
+    lightStats.nodeBytes = bytes(m_ltTlasGpu ? m_ltTlasGpu.Get() : baseLightBuffers.TLASNodes.Get());
+    lightStats.slotBytes = bytes(m_ltSlotGpu ? m_ltSlotGpu.Get() : baseLightBuffers.Slots.Get());
+    lightStats.trailBytes =
+        bytes(m_ltBlasBitTrailGpu ? m_ltBlasBitTrailGpu.Get() : baseLightBuffers.BLASBitTrail.Get());
 
     static FlyCamController dummyFlyCam;
     m_editor.Draw(m_scene, m_camera, m_flyCam ? *m_flyCam : dummyFlyCam, m_passes, m_dlss, m_dlssNR, m_dlssG,
@@ -497,21 +511,7 @@ void Renderer::UpdateRenderer(float dt) {
     m_dlssNR.PrepareFrameGPUIdle();
     m_frameStats.gpuWaitMs = std::chrono::duration<float, std::milli>(hrc::now() - t_waitStart).count();
 
-    m_frameStats.cacheTimingMask = m_sharcTimingMask;
-    for (float& ms : m_frameStats.cachePassMs)
-        ms = 0.0f;
-    if (m_sharcTimingMask != 0u && m_sharcTimestampFrequency != 0u) {
-        void* mappedTicks = nullptr;
-        D3D12_RANGE range{0, 2u * FrameStats::GpuTimingCount * sizeof(UINT64)};
-        ThrowIfFailed(m_sharcTimingReadback->Map(0, &range, &mappedTicks));
-        const auto* ticks = static_cast<const UINT64*>(mappedTicks);
-        for (UINT pass = 0; pass < FrameStats::GpuTimingCount; ++pass)
-            if ((m_sharcTimingMask & (1u << pass)) != 0u && ticks[pass * 2 + 1] >= ticks[pass * 2])
-                m_frameStats.cachePassMs[pass] =
-                    float(double(ticks[pass * 2 + 1] - ticks[pass * 2]) * 1000.0 / double(m_sharcTimestampFrequency));
-        D3D12_RANGE written{0, 0};
-        m_sharcTimingReadback->Unmap(0, &written);
-    }
+    m_gpuProfiler.Readback(m_frameStats);
 
     SwapSampleBuffers();
 
@@ -672,6 +672,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     }
 
     const UINT slotCount = (UINT)m_pendingSlotRecords.size();
+    m_frameStats.lightBvh.slots = slotCount;
     if (slotCount > 0) {
         const UINT64 slotBytes = (UINT64)slotCount * sizeof(lt::LightSlotGpu);
 
@@ -719,6 +720,7 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
         m_lightTree.ReleaseStaging();
         m_lightTree.Build(tris, m_scene.lightInstances, BuildXformsFromScene());
         m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
+        m_frameStats.lightBvh.slots = m_lightTree.SlotCount();
         m_lightTree.UploadAll(dev, cmdList);
         CD3DX12_CPU_DESCRIPTOR_HANDLE treeHandle(m_srvUavHeap->GetCPUDescriptorHandleForHeapStart(), LT_TLAS_SRV_SLOT,
                                                  inc);
@@ -1163,6 +1165,7 @@ void Renderer::RenderFrame() {
         m_scene.tlasFullRebuild = false;
 
         auto t_popStart = hrc::now();
+        m_frameStats.cpuStreamingMs = std::chrono::duration<float, std::milli>(t_popStart - t_frameStart).count();
         PopulateCommandList();
         auto t_popEnd = hrc::now();
         m_frameStats.cpuPopulateMs = std::chrono::duration<float, std::milli>(t_popEnd - t_popStart).count();
@@ -1180,7 +1183,7 @@ void Renderer::RenderFrame() {
 
     m_planet.end_frame();
 
-    m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuPopulateMs;
+    m_frameStats.cpuFrameMs = m_frameStats.cpuUpdateMs + m_frameStats.cpuStreamingMs + m_frameStats.cpuPopulateMs;
 
     s_frameCount++;
     auto now = hrc::now();
@@ -1389,6 +1392,7 @@ void Renderer::HandleKeyUp(UINT8 key) {
 // Execute the configured pass graph with shared queues and resource barriers.
 void Renderer::PopulateCommandList() {
     auto* cmdList = m_ctx.CmdList();
+    m_gpuProfiler.BeginFrame(cmdList);
 
     bool dlssResChanged = (m_dlssModeChangedFrames > 0);
     if (m_dlssModeChangedFrames > 0) {
@@ -1409,10 +1413,6 @@ void Renderer::PopulateCommandList() {
     auto rtv = m_ctx.CurrentRTV();
     auto dsv = m_ctx.DSV();
     cmdList->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
-
-    m_frameStats.tlasWasRefit = false;
-    m_frameStats.tlasWasRebuilt = false;
-    m_frameStats.tlasMs = 0.0f;
 
     RecordSkyLUTBake(cmdList);
 
@@ -1444,8 +1444,16 @@ void Renderer::PopulateCommandList() {
         raysDesc.CallableShaderTable.StrideInBytes = m_sbtHelper.GetCallableEntrySize();
     }
 
-    UploadEmissiveBuffers(cmdList);
-    UploadLightTreeTLAS(cmdList);
+    if (m_emissiveGpuDirty) {
+        const UINT timer = m_gpuProfiler.BeginPass(cmdList, "Emissive buffers");
+        UploadEmissiveBuffers(cmdList);
+        m_gpuProfiler.EndPass(cmdList, timer);
+    }
+    if (!m_pendingTLASUpload.empty()) {
+        const UINT timer = m_gpuProfiler.BeginPass(cmdList, "Light BVH upload");
+        UploadLightTreeTLAS(cmdList);
+        m_gpuProfiler.EndPass(cmdList, timer);
+    }
 
     {
         auto b = CD3DX12_RESOURCE_BARRIER::Transition(m_outputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
@@ -1742,9 +1750,6 @@ void Renderer::PopulateCommandList() {
         cmdList->SetComputeRootUnorderedAccessView(4, m_sharcBuffer->GetGPUVirtualAddress());
     };
 
-    m_sharcTimingMask = 0u;
-    bool ptTimerOpen = false;
-    bool cloudTimerOpen = false;
     const auto& cloudSun = m_camera.sunSettings;
     const auto& cloudSettings = m_camera.cumulusSettings;
     const std::array<float, 5> ambientKey{cloudSun.turbidity, cloudSun.sunIntensity, cloudSun.skyIntensity,
@@ -1783,48 +1788,48 @@ void Renderer::PopulateCommandList() {
             continue;
         }
         p.executedLastFrame = true;
-        int cacheTimer = -1;
-
-        bool timerBegin = true, timerEnd = true;
+        int cacheGroup = -1;
         if (p.file == L"Pass_sharc_prepare_v8.hlsl")
-            cacheTimer = 0;
+            cacheGroup = 0;
         else if (p.file == L"Pass_sharc_update_v8.hlsl")
-            cacheTimer = 1;
+            cacheGroup = 1;
         else if (p.file == L"Pass_sharc_resolve_v8.hlsl")
-            cacheTimer = 2;
+            cacheGroup = 2;
         else if (p.file == L"Pass_light_learning_v8.hlsl")
-            cacheTimer = 9;
-        else if (p.file == L"Pass_pt_nee_v8.hlsl") {
-            cacheTimer = 3;
-            timerEnd = false;
-            ptTimerOpen = true;
-        } else if (p.file == L"Pass_pt_v8.hlsl") {
-            cacheTimer = 3;
-            timerBegin = !ptTimerOpen;
-        } else if (p.file == L"Pass_lite_shift_v8.hlsl")
-            cacheTimer = 4;
+            cacheGroup = 9;
+        else if (p.file == L"Pass_pt_nee_v8.hlsl" || p.file == L"Pass_pt_v8.hlsl")
+            cacheGroup = 3;
+        else if (p.file == L"Pass_lite_shift_v8.hlsl")
+            cacheGroup = 4;
         else if (p.file == L"Pass_lite_merge_v8.hlsl")
-            cacheTimer = 5;
+            cacheGroup = 5;
         else if (p.file == L"Pass_cumulus_noise_v8.hlsl" || p.file == L"Pass_cumulus_density_v8.hlsl" ||
-                 p.file == L"Pass_cumulus_ambient_v8.hlsl" || p.file == L"Pass_cumulus_light_v8.hlsl") {
-            cacheTimer = 6;
-            timerBegin = !cloudTimerOpen;
-            timerEnd = false;
-            cloudTimerOpen = true;
-        } else if (p.file == L"Pass_cumulus_environment_v8.hlsl") {
-            cacheTimer = 6;
-            timerBegin = !cloudTimerOpen;
-        } else if (p.file == L"Pass_cumulus_secondary_v8.hlsl") {
-            cacheTimer = 8;
-        } else if (p.file == L"Pass_atmosphere_primary_v8.hlsl") {
-            cacheTimer = 7;
-            timerEnd = cloudSettings.enabled < 0.5f;
-        } else if (p.file == L"Pass_cumulus_guides_v8.hlsl") {
-            cacheTimer = 7;
-            timerBegin = false;
+                 p.file == L"Pass_cumulus_ambient_v8.hlsl" || p.file == L"Pass_cumulus_light_v8.hlsl" ||
+                 p.file == L"Pass_cumulus_environment_v8.hlsl")
+            cacheGroup = 6;
+        else if (p.file == L"Pass_cumulus_secondary_v8.hlsl")
+            cacheGroup = 8;
+        else if (p.file == L"Pass_atmosphere_primary_v8.hlsl" || p.file == L"Pass_cumulus_guides_v8.hlsl")
+            cacheGroup = 7;
+
+        UINT passTimer = GpuProfiler::InvalidPass;
+        if (p.stage != Stage::LoopStart && p.stage != Stage::LoopEnd && p.stage != Stage::PingSwap &&
+            p.stage != Stage::Callable) {
+            std::wstring label = p.file;
+            if (!p.dispatchTag.empty())
+                label += L" (" + p.dispatchTag + L")";
+            const int length = static_cast<int>(label.size());
+            const int bytes = WideCharToMultiByte(CP_UTF8, 0, label.data(), length, nullptr, 0, nullptr, nullptr);
+            std::string name(bytes, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, label.data(), length, name.data(), bytes, nullptr, nullptr);
+            if (p.stage == Stage::Barrier)
+                name = "UAV barriers";
+            else if (p.stage == Stage::ClearSort)
+                name = "Clear sort buffers";
+            else if (p.stage == Stage::DLSS)
+                name = "DLSS Ray Reconstruction";
+            passTimer = m_gpuProfiler.BeginPass(cmdList, std::move(name), cacheGroup);
         }
-        if (cacheTimer >= 0 && timerBegin)
-            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, (UINT)cacheTimer * 2u);
 
         switch (p.stage) {
         case Stage::LoopStart:
@@ -2153,13 +2158,7 @@ void Renderer::PopulateCommandList() {
         default:
             break;
         }
-        if (cacheTimer >= 0 && timerEnd) {
-            UINT query = (UINT)cacheTimer * 2u;
-            cmdList->EndQuery(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query + 1u);
-            cmdList->ResolveQueryData(m_sharcTimingHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, query, 2u,
-                                      m_sharcTimingReadback.Get(), query * sizeof(UINT64));
-            m_sharcTimingMask |= 1u << (UINT)cacheTimer;
-        }
+        m_gpuProfiler.EndPass(cmdList, passTimer);
     }
 
     {
@@ -2178,11 +2177,17 @@ void Renderer::PopulateCommandList() {
     const bool nrSceneView = dlssEvaluatedThisFrame && sharcDebugMode == 0u && layer == 1u;
     if (!nrSceneView)
         m_dlssNR.ForceReset();
-    if (nrSceneView && m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub, m_dlss.Depth(),
-                                         m_dlss.MVec(), m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
-        presentSrc = m_dlssNR.Output();
-        presentSub = 0;
+    if (nrSceneView) {
+        const UINT timer = m_dlssNR.settings.enabled ? m_gpuProfiler.BeginPass(cmdList, "DLSS Neural Rendering")
+                                                     : GpuProfiler::InvalidPass;
+        if (m_dlssNR.Evaluate(cmdList, m_ctx.Device(), m_outputResource.Get(), sub, m_dlss.Depth(), m_dlss.MVec(),
+                              m_dlss.RenderWidth(), m_dlss.RenderHeight())) {
+            presentSrc = m_dlssNR.Output();
+            presentSub = 0;
+        }
+        m_gpuProfiler.EndPass(cmdList, timer);
     }
+    const UINT outputTimer = m_gpuProfiler.BeginPass(cmdList, "Output copy");
 
     {
         ID3D12DescriptorHeap* h[] = {m_srvUavHeap.Get(), m_samplerHeap.Get()};
@@ -2225,7 +2230,9 @@ void Renderer::PopulateCommandList() {
     D3D12_BOX box = {0, 0, 0, GetWidth(), GetHeight(), 1};
     cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
 
+    m_gpuProfiler.EndPass(cmdList, outputTimer);
     if (m_editor.IsVisible()) {
+        const UINT editorTimer = m_gpuProfiler.BeginPass(cmdList, "Editor");
         // Back buffer is in COPY_DEST after the texture copy — transition to RT
         auto toRT = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_COPY_DEST,
                                                          D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -2237,6 +2244,7 @@ void Renderer::PopulateCommandList() {
         cmdList->SetDescriptorHeaps(1, heaps);
 
         m_editor.Render(cmdList);
+        m_gpuProfiler.EndPass(cmdList, editorTimer);
 
         auto toPres = CD3DX12_RESOURCE_BARRIER::Transition(m_ctx.BackBuffer(), D3D12_RESOURCE_STATE_RENDER_TARGET,
                                                            D3D12_RESOURCE_STATE_PRESENT);
@@ -2272,6 +2280,7 @@ void Renderer::PopulateCommandList() {
 
         SL_CHECK(slSetTagForFrame(*m_ctx.frameToken, m_ctx.viewportHandle, fgTags, _countof(fgTags), nullptr));
     }
+    m_gpuProfiler.EndFrame(cmdList);
 }
 
 void Renderer::BuildLiteReuseTables(float sigma) {

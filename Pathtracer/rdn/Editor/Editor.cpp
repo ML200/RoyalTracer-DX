@@ -31,8 +31,14 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
                   const FrameStats& stats, const planet::StreamOrchestrator::Stats& planetStats,
                   mc::VoxelStreamer* voxels) {
     // Keep history advancing while panels are hidden.
-    if (!m_planetHist.paused)
-        m_planetHist.push(planetStats, stats);
+    if (!m_performanceHistory.paused) {
+        m_performanceHistory.push(stats);
+        m_performanceFrame.frame = stats;
+        m_performanceFrame.stream = planetStats;
+        m_performanceFrame.fps = fps;
+        m_performanceFrame.hasMinecraft = voxels && voxels->world();
+        m_performanceFrame.minecraft = m_performanceFrame.hasMinecraft ? voxels->stats() : mc::StreamerStats{};
+    }
 
     if (!m_visible)
         return;
@@ -47,8 +53,6 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
             ImGui::MenuItem("Camera", nullptr, &m_showCamera);
             ImGui::MenuItem("Materials", nullptr, &m_showMaterials);
             ImGui::MenuItem("Environment", nullptr, &m_showSun);
-            if (voxels)
-                ImGui::MenuItem("Minecraft", nullptr, &m_showMinecraft);
             ImGui::Separator();
             ImGui::MenuItem("Integrator", nullptr, &m_showIntegrator);
             ImGui::MenuItem("DLSS", nullptr, &m_showDLSS);
@@ -57,10 +61,12 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         if (ImGui::BeginMenu("Diagnostics")) {
             ImGui::MenuItem("Render passes", nullptr, &m_showPipeline);
             ImGui::MenuItem("DLSS buffers", nullptr, &m_showDlssInputs);
-            ImGui::MenuItem("Performance", nullptr, &m_showPlanetPerf);
+            ImGui::MenuItem("Performance", nullptr, &m_showPerformance);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Experimental")) {
+            if (voxels)
+                ImGui::MenuItem("Minecraft", nullptr, &m_showMinecraft);
             ImGui::MenuItem("DLSS 5 Neural Rendering", nullptr, &m_showDLSSNR);
             ImGui::EndMenu();
         }
@@ -101,8 +107,9 @@ void Editor::Draw(Scene& scene, Camera& camera, FlyCamController& flyCam, PassSy
         DrawSunPanel(scene, camera, stats, voxels);
     if (m_showMaterials)
         DrawMaterialInspector(scene, camera, restir);
-    if (m_showPlanetPerf)
-        DrawPlanetPerfPanel(planetStats, stats, fps);
+    if (m_showPerformance)
+        DrawPerformancePanel(m_performanceFrame.stream, m_performanceFrame.frame, m_performanceFrame.fps,
+                             m_performanceFrame.hasMinecraft ? &m_performanceFrame.minecraft : nullptr);
     if (m_showMinecraft && voxels)
         DrawMinecraftPanel(*voxels);
 
@@ -445,6 +452,255 @@ void Editor::DrawDLSSPanel(Camera& camera, DLSSManager& dlss, DLSSGSettings& dls
     if (!dlssG.available)
         ImGui::TextDisabled("Unavailable on this GPU");
     ImGui::PopItemWidth();
+    ImGui::End();
+}
+
+void Editor::PerformanceHistory::push(const FrameStats& fs) {
+    const int i = write;
+    frameCpuMs[i] = fs.cpuFrameMs;
+    frameGpuMs[i] = fs.gpuTimingsValid ? fs.gpuFrameMs : 0.0f;
+    streamingCpuMs[i] = fs.cpuStreamingMs;
+    write = (write + 1) % N;
+    if (filled < N)
+        ++filled;
+}
+
+namespace {
+float historyMax(const float* values, int count) {
+    float result = 0.0f;
+    for (int i = 0; i < count; ++i)
+        result = std::max(result, values[i]);
+    return result;
+}
+
+float historyAverage(const float* values, int count) {
+    if (count == 0)
+        return 0.0f;
+    double total = 0.0;
+    for (int i = 0; i < count; ++i)
+        total += values[i];
+    return static_cast<float>(total / count);
+}
+
+float historyLast(const float* values, int write, int count) {
+    if (count == 0)
+        return 0.0f;
+    return values[(write + Editor::PerformanceHistory::N - 1) % Editor::PerformanceHistory::N];
+}
+
+void plotHistory(const char* id, const char* label, const float* values, int count, int offset, int write,
+                 ImVec4 color) {
+    const float maximum = historyMax(values, count);
+    char overlay[96];
+    snprintf(overlay, sizeof(overlay), "last %.3f | avg %.3f | max %.3f ms", historyLast(values, write, count),
+             historyAverage(values, count), maximum);
+    ImGui::TextUnformatted(label);
+    ImGui::PushStyleColor(ImGuiCol_PlotLines, color);
+    ImGui::PlotLines(id, values, count, offset, overlay, 0.0f, maximum > 0.0f ? maximum * 1.1f : 1.0f,
+                     ImVec2(-1.0f, 58.0f));
+    ImGui::PopStyleColor();
+}
+
+void showBytes(const char* label, UINT64 bytes) {
+    ImGui::Text("%s: %.2f MiB", label, static_cast<double>(bytes) / (1024.0 * 1024.0));
+    ImGui::SetItemTooltip("%s: %llu bytes", label, static_cast<unsigned long long>(bytes));
+}
+
+void showByteUsage(const char* label, UINT64 used, UINT64 capacity) {
+    ImGui::Text("%s: %.2f / %.2f MiB", label, static_cast<double>(used) / (1024.0 * 1024.0),
+                static_cast<double>(capacity) / (1024.0 * 1024.0));
+    ImGui::SetItemTooltip("%s: %llu / %llu bytes (used / capacity)", label, static_cast<unsigned long long>(used),
+                          static_cast<unsigned long long>(capacity));
+}
+}
+
+void Editor::DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps,
+                                  const mc::StreamerStats* minecraft) {
+    ImGui::SetNextWindowPos(ImVec2(20, 60), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(650, 760), ImGuiCond_FirstUseEver);
+
+    if (!ImGui::Begin("Performance###Performance", &m_showPerformance)) {
+        ImGui::End();
+        return;
+    }
+
+    ImGui::TextDisabled("Latest CPU and completed GPU measurements");
+    ImGui::Text("%.1f fps | CPU %.2f ms", fps, fs.cpuFrameMs);
+    ImGui::SameLine();
+    if (fs.gpuTimingsValid)
+        ImGui::Text("| GPU %.2f ms", fs.gpuFrameMs);
+    else
+        ImGui::TextDisabled("| GPU unavailable");
+    ImGui::SameLine();
+    ImGui::Checkbox("Pause", &m_performanceHistory.paused);
+    ImGui::SameLine();
+    if (ImGui::Button("Clear")) {
+        const bool paused = m_performanceHistory.paused;
+        m_performanceHistory = PerformanceHistory{};
+        m_performanceHistory.paused = paused;
+    }
+    const int count = m_performanceHistory.filled;
+    const int offset = count < PerformanceHistory::N ? 0 : m_performanceHistory.write;
+    const int write = m_performanceHistory.write;
+
+    ImGui::TextDisabled("Direct queue timings exclude async queues and presentation.");
+
+    if (ImGui::CollapsingHeader("Frame history")) {
+        plotHistory("##frameCpu", "CPU frame", m_performanceHistory.frameCpuMs, count, offset, write,
+                    ImVec4(0.40f, 0.85f, 0.40f, 1.0f));
+        plotHistory("##frameGpu", "GPU frame", m_performanceHistory.frameGpuMs, count, offset, write,
+                    ImVec4(0.95f, 0.55f, 0.20f, 1.0f));
+        plotHistory("##streamingCpu", "CPU streaming", m_performanceHistory.streamingCpuMs, count, offset, write,
+                    ImVec4(0.30f, 0.70f, 1.00f, 1.0f));
+        ImGui::Text("CPU GPU wait: %.3f ms", fs.gpuWaitMs);
+    }
+
+    if (ImGui::BeginTabBar("##performanceViews")) {
+        if (ImGui::BeginTabItem("GPU passes")) {
+            if (!fs.gpuTimingsValid || fs.gpuPasses.empty()) {
+                ImGui::TextDisabled("No valid pass timings for this frame.");
+            } else {
+                if (fs.gpuTimingsTruncated)
+                    ImGui::TextDisabled("Pass list truncated at the profiler limit.");
+                const float totalMs = fs.gpuFrameMs > 0.0f ? fs.gpuFrameMs : [&] {
+                    float total = 0.0f;
+                    for (const GpuPassTiming& pass : fs.gpuPasses)
+                        total += pass.gpuMs;
+                    return total;
+                }();
+                if (ImGui::BeginTable("##gpuPasses", 4,
+                                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                          ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY |
+                                          ImGuiTableFlags_Resizable,
+                                      ImVec2(0, std::max(160.0f, ImGui::GetContentRegionAvail().y)))) {
+                    ImGui::TableSetupColumn("Pass");
+                    ImGui::TableSetupColumn("Last ms", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+                    ImGui::TableSetupColumn("Calls", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+                    ImGui::TableSetupColumn("% total", ImGuiTableColumnFlags_WidthFixed, 72.0f);
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableHeadersRow();
+                    for (const GpuPassTiming& pass : fs.gpuPasses) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::TextUnformatted(pass.name.c_str());
+                        ImGui::SetItemTooltip("%s", pass.name.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.3f", pass.gpuMs);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%u", pass.calls);
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%.1f%%", totalMs > 0.0f ? 100.0f * pass.gpuMs / totalMs : 0.0f);
+                    }
+                    ImGui::EndTable();
+                }
+            }
+
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Minecraft / BVHs")) {
+            ImGui::SeparatorText("Minecraft geometry");
+            if (minecraft) {
+                ImGui::Text("Selected chunks: %u | resident: %u | tracked: %u", minecraft->desired, minecraft->ready,
+                            minecraft->chunksTracked);
+                ImGui::TextDisabled("Resident counts sampled %u frames ago", minecraft->censusAgeFrames);
+                if (ImGui::BeginTable("##geometryCounts", 3,
+                                      ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                    ImGui::TableSetupColumn("Geometry");
+                    ImGui::TableSetupColumn("In scene BVH");
+                    ImGui::TableSetupColumn("Resident");
+                    ImGui::TableHeadersRow();
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted("Chunk BLAS");
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%u", minecraft->geometryBlasRendered);
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%u", minecraft->geometryBlasResident);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted("Triangles");
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->trianglesInTlas));
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->trianglesResident));
+                    ImGui::EndTable();
+                }
+                showByteUsage("Geometry buffers", minecraft->geometryBytesUsed, minecraft->geometryBytesCapacity);
+                showByteUsage("BLAS pool", minecraft->blasBytesUsed, minecraft->blasBytesCapacity);
+                showByteUsage("BLAS build pool", minecraft->blasBuildBytesUsed, minecraft->blasBuildBytesCapacity);
+                showByteUsage("Scratch ring high-water", minecraft->scratchBytesUsed, minecraft->scratchBytesCapacity);
+
+                ImGui::SeparatorText("Streaming");
+                ImGui::Text("Pending %u | meshing %u | meshed %u | uploading %u", minecraft->pending,
+                            minecraft->meshing, minecraft->meshed, minecraft->uploading);
+                ImGui::Text("This frame: %u BLAS builds | %u compactions | %u copies", minecraft->buildsThisFrame,
+                            minecraft->compactionsThisFrame, minecraft->copiesThisFrame);
+                showBytes("Uploaded this frame", minecraft->uploadBytesThisFrame);
+                ImGui::Text("CPU selection %.3f ms | recording %.3f ms", minecraft->selectMs, minecraft->recordMs);
+                ImGui::Text("Mesh job average %.3f ms | allocation retries %u", minecraft->meshMsAvg,
+                            minecraft->allocFailures);
+            } else {
+                ImGui::TextDisabled("No Minecraft world loaded.");
+            }
+
+            ImGui::SeparatorText("Shared scene BVH (TLAS)");
+            ImGui::Text("Instances: %u / %u | %s", ps.tlas_instances, ps.tlas_instance_capacity,
+                        ps.tlas_build_recorded ? "rebuilt this frame" : "reused this frame");
+            showBytes("TLAS allocation", ps.tlas_result_bytes);
+            showBytes("TLAS scratch", ps.tlas_scratch_bytes);
+            if (ps.gpu_timing_valid) {
+                ImGui::Text("Minecraft builds + compaction: %.3f ms GPU", ps.external_blas_gpu_ms);
+                ImGui::Text("Scene TLAS: %.3f ms GPU (%s, %u instances)", ps.tlas_gpu_ms,
+                            ps.gpu_timing_tlas_build_recorded ? "rebuilt" : "reused", ps.gpu_timing_tlas_instances);
+                ImGui::TextDisabled("Compute queue sample: %u frames old; excludes copy queue",
+                                    ps.gpu_timing_sample_age);
+            } else {
+                ImGui::TextDisabled("Waiting for completed BVH GPU timings.");
+            }
+
+            ImGui::SeparatorText("Published light BVH");
+            ImGui::Text("TLAS nodes %u | slot entries %u | Minecraft leaves %u", fs.lightBvh.nodes, fs.lightBvh.slots,
+                        fs.lightBvh.voxelLeaves);
+            showBytes("TLAS node allocation", fs.lightBvh.nodeBytes);
+            showBytes("Slot allocation", fs.lightBvh.slotBytes);
+            showBytes("Traversal trails", fs.lightBvh.trailBytes);
+            if (fs.lightBvh.buildMeasured) {
+                ImGui::Text("Last worker update: %.3f ms CPU (%s)", fs.lightBvh.buildCpuMs,
+                            fs.lightBvh.incremental ? "incremental" : "full rebuild");
+            } else {
+                ImGui::TextDisabled("No completed light BVH worker timing.");
+            }
+            if (fs.lightBvh.pending)
+                ImGui::TextDisabled("Next light BVH update pending");
+            if (minecraft &&
+                ImGui::BeginTable("##lightCounts", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Minecraft lights");
+                ImGui::TableSetupColumn("Published tree");
+                ImGui::TableSetupColumn("Resident");
+                ImGui::TableHeadersRow();
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("BLAS nodes");
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->lightNodesInTree));
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->lightNodesResident));
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted("Triangles");
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->lightTrisInTree));
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(minecraft->lightTrisResident));
+                ImGui::EndTable();
+                ImGui::Text("Published chunks %u | light data dropped from %u chunks", minecraft->lightChunksInTree,
+                            minecraft->lightChunksDropped);
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
     ImGui::End();
 }
 void Editor::DrawDLSSNRPanel(DLSSNRManager& nr) {
@@ -1110,159 +1366,5 @@ void Editor::DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats,
         ImGui::SliderFloat("Shadow softness", &s.atmosEarthShadowSoftness, 0.0f, 0.05f, "%.4f");
     }
     ImGui::PopItemWidth();
-    ImGui::End();
-}
-void Editor::PlanetPerfHistory::push(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs) {
-    const int i = write;
-    frame_total_ms[i] = fs.cpuFrameMs;
-    frame_gpu_wait_ms[i] = fs.gpuWaitMs;
-    planet_cpu_ms[i] = ps.blas_record_cpu_ms;
-    planet_plan_ms[i] = ps.plan_ms;
-    planet_blas_gpu_ms[i] = ps.blas_gpu_ms;
-    planet_tlas_gpu_ms[i] = ps.tlas_gpu_ms;
-    cells_recorded[i] = (float)ps.cells_recorded;
-    pipe_pending[i] = (float)ps.cells_pending;
-    pipe_ready[i] = (float)ps.cells_ready;
-    pipe_blas_pending[i] = (float)ps.cells_recorded_total;
-    pipe_built[i] = (float)ps.dirty_built;
-
-    write = (write + 1) % N;
-    if (filled < N)
-        ++filled;
-}
-
-namespace {
-inline float ring_max(const float* v, int n) {
-    float m = 0.0f;
-    for (int i = 0; i < n; ++i)
-        if (v[i] > m)
-            m = v[i];
-    return m;
-}
-inline float ring_avg(const float* v, int n) {
-    if (n == 0)
-        return 0.0f;
-    double s = 0.0;
-    for (int i = 0; i < n; ++i)
-        s += v[i];
-    return (float)(s / n);
-}
-
-inline float ring_last(const float* v, int write, int filled) {
-    if (filled == 0)
-        return 0.0f;
-    const int idx = (write + Editor::PlanetPerfHistory::N - 1) % Editor::PlanetPerfHistory::N;
-    return v[idx];
-}
-
-void plot_metric(const char* label, const float* values, int count, int offset, int write, const char* unit,
-                 ImVec4 colour) {
-    const float vmax = ring_max(values, count);
-    const float vavg = ring_avg(values, count);
-    const float vnow = ring_last(values, write, count);
-    const float scale_max = vmax > 0.0f ? vmax * 1.1f : 1.0f;
-
-    char overlay[64];
-    snprintf(overlay, sizeof(overlay), "now %.3f  avg %.3f  max %.3f %s", vnow, vavg, vmax, unit);
-
-    ImGui::PushStyleColor(ImGuiCol_PlotLines, colour);
-    ImGui::PlotLines(label, values, count, offset, overlay, 0.0f, scale_max, ImVec2(-1, 60));
-    ImGui::PopStyleColor();
-}
-}
-
-void Editor::DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps) {
-    ImGui::SetNextWindowPos(ImVec2(20, 60), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(560, 760), ImGuiCond_FirstUseEver);
-
-    if (!ImGui::Begin("Performance###Planet Performance", &m_showPlanetPerf)) {
-        ImGui::End();
-        return;
-    }
-
-    const int count = m_planetHist.filled;
-    const int offset = (m_planetHist.filled < PlanetPerfHistory::N) ? 0 : m_planetHist.write;
-    const int write = m_planetHist.write;
-
-    ImGui::Text("%.1f fps  (%.2f ms frame)", fps, fps > 0 ? 1000.0f / fps : 0.0f);
-    ImGui::SameLine();
-    ImGui::Checkbox("Pause", &m_planetHist.paused);
-    ImGui::SameLine();
-    if (ImGui::Button("Clear")) {
-        m_planetHist = PlanetPerfHistory{};
-    }
-    ImGui::Separator();
-
-    ImGui::SeparatorText("LIVE generation");
-    ImGui::Text("built=%d  cells=%u  leaves=%u  tris=%llu  tlas_instances=%u", (int)ps.built, ps.cell_count,
-                ps.leaf_count, (unsigned long long)ps.triangle_count, ps.tlas_instances);
-
-    ImGui::SeparatorText("Rebuild");
-    if (ps.rebuilding) {
-        ImGui::Text("ACTIVE  dirty=%u/%u  recorded=%u  recorded_pending=%u  ready=%u  pending=%u", ps.dirty_built,
-                    ps.dirty_total, ps.cells_recorded, ps.cells_recorded_total, ps.cells_ready, ps.cells_pending);
-    } else {
-        ImGui::TextDisabled("idle  (last rebuild %u frames, est %.1f f)", ps.last_rebuild_frames,
-                            ps.rebuild_frames_est);
-    }
-
-    ImGui::SeparatorText("Frame pacing");
-    plot_metric("##frame_cpu", m_planetHist.frame_total_ms, count, offset, write, "ms",
-                ImVec4(0.40f, 0.85f, 0.40f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("CPU frame");
-    plot_metric("##frame_gpu", m_planetHist.frame_gpu_wait_ms, count, offset, write, "ms",
-                ImVec4(0.95f, 0.55f, 0.20f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("CPU waiting for GPU");
-
-    ImGui::SeparatorText("Planet CPU (render thread)");
-    plot_metric("##blas_rec_cpu", m_planetHist.planet_cpu_ms, count, offset, write, "ms",
-                ImVec4(0.30f, 0.70f, 1.00f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("blas_record");
-    ImGui::TextDisabled("plan job runs on the worker pool - this is the "
-                        "render thread cost of recording BLAS commands.");
-
-    ImGui::SeparatorText("Planet plan job (worker thread)");
-    plot_metric("##plan", m_planetHist.planet_plan_ms, count, offset, write, "ms", ImVec4(0.85f, 0.40f, 0.85f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("plan_ms");
-    ImGui::TextDisabled("non-zero only on the frame after a rebuild was "
-                        "triggered (the plan job's LOD select + cell cut + "
-                        "diff). All other frames read the cached last value.");
-
-    ImGui::SeparatorText("Planet GPU (compute queue)");
-    plot_metric("##blas_gpu", m_planetHist.planet_blas_gpu_ms, count, offset, write, "ms",
-                ImVec4(1.00f, 0.50f, 0.50f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("BLAS builds");
-    plot_metric("##tlas_gpu", m_planetHist.planet_tlas_gpu_ms, count, offset, write, "ms",
-                ImVec4(1.00f, 0.85f, 0.30f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("TLAS rebuild");
-    ImGui::TextDisabled("GPU timestamps lag ~4 frames (fence-gated readback).");
-
-    ImGui::SeparatorText("Async pipeline (cells per stage)");
-    plot_metric("##pending", m_planetHist.pipe_pending, count, offset, write, "", ImVec4(0.60f, 0.60f, 0.60f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Pending  (tess in flight)");
-    plot_metric("##ready", m_planetHist.pipe_ready, count, offset, write, "", ImVec4(0.30f, 0.80f, 1.00f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Ready    (waiting for BLAS record)");
-    plot_metric("##blasrec", m_planetHist.pipe_blas_pending, count, offset, write, "",
-                ImVec4(1.00f, 0.55f, 0.30f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Recorded (BLAS fence pending)");
-    plot_metric("##built", m_planetHist.pipe_built, count, offset, write, "", ImVec4(0.40f, 0.95f, 0.40f, 1.0f));
-    ImGui::SameLine();
-    ImGui::TextUnformatted("Built    (BLAS done)");
-
-    ImGui::SeparatorText("BLAS recordings per frame");
-    plot_metric("##rec_count", m_planetHist.cells_recorded, count, offset, write, "cells",
-                ImVec4(0.80f, 0.80f, 0.30f, 1.0f));
-    ImGui::TextDisabled("capped by StreamConfig::build_budget - controls how "
-                        "many BLAS the compute queue does per frame.");
-
     ImGui::End();
 }

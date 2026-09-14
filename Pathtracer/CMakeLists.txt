@@ -95,6 +95,7 @@ add_executable(Pathtracer WIN32
         rdn/Core/DeviceContext.h
         rdn/Core/DeviceContext.cpp
         rdn/Core/ResourceFactory.h
+        rdn/Core/GpuProfiler.h
         rdn/Camera/Camera.h
         rdn/Camera/Camera.cpp
         rdn/Editor/Editor.h

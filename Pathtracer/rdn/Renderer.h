@@ -5,6 +5,7 @@
 
 #include "Core/DeviceContext.h"
 #include "Core/ResourceFactory.h"
+#include "Core/GpuProfiler.h"
 #include "Scene/Scene.h"
 #include "Scene/AssetLoader.h"
 #include "Camera/Camera.h"
@@ -252,10 +253,7 @@ class Renderer {
 
     ComPtr<ID3D12Resource> m_raygenQueueBuffer;
     ComPtr<ID3D12Resource> m_sharcBuffer;
-    ComPtr<ID3D12QueryHeap> m_sharcTimingHeap;
-    ComPtr<ID3D12Resource> m_sharcTimingReadback;
-    UINT64 m_sharcTimestampFrequency = 0;
-    UINT m_sharcTimingMask = 0;
+    GpuProfiler m_gpuProfiler;
     bool m_sharcResetPending = true;
     bool m_sharcWasEnabled = false;
     uint32_t m_sharcFrame = 0;

@@ -230,6 +230,7 @@ void Renderer::CreateAccelerationStructures() {
     }
     m_lightTree.Build(m_scene.emissiveTriangles, m_scene.lightInstances, ltXforms);
     m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
+    m_frameStats.lightBvh.slots = m_lightTree.SlotCount();
     m_lightTree.PrintMetrics();
 
     {
@@ -617,18 +618,7 @@ void Renderer::CreateRaytracingOutputBuffer() {
 }
 
 void Renderer::CreatePathStateBuffer() {
-    if (!m_sharcTimingHeap) {
-        D3D12_QUERY_HEAP_DESC queries{};
-        queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        queries.Count = 2u * FrameStats::GpuTimingCount;
-        ThrowIfFailed(m_ctx.Device()->CreateQueryHeap(&queries, IID_PPV_ARGS(&m_sharcTimingHeap)));
-        auto heap = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
-        auto desc = CD3DX12_RESOURCE_DESC::Buffer(2u * FrameStats::GpuTimingCount * sizeof(UINT64));
-        ThrowIfFailed(m_ctx.Device()->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                              D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                              IID_PPV_ARGS(&m_sharcTimingReadback)));
-        ThrowIfFailed(m_ctx.CmdQueue()->GetTimestampFrequency(&m_sharcTimestampFrequency));
-    }
+    m_gpuProfiler.Init(m_ctx.Device(), m_ctx.CmdQueue());
     ResourceFactory rf(m_ctx.Device());
     // World-space cache history survives changes to the render resolution.
     if (!m_sharcBuffer) {
@@ -1899,16 +1889,20 @@ void Renderer::RecordSkyLUTBake(ID3D12GraphicsCommandList4* cmd) {
     cmd->SetComputeRootDescriptorTable(0, m_skyLutBakeHeap->GetGPUDescriptorHandleForHeapStart());
     cmd->SetComputeRootConstantBufferView(1, m_camera.GPUBuffer()->GetGPUVirtualAddress());
 
+    const UINT transmittanceTimer = m_gpuProfiler.BeginPass(cmd, "Sky transmittance LUT");
     cmd->SetPipelineState(m_skyLutTransmittancePSO.Get());
     cmd->Dispatch(256 / 8, 64 / 8, 1);
+    m_gpuProfiler.EndPass(cmd, transmittanceTimer);
     {
         // Multiple scattering reads the transmittance written by the first pass.
         D3D12_RESOURCE_BARRIER transDone = CD3DX12_RESOURCE_BARRIER::UAV(m_skyTransmittanceLUT.Get());
         cmd->ResourceBarrier(1, &transDone);
     }
+    const UINT scatterTimer = m_gpuProfiler.BeginPass(cmd, "Sky multiscatter LUT");
     cmd->SetPipelineState(m_skyLutMultiScatterPSO.Get());
 
     cmd->Dispatch(32, 32, 1);
+    m_gpuProfiler.EndPass(cmd, scatterTimer);
     D3D12_RESOURCE_BARRIER toSrv[2] = {
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyTransmittanceLUT.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),
         CD3DX12_RESOURCE_BARRIER::Transition(m_skyMultiScatterLUT.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kSRV),

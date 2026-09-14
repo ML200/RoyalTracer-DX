@@ -1156,49 +1156,104 @@ void VoxelStreamer::drop_far_lights() {
 }
 
 void VoxelStreamer::update_stats() {
+    if (!m_world || !m_vertexGlobal) {
+        m_stats = StreamerStats{};
+        m_statsCensusFrame = m_frame;
+        return;
+    }
     StreamerStats& s = m_stats;
     s.desired = (uint32_t)m_cut.leaves.size();
     s.rendered = (uint32_t)m_render.size();
     s.trianglesRendered = m_trianglesRendered;
     s.lodFactorNow = m_lodFactorNow;
     s.cutReadyFraction = (float)m_cutReadyFraction;
-    if ((m_frame & 3u) != 0u) return;
-    struct Census { uint32_t byState[7] = {}; uint64_t resident = 0, lightResident = 0; uint32_t dropped = 0; };
+    {
+        std::lock_guard<std::mutex> lk(m_poolMutex);
+        const uint64_t vertexUsed = m_vtxAlloc.used(), indexUsed = m_idxAlloc.used(), matUsed = m_matAlloc.used();
+        s.geometryBytesUsed = vertexUsed * sizeof(MeshVertex) + (indexUsed + matUsed) * sizeof(uint32_t);
+        s.geometryBytesCapacity = m_vtxAlloc.capacity() * sizeof(MeshVertex) +
+            (m_idxAlloc.capacity() + m_matAlloc.capacity()) * sizeof(uint32_t);
+        s.blasBytesUsed = m_blasAlloc.used();
+        s.blasBytesCapacity = m_blasAlloc.capacity();
+        s.blasBuildBytesUsed = m_buildAlloc.used();
+        s.blasBuildBytesCapacity = m_buildAlloc.capacity();
+        s.lightRecUsed = m_lightRecAlloc.used();
+        s.lightNodeUsed = m_lightNodeAlloc.used();
+    }
+    s.scratchBytesCapacity = 0;
+    for (const auto& scratch : m_scratch)
+        if (scratch) s.scratchBytesCapacity += scratch->GetDesc().Width;
+    s.scratchBytesUsed = 0;
+    for (uint64_t used : m_scratchUsed) s.scratchBytesUsed += used;
+    s.lightSlotsActive = 0;
+    s.lightChunksInTree = 0;
+    s.lightTrisInTree = 0;
+    s.lightNodesInTree = 0;
+    for (const LightSlot& ls : m_lightSlots) {
+        if (ls.active()) ++s.lightSlotsActive;
+        const bool live = m_lightTlasHasVoxels && ls.light.valid()
+            && ls.includedAt <= m_lightLiveVersion && m_lightLiveVersion < ls.excludedAt;
+        if (!live) continue;
+        ++s.lightChunksInTree;
+        s.lightTrisInTree += ls.light.recCount;
+        s.lightNodesInTree += ls.light.nodeCount;
+    }
+    s.lightVersion = m_lightVersion;
+    s.lightLiveVersion = m_lightLiveVersion;
+    if ((m_frame & 3u) != 0u || m_statsCensusFrame == m_frame) {
+        s.censusAgeFrames = m_frame >= m_statsCensusFrame ? m_frame - m_statsCensusFrame : 0;
+        return;
+    }
+    struct Census {
+        uint32_t byState[7] = {};
+        uint64_t resident = 0, lightResident = 0, lightNodesResident = 0;
+        uint32_t residentBlas = 0, dropped = 0;
+    };
     std::vector<Census> parts(piece_count((uint32_t)m_chunks.bucket_count(), 512));
     parallel_buckets([&](uint64_t, const Chunk& c, uint32_t piece) {
         Census& cs = parts[piece];
         ++cs.byState[(int)c.state];
-        cs.resident += c.gpu.triCount;
-        cs.lightResident += c.gpu.light.recCount;
+        if (c.resident) {
+            cs.resident += c.gpu.triCount;
+            if (c.gpu.valid()) ++cs.residentBlas;
+            cs.lightResident += c.gpu.light.recCount;
+            cs.lightNodesResident += c.gpu.light.nodeCount;
+        }
         if (c.lightsDropped) ++cs.dropped;
     });
     Census total;
     for (const Census& cs : parts) {
         for (int i = 0; i < 7; ++i) total.byState[i] += cs.byState[i];
-        total.resident += cs.resident; total.lightResident += cs.lightResident; total.dropped += cs.dropped;
+        total.resident += cs.resident;
+        total.lightResident += cs.lightResident;
+        total.lightNodesResident += cs.lightNodesResident;
+        total.residentBlas += cs.residentBlas;
+        total.dropped += cs.dropped;
     }
     s.pending = total.byState[(int)State::Pending];   s.meshing = total.byState[(int)State::Meshing];
     s.meshed = total.byState[(int)State::Meshed];     s.uploading = total.byState[(int)State::Uploading] + total.byState[(int)State::Compacting];
     s.ready = total.byState[(int)State::Ready];       s.empty = total.byState[(int)State::Empty];
     s.trianglesResident = total.resident;
+    s.geometryBlasResident = total.residentBlas;
     s.lightTrisResident = total.lightResident;
+    s.lightNodesResident = total.lightNodesResident;
     s.lightChunksDropped = total.dropped;
-    s.lightSlotsActive = 0;
-    s.lightTrisInTree = 0;
-    for (const LightSlot& ls : m_lightSlots)
-        if (ls.active()) { ++s.lightSlotsActive; s.lightTrisInTree += ls.light.recCount; }
-    s.lightChunksInTree = s.lightSlotsActive;
-    s.lightVersion = m_lightVersion;
-    s.lightLiveVersion = m_lightLiveVersion;
     s.chunksTracked = (uint32_t)m_chunks.size();
-    std::lock_guard<std::mutex> lk(m_poolMutex);
-    s.vertexUsed = m_vtxAlloc.used(); s.indexUsed = m_idxAlloc.used(); s.matIdUsed = m_matAlloc.used(); s.blasUsed = m_blasAlloc.used();
-    s.blasBuildUsed = m_buildAlloc.used();
-    s.lightRecUsed = m_lightRecAlloc.used(); s.lightNodeUsed = m_lightNodeAlloc.used();
+    {
+        // Keep the LOD estimator's pool usage paired with its triangle census.
+        std::lock_guard<std::mutex> lk(m_poolMutex);
+        s.vertexUsed = m_vtxAlloc.used();
+        s.indexUsed = m_idxAlloc.used();
+        s.matIdUsed = m_matAlloc.used();
+        s.blasUsed = m_blasAlloc.used();
+        s.blasBuildUsed = m_buildAlloc.used();
+    }
+    m_statsCensusFrame = m_frame;
+    s.censusAgeFrames = 0;
 }
 
 void VoxelStreamer::begin_frame(const double camWorld[3]) {
-    if (!m_world || !m_vertexGlobal) return;
+    if (!m_world || !m_vertexGlobal) { update_stats(); return; }
     ++m_frame;
     m_placement.to_blocks(camWorld, m_cam);
     reclaim();
@@ -1217,7 +1272,7 @@ void VoxelStreamer::record_gpu_work(ID3D12GraphicsCommandList* copyList, ID3D12G
     m_stats.copiesThisFrame = 0;
     m_stats.uploadBytesThisFrame = 0;
     m_uploadingThisFrame.clear();
-    if (!m_world || !m_vertexGlobal) return;
+    if (!m_world || !m_vertexGlobal) { update_stats(); return; }
     using clock = std::chrono::steady_clock;
     const auto t0 = clock::now();
 
@@ -1392,6 +1447,8 @@ void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperti
     if (m_renderListChanged || originChanged) forceRebuild = true;
     if (originChanged) m_lightSetDirty = true;
 
+    m_stats.geometryBlasRendered = 0;
+    m_stats.trianglesInTlas = 0;
     for (const RenderEntry& e : m_render) {
         Chunk& c = *e.chunk;
         if (!c.gpu.valid()) continue;
@@ -1417,6 +1474,8 @@ void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperti
             ? D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE : D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
         const uint32_t hg = (c.gpu.opaqueTriCount == 0 && c.gpu.triCount) ? hitGroup + 1u : hitGroup;
         tlas.add_instance(c.gpu.blasVa, xform, instId, hg, flags);
+        ++m_stats.geometryBlasRendered;
+        m_stats.trianglesInTlas += c.gpu.triCount;
         const uint32_t wantSlot = (c.lightSlot != NONE && light_slot_live(c.lightSlot)) ? m_lights.slotBase + c.lightSlot : NONE;
         const bool full = !c.propsWritten || originChanged;
         if (props && (full || c.propsLightSlot != wantSlot)) {
@@ -1460,6 +1519,7 @@ void VoxelStreamer::append_instances(planet::TlasBuilder& tlas, InstanceProperti
         }
     }
     update_light_set(m_lightLiveVersion);
+    update_stats();
 }
 
 void VoxelStreamer::update_light_set(uint32_t) {

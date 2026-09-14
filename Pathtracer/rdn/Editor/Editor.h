@@ -43,7 +43,8 @@ class Editor {
     void DrawMaterialInspector(Scene& scene, Camera& camera, IntegratorSettings& restir);
     void DrawIntegratorPanel(IntegratorSettings& restir, const FrameStats& stats);
     void DrawSunPanel(Scene& scene, Camera& camera, const FrameStats& stats, mc::VoxelStreamer* voxels);
-    void DrawPlanetPerfPanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps);
+    void DrawPerformancePanel(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs, float fps,
+                              const mc::StreamerStats* minecraft);
 
     void DrawMinecraftPanel(mc::VoxelStreamer& voxels);
 
@@ -59,7 +60,7 @@ class Editor {
     bool m_showInactivePasses = false;
     bool m_showSun = false;
     bool m_showMaterials = false;
-    bool m_showPlanetPerf = false;
+    bool m_showPerformance = false;
     int m_selectedModel = -1;
     int m_selectedMat = -1;
 
@@ -69,27 +70,28 @@ class Editor {
     char m_matFilter[128] = {0};
 
   public:
-    struct PlanetPerfHistory {
+    struct PerformanceHistory {
         static constexpr int N = 256;
         int write = 0;
         int filled = 0;
         bool paused = false;
 
-        float frame_total_ms[N] = {};
-        float frame_gpu_wait_ms[N] = {};
-        float planet_cpu_ms[N] = {};
-        float planet_plan_ms[N] = {};
-        float planet_blas_gpu_ms[N] = {};
-        float planet_tlas_gpu_ms[N] = {};
-        float cells_recorded[N] = {};
-        float pipe_pending[N] = {};
-        float pipe_ready[N] = {};
-        float pipe_blas_pending[N] = {};
-        float pipe_built[N] = {};
+        float frameCpuMs[N] = {};
+        float frameGpuMs[N] = {};
+        float streamingCpuMs[N] = {};
 
-        void push(const planet::StreamOrchestrator::Stats& ps, const FrameStats& fs);
+        void push(const FrameStats& fs);
     };
 
   private:
-    PlanetPerfHistory m_planetHist;
+    struct PerformanceFrame {
+        FrameStats frame;
+        planet::StreamOrchestrator::Stats stream;
+        mc::StreamerStats minecraft;
+        float fps = 0.0f;
+        bool hasMinecraft = false;
+    };
+
+    PerformanceHistory m_performanceHistory;
+    PerformanceFrame m_performanceFrame;
 };

@@ -2,6 +2,7 @@
 
 #include "../Common.h"
 #include "../LightTree.h"
+#include <chrono>
 #include <future>
 #include <functional>
 #include <mutex>
@@ -38,6 +39,7 @@ struct TLASRefitResult {
     uint32_t extraVersion = 0;
     uint32_t extraLeafCount = 0;
     bool incremental = false;
+    float worker_cpu_ms = 0.0f;
 };
 
 inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(const std::vector<LightTriangle>& tris) {
@@ -542,7 +544,13 @@ class LightTreeRefitManager {
         if (m_pending.load())
             return;
         m_pending.store(true);
-        m_future = std::async(std::launch::async, std::move(job));
+        m_future = std::async(std::launch::async, [job = std::move(job)]() mutable {
+            const auto start = std::chrono::steady_clock::now();
+            TLASRefitResult result = job();
+            result.worker_cpu_ms = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            return result;
+        });
     }
 
     bool PollResult(TLASRefitResult& outResult) {

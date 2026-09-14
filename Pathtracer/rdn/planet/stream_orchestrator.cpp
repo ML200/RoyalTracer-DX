@@ -270,24 +270,38 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
                                      uint32_t terrain_hit_group, uint32_t external_hit_group) {
     m_ctx->ResetPlanetLists();
     ID3D12GraphicsCommandList10* cl = m_ctx->ComputeList();
-    if (m_external) m_external->record_gpu_work(m_ctx->CopyList(), cl);
-    const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
 
     const uint32_t slot = m_tsWrite % TS_RING;
     if (m_tsRing[slot].pending &&
         m_ctx->PlanetComputeCompleted() >= m_tsRing[slot].fence) {
         const uint64_t* p = m_tsReadbackMapped + (size_t)slot * TS_PER_SLOT;
         const uint64_t  t_start = p[0];
-        const uint64_t  t_blas  = p[1];
-        const uint64_t  t_tlas  = p[2];
+        const uint64_t  t_external = p[1];
+        const uint64_t  t_blas  = p[2];
+        const uint64_t  t_tlas  = p[3];
         const double inv_freq_ms = (m_tsFreq != 0) ? (1000.0 / double(m_tsFreq)) : 0.0;
-        m_stats.blas_gpu_ms = float(double(t_blas - t_start) * inv_freq_ms);
-        m_stats.tlas_gpu_ms = float(double(t_tlas - t_blas ) * inv_freq_ms);
+        const bool ordered = t_start <= t_external && t_external <= t_blas && t_blas <= t_tlas;
+        m_stats.external_blas_gpu_ms = ordered ? float(double(t_external - t_start) * inv_freq_ms) : 0.0f;
+        m_stats.blas_gpu_ms = ordered ? float(double(t_blas - t_external) * inv_freq_ms) : 0.0f;
+        m_stats.tlas_gpu_ms          = ordered ? float(double(t_tlas - t_blas) * inv_freq_ms) : 0.0f;
+        m_tsLastSampleFrame = m_tsRing[slot].frame;
+        m_stats.gpu_timing_tlas_build_recorded = m_tsRing[slot].tlas_build_recorded;
+        m_stats.gpu_timing_tlas_instances = m_tsRing[slot].tlas_instances;
+        m_tsHaveSample = true;
+        m_tsLastSampleValid = ordered && m_tsFreq != 0;
         m_tsRing[slot].pending = false;
     }
 
+    m_stats.gpu_timing_valid = m_tsHaveSample && m_tsLastSampleValid;
+    m_stats.gpu_timing_sample_age = m_tsHaveSample ? m_frame - m_tsLastSampleFrame : 0;
+
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                  slot * TS_PER_SLOT + 0);
+    if (m_external) m_external->record_gpu_work(m_ctx->CopyList(), cl);
+    const uint64_t copyVal = m_ctx->SubmitPlanetCopy();
+
+    cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                 slot * TS_PER_SLOT + 1);
 
     uint32_t recorded = 0;
     if (m_builder.active()) {
@@ -303,12 +317,12 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     m_stats.cells_recorded = recorded;
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                 slot * TS_PER_SLOT + 1);
+                 slot * TS_PER_SLOT + 2);
 
     record_tlas(scene, scene_count, terrain_hit_group, external_hit_group, cl);
 
     cl->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                 slot * TS_PER_SLOT + 2);
+                 slot * TS_PER_SLOT + 3);
 
     cl->ResolveQueryData(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                          slot * TS_PER_SLOT, TS_PER_SLOT,
@@ -319,7 +333,7 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     if (recorded > 0) m_builder.on_submitted(cv);
     if (m_external) m_external->on_submitted(copyVal, cv);
 
-    m_tsRing[slot] = TsSlot{ cv, true };
+    m_tsRing[slot] = TsSlot{ cv, m_frame, m_tlas.instance_count(), m_tlas.last_build_recorded(), true };
     m_tsWrite++;
 
     m_stats.built          = m_haveLive;
@@ -328,6 +342,10 @@ void StreamOrchestrator::submit_work(const SceneInstanceDesc* scene, uint32_t sc
     m_stats.cell_count     = (uint32_t)m_live.cells.size();
     m_stats.triangle_count = m_live.triangle_count;
     m_stats.tlas_instances = m_tlas.instance_count();
+    m_stats.tlas_instance_capacity = m_tlas.max_instances();
+    m_stats.tlas_result_bytes = m_tlas.result_bytes();
+    m_stats.tlas_scratch_bytes = m_tlas.scratch_bytes();
+    m_stats.tlas_build_recorded = m_tlas.last_build_recorded();
     m_stats.geo_free_leaves = m_geoPool.free_leaves();
     m_stats.stable_id_peak  = m_ids.peak();
     if (m_builder.active()) {

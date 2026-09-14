@@ -62,9 +62,15 @@ struct StreamerStats {
     uint32_t desired = 0, rendered = 0, ready = 0, empty = 0, pending = 0, meshing = 0, meshed = 0, uploading = 0;
     uint32_t chunksTracked = 0;
     uint64_t trianglesRendered = 0, trianglesResident = 0, trianglesEstimated = 0, triangleBudget = 0;
+    uint32_t geometryBlasResident = 0, geometryBlasRendered = 0;
+    uint64_t trianglesInTlas = 0;
     float    lodFactorNow = 0.0f;
     float    cutReadyFraction = 1.0f;
     uint64_t vertexUsed = 0, indexUsed = 0, matIdUsed = 0, blasUsed = 0, blasBuildUsed = 0;
+    uint64_t geometryBytesUsed = 0, geometryBytesCapacity = 0;
+    uint64_t blasBytesUsed = 0, blasBytesCapacity = 0;
+    uint64_t blasBuildBytesUsed = 0, blasBuildBytesCapacity = 0;
+    uint64_t scratchBytesUsed = 0, scratchBytesCapacity = 0;
     uint32_t buildsThisFrame = 0, copiesThisFrame = 0, compactionsThisFrame = 0;
     uint64_t uploadBytesThisFrame = 0;
     uint32_t allocFailures = 0;
@@ -78,9 +84,12 @@ struct StreamerStats {
     float    recordMs  = 0.0f;
     double   warmUpSeconds = 0.0;
     bool     warmUpComplete = false;
-    uint64_t lightTrisResident = 0, lightTrisInTree = 0, lightRecUsed = 0, lightNodeUsed = 0;
+    uint64_t lightTrisResident = 0, lightNodesResident = 0;
+    // Tree counts use the currently published light version.
+    uint64_t lightTrisInTree = 0, lightNodesInTree = 0, lightRecUsed = 0, lightNodeUsed = 0;
     uint32_t lightChunksInTree = 0, lightSlotsActive = 0, lightChunksDropped = 0;
     uint32_t lightVersion = 0, lightLiveVersion = 0;
+    uint32_t censusAgeFrames = 0; // Frames since the last full chunk census.
 };
 
 class SpanAllocator {
@@ -368,6 +377,7 @@ private:
     double                 m_levelTriEst[MAX_LOD_LEVELS] = {};
     planet::DVec3          m_lastOrigin{ 1e30, 1e30, 1e30 };
     uint32_t               m_frame = 0;
+    uint32_t               m_statsCensusFrame = 0;
     uint64_t               m_lastCopyFence = 0, m_lastComputeFence = 0;
     bool                   m_unlimitedBudget = false;
 

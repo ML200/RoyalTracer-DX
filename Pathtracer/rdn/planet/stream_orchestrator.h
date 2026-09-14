@@ -185,8 +185,17 @@ public:
 
         float    blas_record_cpu_ms = 0.0f;
         float    plan_ms            = 0.0f;
+        float    external_blas_gpu_ms = 0.0f;
         float    blas_gpu_ms        = 0.0f;
         float    tlas_gpu_ms        = 0.0f;
+        uint64_t tlas_result_bytes  = 0;
+        uint64_t tlas_scratch_bytes = 0;
+        uint32_t tlas_instance_capacity = 0;
+        bool     tlas_build_recorded = false;
+        bool     gpu_timing_valid    = false;
+        uint32_t gpu_timing_sample_age = 0;
+        bool     gpu_timing_tlas_build_recorded = false;
+        uint32_t gpu_timing_tlas_instances = 0;
 
         uint32_t cells_pending        = 0;
         uint32_t cells_ready          = 0;
@@ -249,14 +258,23 @@ private:
     uint64_t               m_curNode[MAX_TERRAIN_CELLS] = {};
 
     static constexpr uint32_t TS_RING     = 4;
-    static constexpr uint32_t TS_PER_SLOT = 3;
+    static constexpr uint32_t TS_PER_SLOT = 4;
     ComPtr<ID3D12QueryHeap>   m_queryHeap;
     ComPtr<ID3D12Resource>    m_tsReadback;
     uint64_t*                 m_tsReadbackMapped = nullptr;
     uint64_t                  m_tsFreq = 0;
-    struct TsSlot { uint64_t fence = 0; bool pending = false; };
+    struct TsSlot {
+        uint64_t fence = 0;
+        uint32_t frame = 0;
+        uint32_t tlas_instances = 0;
+        bool tlas_build_recorded = false;
+        bool pending = false;
+    };
     TsSlot                    m_tsRing[TS_RING]{};
     uint32_t                  m_tsWrite = 0;
+    uint32_t                  m_tsLastSampleFrame = 0;
+    bool                      m_tsHaveSample = false;
+    bool                      m_tsLastSampleValid = false;
 
     Stats m_stats;
 

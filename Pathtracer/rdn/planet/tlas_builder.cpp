@@ -18,6 +18,7 @@ void TlasBuilder::init(ID3D12Device5* device, uint32_t max_instances) {
     m_count = 0;
     m_builtCount = 0;
     m_built = false;
+    m_lastBuildRecorded = false;
     m_descriptors.clear();
     reserve(std::max(max_instances, 1u));
 }

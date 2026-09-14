@@ -12,17 +12,22 @@ diffuse-resampling defaults.
 - **Diagnostics** contains the executed pass list, DLSS buffer inspector and
   performance graphs. The pass list shows the previous frame's recorded work;
   inactive passes can be included explicitly. UAV barriers are omitted from the UI.
-- **Experimental** contains the optional DLSS 5 integration.
+- **Experimental** contains Minecraft controls and the optional DLSS 5 integration.
   The DLSS preset selector exposes Default/D/E/F from the bundled SDK; the
   report-only jitter override and unsupported preset letters are no longer exposed.
 - Selecting a DLSS buffer displays it immediately. Off or closing the inspector
   restores the prior output view. SHARC inspection takes priority if both are set.
-- CPU fence waiting is labelled **GPU wait**, rather than GPU frame time.
-  Cache/path/cloud timings continue to use actual GPU timestamp queries.
+- **Performance** shows Minecraft geometry, BVH allocations, streaming queues,
+  and the published light hierarchy. Resident counts show their census age;
+  memory tooltips include exact byte counts. CPU streaming and fence waiting
+  are reported separately.
+- Per-pass timings use GPU timestamps from completed render frames. Repeated
+  passes sum their durations and call counts. The render total excludes the
+  asynchronous build queue and presentation; Minecraft BLAS builds/compaction
+  and the shared TLAS have separate completed-sample timings.
 
 `IntegratorSettings` is the shared C++ settings type. Existing shader constant
-slots and render defaults are unchanged. ImGui's original window IDs remain in
-the renamed titles so existing window positions and sizes survive.
+slots and render defaults are unchanged.
 
 ## Pipeline changes
 
@@ -55,6 +60,7 @@ From a Visual Studio Developer PowerShell:
 
 ```powershell
 ./tests/run_render_pipeline_tests.ps1
+./tests/run_gpu_profiler_tests.ps1
 ./tests/run_light_tree_tests.ps1
 ./tests/run_sharc_tests.ps1
 ./tests/run_gltf_instancing_tests.ps1
