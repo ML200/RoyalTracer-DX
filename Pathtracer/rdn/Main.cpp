@@ -68,10 +68,10 @@ class MainScene : public SceneDefinition {
   public:
     std::vector<MeshDefinition> GetMeshes() override {
         return {
-            // {"bistro2/bistro2.obj", XMMatrixIdentity(), "Bistro2"},
-            MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/world/Greenfield v0.5.4",
+            {"harbor2.glb", XMMatrixIdentity(), "sponza_tex"},
+            /*MinecraftWorld("C:/Users/Malte/Downloads/Greenfield v0.5.4/world/Greenfield v0.5.4",
                            {"C:/Users/Malte/Downloads/Greenfield v0.5.4/Greenfield.Texture.Pack.1.17.zip"},
-                           XMMatrixIdentity(), "Greenfield"),
+                           XMMatrixIdentity(), "Greenfield"),*/
         };
     }
     void Init(SceneManager&, Renderer& r) override { m_hooks.Init(r); }

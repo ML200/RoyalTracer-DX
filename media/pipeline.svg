@@ -1,122 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 770" font-family="Segoe UI, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="302" viewBox="0 0 960 302" role="img" aria-labelledby="title desc">
+  <title id="title">Regular path tracing pipeline</title>
+  <desc id="desc">Light trees with learned cuts and path guiding support both SHARC training and path tracing. The three main stages are SHARC training and resolve, path tracing with cache queries, and ReSTIR spatial reuse using reciprocal texture pairs.</desc>
+  <style>
+    .canvas { fill: #ffffff; }
+    .panel { fill: #f6f8fa; stroke: #d1d9e0; }
+    .cache { fill: #eef6ff; stroke: #0969da; }
+    .trace { fill: #f6f8fa; stroke: #59636e; }
+    .reuse { fill: #f0f6f2; stroke: #1a7f37; }
+    .label { fill: #1f2328; font-size: 21px; font-weight: 600; }
+    .detail { fill: #59636e; font-size: 16px; }
+    .flow { fill: none; stroke: #59636e; stroke-width: 1.5; }
+    .arrow { fill: #59636e; }
+    @media (prefers-color-scheme: dark) {
+      .canvas { fill: #0d1117; }
+      .panel { fill: #151b23; stroke: #3d444d; }
+      .cache { fill: #101f33; stroke: #4493f8; }
+      .trace { fill: #151b23; stroke: #9198a1; }
+      .reuse { fill: #12261e; stroke: #3fb950; }
+      .label { fill: #f0f6fc; }
+      .detail { fill: #b1bac4; }
+      .flow { stroke: #9198a1; }
+      .arrow { fill: #9198a1; }
+    }
+  </style>
   <defs>
-    <linearGradient id="pgRaygen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e8f0ff"/>
-      <stop offset="100%" stop-color="#c0d8f8"/>
-    </linearGradient>
-    <linearGradient id="pgTemporal" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fff0e0"/>
-      <stop offset="100%" stop-color="#f0d8a8"/>
-    </linearGradient>
-    <linearGradient id="pgPartner" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ffe8f0"/>
-      <stop offset="100%" stop-color="#f0b8d0"/>
-    </linearGradient>
-    <linearGradient id="pgSpatial" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e8ffe8"/>
-      <stop offset="100%" stop-color="#a8d8a8"/>
-    </linearGradient>
-    <linearGradient id="pgDup" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e8f8ff"/>
-      <stop offset="100%" stop-color="#a8c8e0"/>
-    </linearGradient>
-    <linearGradient id="pgShading" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f8f8f0"/>
-      <stop offset="100%" stop-color="#e0e0c8"/>
-    </linearGradient>
-    <linearGradient id="pgDLSS" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#e0f8f0"/>
-      <stop offset="100%" stop-color="#80d0b0"/>
-    </linearGradient>
-    <linearGradient id="pgPost" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fff8e8"/>
-      <stop offset="100%" stop-color="#f0e0a0"/>
-    </linearGradient>
-    <marker id="arrowBlack" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
-    </marker>
-    <marker id="arrowTemporal" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#c06020"/>
-    </marker>
-    <marker id="arrowDup" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <path d="M0,0 L8,3 L0,6 Z" fill="#2080a0"/>
+    <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+      <path class="arrow" d="M0 0 8 4 0 8Z" />
     </marker>
   </defs>
-
-  <!-- Background -->
-  <rect width="720" height="770" fill="white" rx="8"/>
-
-  <!-- 1. Path Tracing -->
-  <rect x="100" y="20" width="520" height="65" rx="6" fill="url(#pgRaygen)" stroke="#80a0d0" stroke-width="1.5"/>
-  <text x="360" y="46" text-anchor="middle" font-size="17" font-weight="600" fill="#333">Path Tracing</text>
-  <text x="360" y="68" text-anchor="middle" font-size="11" fill="#666">Multi-bounce PT with NEE  ·  G-buffer  ·  Writes unified DI/GI reservoir (matID-keyed)</text>
-
-  <!-- 2. Temporal Reuse -->
-  <rect x="100" y="105" width="520" height="65" rx="6" fill="url(#pgTemporal)" stroke="#c0a060" stroke-width="1.5"/>
-  <text x="360" y="131" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Temporal Reuse</text>
-  <text x="360" y="151" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS  ·  permutation sampling  ·  M-cap lerped toward 1 where prev-frame D is high</text>
-
-  <!-- 3. Reuse-Texture Partner Select -->
-  <rect x="100" y="190" width="520" height="55" rx="6" fill="url(#pgPartner)" stroke="#c08098" stroke-width="1.5"/>
-  <text x="360" y="214" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Reuse-Texture Partner Select</text>
-  <text x="360" y="232" text-anchor="middle" font-size="11" fill="#666">Self-inverting 3-slot lookups give every pixel a symmetric spatial partner</text>
-
-  <!-- 4. Spatial Shift -->
-  <rect x="100" y="265" width="520" height="55" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
-  <text x="360" y="288" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Shift (raygen)</text>
-  <text x="360" y="307" text-anchor="middle" font-size="11" fill="#666">Reconnection shift  ·  visibility rays  ·  caches shifted F + Jacobian per slot</text>
-
-  <!-- 5. Spatial Merge -->
-  <rect x="100" y="340" width="520" height="55" rx="6" fill="url(#pgSpatial)" stroke="#70a070" stroke-width="1.5"/>
-  <text x="360" y="363" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Spatial Merge (compute)</text>
-  <text x="360" y="382" text-anchor="middle" font-size="11" fill="#666">Pairwise MIS over cached shifts  ·  lazy payload load only on RIS win (~25–35%)</text>
-
-  <!-- 6. Duplication Map -->
-  <rect x="100" y="415" width="520" height="65" rx="6" fill="url(#pgDup)" stroke="#6090c0" stroke-width="1.5"/>
-  <text x="360" y="441" text-anchor="middle" font-size="15" font-weight="600" fill="#333">Duplication Map</text>
-  <text x="360" y="460" text-anchor="middle" font-size="11" fill="#666">V2 (reconnection-vertex) matches in 17×17 window  ·  D ∈ [0, 1] drives next frame's M-cap</text>
-
-  <!-- 7. Shading -->
-  <rect x="100" y="500" width="520" height="60" rx="6" fill="url(#pgShading)" stroke="#b0b090" stroke-width="1.5"/>
-  <text x="360" y="525" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Shading &amp; Accumulation</text>
-  <text x="360" y="544" text-anchor="middle" font-size="11" fill="#666">Motion vectors  ·  DLSS-RR inputs (depth, normals, albedo, roughness)</text>
-
-  <!-- 8. DLSS -->
-  <rect x="100" y="575" width="520" height="55" rx="6" fill="url(#pgDLSS)" stroke="#60b090" stroke-width="1.5"/>
-  <text x="360" y="598" text-anchor="middle" font-size="16" font-weight="600" fill="#333">DLSS Ray Reconstruction</text>
-  <text x="360" y="616" text-anchor="middle" font-size="11" fill="#666">Denoising  ·  Super resolution</text>
-
-  <!-- 9. Post-Process -->
-  <rect x="100" y="645" width="520" height="50" rx="6" fill="url(#pgPost)" stroke="#c0b060" stroke-width="1.5"/>
-  <text x="360" y="670" text-anchor="middle" font-size="16" font-weight="600" fill="#333">Post-Process</text>
-  <text x="360" y="686" text-anchor="middle" font-size="11" fill="#666">sRGB gamma correction</text>
-
-  <!-- Forward arrows -->
-  <line x1="360" y1="85"  x2="360" y2="98"  stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="170" x2="360" y2="183" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="245" x2="360" y2="258" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="320" x2="360" y2="333" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="395" x2="360" y2="408" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="480" x2="360" y2="493" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="560" x2="360" y2="568" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-  <line x1="360" y1="630" x2="360" y2="638" stroke="#555" stroke-width="1.5" marker-end="url(#arrowBlack)"/>
-
-  <!-- Temporal feedback: Spatial Merge output -> right -> up -> back into Temporal Reuse -->
-  <path d="M 620,367 L 670,367 L 670,132 L 620,132"
-        fill="none" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowTemporal)"/>
-  <text x="697" y="250" text-anchor="middle" font-size="11" font-weight="600" fill="#c06020" transform="rotate(90, 697, 250)">prev frame spatial reservoirs</text>
-
-  <!-- Duplication-map feedback: Duplication Map output -> left -> up -> back into Temporal Reuse -->
-  <path d="M 100,447 L 50,447 L 50,151 L 100,151"
-        fill="none" stroke="#2080a0" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowDup)"/>
-  <text x="28" y="299" text-anchor="middle" font-size="11" font-weight="600" fill="#2080a0" transform="rotate(-90, 28, 299)">prev frame duplication map</text>
-
-  <!-- Legend -->
-  <rect x="100" y="715" width="520" height="28" rx="6" fill="#fafafa" stroke="#e0e0e0" stroke-width="1"/>
-  <line x1="115" y1="730" x2="145" y2="730" stroke="#555" stroke-width="2"/>
-  <text x="150" y="734" font-size="10" fill="#666">Current frame</text>
-  <line x1="235" y1="730" x2="265" y2="730" stroke="#c06020" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="270" y="734" font-size="10" fill="#666">Prev spatial reservoirs</text>
-  <line x1="415" y1="730" x2="445" y2="730" stroke="#2080a0" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="450" y="734" font-size="10" fill="#666">Prev duplication map</text>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle">
+    <rect class="canvas" width="960" height="302" rx="8" />
+    <rect class="panel" x="32" y="28" width="568" height="70" rx="6" />
+    <text class="label" x="316" y="58" font-size="18">Light tree + learned cuts</text>
+    <text class="detail" x="316" y="82">Path guiding</text>
+    <path class="flow" d="M156 98V153" marker-end="url(#arrow)" />
+    <path class="flow" d="M472 98V153" marker-end="url(#arrow)" />
+    <rect class="cache" x="32" y="164" width="248" height="106" rx="6" />
+    <text class="label" x="156" y="207">SHARC</text>
+    <text class="detail" x="156" y="238">Train + resolve</text>
+    <path class="flow" d="M290 217H338" marker-end="url(#arrow)" />
+    <rect class="trace" x="348" y="164" width="248" height="106" rx="6" />
+    <text class="label" x="472" y="207">Path tracing</text>
+    <text class="detail" x="472" y="238">Trace + query cache</text>
+    <path class="flow" d="M606 217H654" marker-end="url(#arrow)" />
+    <rect class="reuse" x="664" y="164" width="264" height="106" rx="6" />
+    <text class="label" x="796" y="207">ReSTIR spatial reuse</text>
+    <text class="detail" x="796" y="238">Texture pairs + merge</text>
+  </g>
 </svg>
