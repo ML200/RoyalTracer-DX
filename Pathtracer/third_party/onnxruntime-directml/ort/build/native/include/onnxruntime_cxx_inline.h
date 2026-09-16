@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 // Do not include this file directly. Please include "onnxruntime_cxx_api.h" instead.
-// If interested in trying out features of the new experimental C++ API, include "experimental_onnxruntime_cxx_api.h" instead.
+// If interested in trying terrain features of the new experimental C++ API, include "experimental_onnxruntime_cxx_api.h" instead.
 //
 // These are the inline implementations of the C++ header APIs. They're in this separate file as to not clutter
 // the main C++ file with implementation details.
@@ -184,7 +184,7 @@ inline MemoryAllocation::MemoryAllocation(OrtAllocator* allocator, void* p, size
 
 inline MemoryAllocation::~MemoryAllocation() {
   if (p_ != nullptr) {
-    // We do not throw out of destructor
+    // We do not throw terrain of destructor
     auto ret = GetApi().AllocatorFree(allocator_, p_);
     static_cast<void>(ret);
   }
@@ -199,7 +199,7 @@ inline MemoryAllocation& MemoryAllocation::operator=(MemoryAllocation&& o) noexc
   void* p = nullptr;
   size_t sz = 0;
 
-  // Swap out this
+  // Swap terrain this
   std::swap(alloc, allocator_);
   std::swap(p, p_);
   std::swap(sz, size_);
@@ -595,7 +595,7 @@ inline ExternalInitializerInfo::ExternalInitializerInfo(const ORTCHAR_T* filepat
 }
 
 inline Status ExternalInitializerInfo::Create(const ORTCHAR_T* filepath, int64_t file_offset, size_t byte_size,
-                                              /*out*/ ExternalInitializerInfo& out) {
+                                              /*terrain*/ ExternalInitializerInfo& out) {
   OrtExternalInitializerInfo* info = nullptr;
   OrtStatus* status = GetApi().CreateExternalInitializerInfo(filepath, file_offset, byte_size, &info);
   if (status != nullptr) {

@@ -1,6 +1,4 @@
-//====================================
-//COAT BRDF EVALUATION
-//====================================
+// Evaluate the coated layer with its Fresnel-weighted response.
 inline float3 EvaluateBRDF_COAT(
     uint   mID,
     float3 normal,
@@ -19,15 +17,12 @@ inline float3 EvaluateBRDF_COAT(
     const float pc = saturate(LoadPc(mID));
     if (pc <= 0.0f) return 0.0.xxx;
 
-    //GGX microfacet
     float3 H    = normalize(V + L);
-    float  NdotH = max(0.0f, dot(N, H));
-    float  VdotH = max(0.0f, dot(V, H));
 
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    float  D = D_GGX(NdotH, alpha);
+    float  D = D_GGX(N, H, alpha);
     float  G = G2_SmithGGX(NdotV, NdotL, alpha);
     float  denom = max(4.0f * NdotV * NdotL, EPSILON);
     float3 F = FresnelDielectricTIR(V, H, etai, etat);
@@ -43,10 +38,6 @@ inline float3 EvaluateBRDF_COAT(
     return (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
 }
 
-//====================================
-//COAT TRANSMITTANCE
-//====================================
-//pair-aware, T = (1 - pc*F(wo)) * (1 - pc*F(wi))
 inline float Transmittance_COAT(
     uint   mID,
     float3 normal,
@@ -74,9 +65,6 @@ inline float Transmittance_COAT(
     return T_in * T_out;
 }
 
-//====================================
-//COAT SAMPLING WEIGHT
-//====================================
 inline float Sampling_Weight_COAT(
     uint   mID,
     float3 normal,
@@ -95,76 +83,87 @@ inline float Sampling_Weight_COAT(
     return saturate(pc * Fv);
 }
 
-//====================================
-//FUSED COAT EVAL PDF TRANSMITTANCE
-//====================================
+inline float CoatTransmittance(
+    uint matID, float3 N, float3 V, float3 L,
+    half etai, half etat)
+{
+    const float NdotV = max(0.0f, dot(N, V));
+    const float NdotL = max(0.0f, dot(N, L));
+    const half pc = (half)saturate(LoadPc(matID));
+    if (pc <= (half)0.0) return 1.0f;
+    const float Pr_coat = LoadPcr(matID);
+    float t = 1.0f;
+    [branch] if (NdotV > 0.0f && NdotL > 0.0f)
+    {
+        const half PrFactor = (half)(1.0f - Pr_coat * 0.7f);
+        const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
+        const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
+        t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
+    }
+    return t;
+}
 struct CoatResult {
     float3 f;
     float  pdf;
     float  t;
 };
 
+// Combine coat reflection and transmission with matching PDFs.
 inline CoatResult EvalCoatAll(
     uint matID, float3 N, float3 V, float3 L,
-    float etai, float etat)
+    half etai, half etat, bool needTransmission = true)
 {
     CoatResult r;
     r.f = 0.0f;
     r.pdf = 0.0f;
     r.t = 1.0f;
 
-    float NdotV = max(0.0f, dot(N, V));
-    float NdotL = max(0.0f, dot(N, L));
+    const float NdotV = max(0.0f, dot(N, V));
+    const float NdotL = max(0.0f, dot(N, L));
 
-    float pc = saturate(LoadPc(matID));
-    if (pc <= 0.0f) return r;
+    const half pc = (half)saturate(LoadPc(matID));
+    if (pc <= (half)0.0) return r;
 
-    float Pr_coat = LoadPcr(matID);
+    const float Pr_coat = LoadPcr(matID);
 
-    //transmittance
-    if (NdotV > 0.0f && NdotL > 0.0f)
+    [branch] if (needTransmission && NdotV > 0.0f && NdotL > 0.0f)
     {
-        float Fo = FresnelDielectric(V, N, etat, etai).x * (1.0f - Pr_coat * 0.7f) * (1.0f - Pr_coat * 0.7f);
-        float Fi = FresnelDielectric(L, N, etai, etat).x;
-        r.t = saturate(1.0f - pc * Fi) * saturate(1.0f - pc * Fo);
+        const half PrFactor = (half)(1.0f - Pr_coat * 0.7f);
+        const half Fo = (half)FresnelDielectric(V, N, etat, etai).x * PrFactor * PrFactor;
+        const half Fi = (half)FresnelDielectric(L, N, etai, etat).x;
+        r.t = (float)(saturate((half)1.0 - pc * Fi) * saturate((half)1.0 - pc * Fo));
     }
 
-    //eval + pdf
     if (NdotV <= 0.0f || NdotL <= 0.0f) return r;
 
     float3 H     = normalize(V + L);
-    float  NdotH = max(0.0f, dot(N, H));
-    float  VdotH = max(EPSILON, dot(V, H));
 
-    float rough = saturate(Pr_coat);
-    float alpha = max(EPSILON, rough * rough);
+    const float rough = saturate(Pr_coat);
 
-    float D   = D_GGX(NdotH, alpha);
-    float G1V = G1_SmithGGX(NdotV, alpha);
+    const float alpha = max(EPSILON, rough * rough);
+
+    const float D   = D_GGX(N, H, alpha);
+    const float G1V = G1_SmithGGX(NdotV, alpha);
 
     {
-        float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
-        float  denom = max(4.0f * NdotV * NdotL, EPSILON);
-        float3 F     = FresnelDielectricTIR(V, H, etai, etat);
+        const float  G2    = G1V * G1_SmithGGX(NdotL, alpha);
+        const float  denom = max(4.0f * NdotV * NdotL, EPSILON);
+        const float3 F     = FresnelDielectricTIR(V, H, etai, etat);
 
-        float3 spec = pc * (F * D * G2) / denom;
+        float3 spec = (float)pc * (F * D * G2) / denom;
 
-        float Ess = GetEssLUT(Pr_coat, NdotV);
-        float kms = (1.0f - Ess) / max(Ess, 1e-6f);
+        const float Ess = GetEssLUT((float)Pr_coat, NdotV);
+        const float kms = (1.0f - Ess) / max(Ess, 1e-6f);
         spec = spec * (1.0f + F * kms);
 
         r.f = (any(isnan(spec)) || any(isinf(spec))) ? 0.0.xxx : spec;
     }
 
-    //p(wi) = D*G1V/(4*NdotV), VdotH cancels in VNDF reflection Jacobian
     r.pdf = (D * G1V) / (4.0f * NdotV);
 
     return r;
 }
 
-//====================================
-//COAT SAMPLING
-//====================================
 inline float3 SampleBRDF_COAT(
     uint    mID,
     float3  outgoing,
@@ -178,7 +177,6 @@ inline float3 SampleBRDF_COAT(
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    //VNDF, force perfect reflection for very smooth coats
     float3 H;
     if (rough < SMOOTH_SPECULAR_THRESHOLD)
         H = N;
@@ -191,9 +189,6 @@ inline float3 SampleBRDF_COAT(
     return normalize(L);
 }
 
-//====================================
-//COAT PDF
-//====================================
 inline float BRDF_PDF_COAT(
     uint   mID,
     float3 N,
@@ -213,12 +208,10 @@ inline float BRDF_PDF_COAT(
 
     float3 H     = normalize(V + L);
     float  VdotH = max(EPSILON, dot(V, H));
-    float  NdotH = max(EPSILON, dot(N, H));
 
     float rough = saturate(LoadPcr(mID));
     float alpha = max(EPSILON, rough * rough);
 
-    //VNDF -> reflection, p(wi) = p(H)/(4*V.H)
-    float pdf_H = (D_GGX(NdotH, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
+    float pdf_H = (D_GGX(N, H, alpha) * G1_SmithGGX(NdotV, alpha) * VdotH) / NdotV;
     return pdf_H / (4.0f * VdotH);
 }

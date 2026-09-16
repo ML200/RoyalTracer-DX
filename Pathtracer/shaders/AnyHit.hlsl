@@ -1,23 +1,26 @@
 #include "Includes_v8.hlsli"
 
-//====================================
-//ANY-HIT ALPHA TEST
-//====================================
 [shader("anyhit")]
 void AlphaTestAnyHit(inout TracePayload payload,
                      in BuiltInTriangleIntersectionAttributes attr)
 {
+#if DISABLE_ALPHA_TEST
+    // Alpha testing is disabled for fallback renders.
+    return;
+#else
     uint instID = InstanceID();
     uint primID = FlatPrimID(instID, GeometryIndex(), PrimitiveIndex());
 
     uint matID = materialIDs[instanceProps[instID].materialBase + primID];
+
+    if (LoadIsThinGlass(matID) || LoadKd_w(matID) < 1.0f - EPSILON)
+        return;
+
     const int texID = LoadAlbedoTexID(matID);
 
-    //no albedo means fully opaque
     if (texID < 0)
         return;
 
-    //interpolate UVs
     uint baseI = instanceProps[instID].indexBase;
     uint i0 = indices[baseI + 3u * primID + 0u];
     uint i1 = indices[baseI + 3u * primID + 1u];
@@ -31,8 +34,11 @@ void AlphaTestAnyHit(inout TracePayload payload,
     float2 uv = uv0 * b0 + uv1 * attr.barycentrics.x + uv2 * attr.barycentrics.y;
 
     Texture2D<float4> tex = ResourceDescriptorHeap[texID];
-    float alpha = tex.SampleLevel(g_sampler, uv * LoadAlbedoUVScale(matID), 0).a;
+    float alpha = SampleMaterialTex(tex, uv * LoadAlbedoUVScale(matID), 0).a;
+
+    if (LoadInvertAlpha(matID)) alpha = 1.0f - alpha;
 
     if (alpha < LoadAlphaThreshold(matID))
         IgnoreHit();
+#endif
 }

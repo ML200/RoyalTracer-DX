@@ -1,111 +1,112 @@
 #pragma once
-//====================================
-//ASYNC LIGHT-TREE TLAS REBUILDER
-//====================================
-//moved instances rebuild TLAS only, BLASes per-instance in object space
-//runs on background thread, produces TLAS nodes for GPU upload
-//requires LightTree.h to expose GetTLASGpuBuffer()
 
 #include "../Common.h"
 #include "../LightTree.h"
+#include <chrono>
 #include <future>
+#include <functional>
 #include <mutex>
 #include <atomic>
 
 namespace lt {
+// Refit preserves learned node indices while updating bounds.
 
-// ── Data computed per BLAS for fast TLAS refit ───────────────────
 struct BLASRootLocal {
-    Aabb   localAabb;        // object-space AABB of all tris in this BLAS
-    float  power    = 0.f;
-    Cone   localCone;        // object-space orientation cone
-    uint32_t primCount  = 0;
-    float  sumPower   = 0.f;
-    float  sumPowerSq = 0.f;
-    UINT   instanceID = 0;
+    Aabb localAabb;
+    float power = 0.f;
+    Cone localCone;
+    uint32_t primCount = 0;
+    float sumPower = 0.f;
+    float sumPowerSq = 0.f;
+    UINT meshID = 0;
 };
 
-// ── Result of an async TLAS rebuild ──────────────────────────────
+struct TLASExtraLeaf {
+    uint32_t slot = 0;
+    Aabb aabb{};
+    float power = 0.f;
+    Cone cone{};
+    uint32_t primCount = 0;
+    float sumPower = 0.f, sumPowerSq = 0.f;
+    LightSlotGpu record{};
+};
+
 struct TLASRefitResult {
     std::vector<LightTLASNodeGpu> nodes;
-    std::vector<uint32_t>         blasToItem;
-    std::vector<XMFLOAT4X4>      blasWorldToLocal;  // updated inverse transforms
+    std::vector<LightTreeTrail> blasBitTrails;
+    std::vector<LightSlotGpu> slots;
+    std::vector<LightTLASNodePacked> packedNodes;
+
+    uint32_t extraVersion = 0;
+    uint32_t extraLeafCount = 0;
+    bool incremental = false;
+    float worker_cpu_ms = 0.0f;
 };
 
-//====================================
-//BLAS LOCAL ROOTS
-//====================================
-//local-space BLAS root info from scene emissive triangles
-//call once at init, again if emission changes
-inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(
-    const std::vector<LightTriangle>& tris)
-{
-    // Group by instanceID (same as LightTreeBuilder::buildBLASes_SAOH)
-    std::unordered_map<UINT, std::vector<uint32_t>> groups;
+inline std::vector<BLASRootLocal> ComputeBLASLocalRoots(const std::vector<LightTriangle>& tris) {
+    // Aggregate triangles per mesh before transforming them into TLAS leaves.
+    std::map<UINT, std::vector<uint32_t>> groups;
     for (uint32_t i = 0; i < (uint32_t)tris.size(); ++i)
-        groups[tris[i].instanceID].push_back(i);
+        groups[tris[i].meshID].push_back(i);
 
     std::vector<BLASRootLocal> roots;
     roots.reserve(groups.size());
 
-    for (auto& [instID, idxs] : groups) {
+    for (auto& [meshID, idxs] : groups) {
         BLASRootLocal root{};
-        root.instanceID = instID;
+        root.meshID = meshID;
 
         bool first = true;
         for (uint32_t ti : idxs) {
             const auto& t = tris[ti];
 
-            // Object-space AABB
             Aabb ta;
             ta.mn = min3(t.x, min3(t.y, t.z));
             ta.mx = max3(t.x, max3(t.y, t.z));
-            if (first) { root.localAabb = ta; first = false; }
-            else root.localAabb = unionAabb(root.localAabb, ta);
+            if (first) {
+                root.localAabb = ta;
+                first = false;
+            } else
+                root.localAabb = unionAabb(root.localAabb, ta);
 
-            root.power   += t.weight;
+            root.power += t.weight;
             root.sumPower += t.weight;
             root.sumPowerSq += t.weight * t.weight;
             root.primCount++;
 
-            // Compute local normal for cone
             XMFLOAT3 e1 = sub3(t.y, t.x);
             XMFLOAT3 e2 = sub3(t.z, t.x);
-            XMFLOAT3 n  = cross3(e1, e2);
+            XMFLOAT3 n = cross3(e1, e2);
             float len = length3(n);
 
             Cone tc;
             if (len < 1e-12f) {
-                tc.axis = {0, 0, 1}; tc.theta_o = LT_PI; tc.theta_e = LT_HALF_PI;
+                tc.axis = {0, 0, 1};
+                tc.theta_o = LT_PI;
+                tc.theta_e = LT_HALF_PI;
             } else {
-                tc.axis = normalize3(n); tc.theta_o = 0.f; tc.theta_e = LT_HALF_PI;
+                tc.axis = normalize3(n);
+                tc.theta_o = 0.f;
+                tc.theta_e = LT_HALF_PI;
             }
-            root.localCone = coneUnion(root.localCone, tc);
+            root.localCone = root.primCount == 1 ? tc : coneUnion(root.localCone, tc);
         }
 
-        roots.push_back(root);
+        roots.push_back(std::move(root));
     }
     return roots;
 }
 
-//====================================
-//TRANSFORM AABB
-//====================================
-//local AABB to world, 8-corner method
 inline Aabb TransformAabb(const Aabb& local, const XMFLOAT4X4& world) {
     XMFLOAT3 corners[8] = {
-        { local.mn.x, local.mn.y, local.mn.z },
-        { local.mx.x, local.mn.y, local.mn.z },
-        { local.mn.x, local.mx.y, local.mn.z },
-        { local.mx.x, local.mx.y, local.mn.z },
-        { local.mn.x, local.mn.y, local.mx.z },
-        { local.mx.x, local.mn.y, local.mx.z },
-        { local.mn.x, local.mx.y, local.mx.z },
-        { local.mx.x, local.mx.y, local.mx.z },
+        {local.mn.x, local.mn.y, local.mn.z}, {local.mx.x, local.mn.y, local.mn.z},
+        {local.mn.x, local.mx.y, local.mn.z}, {local.mx.x, local.mx.y, local.mn.z},
+        {local.mn.x, local.mn.y, local.mx.z}, {local.mx.x, local.mn.y, local.mx.z},
+        {local.mn.x, local.mx.y, local.mx.z}, {local.mx.x, local.mx.y, local.mx.z},
     };
 
     XMFLOAT3 wc = transformPointW(corners[0], world);
-    Aabb result = { wc, wc };
+    Aabb result = {wc, wc};
     for (int i = 1; i < 8; ++i) {
         wc = transformPointW(corners[i], world);
         result.mn = min3(result.mn, wc);
@@ -114,217 +115,451 @@ inline Aabb TransformAabb(const Aabb& local, const XMFLOAT4X4& world) {
     return result;
 }
 
-//====================================
-//STANDALONE TLAS BUILDER
-//====================================
-//same SAOH algo as LightTreeBuilder
-//operates on pre-computed BLAS root info + world transforms
 class TLASRebuilder {
-public:
-    TLASRefitResult Build(
-        const std::vector<BLASRootLocal>& blasRoots,
-        const std::vector<InstanceXformCPU>& xforms,
-        uint32_t buildBins = 64)
-    {
+  public:
+    static void SceneLeaves(const std::vector<BLASRootLocal>& blasRoots, const std::vector<LightInstanceRef>& slots,
+                            const std::vector<InstanceXformCPU>& xforms, const std::vector<LightSlotGpu>& baseSlots,
+                            std::vector<TLASExtraLeaf>& out) {
+        std::unordered_map<UINT, uint32_t> rootOfMesh;
+        rootOfMesh.reserve(blasRoots.size());
+        for (uint32_t i = 0; i < (uint32_t)blasRoots.size(); ++i)
+            rootOfMesh[blasRoots[i].meshID] = i;
+        const bool haveRecords = baseSlots.size() == slots.size();
+        for (uint32_t s = 0; s < (uint32_t)slots.size(); ++s) {
+            const auto found = rootOfMesh.find(slots[s].meshID);
+            if (found == rootOfMesh.end())
+                continue;
+            const auto& root = blasRoots[found->second];
+            const XMFLOAT4X4 world =
+                (slots[s].instanceID < xforms.size()) ? xforms[slots[s].instanceID].objectToWorld : LT_IDENTITY_4X4;
+            const float scale = areaScale(world);
+            XMFLOAT3X3 norm33;
+            computeNormal33FromWorld(world, norm33);
+            TLASExtraLeaf leaf;
+            leaf.slot = s;
+            leaf.aabb = TransformAabb(root.localAabb, world);
+            leaf.power = root.power * scale;
+            leaf.cone.axis = transformNormalW(root.localCone.axis, norm33);
+            leaf.cone.theta_o = similarityTransform(world) ? root.localCone.theta_o : LT_PI;
+            leaf.cone.theta_e = root.localCone.theta_e;
+            leaf.primCount = root.primCount;
+            leaf.sumPower = root.sumPower * scale;
+            leaf.sumPowerSq = root.sumPowerSq * scale * scale;
+            leaf.record = haveRecords ? baseSlots[s] : LightSlotGpu{};
+            setSlotTransform(leaf.record, world);
+            leaf.record.instanceID = slots[s].instanceID;
+            out.push_back(leaf);
+        }
+    }
+
+    TLASRefitResult Build(const std::vector<BLASRootLocal>& blasRoots, const std::vector<LightInstanceRef>& slots,
+                          const std::vector<InstanceXformCPU>& xforms, uint32_t buildBins = 64,
+                          const std::vector<LightSlotGpu>& baseSlots = {}, const std::vector<TLASExtraLeaf>& extra = {},
+                          uint32_t slotCount = 0, uint32_t extraVersion = 0) {
+        // Build leaves in world space while preserving stable instance slots.
         m_bins = buildBins;
+        slotCount = (std::max)(slotCount, (uint32_t)slots.size());
 
-        // Transform BLAS roots to world space
+        std::unordered_map<UINT, uint32_t> rootOfMesh;
+        rootOfMesh.reserve(blasRoots.size());
+        for (uint32_t i = 0; i < (uint32_t)blasRoots.size(); ++i)
+            rootOfMesh[blasRoots[i].meshID] = i;
+
         std::vector<TItem> items;
-        items.reserve(blasRoots.size());
+        items.reserve(slots.size());
 
-        for (uint32_t i = 0; i < (uint32_t)blasRoots.size(); ++i) {
-            const auto& root = blasRoots[i];
-            XMFLOAT4X4 world = (root.instanceID < xforms.size())
-                ? xforms[root.instanceID].objectToWorld
-                : LT_IDENTITY_4X4;
+        for (uint32_t s = 0; s < (uint32_t)slots.size(); ++s) {
+            const auto found = rootOfMesh.find(slots[s].meshID);
+            if (found == rootOfMesh.end())
+                continue;
+            const auto& root = blasRoots[found->second];
+            XMFLOAT4X4 world =
+                (slots[s].instanceID < xforms.size()) ? xforms[slots[s].instanceID].objectToWorld : LT_IDENTITY_4X4;
+            const float scale = areaScale(world);
 
             Aabb worldAabb = TransformAabb(root.localAabb, world);
 
-            // Rotate cone axis to world space
             XMFLOAT3X3 norm33;
             computeNormal33FromWorld(world, norm33);
+            // Non-similarity transforms invalidate the cone orientation bound.
             XMFLOAT3 worldAxis = transformNormalW(root.localCone.axis, norm33);
 
             Cone worldCone;
-            worldCone.axis    = worldAxis;
-            worldCone.theta_o = root.localCone.theta_o;
+            worldCone.axis = worldAxis;
+            worldCone.theta_o = similarityTransform(world) ? root.localCone.theta_o : LT_PI;
             worldCone.theta_e = root.localCone.theta_e;
 
             TItem it;
-            it.idx       = i;
-            it.a         = worldAabb;
-            it.c         = aabbCenter(worldAabb);
-            it.p         = root.power;
-            it.cone      = worldCone;
+            it.idx = s;
+            it.a = worldAabb;
+            it.c = aabbCenter(worldAabb);
+            it.p = root.power * scale;
+            it.cone = worldCone;
+
             it.primCount = root.primCount;
-            it.sumP      = root.sumPower;
-            it.sumP2     = root.sumPowerSq;
+            it.sumP = root.sumPower * scale;
+            it.sumP2 = root.sumPowerSq * scale * scale;
             items.push_back(it);
+        }
+
+        uint32_t extraCount = 0;
+        for (const TLASExtraLeaf& e : extra) {
+            if (e.slot >= slotCount || !(e.power > 0.f))
+                continue;
+            TItem it;
+            it.idx = e.slot;
+            it.a = e.aabb;
+            it.c = aabbCenter(e.aabb);
+            it.p = e.power;
+            it.cone = e.cone;
+            it.primCount = e.primCount;
+            it.sumP = e.sumPower;
+            it.sumP2 = e.sumPowerSq;
+            items.push_back(it);
+            ++extraCount;
         }
 
         m_tlas.clear();
         m_tlas.reserve(items.size() * 4 + 32);
 
+        m_blasBitTrails.assign(slotCount, 0u);
         if (!items.empty())
-            buildRecursive(items, 0, (uint32_t)items.size());
+            buildRecursive(items, 0, (uint32_t)items.size(), 0u, 0u);
 
-        // Build blasToItem mapping
-        std::vector<uint32_t> blasToItem(blasRoots.size(), 0);
-        for (uint32_t i = 0; i < (uint32_t)items.size(); ++i)
-            blasToItem[items[i].idx] = i;
-
-        // Compute inverse world transforms (worldToLocal) for each BLAS
-        std::vector<XMFLOAT4X4> blasWorldToLocal(blasRoots.size());
-        for (uint32_t i = 0; i < (uint32_t)blasRoots.size(); ++i) {
-            XMFLOAT4X4 world = (blasRoots[i].instanceID < xforms.size())
-                ? xforms[blasRoots[i].instanceID].objectToWorld
-                : LT_IDENTITY_4X4;
-            XMVECTOR det;
-            XMMATRIX Winv = XMMatrixInverse(&det, XMLoadFloat4x4(&world));
-            XMStoreFloat4x4(&blasWorldToLocal[i], Winv);
+        std::vector<LightSlotGpu> slotRecords;
+        if (baseSlots.size() == slots.size() && (!baseSlots.empty() || extraCount)) {
+            slotRecords = baseSlots;
+            for (uint32_t s = 0; s < (uint32_t)slots.size(); ++s) {
+                const XMFLOAT4X4& world =
+                    (slots[s].instanceID < xforms.size()) ? xforms[slots[s].instanceID].objectToWorld : LT_IDENTITY_4X4;
+                setSlotTransform(slotRecords[s], world);
+            }
+            slotRecords.resize(slotCount, LightSlotGpu{});
+            for (const TLASExtraLeaf& e : extra)
+                if (e.slot < slotCount)
+                    slotRecords[e.slot] = e.record;
         }
-
-        return { std::move(m_tlas), std::move(blasToItem), std::move(blasWorldToLocal) };
+        TLASRefitResult r{std::move(m_tlas), std::move(m_blasBitTrails), std::move(slotRecords)};
+        r.extraVersion = extraVersion;
+        r.extraLeafCount = extraCount;
+        return r;
     }
 
-private:
+    TLASRefitResult Build(const std::vector<BLASRootLocal>& blasRoots, const std::vector<InstanceXformCPU>& xforms,
+                          uint32_t buildBins = 64) {
+        std::vector<LightInstanceRef> slots;
+        slots.reserve(blasRoots.size());
+        for (const auto& r : blasRoots)
+            slots.push_back({r.meshID, r.meshID});
+        return Build(blasRoots, slots, xforms, buildBins);
+    }
+
+  private:
     struct TItem {
-        uint32_t idx; Aabb a; XMFLOAT3 c; float p;
-        Cone cone; uint32_t primCount; float sumP, sumP2;
+        uint32_t idx;
+        Aabb a;
+        XMFLOAT3 c;
+        float p;
+        Cone cone;
+        uint32_t primCount;
+        float sumP, sumP2;
     };
 
     struct AggT {
-        bool valid = false; Aabb a; float E = 0;
-        Cone cone{}; uint32_t N = 0; float sumP = 0, sumP2 = 0;
+        bool valid = false;
+        Aabb a;
+        float E = 0;
+        Cone cone{};
+        uint32_t N = 0;
+        float sumP = 0, sumP2 = 0;
     };
 
     static void aggAdd(AggT& A, const TItem& t) {
-        if (!A.valid) { A.valid = true; A.a = t.a; A.E = t.p; A.cone = t.cone;
-                        A.N = t.primCount; A.sumP = t.sumP; A.sumP2 = t.sumP2; return; }
-        A.a = unionAabb(A.a, t.a); A.E += t.p; A.cone = coneUnion(A.cone, t.cone);
-        A.N += t.primCount; A.sumP += t.sumP; A.sumP2 += t.sumP2;
+        if (!A.valid) {
+            A.valid = true;
+            A.a = t.a;
+            A.E = t.p;
+            A.cone = t.cone;
+            A.N = t.primCount;
+            A.sumP = t.sumP;
+            A.sumP2 = t.sumP2;
+            return;
+        }
+        A.a = unionAabb(A.a, t.a);
+        A.E += t.p;
+        A.cone = coneUnion(A.cone, t.cone);
+        A.N += t.primCount;
+        A.sumP += t.sumP;
+        A.sumP2 += t.sumP2;
     }
 
     static void aggMerge(AggT& A, const AggT& B) {
-        if (!B.valid) return; if (!A.valid) { A = B; return; }
-        A.a = unionAabb(A.a, B.a); A.E += B.E; A.cone = coneUnion(A.cone, B.cone);
-        A.N += B.N; A.sumP += B.sumP; A.sumP2 += B.sumP2;
+        if (!B.valid)
+            return;
+        if (!A.valid) {
+            A = B;
+            return;
+        }
+        A.a = unionAabb(A.a, B.a);
+        A.E += B.E;
+        A.cone = coneUnion(A.cone, B.cone);
+        A.N += B.N;
+        A.sumP += B.sumP;
+        A.sumP2 += B.sumP2;
     }
 
     std::vector<LightTLASNodeGpu> m_tlas;
+
+    std::vector<LightTreeTrail> m_blasBitTrails;
     uint32_t m_bins = 64;
 
-    uint32_t buildRecursive(std::vector<TItem>& it, uint32_t begin, uint32_t end) {
-        const uint32_t nodeIdx = (uint32_t)m_tlas.size();
-        m_tlas.push_back({});
+    uint32_t buildRecursive(std::vector<TItem>& it, uint32_t begin, uint32_t end, LightTreeTrail bitTrail,
+                            uint32_t depth, uint32_t destination = UINT32_MAX) {
+        const uint32_t nodeIdx = destination == UINT32_MAX ? (uint32_t)m_tlas.size() : destination;
+        if (destination == UINT32_MAX) m_tlas.push_back({});
 
         AggT parent{};
-        for (uint32_t i = begin; i < end; ++i) aggAdd(parent, it[i]);
+        for (uint32_t i = begin; i < end; ++i)
+            aggAdd(parent, it[i]);
 
         auto& N0 = m_tlas[nodeIdx];
-        N0.bmin = parent.a.mn; N0.bmax = parent.a.mx; N0.power = parent.E;
+        N0.bmin = parent.a.mn;
+        N0.bmax = parent.a.mx;
+        N0.power = parent.E;
         N0.axis = parent.cone.axis;
         N0.cosTheta_o = std::cos(lt::clampf(parent.cone.theta_o, 0.f, lt::LT_PI));
-        N0.cosTheta_e = std::cos(lt::clampf(parent.cone.theta_e, 0.f, lt::LT_PI));
-        N0.primCount = parent.N; N0.sumPower = parent.sumP; N0.sumPowerSq = parent.sumP2;
-        N0.itemFirst = begin; N0.itemCount = end - begin;
-        N0.firstChild = 0xFFFFFFFF; N0.childCount = 0;
-        N0.blasIndex = UINT32_MAX;
+        N0.sinTheta_o = std::sqrt((std::fmax)(0.f, 1.f - N0.cosTheta_o * N0.cosTheta_o));
+
+        N0.firstChild = 0xFFFFFFFF;
+        N0.childCount = 0;
+        N0.slot = UINT32_MAX;
+        N0._pad = 0;
 
         const uint32_t count = end - begin;
-        if (count == 1) { N0.blasIndex = it[begin].idx; return nodeIdx; }
+        if (count == 1) {
+            N0.slot = it[begin].idx;
+            m_blasBitTrails[it[begin].idx] = bitTrail;
+            return nodeIdx;
+        }
 
-        // SAOH binary split
-        int bestAxis = -1; float bestCost = std::numeric_limits<float>::infinity(), bestPos = 0;
-        const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(parent.a));
-        const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parent.cone));
-        XMFLOAT3 ext = aabbExtent(parent.a);
-        float lenMax = (std::fmax)(ext.x, (std::fmax)(ext.y, ext.z));
-
-        for (int axis = 0; axis < 3; ++axis) {
-            float mn = (&it[begin].c.x)[axis], mx = mn;
-            for (uint32_t i = begin; i < end; ++i) {
-                float v = (&it[i].c.x)[axis]; mn = (std::fmin)(mn, v); mx = (std::fmax)(mx, v);
+        auto findBinarySplit = [&](uint32_t b0, uint32_t e0, int& axisOut, float& posOut, uint32_t& midOut) -> bool {
+            AggT parentL{};
+            for (uint32_t i = b0; i < e0; ++i)
+                aggAdd(parentL, it[i]);
+            const Aabb aabb = parentL.a;
+            const XMFLOAT3 ext = aabbExtent(aabb);
+            if (LightTreeNeedsBalancedSplit(e0 - b0, depth)) {
+                axisOut = (ext.y > ext.x && ext.y >= ext.z) ? 1 : (ext.z > ext.x ? 2 : 0);
+                midOut = b0 + (e0 - b0) / 2u;
+                std::nth_element(it.begin() + b0, it.begin() + midOut, it.begin() + e0,
+                                 [&](const TItem& a, const TItem& b) { return (&a.c.x)[axisOut] < (&b.c.x)[axisOut]; });
+                posOut = (&it[midOut].c.x)[axisOut];
+                return true;
             }
-            float span = mx - mn; if (span <= 1e-20f) continue;
+            const float lenX = ext.x, lenY = ext.y, lenZ = ext.z;
+            const float lenMax = (std::fmax)(lenX, (std::fmax)(lenY, lenZ));
+            const float parentMA = (std::fmax)(1e-12f, aabbSurfaceArea(aabb));
+            const float parentMO = (std::fmax)(1e-12f, orientationMeasure(parentL.cone));
 
+            int bestAxis = -1;
+            float bestCost = std::numeric_limits<float>::infinity();
+            float bestPos = 0.f;
             const uint32_t B = (std::fmin)(64u, (std::fmax)(4u, m_bins));
-            std::vector<AggT> bins(B);
-            float invSpan = 1.f / span;
-            for (uint32_t i = begin; i < end; ++i) {
-                float v = (&it[i].c.x)[axis];
-                uint32_t bi = (std::fmin)(B - 1u, (uint32_t)std::floor((v - mn) * invSpan * B));
-                aggAdd(bins[bi], it[i]);
+
+            for (int axis = 0; axis < 3; ++axis) {
+                float mn = (&it[b0].c.x)[axis], mx = mn;
+                for (uint32_t i = b0; i < e0; ++i) {
+                    float v = (&it[i].c.x)[axis];
+                    mn = (std::fmin)(mn, v);
+                    mx = (std::fmax)(mx, v);
+                }
+                float span = mx - mn;
+                if (span <= 1e-20f)
+                    continue;
+
+                std::vector<AggT> bins(B);
+                float invSpan = 1.f / span;
+                for (uint32_t i = b0; i < e0; ++i) {
+                    float v = (&it[i].c.x)[axis];
+                    uint32_t bi = (std::fmin)(B - 1u, (uint32_t)std::floor((v - mn) * invSpan * B));
+                    aggAdd(bins[bi], it[i]);
+                }
+
+                std::vector<AggT> pref(B), suff(B);
+                for (uint32_t i = 0; i < B; ++i) {
+                    pref[i] = (i == 0) ? bins[i] : pref[i - 1];
+                    if (i > 0)
+                        aggMerge(pref[i], bins[i]);
+                }
+                for (int i = (int)B - 1; i >= 0; --i) {
+                    suff[i] = ((uint32_t)i == B - 1) ? bins[i] : suff[i + 1];
+                    if ((uint32_t)i < B - 1)
+                        aggMerge(suff[i], bins[i]);
+                }
+
+                float length_i = (axis == 0 ? lenX : (axis == 1 ? lenY : lenZ));
+                float Kr = (length_i > 1e-20f) ? (lenMax / length_i) : 1e6f;
+
+                for (uint32_t s = 1; s < B; ++s) {
+                    const AggT& L = pref[s - 1];
+                    const AggT& R = suff[s];
+                    if (!L.valid || !R.valid)
+                        continue;
+                    float cost = Kr *
+                                 (L.E * aabbSurfaceArea(L.a) * orientationMeasure(L.cone) +
+                                  R.E * aabbSurfaceArea(R.a) * orientationMeasure(R.cone)) /
+                                 (parentMA * parentMO);
+                    if (cost < bestCost) {
+                        bestCost = cost;
+                        bestAxis = axis;
+                        bestPos = mn + span * s / B;
+                    }
+                }
             }
 
-            std::vector<AggT> pref(B), suff(B);
-            for (uint32_t i = 0; i < B; ++i) { pref[i] = (i == 0) ? bins[i] : pref[i-1]; if (i > 0) aggMerge(pref[i], bins[i]); }
-            for (int i = (int)B - 1; i >= 0; --i) { suff[i] = ((uint32_t)i == B-1) ? bins[i] : suff[i+1]; if ((uint32_t)i < B-1) aggMerge(suff[i], bins[i]); }
+            if (bestAxis < 0 || !std::isfinite(bestCost))
+                return false;
 
-            float length_i = (&ext.x)[axis];
-            float Kr = (length_i > 1e-20f) ? (lenMax / length_i) : 1e6f;
-
-            for (uint32_t s = 1; s < B; ++s) {
-                const AggT& L = pref[s-1]; const AggT& R = suff[s];
-                if (!L.valid || !R.valid) continue;
-                float cost = Kr * (L.E * aabbSurfaceArea(L.a) * orientationMeasure(L.cone)
-                                 + R.E * aabbSurfaceArea(R.a) * orientationMeasure(R.cone))
-                           / (parentMA * parentMO);
-                if (cost < bestCost) { bestCost = cost; bestAxis = axis; bestPos = mn + span * s / B; }
+            auto midIt = std::partition(it.begin() + b0, it.begin() + e0,
+                                        [&](const TItem& t) { return (&t.c.x)[bestAxis] < bestPos; });
+            uint32_t mid = (uint32_t)(midIt - (it.begin() + b0)) + b0;
+            if (mid == b0 || mid == e0) {
+                mid = (b0 + e0) / 2;
+                std::nth_element(
+                    it.begin() + b0, it.begin() + mid, it.begin() + e0,
+                    [&](const TItem& A, const TItem& B) { return (&A.c.x)[bestAxis] < (&B.c.x)[bestAxis]; });
             }
-        }
 
+            axisOut = bestAxis;
+            posOut = bestPos;
+            midOut = mid;
+            return true;
+        };
+
+        int ax;
+        float pos;
         uint32_t mid;
-        if (bestAxis >= 0) {
-            auto midIt = std::partition(it.begin() + begin, it.begin() + end,
-                [&](const TItem& t) { return (&t.c.x)[bestAxis] < bestPos; });
-            mid = (uint32_t)(midIt - it.begin());
-            if (mid == begin || mid == end) mid = (begin + end) / 2;
-        } else {
+        bool ok = findBinarySplit(begin, end, ax, pos, mid);
+        if (!ok) {
+            int widest = 0;
+            XMFLOAT3 e = aabbExtent(parent.a);
+            if (e.y > e.x && e.y >= e.z)
+                widest = 1;
+            else if (e.z > e.x && e.z >= e.y)
+                widest = 2;
             mid = (begin + end) / 2;
+            std::nth_element(it.begin() + begin, it.begin() + mid, it.begin() + end,
+                             [&](const TItem& A, const TItem& B) { return (&A.c.x)[widest] < (&B.c.x)[widest]; });
         }
 
-        // Build 2 children
+        struct Range {
+            uint32_t b, e;
+        };
+        Range buckets[4];
+        uint32_t bucketCount = 0;
+
+        auto pushOrSplitOnce = [&](uint32_t b, uint32_t e) {
+            if (e <= b)
+                return;
+            const uint32_t c = e - b;
+            if (c == 1) {
+                buckets[bucketCount++] = {b, e};
+                return;
+            }
+            int ax2;
+            float pos2;
+            uint32_t mid2;
+            if (findBinarySplit(b, e, ax2, pos2, mid2) && mid2 > b && mid2 < e) {
+                buckets[bucketCount++] = {b, mid2};
+                buckets[bucketCount++] = {mid2, e};
+            } else {
+                buckets[bucketCount++] = {b, e};
+            }
+        };
+
+        pushOrSplitOnce(begin, mid);
+        pushOrSplitOnce(mid, end);
+
         m_tlas[nodeIdx].firstChild = (uint32_t)m_tlas.size();
-        m_tlas[nodeIdx].childCount = 2;
-        m_tlas.push_back({}); m_tlas.push_back({});
+        m_tlas[nodeIdx].childCount = bucketCount;
+        for (uint32_t i = 0; i < bucketCount; ++i)
+            m_tlas.push_back({});
 
-        uint32_t builtL = buildRecursive(it, begin, mid);
-        uint32_t desiredL = m_tlas[nodeIdx].firstChild;
-        if (builtL != desiredL) std::swap(m_tlas[builtL], m_tlas[desiredL]);
-
-        uint32_t builtR = buildRecursive(it, mid, end);
-        uint32_t desiredR = m_tlas[nodeIdx].firstChild + 1;
-        if (builtR != desiredR) std::swap(m_tlas[builtR], m_tlas[desiredR]);
+        for (uint32_t c = 0; c < bucketCount; ++c) {
+            const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
+            const uint32_t desired = m_tlas[nodeIdx].firstChild + c;
+            buildRecursive(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u, desired);
+        }
 
         return nodeIdx;
     }
 };
 
-//====================================
-//ASYNC REFIT MANAGER
-//====================================
-//kicks off CPU rebuild, polls completion
+inline bool SameLightTreeTopology(const std::vector<LightTLASNodeGpu>& a, const std::vector<LightTLASNodeGpu>& b) {
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].childCount != b[i].childCount ||
+            (a[i].childCount != 0 ? a[i].firstChild != b[i].firstChild : a[i].slot != b[i].slot))
+            return false;
+    return true;
+}
 class LightTreeRefitManager {
-public:
-    // Kick off an async TLAS rebuild (non-blocking)
-    void RequestRefit(
-        std::vector<BLASRootLocal> blasRoots,
-        std::vector<InstanceXformCPU> xforms)
-    {
-        if (m_pending.load()) return; // already in flight
+  public:
+    void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<LightInstanceRef> slots,
+                      std::vector<LightSlotGpu> slotRecords, std::vector<InstanceXformCPU> xforms) {
+        RequestRefit(std::move(blasRoots), std::move(slots), std::move(slotRecords), std::move(xforms),
+                     std::vector<TLASExtraLeaf>{}, 0u, 0u);
+    }
+
+    void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<LightInstanceRef> slots,
+                      std::vector<LightSlotGpu> slotRecords, std::vector<InstanceXformCPU> xforms,
+                      std::vector<TLASExtraLeaf> extra, uint32_t slotCount, uint32_t extraVersion) {
+        if (m_pending.load())
+            return;
         m_pending.store(true);
 
         m_future = std::async(std::launch::async,
-            [roots = std::move(blasRoots), xf = std::move(xforms)]() {
-                TLASRebuilder builder;
-                return builder.Build(roots, xf);
-            });
+                              [roots = std::move(blasRoots), sl = std::move(slots), rec = std::move(slotRecords),
+                               xf = std::move(xforms), ex = std::move(extra), slotCount, extraVersion]() {
+                                  TLASRebuilder builder;
+                                  auto result = builder.Build(roots, sl, xf, 64u, rec, ex, slotCount, extraVersion);
+                                  result.packedNodes = PackTLAS(result.nodes);
+                                  return result;
+                              });
+    }
+    void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<LightInstanceRef> slots,
+                      std::vector<InstanceXformCPU> xforms) {
+        RequestRefit(std::move(blasRoots), std::move(slots), std::vector<LightSlotGpu>{}, std::move(xforms));
     }
 
-    // Check if a result is ready (call each frame, non-blocking)
+    void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<InstanceXformCPU> xforms) {
+        std::vector<LightInstanceRef> slots;
+        slots.reserve(blasRoots.size());
+        for (const auto& r : blasRoots)
+            slots.push_back({r.meshID, r.meshID});
+        RequestRefit(std::move(blasRoots), std::move(slots), std::move(xforms));
+    }
+
+    void RequestCustom(std::function<TLASRefitResult()> job, bool compactGpuNodes = true) {
+        if (m_pending.load())
+            return;
+        m_pending.store(true);
+        m_future = std::async(std::launch::async, [job = std::move(job), compactGpuNodes]() mutable {
+            const auto start = std::chrono::steady_clock::now();
+            TLASRefitResult result = job();
+            if (compactGpuNodes)
+                result.packedNodes = PackTLAS(result.nodes);
+            result.worker_cpu_ms = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            return result;
+        });
+    }
+
     bool PollResult(TLASRefitResult& outResult) {
-        if (!m_pending.load()) return false;
+        // Poll without blocking the render thread on the background refit.
+        if (!m_pending.load())
+            return false;
         if (m_future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
             return false;
 
@@ -333,11 +568,14 @@ public:
         return true;
     }
 
+    void DiscardPending() {
+        if (m_pending.exchange(false))
+            m_future.get();
+    }
     bool IsPending() const { return m_pending.load(); }
 
-private:
+  private:
     std::future<TLASRefitResult> m_future;
     std::atomic<bool> m_pending{false};
 };
-
-} // namespace lt
+}

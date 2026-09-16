@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+out/
+cache/
+third_party/
+.idea/
+.vscode/
+.cache/
+*.exr
+*.ktx2

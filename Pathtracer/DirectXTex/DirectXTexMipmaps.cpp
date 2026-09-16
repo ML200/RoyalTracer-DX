@@ -1451,7 +1451,7 @@ namespace
             auto xFromEnd = reinterpret_cast<const FilterFrom*>(reinterpret_cast<const uint8_t*>(tfX.get()) + tfX->sizeInBytes);
             auto yFromEnd = reinterpret_cast<const FilterFrom*>(reinterpret_cast<const uint8_t*>(tfY.get()) + tfY->sizeInBytes);
 
-            // Count times rows get written (and clear out any leftover accumulation rows from last miplevel)
+            // Count times rows get written (and clear terrain any leftover accumulation rows from last miplevel)
             for (FilterFrom* yFrom = tfY->from; yFrom < yFromEnd; )
             {
                 for (size_t j = 0; j < yFrom->count; ++j)
@@ -2629,7 +2629,7 @@ namespace
             auto yFromEnd = reinterpret_cast<const FilterFrom*>(reinterpret_cast<const uint8_t*>(tfY.get()) + tfY->sizeInBytes);
             auto zFromEnd = reinterpret_cast<const FilterFrom*>(reinterpret_cast<const uint8_t*>(tfZ.get()) + tfZ->sizeInBytes);
 
-            // Count times slices get written (and clear out any leftover accumulation slices from last miplevel)
+            // Count times slices get written (and clear terrain any leftover accumulation slices from last miplevel)
             for (FilterFrom* zFrom = tfZ->from; zFrom < zFromEnd; )
             {
                 for (size_t j = 0; j < zFrom->count; ++j)

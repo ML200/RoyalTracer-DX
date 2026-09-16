@@ -31,12 +31,12 @@ enum class DLSSDPreset : uint32_t
 {
     //! Default behavior, may or may not change after an OTA
     eDefault,
-                    // ePresetA removed, use preset D or E
-                    // ePresetB removed, use preset D or E
-                    // ePresetC removed, use preset D or E
-    ePresetD = 4,   // Default model (transformer)
-    ePresetE = 5,   // Latest transformer model (must use if DoF guide is needed)
-    ePresetF = 6,   // Reverts to default
+                    // ePresetA removed, use preset D, E or F
+                    // ePresetB removed, use preset D, E or F
+                    // ePresetC removed, use preset D, E or F
+    ePresetD = 4,   // Transformer model
+    ePresetE = 5,   // Transformer model
+    ePresetF = 6,   // Latest and default transformer model
     ePresetG = 7,   // Reverts to default
     ePresetH = 8,   // Reverts to default
     ePresetI = 9,   // Reverts to default

@@ -52,15 +52,15 @@ enum class DLSSPreset : uint32_t
                     // ePresetB removed, use presets J or K
                     // ePresetC removed, use presets J or K
                     // ePresetD removed, use presets J or K
-                    // ePresetE removed, use presets J or K
-    ePresetF = 6,   // Intended for Ultra Perf/DLAA modes. The default preset for Ultra Perf
+    ePresetE = 5,   // Deprecated
+    ePresetF = 6,   // Deprecated
     ePresetG = 7,   // Reverts to default, not recommended to use
     ePresetH = 8,   // Reverts to default, not recommended to use
     ePresetI = 9,   // Reverts to default, not recommended to use
     ePresetJ = 10,  // Similar to preset K. Preset J might exhibit slightly less ghosting at the cost of extra flickering. Preset K is generally recommended over preset J
-    ePresetK = 11,  // Default preset for DLAA/Perf/Balanced/Quality modes that is transformer based. Best image quality preset at a higher performance cost
-    ePresetL = 12,  // Reverts to default, not recommended to use
-    ePresetM = 13,  // Reverts to default, not recommended to use
+    ePresetK = 11,  // Default preset for DLAA/Balanced/Quality modes that is transformer based. Best image quality preset at a higher performance cost
+    ePresetL = 12,  // Default preset for UltraPerformance mode. Delivers a sharper, more stable image with less ghosting than Preset J, K but are more expensive performance wise
+    ePresetM = 13,  //  Default preset for Performance mode. Delivers similar image quality improvements as Preset L but closer in speed to Presets J, K
     ePresetN = 14,  // Reverts to default, not recommended to use
     ePresetO = 15,  // Reverts to default, not recommended to use
 

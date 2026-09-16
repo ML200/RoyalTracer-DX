@@ -48,7 +48,7 @@ public:
 private:
     static const FORMAT_DETAIL      s_FormatDetail[];
     static const UINT               s_NumFormats;
-    static const LPCSTR             s_FormatNames[]; // separate from above structure so it can be compiled out of runtime.
+    static const LPCSTR             s_FormatNames[]; // separate from above structure so it can be compiled terrain of runtime.
 public:
     static UINT                 GetNumFormats();
     static const FORMAT_DETAIL* GetFormatTable();

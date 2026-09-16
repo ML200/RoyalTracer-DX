@@ -16,9 +16,6 @@ struct TextureData {
     int original_height = 0;
 };
 
-// Authoring / import-time material. Populated by OBJ/GLTF loaders and the
-// editor, then absorbed field-by-field into MaterialSoA (below). Ke stays
-// CPU-only — emission travels to the GPU via the LightTriangle buffer.
 struct alignas(16) Material {
     DirectX::XMFLOAT4 Kd;
     DirectX::XMFLOAT3 Ke;
@@ -33,6 +30,16 @@ struct alignas(16) Material {
     int normalTexID;
     int rmaTexID;
     float alphaThreshold;
+    bool invertAlpha = false;
+
+    // Thin glass uses a single interface.
+    uint8_t thinGlass = 0;
+
+    DirectX::XMFLOAT3 sssAlbedo = { 1.0f, 1.0f, 1.0f };
+    float sssRadius   = 0.0f;
+    float sssPhaseG   = 0.0f;
+    float sssWeight   = 1.0f;
+    uint8_t sssEnable = 0;
 
     Material() :
         Kd(1.0f, 1.0f, 1.0f, 1.0f), Ke(0.0f, 0.0f, 0.0f), Ni(1.0f),
@@ -41,15 +48,8 @@ struct alignas(16) Material {
     {}
 };
 
-// ─────────────────────────────────────────────────────────────────────────
-// Material packing helpers. Mirror the HLSL-side Unpack/Load routines in
-// Compression_v8.hlsli and Material_Decoder_v8.hlsli so CPU packing and
-// GPU unpacking stay bit-exact.
-// ─────────────────────────────────────────────────────────────────────────
 namespace MaterialPack {
 
-// IEEE half (binary16) encoder — matches f32tof16_custom in HLSL.
-// Subnormal input flushes to zero; Inf / NaN preserved.
 inline uint16_t PackHalf(float v)
 {
     uint32_t f = 0;
@@ -65,12 +65,9 @@ inline uint16_t PackHalf(float v)
     return uint16_t((sign << 15) | (uint32_t(ne + 15) << 10) | (mant >> 13));
 }
 
-// RGB9E5 encoder — bit-for-bit matches PackRGB9E5 in Compression_v8.hlsli,
-// including the post-quantization overflow fix (mantissa == 512 → shift +1
-// and bump shared exponent).
 inline uint32_t PackRGB9E5(float r, float g, float b)
 {
-    static constexpr float kMax = 65408.0f;   // (511/512) * 2^16
+    static constexpr float kMax = 65408.0f;
     const float rC = std::max(0.0f, std::min(kMax, r));
     const float gC = std::max(0.0f, std::min(kMax, g));
     const float bC = std::max(0.0f, std::min(kMax, b));
@@ -105,7 +102,7 @@ inline uint8_t PackUnorm8(float v)
     const float c = std::max(0.0f, std::min(1.0f, v));
     return uint8_t(std::floor(c * 255.0f + 0.5f));
 }
-// Signed int8 in [-1, 1] → [-127, 127].
+
 inline uint8_t PackSnorm8(float v)
 {
     const float c = std::max(-1.0f, std::min(1.0f, v));
@@ -113,10 +110,11 @@ inline uint8_t PackSnorm8(float v)
     return uint8_t(q & 0xFF);
 }
 
-// Pack one material into 10 consecutive uint32s (40 B, matches
-// MatPacked in Data_v8.hlsli exactly).
-inline void PackOne(const Material& m, uint32_t dst[10])
+static constexpr size_t kMatPackedU32 = 12;
+
+inline void PackOne(const Material& m, uint32_t dst[kMatPackedU32])
 {
+    // Pack fields in the order consumed by the material shader layout.
     dst[0] = PackRGB9E5(m.Kd.x, m.Kd.y, m.Kd.z);
     dst[1] = uint32_t(PackHalf(m.Kd.w))
            | (uint32_t(PackHalf(m.Ni)) << 16);
@@ -131,34 +129,35 @@ inline void PackOne(const Material& m, uint32_t dst[10])
            | (uint32_t(PackUnorm8(m.Pcr_aniso_anisor.z)) << 16)
            | (uint32_t(PackUnorm8(m.alphaThreshold))     << 24);
 
-    // Tex IDs: clamp to int16, store -1 as 0xFFFF (sign-extended on GPU).
     const auto clip16 = [](int v) -> uint16_t {
         v = std::max(-32768, std::min(32767, v));
         return uint16_t(v & 0xFFFF);
     };
     dst[5] = uint32_t(clip16(m.albedoTexID))
            | (uint32_t(clip16(m.normalTexID)) << 16);
-    dst[6] = uint32_t(clip16(m.rmaTexID));   // high 16 unused
+
+    dst[6] = uint32_t(clip16(m.rmaTexID))
+           | (m.invertAlpha ? (1u << 16) : 0u)
+           | (m.sssEnable   ? (1u << 17) : 0u)
+           | (m.thinGlass   ? (1u << 18) : 0u)
+           | (uint32_t(PackUnorm8(m.sssWeight)) << 24);
     dst[7] = uint32_t(PackHalf(m.albedoUVScale.x))
            | (uint32_t(PackHalf(m.albedoUVScale.y)) << 16);
     dst[8] = uint32_t(PackHalf(m.normalUVScale.x))
            | (uint32_t(PackHalf(m.normalUVScale.y)) << 16);
     dst[9] = uint32_t(PackHalf(m.rmaUVScale.x))
            | (uint32_t(PackHalf(m.rmaUVScale.y)) << 16);
+
+    dst[10] = PackRGB9E5(m.sssAlbedo.x, m.sssAlbedo.y, m.sssAlbedo.z);
+    dst[11] = uint32_t(PackHalf(m.sssRadius))
+            | (uint32_t(PackHalf(m.sssPhaseG)) << 16);
 }
 
-} // namespace MaterialPack
+}
 
-
-// SoA material storage. Full-precision authoring arrays + bindless tex IDs.
-// Editor and loaders mutate the per-field vectors in place, GPU upload
-// packs them into the compressed AoS upload buffer via BuildGpuPacked().
-//
-// push_back(Material) and append(std::vector<Material>) provide a
-// drop-in-replacement API for the old std::vector<Material>.
 struct MaterialSoA {
     std::vector<DirectX::XMFLOAT4> Kd;
-    std::vector<DirectX::XMFLOAT3> Ke;              // CPU-only
+    std::vector<DirectX::XMFLOAT3> Ke;
     std::vector<float>             Ni;
     std::vector<DirectX::XMFLOAT4> Pr_Pm_Ps_Pc;
     std::vector<DirectX::XMFLOAT3> Pcr_aniso_anisor;
@@ -170,6 +169,13 @@ struct MaterialSoA {
     std::vector<int32_t>           normalTexID;
     std::vector<int32_t>           rmaTexID;
     std::vector<float>             alphaThreshold;
+    std::vector<uint8_t>           invertAlpha;
+    std::vector<uint8_t>           thinGlass;
+    std::vector<DirectX::XMFLOAT3> sssAlbedo;
+    std::vector<float>             sssRadius;
+    std::vector<float>             sssPhaseG;
+    std::vector<float>             sssWeight;
+    std::vector<uint8_t>           sssEnable;
 
     size_t size()  const { return Ni.size(); }
     bool   empty() const { return Ni.empty(); }
@@ -180,7 +186,8 @@ struct MaterialSoA {
         Pr_Pm_Ps_Pc.reserve(n); Pcr_aniso_anisor.reserve(n); Tf.reserve(n);
         albedoUVScale.reserve(n); normalUVScale.reserve(n); rmaUVScale.reserve(n);
         albedoTexID.reserve(n); normalTexID.reserve(n); rmaTexID.reserve(n);
-        alphaThreshold.reserve(n);
+        alphaThreshold.reserve(n); invertAlpha.reserve(n); thinGlass.reserve(n);
+        sssAlbedo.reserve(n); sssRadius.reserve(n); sssPhaseG.reserve(n); sssWeight.reserve(n); sssEnable.reserve(n);
     }
 
     void push_back(const Material& m)
@@ -198,6 +205,13 @@ struct MaterialSoA {
         normalTexID.push_back(m.normalTexID);
         rmaTexID.push_back(m.rmaTexID);
         alphaThreshold.push_back(m.alphaThreshold);
+        invertAlpha.push_back(m.invertAlpha ? 1u : 0u);
+        thinGlass.push_back(m.thinGlass ? 1u : 0u);
+        sssAlbedo.push_back(m.sssAlbedo);
+        sssRadius.push_back(m.sssRadius);
+        sssPhaseG.push_back(m.sssPhaseG);
+        sssWeight.push_back(m.sssWeight);
+        sssEnable.push_back(m.sssEnable ? 1u : 0u);
     }
 
     void append(const std::vector<Material>& src)
@@ -206,7 +220,6 @@ struct MaterialSoA {
         for (const auto& m : src) push_back(m);
     }
 
-    // Round-trip helper: produce a Material view for a given index.
     Material Get(size_t i) const
     {
         Material m;
@@ -221,35 +234,36 @@ struct MaterialSoA {
         m.normalTexID = normalTexID[i];
         m.rmaTexID = rmaTexID[i];
         m.alphaThreshold = alphaThreshold[i];
+        m.invertAlpha = (i < invertAlpha.size()) ? (invertAlpha[i] != 0u) : false;
+        m.thinGlass = (i < thinGlass.size()) ? thinGlass[i] : uint8_t(0u);
+        m.sssAlbedo = (i < sssAlbedo.size()) ? sssAlbedo[i] : DirectX::XMFLOAT3(1.0f, 1.0f, 1.0f);
+        m.sssRadius = (i < sssRadius.size()) ? sssRadius[i] : 0.0f;
+        m.sssPhaseG = (i < sssPhaseG.size()) ? sssPhaseG[i] : 0.0f;
+        m.sssWeight = (i < sssWeight.size()) ? sssWeight[i] : 1.0f;
+        m.sssEnable = (i < sssEnable.size()) ? sssEnable[i] : 0u;
         return m;
     }
 
-    // Pack into one flat uint32 array (10 uint32 per material = 40 B)
-    // for direct GPU upload. Matches the HLSL `MatPacked` struct.
     void BuildGpuPacked(std::vector<uint32_t>& out) const
     {
         const size_t n = size();
-        out.resize(n * 10);
+        out.resize(n * MaterialPack::kMatPackedU32);
         for (size_t i = 0; i < n; ++i) {
             Material m = Get(i);
-            MaterialPack::PackOne(m, &out[i * 10]);
+            MaterialPack::PackOne(m, &out[i * MaterialPack::kMatPackedU32]);
         }
     }
 
-    // Repack just material `i` into the flat buffer (caller provides the
-    // whole contiguous array). Used when the editor modifies a single
-    // material and we want to avoid a full rebuild.
     void PackInto(size_t i, uint32_t* buf) const
     {
         Material m = Get(i);
-        MaterialPack::PackOne(m, buf + i * 10);
+        MaterialPack::PackOne(m, buf + i * MaterialPack::kMatPackedU32);
     }
 };
 
-
 struct Vertex {
     DirectX::XMFLOAT3 position;
-    DirectX::XMFLOAT4 normal_material; // w component holds material id
+    DirectX::XMFLOAT4 normal_material;
     DirectX::XMFLOAT2 texCoord;
 
     Vertex() : position{}, normal_material{}, texCoord{} {}

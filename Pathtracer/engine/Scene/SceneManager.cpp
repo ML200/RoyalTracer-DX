@@ -3,10 +3,15 @@
 
 uint32_t SceneManager::Instantiate(UINT meshIndex, const Transform& transform) {
     uint32_t id = m_nextId++;
-    GameObject go; go.id = id; go.transform = transform; go.meshIndex = meshIndex; go.active = true;
+    GameObject go;
+    go.id = id;
+    go.transform = transform;
+    go.meshIndex = meshIndex;
+    go.active = true;
     uint32_t idx;
     if (!m_freeList.empty()) {
-        idx = m_freeList.back(); m_freeList.pop_back();
+        idx = m_freeList.back();
+        m_freeList.pop_back();
         m_objects[idx] = go;
         m_dirty[idx] = 1;
     } else {
@@ -21,7 +26,8 @@ uint32_t SceneManager::Instantiate(UINT meshIndex, const Transform& transform) {
 
 void SceneManager::Destroy(uint32_t id) {
     auto it = m_idToIndex.find(id);
-    if (it == m_idToIndex.end()) return;
+    if (it == m_idToIndex.end())
+        return;
     uint32_t idx = it->second;
     m_objects[idx].active = false;
     m_dirty[idx] = 0;
@@ -32,7 +38,8 @@ void SceneManager::Destroy(uint32_t id) {
 
 GameObject* SceneManager::Get(uint32_t id) {
     auto it = m_idToIndex.find(id);
-    if (it == m_idToIndex.end()) return nullptr;
+    if (it == m_idToIndex.end())
+        return nullptr;
     auto& obj = m_objects[it->second];
     return obj.active ? &obj : nullptr;
 }
@@ -56,9 +63,11 @@ size_t SceneManager::ActiveCount() const {
 
 static void AppendEngineInstances(const std::vector<GameObject>& objects, Scene& scene) {
     for (const auto& obj : objects) {
-        if (!obj.active) continue;
+        if (!obj.active)
+            continue;
         SceneInstance si;
-        si.meshIndex = obj.meshIndex; si.modelIndex = 0;
+        si.meshIndex = obj.meshIndex;
+        si.modelIndex = 0;
         si.localTransform = XMMatrixIdentity();
         si.worldTransform = obj.transform.GetMatrix();
         si.prevWorldTransform = si.worldTransform;
@@ -78,9 +87,13 @@ void SceneManager::SyncToRendererInitial(Scene& scene) {
 
 void SceneManager::SyncToRenderer(Renderer& renderer) {
     Scene& scene = renderer.GetScene();
-    if (m_firstSync) { m_engineInstanceBase = scene.instances.size(); m_firstSync = false; }
+    if (m_firstSync) {
+        m_engineInstanceBase = scene.instances.size();
+        m_firstSync = false;
+    }
 
     if (m_structuralChange) {
+        // Rebuild renderer slots when object membership changes.
         if (scene.instances.size() > m_engineInstanceBase)
             scene.instances.resize(m_engineInstanceBase);
         AppendEngineInstances(m_objects, scene);
@@ -92,10 +105,12 @@ void SceneManager::SyncToRenderer(Renderer& renderer) {
     }
 
     if (m_anyDirty) {
+        // Transform edits update existing slots and invalidate dependent trees.
         size_t engineIdx = m_engineInstanceBase;
         for (size_t i = 0; i < m_objects.size(); ++i) {
             const auto& obj = m_objects[i];
-            if (!obj.active) continue;
+            if (!obj.active)
+                continue;
             if (m_dirty[i] && engineIdx < scene.instances.size()) {
                 scene.instances[engineIdx].worldTransform = obj.transform.GetMatrix();
                 scene.MarkInstanceDirty(static_cast<UINT>(engineIdx));
@@ -103,7 +118,7 @@ void SceneManager::SyncToRenderer(Renderer& renderer) {
             }
             ++engineIdx;
         }
-        scene.tlasDirty      = true;
+        scene.tlasDirty = true;
         scene.lightTreeDirty = true;
         m_anyDirty = false;
     }

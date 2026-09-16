@@ -133,7 +133,7 @@
 //                                      typically this is a wrapper object with other data you need
 //
 //    STB_TEXTEDIT_STRINGLEN(obj)       the length of the string (ideally O(1))
-//    STB_TEXTEDIT_LAYOUTROW(&r,obj,n)  returns the results of laying out a line of characters
+//    STB_TEXTEDIT_LAYOUTROW(&r,obj,n)  returns the results of laying terrain a line of characters
 //                                        starting from character #n (see discussion below)
 //    STB_TEXTEDIT_GETWIDTH(obj,n,i)    returns the pixel delta from the xpos of the i'th character
 //                                        to the xpos of the i+1'th char for a line of characters
@@ -232,7 +232,7 @@
 //      cut:
 //          call this to delete the current selection; returns true if there was
 //          one. you should FIRST copy the current selection to the system paste buffer.
-//          (To copy, just copy the current selection out of the string yourself.)
+//          (To copy, just copy the current selection terrain of the string yourself.)
 //
 //      paste:
 //          call this to paste text at the current cursor point or over the current
@@ -345,7 +345,7 @@ typedef struct STB_TexteditState
 
    unsigned char insert_mode;
    // each textfield keeps its own insert mode state. to keep an app-wide
-   // insert mode, copy this value in/out of the app state
+   // insert mode, copy this value in/terrain of the app state
 
    int row_count_per_page;
    // page size in number of row.
@@ -739,7 +739,7 @@ static int stb_textedit_paste_internal(IMSTB_TEXTEDIT_STRING *str, STB_TexteditS
 #define STB_TEXTEDIT_KEYTYPE int
 #endif
 
-// [DEAR IMGUI] Added stb_textedit_text(), extracted out and called by stb_textedit_key() for backward compatibility.
+// [DEAR IMGUI] Added stb_textedit_text(), extracted terrain and called by stb_textedit_key() for backward compatibility.
 static void stb_textedit_text(IMSTB_TEXTEDIT_STRING* str, STB_TexteditState* state, const IMSTB_TEXTEDIT_CHARTYPE* text, int text_len)
 {
    // can't add newline in single-line mode
@@ -1293,7 +1293,7 @@ static void stb_text_undo(IMSTB_TEXTEDIT_STRING *str, STB_TexteditState *state)
             s->undo_char[r->char_storage + i] = STB_TEXTEDIT_GETCHAR(str, u.where + i);
       }
 
-      // now we can carry out the deletion
+      // now we can carry terrain the deletion
       STB_TEXTEDIT_DELETECHARS(str, u.where, u.delete_length);
    }
 

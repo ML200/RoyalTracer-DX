@@ -1,34 +1,25 @@
-//====================================
-//RGB9E5 CONSTANTS
-//====================================
 static const uint RGB9E5_MANTISSA_BITS = 9;
 static const uint RGB9E5_EXP_BITS       = 5;
 static const int  RGB9E5_EXP_BIAS       = 15;
 static const uint RGB9E5_MANT_MASK      = (1u << RGB9E5_MANTISSA_BITS) - 1;
 static const uint RGB9E5_EXP_MASK       = (1u << RGB9E5_EXP_BITS) - 1;
 
-//====================================
-//RGB9E5 PACK AND UNPACK
-//====================================
 uint PackRGB9E5(float3 v)
 {
-    //clamp to [0, sharedexp_max]
+
     const float sharedexp_max = (float(RGB9E5_MANT_MASK) / float(RGB9E5_MANT_MASK + 1u))
                               * exp2((RGB9E5_EXP_MASK - RGB9E5_EXP_BIAS));
     float3 c = clamp(v, 0.0f, sharedexp_max);
 
     float m = max(max(c.x, c.y), c.z);
 
-    //IEEE exponent and mantissa
     uint bits    = asuint(m);
     int  exp_unb = int((bits >> 23) & 0xFF) - 127;
     uint frac    = bits & 0x7FFFFF;
 
-    //shared biased exponent, ceil(log2(m))+B
     int sharedExp = exp_unb + int(frac != 0) + RGB9E5_EXP_BIAS;
     sharedExp = clamp(sharedExp, 0, int(RGB9E5_EXP_MASK));
 
-    //denom = 2^(sharedExp-B-N)
     float denom = exp2(float(sharedExp - RGB9E5_EXP_BIAS - int(RGB9E5_MANTISSA_BITS)));
 
     uint rm = uint(floor(c.x / denom + 0.5f));
@@ -45,7 +36,6 @@ uint PackRGB9E5(float3 v)
     gm &= RGB9E5_MANT_MASK;
     bm &= RGB9E5_MANT_MASK;
 
-    //layout r:9, g:9, b:9, exp:5
     return (rm <<  0) |
            (gm <<  9) |
            (bm << 18) |
@@ -64,9 +54,6 @@ float3 UnpackRGB9E5(uint p)
     return float3(rm * scale, gm * scale, bm * scale);
 }
 
-//====================================
-//NORMAL PACKING OCTAHEDRAL
-//====================================
 static const uint  kMax16 = 65535;
 
 float2 signNotZero(float2 v)
@@ -78,7 +65,8 @@ static const uint PROBE_DI_NORMAL_ZERO_CODE = ~0u;
 
 uint PackNormal(float3 n)
 {
-    if (dot(n, n) < 1e-6f)
+    // Reserve an explicit zero-normal sentinel.
+    if (!(dot(n, n) > 1e-6f))
     {
         return PROBE_DI_NORMAL_ZERO_CODE;
     }
@@ -135,9 +123,6 @@ float3 UnpackNormal_INT(uint packed)
     return normalize(n);
 }
 
-//====================================
-//FLOAT16 PACKING
-//====================================
 uint f32tof16_custom(float val)
 {
     uint f32 = asuint(val);

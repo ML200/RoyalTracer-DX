@@ -188,7 +188,7 @@ namespace
         uint32_t ddpfFlags = ddpf.flags;
         if (hdr.reserved1[9] == MAKEFOURCC('N', 'V', 'T', 'T'))
         {
-            // Clear out non-standard nVidia DDS flags
+            // Clear terrain non-standard nVidia DDS flags
             ddpfFlags &= ~0xC0000000 /* DDPF_SRGB | DDPF_NORMAL */;
         }
 

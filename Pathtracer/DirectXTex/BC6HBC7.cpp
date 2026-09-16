@@ -1824,7 +1824,7 @@ void D3DX_BC6H::Encode(bool bSigned, const HDRColorA* const pIn) noexcept
     {
         const uint8_t uShapes = ms_aInfo[EP.uMode].uPartitions ? 32u : 1u;
         // Number of rough cases to look at. reasonable values of this are 1, uShapes/4, and uShapes
-        // uShapes/4 gets nearly all the cases; you can increase that a bit (say by 3 or 4) if you really want to squeeze the last bit out
+        // uShapes/4 gets nearly all the cases; you can increase that a bit (say by 3 or 4) if you really want to squeeze the last bit terrain
         const size_t uItems = std::max<size_t>(1u, size_t(uShapes >> 2));
         float afRoughMSE[BC6H_MAX_SHAPES];
         uint8_t auShape[BC6H_MAX_SHAPES];
@@ -2157,7 +2157,7 @@ void D3DX_BC6H::OptimizeOne(const EncodeParams* pEP, const INTColor aColors[], s
     // now optimize each channel separately
     for (uint8_t ch = 0; ch < BC6H_NUM_CHANNELS; ++ch)
     {
-        // figure out which endpoint when perturbed gives the most improvement and start there
+        // figure terrain which endpoint when perturbed gives the most improvement and start there
         // if we just alternate, we can easily end up in a local minima
         const float fErr0 = PerturbOne(pEP, aColors, np, ch, aOptEndPts, new_a, aOptErr, 0);	// perturb endpt A
         const float fErr1 = PerturbOne(pEP, aColors, np, ch, aOptEndPts, new_b, aOptErr, 1);	// perturb endpt B
@@ -2827,7 +2827,7 @@ void D3DX_BC7::Encode(uint32_t flags, const HDRColorA* const pIn) noexcept
         const size_t uNumRots = size_t(1) << ms_aInfo[EP.uMode].uRotationBits;
         const size_t uNumIdxMode = size_t(1) << ms_aInfo[EP.uMode].uIndexModeBits;
         // Number of rough cases to look at. reasonable values of this are 1, uShapes/4, and uShapes
-        // uShapes/4 gets nearly all the cases; you can increase that a bit (say by 3 or 4) if you really want to squeeze the last bit out
+        // uShapes/4 gets nearly all the cases; you can increase that a bit (say by 3 or 4) if you really want to squeeze the last bit terrain
         const size_t uItems = std::max<size_t>(1, uShapes >> 2);
         float afRoughMSE[BC7_MAX_SHAPES];
         size_t auShape[BC7_MAX_SHAPES];
@@ -2982,7 +2982,7 @@ void D3DX_BC7::Exhaustive(const EncodeParams* pEP, const LDRColorA aColors[], si
 
     constexpr int delta = 5;
 
-    // ok figure out the range of A and B
+    // ok figure terrain the range of A and B
     tmpEndPt = optEndPt;
     const int alow = std::max<int>(0, int(optEndPt.A[ch]) - delta);
     const int ahigh = std::min<int>((1 << uPrec) - 1, int(optEndPt.A[ch]) + delta);
@@ -3062,7 +3062,7 @@ void D3DX_BC7::OptimizeOne(const EncodeParams* pEP, const LDRColorA aColors[], s
         if (ms_aInfo[pEP->uMode].RGBAPrecWithP[ch] == 0)
             continue;
 
-        // figure out which endpoint when perturbed gives the most improvement and start there
+        // figure terrain which endpoint when perturbed gives the most improvement and start there
         // if we just alternate, we can easily end up in a local minima
         const float fErr0 = PerturbOne(pEP, aColors, np, uIndexMode, ch, opt, new_a, fOptErr, 0);	// perturb endpt A
         const float fErr1 = PerturbOne(pEP, aColors, np, uIndexMode, ch, opt, new_b, fOptErr, 1);	// perturb endpt B

@@ -1,15 +1,14 @@
 #pragma once
 
-//#define TINYOBJLOADER_USE_MAPBOX_EARCUT
 #include "../../lib/tiny_obj_loader.h"
 #include "../../lib/tiny_gltf_v3.h"
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
+#include <limits>
 
 #include <cmath>
 #include <random>
-#include <iostream>
 #include <vector>
 
 #include <chrono>
@@ -23,12 +22,9 @@
 struct TextureData;
 constexpr float PI = 3.14159265359f;
 
-// ============================================================================
-// DDS texture loading helpers (using DirectXTex)
-// ============================================================================
-
 inline bool isDDSExtension(const std::string& filename) {
-    if (filename.size() < 4) return false;
+    if (filename.size() < 4)
+        return false;
     std::string ext = filename.substr(filename.size() - 4);
     return (ext == ".dds" || ext == ".DDS" || ext == ".Dds");
 }
@@ -38,87 +34,121 @@ inline bool isDDSMemory(const uint8_t* data, size_t size) {
 }
 
 inline bool LoadDDSFileToRGBA8(const std::string& path, DXGI_FORMAT targetFormat, DirectX::ScratchImage& outImage) {
+    // Decompress and convert only when the source format differs.
     using namespace DirectX;
     std::wstring wpath(path.begin(), path.end());
     ScratchImage ddsImage;
     TexMetadata meta;
     HRESULT hr = LoadFromDDSFile(wpath.c_str(), DDS_FLAGS_NONE, &meta, ddsImage);
-    if (FAILED(hr)) return false;
-    if (meta.format == targetFormat) { outImage = std::move(ddsImage); return true; }
+    if (FAILED(hr))
+        return false;
+    if (meta.format == targetFormat) {
+        outImage = std::move(ddsImage);
+        return true;
+    }
     if (IsCompressed(meta.format)) {
         ScratchImage decompressed;
         hr = Decompress(*ddsImage.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+            return false;
         ddsImage = std::move(decompressed);
         meta = ddsImage.GetMetadata();
     }
     if (meta.format != targetFormat) {
         ScratchImage converted;
         hr = Convert(*ddsImage.GetImage(0, 0, 0), targetFormat, TEX_FILTER_DEFAULT, 0.5f, converted);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+            return false;
         ddsImage = std::move(converted);
     }
     outImage = std::move(ddsImage);
     return true;
 }
 
-inline bool LoadDDSMemoryToRGBA8(const uint8_t* data, size_t size, DXGI_FORMAT targetFormat, DirectX::ScratchImage& outImage) {
+inline bool LoadDDSMemoryToRGBA8(const uint8_t* data, size_t size, DXGI_FORMAT targetFormat,
+                                 DirectX::ScratchImage& outImage) {
     using namespace DirectX;
     ScratchImage ddsImage;
     TexMetadata meta;
     HRESULT hr = LoadFromDDSMemory(data, size, DDS_FLAGS_NONE, &meta, ddsImage);
-    if (FAILED(hr)) return false;
-    if (meta.format == targetFormat) { outImage = std::move(ddsImage); return true; }
+    if (FAILED(hr))
+        return false;
+    if (meta.format == targetFormat) {
+        outImage = std::move(ddsImage);
+        return true;
+    }
     if (IsCompressed(meta.format)) {
         ScratchImage decompressed;
         hr = Decompress(*ddsImage.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, decompressed);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+            return false;
         ddsImage = std::move(decompressed);
         meta = ddsImage.GetMetadata();
     }
     if (meta.format != targetFormat) {
         ScratchImage converted;
         hr = Convert(*ddsImage.GetImage(0, 0, 0), targetFormat, TEX_FILTER_DEFAULT, 0.5f, converted);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr))
+            return false;
         ddsImage = std::move(converted);
     }
     outImage = std::move(ddsImage);
     return true;
 }
 
-// Texture packing
+inline std::vector<uint8_t> DecodeBase64(const char* in, size_t len) {
+    // Ignore non alphabet characters so wrapped asset payloads decode correctly.
+    static const int8_t table[256] = {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, 62, -1, 63, 52, 53, 54, 55,
+        56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12,
+        13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, 63, -1, 26, 27, 28, 29, 30, 31, 32,
+        33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    };
+    std::vector<uint8_t> out;
+    out.reserve((len * 3) / 4);
+    int32_t buffer = 0, bits = 0;
+    for (size_t i = 0; i < len; ++i) {
+        int8_t v = table[(unsigned char)in[i]];
+        if (v < 0)
+            continue;
+        buffer = (buffer << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back((uint8_t)((buffer >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
 constexpr int TARGET_TEXTURE_DIM = 2048;
 
 #include <DirectXMath.h>
 #include <DirectXPackedVector.h>
 using namespace DirectX;
 
-// ============================================================================
-// New scene-level data structures
-// ============================================================================
-
 struct LoadedMesh {
-    std::vector<Vertex>   vertices;
-    std::vector<UINT>     indices;
-    std::vector<UINT>     perTriMaterialIDs;   // indices into LoadedScene::materials
-    UINT                  opaqueTriCount = 0;   // filled by caller after SplitOpaqueAlpha
-    UINT                  alphaTriCount  = 0;
+    std::vector<Vertex> vertices;
+    std::vector<UINT> indices;
+    std::vector<UINT> perTriMaterialIDs;
+    UINT opaqueTriCount = 0;
+    UINT alphaTriCount = 0;
 };
 
 struct LoadedScene {
-    std::vector<LoadedMesh>  meshes;      // unique geometries (local-space vertices)
-    std::vector<Material>    materials;   // all materials for this scene (0-based)
-    std::vector<std::string> materialNames; // parallel to materials (for editor display)
-    // Per-instance: which mesh + what transform
-    std::vector<std::pair<UINT, XMMATRIX>> instances; // (meshIndex into meshes[], worldTransform)
+    std::vector<LoadedMesh> meshes;
+    std::vector<Material> materials;
+    std::vector<std::string> materialNames;
+
+    std::vector<std::pair<UINT, XMMATRIX>> instances;
 };
 
-
-// ============================================================================
-// HELPERS
-// ============================================================================
-
-// Add two XMFLOAT3
 inline XMFLOAT3 operator+(const XMFLOAT3& a, const XMFLOAT3& b) {
     XMVECTOR va = XMLoadFloat3(&a);
     XMVECTOR vb = XMLoadFloat3(&b);
@@ -128,7 +158,6 @@ inline XMFLOAT3 operator+(const XMFLOAT3& a, const XMFLOAT3& b) {
     return sum;
 }
 
-// Subtract two XMFLOAT3
 inline XMFLOAT3 operator-(const XMFLOAT3& a, const XMFLOAT3& b) {
     XMVECTOR va = XMLoadFloat3(&a);
     XMVECTOR vb = XMLoadFloat3(&b);
@@ -225,7 +254,7 @@ inline float D_GGX(float NdotH, float roughness) {
 }
 
 inline float G1_SmithGGX(float NdotV, float alpha) {
-    float alpha2 = alpha*alpha;
+    float alpha2 = alpha * alpha;
     float denomC = sqrt(alpha2 + (1.0f - alpha2) * NdotV * NdotV) + NdotV;
     return 2.0f * NdotV / (std::fmax)(denomC, 1e-7f);
 }
@@ -243,13 +272,8 @@ inline void CoordinateSystem(const XMFLOAT3& N, XMFLOAT3& T1, XMFLOAT3& T2) {
     T2 = cross(N, T1);
 }
 
-inline void SampleGGX(
-    const Material& mat,
-    const XMFLOAT3& outgoing,
-    const XMFLOAT3& normal,
-    XMFLOAT3& sample,
-    float e0, float e1)
-{
+inline void SampleGGX(const Material& mat, const XMFLOAT3& outgoing, const XMFLOAT3& normal, XMFLOAT3& sample, float e0,
+                      float e1) {
     float alpha = mat.Pr_Pm_Ps_Pc.x * mat.Pr_Pm_Ps_Pc.x;
     XMFLOAT3 N = normalize(normal);
     XMFLOAT3 V = normalize(outgoing);
@@ -257,73 +281,63 @@ inline void SampleGGX(
     CoordinateSystem(N, T1, T2);
     float vx = dot(T1, V);
     float vy = dot(T2, V);
-    float vz = dot(N,  V);
+    float vz = dot(N, V);
     XMFLOAT3 Ve = normalize(XMFLOAT3(alpha * vx, alpha * vy, vz));
-    float lensq = Ve.x*Ve.x + Ve.y*Ve.y;
-    XMFLOAT3 T1h = (lensq > 0.0f) ? normalize(XMFLOAT3(-Ve.y, Ve.x, 0.0f))
-                                  : XMFLOAT3(1.0f, 0.0f, 0.0f);
+    float lensq = Ve.x * Ve.x + Ve.y * Ve.y;
+    XMFLOAT3 T1h = (lensq > 0.0f) ? normalize(XMFLOAT3(-Ve.y, Ve.x, 0.0f)) : XMFLOAT3(1.0f, 0.0f, 0.0f);
     XMFLOAT3 T2h = cross(Ve, T1h);
-    float r   = sqrtf(e0);
+    float r = sqrtf(e0);
     float phi = 2.0f * PI * e1;
-    float t1  = r * cosf(phi);
-    float t2  = r * sinf(phi);
+    float t1 = r * cosf(phi);
+    float t2 = r * sinf(phi);
     float s = 0.5f * (1.0f + Ve.z);
-    t2 = (1.0f - s) * sqrtf(fmaxf(0.0f, 1.0f - t1*t1)) + s * t2;
-    float t3 = sqrtf(fmaxf(0.0f, 1.0f - t1*t1 - t2*t2));
-    XMFLOAT3 Nh = XMFLOAT3(
-        t1*T1h.x + t2*T2h.x + t3*Ve.x,
-        t1*T1h.y + t2*T2h.y + t3*Ve.y,
-        t1*T1h.z + t2*T2h.z + t3*Ve.z
-    );
+    t2 = (1.0f - s) * sqrtf(fmaxf(0.0f, 1.0f - t1 * t1)) + s * t2;
+    float t3 = sqrtf(fmaxf(0.0f, 1.0f - t1 * t1 - t2 * t2));
+    XMFLOAT3 Nh = XMFLOAT3(t1 * T1h.x + t2 * T2h.x + t3 * Ve.x, t1 * T1h.y + t2 * T2h.y + t3 * Ve.y,
+                           t1 * T1h.z + t2 * T2h.z + t3 * Ve.z);
     XMFLOAT3 Ne = normalize(XMFLOAT3(alpha * Nh.x, alpha * Nh.y, fmaxf(0.0f, Nh.z)));
-    XMFLOAT3 H = normalize(XMFLOAT3(
-        Ne.x * T1.x + Ne.y * T2.x + Ne.z * N.x,
-        Ne.x * T1.y + Ne.y * T2.y + Ne.z * N.y,
-        Ne.x * T1.z + Ne.y * T2.z + Ne.z * N.z
-    ));
+    XMFLOAT3 H = normalize(XMFLOAT3(Ne.x * T1.x + Ne.y * T2.x + Ne.z * N.x, Ne.x * T1.y + Ne.y * T2.y + Ne.z * N.y,
+                                    Ne.x * T1.z + Ne.y * T2.z + Ne.z * N.z));
     sample = normalize(reflect(V * -1.0f, H));
-    if (dot(N, sample) <= 0.0f) sample = XMFLOAT3(0,0,0);
+    if (dot(N, sample) <= 0.0f)
+        sample = XMFLOAT3(0, 0, 0);
 }
 
-inline XMFLOAT3 EvaluateBRDF_GGX(
-    const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N,
-    const XMFLOAT3& /*F0_unused*/, float roughness)
-{
-    XMFLOAT3 H  = normalize(V + L);
+inline XMFLOAT3 EvaluateBRDF_GGX(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, const XMFLOAT3&,
+                                 float roughness) {
+    XMFLOAT3 H = normalize(V + L);
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
     float NdotL = (std::fmax)(dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f) return XMFLOAT3(0,0,0);
+    if (NdotV <= 0.0f || NdotL <= 0.0f)
+        return XMFLOAT3(0, 0, 0);
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float D     = D_GGX(NdotH, roughness);
+    float D = D_GGX(NdotH, roughness);
     float alpha = (std::fmax)(1e-4f, roughness * roughness);
-    float G2    = G2_SmithGGX(NdotV, NdotL, alpha);
+    float G2 = G2_SmithGGX(NdotV, NdotL, alpha);
     float denom = (std::fmax)(4.0f * NdotV * NdotL, 1e-7f);
-    float brdf  = (D * G2) / denom;
+    float brdf = (D * G2) / denom;
     return XMFLOAT3(brdf, brdf, brdf);
 }
 
-inline float BRDF_PDF_GGX(const float roughness,
-                          const XMFLOAT3& normal,
-                          const XMFLOAT3& incoming,
-                          const XMFLOAT3& outgoing)
-{
+inline float BRDF_PDF_GGX(const float roughness, const XMFLOAT3& normal, const XMFLOAT3& incoming,
+                          const XMFLOAT3& outgoing) {
     XMFLOAT3 N = normalize(normal);
     XMFLOAT3 V = normalize(outgoing);
     XMFLOAT3 L = normalize(incoming * -1.0f);
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
     float NdotL = (std::fmax)(dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0f;
+    if (NdotV <= 0.0f || NdotL <= 0.0f)
+        return 0.0f;
     XMFLOAT3 H = normalize(V + L);
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
-    float D     = D_GGX(NdotH, roughness);
+    float D = D_GGX(NdotH, roughness);
     float alpha = (std::fmax)(1e-4f, roughness * roughness);
-    float G1    = G1_SmithGGX(NdotV, alpha);
+    float G1 = G1_SmithGGX(NdotV, alpha);
     return (D * G1) / (4.0f * (std::fmax)(NdotV, 1e-7f));
 }
 
-inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V,
-                 float roughness, XMFLOAT3 /*Ks*/, int numSamples, Material& mat)
-{
+inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V, float roughness, XMFLOAT3, int numSamples,
+                        Material& mat) {
     float Ess = 0.0f;
     std::random_device rd;
     std::mt19937 gen(rd());
@@ -332,8 +346,9 @@ inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V,
         XMFLOAT3 L;
         SampleGGX(mat, V, N, L, dist(gen), dist(gen));
         float NdotL = dot(N, L);
-        if (NdotL <= 0.0f) continue;
-        XMFLOAT3 brdf3 = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), XMFLOAT3(1,1,1), roughness);
+        if (NdotL <= 0.0f)
+            continue;
+        XMFLOAT3 brdf3 = EvaluateBRDF_GGX(normalize(V), normalize(L), normalize(N), XMFLOAT3(1, 1, 1), roughness);
         float pdf = BRDF_PDF_GGX(roughness, N, L * -1.0f, V);
         pdf = (std::fmax)(pdf, 1e-7f);
         Ess += (NdotL * brdf3.x) / pdf;
@@ -341,23 +356,26 @@ inline float ComputeEss(const XMFLOAT3& N, const XMFLOAT3& V,
     return (numSamples > 0) ? (Ess / numSamples) : 0.0f;
 }
 
-// Sheen helpers
 inline float D_Charlie(float NdotH, float r) {
     r = (std::fmax)(1e-4f, r);
-    float invr   = 1.0f / r;
+    float invr = 1.0f / r;
     float sin2Th = (std::fmax)(0.0f, 1.0f - NdotH * NdotH);
-    float sinTh  = sqrtf(sin2Th);
+    float sinTh = sqrtf(sin2Th);
     return (2.0f + invr) * powf((std::fmax)(1e-8f, sinTh), invr) * (0.5f / PI);
 }
 
 inline void Sheen_LambdaFitParams(float r, float& a, float& b, float& c, float& d, float& e) {
     r = (std::fmin)(1.0f, (std::fmax)(0.0f, r));
-    float w0 = (1.0f - r); w0 *= w0;
+    float w0 = (1.0f - r);
+    w0 *= w0;
     float w1 = 1.0f - w0;
-    const float a0=25.3245f, b0=3.32435f, c0=0.16801f, d0=-1.27393f, e0=-4.85967f;
-    const float a1=21.5473f, b1=3.82987f, c1=0.19823f, d1=-1.97760f, e1=-4.32054f;
-    a = w0*a0 + w1*a1; b = w0*b0 + w1*b1; c = w0*c0 + w1*c1;
-    d = w0*d0 + w1*d1; e = w0*e0 + w1*e1;
+    const float a0 = 25.3245f, b0 = 3.32435f, c0 = 0.16801f, d0 = -1.27393f, e0 = -4.85967f;
+    const float a1 = 21.5473f, b1 = 3.82987f, c1 = 0.19823f, d1 = -1.97760f, e1 = -4.32054f;
+    a = w0 * a0 + w1 * a1;
+    b = w0 * b0 + w1 * b1;
+    c = w0 * c0 + w1 * c1;
+    d = w0 * d0 + w1 * d1;
+    e = w0 * e0 + w1 * e1;
 }
 
 inline float Sheen_L_eval(float x, float a, float b, float c, float d, float e) {
@@ -365,11 +383,12 @@ inline float Sheen_L_eval(float x, float a, float b, float c, float d, float e) 
 }
 
 inline float Lambda_Charlie(float cosTheta, float r) {
-    float a,b,c,d,e; Sheen_LambdaFitParams(r, a,b,c,d,e);
+    float a, b, c, d, e;
+    Sheen_LambdaFitParams(r, a, b, c, d, e);
     float x = (std::fmin)(1.0f, (std::fmax)(0.0f, cosTheta));
-    float Lx    = Sheen_L_eval(x,        a,b,c,d,e);
-    float Lhalf = Sheen_L_eval(0.5f,     a,b,c,d,e);
-    float L1mx  = Sheen_L_eval(1.0f - x, a,b,c,d,e);
+    float Lx = Sheen_L_eval(x, a, b, c, d, e);
+    float Lhalf = Sheen_L_eval(0.5f, a, b, c, d, e);
+    float L1mx = Sheen_L_eval(1.0f - x, a, b, c, d, e);
     return (x < 0.5f) ? expf(Lx) : expf(2.0f * Lhalf - L1mx);
 }
 
@@ -377,11 +396,11 @@ inline float G_Charlie(float NdotV, float NdotL, float r) {
     return 1.0f / (1.0f + Lambda_Charlie(NdotV, r) + Lambda_Charlie(NdotL, r));
 }
 
-inline float EvaluateBRDF_SHEEN_scalar(const XMFLOAT3& V, const XMFLOAT3& L,
-                                       const XMFLOAT3& N, float r) {
+inline float EvaluateBRDF_SHEEN_scalar(const XMFLOAT3& V, const XMFLOAT3& L, const XMFLOAT3& N, float r) {
     float NdotV = (std::fmax)(dot(N, V), 0.0f);
     float NdotL = (std::fmax)(dot(N, L), 0.0f);
-    if (NdotV <= 0.0f || NdotL <= 0.0f) return 0.0f;
+    if (NdotV <= 0.0f || NdotL <= 0.0f)
+        return 0.0f;
     XMFLOAT3 H = normalize(XMFLOAT3(V.x + L.x, V.y + L.y, V.z + L.z));
     float NdotH = (std::fmax)(dot(N, H), 0.0f);
     float D = D_Charlie(NdotH, r);
@@ -395,33 +414,30 @@ inline XMFLOAT3 CosineHemisphereSample(float u1, float u2) {
     float phi = 2.0f * PI * u2;
     float x = r * cosf(phi);
     float y = r * sinf(phi);
-    float z = sqrtf((std::fmax)(0.0f, 1.0f - x*x - y*y));
-    return XMFLOAT3(x,y,z);
+    float z = sqrtf((std::fmax)(0.0f, 1.0f - x * x - y * y));
+    return XMFLOAT3(x, y, z);
 }
 
-inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N, const XMFLOAT3& V,
-                                           float sheenR, int numSamples) {
+inline float ComputeSheenDirectionalAlbedo(const XMFLOAT3& N, const XMFLOAT3& V, float sheenR, int numSamples) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    XMFLOAT3 T1, T2; CoordinateSystem(N, T1, T2);
+    XMFLOAT3 T1, T2;
+    CoordinateSystem(N, T1, T2);
     float sum_f = 0.0f;
     for (int i = 0; i < numSamples; ++i) {
         float u1 = dist(gen), u2 = dist(gen);
         XMFLOAT3 Llocal = CosineHemisphereSample(u1, u2);
-        XMFLOAT3 L = normalize(XMFLOAT3(
-            Llocal.x * T1.x + Llocal.y * T2.x + Llocal.z * N.x,
-            Llocal.x * T1.y + Llocal.y * T2.y + Llocal.z * N.y,
-            Llocal.x * T1.z + Llocal.y * T2.z + Llocal.z * N.z
-        ));
+        XMFLOAT3 L = normalize(XMFLOAT3(Llocal.x * T1.x + Llocal.y * T2.x + Llocal.z * N.x,
+                                        Llocal.x * T1.y + Llocal.y * T2.y + Llocal.z * N.y,
+                                        Llocal.x * T1.z + Llocal.y * T2.z + Llocal.z * N.z));
         sum_f += EvaluateBRDF_SHEEN_scalar(V, L, N, sheenR);
     }
     float mean_f = (numSamples > 0) ? (sum_f / numSamples) : 0.0f;
     return mean_f * PI;
 }
 
-inline void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title)
-{
+inline void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std::wstring& title) {
     std::wcout << L"\n======================================================================================\n";
     std::wcout << L" Full 32x32 Matrix for: " << title << L"\n";
     std::wcout << L"======================================================================================\n";
@@ -444,19 +460,14 @@ inline void PrintFullLutMatrix(const std::vector<float>& lutSliceData, const std
             }
         }
         std::wcout << L"\n";
-        if ((y + 1) % 8 == 0) std::wcout << std::wstring(120, L'-') << L"\n";
+        if ((y + 1) % 8 == 0)
+            std::wcout << std::wstring(120, L'-') << L"\n";
     }
     std::wcout << L"\n";
 }
 
-
-// ============================================================================
-// ObjLoader class
-// ============================================================================
-
 class ObjLoader {
-private:
-    // ---- tiny_gltf v3 helpers ------------------------------------------------
+  private:
     static bool tg3_str_eq(const tg3_str& s, const char* lit) {
         size_t n = strlen(lit);
         return s.len == (uint32_t)n && memcmp(s.data, lit, n) == 0;
@@ -475,103 +486,278 @@ private:
     }
 
     static double tg3_obj_get_double(const tg3_value* obj, const char* key, double fallback) {
-        if (!obj || obj->type != TG3_VALUE_OBJECT) return fallback;
+        if (!obj || obj->type != TG3_VALUE_OBJECT)
+            return fallback;
         for (uint32_t i = 0; i < obj->object_count; ++i) {
             if (tg3_str_eq(obj->object_data[i].key, key)) {
                 const tg3_value& v = obj->object_data[i].value;
-                if (v.type == TG3_VALUE_REAL) return v.real_val;
-                if (v.type == TG3_VALUE_INT)  return (double)v.int_val;
+                if (v.type == TG3_VALUE_REAL)
+                    return v.real_val;
+                if (v.type == TG3_VALUE_INT)
+                    return (double)v.int_val;
                 return fallback;
             }
         }
         return fallback;
     }
 
-    template <typename T>
-    static std::vector<T> ReadGltfAccessorV3(const tg3_model& model, int accessorIdx)
-    {
-        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors_count) return {};
-        const tg3_accessor& acc = model.accessors[accessorIdx];
-        if (acc.buffer_view < 0 || acc.buffer_view >= (int)model.buffer_views_count) return {};
-        const tg3_buffer_view& bv = model.buffer_views[acc.buffer_view];
-        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers_count) return {};
-        const tg3_buffer& buf = model.buffers[bv.buffer];
+    static void tg3_obj_get_vec3(const tg3_value* obj, const char* key, float out[3], float fallback) {
+        out[0] = out[1] = out[2] = fallback;
+        if (!obj || obj->type != TG3_VALUE_OBJECT)
+            return;
+        for (uint32_t i = 0; i < obj->object_count; ++i) {
+            if (tg3_str_eq(obj->object_data[i].key, key)) {
+                const tg3_value& v = obj->object_data[i].value;
+                if (v.type != TG3_VALUE_ARRAY)
+                    return;
+                const uint32_t n = (v.array_count < 3u) ? v.array_count : 3u;
+                for (uint32_t c = 0; c < n; ++c) {
+                    const tg3_value& e = v.array_data[c];
+                    out[c] = (e.type == TG3_VALUE_REAL)  ? (float)e.real_val
+                             : (e.type == TG3_VALUE_INT) ? (float)e.int_val
+                                                         : fallback;
+                }
+                return;
+            }
+        }
+    }
 
+    template <typename T> static std::vector<T> ReadGltfAccessorV3(const tg3_model& model, int accessorIdx) {
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors_count)
+            return {};
+        const tg3_accessor& acc = model.accessors[accessorIdx];
         uint32_t componentCount = 1;
         switch (acc.type) {
-            case TG3_TYPE_SCALAR: componentCount = 1; break;
-            case TG3_TYPE_VEC2:   componentCount = 2; break;
-            case TG3_TYPE_VEC3:   componentCount = 3; break;
-            case TG3_TYPE_VEC4:   componentCount = 4; break;
-            default: break;
+        case TG3_TYPE_SCALAR:
+            componentCount = 1;
+            break;
+        case TG3_TYPE_VEC2:
+            componentCount = 2;
+            break;
+        case TG3_TYPE_VEC3:
+            componentCount = 3;
+            break;
+        case TG3_TYPE_VEC4:
+            componentCount = 4;
+            break;
+        default:
+            return {};
         }
 
         size_t compSize = 0;
         switch (acc.component_type) {
-            case TG3_COMPONENT_TYPE_BYTE:
-            case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:  compSize = 1; break;
-            case TG3_COMPONENT_TYPE_SHORT:
-            case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: compSize = 2; break;
-            case TG3_COMPONENT_TYPE_INT:
-            case TG3_COMPONENT_TYPE_UNSIGNED_INT:
-            case TG3_COMPONENT_TYPE_FLOAT:          compSize = 4; break;
-            default: break;
+        case TG3_COMPONENT_TYPE_BYTE:
+        case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
+            compSize = 1;
+            break;
+        case TG3_COMPONENT_TYPE_SHORT:
+        case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
+            compSize = 2;
+            break;
+        case TG3_COMPONENT_TYPE_INT:
+        case TG3_COMPONENT_TYPE_UNSIGNED_INT:
+        case TG3_COMPONENT_TYPE_FLOAT:
+            compSize = 4;
+            break;
+        default:
+            return {};
         }
 
-        size_t stride = bv.byte_stride;
-        if (stride == 0) stride = compSize * componentCount;
+        auto span = [&](int viewIdx, uint64_t offset, uint64_t count, size_t elementSize, bool packed,
+                        size_t& stride) -> const uint8_t* {
+            if (viewIdx < 0 || viewIdx >= (int)model.buffer_views_count || count == 0)
+                return nullptr;
+            const auto& bv = model.buffer_views[viewIdx];
+            if (bv.buffer < 0 || bv.buffer >= (int)model.buffers_count)
+                return nullptr;
+            const auto& buf = model.buffers[bv.buffer];
+            stride = packed || bv.byte_stride == 0 ? elementSize : bv.byte_stride;
+            if (!buf.data.data || stride < elementSize || bv.byte_offset > buf.data.count ||
+                bv.byte_length > buf.data.count - bv.byte_offset || offset > bv.byte_length ||
+                elementSize > bv.byte_length - offset || count - 1 > (bv.byte_length - offset - elementSize) / stride)
+                return nullptr;
+            return buf.data.data + bv.byte_offset + offset;
+        };
+        const size_t elementSize = compSize * componentCount;
+        if (acc.count == 0 || acc.count > std::vector<T>().max_size() / componentCount)
+            return {};
+        size_t stride = elementSize;
+        const uint8_t* base = nullptr;
+        if (acc.buffer_view >= 0) {
+            base = span(acc.buffer_view, acc.byte_offset, acc.count, elementSize, false, stride);
+            if (!base)
+                return {};
+        }
+        std::vector<T> result((size_t)acc.count * componentCount, T{});
 
-        std::vector<T> result;
-        result.reserve((size_t)acc.count * componentCount);
-        const uint8_t* base = buf.data.data + bv.byte_offset + acc.byte_offset;
-
-        for (uint64_t i = 0; i < acc.count; ++i) {
-            const uint8_t* elem = base + i * stride;
+        auto readElement = [&](const uint8_t* elem, size_t index) {
             for (uint32_t c = 0; c < componentCount; ++c) {
-                T value{};
+                double value = 0;
                 switch (acc.component_type) {
-                    case TG3_COMPONENT_TYPE_FLOAT: {
-                        float f; memcpy(&f, elem + c * sizeof(float), sizeof(float));
-                        value = static_cast<T>(f); break;
-                    }
-                    case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: {
-                        uint16_t u; memcpy(&u, elem + c * sizeof(uint16_t), sizeof(uint16_t));
-                        value = static_cast<T>(u); break;
-                    }
-                    case TG3_COMPONENT_TYPE_UNSIGNED_INT: {
-                        uint32_t u; memcpy(&u, elem + c * sizeof(uint32_t), sizeof(uint32_t));
-                        value = static_cast<T>(u); break;
-                    }
-                    case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: {
-                        value = static_cast<T>(elem[c]); break;
-                    }
-                    case TG3_COMPONENT_TYPE_SHORT: {
-                        int16_t s; memcpy(&s, elem + c * sizeof(int16_t), sizeof(int16_t));
-                        value = static_cast<T>(s); break;
-                    }
-                    case TG3_COMPONENT_TYPE_BYTE: {
-                        value = static_cast<T>(reinterpret_cast<const int8_t*>(elem)[c]); break;
-                    }
-                    default: break;
+                case TG3_COMPONENT_TYPE_FLOAT: {
+                    float f;
+                    memcpy(&f, elem + c * sizeof(float), sizeof(float));
+                    value = f;
+                    break;
                 }
-                result.push_back(value);
+                case TG3_COMPONENT_TYPE_UNSIGNED_SHORT: {
+                    uint16_t u;
+                    memcpy(&u, elem + c * sizeof(uint16_t), sizeof(uint16_t));
+                    value = acc.normalized ? u / 65535.0 : u;
+                    break;
+                }
+                case TG3_COMPONENT_TYPE_UNSIGNED_INT: {
+                    uint32_t u;
+                    memcpy(&u, elem + c * sizeof(uint32_t), sizeof(uint32_t));
+                    value = u;
+                    break;
+                }
+                case TG3_COMPONENT_TYPE_INT: {
+                    int32_t s;
+                    memcpy(&s, elem + c * sizeof(int32_t), sizeof(int32_t));
+                    value = s;
+                    break;
+                }
+                case TG3_COMPONENT_TYPE_UNSIGNED_BYTE: {
+                    value = acc.normalized ? elem[c] / 255.0 : elem[c];
+                    break;
+                }
+                case TG3_COMPONENT_TYPE_SHORT: {
+                    int16_t s;
+                    memcpy(&s, elem + c * sizeof(int16_t), sizeof(int16_t));
+                    value = acc.normalized ? std::max(s / 32767.0, -1.0) : s;
+                    break;
+                }
+                case TG3_COMPONENT_TYPE_BYTE: {
+                    const int8_t s = reinterpret_cast<const int8_t*>(elem)[c];
+                    value = acc.normalized ? std::max(s / 127.0, -1.0) : s;
+                    break;
+                }
+                default:
+                    break;
+                }
+                result[index * componentCount + c] = static_cast<T>(value);
+            }
+        };
+        if (base) {
+            for (size_t i = 0; i < (size_t)acc.count; ++i)
+                readElement(base + i * stride, i);
+        }
+        if (acc.sparse.is_sparse) {
+            const auto& sparse = acc.sparse;
+            if (sparse.count <= 0 || (uint64_t)sparse.count > acc.count)
+                return {};
+            size_t indexSize = 0;
+            switch (sparse.indices.component_type) {
+            case TG3_COMPONENT_TYPE_UNSIGNED_BYTE:
+                indexSize = 1;
+                break;
+            case TG3_COMPONENT_TYPE_UNSIGNED_SHORT:
+                indexSize = 2;
+                break;
+            case TG3_COMPONENT_TYPE_UNSIGNED_INT:
+                indexSize = 4;
+                break;
+            default:
+                return {};
+            }
+            size_t indexStride, valueStride;
+            const uint8_t* indices = span(sparse.indices.buffer_view, sparse.indices.byte_offset, sparse.count,
+                                          indexSize, true, indexStride);
+            const uint8_t* values = span(sparse.values.buffer_view, sparse.values.byte_offset, sparse.count,
+                                         elementSize, true, valueStride);
+            if (!indices || !values)
+                return {};
+            uint32_t previous = 0;
+            for (int i = 0; i < sparse.count; ++i) {
+                uint32_t index = 0;
+                memcpy(&index, indices + i * indexStride, indexSize);
+                if (index >= acc.count || (i > 0 && index <= previous))
+                    return {};
+                readElement(values + i * valueStride, index);
+                previous = index;
             }
         }
         return result;
     }
 
-    // Recursively collect mesh instances with accumulated transforms.
-    // IMPORTANT: Stores the node transform — vertices stay in mesh-local space.
-    // Uses a visited set to prevent double-traversal when a node appears as
-    // both a scene root and a child of another node.
-    static void CollectGltfNodesV3(
-        const tg3_model& model, int nodeIdx,
-        const XMMATRIX& parentTransform,
-        std::vector<std::pair<int, XMMATRIX>>& outMeshes,
-        std::unordered_set<int>& visited)
-    {
-        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count) return;
-        if (!visited.insert(nodeIdx).second) return; // already visited
+    static bool CollectGltfMeshInstancesV3(const tg3_model& model, const tg3_node& node, const XMMATRIX& world,
+                                           std::vector<std::pair<int, XMMATRIX>>& outMeshes) {
+        const auto* ext = tg3_find_extension(node.ext, "EXT_mesh_gpu_instancing");
+        if (!ext) {
+            outMeshes.push_back({node.mesh, world});
+            return true;
+        }
+        const tg3_value* attributes = nullptr;
+        if (ext->type != TG3_VALUE_OBJECT)
+            return false;
+        for (uint32_t i = 0; i < ext->object_count; ++i)
+            if (tg3_str_eq(ext->object_data[i].key, "attributes"))
+                attributes = &ext->object_data[i].value;
+        if (!attributes || attributes->type != TG3_VALUE_OBJECT || attributes->object_count == 0)
+            return false;
+
+        uint64_t count = 0;
+        std::vector<float> translations, rotations, scales;
+        for (uint32_t i = 0; i < attributes->object_count; ++i) {
+            const auto& attr = attributes->object_data[i];
+            if (attr.value.type != TG3_VALUE_INT || attr.value.int_val < 0 ||
+                (uint64_t)attr.value.int_val >= model.accessors_count)
+                return false;
+            const int accessorIdx = (int)attr.value.int_val;
+            const auto& acc = model.accessors[accessorIdx];
+            if (acc.count == 0 || (i > 0 && acc.count != count))
+                return false;
+            count = acc.count;
+            const bool translation = tg3_str_eq(attr.key, "TRANSLATION");
+            const bool rotation = tg3_str_eq(attr.key, "ROTATION");
+            const bool scale = tg3_str_eq(attr.key, "SCALE");
+
+            if (!translation && !rotation && !scale) {
+                if (attr.key.len == 0 || attr.key.data[0] != '_')
+                    return false;
+                continue;
+            }
+            if (acc.type != (rotation ? TG3_TYPE_VEC4 : TG3_TYPE_VEC3))
+                return false;
+            const bool floatType = acc.component_type == TG3_COMPONENT_TYPE_FLOAT && !acc.normalized;
+            const bool packedRotation =
+                rotation && acc.normalized &&
+                (acc.component_type == TG3_COMPONENT_TYPE_BYTE || acc.component_type == TG3_COMPONENT_TYPE_SHORT);
+            if (!floatType && !packedRotation)
+                return false;
+            auto values = ReadGltfAccessorV3<float>(model, accessorIdx);
+            if (values.empty() || !std::all_of(values.begin(), values.end(), [](float v) { return std::isfinite(v); }))
+                return false;
+            (translation ? translations : (rotation ? rotations : scales)) = std::move(values);
+        }
+        if (count > outMeshes.max_size() - outMeshes.size())
+            return false;
+        for (size_t i = 0; i < (size_t)count; ++i) {
+            const XMMATRIX T = translations.empty() ? XMMatrixIdentity()
+                                                    : XMMatrixTranslation(translations[3 * i], translations[3 * i + 1],
+                                                                          translations[3 * i + 2]);
+            const XMMATRIX S = scales.empty() ? XMMatrixIdentity()
+                                              : XMMatrixScaling(scales[3 * i], scales[3 * i + 1], scales[3 * i + 2]);
+            XMMATRIX R = XMMatrixIdentity();
+            if (!rotations.empty()) {
+                XMVECTOR q =
+                    XMVectorSet(rotations[4 * i], rotations[4 * i + 1], rotations[4 * i + 2], rotations[4 * i + 3]);
+                if (XMVectorGetX(XMVector4LengthSq(q)) < 1e-12f)
+                    return false;
+                R = XMMatrixRotationQuaternion(XMQuaternionNormalize(q));
+            }
+            outMeshes.push_back({node.mesh, S * R * T * world});
+        }
+        return true;
+    }
+
+    static bool CollectGltfNodesV3(const tg3_model& model, int nodeIdx, const XMMATRIX& parentTransform,
+                                   std::vector<std::pair<int, XMMATRIX>>& outMeshes, std::unordered_set<int>& visited) {
+        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes_count)
+            return false;
+        if (!visited.insert(nodeIdx).second)
+            return true;
 
         const tg3_node& node = model.nodes[nodeIdx];
         XMMATRIX local = XMMatrixIdentity();
@@ -580,19 +766,26 @@ private:
             XMFLOAT4X4 m;
             for (int r = 0; r < 4; ++r)
                 for (int c = 0; c < 4; ++c)
-                    m.m[r][c] = (float)node.matrix[c * 4 + r];
+
+                    m.m[r][c] = (float)node.matrix[r * 4 + c];
             local = XMLoadFloat4x4(&m);
         } else {
-            XMMATRIX T = XMMatrixTranslation((float)node.translation[0], (float)node.translation[1], (float)node.translation[2]);
-            XMMATRIX R = XMMatrixRotationQuaternion(XMVectorSet((float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2], (float)node.rotation[3]));
+            XMMATRIX T =
+                XMMatrixTranslation((float)node.translation[0], (float)node.translation[1], (float)node.translation[2]);
+            XMMATRIX R = XMMatrixRotationQuaternion(XMVectorSet((float)node.rotation[0], (float)node.rotation[1],
+                                                                (float)node.rotation[2], (float)node.rotation[3]));
             XMMATRIX S = XMMatrixScaling((float)node.scale[0], (float)node.scale[1], (float)node.scale[2]);
             local = S * R * T;
         }
 
         XMMATRIX world = local * parentTransform;
-        if (node.mesh >= 0) outMeshes.push_back({ node.mesh, world });
+        if (node.mesh >= 0 &&
+            (node.mesh >= (int)model.meshes_count || !CollectGltfMeshInstancesV3(model, node, world, outMeshes)))
+            return false;
         for (uint32_t i = 0; i < node.children_count; ++i)
-            CollectGltfNodesV3(model, node.children[i], world, outMeshes, visited);
+            if (!CollectGltfNodesV3(model, node.children[i], world, outMeshes, visited))
+                return false;
+        return true;
     }
 
     static int tg3_find_attribute(const tg3_primitive& prim, const char* name) {
@@ -603,19 +796,11 @@ private:
         return -1;
     }
 
-public:
-
-    // =========================================================================
-    // loadObjFile  —  returns a LoadedScene with one mesh + one instance
-    // =========================================================================
-    static LoadedScene loadObjFile(
-        const std::string& inputfile,
-        std::map<std::string, uint32_t>& textureMap,
-        std::vector<TextureData>& albedoTextures,
-        std::vector<TextureData>& normalTextures,
-        std::vector<TextureData>& rmaTextures,
-        const std::string& material_search_path = "./")
-    {
+  public:
+    static LoadedScene loadObjFile(const std::string& inputfile, std::map<std::string, uint32_t>& textureMap,
+                                   std::vector<TextureData>& albedoTextures, std::vector<TextureData>& normalTextures,
+                                   std::vector<TextureData>& rmaTextures,
+                                   const std::string& material_search_path = "./") {
         using namespace DirectX;
 
         LoadedScene scene;
@@ -628,9 +813,14 @@ public:
 
         tinyobj::ObjReader reader;
         if (!reader.ParseFromFile(inputfile, reader_config)) {
-            if (!reader.Error().empty()) { std::cerr << "TinyObjReader: " << reader.Error(); exit(1); }
+            if (!reader.Error().empty()) {
+                std::cerr << "TinyObjReader: " << reader.Error();
+                exit(1);
+            }
         }
-        if (!reader.Warning().empty()) { std::cout << "TinyObjReader: " << reader.Warning(); }
+        if (!reader.Warning().empty()) {
+            std::cout << "TinyObjReader: " << reader.Warning();
+        }
 
         const auto& attrib = reader.GetAttrib();
         const auto& shapes = reader.GetShapes();
@@ -641,79 +831,96 @@ public:
         std::cout << "  - Materials: " << materials.size() << std::endl;
         std::cout << "  - Vertices: " << (attrib.vertices.size() / 3) << std::endl;
 
-        // ---- Texture processing lambdas (unchanged) ----
-        auto processTexture = [&](
-            const std::string& filename, const std::string& materialPath,
-            std::vector<TextureData>& textureList, bool isBumpMap, bool isSrgb) -> int
-        {
-            if (filename.empty()) return -1;
+        auto processTexture = [&](const std::string& filename, const std::string& materialPath,
+                                  std::vector<TextureData>& textureList, bool isBumpMap, bool isSrgb) -> int {
+            if (filename.empty())
+                return -1;
             std::string srgb_suffix = isSrgb ? "_srgb" : "_linear";
             std::string fullPath = materialPath + filename;
             std::string cacheKey = fullPath + (isBumpMap ? "_bump_v2_uncompressed" : "_uncompressed") + srgb_suffix;
-            if (textureMap.count(cacheKey)) return static_cast<int>(textureMap[cacheKey]);
+            if (textureMap.count(cacheKey))
+                return static_cast<int>(textureMap[cacheKey]);
             DXGI_FORMAT format = isSrgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
             int width, height, channels;
             ScratchImage scratchImage;
             HRESULT hr;
             if (isDDSExtension(filename)) {
                 if (!LoadDDSFileToRGBA8(fullPath, format, scratchImage)) {
-                    std::cerr << "  ERROR: Failed to load DDS texture: " << fullPath << std::endl; return -1;
+                    std::cerr << "  ERROR: Failed to load DDS texture: " << fullPath << std::endl;
+                    return -1;
                 }
                 width = (int)scratchImage.GetMetadata().width;
                 height = (int)scratchImage.GetMetadata().height;
                 channels = 4;
             } else {
                 unsigned char* data = stbi_load(fullPath.c_str(), &width, &height, &channels, 4);
-                if (!data) { std::cerr << "  ERROR: Failed to load texture: " << fullPath << std::endl; return -1; }
+                if (!data) {
+                    std::cerr << "  ERROR: Failed to load texture: " << fullPath << std::endl;
+                    return -1;
+                }
                 hr = scratchImage.Initialize2D(format, width, height, 1, 1);
-                if (FAILED(hr)) { stbi_image_free(data); return -1; }
+                if (FAILED(hr)) {
+                    stbi_image_free(data);
+                    return -1;
+                }
                 memcpy(scratchImage.GetPixels(), data, scratchImage.GetPixelsSize());
                 stbi_image_free(data);
             }
             TextureData texData;
-            texData.original_width = width; texData.original_height = height;
+            texData.original_width = width;
+            texData.original_height = height;
             if (isBumpMap && channels < 3) {
                 ScratchImage normalMapImage;
-                hr = ComputeNormalMap(*scratchImage.GetImage(0,0,0), CNMAP_DEFAULT, 1.0f, DXGI_FORMAT_R8G8B8A8_UNORM, normalMapImage);
-                if (FAILED(hr)) return -1;
+                hr = ComputeNormalMap(*scratchImage.GetImage(0, 0, 0), CNMAP_DEFAULT, 1.0f, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                      normalMapImage);
+                if (FAILED(hr))
+                    return -1;
                 scratchImage = std::move(normalMapImage);
             }
             ScratchImage mipChain;
-            hr = GenerateMipMaps(*scratchImage.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
-            if (FAILED(hr)) return -1;
+            hr = GenerateMipMaps(*scratchImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
+            if (FAILED(hr))
+                return -1;
             const TexMetadata& fm = mipChain.GetMetadata();
-            texData.width = (int)fm.width; texData.height = (int)fm.height;
-            texData.channels = 4; texData.image = std::move(mipChain);
+            texData.width = (int)fm.width;
+            texData.height = (int)fm.height;
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
             uint32_t textureID = (uint32_t)textureList.size();
             textureList.push_back(std::move(texData));
             textureMap[cacheKey] = textureID;
             return (int)textureID;
         };
 
-        auto processAndCombineRMA = [&](
-            const std::string& r_fname, const std::string& m_fname,
-            float constant_roughness, float constant_metallic,
-            const std::string& materialPath, std::vector<TextureData>& rmaTextureList) -> int
-        {
-            if (r_fname.empty() && m_fname.empty()) return -1;
+        auto processAndCombineRMA = [&](const std::string& r_fname, const std::string& m_fname,
+                                        float constant_roughness, float constant_metallic,
+                                        const std::string& materialPath,
+                                        std::vector<TextureData>& rmaTextureList) -> int {
+            if (r_fname.empty() && m_fname.empty())
+                return -1;
             std::string combinedKey = materialPath + r_fname + "+" + m_fname + "_uncompressed";
-            if (textureMap.count(combinedKey)) return (int)textureMap[combinedKey];
+            if (textureMap.count(combinedKey))
+                return (int)textureMap[combinedKey];
             auto load_single_channel = [&](const std::string& fname, ScratchImage& out) -> bool {
-                if (fname.empty()) return false;
+                if (fname.empty())
+                    return false;
                 std::string fpath = materialPath + fname;
                 if (isDDSExtension(fname)) {
                     ScratchImage rgba;
-                    if (!LoadDDSFileToRGBA8(fpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba)) return false;
+                    if (!LoadDDSFileToRGBA8(fpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba))
+                        return false;
                     int w = (int)rgba.GetMetadata().width, h = (int)rgba.GetMetadata().height;
                     out.Initialize2D(DXGI_FORMAT_R8_UNORM, w, h, 1, 1);
                     const uint8_t* src = rgba.GetPixels();
                     uint8_t* dst = out.GetPixels();
-                    for (size_t i = 0; i < (size_t)w * h; ++i) dst[i] = src[i * 4];
+                    for (size_t i = 0; i < (size_t)w * h; ++i)
+                        dst[i] = src[i * 4];
                     return true;
                 }
                 int w, h, c;
                 unsigned char* img_data = stbi_load(fpath.c_str(), &w, &h, &c, 1);
-                if (!img_data) return false;
+                if (!img_data)
+                    return false;
                 out.Initialize2D(DXGI_FORMAT_R8_UNORM, w, h, 1, 1);
                 memcpy(out.GetPixels(), img_data, out.GetPixelsSize());
                 stbi_image_free(img_data);
@@ -724,14 +931,19 @@ public:
             bool has_m = load_single_channel(m_fname, m_img);
             size_t width = has_r ? r_img.GetMetadata().width : (has_m ? m_img.GetMetadata().width : 0);
             size_t height = has_r ? r_img.GetMetadata().height : (has_m ? m_img.GetMetadata().height : 0);
-            if (width == 0) return -1;
-            if (has_r && has_m && (r_img.GetMetadata().width != m_img.GetMetadata().width || r_img.GetMetadata().height != m_img.GetMetadata().height)) {
+            if (width == 0)
+                return -1;
+            if (has_r && has_m &&
+                (r_img.GetMetadata().width != m_img.GetMetadata().width ||
+                 r_img.GetMetadata().height != m_img.GetMetadata().height)) {
                 ScratchImage& smaller = (r_img.GetPixelsSize() < m_img.GetPixelsSize()) ? r_img : m_img;
-                ScratchImage& larger  = (r_img.GetPixelsSize() < m_img.GetPixelsSize()) ? m_img : r_img;
+                ScratchImage& larger = (r_img.GetPixelsSize() < m_img.GetPixelsSize()) ? m_img : r_img;
                 ScratchImage resized;
-                Resize(*smaller.GetImage(0,0,0), larger.GetMetadata().width, larger.GetMetadata().height, TEX_FILTER_DEFAULT, resized);
+                Resize(*smaller.GetImage(0, 0, 0), larger.GetMetadata().width, larger.GetMetadata().height,
+                       TEX_FILTER_DEFAULT, resized);
                 smaller = std::move(resized);
-                width = larger.GetMetadata().width; height = larger.GetMetadata().height;
+                width = larger.GetMetadata().width;
+                height = larger.GetMetadata().height;
             }
             ScratchImage combinedImage;
             combinedImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1);
@@ -740,53 +952,105 @@ public:
             const uint8_t* m_px = has_m ? m_img.GetPixels() : nullptr;
             uint8_t rC = (uint8_t)(constant_roughness * 255.0f), mC = (uint8_t)(constant_metallic * 255.0f);
             for (size_t i = 0; i < width * height; ++i) {
-                dest[i*4+0] = 255;
-                dest[i*4+1] = r_px ? r_px[i] : rC;
-                dest[i*4+2] = m_px ? m_px[i] : mC;
-                dest[i*4+3] = 255;
+                dest[i * 4 + 0] = 255;
+                dest[i * 4 + 1] = r_px ? r_px[i] : rC;
+                dest[i * 4 + 2] = m_px ? m_px[i] : mC;
+                dest[i * 4 + 3] = 255;
             }
             ScratchImage mipChain;
-            GenerateMipMaps(*combinedImage.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
+            GenerateMipMaps(*combinedImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
             TextureData texData;
-            texData.original_width = width; texData.original_height = height;
+            texData.original_width = width;
+            texData.original_height = height;
             const TexMetadata& fm = mipChain.GetMetadata();
-            texData.width = (int)fm.width; texData.height = (int)fm.height;
-            texData.channels = 4; texData.image = std::move(mipChain);
+            texData.width = (int)fm.width;
+            texData.height = (int)fm.height;
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
             uint32_t textureID = (uint32_t)rmaTextureList.size();
             rmaTextureList.push_back(std::move(texData));
             textureMap[combinedKey] = textureID;
             return (int)textureID;
         };
 
-        auto processAlbedoWithOpacity = [&](
-            const std::string& diffuse_fname, const std::string& opacity_fname,
-            float constant_dissolve, const std::string& materialPath,
-            std::vector<TextureData>& albedoList) -> int
-        {
-            if (diffuse_fname.empty() && opacity_fname.empty()) return -1;
-            std::string cacheKey = materialPath + diffuse_fname + "+opacity_" + opacity_fname
-                                 + "_d" + std::to_string(constant_dissolve) + "_srgb";
-            if (textureMap.count(cacheKey)) return (int)textureMap[cacheKey];
+        auto containsCI = [](const std::string& s, const char* sub) -> bool {
+            std::string l = s;
+            std::transform(l.begin(), l.end(), l.begin(), ::tolower);
+            std::string ll = sub;
+            std::transform(ll.begin(), ll.end(), ll.begin(), ::tolower);
+            return l.find(ll) != std::string::npos;
+        };
+
+        auto detectInvertAlpha = [&](const std::string& alphaName, const DirectX::ScratchImage* opacityImg,
+                                     float threshold) -> bool {
+            bool invert = false;
+
+            if (!alphaName.empty() && (containsCI(alphaName, "_tr.") || containsCI(alphaName, "_trans") ||
+                                       containsCI(alphaName, "transparen"))) {
+                invert = true;
+            }
+
+            if (opacityImg) {
+                const DirectX::Image* img = opacityImg->GetImage(0, 0, 0);
+                if (img && img->pixels) {
+                    const uint8_t threshByte =
+                        (uint8_t)std::min<int>(255, std::max<int>(0, (int)std::lround(threshold * 255.0f)));
+                    uint64_t passNoInvert = 0, passInvert = 0;
+                    const uint8_t* p = img->pixels;
+                    const size_t count = (size_t)img->width * (size_t)img->height;
+                    for (size_t i = 0; i < count; ++i) {
+                        const uint8_t a = p[i];
+                        if (a >= threshByte)
+                            ++passNoInvert;
+                        if ((uint8_t)(255 - a) >= threshByte)
+                            ++passInvert;
+                    }
+                    if (passNoInvert == 0 && passInvert > 0)
+                        invert = true;
+                    else if (passInvert == 0 && passNoInvert > 0)
+                        invert = false;
+                }
+            }
+
+            return invert;
+        };
+
+        auto processAlbedoWithOpacity = [&](const std::string& diffuse_fname, const std::string& opacity_fname,
+                                            float constant_dissolve, const std::string& materialPath,
+                                            std::vector<TextureData>& albedoList, bool& outInvertAlpha) -> int {
+            outInvertAlpha = false;
+            if (diffuse_fname.empty() && opacity_fname.empty())
+                return -1;
+            std::string cacheKey = materialPath + diffuse_fname + "+opacity_" + opacity_fname + "_d" +
+                                   std::to_string(constant_dissolve) + "_srgb";
+            if (textureMap.count(cacheKey))
+                return (int)textureMap[cacheKey];
             int dw = 1, dh = 1;
             ScratchImage diffuseImage;
             if (!diffuse_fname.empty()) {
                 std::string dfpath = materialPath + diffuse_fname;
                 if (isDDSExtension(diffuse_fname)) {
                     if (!LoadDDSFileToRGBA8(dfpath, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, diffuseImage)) {
-                        std::cerr << "  ERROR: Failed to load DDS diffuse: " << diffuse_fname << std::endl; return -1;
+                        std::cerr << "  ERROR: Failed to load DDS diffuse: " << diffuse_fname << std::endl;
+                        return -1;
                     }
-                    dw = (int)diffuseImage.GetMetadata().width; dh = (int)diffuseImage.GetMetadata().height;
+                    dw = (int)diffuseImage.GetMetadata().width;
+                    dh = (int)diffuseImage.GetMetadata().height;
                 } else {
                     int dc;
                     unsigned char* ddata = stbi_load(dfpath.c_str(), &dw, &dh, &dc, 4);
-                    if (!ddata) { std::cerr << "  ERROR: Failed to load diffuse: " << diffuse_fname << std::endl; return -1; }
+                    if (!ddata) {
+                        std::cerr << "  ERROR: Failed to load diffuse: " << diffuse_fname << std::endl;
+                        return -1;
+                    }
                     diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, dw, dh, 1, 1);
                     memcpy(diffuseImage.GetPixels(), ddata, diffuseImage.GetPixelsSize());
                     stbi_image_free(ddata);
                 }
             } else {
                 diffuseImage.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 1, 1, 1, 1);
-                uint8_t* px = diffuseImage.GetPixels(); px[0]=px[1]=px[2]=px[3]=255;
+                uint8_t* px = diffuseImage.GetPixels();
+                px[0] = px[1] = px[2] = px[3] = 255;
             }
             if (!opacity_fname.empty()) {
                 std::string ofpath = materialPath + opacity_fname;
@@ -794,78 +1058,109 @@ public:
                 int ow, oh;
                 if (isDDSExtension(opacity_fname)) {
                     ScratchImage rgba;
-                    if (!LoadDDSFileToRGBA8(ofpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba)) return -1;
-                    ow = (int)rgba.GetMetadata().width; oh = (int)rgba.GetMetadata().height;
+                    if (!LoadDDSFileToRGBA8(ofpath, DXGI_FORMAT_R8G8B8A8_UNORM, rgba))
+                        return -1;
+                    ow = (int)rgba.GetMetadata().width;
+                    oh = (int)rgba.GetMetadata().height;
                     opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
                     const uint8_t* src = rgba.GetPixels();
                     uint8_t* dst = opacityImage.GetPixels();
-                    for (size_t i = 0; i < (size_t)ow * oh; ++i) dst[i] = src[i * 4];
+                    for (size_t i = 0; i < (size_t)ow * oh; ++i)
+                        dst[i] = src[i * 4];
                 } else {
                     int oc;
                     unsigned char* odata = stbi_load(ofpath.c_str(), &ow, &oh, &oc, 1);
-                    if (!odata) return -1;
+                    if (!odata)
+                        return -1;
                     opacityImage.Initialize2D(DXGI_FORMAT_R8_UNORM, ow, oh, 1, 1);
                     memcpy(opacityImage.GetPixels(), odata, opacityImage.GetPixelsSize());
                     stbi_image_free(odata);
                 }
                 if (ow != dw || oh != dh) {
                     ScratchImage resized;
-                    Resize(*opacityImage.GetImage(0,0,0), dw, dh, TEX_FILTER_DEFAULT, resized);
+                    Resize(*opacityImage.GetImage(0, 0, 0), dw, dh, TEX_FILTER_DEFAULT, resized);
                     opacityImage = std::move(resized);
                 }
+
+                outInvertAlpha = detectInvertAlpha(opacity_fname, &opacityImage, 0.5f);
                 uint8_t* dpx = diffuseImage.GetPixels();
                 const uint8_t* opx = opacityImage.GetPixels();
-                for (size_t i = 0; i < (size_t)dw * dh; ++i) dpx[i*4+3] = opx[i];
+                for (size_t i = 0; i < (size_t)dw * dh; ++i)
+                    dpx[i * 4 + 3] = opx[i];
             } else {
                 uint8_t alpha_const = (uint8_t)(constant_dissolve * 255.0f);
                 uint8_t* dpx = diffuseImage.GetPixels();
-                for (size_t i = 0; i < (size_t)dw * dh; ++i) dpx[i*4+3] = alpha_const;
+                for (size_t i = 0; i < (size_t)dw * dh; ++i)
+                    dpx[i * 4 + 3] = alpha_const;
+
+                outInvertAlpha = false;
             }
             ScratchImage mipChain;
-            HRESULT hr = GenerateMipMaps(*diffuseImage.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
-            if (FAILED(hr)) return -1;
+            HRESULT hr = GenerateMipMaps(*diffuseImage.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
+            if (FAILED(hr))
+                return -1;
             TextureData texData;
-            texData.original_width = dw; texData.original_height = dh;
+            texData.original_width = dw;
+            texData.original_height = dh;
             const TexMetadata& fm = mipChain.GetMetadata();
-            texData.width = (int)fm.width; texData.height = (int)fm.height;
-            texData.channels = 4; texData.image = std::move(mipChain);
+            texData.width = (int)fm.width;
+            texData.height = (int)fm.height;
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
             uint32_t textureID = (uint32_t)albedoList.size();
             albedoList.push_back(std::move(texData));
             textureMap[cacheKey] = textureID;
             return (int)textureID;
         };
 
-        // ---- Materials (scene-local, 0-based) ----
-        // Index 0 = default material
         Material defaultMaterial;
         scene.materials.push_back(defaultMaterial);
         scene.materialNames.push_back("(default)");
 
         for (const auto& mat : materials) {
             Material t_mat;
-            t_mat.Kd = { mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], mat.dissolve };
-            t_mat.Ke = { mat.emission[0], mat.emission[1], mat.emission[2] };
-            t_mat.Ni = mat.ior;
-            t_mat.Pr_Pm_Ps_Pc = { mat.roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness };
-            t_mat.Pcr_aniso_anisor = { mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation };
+            const bool has_opacity_tex = !mat.alpha_texname.empty();
+
+            float effective_dissolve = mat.dissolve;
+            if (!has_opacity_tex && effective_dissolve <= 0.0f) {
+                effective_dissolve = 1.0f;
+            }
+
+            t_mat.Kd = {mat.diffuse[0], mat.diffuse[1], mat.diffuse[2], effective_dissolve};
+            t_mat.Ke = {mat.emission[0], mat.emission[1], mat.emission[2]};
+
+            t_mat.Ni = (mat.ior <= 1.0f) ? 1.5f : mat.ior;
+
+            const float effective_roughness = (mat.roughness <= 0.0f) ? 1.0f : mat.roughness;
+            t_mat.Pr_Pm_Ps_Pc = {effective_roughness, mat.metallic, mat.sheen, mat.clearcoat_thickness};
+            t_mat.Pcr_aniso_anisor = {mat.clearcoat_roughness, mat.anisotropy, mat.anisotropy_rotation};
             t_mat.Tf = {mat.transmittance[0], mat.transmittance[1], mat.transmittance[2]};
 
-            bool has_opacity_tex = !mat.alpha_texname.empty();
-            bool has_partial_dissolve = mat.dissolve < 1.0f;
+            const bool has_partial_dissolve = effective_dissolve < 1.0f;
             if (has_opacity_tex || has_partial_dissolve) {
-                t_mat.albedoTexID = processAlbedoWithOpacity(mat.diffuse_texname, mat.alpha_texname, mat.dissolve, material_search_path, albedoTextures);
-                t_mat.alphaThreshold = mat.unknown_parameter.count("alpha_cutoff") ? std::stof(mat.unknown_parameter.at("alpha_cutoff")) : 0.5f;
+                bool detectedInvert = false;
+                t_mat.albedoTexID = processAlbedoWithOpacity(mat.diffuse_texname, mat.alpha_texname, effective_dissolve,
+                                                             material_search_path, albedoTextures, detectedInvert);
+                t_mat.alphaThreshold = mat.unknown_parameter.count("alpha_cutoff")
+                                           ? std::stof(mat.unknown_parameter.at("alpha_cutoff"))
+                                           : 0.5f;
+
+                t_mat.invertAlpha = detectedInvert;
             } else {
-                t_mat.albedoTexID = processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
+                t_mat.albedoTexID =
+                    processTexture(mat.diffuse_texname, material_search_path, albedoTextures, false, true);
                 t_mat.alphaThreshold = 1.0f;
+                t_mat.invertAlpha = false;
             }
             bool isBump = !mat.bump_texname.empty() && mat.normal_texname.empty();
             std::string normalTexName = !mat.normal_texname.empty() ? mat.normal_texname : mat.bump_texname;
             t_mat.normalTexID = processTexture(normalTexName, material_search_path, normalTextures, isBump, false);
             if (mat.unknown_parameter.count("map_rma")) {
-                t_mat.rmaTexID = processTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures, false, false);
+                t_mat.rmaTexID = processTexture(mat.unknown_parameter.at("map_rma"), material_search_path, rmaTextures,
+                                                false, false);
             } else if (!mat.roughness_texname.empty() || !mat.metallic_texname.empty()) {
-                t_mat.rmaTexID = processAndCombineRMA(mat.roughness_texname, mat.metallic_texname, mat.roughness, mat.metallic, material_search_path, rmaTextures);
+                t_mat.rmaTexID = processAndCombineRMA(mat.roughness_texname, mat.metallic_texname, mat.roughness,
+                                                      mat.metallic, material_search_path, rmaTextures);
             } else {
                 t_mat.rmaTexID = -1;
             }
@@ -873,7 +1168,6 @@ public:
             scene.materialNames.push_back(mat.name);
         }
 
-        // ---- Geometry: single LoadedMesh for the whole OBJ ----
         LoadedMesh mesh;
         std::unordered_map<Vertex, uint32_t> uniqueVertices;
 
@@ -881,24 +1175,36 @@ public:
             size_t index_offset = 0;
             for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++) {
                 int fv = shape.mesh.num_face_vertices[f];
-                if (fv != 3) { index_offset += fv; continue; }
+                if (fv != 3) {
+                    index_offset += fv;
+                    continue;
+                }
 
-                // Material ID is local to scene.materials (default=0, tinyobj mats start at 1)
                 int materialID = (f < shape.mesh.material_ids.size()) ? shape.mesh.material_ids[f] : -1;
                 uint32_t matID = (materialID >= 0) ? uint32_t(materialID + 1) : 0u;
                 mesh.perTriMaterialIDs.push_back(matID);
 
-                tinyobj::index_t idx[3] = { shape.mesh.indices[index_offset], shape.mesh.indices[index_offset+1], shape.mesh.indices[index_offset+2] };
-                XMFLOAT3 p[3], n[3]; XMFLOAT2 uv[3];
+                tinyobj::index_t idx[3] = {shape.mesh.indices[index_offset], shape.mesh.indices[index_offset + 1],
+                                           shape.mesh.indices[index_offset + 2]};
+                XMFLOAT3 p[3], n[3];
+                XMFLOAT2 uv[3];
                 for (int i = 0; i < 3; ++i) {
-                    p[i] = { attrib.vertices[3*idx[i].vertex_index+0], attrib.vertices[3*idx[i].vertex_index+1], attrib.vertices[3*idx[i].vertex_index+2] };
-                    uv[i] = (idx[i].texcoord_index >= 0) ? XMFLOAT2{ attrib.texcoords[2*idx[i].texcoord_index+0], 1.0f - attrib.texcoords[2*idx[i].texcoord_index+1] } : XMFLOAT2{0,0};
-                    n[i] = (idx[i].normal_index >= 0) ? XMFLOAT3{ attrib.normals[3*idx[i].normal_index+0], attrib.normals[3*idx[i].normal_index+1], attrib.normals[3*idx[i].normal_index+2] } : XMFLOAT3{0,0,0};
+                    p[i] = {attrib.vertices[3 * idx[i].vertex_index + 0], attrib.vertices[3 * idx[i].vertex_index + 1],
+                            attrib.vertices[3 * idx[i].vertex_index + 2]};
+                    uv[i] = (idx[i].texcoord_index >= 0)
+                                ? XMFLOAT2{attrib.texcoords[2 * idx[i].texcoord_index + 0],
+                                           1.0f - attrib.texcoords[2 * idx[i].texcoord_index + 1]}
+                                : XMFLOAT2{0, 0};
+                    n[i] = (idx[i].normal_index >= 0) ? XMFLOAT3{attrib.normals[3 * idx[i].normal_index + 0],
+                                                                 attrib.normals[3 * idx[i].normal_index + 1],
+                                                                 attrib.normals[3 * idx[i].normal_index + 2]}
+                                                      : XMFLOAT3{0, 0, 0};
                 }
                 if (idx[0].normal_index < 0) {
                     XMVECTOR p0_v = XMLoadFloat3(&p[0]), p1_v = XMLoadFloat3(&p[1]), p2_v = XMLoadFloat3(&p[2]);
                     XMVECTOR faceNormalVec = XMVector3Normalize(XMVector3Cross(p1_v - p0_v, p2_v - p0_v));
-                    XMStoreFloat3(&n[0], faceNormalVec); n[1] = n[2] = n[0];
+                    XMStoreFloat3(&n[0], faceNormalVec);
+                    n[1] = n[2] = n[0];
                 }
                 for (int i = 0; i < 3; ++i) {
                     Vertex v({p[i]}, {n[i].x, n[i].y, n[i].z, (float)matID}, {uv[i]});
@@ -917,8 +1223,7 @@ public:
 
         scene.meshes.push_back(std::move(mesh));
 
-        // OBJ has no scene graph → one instance at identity
-        scene.instances.push_back({ 0, XMMatrixIdentity() });
+        scene.instances.push_back({0, XMMatrixIdentity()});
 
         std::cout << "[ObjLoader] COMPLETED '" << inputfile << "'." << std::endl;
         std::cout << "  - Unique vertices: " << scene.meshes[0].vertices.size() << std::endl;
@@ -929,26 +1234,16 @@ public:
         return scene;
     }
 
-
-    // =========================================================================
-    // loadGlbFile  —  returns LoadedScene with per-mesh geometry in LOCAL space
-    //                  and instances carrying the scene-graph transforms
-    // =========================================================================
-    static LoadedScene loadGlbFile(
-        const std::string& inputfile,
-        std::map<std::string, uint32_t>& textureMap,
-        std::vector<TextureData>& albedoTextures,
-        std::vector<TextureData>& normalTextures,
-        std::vector<TextureData>& rmaTextures,
-        const std::string& material_search_path = "./")
-    {
+    static LoadedScene loadGlbFile(const std::string& inputfile, std::map<std::string, uint32_t>& textureMap,
+                                   std::vector<TextureData>& albedoTextures, std::vector<TextureData>& normalTextures,
+                                   std::vector<TextureData>& rmaTextures,
+                                   const std::string& material_search_path = "./") {
         using namespace DirectX;
 
         LoadedScene scene;
 
         std::cout << "[GlbLoader] Starting to load GLB file: " << inputfile << std::endl;
 
-        // ---- 1. Read file into memory -------------------------------------------
         std::ifstream file(inputfile, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
             std::cerr << "[GlbLoader] ERROR: Could not open file: " << inputfile << std::endl;
@@ -960,7 +1255,6 @@ public:
         file.read(reinterpret_cast<char*>(fileData.data()), fileSize);
         file.close();
 
-        // ---- 2. Parse with v3 API -----------------------------------------------
         tg3_model model{};
         tg3_error_stack errors{};
         tg3_error_stack_init(&errors);
@@ -969,12 +1263,10 @@ public:
         tg3_parse_options_init(&opts);
         opts.preserve_image_channels = 0;
         opts.images_as_is = 0;
-        opts.memory.memory_budget = 4ULL * 1024 * 1024 * 1024;
 
-        opts.image.load_image = [](tg3_image_result* result,
-                           const tg3_image_request* request,
-                           void* /*user_data*/) -> int32_t
-        {
+        opts.memory.memory_budget = 64ULL * 1024 * 1024 * 1024;
+
+        opts.image.load_image = [](tg3_image_result* result, const tg3_image_request* request, void*) -> int32_t {
             if (isDDSMemory(request->data, request->data_size)) {
                 DirectX::ScratchImage ddsImage;
                 if (LoadDDSMemoryToRGBA8(request->data, request->data_size, DXGI_FORMAT_R8G8B8A8_UNORM, ddsImage)) {
@@ -983,8 +1275,11 @@ public:
                     uint8_t* pixels = (uint8_t*)malloc(pixelSize);
                     if (pixels) {
                         memcpy(pixels, ddsImage.GetPixels(), pixelSize);
-                        result->pixels = pixels; result->width = (int)meta.width; result->height = (int)meta.height;
-                        result->component = 4; result->bits = 8;
+                        result->pixels = pixels;
+                        result->width = (int)meta.width;
+                        result->height = (int)meta.height;
+                        result->component = 4;
+                        result->bits = 8;
                         result->pixel_type = TG3_COMPONENT_TYPE_UNSIGNED_BYTE;
                         return 1;
                     }
@@ -992,35 +1287,106 @@ public:
             }
             int w, h, c;
             unsigned char* data = stbi_load_from_memory(request->data, (int)request->data_size, &w, &h, &c, 4);
-            if (!data) return 0;
-            result->pixels = data; result->width = w; result->height = h;
-            result->component = 4; result->bits = 8;
+            if (!data)
+                return 0;
+            result->pixels = data;
+            result->width = w;
+            result->height = h;
+            result->component = 4;
+            result->bits = 8;
             result->pixel_type = TG3_COMPONENT_TYPE_UNSIGNED_BYTE;
             return 1;
         };
         opts.image.free_image = [](uint8_t* pixels, void*) { free(pixels); };
         opts.image.user_data = nullptr;
 
-        tg3_error_code ec = tg3_parse_glb(&model, &errors, fileData.data(), (uint64_t)fileSize, nullptr, 0, &opts);
+        opts.fs.read_file = [](uint8_t** out_data, uint64_t* out_size, const char* path, uint32_t path_len,
+                               void*) -> int32_t {
+            std::ifstream f(std::string(path, path_len), std::ios::binary | std::ios::ate);
+            if (!f.is_open())
+                return 0;
+            std::streamoff sz = f.tellg();
+            if (sz < 0)
+                return 0;
+            f.seekg(0);
+            uint8_t* data = (uint8_t*)malloc((size_t)sz);
+            if (!data)
+                return 0;
+            f.read(reinterpret_cast<char*>(data), sz);
+            if (!f) {
+                free(data);
+                return 0;
+            }
+            *out_data = data;
+            *out_size = (uint64_t)sz;
+            return 1;
+        };
+        opts.fs.free_file = [](uint8_t* data, uint64_t, void*) { free(data); };
+        opts.fs.user_data = nullptr;
+
+        tg3_error_code ec =
+            tg3_parse_auto(&model, &errors, fileData.data(), (uint64_t)fileSize, material_search_path.c_str(),
+                           (uint32_t)material_search_path.length(), &opts);
         if (ec != TG3_OK) {
-            std::cerr << "[GlbLoader] Failed to parse GLB (error code " << (int)ec << ")." << std::endl;
+            std::cerr << "[GlbLoader] Failed to parse glTF (error code " << (int)ec << ")." << std::endl;
             for (uint32_t i = 0; i < tg3_errors_count(&errors); ++i) {
                 const tg3_error_entry* e = tg3_errors_get(&errors, i);
-                if (e) std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
+                if (e)
+                    std::cerr << "  " << (e->message ? e->message : "?") << std::endl;
             }
             tg3_error_stack_free(&errors);
             return scene;
         }
 
-        // Decode images
-        struct DecodedImage { std::vector<uint8_t> pixels; int width, height, channels; };
+        std::vector<uint8_t>().swap(fileData);
+
+        std::vector<std::pair<int, XMMATRIX>> meshInstances;
+        std::unordered_set<int> visited;
+        bool validInstances = true;
+        if (model.scenes_count > 0) {
+            const int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
+            validInstances = sceneIdx < (int)model.scenes_count;
+            if (validInstances) {
+                const auto& sc = model.scenes[sceneIdx];
+                for (uint32_t i = 0; i < sc.nodes_count && validInstances; ++i)
+                    validInstances = CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances, visited);
+            }
+        } else {
+            std::vector<bool> isChild(model.nodes_count, false);
+            for (uint32_t i = 0; i < model.nodes_count; ++i) {
+                const auto& node = model.nodes[i];
+                for (uint32_t j = 0; j < node.children_count; ++j) {
+                    const int child = node.children[j];
+                    if (child < 0 || child >= (int)model.nodes_count)
+                        validInstances = false;
+                    else
+                        isChild[child] = true;
+                }
+            }
+            for (uint32_t i = 0; i < model.nodes_count && validInstances; ++i)
+                if (!isChild[i])
+                    validInstances = CollectGltfNodesV3(model, (int)i, XMMatrixIdentity(), meshInstances, visited);
+        }
+        if (!validInstances) {
+            std::cerr << "[GlbLoader] Invalid scene graph or EXT_mesh_gpu_instancing attributes in " << inputfile
+                      << std::endl;
+            tg3_model_free(&model);
+            tg3_error_stack_free(&errors);
+            return {};
+        }
+
+        struct DecodedImage {
+            std::vector<uint8_t> pixels;
+            int width, height, channels;
+        };
         std::vector<DecodedImage> decodedImages(model.images_count);
 
         for (uint32_t i = 0; i < model.images_count; ++i) {
             const tg3_image& img = model.images[i];
             if (img.image.data && img.image.count > 0 && img.width > 0) {
                 decodedImages[i].pixels.assign(img.image.data, img.image.data + img.image.count);
-                decodedImages[i].width = img.width; decodedImages[i].height = img.height;
+                decodedImages[i].width = img.width;
+                decodedImages[i].height = img.height;
                 decodedImages[i].channels = img.component;
                 continue;
             }
@@ -1036,7 +1402,8 @@ public:
                             const auto& meta = ddsImage.GetMetadata();
                             size_t pixelSize = meta.width * meta.height * 4;
                             decodedImages[i].pixels.assign(ddsImage.GetPixels(), ddsImage.GetPixels() + pixelSize);
-                            decodedImages[i].width = (int)meta.width; decodedImages[i].height = (int)meta.height;
+                            decodedImages[i].width = (int)meta.width;
+                            decodedImages[i].height = (int)meta.height;
                             decodedImages[i].channels = 4;
                             continue;
                         }
@@ -1044,8 +1411,66 @@ public:
                     int w, h, c;
                     unsigned char* decoded = stbi_load_from_memory(bvData, (int)bvSize, &w, &h, &c, 4);
                     if (decoded) {
-                        decodedImages[i].pixels.assign(decoded, decoded + w*h*4);
-                        decodedImages[i].width = w; decodedImages[i].height = h; decodedImages[i].channels = 4;
+                        decodedImages[i].pixels.assign(decoded, decoded + w * h * 4);
+                        decodedImages[i].width = w;
+                        decodedImages[i].height = h;
+                        decodedImages[i].channels = 4;
+                        stbi_image_free(decoded);
+                    }
+                }
+                continue;
+            }
+
+            if (img.uri.data && img.uri.len > 0) {
+                std::vector<uint8_t> imageBytes;
+                if (tg3_is_data_uri(img.uri.data, img.uri.len)) {
+                    const char* uri = img.uri.data;
+                    uint32_t uriLen = img.uri.len;
+                    const char* comma = (const char*)memchr(uri, ',', uriLen);
+                    if (comma) {
+                        const char* payload = comma + 1;
+                        size_t payloadLen = uriLen - (size_t)(payload - uri);
+                        imageBytes = DecodeBase64(payload, payloadLen);
+                    }
+                } else {
+                    std::string fullPath = material_search_path + std::string(img.uri.data, img.uri.len);
+                    std::ifstream f(fullPath, std::ios::binary | std::ios::ate);
+                    if (f.is_open()) {
+                        std::streamoff sz = f.tellg();
+                        if (sz > 0) {
+                            f.seekg(0);
+                            imageBytes.resize((size_t)sz);
+                            f.read(reinterpret_cast<char*>(imageBytes.data()), sz);
+                            if (!f)
+                                imageBytes.clear();
+                        }
+                    } else {
+                        std::cerr << "[GlbLoader] Failed to open external image: " << fullPath << std::endl;
+                    }
+                }
+
+                if (!imageBytes.empty()) {
+                    if (isDDSMemory(imageBytes.data(), imageBytes.size())) {
+                        DirectX::ScratchImage ddsImage;
+                        if (LoadDDSMemoryToRGBA8(imageBytes.data(), imageBytes.size(), DXGI_FORMAT_R8G8B8A8_UNORM,
+                                                 ddsImage)) {
+                            const auto& meta = ddsImage.GetMetadata();
+                            size_t pixelSize = meta.width * meta.height * 4;
+                            decodedImages[i].pixels.assign(ddsImage.GetPixels(), ddsImage.GetPixels() + pixelSize);
+                            decodedImages[i].width = (int)meta.width;
+                            decodedImages[i].height = (int)meta.height;
+                            decodedImages[i].channels = 4;
+                            continue;
+                        }
+                    }
+                    int w, h, c;
+                    unsigned char* decoded =
+                        stbi_load_from_memory(imageBytes.data(), (int)imageBytes.size(), &w, &h, &c, 4);
+                    if (decoded) {
+                        decodedImages[i].pixels.assign(decoded, decoded + w * h * 4);
+                        decodedImages[i].width = w;
+                        decodedImages[i].height = h;
+                        decodedImages[i].channels = 4;
                         stbi_image_free(decoded);
                     }
                 }
@@ -1055,31 +1480,39 @@ public:
         std::cout << "[GlbLoader] Parsed '" << inputfile << "': Meshes=" << model.meshes_count
                   << " Materials=" << model.materials_count << " Images=" << model.images_count << std::endl;
 
-        // ---- 3. Texture helpers -------------------------------------------------
         auto getImageIndex = [&](int textureIndex) -> int {
-            if (textureIndex < 0 || textureIndex >= (int)model.textures_count) return -1;
+            if (textureIndex < 0 || textureIndex >= (int)model.textures_count)
+                return -1;
             return model.textures[textureIndex].source;
         };
 
-        auto processEmbeddedTexture = [&](int imageIndex, std::vector<TextureData>& textureList,
-                                          bool isSrgb, const std::string& label) -> int
-        {
-            if (imageIndex < 0 || imageIndex >= (int)decodedImages.size()) return -1;
+        auto processEmbeddedTexture = [&](int imageIndex, std::vector<TextureData>& textureList, bool isSrgb,
+                                          const std::string& label) -> int {
+            if (imageIndex < 0 || imageIndex >= (int)decodedImages.size())
+                return -1;
             std::string cacheKey = inputfile + "_img" + std::to_string(imageIndex) + (isSrgb ? "_srgb" : "_linear");
-            if (textureMap.count(cacheKey)) return (int)textureMap[cacheKey];
+            if (textureMap.count(cacheKey))
+                return (int)textureMap[cacheKey];
             const DecodedImage& img = decodedImages[imageIndex];
-            if (img.pixels.empty()) return -1;
+            if (img.pixels.empty())
+                return -1;
             DXGI_FORMAT format = isSrgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
             ScratchImage scratch;
-            if (FAILED(scratch.Initialize2D(format, img.width, img.height, 1, 1))) return -1;
-            memcpy(scratch.GetPixels(), img.pixels.data(), (std::min)(scratch.GetPixelsSize(), (size_t)img.width * img.height * 4));
+            if (FAILED(scratch.Initialize2D(format, img.width, img.height, 1, 1)))
+                return -1;
+            memcpy(scratch.GetPixels(), img.pixels.data(),
+                   (std::min)(scratch.GetPixelsSize(), (size_t)img.width * img.height * 4));
             ScratchImage mipChain;
-            if (FAILED(GenerateMipMaps(*scratch.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain))) return -1;
+            if (FAILED(GenerateMipMaps(*scratch.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain)))
+                return -1;
             TextureData texData;
-            texData.original_width = img.width; texData.original_height = img.height;
+            texData.original_width = img.width;
+            texData.original_height = img.height;
             const TexMetadata& fm = mipChain.GetMetadata();
-            texData.width = (int)fm.width; texData.height = (int)fm.height;
-            texData.channels = 4; texData.image = std::move(mipChain);
+            texData.width = (int)fm.width;
+            texData.height = (int)fm.height;
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
             uint32_t id = (uint32_t)textureList.size();
             textureList.push_back(std::move(texData));
             textureMap[cacheKey] = id;
@@ -1087,41 +1520,78 @@ public:
         };
 
         auto processGltfRMA = [&](int mrImgIdx, int aoImgIdx, float constR, float constM,
-                                  std::vector<TextureData>& rmaList) -> int
-        {
-            if (mrImgIdx < 0 && aoImgIdx < 0) return -1;
+                                  std::vector<TextureData>& rmaList) -> int {
+            if (mrImgIdx < 0 && aoImgIdx < 0)
+                return -1;
             std::string cacheKey = inputfile + "_rma_mr" + std::to_string(mrImgIdx) + "_ao" + std::to_string(aoImgIdx);
-            if (textureMap.count(cacheKey)) return (int)textureMap[cacheKey];
-            const uint8_t* mrPx = (mrImgIdx >= 0 && !decodedImages[mrImgIdx].pixels.empty()) ? decodedImages[mrImgIdx].pixels.data() : nullptr;
-            const uint8_t* aoPx = (aoImgIdx >= 0 && !decodedImages[aoImgIdx].pixels.empty()) ? decodedImages[aoImgIdx].pixels.data() : nullptr;
+            if (textureMap.count(cacheKey))
+                return (int)textureMap[cacheKey];
+            const uint8_t* mrPx = (mrImgIdx >= 0 && !decodedImages[mrImgIdx].pixels.empty())
+                                      ? decodedImages[mrImgIdx].pixels.data()
+                                      : nullptr;
+            const uint8_t* aoPx = (aoImgIdx >= 0 && !decodedImages[aoImgIdx].pixels.empty())
+                                      ? decodedImages[aoImgIdx].pixels.data()
+                                      : nullptr;
             int w = 0, h = 0;
-            if (mrPx) { w = decodedImages[mrImgIdx].width; h = decodedImages[mrImgIdx].height; }
-            else if (aoPx) { w = decodedImages[aoImgIdx].width; h = decodedImages[aoImgIdx].height; }
-            if (w == 0) return -1;
+            if (mrPx) {
+                w = decodedImages[mrImgIdx].width;
+                h = decodedImages[mrImgIdx].height;
+            } else if (aoPx) {
+                w = decodedImages[aoImgIdx].width;
+                h = decodedImages[aoImgIdx].height;
+            }
+            if (w == 0)
+                return -1;
             ScratchImage combined;
             combined.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1);
             uint8_t* dest = combined.GetPixels();
             uint8_t rC = (uint8_t)(constR * 255.0f), mC = (uint8_t)(constM * 255.0f);
-            for (size_t i = 0; i < (size_t)w*h; ++i) {
-                dest[i*4+0] = aoPx ? aoPx[i*4+0] : 255;
-                dest[i*4+1] = mrPx ? mrPx[i*4+1] : rC;
-                dest[i*4+2] = mrPx ? mrPx[i*4+2] : mC;
-                dest[i*4+3] = 255;
+            for (size_t i = 0; i < (size_t)w * h; ++i) {
+                dest[i * 4 + 0] = aoPx ? aoPx[i * 4 + 0] : 255;
+                dest[i * 4 + 1] = mrPx ? mrPx[i * 4 + 1] : rC;
+                dest[i * 4 + 2] = mrPx ? mrPx[i * 4 + 2] : mC;
+                dest[i * 4 + 3] = 255;
             }
             ScratchImage mipChain;
-            GenerateMipMaps(*combined.GetImage(0,0,0), TEX_FILTER_DEFAULT, 0, mipChain);
+            GenerateMipMaps(*combined.GetImage(0, 0, 0), TEX_FILTER_DEFAULT, 0, mipChain);
             TextureData texData;
-            texData.original_width = w; texData.original_height = h;
+            texData.original_width = w;
+            texData.original_height = h;
             const TexMetadata& fm = mipChain.GetMetadata();
-            texData.width = (int)fm.width; texData.height = (int)fm.height;
-            texData.channels = 4; texData.image = std::move(mipChain);
+            texData.width = (int)fm.width;
+            texData.height = (int)fm.height;
+            texData.channels = 4;
+            texData.image = std::move(mipChain);
             uint32_t id = (uint32_t)rmaList.size();
             rmaList.push_back(std::move(texData));
             textureMap[cacheKey] = id;
             return (int)id;
         };
 
-        // ---- 4. Materials (scene-local, 0-based) --------------------------------
+        auto computeEmissiveAverage = [&](int imageIndex) -> XMFLOAT3 {
+            if (imageIndex < 0 || imageIndex >= (int)decodedImages.size())
+                return {0.0f, 0.0f, 0.0f};
+            const DecodedImage& img = decodedImages[imageIndex];
+            if (img.pixels.empty() || img.width <= 0 || img.height <= 0)
+                return {0.0f, 0.0f, 0.0f};
+
+            auto srgbToLin = [](uint8_t v) -> float {
+                float x = v * (1.0f / 255.0f);
+                return (x <= 0.04045f) ? (x * (1.0f / 12.92f)) : std::pow((x + 0.055f) * (1.0f / 1.055f), 2.4f);
+            };
+
+            const size_t pixCount = (size_t)img.width * (size_t)img.height;
+            double sumR = 0.0, sumG = 0.0, sumB = 0.0;
+            const uint8_t* p = img.pixels.data();
+            for (size_t i = 0; i < pixCount; ++i) {
+                sumR += srgbToLin(p[i * 4 + 0]);
+                sumG += srgbToLin(p[i * 4 + 1]);
+                sumB += srgbToLin(p[i * 4 + 2]);
+            }
+            const float inv = 1.0f / (float)pixCount;
+            return {(float)(sumR * inv), (float)(sumG * inv), (float)(sumB * inv)};
+        };
+
         Material defaultMaterial;
         scene.materials.push_back(defaultMaterial);
         scene.materialNames.push_back("(default)");
@@ -1131,32 +1601,42 @@ public:
             const tg3_pbr_metallic_roughness& pbr = gmat.pbr_metallic_roughness;
 
             Material t_mat{};
-            t_mat.Kd = { (float)pbr.base_color_factor[0], (float)pbr.base_color_factor[1],
-                         (float)pbr.base_color_factor[2], (float)pbr.base_color_factor[3] };
-            t_mat.Ke = { (float)gmat.emissive_factor[0], (float)gmat.emissive_factor[1],
-                         (float)gmat.emissive_factor[2] };
+            t_mat.Kd = {(float)pbr.base_color_factor[0], (float)pbr.base_color_factor[1],
+                        (float)pbr.base_color_factor[2], (float)pbr.base_color_factor[3]};
+
+            t_mat.Ke = {(float)gmat.emissive_factor[0], (float)gmat.emissive_factor[1], (float)gmat.emissive_factor[2]};
+            if (gmat.emissive_texture.index >= 0) {
+                XMFLOAT3 avg = computeEmissiveAverage(getImageIndex(gmat.emissive_texture.index));
+                t_mat.Ke.x *= avg.x;
+                t_mat.Ke.y *= avg.y;
+                t_mat.Ke.z *= avg.z;
+            }
 
             const tg3_value* emStrExt = tg3_find_extension(gmat.ext, "KHR_materials_emissive_strength");
             if (emStrExt) {
                 float strength = (float)tg3_obj_get_double(emStrExt, "emissiveStrength", 1.0);
-                t_mat.Ke.x *= strength; t_mat.Ke.y *= strength; t_mat.Ke.z *= strength;
+                t_mat.Ke.x *= strength;
+                t_mat.Ke.y *= strength;
+                t_mat.Ke.z *= strength;
             }
             t_mat.Ni = 1.5f;
             const tg3_value* iorExt = tg3_find_extension(gmat.ext, "KHR_materials_ior");
-            if (iorExt) t_mat.Ni = (float)tg3_obj_get_double(iorExt, "ior", 1.5);
+            if (iorExt)
+                t_mat.Ni = (float)tg3_obj_get_double(iorExt, "ior", 1.5);
 
             float roughness = (float)pbr.roughness_factor;
-            float metallic  = (float)pbr.metallic_factor;
-            t_mat.Pr_Pm_Ps_Pc = { roughness, metallic, 0.0f, 0.0f };
-            t_mat.Pcr_aniso_anisor = { 0.0f, 0.0f, 0.0f };
-            t_mat.Tf = { 0.0f, 0.0f, 0.0f };
+            float metallic = (float)pbr.metallic_factor;
+            t_mat.Pr_Pm_Ps_Pc = {roughness, metallic, 0.0f, 0.0f};
+            t_mat.Pcr_aniso_anisor = {0.0f, 0.0f, 0.0f};
+            t_mat.Tf = {0.0f, 0.0f, 0.0f};
 
             const tg3_value* sheenExt = tg3_find_extension(gmat.ext, "KHR_materials_sheen");
-            if (sheenExt) t_mat.Pr_Pm_Ps_Pc.z = (float)tg3_obj_get_double(sheenExt, "sheenRoughnessFactor", 0.0);
+            if (sheenExt)
+                t_mat.Pr_Pm_Ps_Pc.z = (float)tg3_obj_get_double(sheenExt, "sheenRoughnessFactor", 0.0);
 
             const tg3_value* ccExt = tg3_find_extension(gmat.ext, "KHR_materials_clearcoat");
             if (ccExt) {
-                t_mat.Pr_Pm_Ps_Pc.w     = (float)tg3_obj_get_double(ccExt, "clearcoatFactor", 0.0);
+                t_mat.Pr_Pm_Ps_Pc.w = (float)tg3_obj_get_double(ccExt, "clearcoatFactor", 0.0);
                 t_mat.Pcr_aniso_anisor.x = (float)tg3_obj_get_double(ccExt, "clearcoatRoughnessFactor", 0.0);
             }
 
@@ -1169,115 +1649,148 @@ public:
             const tg3_value* transExt = tg3_find_extension(gmat.ext, "KHR_materials_transmission");
             if (transExt) {
                 float tf = (float)tg3_obj_get_double(transExt, "transmissionFactor", 0.0);
-                t_mat.Tf = { tf, tf, tf };
+                t_mat.Tf = {tf, tf, tf};
+
+                t_mat.Kd.w *= (1.0f - tf);
             }
 
-            // Albedo
+            const tg3_value* volExt = tg3_find_extension(gmat.ext, "KHR_materials_volume");
+            if (volExt) {
+                const float thickness = (float)tg3_obj_get_double(volExt, "thicknessFactor", 0.0);
+                if (thickness > 0.0f) {
+                    float attenCol[3] = {1.0f, 1.0f, 1.0f};
+                    tg3_obj_get_vec3(volExt, "attenuationColor", attenCol, 1.0f);
+
+                    const float attenDist = (float)tg3_obj_get_double(volExt, "attenuationDistance", 0.0);
+                    t_mat.sssEnable = 1;
+                    t_mat.sssAlbedo = {attenCol[0], attenCol[1], attenCol[2]};
+                    t_mat.sssRadius = (attenDist > 0.0f && attenDist < 1e16f) ? attenDist : 1.0f;
+                    t_mat.sssPhaseG = 0.0f;
+
+                    t_mat.Kd.w = (float)pbr.base_color_factor[3];
+                }
+            }
+
+            const tg3_value* dtExt = tg3_find_extension(gmat.ext, "KHR_materials_diffuse_transmission");
+            if (dtExt && !t_mat.sssEnable) {
+                const float dtf = (float)tg3_obj_get_double(dtExt, "diffuseTransmissionFactor", 0.0);
+                if (dtf > 0.0f) {
+                    float dtCol[3] = {1.0f, 1.0f, 1.0f};
+                    tg3_obj_get_vec3(dtExt, "diffuseTransmissionColorFactor", dtCol, 1.0f);
+                    t_mat.sssEnable = 1;
+                    t_mat.sssAlbedo = {dtCol[0] * dtf, dtCol[1] * dtf, dtCol[2] * dtf};
+                    t_mat.sssRadius = 1.0f;
+                    t_mat.sssPhaseG = 0.0f;
+                }
+            }
+
             int baseColorImg = getImageIndex(pbr.base_color_texture.index);
             bool hasMask = tg3_str_eq(gmat.alpha_mode, "MASK");
             if (tg3_str_eq(gmat.alpha_mode, "BLEND") || hasMask) {
-                t_mat.albedoTexID    = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo+alpha");
+                t_mat.albedoTexID = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo+alpha");
                 t_mat.alphaThreshold = hasMask ? (float)gmat.alpha_cutoff : 0.5f;
             } else {
-                t_mat.albedoTexID    = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo");
+                t_mat.albedoTexID = processEmbeddedTexture(baseColorImg, albedoTextures, true, "albedo");
                 t_mat.alphaThreshold = 1.0f;
             }
 
-            // Normal
-            t_mat.normalTexID = processEmbeddedTexture(getImageIndex(gmat.normal_texture.index), normalTextures, false, "normal");
+            t_mat.normalTexID =
+                processEmbeddedTexture(getImageIndex(gmat.normal_texture.index), normalTextures, false, "normal");
 
-            // RMA
             int mrImg = getImageIndex(pbr.metallic_roughness_texture.index);
             int aoImg = getImageIndex(gmat.occlusion_texture.index);
-            t_mat.rmaTexID = (mrImg >= 0 || aoImg >= 0) ? processGltfRMA(mrImg, aoImg, roughness, metallic, rmaTextures) : -1;
+            t_mat.rmaTexID =
+                (mrImg >= 0 || aoImg >= 0) ? processGltfRMA(mrImg, aoImg, roughness, metallic, rmaTextures) : -1;
 
             scene.materials.push_back(t_mat);
             scene.materialNames.push_back(tg3_to_string(gmat.name));
         }
 
-        // ---- 5. Collect mesh instances via scene graph --------------------------
-        std::vector<std::pair<int, XMMATRIX>> meshInstances;
-        int sceneIdx = model.default_scene >= 0 ? model.default_scene : 0;
-        if (sceneIdx < (int)model.scenes_count) {
-            const tg3_scene& sc = model.scenes[sceneIdx];
-            std::unordered_set<int> visited;
-            for (uint32_t i = 0; i < sc.nodes_count; ++i)
-                CollectGltfNodesV3(model, sc.nodes[i], XMMatrixIdentity(), meshInstances, visited);
-        }
-
-        // ---- 6. Build one LoadedMesh per unique glTF mesh -----------------------
-        // Map from glTF mesh index -> LoadedScene mesh index
         std::unordered_map<int, UINT> gltfMeshToLoaded;
+        std::unordered_set<int> referencedMeshes;
+        for (const auto& instance : meshInstances)
+            referencedMeshes.insert(instance.first);
 
         for (uint32_t mi = 0; mi < model.meshes_count; ++mi) {
+            if (!referencedMeshes.count((int)mi))
+                continue;
             const tg3_mesh& mesh = model.meshes[mi];
             LoadedMesh lm;
             std::unordered_map<Vertex, uint32_t> uniqueVerts;
 
             for (uint32_t pi = 0; pi < mesh.primitives_count; ++pi) {
                 const tg3_primitive& prim = mesh.primitives[pi];
-                if (prim.mode != TG3_MODE_TRIANGLES && prim.mode != -1) continue;
+                if (prim.mode != TG3_MODE_TRIANGLES && prim.mode != -1)
+                    continue;
 
-                int posAccessor  = tg3_find_attribute(prim, "POSITION");
+                int posAccessor = tg3_find_attribute(prim, "POSITION");
                 int normAccessor = tg3_find_attribute(prim, "NORMAL");
-                int uvAccessor   = tg3_find_attribute(prim, "TEXCOORD_0");
-                if (posAccessor < 0) continue;
+                int uvAccessor = tg3_find_attribute(prim, "TEXCOORD_0");
+                if (posAccessor < 0)
+                    continue;
 
                 std::vector<float> positions = ReadGltfAccessorV3<float>(model, posAccessor);
                 std::vector<float> normals;
-                if (normAccessor >= 0) normals = ReadGltfAccessorV3<float>(model, normAccessor);
+                if (normAccessor >= 0)
+                    normals = ReadGltfAccessorV3<float>(model, normAccessor);
                 std::vector<float> texcoords;
-                if (uvAccessor >= 0) texcoords = ReadGltfAccessorV3<float>(model, uvAccessor);
+                if (uvAccessor >= 0)
+                    texcoords = ReadGltfAccessorV3<float>(model, uvAccessor);
 
                 size_t vertexCount = positions.size() / 3;
+                if (vertexCount == 0 || (!normals.empty() && normals.size() != vertexCount * 3) ||
+                    (!texcoords.empty() && texcoords.size() != vertexCount * 2))
+                    continue;
 
                 std::vector<uint32_t> primIndices;
                 if (prim.indices >= 0) {
                     primIndices = ReadGltfAccessorV3<uint32_t>(model, prim.indices);
                 } else {
                     primIndices.resize(vertexCount);
-                    for (uint32_t i = 0; i < (uint32_t)vertexCount; ++i) primIndices[i] = i;
+                    for (uint32_t i = 0; i < (uint32_t)vertexCount; ++i)
+                        primIndices[i] = i;
                 }
 
-                // Material ID: local to scene.materials (default=0, glTF mats start at 1)
                 uint32_t matID = (prim.material >= 0) ? (uint32_t)(prim.material + 1) : 0u;
+                if (matID >= scene.materials.size() ||
+                    std::any_of(primIndices.begin(), primIndices.end(),
+                                [vertexCount](uint32_t i) { return i >= vertexCount; }))
+                    continue;
 
                 for (size_t t = 0; t + 2 < primIndices.size(); t += 3) {
                     lm.perTriMaterialIDs.push_back(matID);
 
-                    uint32_t triIdx[3] = { primIndices[t], primIndices[t+1], primIndices[t+2] };
-                    XMFLOAT3 p[3], n[3]; XMFLOAT2 uv[3];
+                    uint32_t triIdx[3] = {primIndices[t], primIndices[t + 1], primIndices[t + 2]};
+                    XMFLOAT3 p[3], n[3];
+                    XMFLOAT2 uv[3];
 
                     for (int i = 0; i < 3; ++i) {
                         uint32_t vi = triIdx[i];
 
-                        // *** KEY CHANGE: vertices stay in LOCAL (mesh) space ***
-                        p[i] = { positions[vi*3+0], positions[vi*3+1], positions[vi*3+2] };
+                        p[i] = {positions[vi * 3 + 0], positions[vi * 3 + 1], positions[vi * 3 + 2]};
 
                         if (!normals.empty()) {
-                            n[i] = { normals[vi*3+0], normals[vi*3+1], normals[vi*3+2] };
-                            // Normalize but don't transform — stays in local space
+                            n[i] = {normals[vi * 3 + 0], normals[vi * 3 + 1], normals[vi * 3 + 2]};
+
                             XMVECTOR nv = XMVector3Normalize(XMLoadFloat3(&n[i]));
                             XMStoreFloat3(&n[i], nv);
                         } else {
-                            n[i] = { 0, 0, 0 };
+                            n[i] = {0, 0, 0};
                         }
 
-                        uv[i] = !texcoords.empty()
-                            ? XMFLOAT2{ texcoords[vi*2+0], texcoords[vi*2+1] }
-                            : XMFLOAT2{ 0, 0 };
+                        uv[i] = !texcoords.empty() ? XMFLOAT2{texcoords[vi * 2 + 0], texcoords[vi * 2 + 1]}
+                                                   : XMFLOAT2{0, 0};
                     }
 
-                    // Face normal fallback (in local space)
                     if (normals.empty()) {
-                        XMVECTOR fn = XMVector3Normalize(XMVector3Cross(
-                            XMLoadFloat3(&p[1]) - XMLoadFloat3(&p[0]),
-                            XMLoadFloat3(&p[2]) - XMLoadFloat3(&p[0])));
-                        XMStoreFloat3(&n[0], fn); n[1] = n[2] = n[0];
+                        XMVECTOR fn = XMVector3Normalize(XMVector3Cross(XMLoadFloat3(&p[1]) - XMLoadFloat3(&p[0]),
+                                                                        XMLoadFloat3(&p[2]) - XMLoadFloat3(&p[0])));
+                        XMStoreFloat3(&n[0], fn);
+                        n[1] = n[2] = n[0];
                     }
 
                     for (int i = 0; i < 3; ++i) {
-                        Vertex v({ p[i] }, { n[i].x, n[i].y, n[i].z, (float)matID }, { uv[i] });
+                        Vertex v({p[i]}, {n[i].x, n[i].y, n[i].z, (float)matID}, {uv[i]});
                         if (uniqueVerts.count(v)) {
                             lm.indices.push_back(uniqueVerts[v]);
                         } else {
@@ -1290,16 +1803,18 @@ public:
                 }
             }
 
+            if (lm.indices.empty())
+                continue;
             UINT loadedIdx = (UINT)scene.meshes.size();
             gltfMeshToLoaded[(int)mi] = loadedIdx;
             scene.meshes.push_back(std::move(lm));
         }
 
-        // ---- 7. Build instances from scene graph --------------------------------
         for (const auto& [gltfMeshIdx, worldTransform] : meshInstances) {
-            if (gltfMeshToLoaded.find(gltfMeshIdx) == gltfMeshToLoaded.end()) continue;
+            if (gltfMeshToLoaded.find(gltfMeshIdx) == gltfMeshToLoaded.end())
+                continue;
             UINT loadedIdx = gltfMeshToLoaded[gltfMeshIdx];
-            scene.instances.push_back({ loadedIdx, worldTransform });
+            scene.instances.push_back({loadedIdx, worldTransform});
         }
 
         std::cout << "[GlbLoader] COMPLETED '" << inputfile << "'." << std::endl;
@@ -1311,7 +1826,6 @@ public:
         std::cout << "  - RMA textures:    " << rmaTextures.size() << std::endl;
         std::cout << "-----------------------------------------------------" << std::endl;
 
-        // ---- 8. Cleanup v3 model ------------------------------------------------
         tg3_model_free(&model);
         tg3_error_stack_free(&errors);
 

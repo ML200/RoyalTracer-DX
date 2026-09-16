@@ -5,9 +5,9 @@
 ![API](https://img.shields.io/badge/API-DirectX%2012-76b900)
 ![Language](https://img.shields.io/badge/HLSL%20%7C%20C%2B%2B-informational)
 
-Real time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservoir, a four lobe layered BXDF, light tree importance sampling, modern upscaling/denoising technology with NVIDIA DLSS. All images shown are rendered in real time using DLSS Ray Reconstruction for denoising.
+Real time path tracer in DirectX 12 with SHARC radiance caching, path guiding, optimized ReSTIR spatial reuse, a four lobe layered BXDF, light tree importance sampling with learned light cuts, and NVIDIA DLSS for upscaling and denoising.
 
-![Bistro exterior](media/bistro_clean.png)
+![Studio interior](media/studio1.webp)
 
 ## Table of Contents
 
@@ -15,164 +15,210 @@ Real time path tracer in DirectX 12 with unbiased ReSTIR PT on a unified reservo
 - [Background](#background)
 - [Build](#build)
 - [Controls](#controls)
-- [Future Work](#future-work)
-- [References](#references)
 - [Acknowledgments](#acknowledgments)
 - [Gallery](#gallery)
 
 ## Features
 
-### Model Loading
-Supports OBJ and glTF/glB formats via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinygltf](https://github.com/syoyo/tinygltf). Textures are loaded through stb_image with DDS decompression via [DirectXTex](https://github.com/microsoft/DirectXTex). Models, materials, and per instance transforms are unified into a single scene representation.
+### Rendering Pipeline
+
+![SHARC trains and resolves the cache. Path tracing uses learned light cuts, path guiding, and cached radiance. ReSTIR spatial reuse combines samples through texture-defined pixel pairs.](media/pipeline.svg)
+
+The path tracer uses the DXR HitObject API with Shader Execution Reordering (SER). The regular pipeline consists of three main stages:
+
+1. **SHARC**: Sparse update paths, radiance cache resolve, and path guiding updates.
+2. **Path tracing**: Multi-bounce tracing with light tree NEE, learned light cuts, guided BSDF sampling, and SHARC queries.
+3. **ReSTIR spatial reuse**: Texture-based partner selection, reconnection and visibility evaluation, followed by pairwise MIS merging.
+
+SHARC training and rendering share the light sampler and material model. Training also updates the directional guide. Spatial reuse operates on the resulting render samples within the current frame.
+
+### Light Trees and Learned Light Cuts
+
+A [light tree](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf) over the scene's emissive triangles provides importance sampling for scenes with many lights. The tree uses a TLAS/BLAS hierarchy with geometric importance weights based on emitted power, distance, and orientation.
+
+[Learned light cuts](https://kevincosner.github.io/publications/Wang2021LCR/index.html) adapt emitter selection using visibility-weighted contribution feedback. Spatial cells store cuts of up to 32 clusters, with online splitting and merging. Cells are separated by surface orientation and retain history during camera movement. The learned sampler is used in both path tracing and SHARC training.
+
+### SHARC
+
+![Interior rendered with SHARC](media/cache1.webp)
+
+*SHARC example: interior illumination.*
+
+[Spatially Hashed Radiance Caching](https://github.com/NVIDIA-RTX/SHARC) with a sparse world-space hash grid, distance-adaptive cell spacing, and temporal accumulation. A rotating subset of pixels supplies cache updates. Entries store material-demodulated radiance and statistical confidence.
+
+Cache queries replace eligible diffuse and rough reflection contributions at secondary surfaces. Surface identity, normal and plane compatibility, confidence, and path footprint control acceptance. Direct lighting at primary surfaces remains traced, and rejected queries continue normally. Cache termination introduces spatial and temporal approximation error.
+
+### Path Guiding
+
+<table>
+  <tr>
+    <th width="50%">Path guiding off</th>
+    <th width="50%">Path guiding on</th>
+  </tr>
+  <tr>
+    <td valign="top"><a href="media/pg2.webp"><img src="media/pg2.webp" alt="Path guiding disabled" width="100%" /></a></td>
+    <td valign="top"><a href="media/pg1.webp"><img src="media/pg1.webp" alt="Path guiding enabled" width="100%" /></a></td>
+  </tr>
+</table>
+
+[Path guiding](https://jannovak.info/publications/PathGuide/index.html) uses up to eight directional lobes per spatial cell, fitted from SHARC training paths. Lobes store direction, angular extent, weight, and a distance estimate for parallax correction. Stale lobes decay, with fallback to coarser cells when local support is unavailable.
+
+Guided directions are mixed with diffuse and rough reflection BSDF sampling. The matching mixture PDF is used for path weighting and MIS.
+
+### ReSTIR Spatial Reuse
+
+ReSTIR spatial resampling for diffuse and rough reflection contributions using **32-byte reservoirs**. Three precomputed, self-inverting **reuse textures** provide reciprocal pixel partners, following [ReSTIR PT Enhanced](https://research.nvidia.com/labs/rtr/publication/lin2026restirptenhanced/).
+
+Separate shift and merge passes cache reconnected contributions and visibility for pairwise MIS. Reciprocal pairing makes both pixels' evaluations available to the merge. Repeated samples reuse visibility results, and full neighbor payloads are loaded only on reservoir selection. Material and geometric checks reject incompatible pairs. The regular pipeline uses spatial reuse only.
+
+The ReSTIR PT hybrid shift mode is deprecated.
+
+### Technology Comparison
+
+Cumulative comparison: base path tracing, learned light cuts, SHARC, then path guiding and ReSTIR spatial reuse.
+
+<table>
+  <tr>
+    <th width="50%">1 · Base path tracing</th>
+    <th width="50%">2 · + Learned light cuts</th>
+  </tr>
+  <tr>
+    <td><a href="media/comp1.webp"><img src="media/comp1.webp" alt="Base path tracing" width="100%" /></a></td>
+    <td><a href="media/comp2.webp"><img src="media/comp2.webp" alt="Base path tracing with learned light cuts" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <th>3 · + SHARC</th>
+    <th>4 · + Path guiding and ReSTIR</th>
+  </tr>
+  <tr>
+    <td><a href="media/comp3.webp"><img src="media/comp3.webp" alt="Learned light cuts with SHARC" width="100%" /></a></td>
+    <td><a href="media/comp4.webp"><img src="media/comp4.webp" alt="Learned light cuts, SHARC, path guiding, and ReSTIR spatial reuse" width="100%" /></a></td>
+  </tr>
+</table>
 
 ### Material Model
 
-<p float="left">
-  <img src="media/dragon.png" width="24%" />
-  <img src="media/sheen_clean.png" width="24%" />
-  <img src="media/metal_clean.png" width="24%" />
-  <img src="media/clearcoat_clean.png" width="24%" />
-</p>
+<table>
+  <tr>
+    <td width="20%" align="center" valign="middle"><a href="media/dragon.png"><img src="media/dragon.png" alt="Dragon material" width="100%" /></a></td>
+    <td width="20%" align="center" valign="middle"><a href="media/sheen_clean.png"><img src="media/sheen_clean.png" alt="Sheen material" width="100%" /></a></td>
+    <td width="20%" align="center" valign="middle"><a href="media/metal_clean.png"><img src="media/metal_clean.png" alt="Metal material" width="100%" /></a></td>
+    <td width="20%" align="center" valign="middle"><a href="media/clearcoat_clean.png"><img src="media/clearcoat_clean.png" alt="Clearcoat material" width="100%" /></a></td>
+    <td width="20%" align="center" valign="middle"><a href="media/sss1.webp"><img src="media/sss1.webp" alt="Dragon with subsurface scattering" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Transmission</td>
+    <td align="center">Sheen</td>
+    <td align="center">Metal</td>
+    <td align="center">Clearcoat</td>
+    <td align="center">SSS</td>
+  </tr>
+</table>
 
-![Material model layers](media/material_model.svg)
+*Material examples, including subsurface scattering (SSS).*
 
-A four lobe, energy conserving BXDF with layered evaluation:
-- **Sheen**: [Charlie NDF](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf) for fabric like surfaces
-- **Clearcoat**: Dielectric GGX with independent roughness and Fresnel
-- **[GGX](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf) Specular/Transmission**: Anisotropic microfacet model with VNDF importance sampling, supporting reflection and refraction through nested dielectrics with per bounce IOR stack tracking
-- **Lambertian Diffuse**: Cosine weighted base layer
+![Layered scattering: sheen, clearcoat, GGX reflection and transmission, then diffuse. Emission is separate.](media/material_model.svg)
 
-### Light Sampling
+A four lobe BXDF with layered evaluation:
 
-A [light tree](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf) built over the scene's emissive triangles provides efficient importance sampling in scenes with many lights. The tree uses a TLAS/BLAS hierarchy with precomputed visibility cones and geometric importance weights (receiver cosine, distance attenuation) to guide traversal. This allows the renderer to handle scenes with hundreds of emissive primitives without per light overhead.
+- **Sheen**: [Charlie NDF](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf) for fabric-like surfaces.
+- **Clearcoat**: Dielectric GGX with independent roughness and Fresnel.
+- **[GGX Specular/Transmission](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf)**: Anisotropic microfacet model with VNDF importance sampling. Nested dielectrics use per-bounce IOR stack tracking.
+- **Lambertian Diffuse**: Cosine-weighted base layer.
 
-Light tree builds on the CPU. When lights move or their brightness changes, the tree is refit/rebuilt asynchronously.
+Subsurface scattering uses volumetric random walks. Emission is evaluated separately from the scattering lobes.
 
-### ReSTIR
+### Model Loading
 
-![No ReSTIR](media/twr_norestir.png)
-*Path tracing, no ReSTIR (1 spp)*
-
-![ReSTIR raw](media/twr_restir.png)
-*ReSTIR, raw (1 spp)*
-
-![ReSTIR + DLSS RR](media/twr_denoised.png)
-*ReSTIR + DLSS Ray Reconstruction*
-
-Unbiased [ReSTIR PT](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir) (reconnection shift only) on a **unified DI/GI reservoir**: NEE, environment miss, and path integrand candidates all feed one reservoir stream, with sentinel matIDs discriminating direct samples from indirect ones. Each path uses temporal and spatial reservoir resampling with [pairwise MIS](https://intro-to-restir.cwyman.org/) for unbiased combination of canonical and neighbor samples. Temporal permutation sampling decorrelates reuse patterns across frames, and the temporal mCap is modulated by a per pixel **duplication map** so highly shared samples refresh quickly instead of creating correlation artifacts (Lin et al. 2026 §5).
-
-### Rendering Pipeline
-![ReSTIR rendering pipeline](media/pipeline.svg)
-
-The path tracer uses the DXR HitObject API with Shader Execution Reordering (SER) for wavefront like coherence without an explicit wavefront architecture. The pipeline is split into discrete passes:
-1. **Raygen**: Primary rays, multi bounce path tracing with NEE. All candidates (NEE, env miss, path integrand) are written into a single **unified DI/GI reservoir**, keyed by sentinel matIDs. Thanks to SER, aggressive russian roulette sampling allows for 30+ bounces with barely any performance impact
-2. **Temporal reuse**: Pairwise MIS temporal resampling on the unified reservoir. Permutation sampling breaks up temporal correlations that become very apparent in the denoiser; the temporal mCap is adaptively lowered where the previous frame's duplication map shows high sample reuse
-3. **Reuse texture partner select**: A stack of three precomputed self inverting **reuse textures** (Lin, Kettunen, Wyman 2026 §3) gives every pixel a guaranteed symmetric spatial partner in a single texture load, replacing the usual neighbor search pass
-4. **Spatial shift** (raygen): Performs the reconnection shift and visibility rays for each partner slot, caching the shifted contribution F and Jacobian in per pixel scratch
-5. **Spatial merge** (compute): Pairwise MIS over the cached shifts
-6. **Duplication map**: Compute pass that scans each pixel's 17×17 neighborhood and counts matches of the packed V2 (reconnection vertex) identifier. Initially presented for Hybrid shift using seed, V2 prooved to be a cheap and simple proxy to distinguish samples in non hybrid shift environments.
-7. **Shading**: Final accumulation, motion vectors, and DLSS input preparation
-8. **Postprocess**: Tone mapping (PBR Neutral, currently disabled) and sRGB gamma correction
+Supports OBJ and glTF/GLB via [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) and [tinygltf](https://github.com/syoyo/tinygltf). Textures use stb_image with DDS decompression through [DirectXTex](https://github.com/microsoft/DirectXTex). Models, materials, and per-instance transforms share a unified scene representation.
 
 ### Opacity Micromaps
-Alpha tested geometry (foliage, fences, etc.) uses [Opacity Micromaps](https://github.com/NVIDIA-RTX/OMM) (OMMs) built with the NVIDIA OMM SDK. OMMs encode opacity per microtriangle into the BVH, allowing the hardware to skip transparent regions during traversal without invoking any hit shaders, significantly improving ray tracing performance on scenes with heavy alpha tested content.
+
+Alpha-tested geometry uses [Opacity Micromaps](https://github.com/NVIDIA-RTX/OMM), built with the NVIDIA OMM SDK. Opacity is encoded per microtriangle in the BVH, allowing hardware traversal to skip transparent regions without any-hit shader invocations.
 
 ### Denoiser
-NVIDIA DLSS Ray Reconstruction is used for denoising using NVIDIA [Streamline](https://github.com/NVIDIA-RTX/Streamline). On supported GPUs, DLSS frame generation can be used to improve performance.
 
-### Neural Radiance Cache
+NVIDIA DLSS Ray Reconstruction provides denoising and upscaling through [Streamline](https://github.com/NVIDIA-RTX/Streamline).
 
-Following [Müller et al. 2021](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing): a small MLP trained online every frame predicts residual radiance from short path prefixes. Paths terminate at a fixed depth and query the cache for the remainder of the integral. The network runs through [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn) (tcnn) on a separate CUDA stream alongside the DX12 hybrid pipeline, sharing GPU memory through CUDA/D3D12 interop.
+### Minecraft Chunk Rendering
 
-**Network**: fully fused MLP, 5 hidden × 64 neurons, ReLU activations, linear 3 channel output. 16 raw inputs (position, scattered direction, surface normal, roughness, diffuse + specular reflectance) expand to 74 dims through a composite encoding:
+Minecraft worlds are supported with chunk streaming, adaptive LOD, and asynchronous geometry builds. Emissive block geometry is sampled through the light tree.
 
-- **Position** -> HashGrid, 16 levels × 2 features, log₂ hashmap = 21, smoothstep interpolation
-- **Direction & normal** -> Spherical Harmonics, degree 4
-- **Roughness** -> OneBlob, 4 bins
-- **Reflectance** -> Identity passthrough
+Example statistics from a recorded **Greenfield v0.5.4** run:
 
-**Training**: RelativeL2 loss (Müller 2021 §5) on a linear target. Sqrt/log target transforms produce systematic darkening through Jensen's inequality. Adam (lr 1e-3, β = 0.9 / 0.99, L2 reg 1e-6), 4 batches × 8192 records per frame trained asynchronously during the ReSTIR reuse passes. One row per path at a randomized depth, since multi row per path emission produces intra path correlated gradients that Adam's 2nd moment EMA absorbs, collapsing the effective learning rate on shared parameters. 1/16 of training pixels take long RR terminated paths to anchor emitter/miss radiance; the remainder use cache recursive multi bounce targets.
+| Metric | Count |
+| --- | ---: |
+| Rendered triangles | 86.13 million |
+| Emissive triangles in the active light tree | 1.29 million |
+| World chunks | 295,936 across 356 regions |
+| Materials | 10,451 |
+| Textures | 5,253 |
 
-**Engineering**: tcnn lives behind a thin C++/CUDA wall in [Pathtracer/rdn/NRC/](Pathtracer/rdn/NRC/); DXR/HLSL only ever sees the byte for byte buffer layout in `NrcLayout.h`, mirrored in `Nrc_v8.hlsli`. An auxiliary CUDA stream + events keep training off the render critical path, and an adaptive training tile size (4×4 to 32×32 per frame) keeps the trainer saturated independent of resolution.
+Geometry and light counts vary with camera position and LOD.
+
+<!-- Metrics: Pathtracer/out/ui-performance/startup.log, 2026-09-14. World/assets: lines 55 and 68. Rendered triangles and active light-tree triangles: lines 155 and 157. -->
+
+![Minecraft city rendered from chunks](media/minecraft1.webp)
 
 ## Background
 
-What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX quickly became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to enhance the renderers' real time capabilities. Since then, the focus has shifted to implementing and evaluating state of the art algorithms for improving unbiased sampling efficiency.
-
-![Sponza interior](media/sponza_clean.png)
+What started as a port of the [RoyalTracer university project](https://github.com/Royal-Project-Group/royaltracer) to DirectX became a standalone rendering engine. In my [Bachelor's Thesis](https://ml200.github.io/university/2025/05/28/thesis.html), I implemented and optimized ReSTIR to improve real time rendering. Current work focuses on learned sampling, radiance caching, and spatial reuse.
 
 ## Build
 
-### Requirements
-- Windows 11 (recent version for DirectX Agility SDK support)
-- NVIDIA RTX 40 series GPU or newer. Frame generation requires 40 series; core rendering may work on earlier RTX cards but is untested.
-- Visual Studio 2022 build tools
+Requires Windows 11, an NVIDIA RTX 40 series GPU or newer, Visual Studio 2022 with C++ build tools and Windows SDK 10.0.22621.0, and CMake 3.25.2 or newer.
 
-### Quickstart
+Run from the repository root:
 
-```bash
-cmake -B build -G "Visual Studio 17 2022" -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
+```powershell
+cmake -S Pathtracer -B Pathtracer/build -G "Visual Studio 17 2022" -A x64
+cmake --build Pathtracer/build --config Release
 ```
-
-<details><summary>CLion (2024.3.2+) setup notes</summary>
-
-1. Set up the toolchain: select Visual Studio (should be detected automatically). Delete any other toolchain.
-2. Configure the CMake project: select Visual Studio as the toolchain. Name the build directory `cmake-build-debug-visual-studio`. Select "use default" for the generator and "Release" for build type.
-3. Delete the existing `cmake-build-debug-visual-studio` directory if it exists.
-4. Reload the CMake project (File > Reload CMake Project).
-5. Build and run. Includes are automatically placed in the build directory.
-
-</details>
-
-<details><summary>Visual Studio (2022+) setup notes</summary>
-
-1. Open the project folder.
-2. VS should automatically run CMake.
-3. Build and run.
-
-</details>
 
 ## Controls
 
 | Input | Action |
 | --- | --- |
-| **W / A / S / D** | Move forward / left / back / right |
-| **Space** | Ascend |
-| **Left Ctrl** | Descend |
-| **Left mouse drag** | Look around |
-
-## Planned Features
-
-- Port NRC to DX12 cooperative vector intrinsics (latest Agility SDK preview) to remove the CUDA dependency
-- Modular material system and light sampling for reduced register pressure in callable shaders
-- Modular resampling for better performance
-- Volume rendering
-
-## References
-
-- Kulla, C., Conty Estevez, A. *Importance Sampling of Many Lights with Adaptive Tree Splitting.* HPG 2018. [[PDF]](https://fpsunflower.github.io/ckulla/data/many-lights-hpg2018.pdf)
-- Estevez, A., Kulla, C. *Production Friendly Microfacet Sheen BRDF.* SIGGRAPH 2017 Course. [[PDF]](https://blog.selfshadow.com/publications/s2017-shading-course/imageworks/s2017_pbs_imageworks_sheen.pdf)
-- Walter, B., Marschner, S. R., Li, H., Torrance, K. E. *Microfacet Models for Refraction through Rough Surfaces.* EGSR 2007. [[PDF]](https://www.cs.cornell.edu/~srm/publications/EGSR07-btdf.pdf)
-- Lin, D., Wyman, C., Yuksel, C. *Generalized Resampled Importance Sampling: Foundations of ReSTIR.* ACM TOG 2022. [[Project]](https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir)
-- Wyman, C. et al. *A Gentle Introduction to ReSTIR.* SIGGRAPH 2023 Course. [[Web]](https://intro-to-restir.cwyman.org/)
-- Lin, D., Kettunen, M., Wyman, C. *ReSTIR PT Enhanced.* 2026. (§3: paired reuse textures; §5: duplication map correlation reduction.)
-- Müller, T., Rousselle, F., Novák, J., Keller, A. *Real-time Neural Radiance Caching for Path Tracing.* SIGGRAPH 2021. [[Project]](https://research.nvidia.com/publication/2021-06_real-time-neural-radiance-caching-path-tracing)
-- Lanz, M. *Real-Time Path Tracing with ReSTIR.* Bachelor's Thesis, 2025. [[Writeup]](https://ml200.github.io/university/2025/05/28/thesis.html)
+| W / A / S / D | Move |
+| Space / Left Ctrl | Ascend / descend |
+| Left mouse drag | Look around |
 
 ## Acknowledgments
 
-- **Scenes**: [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) (NVIDIA ORCA), Crytek Sponza
-- **NVIDIA libraries**: [DLSS Streamline](https://github.com/NVIDIA-RTX/Streamline), [OMM SDK](https://github.com/NVIDIA-RTX/OMM)
-- **Asset loaders & texturing**: [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), [tinygltf](https://github.com/syoyo/tinygltf), [stb_image](https://github.com/nothings/stb), [DirectXTex](https://github.com/microsoft/DirectXTex)
-- **UI**: [Dear ImGui](https://github.com/ocornut/imgui)
+- **Scenes**: [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) (NVIDIA ORCA), Crytek Sponza, Minecraft Greenfield.
+- **NVIDIA libraries**: [Streamline](https://github.com/NVIDIA-RTX/Streamline), [OMM SDK](https://github.com/NVIDIA-RTX/OMM).
+- **Asset loaders and texturing**: [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), [tinygltf](https://github.com/syoyo/tinygltf), [stb_image](https://github.com/nothings/stb), [DirectXTex](https://github.com/microsoft/DirectXTex).
+- **UI**: [Dear ImGui](https://github.com/ocornut/imgui).
 
 ## Gallery
 
-![Staircase](media/staircase.png)
+![Bistro exterior](media/bistro1.webp)
 
-![Coffee](media/coffee.png)
+*Bistro.*
 
-![Kitchen](media/kitchen.png)
+![Sponza interior](media/sponza1.webp)
 
-![Spaceship](media/spaceship.png)
+*Sponza.*
+
+<table>
+  <tr>
+    <td width="50%"><a href="media/harbor2.webp"><img src="media/harbor2.webp" alt="Harbor panorama" width="100%" /></a></td>
+    <td width="50%"><a href="media/harbor3.webp"><img src="media/harbor3.webp" alt="Harbor at night" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Harbor</td>
+    <td align="center">Harbor at night</td>
+  </tr>
+  <tr>
+    <td><a href="media/ship2.webp"><img src="media/ship2.webp" alt="Ship in the harbor" width="100%" /></a></td>
+    <td><a href="media/skyline.webp"><img src="media/skyline.webp" alt="City skyline" width="100%" /></a></td>
+  </tr>
+  <tr>
+    <td align="center">Ship</td>
+    <td align="center">Skyline</td>
+  </tr>
+</table>
+
+![Island scene](media/island1.webp)
+
+*Island.*

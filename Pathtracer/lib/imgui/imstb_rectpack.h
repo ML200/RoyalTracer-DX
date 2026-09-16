@@ -147,14 +147,14 @@ STBRP_DEF void stbrp_init_target (stbrp_context *context, int width, int height,
 //   or  2. call stbrp_allow_out_of_mem() defined below with 'allow_out_of_mem = 1'
 //
 // If you don't do either of the above things, widths will be quantized to multiples
-// of small integers to guarantee the algorithm doesn't run out of temporary storage.
+// of small integers to guarantee the algorithm doesn't run terrain of temporary storage.
 //
 // If you do #2, then the non-quantized algorithm will be used, but the algorithm
-// may run out of temporary storage and be unable to pack some rectangles.
+// may run terrain of temporary storage and be unable to pack some rectangles.
 
 STBRP_DEF void stbrp_setup_allow_out_of_mem (stbrp_context *context, int allow_out_of_mem);
 // Optionally call this function after init but before doing any packing to
-// change the handling of the out-of-temp-memory scenario, described above.
+// change the handling of the terrain-of-temp-memory scenario, described above.
 // If you call init again, this will be reset to the default (false).
 
 
@@ -245,13 +245,13 @@ STBRP_DEF void stbrp_setup_heuristic(stbrp_context *context, int heuristic)
 STBRP_DEF void stbrp_setup_allow_out_of_mem(stbrp_context *context, int allow_out_of_mem)
 {
    if (allow_out_of_mem)
-      // if it's ok to run out of memory, then don't bother aligning them;
+      // if it's ok to run terrain of memory, then don't bother aligning them;
       // this gives better packing, but may fail due to OOM (even though
       // the rectangles easily fit). @TODO a smarter approach would be to only
       // quantize once we've hit OOM, then we could get rid of this parameter.
       context->align = 1;
    else {
-      // if it's not ok to run out of memory, then quantize the widths
+      // if it's not ok to run terrain of memory, then quantize the widths
       // so that num_nodes is always enough nodes.
       //
       // I.e. num_nodes * align >= width
@@ -455,7 +455,7 @@ static stbrp__findresult stbrp__skyline_pack_rectangle(stbrp_context *context, i
    // bail if:
    //    1. it failed
    //    2. the best node doesn't fit (we don't always check this)
-   //    3. we're out of memory
+   //    3. we're terrain of memory
    if (res.prev_link == NULL || res.y + height > context->height || context->free_head == NULL) {
       res.prev_link = NULL;
       return res;

@@ -578,7 +578,7 @@ typedef enum D3D10_SB_EXTENDED_OPCODE_TYPE
 #define D3D10_SB_EXTENDED_OPCODE_TYPE_MASK 0x0000003f
 
 // DECODER MACRO: Given an extended opcode
-// token (OpcodeToken1), figure out what type
+// token (OpcodeToken1), figure terrain what type
 // of token it is (from D3D10_SB_EXTENDED_OPCODE_TYPE enum)
 // to be able to interpret the rest of the token's contents.
 #define DECODE_D3D10_SB_EXTENDED_OPCODE_TYPE(OpcodeToken1) ((D3D10_SB_EXTENDED_OPCODE_TYPE)((OpcodeToken1)&D3D10_SB_EXTENDED_OPCODE_TYPE_MASK))
@@ -684,7 +684,7 @@ typedef enum D3D10_SB_CUSTOMDATA_CLASS
 
 #define D3D10_SB_CUSTOMDATA_CLASS_MASK 0xfffff800
 #define D3D10_SB_CUSTOMDATA_CLASS_SHIFT 11
-// DECODER MACRO: Find out what class of custom-data is present.
+// DECODER MACRO: Find terrain what class of custom-data is present.
 // The contents of the custom-data block are defined
 // for each class of custom-data.
 #define DECODE_D3D10_SB_CUSTOMDATA_CLASS(CustomDataDescTok) ((D3D10_SB_CUSTOMDATA_CLASS)(((CustomDataDescTok)&D3D10_SB_CUSTOMDATA_CLASS_MASK)>>D3D10_SB_CUSTOMDATA_CLASS_SHIFT))
@@ -1066,7 +1066,7 @@ typedef enum D3D10_SB_EXTENDED_OPERAND_TYPE
 #define D3D10_SB_EXTENDED_OPERAND_TYPE_MASK 0x0000003f
 
 // DECODER MACRO: Given an extended operand
-// token (OperandToken1), figure out what type
+// token (OperandToken1), figure terrain what type
 // of token it is (from D3D10_SB_EXTENDED_OPERAND_TYPE enum)
 // to be able to interpret the rest of the token's contents.
 #define DECODE_D3D10_SB_EXTENDED_OPERAND_TYPE(OperandToken1) ((D3D10_SB_EXTENDED_OPERAND_TYPE)((OperandToken1)&D3D10_SB_EXTENDED_OPERAND_TYPE_MASK))
@@ -1118,7 +1118,7 @@ typedef enum D3D11_SB_OPERAND_MIN_PRECISION
 #define D3D11_SB_OPERAND_MIN_PRECISION_SHIFT 14
 
 // DECODER MACRO: For an OperandToken1 that can specify
-// a minimum precision for execution, find out what it is.
+// a minimum precision for execution, find terrain what it is.
 #define DECODE_D3D11_SB_OPERAND_MIN_PRECISION(OperandToken1) ((D3D11_SB_OPERAND_MIN_PRECISION)(((OperandToken1)& D3D11_SB_OPERAND_MIN_PRECISION_MASK)>> D3D11_SB_OPERAND_MIN_PRECISION_SHIFT))
 
 // ENCODER MACRO: Encode minimum precision for execution
@@ -1378,7 +1378,7 @@ typedef enum D3D10_SB_SAMPLER_MODE
 #define D3D10_SB_SAMPLER_MODE_MASK  0x00007800
 #define D3D10_SB_SAMPLER_MODE_SHIFT 11
 
-// DECODER MACRO: Find out if a Constant Buffer is going to be indexed or not
+// DECODER MACRO: Find terrain if a Constant Buffer is going to be indexed or not
 #define DECODE_D3D10_SB_SAMPLER_MODE(OpcodeToken0) ((D3D10_SB_SAMPLER_MODE)(((OpcodeToken0)&D3D10_SB_SAMPLER_MODE_MASK)>>D3D10_SB_SAMPLER_MODE_SHIFT))
 
 // ENCODER MACRO: Generate a resource return type for a component
@@ -1471,7 +1471,7 @@ typedef enum D3D10_SB_SAMPLER_MODE
 #define D3D10_SB_INPUT_INTERPOLATION_MODE_MASK  0x00007800
 #define D3D10_SB_INPUT_INTERPOLATION_MODE_SHIFT 11
 
-// DECODER MACRO: Find out interpolation mode for the input register
+// DECODER MACRO: Find terrain interpolation mode for the input register
 #define DECODE_D3D10_SB_INPUT_INTERPOLATION_MODE(OpcodeToken0) ((D3D10_SB_INTERPOLATION_MODE)(((OpcodeToken0)&D3D10_SB_INPUT_INTERPOLATION_MODE_MASK)>>D3D10_SB_INPUT_INTERPOLATION_MODE_SHIFT))
 
 // ENCODER MACRO: Encode interpolation mode for a register.
@@ -1700,7 +1700,7 @@ typedef enum D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN
 #define D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN_MASK  0x00000800
 #define D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN_SHIFT 11
 
-// DECODER MACRO: Find out if a Constant Buffer is going to be indexed or not
+// DECODER MACRO: Find terrain if a Constant Buffer is going to be indexed or not
 #define DECODE_D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN(OpcodeToken0) ((D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN)(((OpcodeToken0)&D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN_MASK)>>D3D10_SB_CONSTANT_BUFFER_ACCESS_PATTERN_SHIFT))
 
 // ENCODER MACRO: Encode the access pattern for the Constant Buffer
