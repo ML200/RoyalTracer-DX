@@ -107,7 +107,7 @@ Cumulative comparison: base path tracing, learned light cuts, SHARC, then path g
     <td width="20%" align="center" valign="middle"><a href="media/sss1.webp"><img src="media/sss1.webp" alt="Dragon with subsurface scattering" width="100%" /></a></td>
   </tr>
   <tr>
-    <td align="center">Dragon</td>
+    <td align="center">Transmission</td>
     <td align="center">Sheen</td>
     <td align="center">Metal</td>
     <td align="center">Clearcoat</td>
