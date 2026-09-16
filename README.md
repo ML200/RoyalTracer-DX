@@ -142,7 +142,21 @@ NVIDIA DLSS Ray Reconstruction provides denoising and upscaling through [Streaml
 
 ### Minecraft Chunk Rendering
 
-Minecraft chunk rendering is supported.
+Minecraft worlds are supported with chunk streaming, adaptive LOD, and asynchronous geometry builds. Emissive block geometry is sampled through the light tree.
+
+Example statistics from a recorded **Greenfield v0.5.4** run:
+
+| Metric | Count |
+| --- | ---: |
+| Rendered triangles | 86.13 million |
+| Emissive triangles in the active light tree | 1.29 million |
+| World chunks | 295,936 across 356 regions |
+| Materials | 10,451 |
+| Textures | 5,253 |
+
+Geometry and light counts vary with camera position and LOD.
+
+<!-- Metrics: Pathtracer/out/ui-performance/startup.log, 2026-09-14. World/assets: lines 55 and 68. Rendered triangles and active light-tree triangles: lines 155 and 157. -->
 
 ![Minecraft city rendered from chunks](media/minecraft1.webp)
 
@@ -171,7 +185,7 @@ cmake --build Pathtracer/build --config Release
 
 ## Acknowledgments
 
-- **Scenes**: [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) (NVIDIA ORCA), Crytek Sponza.
+- **Scenes**: [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) (NVIDIA ORCA), Crytek Sponza, Minecraft Greenfield.
 - **NVIDIA libraries**: [Streamline](https://github.com/NVIDIA-RTX/Streamline), [OMM SDK](https://github.com/NVIDIA-RTX/OMM).
 - **Asset loaders and texturing**: [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader), [tinygltf](https://github.com/syoyo/tinygltf), [stb_image](https://github.com/nothings/stb), [DirectXTex](https://github.com/microsoft/DirectXTex).
 - **UI**: [Dear ImGui](https://github.com/ocornut/imgui).
