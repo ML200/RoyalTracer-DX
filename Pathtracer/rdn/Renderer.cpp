@@ -360,6 +360,17 @@ void Renderer::UpdateRenderer(float dt) {
     auto t_updateStart = hrc::now();
     m_time++;
 
+    if (m_integratorSettings.compactLightTree != m_lightTreeCompact) {
+        // Drain users of the old descriptors before replacing the selected layout.
+        m_ctx.WaitForGPU();
+        m_lightTreeRefit.DiscardPending();
+        m_lightTreeCompact = m_integratorSettings.compactLightTree;
+        m_emissiveGpuDirty = true;
+        m_lightLearningResetPending = true;
+        m_dlss.ForceReset();
+        m_dlssNR.ForceReset();
+    }
+
     if (m_dlss.mode != m_dlss.ActiveMode()) {
         m_ctx.WaitForGPU(); // drain all in-flight GPU work BEFORE releasing old textures
         if (m_dlss.UpdateMode(m_ctx.Device())) {
@@ -416,6 +427,7 @@ void Renderer::UpdateRenderer(float dt) {
     lt::TLASRefitResult refitResult;
     if (m_lightTreeRefit.PollResult(refitResult)) {
         m_pendingTLASUpload = std::move(refitResult.nodes);
+        m_pendingPackedTLAS = std::move(refitResult.packedNodes);
         m_pendingBLASBitTrail = std::move(refitResult.blasBitTrails);
 
         m_pendingSlotRecords = std::move(refitResult.slots);
@@ -567,7 +579,7 @@ void Renderer::KickLightTreeRefit() {
 
     lt::RequestIncrementalRefit(m_lightTreeRefit, std::move(roots), std::move(slots), m_lightTree.SlotRecords(),
                                 std::move(xforms), std::move(extra), slotCount, extraVersion, &m_liveLightTlas,
-                                m_lightTlasForceRebuild);
+                                m_lightTlasForceRebuild, m_lightTreeCompact);
     m_lightTlasForceRebuild = false;
 }
 
@@ -587,7 +599,8 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     auto* dev = m_ctx.Device();
     const UINT inc = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const UINT nodeCount = (UINT)m_pendingTLASUpload.size();
-    const UINT64 nodeBytes = (UINT64)nodeCount * sizeof(lt::LightTLASNodeGpu);
+    const UINT nodeStride = lt::LightTLASNodeStride(m_lightTreeCompact);
+    const UINT64 nodeBytes = (UINT64)nodeCount * nodeStride;
     const UINT itemCount = (UINT)m_pendingBLASBitTrail.size();
     const UINT64 itemBytes = (UINT64)itemCount * sizeof(lt::LightTreeTrail);
     CD3DX12_RANGE readRange(0, 0);
@@ -614,8 +627,9 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
             sd.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
             if (stride > 0) {
                 sd.Format = DXGI_FORMAT_UNKNOWN;
-                sd.Buffer.NumElements = capacity;
-                sd.Buffer.StructureByteStride = stride;
+                const UINT srvStride = srvSlot == LT_TLAS_SRV_SLOT ? 16u : stride;
+                sd.Buffer.NumElements = (UINT)(allocBytes / srvStride);
+                sd.Buffer.StructureByteStride = srvStride;
             } else {
                 sd.Format = fmt;
                 sd.Buffer.NumElements = capacity;
@@ -637,13 +651,15 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
         }
     };
 
-    growBuffer(m_ltTlasGpu, m_tlasUploadStaging, m_ltTlasGpuCapacity, nodeCount, sizeof(lt::LightTLASNodeGpu),
+    growBuffer(m_ltTlasGpu, m_tlasUploadStaging, m_ltTlasGpuCapacity, nodeCount, nodeStride,
                DXGI_FORMAT_UNKNOWN, LT_TLAS_SRV_SLOT, L"LT_TLAS_Refit");
 
     {
         void* p = nullptr;
         ThrowIfFailed(m_tlasUploadStaging->Map(0, &readRange, &p));
-        memcpy(p, m_pendingTLASUpload.data(), nodeBytes);
+        const void* nodes = m_lightTreeCompact ? static_cast<const void*>(m_pendingPackedTLAS.data())
+                                               : static_cast<const void*>(m_pendingTLASUpload.data());
+        memcpy(p, nodes, nodeBytes);
         m_tlasUploadStaging->Unmap(0, nullptr);
     }
 
@@ -694,6 +710,7 @@ void Renderer::UploadLightTreeTLAS(ID3D12GraphicsCommandList* cmdList) {
     }
 
     m_pendingTLASUpload.clear();
+    m_pendingPackedTLAS.clear();
     m_pendingBLASBitTrail.clear();
     m_pendingSlotRecords.clear();
 }
@@ -712,13 +729,17 @@ void Renderer::UploadEmissiveBuffers(ID3D12GraphicsCommandList* cmdList) {
 
     m_lightTreeRefit.DiscardPending();
     m_pendingTLASUpload.clear();
+    m_pendingPackedTLAS.clear();
     m_pendingBLASBitTrail.clear();
     m_pendingSlotRecords.clear();
     m_lightLearningResetPending = true;
     m_lightTlasForceRebuild = true;
-    if (!tris.empty()) {
+    m_scene.lightTreeDirty = true;
+    {
         m_lightTree.ReleaseStaging();
-        m_lightTree.Build(tris, m_scene.lightInstances, BuildXformsFromScene());
+        lt::LightTreeBuilder::Settings settings;
+        settings.compactGpuNodes = m_lightTreeCompact;
+        m_lightTree.Build(tris, m_scene.lightInstances, BuildXformsFromScene(), settings);
         m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
         m_frameStats.lightBvh.slots = m_lightTree.SlotCount();
         m_lightTree.UploadAll(dev, cmdList);
@@ -1527,6 +1548,8 @@ void Renderer::PopulateCommandList() {
     const bool integratorChanged = rs.integratorMode != m_previousIntegratorMode;
     m_previousIntegratorMode = rs.integratorMode;
     uint32_t baseFlags = (dlssResChanged || integratorChanged) ? (rs.Flags() & ~3u) : rs.Flags();
+    if (m_lightTreeCompact)
+        baseFlags |= RS_FLAG_COMPACT_LIGHT_TREE;
     if (!MeshLightsActive())
         baseFlags |= RS_FLAG_NO_MESH_LIGHTS;
     if (m_dlss.clampEmitterSpikes)

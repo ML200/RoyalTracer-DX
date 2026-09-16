@@ -228,7 +228,10 @@ void Renderer::CreateAccelerationStructures() {
         XMStoreFloat4x4(&x.objectToWorld, shifted);
         ltXforms.push_back(x);
     }
-    m_lightTree.Build(m_scene.emissiveTriangles, m_scene.lightInstances, ltXforms);
+    m_lightTreeCompact = m_integratorSettings.compactLightTree;
+    lt::LightTreeBuilder::Settings lightTreeSettings;
+    lightTreeSettings.compactGpuNodes = m_lightTreeCompact;
+    m_lightTree.Build(m_scene.emissiveTriangles, m_scene.lightInstances, ltXforms, lightTreeSettings);
     m_publishedLightTLAS = m_lightTree.GetCpuTLASNodes();
     m_frameStats.lightBvh.slots = m_lightTree.SlotCount();
     m_lightTree.PrintMetrics();

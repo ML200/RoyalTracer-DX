@@ -371,8 +371,8 @@ StructuredBuffer<MatPacked>          g_mat               : register(t5);
 StructuredBuffer<LightTriangle>      g_EmissiveTriangles : register(t6);
 StructuredBuffer<uint>               gTriToLightId       : register(t15);
 
-StructuredBuffer<LightTLASNodeGpu> gLT_TLAS         : register(t9);
-StructuredBuffer<LightBLASNodeGpu> gLT_BLAS         : register(t10);
+StructuredBuffer<uint4> gLT_TLAS                  : register(t9);
+StructuredBuffer<uint4> gLT_BLAS                  : register(t10);
 StructuredBuffer<BlasRangeGpu>     gLT_Range        : register(t11);
 Buffer<uint>                       gLT_LeafTriIndex : register(t12);
 

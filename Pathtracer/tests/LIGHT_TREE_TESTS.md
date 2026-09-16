@@ -3,6 +3,17 @@ The standalone D3D12 runner compiles the production light-tree and update HLSL.
 
 Coverage:
 
+- Runtime compaction off/on/off/on with shared builder/descriptors, full-precision
+  GPU decoding, header-free streamed encoding and leaf rebasing, both layouts'
+  deep-tree and refit PDFs, learned sampling/integrals, and disabled worker packing.
+  Render-pipeline tests also check default-off and reconstruction invalidation.
+
+- Compact 32-byte BLAS and 48-byte TLAS storage: CPU/GPU conservative bounds and
+  cone decoding, full FP32 power, mesh headers at nonzero offsets, streamed leaf
+  rebasing, reachable-only builds, stable refit IDs/trails, tombstones, and packed
+  publication from the asynchronous worker. Includes flat bounds, tiny meshes,
+  large coordinate offsets, and large/small extents.
+
 - Learned sampling for every receiver when enabled, including rough and clearcoat surfaces. Training feedback selects full or broad contributions by roughness and clearcoat. Sampling and emitter MIS share the same PDFs; a concentrated BSDF fixture checks the unit integral. Use `-SurfaceTest` for the focused checks.
 
 - TLAS/BLAS trails at depths 0, 16, 17, 31 and 32, malformed depth-33 rejection, and independent topology/PDF walks through skewed and coincident scenes.
@@ -25,7 +36,7 @@ Coverage:
 - Calibrated bright priors inherited into dim children, including a camera move from a spatial parent trained with real feedback to a child receiving contributions twelve orders of magnitude smaller. Local scale and the newly visible emitter must recover without resetting the cache.
 - Native integer feedback accumulation against independent CPU 320-bit sums: every FP32 exponent, subnormal inputs, five-word carry propagation, 2,073,603 contending observations, exact zero counts, float decoding and record reuse.
 
-Learning storage is 297.03 MiB for 65,536 spatial cells plus six roots, shared across all hierarchical levels. Each cell has at most 32 cut entries. Frozen entries remain 64 bytes; exact accumulators use 80 bytes per entry. Trails use `LightTreeTrail.h`, uploaded as `R32G32_UINT` and read as `uint2`.
+Learning storage is 297.03 MiB for 65,536 spatial cells plus six roots, shared across all hierarchical levels. Each cell has at most 32 cut entries. Frozen entries use 32 bytes, statistics use another 32 bytes, and exact accumulators use 80 bytes per entry. Trails use `LightTreeTrail.h`, uploaded as `R32G32_UINT` and read as `uint2`. Tree-node compression is separate; see [LIGHT_TREE_COMPACTION.md](../docs/LIGHT_TREE_COMPACTION.md) for layout details and measured tradeoffs.
 
 Use `-Benchmark` for coherent/scattered sample, sample+feedback and sample+PDF timings at 1920x1080 queries, with mature cuts in stable LOD and transition-band cases. Warmup trains at each measured camera distance so the blend parent is actually resident. A separate 65,536-receiver workload measures a saturated directory. Timings are GPU medians of five dispatches and exclude full-frame rendering. `-ShaderDirectory <path> -Benchmark` selects another sampler; add `-TestShader <matching test HLSL>` when comparing a snapshot with a different test-facing API.
 

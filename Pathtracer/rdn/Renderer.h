@@ -132,9 +132,11 @@ class Renderer {
     int m_lightLearningCellExponent = 0;
     float m_lightLearningLodScale = 0.05f;
     lt::LightTreeBuilder m_lightTree;
+    bool m_lightTreeCompact = false;
     lt::LightTreeRefitManager m_lightTreeRefit;
     std::vector<lt::BLASRootLocal> m_blasLocalRoots;
     std::vector<lt::LightTLASNodeGpu> m_pendingTLASUpload;
+    std::vector<lt::LightTLASNodePacked> m_pendingPackedTLAS;
     std::vector<lt::LightTLASNodeGpu> m_publishedLightTLAS;
 
     std::vector<lt::LightTreeTrail> m_pendingBLASBitTrail;
@@ -167,6 +169,7 @@ class Renderer {
     };
     std::vector<RetiredResource> m_vxLightRetired;
     UINT m_vxSceneRecordCap = 0, m_vxSceneNodeCap = 0;
+    UINT m_vxLightNodeStride = 0;
     uint32_t m_voxelLightKickedVersion = 0xFFFFFFFFu;
     uint32_t m_pendingVoxelLightVersion = 0, m_pendingVoxelLeafCount = 0;
     uint32_t m_liveVoxelLightLeaves = 0;

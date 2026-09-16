@@ -2,6 +2,7 @@
 #include "Includes_v8.hlsli"
 RWStructuredBuffer<float4> results : register(u0, space1);
 StructuredBuffer<float4> testReceivers : register(t19);
+StructuredBuffer<LightBLASNodeGpu> unpackedLightNodes : register(t20);
 uint TestInstOf(uint tri) { return g_EmissiveTriangles[tri].meshID; }
 uint TestSlotOf(uint tri) { return LT_SlotOfInstance(TestInstOf(tri)); }
 #ifdef LT_FROZEN_BYTES
@@ -27,6 +28,28 @@ void LT_TEST_ClearRecord(uint a) { for(uint b=0u;b<LT_CLUSTER_BYTES;b+=16u) g_sh
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {
     if(tid.x>=workCount) return;
+    if(testMode==47u || testMode==48u) {
+        LightBLASNodeGpu expected=unpackedLightNodes[tid.x];
+        LightBLASNodeGpu actual;
+        if(testMode==47u) actual=LT_LoadBLAS(testSeed,tid.x);
+        else {
+            LightTLASNodeGpu t=LT_LoadTLAS(tid.x);
+            actual.bmin=t.bmin;actual.bmax=t.bmax;actual.power=t.power;
+            actual.axis=t.axis;actual.cosTheta_o=t.cosTheta_o;actual.sinTheta_o=t.sinTheta_o;
+            actual.firstChild=t.firstChild;actual.childCount=t.childCount;actual.triFirst=t.slot;actual.triCount=1u;
+        }
+        bool bounds=all(actual.bmin<=expected.bmin) && all(actual.bmax>=expected.bmax);
+        bool topology=actual.childCount==expected.childCount && (actual.childCount?
+            actual.firstChild==expected.firstChild:actual.triFirst==expected.triFirst);
+        float delta=acos(clamp(dot(normalize(actual.axis),normalize(expected.axis)),-1.0f,1.0f));
+        bool cone=actual.cosTheta_o==-1.0f || delta+acos(clamp(expected.cosTheta_o,-1.0f,1.0f))<=acos(actual.cosTheta_o)+1e-6f;
+        if ((rs_flags & RS_FLAG_COMPACT_LIGHT_TREE) == 0u) {
+            bounds=all(asuint(actual.bmin)==asuint(expected.bmin)) && all(asuint(actual.bmax)==asuint(expected.bmax));
+            cone=all(asuint(actual.axis)==asuint(expected.axis)) && asuint(actual.cosTheta_o)==asuint(expected.cosTheta_o) &&
+                 asuint(actual.sinTheta_o)==asuint(expected.sinTheta_o);
+        }
+        results[tid.x]=float4(bounds,asuint(actual.power)==asuint(expected.power),topology,cone);return;
+    }
     if(testMode==45u || testMode==46u) {
         float4 receiver=testReceivers[0],coat=testReceivers[1];
         float3 x=receiver.xyz,n=float3(0,0,1);

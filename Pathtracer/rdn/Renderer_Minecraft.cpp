@@ -165,11 +165,13 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
     ID3D12Resource* srcRecords = m_ownedEmissiveGpu ? m_ownedEmissiveGpu.Get() : m_scene.emissiveTrianglesBuffer.Get();
     const UINT sceneRecords =
         std::min((UINT)m_scene.emissiveTriangles.size(), elems(srcRecords, sizeof(LightTriangle)));
-    const UINT sceneNodes = elems(gpu.BLASNodes.Get(), sizeof(lt::LightBLASNodeGpu));
+    const UINT nodeStride = lt::LightBLASNodeStride(m_lightTreeCompact);
+    const UINT sceneNodes = elems(gpu.BLASNodes.Get(), nodeStride);
     const UINT sceneLeaves = elems(gpu.LeafTriIndex.Get(), sizeof(uint32_t));
     const UINT sceneTrails = elems(gpu.TriBitTrail.Get(), sizeof(lt::LightTreeTrail));
     const UINT needRec = std::max({sceneRecords, sceneLeaves, sceneTrails, 1u});
-    const bool recreate = !m_vxLightRecords || needRec > m_vxSceneRecordCap || sceneNodes > m_vxSceneNodeCap;
+    const bool recreate = !m_vxLightRecords || needRec > m_vxSceneRecordCap || sceneNodes > m_vxSceneNodeCap ||
+                          m_vxLightNodeStride != nodeStride;
     if (recreate) {
         // Retire replaced buffers after frames using the old descriptors finish.
         ComPtr<ID3D12Resource>* old[4] = {&m_vxLightRecords, &m_vxLightNodes, &m_vxLightLeaf, &m_vxLightTrails};
@@ -178,6 +180,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
                 m_vxLightRetired.push_back({*r, m_time});
         m_vxSceneRecordCap = std::max(4096u, needRec * 2u);
         m_vxSceneNodeCap = std::max(8192u, sceneNodes * 2u);
+        m_vxLightNodeStride = nodeStride;
         auto make = [&](ComPtr<ID3D12Resource>& res, UINT64 bytes, const wchar_t* name) {
             auto hp = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
             auto desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
@@ -187,7 +190,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
         };
         const UINT64 recElems = (UINT64)m_vxSceneRecordCap + sc.lightRecordCapacity;
         make(m_vxLightRecords, recElems * sizeof(LightTriangle), L"MinecraftLightRecords");
-        make(m_vxLightNodes, ((UINT64)m_vxSceneNodeCap + sc.lightNodeCapacity) * sizeof(lt::LightBLASNodeGpu),
+        make(m_vxLightNodes, ((UINT64)m_vxSceneNodeCap + sc.lightNodeCapacity) * nodeStride,
              L"MinecraftLightNodes");
         make(m_vxLightLeaf, recElems * sizeof(uint32_t), L"MinecraftLightLeafIndex");
         make(m_vxLightTrails, recElems * sizeof(lt::LightTreeTrail), L"MinecraftLightTrails");
@@ -205,7 +208,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
         cmdList->ResourceBarrier(1, &b);
     };
     copy(m_vxLightRecords.Get(), srcRecords, (UINT64)sceneRecords * sizeof(LightTriangle));
-    copy(m_vxLightNodes.Get(), gpu.BLASNodes.Get(), (UINT64)sceneNodes * sizeof(lt::LightBLASNodeGpu));
+    copy(m_vxLightNodes.Get(), gpu.BLASNodes.Get(), (UINT64)sceneNodes * nodeStride);
     copy(m_vxLightLeaf.Get(), gpu.LeafTriIndex.Get(), (UINT64)sceneLeaves * sizeof(uint32_t));
     copy(m_vxLightTrails.Get(), gpu.TriBitTrail.Get(), (UINT64)sceneTrails * sizeof(lt::LightTreeTrail));
 
@@ -225,7 +228,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
     };
     const UINT recCount = m_vxSceneRecordCap + sc.lightRecordCapacity;
     srv(EMISSIVE_TRI_SRV_SLOT, m_vxLightRecords.Get(), recCount, sizeof(LightTriangle), DXGI_FORMAT_UNKNOWN);
-    srv(21u, m_vxLightNodes.Get(), m_vxSceneNodeCap + sc.lightNodeCapacity, sizeof(lt::LightBLASNodeGpu),
+    srv(21u, m_vxLightNodes.Get(), (UINT)(((UINT64)m_vxSceneNodeCap + sc.lightNodeCapacity) * nodeStride / 16u), 16u,
         DXGI_FORMAT_UNKNOWN);
     srv(23u, m_vxLightLeaf.Get(), recCount, 0u, DXGI_FORMAT_R32_UINT);
     srv(26u, m_vxLightTrails.Get(), recCount, 0u, DXGI_FORMAT_R32G32_UINT);
@@ -241,6 +244,7 @@ void Renderer::BindVoxelLights(ID3D12GraphicsCommandList* cmdList) {
         lb.leafIndex = m_vxLightLeaf.Get();
         lb.trails = m_vxLightTrails.Get();
         lb.slotBase = (uint32_t)m_scene.lightInstances.size();
+        lb.compactNodes = m_lightTreeCompact;
         m_voxels.bind_lights(sc.lights ? lb : mc::LightBinding{});
     } else {
         m_voxels.set_light_slot_base((uint32_t)m_scene.lightInstances.size());

@@ -1,4 +1,5 @@
 #include "LightTreeTrail.h"
+#include "LightTreeDecode.hlsli"
 
 Buffer<uint> gLT_TriToBLAS       : register(t16);
 Buffer<uint2> gLT_TriBitTrail    : register(t17);
@@ -137,19 +138,19 @@ struct LTNodeCommon
     float cosTheta_o; float sinTheta_o; float power;
     uint4 topology;
 };
-LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index)
+LTNodeCommon LT_LoadChild(uint phase, uint nodeOffset, uint index, LT_BlasFrame frame)
 {
     LTNodeCommon c;
     if (phase == 0u)
     {
-        const LightTLASNodeGpu a = gLT_TLAS[index];
+        const LightTLASNodeGpu a = LT_LoadTLAS(index);
         c.bmin = a.bmin; c.bmax = a.bmax; c.axis = a.axis;
         c.cosTheta_o = a.cosTheta_o; c.sinTheta_o = a.sinTheta_o; c.power = a.power;
         c.topology = uint4(a.firstChild, a.childCount, a.slot, 0u);
     }
     else
     {
-        const LightBLASNodeGpu b = gLT_BLAS[nodeOffset + index];
+        const LightBLASNodeGpu b = LT_LoadBLAS(nodeOffset, index, frame);
         c.bmin = b.bmin; c.bmax = b.bmax; c.axis = b.axis;
         c.cosTheta_o = b.cosTheta_o; c.sinTheta_o = b.sinTheta_o; c.power = b.power;
         c.topology = uint4(b.firstChild, b.childCount, b.triFirst, b.triCount);
@@ -169,6 +170,7 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
     uint   iter = 0u;
     float3 xP = x, nP = n;
     uint   nodeOffset = 0u;
+    LT_BlasFrame frame = (LT_BlasFrame)0;
     uint   node = 0u;
     float  xi = xiT;
     uint4  t = 0u;
@@ -179,7 +181,7 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
             enter = false; iter = 0u;
             if (phase == 0u)
             {
-                const LightTLASNodeGpu Nroot = gLT_TLAS[startNode];
+                const LightTLASNodeGpu Nroot = LT_LoadTLAS(startNode);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.slot, 0u);
                 xi = xiT;
             }
@@ -192,8 +194,9 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
                 xP = mul(W2L, float4(x, 1.0));
                 nP = LT_LocalReceiverNormal(W2L, n);
                 nodeOffset = S.nodeOffset; instOut = S.instanceID;
+                frame = LT_LoadBlasFrame(nodeOffset);
                 node = startSlot == LT_SENTINEL ? 0u : startNode;
-                const LightBLASNodeGpu Nroot = gLT_BLAS[nodeOffset + node];
+                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, node, frame);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.triFirst, Nroot.triCount);
                 xi = xiB;
             }
@@ -211,11 +214,11 @@ bool LT_Descend(float3 x, float3 n, float xiT, float xiB, uint startNode, uint s
         const uint count = min(t.y, 4u);
         float w0 = 0.0, w1 = 0.0, w2 = 0.0, w3 = 0.0;
         uint4 t0 = 0u, t1 = 0u, t2 = 0u, t3 = 0u;
-        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x);
+        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x, frame);
         [loop] for (uint i = 0u; i < count; ++i)
         {
             LTNodeCommon Cn = C;
-            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u);
+            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u, frame);
             const float wi = max(LT_NodeImportance_Common(xP, nP, C.bmin, C.bmax, C.axis, C.cosTheta_o, C.sinTheta_o, C.power), 0.0);
             if (i == 0u)      { w0 = wi; t0 = C.topology; }
             else if (i == 1u) { w1 = wi; t1 = C.topology; }
@@ -313,6 +316,7 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
     uint   iter = 0u;
     float3 xP = x, nP = n;
     uint   nodeOffset = 0u;
+    LT_BlasFrame frame = (LT_BlasFrame)0;
     uint2  trail = 0u;
     uint4  t = 0u;
     [loop] for (;;)
@@ -322,7 +326,7 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
             enter = false;
             if (phase == 0u)
             {
-                const LightTLASNodeGpu Nroot = gLT_TLAS[startNode];
+                const LightTLASNodeGpu Nroot = LT_LoadTLAS(startNode);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.slot, 0u);
                 trail = slotTrail; iter = startDepth;
             }
@@ -333,7 +337,8 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
                 xP = mul(W2L, float4(x, 1.0));
                 nP = LT_LocalReceiverNormal(W2L, n);
                 nodeOffset = S.nodeOffset;
-                const LightBLASNodeGpu Nroot = gLT_BLAS[nodeOffset + (startSlot == LT_SENTINEL ? 0u : startNode)];
+                frame = LT_LoadBlasFrame(nodeOffset);
+                const LightBLASNodeGpu Nroot = LT_LoadBLAS(nodeOffset, startSlot == LT_SENTINEL ? 0u : startNode, frame);
                 t = uint4(Nroot.firstChild, Nroot.childCount, Nroot.triFirst, Nroot.triCount);
                 trail = triTrail; iter = startSlot == LT_SENTINEL ? 0u : startDepth;
             }
@@ -367,11 +372,11 @@ float LT_PdfSubtree(float3 x, float3 n, uint triIndex, uint slot, uint startNode
 
         const uint count = min(t.y, 4u);
         float sum = 0.0; float wc = 0.0; uint4 tc = 0u;
-        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x);
+        LTNodeCommon C = LT_LoadChild(phase, nodeOffset, t.x, frame);
         [loop] for (uint i = 0u; i < count; ++i)
         {
             LTNodeCommon Cn = C;
-            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u);
+            if (i + 1u < count) Cn = LT_LoadChild(phase, nodeOffset, t.x + i + 1u, frame);
             const float wi = max(LT_NodeImportance_Common(xP, nP, C.bmin, C.bmax, C.axis, C.cosTheta_o, C.sinTheta_o, C.power), 0.0);
             sum += wi;
             if (i == childIdx) { wc = wi; tc = C.topology; }

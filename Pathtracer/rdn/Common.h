@@ -153,6 +153,7 @@ struct GeometryOffsets {
 struct IntegratorSettings {
     int integratorMode = 0;
 
+    bool compactLightTree = false;
     bool lightTreeLearning = true;
     bool lightTreeReset = false;
     int lightTreeCellExponent = 0;
@@ -273,7 +274,7 @@ struct IntegratorSettings {
         const bool pt = integratorMode == 0;
         const bool lite = pt && liteEnabled;
         return std::make_tuple(integratorMode, maxBounces, maxDiffuseBounces, texturePointFilter, forceDiffuseMats,
-                               pt && lightTreeLearning, lightTreeCellExponent, lightTreeLodScale, pt && sharcEnabled,
+                               compactLightTree, pt && lightTreeLearning, lightTreeCellExponent, lightTreeLodScale, pt && sharcEnabled,
                                lite, lite && liteDebugView, lite && liteUnshadowedTargets, ucwClampMax,
                                pt ? 0u : Flags());
     }

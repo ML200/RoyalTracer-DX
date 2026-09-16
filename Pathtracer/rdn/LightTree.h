@@ -19,6 +19,7 @@
 #include <cmath>
 #include <stdexcept>
 #include "../shaders/LightTreeTrail.h"
+#include "Lighting/LightTreePacking.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -106,6 +107,7 @@ struct LightInstanceRef {
 namespace lt {
 #pragma pack(push, 1)
 
+// Full-precision CPU/decoded records; GPU resources use Light*NodePacked.
 struct LightTLASNodeGpu {
     XMFLOAT3 bmin;
     float power;
@@ -426,6 +428,7 @@ class LightTreeBuilder {
 
   public:
     struct Settings {
+        bool compactGpuNodes = true;
         uint32_t maxLeafTris = 1;
         bool useTwoLevel = true;
         uint32_t buildBins = 64;
@@ -561,8 +564,9 @@ class LightTreeBuilder {
     // Flatten mesh trees and rebase their leaf ranges into shared buffers.
     void UploadAll(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList) {
         LT_TIME_SCOPE(L"UploadAll()");
-        std::vector<LightBLASNodeGpu> gpuBlasNodes;
-        gpuBlasNodes.reserve(totalBLASNodeCount());
+        const uint32_t nodeWords = LightBLASNodeStride(m_cfg.compactGpuNodes) / sizeof(uint32_t);
+        std::vector<uint32_t> gpuBlasNodes;
+        gpuBlasNodes.reserve((totalBLASNodeCount() + m_blas.size()) * nodeWords);
         std::vector<uint32_t> gpuLeafTriIndex;
         gpuLeafTriIndex.reserve(totalLeafIndexCount());
         std::vector<BlasRangeGpu> gpuRanges;
@@ -570,31 +574,29 @@ class LightTreeBuilder {
 
         for (const auto& b : m_blas) {
             BlasRangeGpu r{};
-            r.nodeOffset = static_cast<uint32_t>(gpuBlasNodes.size());
+            r.nodeOffset = static_cast<uint32_t>(gpuBlasNodes.size() / nodeWords);
             r.nodeCount = static_cast<uint32_t>(b.nodes.size());
             r.triIndexOffset = static_cast<uint32_t>(gpuLeafTriIndex.size());
             r.triIndexCount = static_cast<uint32_t>(b.leafTriList.size());
 
-            for (const auto& n : b.nodes) {
-                LightBLASNodeGpu g = toGpu(n);
-                g.triFirst += r.triIndexOffset;
-                gpuBlasNodes.push_back(g);
-            }
+            std::vector<LightBLASNodeGpu> nodes;
+            nodes.reserve(b.nodes.size());
+            for (const auto& n : b.nodes) nodes.push_back(toGpu(n));
+            const auto packed = EncodeLightBLAS(nodes, m_cfg.compactGpuNodes, r.triIndexOffset);
+            gpuBlasNodes.insert(gpuBlasNodes.end(), packed.begin(), packed.end());
 
             gpuLeafTriIndex.insert(gpuLeafTriIndex.end(), b.leafTriList.begin(), b.leafTriList.end());
             gpuRanges.push_back(r);
         }
 
-        std::vector<LightTLASNodeGpu> gpuTlasNodes(m_tlas.size());
-        for (size_t i = 0; i < m_tlas.size(); ++i)
-            gpuTlasNodes[i] = m_tlas[i];
+        const auto gpuTlasNodes = m_cfg.compactGpuNodes ? PackTLAS(m_tlas) : std::vector<LightTLASNodePacked>{};
 
-        LT_LOG(L"UploadAll: BLASNodes=" << gpuBlasNodes.size() << L", LeafTriIndex=" << gpuLeafTriIndex.size()
+        LT_LOG(L"UploadAll: BLASNodes=" << gpuBlasNodes.size() / nodeWords << L", LeafTriIndex=" << gpuLeafTriIndex.size()
                                         << L", BLASRanges=" << gpuRanges.size() << L", Slots=" << m_slotGpu.size()
-                                        << L", TLASNodes=" << gpuTlasNodes.size());
+                                        << L", TLASNodes=" << m_tlas.size());
         const auto KiB = [](uint64_t b) { return b / 1024.0; };
-        LT_LOG(L"  sizes: TLAS=" << KiB(gpuTlasNodes.size() * sizeof(LightTLASNodeGpu)) << L" KiB" << L", BLAS="
-                                 << KiB(gpuBlasNodes.size() * sizeof(LightBLASNodeGpu)) << L" KiB" << L", Ranges="
+        LT_LOG(L"  sizes: TLAS=" << KiB(m_tlas.size() * LightTLASNodeStride(m_cfg.compactGpuNodes)) << L" KiB" << L", BLAS="
+                                 << KiB(gpuBlasNodes.size() * sizeof(uint32_t)) << L" KiB" << L", Ranges="
                                  << KiB(gpuRanges.size() * sizeof(BlasRangeGpu)) << L" KiB" << L", Slots="
                                  << KiB(m_slotGpu.size() * sizeof(LightSlotGpu)) << L" KiB" << L", LeafIdx="
                                  << KiB(gpuLeafTriIndex.size() * sizeof(uint32_t)) << L" KiB");
@@ -613,7 +615,7 @@ class LightTreeBuilder {
         m_gpu.BLASNodes = uploadVector(device, cmdList, gpuBlasNodes);
         m_gpu.LeafTriIndex = uploadVector(device, cmdList, gpuLeafTriIndex);
         m_gpu.BLASRanges = uploadVector(device, cmdList, gpuRanges);
-        m_gpu.TLASNodes = uploadVector(device, cmdList, gpuTlasNodes);
+        m_gpu.TLASNodes = m_cfg.compactGpuNodes ? uploadVector(device, cmdList, gpuTlasNodes) : uploadVector(device, cmdList, m_tlas);
         m_gpu.TriToBLAS = uploadVector(device, cmdList, triToBLAS);
         m_gpu.TriBitTrail = uploadVector(device, cmdList, m_triBitTrails);
         m_gpu.BLASBitTrail = uploadVector(device, cmdList, m_slotBitTrails);
@@ -646,11 +648,11 @@ class LightTreeBuilder {
         };
         if (!m_gpu.TLASNodes)
             LT_WARN(L"WriteSrvs: TLASNodes is null (no light slots), writing a null SRV.");
-        writeBufSrv(device, m_gpu.TLASNodes.Get(), elems(m_gpu.TLASNodes.Get(), sizeof(LightTLASNodeGpu)),
-                    sizeof(LightTLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+        writeBufSrv(device, m_gpu.TLASNodes.Get(), elems(m_gpu.TLASNodes.Get(), 16u),
+                    16u, DXGI_FORMAT_UNKNOWN, dst);
         dst.ptr += inc;
-        writeBufSrv(device, m_gpu.BLASNodes.Get(), elems(m_gpu.BLASNodes.Get(), sizeof(LightBLASNodeGpu)),
-                    sizeof(LightBLASNodeGpu), DXGI_FORMAT_UNKNOWN, dst);
+        writeBufSrv(device, m_gpu.BLASNodes.Get(), elems(m_gpu.BLASNodes.Get(), 16u),
+                    16u, DXGI_FORMAT_UNKNOWN, dst);
         dst.ptr += inc;
         writeBufSrv(device, m_gpu.BLASRanges.Get(), elems(m_gpu.BLASRanges.Get(), sizeof(BlasRangeGpu)),
                     sizeof(BlasRangeGpu), DXGI_FORMAT_UNKNOWN, dst);
@@ -720,7 +722,8 @@ class LightTreeBuilder {
 
     ID3D12Resource* GetTLASGpuBuffer() const { return m_gpu.TLASNodes.Get(); }
     ID3D12Resource* GetBLASBitTrailGpuBuffer() const { return m_gpu.BLASBitTrail.Get(); }
-    uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * sizeof(LightTLASNodeGpu)); }
+    bool CompactGpuNodes() const { return m_cfg.compactGpuNodes; }
+    uint32_t GetTLASBufferSize() const { return static_cast<uint32_t>(m_tlas.size() * LightTLASNodeStride(m_cfg.compactGpuNodes)); }
 
     const GpuBuffers& GetGpu() const { return m_gpu; }
 
@@ -949,7 +952,7 @@ class LightTreeBuilder {
         uint32_t n = 0;
         for (size_t i = 0; i < m_blas.size(); ++i) {
             nodeOff[i] = n;
-            n += static_cast<uint32_t>(m_blas[i].nodes.size());
+            n += static_cast<uint32_t>(m_blas[i].nodes.size()) + (m_cfg.compactGpuNodes ? 1u : 0u);
         }
         m_slotGpu.assign(m_slots.size(), LightSlotGpu{});
         for (size_t s = 0; s < m_slots.size(); ++s) {
@@ -1011,9 +1014,9 @@ class LightTreeBuilder {
 
     // Build four-way nodes using spatial, power, and orientation split costs.
     uint32_t buildBLASRecursive_SAOH(std::vector<TmpTri>& tmp, BLASBuild& out, uint32_t begin, uint32_t end,
-                                     LightTreeTrail bitTrail, uint32_t depth) {
-        const uint32_t nodeIdx = static_cast<uint32_t>(out.nodes.size());
-        out.nodes.emplace_back();
+                                     LightTreeTrail bitTrail, uint32_t depth, uint32_t destination = UINT32_MAX) {
+        const uint32_t nodeIdx = destination == UINT32_MAX ? static_cast<uint32_t>(out.nodes.size()) : destination;
+        if (destination == UINT32_MAX) out.nodes.emplace_back();
 
         auto nodeAt = [&](uint32_t i) -> BLASNode& { return out.nodes[i]; };
         BLASNode& N0 = nodeAt(nodeIdx);
@@ -1203,10 +1206,8 @@ class LightTreeBuilder {
 
         for (uint32_t c = 0; c < bucketCount; ++c) {
             const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
-            uint32_t built = buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
-            uint32_t desired = nodeAt(nodeIdx).firstChild + c;
-            if (built != desired)
-                std::swap(out.nodes[built], out.nodes[desired]);
+            const uint32_t desired = nodeAt(nodeIdx).firstChild + c;
+            buildBLASRecursive_SAOH(tmp, out, buckets[c].b, buckets[c].e, childTrail, depth + 1u, desired);
         }
 
         // Recursive growth may invalidate references into the node vector.
@@ -1309,9 +1310,9 @@ class LightTreeBuilder {
     }
 
     uint32_t buildTLASRecursive_SAOH(std::vector<TItem>& it, uint32_t begin, uint32_t end, LightTreeTrail bitTrail,
-                                     uint32_t depth) {
-        const uint32_t nodeIdx = static_cast<uint32_t>(m_tlas.size());
-        m_tlas.push_back({});
+                                     uint32_t depth, uint32_t destination = UINT32_MAX) {
+        const uint32_t nodeIdx = destination == UINT32_MAX ? static_cast<uint32_t>(m_tlas.size()) : destination;
+        if (destination == UINT32_MAX) m_tlas.push_back({});
 
         auto nodeAt = [&](uint32_t i) -> LightTLASNodeGpu& { return m_tlas[i]; };
         LightTLASNodeGpu& N0 = nodeAt(nodeIdx);
@@ -1500,10 +1501,8 @@ class LightTreeBuilder {
 
         for (uint32_t c = 0; c < bucketCount; c++) {
             const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
-            uint32_t built = buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
-            uint32_t desired = nodeAt(nodeIdx).firstChild + c;
-            if (built != desired)
-                std::swap(m_tlas[built], m_tlas[desired]);
+            const uint32_t desired = nodeAt(nodeIdx).firstChild + c;
+            buildTLASRecursive_SAOH(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u, desired);
         }
 
         return nodeIdx;

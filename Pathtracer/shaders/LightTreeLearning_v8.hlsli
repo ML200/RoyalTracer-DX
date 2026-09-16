@@ -206,9 +206,9 @@ LTC_Node LTC_LoadNode(uint address) {
 }
 
 float LTC_NodePower(LTC_Node c) {
-    if(c.slot==LT_SENTINEL) return gLT_TLAS[c.node].power;
+    if(c.slot==LT_SENTINEL) return LT_LoadTLAS(c.node).power;
     LightSlotGpu s=gLT_Slot[c.slot];
-    return gLT_BLAS[s.nodeOffset+c.node].power*s.powerScale;
+    return LT_LoadBLAS(s.nodeOffset,c.node).power*s.powerScale;
 }
 void LTC_StoreNode(uint address,LTC_Node n) {
     g_sharc.Store4(address+LT_FZ_NODE,uint4(n.node,n.slot,n.trail));g_sharc.Store2(address+LT_FZ_DEPTH,uint2(n.depth,n.parent));
@@ -244,19 +244,19 @@ float LTC_Probability(uint address,uint count,float sum,float powerSum) {
 }
 float LTC_FrozenProbability(uint address) { return asfloat(g_sharc.Load(address+LT_FZ_PROBABILITY)); }
 float LTC_Prior(LTC_Node c,float3 x,float3 n) {
-    if(c.slot==LT_SENTINEL) return LT_NodeImportance_TLAS(gLT_TLAS[c.node],x,n);
+    if(c.slot==LT_SENTINEL) return LT_NodeImportance_TLAS(LT_LoadTLAS(c.node),x,n);
     LightSlotGpu s=gLT_Slot[c.slot];
-    return LT_NodeImportance_BLAS(gLT_BLAS[s.nodeOffset+c.node],x,n,s.worldToLocal)*s.powerScale;
+    return LT_NodeImportance_BLAS(LT_LoadBLAS(s.nodeOffset,c.node),x,n,s.worldToLocal)*s.powerScale;
 }
 uint LTC_Children(inout LTC_Node c,out uint first) {
     first=0;
     if(c.slot==LT_SENTINEL) {
-        LightTLASNodeGpu t=gLT_TLAS[c.node];
+        LightTLASNodeGpu t=LT_LoadTLAS(c.node);
         if(t.childCount>0u) { first=t.firstChild;return t.childCount; }
 
         c.node=0u;c.slot=t.slot;c.trail=0u;c.depth=0u;c.parent=LT_SENTINEL;
     }
-    LightBLASNodeGpu b=gLT_BLAS[gLT_Slot[c.slot].nodeOffset+c.node];
+    LightBLASNodeGpu b=LT_LoadBLAS(gLT_Slot[c.slot].nodeOffset,c.node);
     first=b.firstChild;return b.childCount;
 }
 LTC_Node LTC_Child(LTC_Node parent,uint first,uint child) {

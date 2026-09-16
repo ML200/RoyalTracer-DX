@@ -16,7 +16,7 @@ void LTC_CopyCluster(uint destination,uint source) {
 LTC_Node LTC_ParentNode(LTC_Node child) {
     LTC_Node parent=LTC_Root();parent.slot=child.slot;
     [loop] for(uint d=0u;d+1u<child.depth;++d) {
-        uint first=parent.slot==LT_SENTINEL?gLT_TLAS[parent.node].firstChild:gLT_BLAS[gLT_Slot[parent.slot].nodeOffset+parent.node].firstChild;
+        uint first=parent.slot==LT_SENTINEL?LT_LoadTLAS(parent.node).firstChild:LT_LoadBLAS(gLT_Slot[parent.slot].nodeOffset,parent.node).firstChild;
         uint digit=(d<16u?child.trail.x>>(2u*d):child.trail.y>>(2u*(d-16u)))&3u;
         parent=LTC_Child(parent,first,digit);
     }
@@ -24,7 +24,7 @@ LTC_Node LTC_ParentNode(LTC_Node child) {
 
         uint2 trail=gLT_BLASBitTrail[parent.slot];parent=LTC_Root();
         [loop] for(uint d=0u;d<LT_TRAIL_MAX_DEPTH;++d) {
-            LightTLASNodeGpu node=gLT_TLAS[parent.node];if(node.childCount==0u) break;
+            LightTLASNodeGpu node=LT_LoadTLAS(parent.node);if(node.childCount==0u) break;
             uint digit=(d<16u?trail.x>>(2u*d):trail.y>>(2u*(d-16u)))&3u;
             parent=LTC_Child(parent,node.firstChild,digit);
         }
@@ -40,9 +40,9 @@ bool LTC_MergeForSplit(uint cell,inout uint count,inout uint target,float target
         if(child.parent==LT_SENTINEL) continue;
         uint first,children;
         if(child.slot==LT_SENTINEL) {
-            LightTLASNodeGpu p=gLT_TLAS[child.parent];first=p.firstChild;children=p.childCount;
+            LightTLASNodeGpu p=LT_LoadTLAS(child.parent);first=p.firstChild;children=p.childCount;
         } else {
-            LightBLASNodeGpu p=gLT_BLAS[gLT_Slot[child.slot].nodeOffset+child.parent];first=p.firstChild;children=p.childCount;
+            LightBLASNodeGpu p=LT_LoadBLAS(gLT_Slot[child.slot].nodeOffset,child.parent);first=p.firstChild;children=p.childCount;
         }
         if(child.node!=first || children<2u || j+children>count || (target>=j && target<j+children)) continue;
         bool complete=true;float q=0.0f;
@@ -256,7 +256,7 @@ bool LTC_CutValid(uint cell) {
         uint node=0u,parent=LT_SENTINEL;
         if(c.slot==LT_SENTINEL) {
             [loop] for(uint d=0u;d<c.depth;++d) {
-                LightTLASNodeGpu t=gLT_TLAS[node];
+                LightTLASNodeGpu t=LT_LoadTLAS(node);
                 uint digit=(d<16u?c.trail.x>>(2u*d):c.trail.y>>(2u*(d-16u)))&3u;
                 if(digit>=t.childCount) return false;
                 parent=node;node=t.firstChild+digit;
@@ -265,13 +265,13 @@ bool LTC_CutValid(uint cell) {
         } else {
             uint2 trail=gLT_BLASBitTrail[c.slot];
             [loop] for(uint d=0u;d<LT_TRAIL_MAX_DEPTH;++d) {
-                LightTLASNodeGpu t=gLT_TLAS[node];
+                LightTLASNodeGpu t=LT_LoadTLAS(node);
                 if(t.childCount==0u) break;
                 uint digit=(d<16u?trail.x>>(2u*d):trail.y>>(2u*(d-16u)))&3u;
                 if(digit>=t.childCount) return false;
                 node=t.firstChild+digit;
             }
-            if(gLT_TLAS[node].slot!=c.slot) return false;
+            if(LT_LoadTLAS(node).slot!=c.slot) return false;
         }
     }
     return true;

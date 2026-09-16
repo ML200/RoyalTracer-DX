@@ -2,5 +2,6 @@
 #define RENDER_FLAGS_H
 
 #define RS_FLAG_NO_MESH_LIGHTS 0x80u
+#define RS_FLAG_COMPACT_LIGHT_TREE 0x4u
 
 #endif

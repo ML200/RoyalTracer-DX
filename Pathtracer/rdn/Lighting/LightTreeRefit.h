@@ -35,6 +35,7 @@ struct TLASRefitResult {
     std::vector<LightTLASNodeGpu> nodes;
     std::vector<LightTreeTrail> blasBitTrails;
     std::vector<LightSlotGpu> slots;
+    std::vector<LightTLASNodePacked> packedNodes;
 
     uint32_t extraVersion = 0;
     uint32_t extraLeafCount = 0;
@@ -313,9 +314,9 @@ class TLASRebuilder {
     uint32_t m_bins = 64;
 
     uint32_t buildRecursive(std::vector<TItem>& it, uint32_t begin, uint32_t end, LightTreeTrail bitTrail,
-                            uint32_t depth) {
-        const uint32_t nodeIdx = (uint32_t)m_tlas.size();
-        m_tlas.push_back({});
+                            uint32_t depth, uint32_t destination = UINT32_MAX) {
+        const uint32_t nodeIdx = destination == UINT32_MAX ? (uint32_t)m_tlas.size() : destination;
+        if (destination == UINT32_MAX) m_tlas.push_back({});
 
         AggT parent{};
         for (uint32_t i = begin; i < end; ++i)
@@ -486,10 +487,8 @@ class TLASRebuilder {
 
         for (uint32_t c = 0; c < bucketCount; ++c) {
             const LightTreeTrail childTrail = AppendLightTreeTrail(bitTrail, c, depth);
-            uint32_t built = buildRecursive(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u);
-            uint32_t desired = m_tlas[nodeIdx].firstChild + c;
-            if (built != desired)
-                std::swap(m_tlas[built], m_tlas[desired]);
+            const uint32_t desired = m_tlas[nodeIdx].firstChild + c;
+            buildRecursive(it, buckets[c].b, buckets[c].e, childTrail, depth + 1u, desired);
         }
 
         return nodeIdx;
@@ -524,7 +523,9 @@ class LightTreeRefitManager {
                               [roots = std::move(blasRoots), sl = std::move(slots), rec = std::move(slotRecords),
                                xf = std::move(xforms), ex = std::move(extra), slotCount, extraVersion]() {
                                   TLASRebuilder builder;
-                                  return builder.Build(roots, sl, xf, 64u, rec, ex, slotCount, extraVersion);
+                                  auto result = builder.Build(roots, sl, xf, 64u, rec, ex, slotCount, extraVersion);
+                                  result.packedNodes = PackTLAS(result.nodes);
+                                  return result;
                               });
     }
     void RequestRefit(std::vector<BLASRootLocal> blasRoots, std::vector<LightInstanceRef> slots,
@@ -540,13 +541,15 @@ class LightTreeRefitManager {
         RequestRefit(std::move(blasRoots), std::move(slots), std::move(xforms));
     }
 
-    void RequestCustom(std::function<TLASRefitResult()> job) {
+    void RequestCustom(std::function<TLASRefitResult()> job, bool compactGpuNodes = true) {
         if (m_pending.load())
             return;
         m_pending.store(true);
-        m_future = std::async(std::launch::async, [job = std::move(job)]() mutable {
+        m_future = std::async(std::launch::async, [job = std::move(job), compactGpuNodes]() mutable {
             const auto start = std::chrono::steady_clock::now();
             TLASRefitResult result = job();
+            if (compactGpuNodes)
+                result.packedNodes = PackTLAS(result.nodes);
             result.worker_cpu_ms = std::chrono::duration<float, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
             return result;

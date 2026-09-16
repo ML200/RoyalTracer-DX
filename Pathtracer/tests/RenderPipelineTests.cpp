@@ -39,6 +39,7 @@ int main() {
         for (const auto& pass : p) Require(!pass.executedLastFrame, "Unexecuted passes shown as active");
 
         IntegratorSettings base;
+        Require(!base.compactLightTree, "Light tree compaction must default off");
         Require(base.integratorMode == 0 && base.sharcEnabled, "Default is not PT with SHARC");
         Require(base.liteEnabled && base.liteSpatial, "Default diffuse spatial reuse is disabled");
         auto changed = base;
@@ -46,7 +47,7 @@ int main() {
         changed.sharcDebugCoarse = true;
         changed.lightTreeDebug = true;
         Require(changed.ReconstructionKey() == base.ReconstructionKey(), "Inspection invalidates underlying reconstruction");
-        for (int control = 0; control < 10; ++control) {
+        for (int control = 0; control < 11; ++control) {
             changed = base;
             if (control == 0) changed.integratorMode = 1;
             if (control == 1) changed.sharcEnabled = false;
@@ -58,6 +59,7 @@ int main() {
             if (control == 7) changed.lightTreeLearning = false;
             if (control == 8) changed.lightTreeCellExponent += 1;
             if (control == 9) changed.lightTreeLodScale *= 2;
+            if (control == 10) changed.compactLightTree = true;
             Require(changed.ReconstructionKey() != base.ReconstructionKey(), "Transport edit retains incompatible reconstruction");
         }
         CumulusSettings cloud, inspected = cloud;
